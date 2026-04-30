@@ -557,23 +557,27 @@ export class GeminiLane implements Lane {
 
       // Auth-stale 403 that survived the one-shot re-onboard retry means
       // the token itself is bad (account lost Antigravity access, scopes
-      // were revoked, or refresh expired). A raw "Gemini API error 403:
-      // The caller does not have permission" isn't actionable — replace
-      // with a concrete next-step message so the user knows to run /provider.
+      // were revoked, or refresh expired). Generic 400/non-retryable errors
+      // are provider payload validation failures, not auth failures.
       const errKind = (err as { kind?: string } | null)?.kind
+      const errMessage = String(err?.message ?? err ?? '')
+      const looksLikeCredentialError = /No OAuth credentials available|restricted_client|invalid_grant|invalid_client/i.test(errMessage)
       const isTerminalAuth = errKind === 'auth-stale'
-        || errKind === 'non-retryable'
+        || looksLikeCredentialError
         || (err?.status === 401 || err?.status === 403)
       const isQuotaOrCapacity = errKind === 'retryable-quota'
         || errKind === 'terminal-quota'
         || err?.status === 429
+      const isRejectedRequest = errKind === 'non-retryable' || err?.status === 400
       const errText = isPTL
         ? (err?.message ?? String(err))
         : isTerminalAuth
           ? buildAuthErrorMessage(err, model)
           : isQuotaOrCapacity
             ? buildQuotaErrorMessage(err, model)
-            : `\n\nGemini API error (model: ${model}): ${err?.message ?? String(err)}`
+            : isRejectedRequest
+              ? buildRejectedRequestErrorMessage(err, model)
+              : `\n\nGemini API error (model: ${model}): ${err?.message ?? String(err)}`
       yield {
         type: 'content_block_delta',
         index: blockIndex,
@@ -1255,7 +1259,7 @@ function buildGeminiRequest(config: GeminiRequestConfig): Record<string, unknown
 //
 // A raw "Gemini API error 403: The caller does not have permission"
 // isn't actionable for the user. When the error is classified as
-// auth-stale / non-retryable / 401 / 403 we rewrite it into a message
+// auth-stale / credential-missing / 401 / 403 we rewrite it into a message
 // that tells the user exactly what to do — and points at the right
 // remediation surface (Antigravity account page for Antigravity
 // models, /provider for OAuth refresh, /login for a fresh auth).
@@ -1393,6 +1397,27 @@ function buildQuotaErrorMessage(err: any, model?: string): string {
   }
 
   return lines.join('\n')
+}
+
+function buildRejectedRequestErrorMessage(err: any, model?: string): string {
+  const status = err?.status
+  const statusPrefix = status ? `Gemini ${status} ` : 'Gemini '
+  const detail = (err?.body && typeof err.body === 'string')
+    ? err.body.slice(0, 300).replace(/\s+/g, ' ').trim()
+    : (err?.message ?? String(err))
+  const modelLine = model ? `Model attempted: ${model}` : null
+
+  return [
+    '',
+    '',
+    `${statusPrefix}request failed validation before the model could answer.`,
+    '',
+    ...(modelLine ? [modelLine, ''] : []),
+    `Server said: ${detail}`,
+    '',
+    'This is not an OAuth/login failure. The provider rejected the request payload.',
+    'If this repeats on Claude Antigravity models, update ClauDex with `claudex update` and retry.',
+  ].join('\n')
 }
 
 function extractGoogleErrorMessage(body: unknown): string | null {

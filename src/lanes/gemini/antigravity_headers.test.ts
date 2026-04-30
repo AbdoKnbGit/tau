@@ -10,6 +10,7 @@ import {
   CODE_ASSIST_BASE,
   antigravityApiHeaders,
   codeAssistGenerationBase,
+  wrapForCodeAssist,
 } from '../../services/api/providers/gemini_code_assist.js'
 import { buildApiHeaders } from '../shared/antigravity_auth.js'
 
@@ -62,6 +63,64 @@ function main(): void {
       `bad User-Agent: ${headers['User-Agent']}`,
     )
     assert(headers['Client-Metadata']?.includes('"ideType":"ANTIGRAVITY"'), 'metadata lost Antigravity ideType')
+  })
+
+  test('Claude Antigravity model messages move function calls after text parts', () => {
+    const wrapped = wrapForCodeAssist('claude-sonnet-4-6', 'project-id', {
+      contents: [
+        {
+          role: 'model',
+          parts: [
+            { text: 'Let me check.' },
+            {
+              functionCall: {
+                id: 'call_abc',
+                name: 'Read',
+                args: { file: 'src/index.ts' },
+              },
+              thoughtSignature: 'skip_thought_signature_validator',
+            },
+            { text: 'Reading the file now.' },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                id: 'call_abc',
+                name: 'Read',
+                response: { content: 'file contents' },
+              },
+            },
+          ],
+        },
+      ],
+    })
+    const contents = wrapped.request.contents as Array<{ role?: string; parts?: Array<Record<string, unknown>> }>
+    const parts = contents[0]?.parts ?? []
+    assert((parts[0] as { text?: string }).text === 'Let me check.', 'first text part should stay first')
+    assert((parts[1] as { text?: string }).text === 'Reading the file now.', 'text after tool call should move before it')
+    assert(!!parts[2] && 'functionCall' in parts[2], 'functionCall should move to the end')
+    assert(contents[1]?.role === 'user', 'functionResponse message should use user role')
+  })
+
+  test('Gemini Antigravity model messages keep function-call ordering unchanged', () => {
+    const wrapped = wrapForCodeAssist('gemini-3-flash', 'project-id', {
+      contents: [
+        {
+          role: 'model',
+          parts: [
+            { functionCall: { id: 'call_abc', name: 'Read', args: {} } },
+            { text: 'Reading the file now.' },
+          ],
+        },
+      ],
+    })
+    const contents = wrapped.request.contents as Array<{ parts?: Array<Record<string, unknown>> }>
+    const parts = contents[0]?.parts ?? []
+    assert(!!parts[0] && 'functionCall' in parts[0], 'Gemini functionCall order should not change')
+    assert((parts[1] as { text?: string }).text === 'Reading the file now.', 'Gemini text order should not change')
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

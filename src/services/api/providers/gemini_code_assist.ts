@@ -828,6 +828,10 @@ export function antigravityApiHeaders(accessToken: string): Record<string, strin
  *      these, Claude doesn't accept them).
  *   3. Parts that carry only a `thoughtSignature` with no functionCall
  *      and no text are dropped for the same reason.
+ *   4. In model messages, regular parts are moved before `functionCall`
+ *      parts. Antigravity splits model messages at function-call
+ *      boundaries; text after a function call would create an assistant
+ *      turn between Claude's `tool_use` and `tool_result` blocks.
  *
  * Mirrors CLIProxyAPI's antigravity executor transformRequest().
  */
@@ -847,7 +851,13 @@ function _applyClaudeContentFixes(request: Record<string, unknown>): void {
       if ('thoughtSignature' in p && !hasFunctionCall && !hasText) return false
       return true
     })
-    contents[i] = { ...c, role, parts }
+    const orderedParts = role === 'model'
+      ? [
+          ...parts.filter(p => !(p && typeof p === 'object' && 'functionCall' in p)),
+          ...parts.filter(p => p && typeof p === 'object' && 'functionCall' in p),
+        ]
+      : parts
+    contents[i] = { ...c, role, parts: orderedParts }
   }
 }
 
