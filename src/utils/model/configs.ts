@@ -1,3 +1,4 @@
+import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import type { ModelName } from './model.js'
 import type { APIProvider } from './providers.js'
 
@@ -52,6 +53,15 @@ export interface ProviderModelConfig {
  *
  * Set PROVIDER_TIER=free|pro|plus to override auto-detection.
  * Provider-specific overrides: OPENAI_TIER, GEMINI_TIER, etc.
+ *
+ * For OpenRouter specifically, when no override is set, the active main-loop
+ * model is sniffed for a `:free` suffix — OpenRouter's free models all carry
+ * it, and a user who picked one through `/model` clearly wants subagent
+ * spawns to stay in the free pool too. Without this, a free-tier user gets
+ * subagents resolved against `defaultTier: 'pro'` (gpt-5.5 etc.), which
+ * silently leaves the free credit pool and was the root cause of the
+ * "subagents spawn with random models" report — those pro IDs are not all
+ * hosted, so OpenRouter routed to whatever it could.
  */
 export function getProviderTier(provider: string): ProviderTier {
   // Provider-specific override first
@@ -62,12 +72,40 @@ export function getProviderTier(provider: string): ProviderTier {
   const globalTier = process.env.PROVIDER_TIER
   if (globalTier && isValidTier(globalTier)) return globalTier
 
+  // Sticky free-tier inference for OpenRouter based on the user's current
+  // main-loop selection. Reads three sources in priority order — the same
+  // order getUserSpecifiedModelSetting() uses (session override > env >
+  // settings) — so a user who picked a `:free` model via /model at runtime
+  // gets free-tier subagents on the very next spawn, not just after
+  // restarting with ANTHROPIC_MODEL set.
+  //
+  // bootstrap/state is safe to import here — it only type-imports model.ts,
+  // so no runtime cycle. Settings is read lazily via dynamic require to
+  // avoid pulling in the settings module at module-load time (it pulls in
+  // file I/O and would slow cold start of every consumer of configs.ts).
+  if (provider === 'openrouter') {
+    if (looksLikeFreeOpenRouterId(getMainLoopModelOverride())) return 'free'
+    if (looksLikeFreeOpenRouterId(process.env.ANTHROPIC_MODEL)) return 'free'
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const settingsMod = require('../settings/settings.js') as { getSettings_DEPRECATED?: () => { model?: unknown } | undefined }
+      const settings = settingsMod.getSettings_DEPRECATED?.()
+      if (looksLikeFreeOpenRouterId(settings?.model)) return 'free'
+    } catch {
+      // Settings unavailable (cold-start path) — fall through to default tier.
+    }
+  }
+
   // Auto-detect from provider config default
   return PROVIDER_CONFIGS[provider]?.defaultTier ?? 'pro'
 }
 
 function isValidTier(t: string): t is ProviderTier {
   return ['free', 'pro', 'plus'].includes(t)
+}
+
+function looksLikeFreeOpenRouterId(value: unknown): boolean {
+  return typeof value === 'string' && value.toLowerCase().endsWith(':free')
 }
 
 // ─── Provider Configurations (Updated April 2026) ──────────────────
@@ -195,9 +233,25 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     defaultTier: 'pro',
     tiers: {
       free: {
-        opus:   'tencent/hy3-preview:free',
-        sonnet: 'inclusionai/ling-2.6-1t:free',
-        haiku:  'inclusionai/ling-2.6-flash:free',
+        // All three tiers point at confirmed-existing free OpenRouter
+        // model IDs (verified against /v1/models pricing.prompt == 0).
+        // Subagents pinned to `haiku` (Explore, claudeCodeGuide) used to
+        // resolve to `inclusionai/ling-2.6-flash:free`, which OpenRouter
+        // doesn't host — the gateway then routed to whatever variant was
+        // available, which is the "random model spawn" the user sees.
+        // Mapping every tier to a real free model with a consistent ID
+        // makes spawn behavior deterministic.
+        //
+        // Capability ranking (highest → lowest), all 256K+ context:
+        //   ling-2.6-1t      — trillion-param flagship; best for opus/sonnet
+        //   nemotron-nano    — 30B / 3B-active reasoning model; small + fast
+        //   poolside-laguna  — efficient coding-focused agent
+        //
+        // Override per-tier via OR_MODEL_OPUS / OR_MODEL_SONNET /
+        // OR_MODEL_HAIKU.
+        opus:   process.env.OR_MODEL_OPUS_FREE   ?? 'inclusionai/ling-2.6-1t:free',
+        sonnet: process.env.OR_MODEL_SONNET_FREE ?? 'inclusionai/ling-2.6-1t:free',
+        haiku:  process.env.OR_MODEL_HAIKU_FREE  ?? 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
       },
       pro: {
         opus:   process.env.OR_MODEL_OPUS   ?? 'anthropic/claude-opus-4.7',

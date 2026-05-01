@@ -91,7 +91,7 @@ function isLocalBaseUrl(baseUrl: string): boolean {
 
 interface OpenAIChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content?: string | null | Array<{ type: string; text?: string; image_url?: unknown }>
+  content?: string | null | Array<{ type: string; text?: string; image_url?: unknown; cache_control?: { type: string } }>
   reasoning_content?: string
   tool_calls?: Array<{
     id: string
@@ -124,6 +124,13 @@ interface OpenAIChatRequest {
   models?: string[]
   route?: string
   prompt_cache_key?: string
+  /**
+   * OpenRouter-native detailed-usage flag. When set, the gateway returns
+   * cache_discount and per-breakpoint hit counts on the final stream
+   * chunk so implicit-cache hits (DeepSeek, OpenAI gpt-5/4.1 on OR) are
+   * actually visible in our usage parsing instead of looking like 0.
+   */
+  usage?: { include?: boolean }
 }
 
 interface CompatCatalogModel extends OpenRouterCatalogModel {
@@ -279,6 +286,13 @@ export class OpenAICompatLane implements Lane {
         messages: chatMessages,
         stream: true,
         stream_options: { include_usage: true },
+        // OpenRouter-only: surface detailed usage including cache_discount.
+        // Mirrors the Kilo lane's body. For DeepSeek-on-OR and OpenAI-on-OR
+        // implicit caching is server-side and free models on those families
+        // still pay zero — but without this flag the cache_read field is
+        // never populated, which is what made the user think every call
+        // was a cold miss.
+        ...(provider === 'openrouter' && { usage: { include: true } }),
         // Ollama has supported OpenAI-compat function calling since
         // v0.3.0 (Jul 2024). The previous `!isLocal` gate stripped tools
         // for Ollama, so the model would say "let me explore" and stop
@@ -839,6 +853,16 @@ function applyProviderRequestQuirks(
   const cacheMode = transformer.cacheControlMode(body.model)
   if (cacheMode === 'none') {
     body.messages = body.messages.map(stripCacheControlFromMessage)
+  } else if (cacheMode === 'last-only') {
+    // Apply Anthropic's 4-breakpoint rolling cache (one for system, two
+    // for the trailing user/tool messages). Without this OpenRouter ships
+    // a request without a single cache_control marker, Anthropic upstream
+    // never sees the prefix anchor, and every turn is billed as a cold
+    // write — the user-visible "unstable cache hit" symptom. After the
+    // cold write, the system breakpoint anchors a deep read and the two
+    // rolling user breakpoints extend it to the latest tool result, so
+    // subsequent turns hit ~100% of the prefix.
+    applyLastOnlyCacheBreakpoints(body.messages)
   }
 
   // Let the transformer apply its provider-specific quirks. Every
@@ -885,6 +909,67 @@ function stripCacheControlFromMessage(m: OpenAIChatMessage): OpenAIChatMessage {
     return rest
   })
   return { ...m, content: cleanedContent as any }
+}
+
+/**
+ * Anthropic-via-OpenRouter rolling cache: stamp ephemeral cache_control on
+ * the last text block of the system message and the last two non-system
+ * user/tool messages. Mirrors the Kilo lane's _applyCacheBreakpoints and
+ * the strategy native Kilo CLI uses (`slice(-2)` rolling).
+ *
+ * Three breakpoints (system + 2 trailing) is the sweet spot for
+ * Anthropic's 4-breakpoint cap: turn N's trailing breakpoint becomes
+ * turn N+1's deep cache anchor, so the cached prefix walks forward
+ * with the conversation instead of resetting to the system block. The
+ * fourth breakpoint is intentionally left unused so OpenRouter has
+ * headroom if it inserts its own (it doesn't today, but nothing in the
+ * docs guarantees it won't).
+ *
+ * String content gets promoted to a single-element parts array so the
+ * marker has somewhere to land. Empty tool results fall back to ' ' so
+ * the part is well-formed without altering visible prompt content.
+ *
+ * Idempotent: existing markers are left untouched, so a SystemBlock that
+ * arrived with cache_control already set isn't re-stamped.
+ */
+function applyLastOnlyCacheBreakpoints(messages: OpenAIChatMessage[]): void {
+  const stampLast = (parts: Array<{ type: string; text?: string; cache_control?: { type: string } }>): void => {
+    if (parts.length === 0) return
+    const last = parts[parts.length - 1]
+    if (last && last.type === 'text' && !last.cache_control) {
+      last.cache_control = { type: 'ephemeral' }
+    }
+  }
+
+  const stampTrailing = (m: OpenAIChatMessage): void => {
+    if (typeof m.content === 'string') {
+      const text = m.content
+      m.content = [
+        { type: 'text', text: text.length > 0 ? text : ' ', cache_control: { type: 'ephemeral' } },
+      ]
+    } else if (Array.isArray(m.content) && m.content.length > 0) {
+      stampLast(m.content as any)
+    }
+  }
+
+  // 1. System breakpoint — anchors the whole system-prompt-plus-tools prefix.
+  const sys = messages.find((m) => m.role === 'system')
+  if (sys) {
+    if (typeof sys.content === 'string' && sys.content.length > 0) {
+      sys.content = [{ type: 'text', text: sys.content, cache_control: { type: 'ephemeral' } }]
+    } else if (Array.isArray(sys.content)) {
+      stampLast(sys.content as any)
+    }
+  }
+
+  // 2 & 3. Last TWO non-system user/tool breakpoints — rolling cache.
+  let stamped = 0
+  for (let i = messages.length - 1; i >= 0 && stamped < 2; i--) {
+    const m = messages[i]!
+    if (m.role !== 'user' && m.role !== 'tool') continue
+    stampTrailing(m)
+    stamped++
+  }
 }
 
 function stripNullToolCall(m: OpenAIChatMessage): OpenAIChatMessage {

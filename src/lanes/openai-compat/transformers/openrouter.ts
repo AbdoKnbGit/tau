@@ -68,6 +68,10 @@ export const openrouterTransformer: Transformer = {
 
   smallFastModel(model: string): string | null {
     const m = model.toLowerCase()
+    // Free-tier parent ⇒ free fast model. Otherwise the title /
+    // tool-use-summary side calls would silently leave the free credit
+    // pool, surprise-billing the user.
+    if (m.endsWith(':free')) return 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free'
     if (m.startsWith('anthropic/')) return 'anthropic/claude-haiku-4-5'
     if (m.startsWith('openai/')) return 'openai/gpt-4o-mini'
     if (m.startsWith('google/')) return 'google/gemini-2.5-flash-lite'
