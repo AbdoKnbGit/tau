@@ -97,6 +97,22 @@ test('Cursor read_file input adapts to shared Read schema', () => {
   assert(resolved.input.limit === 3, 'wrong limit')
 })
 
+test('Cursor read_file and write_file accept common path/content aliases', () => {
+  const read = resolveCursorToolCall('read_file', {
+    path: '/tmp/a.txt',
+  })
+  assert(read?.implId === 'Read', 'wrong read impl')
+  assert(read.input.file_path === '/tmp/a.txt', 'read path alias was not adapted')
+
+  const write = resolveCursorToolCall('write_file', {
+    path: '/tmp/a.txt',
+    text: 'hello',
+  })
+  assert(write?.implId === 'Write', 'wrong write impl')
+  assert(write.input.file_path === '/tmp/a.txt', 'write path alias was not adapted')
+  assert(write.input.content === 'hello', 'write content alias was not adapted')
+})
+
 test('Cursor run_shell_command input adapts to shared Bash schema', () => {
   const resolved = resolveCursorToolCall('run_shell_command', {
     command: 'bun test',
@@ -192,6 +208,178 @@ test('Cursor tolerates Shell as a terminal alias', () => {
   assert(shell?.implId === 'Bash', 'wrong Shell impl')
   assert(shell.input.command === 'cd "/tmp/project" && echo ok', 'wrong Shell cwd adaptation')
   assert(shell.input.description === 'Verify shell alias', 'wrong Shell description')
+})
+
+test('Cursor normalizes incomplete ask_question calls to AskUserQuestion schema', () => {
+  const resolved = resolveCursorToolCall('ask_question', {
+    prompt: 'Which approach should I take?',
+    options: ['Simple'],
+  })
+  assert(resolved?.implId === 'AskUserQuestion', 'wrong ask impl')
+  const questions = resolved.input.questions as Array<Record<string, any>>
+  assert(questions.length === 1, 'wrong question count')
+  assert(questions[0]?.question === 'Which approach should I take?', 'wrong question text')
+  assert(typeof questions[0]?.header === 'string' && questions[0].header.length > 0, 'missing header')
+  assert(questions[0]?.options.length >= 2, 'must pad to at least two options')
+  assert(questions[0]?.options.every((opt: any) => opt.label && opt.description), 'missing option descriptions')
+  assert(questions[0]?.multiSelect === false, 'wrong multiSelect default')
+})
+
+test('Cursor NotebookEdit inserts default to code cell_type and accept aliases', () => {
+  const resolved = resolveCursorToolCall('NotebookEdit', {
+    path: '/tmp/demo.ipynb',
+    mode: 'insert',
+    source: 'print("hi")',
+    after_cell_id: 'cell-1',
+  })
+  assert(resolved?.implId === 'NotebookEdit', 'wrong notebook impl')
+  assert(resolved.input.notebook_path === '/tmp/demo.ipynb', 'wrong notebook path')
+  assert(resolved.input.new_source === 'print("hi")', 'wrong notebook source')
+  assert(resolved.input.edit_mode === 'insert', 'wrong notebook edit mode')
+  assert(resolved.input.cell_type === 'code', 'insert must default to code cell_type')
+  assert(resolved.input.cell_id === 'cell-1', 'after_cell_id should map to cell_id')
+})
+
+test('Cursor NotebookEdit delete accepts cell indexes and missing new_source', () => {
+  const resolved = resolveCursorToolCall('NotebookEdit', {
+    notebook_path: '/tmp/demo.ipynb',
+    edit_mode: 'delete',
+    cell_index: 0,
+  })
+  assert(resolved?.implId === 'NotebookEdit', 'wrong notebook delete impl')
+  assert(resolved.input.cell_id === 'cell-0', 'cell_index should map to cell-N id')
+  assert(resolved.input.new_source === '', 'delete should provide empty new_source for shared schema')
+})
+
+test('Cursor repairs MCP required string arguments from generic query fields', () => {
+  const schema = {
+    type: 'object',
+    properties: {
+      libraryName: { type: 'string' },
+    },
+    required: ['libraryName'],
+  }
+  const resolved = resolveCursorToolCall(
+    'mcp__context7__resolve-library-id',
+    { query: 'apache cassandra' },
+    {
+      toolSchemas: new Map([
+        ['mcp__context7__resolve-library-id', schema],
+      ]),
+    },
+  )
+  assert(resolved?.implId === 'mcp__context7__resolve-library-id', 'wrong MCP impl')
+  assert(resolved.input.libraryName === 'apache cassandra', 'query did not map to required libraryName')
+  assert(!('query' in resolved.input), 'unmapped generic query should not leak when schema has no query field')
+})
+
+test('Cursor repairs direct MCP arguments when Cursor nests args under arguments', () => {
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      libraryName: { type: 'string' },
+    },
+    required: ['libraryName'],
+  }
+  const resolved = resolveCursorToolCall(
+    'mcp__context7__resolve-library-id',
+    { arguments: { query: 'apache cassandra' } },
+    {
+      toolSchemas: new Map([
+        ['mcp__context7__resolve-library-id', schema],
+      ]),
+    },
+  )
+  assert(resolved?.implId === 'mcp__context7__resolve-library-id', 'wrong MCP impl')
+  assert(resolved.input.libraryName === 'apache cassandra', 'nested query did not map to required libraryName')
+  assert(!('arguments' in resolved.input), 'wrapper arguments should not leak into direct MCP input')
+  assert(!('query' in resolved.input), 'generic nested query should not leak')
+})
+
+test('Cursor repairs call_mcp_tool wrapper arguments with the target MCP schema', () => {
+  const schema = {
+    type: 'object',
+    properties: {
+      libraryName: { type: 'string' },
+    },
+    required: ['libraryName'],
+  }
+  const resolved = resolveCursorToolCall(
+    'call_mcp_tool',
+    {
+      server: 'context7',
+      tool_name: 'resolve-library-id',
+      tool_args: { query: 'apache cassandra' },
+    },
+    {
+      toolSchemas: new Map([
+        ['mcp__context7__resolve-library-id', schema],
+      ]),
+    },
+  )
+  assert(resolved?.implId === 'mcp__context7__resolve-library-id', 'wrong call_mcp_tool impl')
+  assert(resolved.input.libraryName === 'apache cassandra', 'wrapped query did not map to required libraryName')
+})
+
+test('Cursor matches call_mcp_tool underscore names to hyphenated MCP schemas', () => {
+  const schema = {
+    type: 'object',
+    properties: {
+      libraryName: { type: 'string' },
+    },
+    required: ['libraryName'],
+  }
+  const resolved = resolveCursorToolCall(
+    'call_mcp_tool',
+    {
+      server: 'context7',
+      tool_name: 'resolve_library_id',
+      tool_args: { query: 'apache cassandra' },
+    },
+    {
+      toolSchemas: new Map([
+        ['mcp__context7__resolve-library-id', schema],
+      ]),
+    },
+  )
+  assert(resolved?.implId === 'mcp__context7__resolve-library-id', 'underscore MCP tool name did not resolve to schema key')
+  assert(resolved.input.libraryName === 'apache cassandra', 'underscore wrapped query did not map')
+})
+
+test('Cursor coerces shared TaskUpdate array fields from strings', () => {
+  const schema = {
+    type: 'object',
+    required: ['taskId'],
+    additionalProperties: false,
+    properties: {
+      taskId: { type: 'string' },
+      addBlocks: { type: 'array', items: { type: 'string' } },
+      addBlockedBy: { type: 'array', items: { type: 'string' } },
+      status: { type: 'string' },
+    },
+  }
+  const resolved = resolveCursorToolCall(
+    'TaskUpdate',
+    {
+      taskId: 2,
+      addBlocks: '3',
+      add_blocked_by: '1, 4',
+      ignored: 'drop me',
+    },
+    {
+      toolSchemas: new Map([
+        ['TaskUpdate', schema],
+      ]),
+    },
+  )
+  assert(resolved?.implId === 'TaskUpdate', 'wrong task update impl')
+  assert(resolved.input.taskId === '2', 'taskId should coerce to string')
+  assert(Array.isArray(resolved.input.addBlocks), 'addBlocks should be an array')
+  assert((resolved.input.addBlocks as string[])[0] === '3', 'addBlocks should contain string task id')
+  assert(Array.isArray(resolved.input.addBlockedBy), 'addBlockedBy should be an array')
+  assert((resolved.input.addBlockedBy as string[]).join(',') === '1,4', 'addBlockedBy should split string list')
+  assert(!('ignored' in resolved.input), 'additionalProperties=false should drop unknown fields')
 })
 
 test('Cursor adapts shared Glob and Grep names from printed-tool syntax', () => {

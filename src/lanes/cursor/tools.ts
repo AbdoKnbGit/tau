@@ -70,6 +70,457 @@ const CT = CURSOR_CLIENT_SIDE_TOOL_V2
 const _stringifyToolOutput = (output: string | unknown): string =>
   typeof output === 'string' ? output : JSON.stringify(output)
 
+type JsonSchema = Record<string, unknown>
+
+export interface CursorToolResolutionOptions {
+  toolSchemas?: ReadonlyMap<string, JsonSchema>
+}
+
+type AskUserOption = {
+  label: string
+  description: string
+}
+
+function _asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function _nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : null
+}
+
+function _firstDefined(
+  native: Record<string, unknown>,
+  keys: readonly string[],
+): unknown {
+  for (const key of keys) {
+    if (native[key] != null) return native[key]
+  }
+  return undefined
+}
+
+function _firstString(
+  native: Record<string, unknown>,
+  keys: readonly string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = _nonEmptyString(native[key])
+    if (value) return value
+  }
+  return undefined
+}
+
+function _askUserHeader(value: unknown, question: string, index: number): string {
+  const explicit = _nonEmptyString(value)
+  if (explicit) return explicit.slice(0, 12)
+  const fromQuestion = question
+    .replace(/[^\w\s]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .join(' ')
+  return (fromQuestion || `Q${index + 1}`).slice(0, 12)
+}
+
+function _askUserOptions(rawOptions: unknown, type: unknown): AskUserOption[] {
+  const options: AskUserOption[] = []
+  if (Array.isArray(rawOptions)) {
+    for (let i = 0; i < rawOptions.length; i++) {
+      const raw = rawOptions[i]
+      if (typeof raw === 'string') {
+        const label = raw.trim()
+        if (label) options.push({ label, description: `Select ${label}.` })
+        continue
+      }
+
+      const record = _asRecord(raw)
+      if (!record) continue
+      const label =
+        _nonEmptyString(record.label) ??
+        _nonEmptyString(record.text) ??
+        _nonEmptyString(record.value) ??
+        `Option ${i + 1}`
+      const description =
+        _nonEmptyString(record.description) ??
+        _nonEmptyString(record.desc) ??
+        `Select ${label}.`
+      options.push({ label, description })
+    }
+  }
+
+  const deduped: AskUserOption[] = []
+  const seen = new Set<string>()
+  for (const option of options) {
+    const key = option.label.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(option)
+    if (deduped.length >= 4) break
+  }
+
+  const fallback = String(type ?? '').toLowerCase() === 'yesno'
+    ? [
+        { label: 'Yes', description: 'Confirm this option.' },
+        { label: 'No', description: 'Decline this option.' },
+      ]
+    : [
+        { label: 'Answer', description: 'Provide a custom answer.' },
+        { label: 'Skip', description: 'Do not answer this now.' },
+      ]
+
+  for (const option of fallback) {
+    if (deduped.length >= 2) break
+    if (!seen.has(option.label.toLowerCase())) {
+      deduped.push(option)
+      seen.add(option.label.toLowerCase())
+    }
+  }
+
+  return deduped.slice(0, 4)
+}
+
+function _normalizeAskUserInput(
+  native: Record<string, unknown>,
+): Record<string, unknown> {
+  const rawQuestions = Array.isArray(native.questions) && native.questions.length > 0
+    ? native.questions
+    : [native]
+
+  const questions = rawQuestions.map((raw, index) => {
+    const record = _asRecord(raw) ?? {}
+    const question =
+      _nonEmptyString(record.question) ??
+      _nonEmptyString(record.prompt) ??
+      _nonEmptyString(native.question) ??
+      _nonEmptyString(native.prompt) ??
+      'Please choose an option.'
+    const type = record.type ?? native.type
+    return {
+      question,
+      header: _askUserHeader(record.header ?? native.header, question, index),
+      options: _askUserOptions(record.options ?? native.options, type),
+      multiSelect: Boolean(
+        record.multiSelect ??
+        record.multi_select ??
+        native.multiSelect ??
+        native.multi_select,
+      ),
+    }
+  })
+
+  return { questions }
+}
+
+function _schemaProperties(schema: JsonSchema | undefined): Record<string, JsonSchema> {
+  const properties = _asRecord(schema?.properties)
+  if (!properties) return {}
+  const out: Record<string, JsonSchema> = {}
+  for (const [key, value] of Object.entries(properties)) {
+    const property = _asRecord(value)
+    if (property) out[key] = property
+  }
+  return out
+}
+
+function _schemaRequired(schema: JsonSchema | undefined): string[] {
+  return Array.isArray(schema?.required)
+    ? schema.required.filter((value): value is string => typeof value === 'string')
+    : []
+}
+
+function _schemaTypeIncludes(property: JsonSchema | undefined, type: string): boolean {
+  const raw = property?.type
+  if (raw === type) return true
+  if (Array.isArray(raw)) return raw.includes(type)
+  return false
+}
+
+function _schemaRequiredStringKeys(schema: JsonSchema | undefined): string[] {
+  const properties = _schemaProperties(schema)
+  return _schemaRequired(schema).filter(key => {
+    const property = properties[key]
+    return !property || _schemaTypeIncludes(property, 'string')
+  })
+}
+
+function _camelToSnake(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
+}
+
+function _fieldAliases(key: string): string[] {
+  const snake = _camelToSnake(key)
+  const kebab = snake.replace(/_/g, '-')
+  const lower = key.toLowerCase()
+  const aliases = [
+    key,
+    snake,
+    kebab,
+    lower,
+    'query',
+    'q',
+    'search',
+    'searchQuery',
+    'search_query',
+    'term',
+    'text',
+    'value',
+    'input',
+  ]
+  if (lower.includes('name')) aliases.push('name')
+  if (lower.includes('id')) aliases.push('id')
+  if (lower.includes('library')) aliases.push('library', 'library_name')
+  if (lower.includes('path')) aliases.push('path', 'file_path')
+  return [...new Set(aliases)]
+}
+
+function _structuralFieldAliases(key: string): string[] {
+  const snake = _camelToSnake(key)
+  const kebab = snake.replace(/_/g, '-')
+  const lower = key.toLowerCase()
+  const aliases = [key, snake, kebab, lower]
+  if (lower.includes('name')) aliases.push('name')
+  if (lower.includes('id')) aliases.push('id')
+  if (lower.includes('path')) aliases.push('path', 'file_path')
+  return [...new Set(aliases)]
+}
+
+function _schemaHasProperty(schema: JsonSchema | undefined, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(_schemaProperties(schema), key)
+}
+
+function _schemaAllowsAdditionalProperties(schema: JsonSchema | undefined): boolean {
+  return schema?.additionalProperties !== false
+}
+
+function _singleStringCandidate(
+  input: Record<string, unknown>,
+  schema: JsonSchema | undefined,
+): { key: string; value: string } | null {
+  const candidates: Array<{ key: string; value: string }> = []
+  for (const [key, value] of Object.entries(input)) {
+    const text = _nonEmptyString(value)
+    if (!text) continue
+    if (schema && _schemaHasProperty(schema, key)) continue
+    candidates.push({ key, value: text })
+  }
+  return candidates.length === 1 ? candidates[0]! : null
+}
+
+function _schemaForTool(
+  toolName: string,
+  options?: CursorToolResolutionOptions,
+): JsonSchema | undefined {
+  return options?.toolSchemas?.get(toolName)
+}
+
+function _normalizeMcpNamePart(value: string): string {
+  return value.toLowerCase().replace(/[-_\s]+/g, '')
+}
+
+function _mcpNameParts(name: string): { server: string; toolName: string } | null {
+  if (!name.startsWith('mcp__')) return null
+  const rest = name.slice('mcp__'.length)
+  const idx = rest.indexOf('__')
+  if (idx < 0) return null
+  return {
+    server: rest.slice(0, idx),
+    toolName: rest.slice(idx + 2),
+  }
+}
+
+function _resolveMcpImplId(
+  server: string,
+  toolName: string,
+  options?: CursorToolResolutionOptions,
+): string {
+  const exact = `mcp__${server}__${toolName}`
+  if (options?.toolSchemas?.has(exact)) return exact
+
+  const normalizedServer = _normalizeMcpNamePart(server)
+  const normalizedToolName = _normalizeMcpNamePart(toolName)
+  for (const candidate of options?.toolSchemas?.keys() ?? []) {
+    const parts = _mcpNameParts(candidate)
+    if (!parts) continue
+    if (
+      _normalizeMcpNamePart(parts.server) === normalizedServer &&
+      _normalizeMcpNamePart(parts.toolName) === normalizedToolName
+    ) {
+      return candidate
+    }
+  }
+
+  return exact
+}
+
+function _unwrapCursorToolInput(
+  nativeInput: Record<string, unknown>,
+  schema?: JsonSchema,
+): Record<string, unknown> {
+  for (const key of ['tool_args', 'arguments', 'args', 'input', 'parameters']) {
+    if (_schemaHasProperty(schema, key)) continue
+    const nested = _asRecord(nativeInput[key])
+    if (nested) return nested
+  }
+  return nativeInput
+}
+
+function _schemaArrayItem(schema: JsonSchema | undefined): JsonSchema | undefined {
+  return _asRecord(schema?.items) ?? undefined
+}
+
+function _coerceStringValue(value: unknown): unknown {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return value
+}
+
+function _coerceArrayItemValue(value: unknown, itemSchema: JsonSchema | undefined): unknown {
+  if (_schemaTypeIncludes(itemSchema, 'string')) return _coerceStringValue(value)
+  if (_schemaTypeIncludes(itemSchema, 'number') || _schemaTypeIncludes(itemSchema, 'integer')) {
+    return _coerceNumberValue(value)
+  }
+  if (_schemaTypeIncludes(itemSchema, 'boolean')) return _coerceBooleanValue(value)
+  if (_schemaTypeIncludes(itemSchema, 'object')) return _coerceObjectValue(value)
+  return value
+}
+
+function _coerceArrayValue(value: unknown, property: JsonSchema | undefined): unknown[] {
+  const itemSchema = _schemaArrayItem(property)
+  if (Array.isArray(value)) {
+    return value.map(item => _coerceArrayItemValue(item, itemSchema))
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return []
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown
+        if (Array.isArray(parsed)) {
+          return parsed.map(item => _coerceArrayItemValue(item, itemSchema))
+        }
+      } catch {
+        // Fall through to delimiter handling.
+      }
+    }
+    const parts = trimmed
+      .split(/[,\n]/)
+      .map(part => part.trim())
+      .filter(Boolean)
+    const raw = parts.length > 1 ? parts : [trimmed]
+    return raw.map(item => _coerceArrayItemValue(item, itemSchema))
+  }
+  return value == null ? [] : [_coerceArrayItemValue(value, itemSchema)]
+}
+
+function _coerceObjectValue(value: unknown): unknown {
+  if (_asRecord(value)) return value
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('{')) return value
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    return _asRecord(parsed) ?? value
+  } catch {
+    return value
+  }
+}
+
+function _coerceBooleanValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const lower = value.trim().toLowerCase()
+  if (lower === 'true') return true
+  if (lower === 'false') return false
+  return value
+}
+
+function _coerceNumberValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if (!trimmed) return value
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? parsed : value
+}
+
+function _coerceSchemaPropertyValue(
+  value: unknown,
+  property: JsonSchema | undefined,
+): unknown {
+  if (_schemaTypeIncludes(property, 'array')) return _coerceArrayValue(value, property)
+  if (_schemaTypeIncludes(property, 'object')) return _coerceObjectValue(value)
+  if (_schemaTypeIncludes(property, 'boolean')) return _coerceBooleanValue(value)
+  if (_schemaTypeIncludes(property, 'number') || _schemaTypeIncludes(property, 'integer')) {
+    return _coerceNumberValue(value)
+  }
+  if (_schemaTypeIncludes(property, 'string')) return _coerceStringValue(value)
+  return value
+}
+
+export function normalizeCursorSchemaToolInput(
+  nativeInput: Record<string, unknown>,
+  schema?: JsonSchema,
+): Record<string, unknown> {
+  const input: Record<string, unknown> = { ..._unwrapCursorToolInput(nativeInput, schema) }
+  const properties = _schemaProperties(schema)
+  const requiredStringKeys = _schemaRequiredStringKeys(schema)
+
+  for (const key of Object.keys(properties)) {
+    if (input[key] != null) continue
+    for (const alias of _structuralFieldAliases(key)) {
+      if (alias === key || input[alias] == null) continue
+      input[key] = input[alias]
+      if (!_schemaHasProperty(schema, alias)) delete input[alias]
+      break
+    }
+  }
+
+  for (const key of requiredStringKeys) {
+    if (input[key] != null) continue
+
+    let mappedFrom: string | null = null
+    for (const alias of _fieldAliases(key)) {
+      if (alias === key) continue
+      const value = _nonEmptyString(input[alias])
+      if (!value) continue
+      input[key] = value
+      mappedFrom = alias
+      break
+    }
+
+    if (!mappedFrom) {
+      const single = _singleStringCandidate(input, schema)
+      if (single) {
+        input[key] = single.value
+        mappedFrom = single.key
+      }
+    }
+
+    if (
+      mappedFrom &&
+      mappedFrom !== key &&
+      !_schemaHasProperty(schema, mappedFrom)
+    ) {
+      delete input[mappedFrom]
+    }
+  }
+
+  for (const [key, property] of Object.entries(properties)) {
+    if (input[key] == null) continue
+    input[key] = _coerceSchemaPropertyValue(input[key], property)
+  }
+
+  if (!_schemaAllowsAdditionalProperties(schema)) {
+    for (const key of Object.keys(input)) {
+      if (!_schemaHasProperty(schema, key)) delete input[key]
+    }
+  }
+
+  return input
+}
+
 const CURSOR_EXTRA_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
     nativeName: 'run_terminal_cmd',
@@ -556,6 +1007,7 @@ export function buildCursorSupportedToolEnums(tools: ProviderTool[]): number[] {
 export function resolveCursorToolCall(
   nativeName: string,
   nativeInput: Record<string, unknown>,
+  options?: CursorToolResolutionOptions,
 ): { implId: string; input: Record<string, unknown> } | null {
   const normalizedName = CURSOR_TOOL_ALIAS_BY_NAME[nativeName] ?? nativeName
 
@@ -567,6 +1019,13 @@ export function resolveCursorToolCall(
     return {
       implId: 'Read',
       input: _adaptCursorReadInput(nativeInput),
+    }
+  }
+
+  if (normalizedName === 'write_file' || normalizedName === 'write') {
+    return {
+      implId: 'Write',
+      input: _adaptCursorWriteInput(nativeInput),
     }
   }
 
@@ -588,33 +1047,9 @@ export function resolveCursorToolCall(
   }
 
   if (normalizedName === 'ask_user') {
-    // The model may send questions without the required `options` and
-    // `multiSelect` fields. Fill in safe defaults so Zod validation passes.
-    if (Array.isArray(nativeInput.questions)) {
-      const adapted = (nativeInput.questions as Array<Record<string, unknown>>).map(q => ({
-        question: q.question ?? q.prompt ?? '',
-        header: q.header ?? 'Question',
-        options: Array.isArray(q.options) ? q.options : [],
-        multiSelect: typeof q.multiSelect === 'boolean' ? q.multiSelect : false,
-        ...(q.type ? { type: q.type } : {}),
-      }))
-      return {
-        implId: 'AskUserQuestion',
-        input: { questions: adapted },
-      }
-    }
     return {
       implId: 'AskUserQuestion',
-      input: {
-        questions: [
-          {
-            question: nativeInput.question ?? nativeInput.prompt ?? 'Clarify the next step?',
-            header: 'Question',
-            options: [],
-            multiSelect: false,
-          },
-        ],
-      },
+      input: _normalizeAskUserInput(nativeInput),
     }
   }
 
@@ -641,24 +1076,51 @@ export function resolveCursorToolCall(
   }
 
   if (nativeName === 'call_mcp_tool') {
-    const server = typeof nativeInput.server === 'string' ? nativeInput.server : ''
-    const toolName = typeof nativeInput.tool_name === 'string' ? nativeInput.tool_name : ''
+    const server =
+      typeof nativeInput.server === 'string'
+        ? nativeInput.server
+        : typeof nativeInput.server_name === 'string'
+          ? nativeInput.server_name
+          : typeof nativeInput.serverName === 'string'
+            ? nativeInput.serverName
+            : typeof nativeInput.mcp_server === 'string'
+              ? nativeInput.mcp_server
+              : ''
+    const toolName =
+      typeof nativeInput.tool_name === 'string'
+        ? nativeInput.tool_name
+        : typeof nativeInput.toolName === 'string'
+          ? nativeInput.toolName
+          : typeof nativeInput.name === 'string'
+            ? nativeInput.name
+            : ''
     if (server && toolName) {
+      const implId = _resolveMcpImplId(server, toolName, options)
+      const toolArgs =
+        _asRecord(nativeInput.tool_args) ??
+        _asRecord(nativeInput.arguments) ??
+        _asRecord(nativeInput.args) ??
+        _asRecord(nativeInput.input) ??
+        nativeInput
       return {
-        implId: `mcp__${server}__${toolName}`,
-        input: (
-          nativeInput.tool_args &&
-          typeof nativeInput.tool_args === 'object' &&
-          !Array.isArray(nativeInput.tool_args)
-        )
-          ? nativeInput.tool_args as Record<string, unknown>
-          : nativeInput,
+        implId,
+        input: normalizeCursorSchemaToolInput(
+          toolArgs,
+          _schemaForTool(implId, options),
+        ),
       }
     }
   }
 
   if (normalizedName === 'replace' || nativeName === 'edit_file' || nativeName === 'edit_file_v2') {
     return _adaptCursorEditInput(nativeInput)
+  }
+
+  if (nativeName === 'NotebookEdit') {
+    return {
+      implId: 'NotebookEdit',
+      input: _adaptCursorNotebookEditInput(nativeInput),
+    }
   }
 
   // ── TaskCreate ───────────────────────────────────────────────────
@@ -715,11 +1177,26 @@ export function resolveCursorToolCall(
   // When the model calls an MCP tool directly (e.g. mcp__context7__resolve-library-id)
   // instead of going through call_mcp_tool, pass through with the native input.
   if (nativeName.startsWith('mcp__')) {
-    return { implId: nativeName, input: nativeInput }
+    return {
+      implId: nativeName,
+      input: normalizeCursorSchemaToolInput(
+        nativeInput,
+        _schemaForTool(nativeName, options),
+      ),
+    }
   }
 
   const reg = getCursorRegistrationByNativeName(normalizedName)
-  if (!reg) return null
+  if (!reg) {
+    const schema = _schemaForTool(nativeName, options)
+    if (schema) {
+      return {
+        implId: nativeName,
+        input: normalizeCursorSchemaToolInput(nativeInput, schema),
+      }
+    }
+    return null
+  }
   return {
     implId: reg.implId,
     input: reg.adaptInput(nativeInput),
@@ -732,9 +1209,19 @@ function _cursorToolEnumsForName(name: string): readonly number[] {
 
 function _adaptCursorReadInput(native: Record<string, unknown>): Record<string, unknown> {
   const filePath =
-    native.file_path ??
-    native.relative_workspace_path ??
-    native.target_file
+    _firstDefined(native, [
+      'file_path',
+      'relative_workspace_path',
+      'relativeWorkspacePath',
+      'target_file',
+      'targetFile',
+      'path',
+      'absolute_path',
+      'absolutePath',
+      'filename',
+      'file',
+      'uri',
+    ])
   const start =
     _asNumber(native.start_line) ??
     _asNumber(native.start_line_one_indexed) ??
@@ -752,13 +1239,48 @@ function _adaptCursorReadInput(native: Record<string, unknown>): Record<string, 
   return result
 }
 
+function _adaptCursorWriteInput(native: Record<string, unknown>): Record<string, unknown> {
+  return {
+    file_path: _firstDefined(native, [
+      'file_path',
+      'relative_workspace_path',
+      'relativeWorkspacePath',
+      'target_file',
+      'targetFile',
+      'path',
+      'absolute_path',
+      'absolutePath',
+      'filename',
+      'file',
+    ]),
+    content: _firstDefined(native, [
+      'content',
+      'contents',
+      'text',
+      'source',
+      'new_source',
+      'newSource',
+      'data',
+    ]),
+  }
+}
+
 function _adaptCursorEditInput(
   native: Record<string, unknown>,
 ): { implId: string; input: Record<string, unknown> } | null {
   const filePath =
-    native.file_path ??
-    native.relative_workspace_path ??
-    native.target_file
+    _firstDefined(native, [
+      'file_path',
+      'relative_workspace_path',
+      'relativeWorkspacePath',
+      'target_file',
+      'targetFile',
+      'path',
+      'absolute_path',
+      'absolutePath',
+      'filename',
+      'file',
+    ])
 
   if (native.old_string != null || native.new_string != null) {
     return {
@@ -787,6 +1309,84 @@ function _adaptCursorEditInput(
   return reg
     ? { implId: reg.implId, input: reg.adaptInput(native) }
     : null
+}
+
+function _adaptCursorNotebookEditInput(
+  native: Record<string, unknown>,
+): Record<string, unknown> {
+  const editMode =
+    _firstString(native, ['edit_mode', 'editMode', 'mode', 'operation']) ??
+    'replace'
+  const input: Record<string, unknown> = {
+    notebook_path: _firstDefined(native, [
+      'notebook_path',
+      'notebookPath',
+      'file_path',
+      'path',
+      'absolute_path',
+      'absolutePath',
+      'filename',
+      'file',
+    ]),
+    new_source: _firstDefined(native, [
+      'new_source',
+      'newSource',
+      'source',
+      'cell_source',
+      'cellSource',
+      'content',
+      'text',
+    ]),
+    edit_mode: editMode,
+  }
+
+  if (input.new_source == null && editMode === 'delete') {
+    input.new_source = ''
+  }
+
+  const cellId = _cursorNotebookCellId(native)
+  if (cellId != null) input.cell_id = cellId
+
+  const cellType = _firstString(native, ['cell_type', 'cellType', 'type'])
+  if (cellType === 'code' || cellType === 'markdown') {
+    input.cell_type = cellType
+  } else if (editMode === 'insert') {
+    input.cell_type = 'code'
+  }
+
+  return input
+}
+
+function _cursorNotebookCellId(native: Record<string, unknown>): unknown {
+  const explicit = _firstDefined(native, [
+    'cell_id',
+    'cellId',
+    'target_cell_id',
+    'targetCellId',
+    'after_cell_id',
+    'afterCellId',
+    'insert_after',
+    'insertAfter',
+    'id',
+  ])
+  if (explicit != null) return explicit
+
+  const index = _firstDefined(native, [
+    'cell_index',
+    'cellIndex',
+    'cell_number',
+    'cellNumber',
+    'index',
+  ])
+  const numericIndex =
+    typeof index === 'number'
+      ? index
+      : typeof index === 'string' && index.trim() !== ''
+        ? Number(index.trim())
+        : NaN
+  return Number.isInteger(numericIndex) && numericIndex >= 0
+    ? `cell-${numericIndex}`
+    : undefined
 }
 
 function _asNumber(value: unknown): number | undefined {

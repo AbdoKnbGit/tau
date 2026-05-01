@@ -23,6 +23,7 @@
 import type {
   AnthropicStreamEvent,
   ModelInfo,
+  ProviderTool,
 } from '../../services/api/providers/base_provider.js'
 import type {
   Lane,
@@ -408,6 +409,7 @@ async function* _streamCursorAttempt(params: {
     conversationId: params.conversationId,
   })
   const toolNameMap = _buildCursorToolNameMap(params.tools)
+  const toolSchemas = _buildCursorToolSchemaMap(params.tools, toolNameMap)
 
   const headers = buildCursorHeaders({
     accessToken: params.accessToken,
@@ -516,7 +518,9 @@ async function* _streamCursorAttempt(params: {
 
   const queueToolUse = (toolName: string, rawInput: Record<string, unknown>): void => {
     const nativeName = _normalizeCursorToolName(toolName, toolNameMap)
-    const resolved = resolveCursorToolCall(nativeName, rawInput)
+    const resolved = resolveCursorToolCall(nativeName, rawInput, {
+      toolSchemas,
+    })
     const entryName = resolved?.implId ?? _implNameForCursorToolName(nativeName)
     const entryInput = resolved?.input ?? rawInput
     const id = `cursor-printed-tool-${++syntheticToolCallCount}`
@@ -733,7 +737,9 @@ async function* _streamCursorAttempt(params: {
   // Emit complete tool_use blocks after native-to-shared input adaptation.
   for (const [id, entry] of toolBlocks) {
     const nativeInput = _parseCursorToolArgs(entry.rawArgs)
-    const resolved = resolveCursorToolCall(entry.nativeName, nativeInput)
+    const resolved = resolveCursorToolCall(entry.nativeName, nativeInput, {
+      toolSchemas,
+    })
     const name = resolved?.implId ?? entry.name
     const input = resolved?.input ?? nativeInput
     yield {
@@ -960,6 +966,9 @@ function _buildCursorToolNameMap(
     const formatted = formatCursorToolName(original)
     map.set(original, original)
     map.set(formatted, original)
+    if (original.startsWith('mcp__')) {
+      map.set(formatted.replace(/-/g, '_'), original)
+    }
 
     const reg =
       getCursorRegistrationByImplId(original) ??
@@ -972,10 +981,12 @@ function _buildCursorToolNameMap(
     if (original.startsWith('mcp__')) {
       const selected = _extractMcpSelectedToolName(original)
       if (selected) {
-        selectedMcpNames.set(
-          selected,
-          selectedMcpNames.has(selected) ? null : original,
-        )
+        for (const variant of _mcpSelectedToolNameVariants(selected)) {
+          selectedMcpNames.set(
+            variant,
+            selectedMcpNames.has(variant) ? null : original,
+          )
+        }
       }
       continue
     }
@@ -993,6 +1004,53 @@ function _buildCursorToolNameMap(
   }
 
   return map
+}
+
+function _mcpSelectedToolNameVariants(name: string): string[] {
+  return [...new Set([
+    name,
+    name.replace(/-/g, '_'),
+    name.replace(/_/g, '-'),
+  ])]
+}
+
+function _buildCursorToolSchemaMap(
+  tools: ProviderTool[],
+  toolNameMap: Map<string, string>,
+): Map<string, Record<string, unknown>> {
+  const schemas = new Map<string, Record<string, unknown>>()
+  for (const tool of tools) {
+    if (!tool.name) continue
+    const schema = tool.input_schema ?? {}
+    const names = new Set<string>([
+      tool.name,
+      formatCursorToolName(tool.name),
+      unformatCursorToolName(formatCursorToolName(tool.name)),
+    ])
+    if (tool.name.startsWith('mcp__')) {
+      names.add(formatCursorToolName(tool.name).replace(/-/g, '_'))
+    }
+
+    const reg =
+      getCursorRegistrationByImplId(tool.name) ??
+      getCursorRegistrationByNativeName(tool.name)
+    if (reg) {
+      names.add(reg.nativeName)
+      names.add(formatCursorToolName(reg.nativeName))
+    }
+
+    const selected = _extractMcpSelectedToolName(tool.name)
+    if (selected && toolNameMap.get(selected) === tool.name) {
+      for (const variant of _mcpSelectedToolNameVariants(selected)) {
+        names.add(variant)
+      }
+    }
+
+    for (const name of names) {
+      schemas.set(name, schema)
+    }
+  }
+  return schemas
 }
 
 function _extractMcpSelectedToolName(name: string): string | null {

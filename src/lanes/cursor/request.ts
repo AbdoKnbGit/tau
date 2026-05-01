@@ -99,6 +99,7 @@ function _buildCursorToolHint(
       : []),
     'Claudex tools without a Cursor-native alias keep their advertised names, including Skill, TaskCreate, TaskUpdate, TaskList, TaskGet, EnterWorktree, ExitWorktree, and mcp__server__tool MCP names.',
     _buildCursorToolSelectionGuide(originalTools, encodedTools),
+    _buildCursorPreconditionGuide(originalTools),
   ].join('\n')
 }
 
@@ -197,6 +198,30 @@ function _buildCursorToolSelectionGuide(
     'Use the most specific tool available instead of claiming the capability is unavailable.',
     ...lines,
   ].join('\n')
+}
+
+function _buildCursorPreconditionGuide(originalTools: ProviderTool[]): string {
+  const originalNames = new Set(originalTools.map(tool => tool.name))
+  const lines: string[] = []
+
+  if (originalNames.has('NotebookEdit')) {
+    lines.push('Before NotebookEdit, read the target .ipynb with read_file and use a real cell_id for replace/delete. For insert, include cell_type as "code" or "markdown".')
+  }
+
+  if (originalNames.has('EnterWorktree') || originalNames.has('ExitWorktree')) {
+    lines.push('Use EnterWorktree only after confirming the current directory is a git repository or has configured worktree hooks. Use ExitWorktree only after EnterWorktree succeeded in this session.')
+  }
+
+  if (originalNames.has('Bash')) {
+    lines.push('When repo state is uncertain, run git rev-parse --is-inside-work-tree before git diff, git status, or other git-only commands.')
+  }
+
+  if (originalTools.some(tool => tool.name.startsWith('mcp__'))) {
+    lines.push('For mcp__server__tool calls, follow the advertised JSON schema exactly. If a tool asks for a named string field, send that exact key rather than a generic query key.')
+  }
+
+  if (lines.length === 0) return ''
+  return ['[Cursor Tool Preconditions]', ...lines].join('\n')
 }
 
 function _buildToolNameMap(messages: ProviderMessage[]): Map<string, string> {
