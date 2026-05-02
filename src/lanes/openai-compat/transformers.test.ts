@@ -12,7 +12,8 @@
  *
  * Plus a few targeted checks that guard against the specific quirks
  * each transformer is supposed to fix:
- *   - DeepSeek clamps max_tokens at 8192 and explicitly toggles thinking.
+ *   - DeepSeek clamps max_tokens at 8192, toggles thinking, and repairs
+ *     strict tool-call adjacency before sending replayed history.
  *   - Groq normalizes reasoning → reasoning_content on the delta.
  *   - Mistral rewrites tool_choice: "required" → "any".
  *   - NIM deletes stream_options.
@@ -128,6 +129,91 @@ function main(): void {
         assert(body.thinking?.type === 'disabled', `${model} thinking=${JSON.stringify(body.thinking)}`)
         assert(!('reasoning_content' in body.messages[1]!), `${model} leaked reasoning_content`)
       }
+    } finally {
+      setDeepSeekV4Thinking(false)
+    }
+  })
+  test('deepseek trims tool_calls to immediately answered tool messages', () => {
+    const body = mkBody('deepseek-chat', {
+      messages: [
+        { role: 'user', content: 'start' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            mkToolCall('toolu_compat_call_answered', 'Read'),
+            mkToolCall('toolu_compat_call_missing', 'Grep'),
+          ],
+        },
+        { role: 'tool', tool_call_id: 'toolu_compat_call_answered', content: 'ok' },
+        { role: 'user', content: 'continue' },
+      ],
+    })
+
+    TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-chat'))
+
+    const assistant = body.messages[1]
+    assert(assistant?.role === 'assistant', `assistant role=${assistant?.role}`)
+    assert(assistant.tool_calls?.length === 1,
+      `tool_calls=${JSON.stringify(assistant.tool_calls)}`)
+    assert(assistant.tool_calls?.[0]?.id === 'toolu_compat_call_answered',
+      `tool_call_id=${assistant.tool_calls?.[0]?.id}`)
+    assert(body.messages[2]?.role === 'tool', `expected kept tool message, got ${body.messages[2]?.role}`)
+    assert(body.messages[3]?.role === 'user', `expected next user message, got ${body.messages[3]?.role}`)
+  })
+  test('deepseek removes unanswered tool_calls and orphan tool messages', () => {
+    const body = mkBody('deepseek-chat', {
+      messages: [
+        { role: 'user', content: 'start' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            mkToolCall('toolu_compat_call_missing_a', 'Read'),
+            mkToolCall('toolu_compat_call_missing_b', 'Grep'),
+          ],
+        },
+        { role: 'user', content: 'continue' },
+        { role: 'tool', tool_call_id: 'toolu_compat_call_missing_a', content: 'late orphan' },
+      ],
+    })
+
+    TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-chat'))
+
+    const assistant = body.messages[1]
+    assert(body.messages.length === 3, `messages=${JSON.stringify(body.messages)}`)
+    assert(assistant?.role === 'assistant', `assistant role=${assistant?.role}`)
+    assert(assistant.tool_calls === undefined, `tool_calls=${JSON.stringify(assistant.tool_calls)}`)
+    assert(assistant.content === '', `assistant content=${JSON.stringify(assistant.content)}`)
+    assert(!body.messages.some(message => message.role === 'tool'), 'orphan tool message was kept')
+  })
+  test('deepseek repairs tool-call adjacency without stripping enabled reasoning_content', () => {
+    setDeepSeekV4Thinking(true)
+    try {
+      const body = mkBody('deepseek-v4-pro', {
+        messages: [
+          { role: 'user', content: 'start' },
+          {
+            role: 'assistant',
+            content: null,
+            reasoning_content: 'I should inspect the file.',
+            tool_calls: [
+              mkToolCall('toolu_compat_call_answered', 'Read'),
+              mkToolCall('toolu_compat_call_missing', 'Grep'),
+            ],
+          },
+          { role: 'tool', tool_call_id: 'toolu_compat_call_answered', content: 'ok' },
+        ],
+      })
+
+      TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-v4-pro'))
+
+      const assistant = body.messages[1]
+      assert(body.thinking?.type === 'enabled', `thinking=${JSON.stringify(body.thinking)}`)
+      assert(assistant?.reasoning_content === 'I should inspect the file.',
+        `reasoning_content=${JSON.stringify(assistant?.reasoning_content)}`)
+      assert(assistant?.tool_calls?.length === 1,
+        `tool_calls=${JSON.stringify(assistant?.tool_calls)}`)
     } finally {
       setDeepSeekV4Thinking(false)
     }
