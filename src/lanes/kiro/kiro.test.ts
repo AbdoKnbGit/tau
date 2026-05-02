@@ -2,7 +2,12 @@ import type { AnthropicStreamEvent } from '../../services/api/providers/base_pro
 import { _normalizeKiroTokenPayload } from '../../services/api/auth/oauth_services.js'
 import { normalizeKiroModelId } from './catalog.js'
 import type { KiroEvent } from './eventstream.js'
-import { _closeOpenToolUseBlocks, _handleKiroEvent, _parseDsmlFunctionCalls } from './loop.js'
+import {
+  _closeOpenToolUseBlocks,
+  _deriveKiroPromptUsage,
+  _handleKiroEvent,
+  _parseDsmlFunctionCalls,
+} from './loop.js'
 import { checkKiroPayloadSize, trimKiroPayloadToLimit } from './payload_guards.js'
 import { buildKiroPayload } from './request.js'
 import { resolvePreferredKiroShellToolName } from './tool_names.js'
@@ -182,6 +187,7 @@ function main(): void {
     const payload = buildKiroPayload({
       model: 'MiniMax-M2.5',
       system: 'Project rules',
+      conversationId: 'stable-kiro-session',
       messages: [
         {
           role: 'user',
@@ -206,6 +212,7 @@ function main(): void {
     })
 
     assert(payload.conversationState.currentMessage.userInputMessage.modelId === 'minimax-m2.5', 'expected normalized model id in payload')
+    assert(payload.conversationState.conversationId === 'stable-kiro-session', 'expected caller-supplied conversation id')
 
     const tool = payload.conversationState.currentMessage.userInputMessage.userInputMessageContext?.tools?.[0]
     assert(!!tool, 'expected tool spec in current message')
@@ -322,6 +329,60 @@ function main(): void {
     const toolStart = emitted.find((event): event is Extract<AnthropicStreamEvent, { type: 'content_block_start' }> =>
       event.type === 'content_block_start' && event.content_block.type === 'tool_use')
     assert(toolStart?.content_block.name === preferredShellToolName, `expected shell tool to map to ${preferredShellToolName}, got ${toolStart?.content_block.name ?? 'missing'}`)
+  })
+
+  test('unwraps nested Kiro toolUseEvent payloads before mapping tool names', () => {
+    const { state } = createHandlerState('Bash')
+    const emitted = _handleKiroEvent({
+      eventType: 'toolUseEvent',
+      payload: {
+        toolUseEvent: {
+          toolUseId: 'toolu_nested_shell',
+          name: 'shell',
+          input: { command: 'pwd' },
+        },
+      },
+    }, state)
+
+    const toolStart = emitted.find((event): event is Extract<AnthropicStreamEvent, { type: 'content_block_start' }> =>
+      event.type === 'content_block_start' && event.content_block.type === 'tool_use')
+    assert(toolStart?.content_block.name === 'Bash', `expected nested shell event to map to Bash, got ${toolStart?.content_block.name ?? 'missing'}`)
+
+    const toolDelta = emitted.find((event): event is Extract<AnthropicStreamEvent, { type: 'content_block_delta' }> =>
+      event.type === 'content_block_delta' && event.delta.type === 'input_json_delta')
+    assert(toolDelta?.delta.partial_json === '{"command":"pwd"}', `unexpected nested tool args: ${toolDelta?.delta.partial_json ?? 'missing'}`)
+  })
+
+  test('derives non-negative rolling Kiro cache reads from context usage', () => {
+    const first = _deriveKiroPromptUsage({
+      rawInputTokens: 0,
+      contextTokens: 12_000,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      previousContextTokens: 0,
+    })
+    assert(first.inputTokens === 12_000, `expected first turn input to be full context, got ${first.inputTokens}`)
+    assert(first.cacheReadTokens === 0, `expected first turn cache read 0, got ${first.cacheReadTokens}`)
+
+    const second = _deriveKiroPromptUsage({
+      rawInputTokens: 0,
+      contextTokens: 12_500,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      previousContextTokens: first.nextContextTokens,
+    })
+    assert(second.inputTokens === 500, `expected second turn uncached delta 500, got ${second.inputTokens}`)
+    assert(second.cacheReadTokens === 12_000, `expected second turn cache read 12000, got ${second.cacheReadTokens}`)
+
+    const trimmed = _deriveKiroPromptUsage({
+      rawInputTokens: 0,
+      contextTokens: 8_000,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      previousContextTokens: second.nextContextTokens,
+    })
+    assert(trimmed.inputTokens === 0, `expected trimmed context to avoid negative input, got ${trimmed.inputTokens}`)
+    assert(trimmed.cacheReadTokens === 8_000, `expected trimmed context cache read to clamp to current context, got ${trimmed.cacheReadTokens}`)
   })
 
   test('closes native tool_use blocks when the stream ends without messageStopEvent', () => {
@@ -457,6 +518,7 @@ function main(): void {
     assert(content.includes('Edit (modify existing files in place)'), 'expected edit guidance')
     assert(content.includes('EnterPlanMode (switch into planning mode)'), 'expected planning guidance')
     assert(content.includes('Agent (launch a subagent)'), 'expected agent guidance')
+    assert(content.includes('only describe rate limiting when the result explicitly says 429'), 'expected subagent rate-limit guard')
     assert(content.includes('ListMcpResourcesTool (list MCP resources)'), 'expected MCP guidance')
     assert(content.includes('Repo rules'), 'expected original system prompt preserved')
   })

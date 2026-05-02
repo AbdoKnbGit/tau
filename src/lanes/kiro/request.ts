@@ -107,6 +107,7 @@ export interface BuildKiroPayloadParams {
   system: string
   messages: ProviderMessage[]
   tools: ProviderTool[]
+  conversationId?: string
   maxTokens?: number
   temperature?: number
   topP?: number
@@ -118,7 +119,17 @@ const KIRO_DEFAULT_MAX_PAYLOAD_BYTES = 600_000
 const KIRO_DEFAULT_TARGET_PAYLOAD_BYTES = 220_000
 
 export function buildKiroPayload(params: BuildKiroPayloadParams): KiroPayload {
-  const { model, system, messages, tools, maxTokens, temperature, topP, profileArn } = params
+  const {
+    model,
+    system,
+    messages,
+    tools,
+    conversationId,
+    maxTokens,
+    temperature,
+    topP,
+    profileArn,
+  } = params
   const resolvedModel = normalizeKiroModelId(model)
   const preferredShellToolName = resolvePreferredKiroShellToolName(
     tools.map(tool => tool.name),
@@ -145,7 +156,7 @@ export function buildKiroPayload(params: BuildKiroPayloadParams): KiroPayload {
   const payload: KiroPayload = {
     conversationState: {
       chatTriggerType: 'MANUAL',
-      conversationId: randomUUID(),
+      conversationId: conversationId || randomUUID(),
       currentMessage: {
         userInputMessage: {
           content: stampedContent,
@@ -404,6 +415,7 @@ function _buildKiroToolSelectionGuide(
   return [
     '<tool_selection_guide>',
     'Prefer specialized tools over shell when a direct tool exists for files, notebooks, planning, worktrees, questions, skills, tasks, or MCP resources.',
+    'For Agent/subagent results, report the tool output as observed; only describe rate limiting when the result explicitly says 429, rate limit, quota, or throttled.',
     ...lines,
     '</tool_selection_guide>',
   ].join('\n')

@@ -43,6 +43,7 @@ import {
   toClaudexToolName,
 } from './tool_names.js'
 import { randomUUID } from 'crypto'
+import { getSessionId } from '../../bootstrap/state.js'
 import { loadProviderKey } from '../../services/api/auth/api_key_manager.js'
 
 const KIRO_ENDPOINT = 'https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse'
@@ -64,6 +65,13 @@ const DSML_FUNCTION_CALLS_CLOSE = `</${DSML_TOKEN}function_calls>`
 interface ParsedDsmlToolCall {
   name: string
   input: Record<string, unknown>
+}
+
+interface DerivedKiroPromptUsage {
+  inputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  nextContextTokens: number
 }
 
 interface KiroAvailableModel {
@@ -133,12 +141,17 @@ export class KiroLane implements Lane {
   private profileArn: string | null = null
   private discoveredModels = new Map<string, ModelInfo>()
   private modelsCache: { at: number; models: ModelInfo[] } | null = null
+  private promptContextTokensByConversation = new Map<string, number>()
 
   configure(opts: { accessToken?: string; profileArn?: string | null }): void {
+    const authChanged =
+      (opts.accessToken !== undefined && (opts.accessToken || null) !== this.accessToken)
+      || (opts.profileArn !== undefined && (opts.profileArn ?? null) !== this.profileArn)
     if (opts.accessToken !== undefined) this.accessToken = opts.accessToken || null
     if (opts.profileArn !== undefined) this.profileArn = opts.profileArn || null
     this.modelsCache = null
     this.discoveredModels.clear()
+    if (authChanged) this.promptContextTokensByConversation.clear()
   }
 
   supportsModel(model: string): boolean {
@@ -399,6 +412,7 @@ export class KiroLane implements Lane {
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
     const { model, messages, system, tools, max_tokens, temperature, signal } = params
     const resolvedModel = this.resolveModel(model)
+    const conversationId = params.sessionId || getSessionId()
 
     if (!this.accessToken) {
       throw new Error(
@@ -415,6 +429,7 @@ export class KiroLane implements Lane {
       system: systemText,
       messages,
       tools,
+      conversationId,
       // CodeWhisperer caps at 32k output; the caller's max_tokens is
       // usually 8192 already, but clamp for safety.
       maxTokens: Math.min(max_tokens ?? 8192, 32_000),
@@ -426,6 +441,8 @@ export class KiroLane implements Lane {
     let messageStartEmitted = false
     let outputTokens = 0
     let inputTokens = 0
+    let cacheReadTokens = 0
+    let cacheWriteTokens = 0
     let reasoningTokens = 0
 
     // Content-block state. Kiro interleaves text + code + tool_use freely,
@@ -444,9 +461,8 @@ export class KiroLane implements Lane {
       tools.map(tool => tool.name),
     )
 
-    // Track stop-state. Kiro sometimes emits messageStopEvent BEFORE
-    // metricsEvent, sometimes after; we only close out once per turn.
-    let streamClosed = false
+    // Kiro often emits messageStopEvent before metrics/context bookkeeping.
+    // Keep reading until the HTTP stream ends so final usage is not dropped.
     let totalContentChars = 0
     let contextUsagePercentage = 0
 
@@ -559,7 +575,7 @@ export class KiroLane implements Lane {
     let buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
 
     try {
-      while (!streamClosed) {
+      while (true) {
         const { done, value } = await reader.read()
         if (done) break
         if (value && value.length > 0) {
@@ -578,7 +594,8 @@ export class KiroLane implements Lane {
           // Track how much content the model has produced so we can
           // estimate output_tokens when metricsEvent is absent.
           if (ev.eventType === 'assistantResponseEvent' || ev.eventType === 'codeEvent') {
-            const c = ev.payload && typeof ev.payload.content === 'string' ? ev.payload.content : ''
+            const contentPayload = _asRecord(_unwrapKiroEventPayload(ev.eventType, ev.payload))
+            const c = typeof contentPayload?.content === 'string' ? contentPayload.content : ''
             totalContentChars += c.length
           }
 
@@ -595,21 +612,17 @@ export class KiroLane implements Lane {
             const m = (ev.payload?.metricsEvent as Record<string, unknown> | undefined)
               ?? ev.payload
               ?? {}
-            const it = typeof (m as { inputTokens?: unknown }).inputTokens === 'number'
-              ? (m as { inputTokens: number }).inputTokens : 0
-            const ot = typeof (m as { outputTokens?: unknown }).outputTokens === 'number'
-              ? (m as { outputTokens: number }).outputTokens : 0
-            if (it > 0) inputTokens = it
-            if (ot > 0) outputTokens = ot
+            const usage = _extractKiroMetricsUsage(m)
+            if (usage.inputTokens > 0) inputTokens = usage.inputTokens
+            if (usage.outputTokens > 0) outputTokens = usage.outputTokens
+            if (usage.cacheReadTokens > 0) cacheReadTokens = usage.cacheReadTokens
+            if (usage.cacheWriteTokens > 0) cacheWriteTokens = usage.cacheWriteTokens
+            if (usage.reasoningTokens > 0) reasoningTokens = usage.reasoningTokens
           }
 
           if (ev.eventType === 'contextUsageEvent') {
-            const pct = (ev.payload?.contextUsagePercentage as number | undefined) ?? 0
+            const pct = _extractKiroContextUsagePercentage(ev.payload)
             if (pct > 0) contextUsagePercentage = pct
-          }
-
-          if (ev.eventType === 'messageStopEvent') {
-            streamClosed = true
           }
         }
       }
@@ -641,8 +654,24 @@ export class KiroLane implements Lane {
     if (outputTokens === 0 && totalContentChars > 0) {
       outputTokens = Math.max(1, Math.floor(totalContentChars / 4))
     }
-    if (inputTokens === 0 && contextUsagePercentage > 0) {
-      inputTokens = Math.floor(contextUsagePercentage * KIRO_CONTEXT_WINDOW / 100)
+    const estimatedContextTokens = contextUsagePercentage > 0
+      ? Math.floor(contextUsagePercentage * KIRO_CONTEXT_WINDOW / 100)
+      : 0
+    if (inputTokens === 0 && estimatedContextTokens > 0) inputTokens = estimatedContextTokens
+
+    const promptUsageKey = `${conversationId}:${resolvedModel}`
+    const promptUsage = _deriveKiroPromptUsage({
+      rawInputTokens: inputTokens,
+      contextTokens: estimatedContextTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      previousContextTokens: this.promptContextTokensByConversation.get(promptUsageKey) ?? 0,
+    })
+    inputTokens = promptUsage.inputTokens
+    cacheReadTokens = promptUsage.cacheReadTokens
+    cacheWriteTokens = promptUsage.cacheWriteTokens
+    if (promptUsage.nextContextTokens > 0) {
+      this.promptContextTokensByConversation.set(promptUsageKey, promptUsage.nextContextTokens)
     }
 
     const hadToolUse = sawToolUse
@@ -650,15 +679,20 @@ export class KiroLane implements Lane {
     yield {
       type: 'message_delta',
       delta: { stop_reason: stopReason },
-      usage: { output_tokens: outputTokens, input_tokens: inputTokens },
+      usage: {
+        output_tokens: outputTokens,
+        input_tokens: inputTokens,
+        ...(cacheReadTokens > 0 && { cache_read_input_tokens: cacheReadTokens }),
+        ...(cacheWriteTokens > 0 && { cache_creation_input_tokens: cacheWriteTokens }),
+      },
     }
     yield { type: 'message_stop' }
 
     return {
       input_tokens: inputTokens,
       output_tokens: outputTokens,
-      cache_read_tokens: 0,
-      cache_write_tokens: 0,
+      cache_read_tokens: cacheReadTokens,
+      cache_write_tokens: cacheWriteTokens,
       thinking_tokens: reasoningTokens,
     }
   }
@@ -709,6 +743,142 @@ export function _closeOpenToolUseBlocks(
     }
   }
   state.toolBlocks.clear()
+}
+
+function _asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function _numberFrom(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.floor(value)
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed)
+  }
+  return 0
+}
+
+function _firstNumber(record: Record<string, unknown>, keys: readonly string[]): number {
+  for (const key of keys) {
+    const value = _numberFrom(record[key])
+    if (value > 0) return value
+  }
+  return 0
+}
+
+function _unwrapKiroEventPayload(eventType: string, payload: Record<string, unknown> | null): unknown {
+  if (!payload) return {}
+  const nested = payload[eventType]
+  return nested !== undefined ? nested : payload
+}
+
+function _extractKiroMetricsUsage(metrics: Record<string, unknown>): {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  reasoningTokens: number
+} {
+  return {
+    inputTokens: _firstNumber(metrics, [
+      'inputTokens',
+      'input_tokens',
+      'promptTokens',
+      'prompt_tokens',
+    ]),
+    outputTokens: _firstNumber(metrics, [
+      'outputTokens',
+      'output_tokens',
+      'completionTokens',
+      'completion_tokens',
+    ]),
+    cacheReadTokens: _firstNumber(metrics, [
+      'cacheReadInputTokens',
+      'cache_read_input_tokens',
+      'cachedInputTokens',
+      'cached_input_tokens',
+      'cachedTokens',
+      'cached_tokens',
+    ]),
+    cacheWriteTokens: _firstNumber(metrics, [
+      'cacheCreationInputTokens',
+      'cache_creation_input_tokens',
+      'cacheWriteInputTokens',
+      'cache_write_input_tokens',
+    ]),
+    reasoningTokens: _firstNumber(metrics, [
+      'reasoningTokens',
+      'reasoning_tokens',
+      'thinkingTokens',
+      'thinking_tokens',
+    ]),
+  }
+}
+
+function _extractKiroContextUsagePercentage(payload: Record<string, unknown> | null): number {
+  const source = _asRecord(_unwrapKiroEventPayload('contextUsageEvent', payload)) ?? payload ?? {}
+  return _numberFrom(source.contextUsagePercentage)
+}
+
+export function _deriveKiroPromptUsage(args: {
+  rawInputTokens: number
+  contextTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  previousContextTokens: number
+}): DerivedKiroPromptUsage {
+  const rawInputTokens = _numberFrom(args.rawInputTokens)
+  const contextTokens = _numberFrom(args.contextTokens)
+  const explicitCacheReadTokens = _numberFrom(args.cacheReadTokens)
+  const explicitCacheWriteTokens = _numberFrom(args.cacheWriteTokens)
+  const previousContextTokens = _numberFrom(args.previousContextTokens)
+  const explicitCacheTokens = explicitCacheReadTokens + explicitCacheWriteTokens
+
+  if (explicitCacheTokens > 0) {
+    const inputTokens = rawInputTokens >= explicitCacheTokens
+      ? rawInputTokens - explicitCacheTokens
+      : rawInputTokens
+    const nextContextTokens = contextTokens > 0
+      ? contextTokens
+      : inputTokens + explicitCacheTokens
+    return {
+      inputTokens,
+      cacheReadTokens: explicitCacheReadTokens,
+      cacheWriteTokens: explicitCacheWriteTokens,
+      nextContextTokens,
+    }
+  }
+
+  const totalContextTokens = contextTokens > 0 ? contextTokens : rawInputTokens
+  if (totalContextTokens <= 0) {
+    return {
+      inputTokens: rawInputTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      nextContextTokens: 0,
+    }
+  }
+
+  if (previousContextTokens <= 0) {
+    return {
+      inputTokens: rawInputTokens > 0 ? rawInputTokens : totalContextTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      nextContextTokens: totalContextTokens,
+    }
+  }
+
+  const cacheReadTokens = Math.min(previousContextTokens, totalContextTokens)
+  return {
+    inputTokens: Math.max(0, totalContextTokens - cacheReadTokens),
+    cacheReadTokens,
+    cacheWriteTokens: 0,
+    nextContextTokens: totalContextTokens,
+  }
 }
 
 function _emitText(
@@ -957,11 +1127,12 @@ export function _handleKiroEvent(
 ): AnthropicStreamEvent[] {
   const out: AnthropicStreamEvent[] = []
 
-  const payload = ev.payload ?? {}
+  const payload = _unwrapKiroEventPayload(ev.eventType, ev.payload)
+  const payloadRecord = _asRecord(payload) ?? {}
 
   switch (ev.eventType) {
     case 'assistantResponseEvent': {
-      const content = typeof payload.content === 'string' ? payload.content : ''
+      const content = typeof payloadRecord.content === 'string' ? payloadRecord.content : ''
       if (content) {
         state.setPendingAssistantText(state.getPendingAssistantText() + content)
         _flushPendingAssistantText(state, out, false)
@@ -969,21 +1140,20 @@ export function _handleKiroEvent(
       break
     }
     case 'codeEvent': {
-      const content = typeof payload.content === 'string' ? payload.content : ''
+      const content = typeof payloadRecord.content === 'string' ? payloadRecord.content : ''
       if (content) _emitText(state, out, content)
       break
     }
     case 'reasoningContentEvent': {
-      const content = typeof payload.content === 'string' ? payload.content : ''
+      const content = typeof payloadRecord.content === 'string' ? payloadRecord.content : ''
       if (content) _emitThinking(state, out, content)
       break
     }
     case 'toolUseEvent': {
       // Payload can be a single tool or an array — normalize.
-      const raw = payload as Record<string, unknown>
-      const items: Array<Record<string, unknown>> = Array.isArray(raw)
-        ? (raw as unknown as Array<Record<string, unknown>>)
-        : [raw]
+      const items: Array<Record<string, unknown>> = Array.isArray(payload)
+        ? payload.filter((item): item is Record<string, unknown> => _asRecord(item) !== null)
+        : [payloadRecord]
       for (const tu of items) {
         const toolUseId = (typeof tu.toolUseId === 'string' && tu.toolUseId)
           || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
