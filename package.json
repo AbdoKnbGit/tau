@@ -5,16 +5,16 @@
   "author": "AbdoKnbGit",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AbdoKnbGit/claudex"
+    "url": "git+https://github.com/AbdoKnbGit/tau.git"
   },
-  "homepage": "https://github.com/AbdoKnbGit/claudex#readme",
+  "homepage": "https://github.com/AbdoKnbGit/tau#readme",
   "bugs": {
-    "url": "https://github.com/AbdoKnbGit/claudex/issues"
+    "url": "https://github.com/AbdoKnbGit/tau/issues"
   },
   "type": "module",
   "bin": {
-    "tau": "./dist/cli.mjs",
-    "claudex": "./dist/cli.mjs"
+    "tau": "dist/cli.mjs",
+    "claudex": "dist/cli.mjs"
   },
   "files": [
     "dist",

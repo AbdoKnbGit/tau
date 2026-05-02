@@ -231,10 +231,10 @@ const result = await build({
     'MACRO.NATIVE_PACKAGE_URL': JSON.stringify(pkg.name),
     'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
     'MACRO.FEEDBACK_CHANNEL': JSON.stringify(
-      'https://github.com/AbdoKnbGit/claudex/issues',
+      'https://github.com/AbdoKnbGit/tau/issues',
     ),
     'MACRO.ISSUES_EXPLAINER': JSON.stringify(
-      'report the issue at https://github.com/AbdoKnbGit/claudex/issues',
+      'report the issue at https://github.com/AbdoKnbGit/tau/issues',
     ),
     'process.env.USER_TYPE': JSON.stringify('external'),
   },

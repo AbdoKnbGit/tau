@@ -422,7 +422,7 @@ export class KiloLane implements Lane {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
       'User-Agent': KILO_USER_AGENT,
-      'HTTP-Referer': 'https://github.com/AbdoKnbGit/claudex',
+      'HTTP-Referer': 'https://github.com/AbdoKnbGit/tau',
       'X-Title': 'Tau',
       // Kilo CLI-parity attribution headers — see kilo-gateway/src/headers.ts.
       'X-KILOCODE-EDITORNAME': KILO_EDITOR_NAME,

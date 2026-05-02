@@ -28,8 +28,8 @@ export const iflowTransformer: Transformer = {
     // session as a Tau IDE request (matches iflow's expected
     // User-Agent shape for chat endpoints).
     return {
-      'User-Agent': 'Tau/0.4.0 (+https://github.com/AbdoKnbGit/claudex)',
-      'X-Source': 'claudex',
+      'User-Agent': 'Tau/0.6.0 (+https://github.com/AbdoKnbGit/tau)',
+      'X-Source': 'tau',
       'X-Title': 'Tau',
     }
   },

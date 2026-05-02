@@ -27,7 +27,7 @@ export const kilocodeTransformer: Transformer = {
   buildHeaders(_apiKey: string): Record<string, string> {
     const orgId = getKiloCodeOrgId()
     const headers: Record<string, string> = {
-      'HTTP-Referer': 'https://github.com/AbdoKnbGit/claudex',
+      'HTTP-Referer': 'https://github.com/AbdoKnbGit/tau',
       'X-Title': 'Tau',
       'X-Kilocode-Version': '0.4.0',
     }

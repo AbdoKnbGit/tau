@@ -34,7 +34,7 @@ export const openrouterTransformer: Transformer = {
 
   buildHeaders(_apiKey: string): Record<string, string> {
     return {
-      'HTTP-Referer': 'https://github.com/AbdoKnbGit/claudex',
+      'HTTP-Referer': 'https://github.com/AbdoKnbGit/tau',
       'X-Title': 'Tau',
     }
   },

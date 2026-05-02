@@ -31,7 +31,7 @@ export const clineTransformer: Transformer = {
       // header. The Bearer comes from the lane's default path; we add
       // workos here so the backend links the request to the OAuth session.
       workos: apiKey ? `workos:${apiKey}` : '',
-      'HTTP-Referer': 'https://github.com/AbdoKnbGit/claudex',
+      'HTTP-Referer': 'https://github.com/AbdoKnbGit/tau',
       'X-Title': 'Tau',
     }
   },

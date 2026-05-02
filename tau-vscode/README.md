@@ -1,6 +1,6 @@
 # Tau VS Code Companion
 
-The official VS Code companion for [Tau](https://github.com/AbdoKnbGit/claudex), the multi-provider AI coding CLI. One install, one click, full IDE awareness - no env-var juggling.
+The official VS Code companion for [Tau](https://github.com/AbdoKnbGit/tau), the multi-provider AI coding CLI. One install, one click, full IDE awareness - no env-var juggling.
 
 ## What it does
 

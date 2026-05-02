@@ -465,7 +465,7 @@ export class ClineLane implements Lane {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
-      'HTTP-Referer': 'https://github.com/AbdoKnbGit/claudex',
+      'HTTP-Referer': 'https://github.com/AbdoKnbGit/tau',
       'X-Title': 'Tau',
     }
 

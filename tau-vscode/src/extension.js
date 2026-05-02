@@ -13,8 +13,8 @@ const {
 } = require('./state');
 const { buildControlCenterViewModel } = require('./presentation');
 
-const CLAUDEX_REPO_URL = 'https://github.com/AbdoKnbGit/claudex';
-const CLAUDEX_SETUP_URL = 'https://github.com/AbdoKnbGit/claudex#readme';
+const CLAUDEX_REPO_URL = 'https://github.com/AbdoKnbGit/tau';
+const CLAUDEX_SETUP_URL = 'https://github.com/AbdoKnbGit/tau#readme';
 const PROFILE_FILE_NAME = '.claudex-profile.json';
 
 /** Provider env var mapping for terminal injection */
