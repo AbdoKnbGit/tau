@@ -1,4 +1,6 @@
-![Logo](Logo.webp)
+<p align="center">
+  <img src="Logo.webp" alt="Tau logo" width="120">
+</p>
 
 # Tau
 
