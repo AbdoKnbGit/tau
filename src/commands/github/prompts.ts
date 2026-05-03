@@ -416,8 +416,14 @@ NEVER auto-close, auto-assign, or auto-label without the user's explicit yes.`
 
 export function buildReleasePrompt(args: string): string {
   const version = args.trim().split(/\s+/)[0]
+  const looksLikeSemverFragment = /^v?(?:\d+)?(?:\.\d*){0,2}$/i.test(version)
+  const looksLikeCompleteSemver = /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/i.test(version)
+  const incompleteVersion =
+    Boolean(version) && looksLikeSemverFragment && !looksLikeCompleteSemver
   const versionSection = version
-    ? `User-supplied version: \`${version}\`. Validate it matches the project's tag pattern (\`vMAJOR.MINOR.PATCH\` is most common — check \`git tag --sort=-v:refname | head -5\`). If the format clashes, ASK before continuing.`
+    ? incompleteVersion
+      ? `User-supplied version fragment: \`${version}\`. This is not a complete tag. ASK the user for the full release version (for example, \`v0.6.3\`) and STOP until they provide it.`
+      : `User-supplied version: \`${version}\`. Validate it matches the project's tag pattern (\`vMAJOR.MINOR.PATCH\` is most common — check \`git tag --sort=-v:refname | head -5\`). If the format clashes, ASK before continuing.`
     : `No version supplied. Read the latest tag (\`git tag --sort=-v:refname | head -1\`), propose the next bump (patch by default; minor if new features; major if breaking changes), and include the proposal in the Step 4 preview for the user to confirm.`
 
   return `# /github release — tag → publish → trigger

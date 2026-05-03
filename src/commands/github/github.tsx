@@ -439,6 +439,8 @@ function GithubWizard({ onDone }: WizardProps): React.ReactNode {
   }
 
   if (step.kind === 'release-version') {
+    const submitRelease = () => submit('release', versionInput.trim())
+
     return (
       <Box flexDirection="column" gap={1}>
         <Text bold>/github release — version</Text>
@@ -450,16 +452,17 @@ function GithubWizard({ onDone }: WizardProps): React.ReactNode {
               label: 'Version (Enter to auto-detect from last tag)',
               placeholder: 'e.g. v2.0.1',
               initialValue: versionInput,
-              allowEmptySubmitToCancel: true,
               onChange: (raw: string) => {
-                const v = raw.trim()
-                setVersionInput(v)
-                submit('release', v)
+                setVersionInput(raw.trim())
               },
             },
             { value: 'back', label: 'Back', description: 'Pick a different subcommand' },
           ]}
           onChange={value => {
+            if (value === 'version') {
+              submitRelease()
+              return
+            }
             if (value === 'back') setStep({ kind: 'subcommand' })
           }}
           onCancel={() => submit('release', '')}
