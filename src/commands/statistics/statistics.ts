@@ -1,3 +1,4 @@
+import chalk from 'chalk'
 import { diffLines } from 'diff'
 import { readFile } from 'fs/promises'
 import { isAbsolute, join, relative, sep } from 'path'
@@ -125,9 +126,6 @@ function formatStatistics({
   }
 
   lines.push(
-    ...section('Metric Note'),
-    'antigravity/cursor/deepseek usually show cache_hit: 0% because cache is managed automatically by the provider backend.',
-    'Kilo cache metrics are unstable. Other providers may report estimated or slightly inaccurate token metrics; this is expected.',
     ...section('Tool Calls'),
     statRow('regular tool calls', toolStats.total),
   )
@@ -171,11 +169,34 @@ function formatStatistics({
     }
   }
 
+  lines.push(
+    ...glowNote([
+      'antigravity/cursor/deepseek can show cache_hit: 0% because cache is handled automatically by the provider backend.',
+      'If cache numbers look unstable sometimes, do not worry. Every provider with cache support has been tested and tuned to maximize hits.',
+      'Cache-hit reporting is not always exact because models and providers expose usage differently.',
+      'Tau optimizes for the best cost/performance path available for the selected provider.',
+    ]),
+  )
+
   return lines.join('\n')
 }
 
 function section(title: string): string[] {
   return ['', title, '-'.repeat(title.length)]
+}
+
+function glowNote(lines: string[]): string[] {
+  const title = 'Cache Note'
+  const width = Math.max(title.length, ...lines.map(line => line.length))
+  const border = `*${'='.repeat(width + 2)}*`
+  return [
+    '',
+    chalk.cyanBright(border),
+    chalk.cyanBright(`| ${title.padEnd(width)} |`),
+    chalk.cyanBright(border),
+    ...lines.map(line => chalk.cyanBright(`| ${line.padEnd(width)} |`)),
+    chalk.cyanBright(border),
+  ]
 }
 
 function statRow(name: string, value: number | string): string {

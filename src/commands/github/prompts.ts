@@ -263,9 +263,21 @@ export function buildWrapPrompt(args: string): string {
     ? `User instructions for this wrap: ${instructions}`
     : `No extra instructions — derive the commit message from the diff and recent commits.`
 
-  return `# /github wrap — commit, push, link
+  return `# /github wrap — stage → commit → changelog → push
 
 ${SAFETY_RULES}
+
+> By invoking \`/github wrap\`, the user has authorized stage, commit, changelog, AND push for this turn. Do NOT re-ask permission for any of them — stop only if the push fails or you find secrets in the diff. The branch was already chosen in the wizard (see **Branch** below); use it.
+
+## Writing style — applies to every line of text you write
+
+Every line must be **concentrated** (dense, no padding, every word earns its place) and **high quality** (specific, accurate, useful). Covers commit subjects, body bullets, changelog entries, and the final report.
+- Be specific about WHAT changed and WHY. Banned filler: "improved X", "refactored Y", "various updates", "minor changes", "this commit ...".
+- Imperative voice for commit subjects ("Fix race in stream parser", not "Fixed" / "Fixing").
+- Subject ≤60 chars. Add a body bullet ONLY if it tells a reader something the subject does not.
+- Cut wordy phrases: "in order to" → "to", "make use of" → "use", "due to the fact that" → "because".
+- No emojis, no celebration, no PR-style preamble, no "Generated with Claude" trailers.
+- Plain English. A teammate reading the diff in six months should understand instantly.
 
 ## Branch
 
@@ -281,26 +293,62 @@ ${instructionsSection}
 
 ## Your task
 
-Run these in order. STOP at any prompt that says "ask the user".
+Run in this exact order. The four numbered phases (Stage+Commit → Changelog → Push) are the whole job. One push at the end carries both commits.
 
-1. **Survey** — \`git status\`, \`git diff HEAD\`, \`git log --oneline -10\` so you understand what is staged and the local commit style.
-2. **Branch** — handle the branch section above. Never commit to \`main\` / \`master\` without explicit user confirmation.
-3. **Compose commit** — short imperative subject (≤72 chars), blank line, bullet body explaining *why*, blank line, then the \`Closes #N\` trailer if applicable. Match the repo's existing commit style. Use HEREDOC:
-   \`\`\`
-   git commit -m "$(cat <<'EOF'
-   <subject>
+### Step 1: Survey
 
-   - <bullet 1>
-   - <bullet 2>
+\`git status\`, \`git diff HEAD\`, \`git log --oneline -10\`. Understand what is staged and the repo's commit-message style so the new commit blends in.
 
-   Closes #N
-   EOF
-   )"
-   \`\`\`
-4. **Stage + commit** — only files relevant to this change. Skip anything that smells like a secret. If nothing is staged, tell the user and stop.
-5. **Changelog** — if a top-level \`CHANGELOG.md\` exists, append a one-line entry under the \`## [Unreleased]\` section (create the section if missing). Stage and amend it INTO the same commit only if you have not pushed yet — otherwise add it as a follow-up commit. If no changelog file exists, skip silently.
-6. **Push** — \`git push -u origin <branch>\`. If the push is rejected (non-fast-forward), STOP and tell the user — do not force-push.
-7. **Report** — reply with: branch name, commit SHA, commit subject, link to the issue (if any), and the \`gh pr create\` command they could run next (do not run it yourself).`
+If the working tree is clean and nothing is staged, tell the user "nothing to commit" and STOP.
+
+### Step 2: Branch
+
+Handle the branch section above. Never commit to \`main\` / \`master\` without explicit user confirmation in this turn.
+
+### Step 3: Stage + commit the change (concentrated + high quality)
+
+1. Stage only files relevant to this change. If anything looks like a secret (\`.env\`, \`*.pem\`, \`credentials.json\`, key-shaped strings), STOP and warn the user — do not stage.
+2. Compose the message per **Writing style** above. Match repo style from Step 1's \`git log\`.
+3. Commit with HEREDOC so multi-line bodies stay clean:
+\`\`\`
+git commit -m "$(cat <<'EOF'
+<subject>
+
+- <why bullet 1>
+- <why bullet 2>
+
+Closes #N
+EOF
+)"
+\`\`\`
+
+### Step 4: Update changelog (concentrated + high quality, only if CHANGELOG.md exists)
+
+1. If \`CHANGELOG.md\` does not exist at the repo root, SKIP this step — never create one.
+2. Read it. Find or create the \`## [Unreleased]\` section at the top.
+3. Append ONE concentrated bullet in user-facing terms (what the user gains, what bug is gone). If the change is purely internal with no user impact, SKIP and mark \`Changelog: skipped (no user-facing change)\` in the report — do not pad the file.
+4. Match the file's existing entry style (Keep-a-Changelog past tense, plain bullets, whatever it uses).
+5. Stage \`CHANGELOG.md\` and commit it as a SECOND commit with a concentrated repo-style message (e.g. \`Add changelog entry for <subject>\`). Do NOT amend the Step 3 commit.
+
+### Step 5: Push to origin (most important — sends both commits at once)
+
+1. \`git push -u origin <branch>\` — where \`<branch>\` is the branch from Step 2 (the one the user picked in the wizard).
+2. If the push is rejected (non-fast-forward), STOP — do NOT force-push. Tell the user the remote moved and suggest \`git pull --rebase origin <branch>\` first.
+
+### Step 6: Report
+
+Reply with EXACTLY these lines, no other prose, no congratulations:
+
+\`\`\`
+Branch:    <name>
+Commit:    <short SHA> <subject>
+Changelog: updated (<short SHA>) | not present | skipped (no user-facing change)
+Push:      ok
+Issue:     #N | none
+Next:      gh pr create --base <main> --head <branch> --title "<subject>"
+\`\`\`
+
+If any step failed, replace that line's value with \`failed: <one-line reason>\` and stop. Do not attempt recovery without asking.`
 }
 
 export function buildChangelogPrompt(args: string): string {
