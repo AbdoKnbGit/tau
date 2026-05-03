@@ -104,11 +104,6 @@ async function loadRecentBranches(): Promise<{
   }
 }
 
-function formatBranchLabel(b: BranchEntry, isCurrent: boolean): string {
-  const tag = isCurrent ? ' (current)' : ''
-  return `${b.name}${tag}`
-}
-
 function formatBranchDescription(b: BranchEntry): string {
   if (!b.relDate && !b.subject) return ''
   if (!b.subject) return b.relDate
@@ -125,6 +120,7 @@ function GithubWizard({ onDone }: WizardProps): React.ReactNode {
   } | null>(null)
   const [branchInput, setBranchInput] = useState('')
   const [issueInput, setIssueInput] = useState('')
+  const [instructionsInput, setInstructionsInput] = useState('')
   const [versionInput, setVersionInput] = useState('')
 
   useKeybinding(
@@ -287,11 +283,15 @@ function GithubWizard({ onDone }: WizardProps): React.ReactNode {
     }
 
     const { branches, current } = branchData
-    const branchOptions = branches.map(b => ({
-      value: `branch:${b.name}`,
-      label: formatBranchLabel(b, b.name === current),
-      description: formatBranchDescription(b),
-    }))
+    // Exclude the current branch from the recent list so it does not appear
+    // twice (once as "Use current branch ..." and once as "<name> (current)").
+    const branchOptions = branches
+      .filter(b => b.name !== current)
+      .map(b => ({
+        value: `branch:${b.name}`,
+        label: b.name,
+        description: formatBranchDescription(b),
+      }))
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -312,16 +312,10 @@ function GithubWizard({ onDone }: WizardProps): React.ReactNode {
               type: 'input' as const,
               value: 'new',
               label: 'New branch — type a name',
-              placeholder: 'feature/short-description',
+              placeholder: 'type a new branch name',
               initialValue: branchInput,
               onChange: (raw: string) => {
                 setBranchInput(raw)
-                const v = raw.trim()
-                if (!v) {
-                  setStep({ kind: 'subcommand' })
-                  return
-                }
-                setStep({ kind: 'wrap-issue', branch: v })
               },
             },
             { value: 'back', label: 'Back', description: 'Pick a different subcommand' },
@@ -339,9 +333,14 @@ function GithubWizard({ onDone }: WizardProps): React.ReactNode {
               setStep({ kind: 'wrap-issue', branch: value.slice('branch:'.length) })
               return
             }
+            if (value === 'new') {
+              const v = branchInput.trim()
+              if (!v) return
+              setStep({ kind: 'wrap-issue', branch: v })
+            }
           }}
           onCancel={() => setStep({ kind: 'subcommand' })}
-          visibleOptionCount={Math.min(10, branchOptions.length + 3)}
+          visibleOptionCount={Math.min(10, branchOptions.length + (current ? 3 : 2))}
         />
         <Text dimColor>Enter to pick · Esc to go back</Text>
       </Box>
@@ -349,6 +348,8 @@ function GithubWizard({ onDone }: WizardProps): React.ReactNode {
   }
 
   if (step.kind === 'wrap-issue') {
+    const advance = (issueNum: string) =>
+      setStep({ kind: 'wrap-instructions', branch: step.branch, issueNum })
     return (
       <Box flexDirection="column" gap={1}>
         <Text bold>/github wrap — link an issue (optional)</Text>
@@ -358,39 +359,43 @@ function GithubWizard({ onDone }: WizardProps): React.ReactNode {
             {
               type: 'input',
               value: 'issue',
-              label: 'Issue # to close (Enter to skip)',
+              label: 'Issue # to close',
               placeholder: 'e.g. 42',
               initialValue: issueInput,
-              allowEmptySubmitToCancel: true,
               onChange: (raw: string) => {
-                const v = raw.trim().replace(/^#/, '')
-                setIssueInput(v)
-                setStep({
-                  kind: 'wrap-instructions',
-                  branch: step.branch,
-                  issueNum: /^\d+$/.test(v) ? v : '',
-                })
+                setIssueInput(raw.trim().replace(/^#/, ''))
               },
             },
+            { value: 'skip', label: 'Skip', description: 'Commit without linking to an issue' },
             { value: 'back', label: 'Back', description: 'Re-pick the branch' },
           ]}
           onChange={value => {
-            if (value === 'back') setStep({ kind: 'wrap-branch' })
+            if (value === 'back') {
+              setStep({ kind: 'wrap-branch' })
+              return
+            }
+            if (value === 'skip') {
+              advance('')
+              return
+            }
+            if (value === 'issue') {
+              advance(/^\d+$/.test(issueInput) ? issueInput : '')
+            }
           }}
-          onCancel={() =>
-            setStep({
-              kind: 'wrap-instructions',
-              branch: step.branch,
-              issueNum: '',
-            })
-          }
+          onCancel={() => advance('')}
         />
-        <Text dimColor>Enter to confirm · Esc to skip · Backspace empties</Text>
+        <Text dimColor>Enter on Issue # to type · Enter on Skip to continue · Esc skips</Text>
       </Box>
     )
   }
 
   if (step.kind === 'wrap-instructions') {
+    const runWith = (notes: string) => {
+      const parts = [`--branch=${step.branch}`]
+      if (step.issueNum) parts.push(`--issue=${step.issueNum}`)
+      if (notes) parts.push(notes)
+      submit('wrap', parts.join(' '))
+    }
     return (
       <Box flexDirection="column" gap={1}>
         <Text bold>/github wrap — extra instructions (optional)</Text>
@@ -403,30 +408,32 @@ function GithubWizard({ onDone }: WizardProps): React.ReactNode {
             {
               type: 'input',
               value: 'instructions',
-              label: 'Notes for the commit message (Enter to skip)',
+              label: 'Notes for the commit message',
               placeholder: 'e.g. fix mobile checkout overflow',
-              allowEmptySubmitToCancel: true,
+              initialValue: instructionsInput,
               onChange: (raw: string) => {
-                const text = raw.trim()
-                const parts = [`--branch=${step.branch}`]
-                if (step.issueNum) parts.push(`--issue=${step.issueNum}`)
-                if (text) parts.push(text)
-                submit('wrap', parts.join(' '))
+                setInstructionsInput(raw)
               },
             },
+            { value: 'skip', label: 'Skip', description: 'Run without extra notes' },
             { value: 'back', label: 'Back', description: 'Re-enter the issue number' },
           ]}
           onChange={value => {
-            if (value === 'back')
+            if (value === 'back') {
               setStep({ kind: 'wrap-issue', branch: step.branch })
+              return
+            }
+            if (value === 'skip') {
+              runWith('')
+              return
+            }
+            if (value === 'instructions') {
+              runWith(instructionsInput.trim())
+            }
           }}
-          onCancel={() => {
-            const parts = [`--branch=${step.branch}`]
-            if (step.issueNum) parts.push(`--issue=${step.issueNum}`)
-            submit('wrap', parts.join(' '))
-          }}
+          onCancel={() => runWith('')}
         />
-        <Text dimColor>Enter to confirm · Esc to skip and run</Text>
+        <Text dimColor>Enter on Notes to type · Enter on Skip to run · Esc runs without notes</Text>
       </Box>
     )
   }
