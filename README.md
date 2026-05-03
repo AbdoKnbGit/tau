@@ -143,6 +143,9 @@ Twelve providers with native adapters. Not a routing layer, not a translation pr
 **The full agent loop**
 File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management — all present, all working across every provider.
 
+**GitHub automation and repo management**
+The `/github` command brings common GitHub work into Tau through `gh`: inspect issues and pull requests, review repo state, triage labels/status, generate changelog notes, run wrap-up flows for stage/commit/push, and inspect workflow or release status before publishing changes.
+
 **Scalable context across providers**
 Tau adapts context windows when switching between models and providers, so larger-context models can carry more history while smaller-context models stay usable.
 

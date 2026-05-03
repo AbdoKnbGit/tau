@@ -69,7 +69,7 @@ function runPostLoginRefresh(context: LocalJSXCommandContext) {
 // ─── Main login entry point ──────────────────────────────────────
 //
 // /login is the general provider login entry point. Selecting Anthropic from
-// here opens the native Tau OAuth flow (subscription / Console API /
+// here opens the native Claude OAuth flow (subscription / Console API /
 // platform). /provider reuses the exported Login component for the same
 // Anthropic-only screen.
 
@@ -97,7 +97,7 @@ const LOGIN_PROVIDERS = SELECTABLE_PROVIDERS
 
 function getProviderAuthTypeLabel(provider: APIProvider): string {
   if (provider === 'firstParty') {
-    return 'Tau subscription / Console API / platform'
+    return 'claude subscription / Console API / platform'
   }
   if (provider === 'antigravity') return 'Google login'
   if (provider === 'gemini') return 'Google / API key'
