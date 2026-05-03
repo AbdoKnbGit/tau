@@ -53,6 +53,10 @@ tau
 tau update
 ```
 
+<p align="center">
+  <img src="tau_docs.PNG" alt="Tau docs" width="720">
+</p>
+
 ---
 ## The Commands You Need to Know
 

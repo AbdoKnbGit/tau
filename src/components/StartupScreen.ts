@@ -1,5 +1,6 @@
 /**
- * Tau startup screen: dark terminal base with ember red and brown glow.
+ * Tau startup screen: ember red and brown glow rendered as a watermark
+ * over the terminal's own background (no opaque fill behind glyphs).
  * Called once at CLI startup before the Ink UI renders.
  */
 
@@ -9,8 +10,6 @@ const RESET = `${ESC}0m`
 type RGB = [number, number, number]
 const rgb = (r: number, g: number, b: number): string =>
   `${ESC}38;2;${r};${g};${b}m`
-const bg = (r: number, g: number, b: number): string =>
-  `${ESC}48;2;${r};${g};${b}m`
 
 function lerp(a: RGB, b: RGB, t: number): RGB {
   return [
@@ -38,12 +37,11 @@ function paintLineDiagonal(
     const horizontal = text.length > 1 ? i / (text.length - 1) : 0
     const t = lineT * 0.42 + horizontal * 0.58
     const [r, g, b] = gradAt(stops, t)
-    out += `${bg(...BASE)}${rgb(r, g, b)}${text[i]}`
+    out += `${rgb(r, g, b)}${text[i]}`
   }
   return out + RESET
 }
 
-const BASE: RGB = [9, 5, 4]
 const TAU_GLOW: readonly RGB[] = [
   [255, 96, 72],
   [238, 58, 48],
