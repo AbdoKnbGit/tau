@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [v0.6.5] - 2026-05-04
+
+### Voice
+- Added `/hey` to start a voice conversation and `/bye` to end it cleanly.
+- Added the hold-to-talk voice flow for recording, transcribing, and sending spoken prompts.
+- Added optional spoken replies, local voice support, and Gemini voice conversation setup.
+
+### Providers and models
+- Improved provider setup and switching so login, provider choice, and model selection are easier to follow.
+- Refreshed OpenAI and provider model handling for the next release.
+
+### Fixes and polish
+- Fixed provider file handling and tightened the voice startup checks.
+- Improved Codex session stability around prompt caching.
+- Refreshed README visuals and release documentation.
+
 ## [v0.6.3] - 2026-05-03
 
 ### /github issue

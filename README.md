@@ -77,6 +77,14 @@ Live model browser. Fetches the real catalog from your provider API, lets you se
 /model kimi-k2-5            set a model directly
 ```
 
+### Voice
+
+**`/hey` - Start a voice conversation**
+Turns on voice conversation mode. Hold Space to talk, release to send, and Tau shows what it heard before submitting.
+
+**`/bye` - End the voice conversation**
+Turns voice conversation mode off and stops any spoken reply that is still playing.
+
 ### Session
 
 **`/tree` - Navigate the session graph**
@@ -146,6 +154,9 @@ Twelve providers with native adapters. Not a routing layer, not a translation pr
 
 **The full agent loop**
 File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management — all present, all working across every provider.
+
+**Voice conversation**
+Use `/hey` to start a voice conversation and `/bye` to end it. Tau can listen, transcribe what you said, send it as your prompt, and optionally speak replies back.
 
 **GitHub automation and repo management**
 The `/github` command brings common GitHub work into Tau through `gh`: inspect issues and pull requests, review repo state, triage labels/status, generate changelog notes, run wrap-up flows for stage/commit/push, and inspect workflow or release status before publishing changes.
