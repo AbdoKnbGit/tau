@@ -2,7 +2,7 @@ import { useAppState } from '../state/AppState.js'
 import { isHeyModeFeatureOn } from '../voice/heyModeEnabled.js'
 
 /**
- * Reactive selector for hey-mode (the /hey conversational hold-V flow).
+ * Reactive selector for hey-mode (the /hey conversational hold-Space flow).
  * Unlike voice, hey-mode has no auth or GrowthBook gate — STT is local
  * (whisper.cpp) and TTS is OS-native — so this is just user intent +
  * feature flag.

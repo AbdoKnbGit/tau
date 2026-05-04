@@ -44,6 +44,14 @@ function exit(): void {
   gracefulShutdownSync(0)
 }
 
+const VOICE_MODE_RESPONSE_HINT = [
+  'Voice mode instruction for the immediately preceding user request:',
+  'Reply like a concise spoken conversation.',
+  'Start with the practical short version in natural language.',
+  'If the user asks about files or code, explain the main roles and relationships first; keep exhaustive file lists, code, and line-by-line detail for the screen.',
+  'Do not answer with only "details are on screen".',
+].join(' ')
+
 type BaseExecutionParams = {
   queuedCommands?: QueuedCommand[]
   messages: Message[]
@@ -87,6 +95,7 @@ type BaseExecutionParams = {
    * so headless paths (print.ts, tests) can skip passing it.
    */
   setMessages?: (updater: (prev: Message[]) => Message[]) => void
+  voiceMode?: boolean
 }
 
 /**
@@ -345,6 +354,9 @@ export async function handlePromptSubmit(
       params.abortController?.abort('interrupt')
     }
 
+    const shouldAddVoiceMeta =
+      params.voiceMode && mode === 'prompt' && !finalInput.trim().startsWith('/')
+
     // Enqueue with string value + raw pastedContents. Images will be resized
     // at execution time when processUserInput runs (not baked in here).
     enqueue({
@@ -355,6 +367,14 @@ export async function handlePromptSubmit(
       skipSlashCommands,
       uuid,
     })
+    if (shouldAddVoiceMeta) {
+      enqueue({
+        value: VOICE_MODE_RESPONSE_HINT,
+        mode: 'prompt',
+        skipSlashCommands: true,
+        isMeta: true,
+      })
+    }
 
     onInputChange('')
     setCursorOffset(0)
@@ -378,9 +398,22 @@ export async function handlePromptSubmit(
     skipSlashCommands,
     uuid,
   }
+  const shouldAddVoiceMeta =
+    params.voiceMode && mode === 'prompt' && !finalInput.trim().startsWith('/')
+  const queuedCommandsForTurn: QueuedCommand[] = shouldAddVoiceMeta
+    ? [
+        cmd,
+        {
+          value: VOICE_MODE_RESPONSE_HINT,
+          mode: 'prompt',
+          skipSlashCommands: true,
+          isMeta: true,
+        },
+      ]
+    : [cmd]
 
   await executeUserInput({
-    queuedCommands: [cmd],
+    queuedCommands: queuedCommandsForTurn,
     messages,
     mainLoopModel,
     ideSelection,

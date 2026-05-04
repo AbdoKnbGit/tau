@@ -367,6 +367,24 @@ function TranscriptModeFooter(t0) {
   return t5;
 }
 
+type HeyUiState = 'idle' | 'recording' | 'transcribing';
+
+function HeyListeningIndicator({
+  state
+}: {
+  state: HeyUiState;
+}): React.ReactNode {
+  if (state === 'idle') return null;
+  const label = state === 'recording' ? 'Listening' : 'Transcribing';
+  const hint = state === 'recording' ? 'release Space to send' : 'turning speech into text';
+  return <Box noSelect={true} flexDirection="row" paddingX={1}>
+      <Text color={state === 'recording' ? 'success' : 'suggestion'} bold>
+        {label}
+      </Text>
+      <Text dimColor={true}> - {hint}</Text>
+    </Box>;
+}
+
 /** less-style / bar. 1-row, same border-top styling as TranscriptModeFooter
  *  so swapping them in the bottom slot doesn't shift ScrollBox height.
  *  useSearchInput handles readline editing; we report query changes and
@@ -3174,6 +3192,7 @@ export function REPL({
     setAppState: SetAppState;
   }, options?: {
     fromKeybinding?: boolean;
+    voiceMode?: boolean;
   }) => {
     // Re-pin scroll to bottom on submit so the user always sees the new
     // exchange (matches OpenCode's auto-scroll behavior).
@@ -3544,7 +3563,8 @@ export function REPL({
       // Read via ref so streamMode can be dropped from onSubmit deps —
       // handlePromptSubmit only uses it for debug log + telemetry event.
       streamMode: streamModeRef.current,
-      hasInterruptibleToolInProgress: hasInterruptibleToolInProgressRef.current
+      hasInterruptibleToolInProgress: hasInterruptibleToolInProgressRef.current,
+      voiceMode: options?.voiceMode
     });
 
     // Restore stash that was deferred above. Two cases:
@@ -4061,36 +4081,43 @@ export function REPL({
     interimRange: null
   };
 
-  // Hey-mode integration (hold-V conversation: local whisper STT +
+  // Hey-mode integration (hold-Space conversation: local whisper STT +
   // auto-submit + native TTS reply). Mounted alongside voice — they share
-  // recording infra but use distinct keys (space vs v) and distinct STT
-  // backends, and only fire when their respective toggles are on.
+  // recording infra but only fire when their respective toggles are on.
   const hey = heyModeAvailable ?
   // biome-ignore lint/correctness/useHookAtTopLevel: heyModeAvailable is a process-lifetime constant
   useHeyIntegrationImpl({
-    setInputValueRaw,
+    setInputValue,
     inputValueRef,
     insertTextRef,
     onSubmit: (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
-      if (insertTextRef.current) {
-        insertTextRef.current.setInputWithCursor(trimmed, trimmed.length);
-      } else {
-        setInputValueRaw(trimmed);
-      }
-      // Route the transcript through the same pipeline as the inbox
-      // poller / mailbox bridge so it gets normal user-message treatment
-      // (history, slash-commands, etc.).
-      setTimeout(() => {
-        if (handleIncomingPrompt(trimmed)) {
-          if (insertTextRef.current) {
-            insertTextRef.current.setInputWithCursor('', 0);
-          } else {
-            setInputValueRaw('');
-          }
-        }
-      }, 700);
+      logForDebugging(`[hey] submitting transcript chars=${trimmed.length}`);
+      void onSubmit(trimmed, {
+        setCursorOffset: (offset: number) => {
+          insertTextRef.current?.setInputWithCursor(inputValueRef.current, offset);
+        },
+        clearBuffer: () => {},
+        resetHistory: () => {}
+      }, undefined, {
+        voiceMode: true
+      }).then(() => {
+        logForDebugging(`[hey] submit completed chars=${trimmed.length}`);
+      }).catch(err => {
+        const message = errorMessage(err);
+        logError(err);
+        logForDebugging(`[hey] submit failed: ${message}`, {
+          level: 'error'
+        });
+        addNotification({
+          key: 'hey-submit-error',
+          text: `Voice submit failed: ${message}`,
+          color: 'error',
+          priority: 'immediate',
+          timeoutMs: 10000
+        });
+      });
     }
   }) : {
     stripTrailing: () => 0,
@@ -4615,6 +4642,12 @@ export function REPL({
   // check footerSelection: pill FOCUS (arrow-down to tasks pill) must keep
   // the sprite visible so arrow-right can navigate to it.
   const companionVisible = !toolJSX?.shouldHidePromptInput && !focusedInputDialog && !showBashesDialog;
+  const heyFloat = heyModeAvailable && hey.state !== 'idle' ? <HeyListeningIndicator state={hey.state} /> : null;
+  const companionFloat = feature('BUDDY') && companionVisible && !companionNarrow ? <CompanionFloatingBubble /> : null;
+  const bottomFloat = heyFloat || companionFloat ? <Box flexDirection="column" alignItems="flex-end">
+      {heyFloat}
+      {companionFloat}
+    </Box> : undefined;
 
   // In fullscreen, ALL local-jsx slash commands float in the modal slot —
   // FullscreenLayout wraps them in an absolute-positioned bottom-anchored
@@ -4649,7 +4682,7 @@ export function REPL({
       {feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? <MessageActionsKeybindings handlers={messageActionHandlers} isActive={cursor !== null} /> : null}
       <CancelRequestHandler {...cancelRequestProps} />
       <MCPConnectionManager key={remountKey} dynamicMcpConfig={dynamicMcpConfig} isStrictMcpConfig={strictMcpConfig}>
-        <FullscreenLayout scrollRef={scrollRef} overlay={toolPermissionOverlay} bottomFloat={feature('BUDDY') && companionVisible && !companionNarrow ? <CompanionFloatingBubble /> : undefined} modal={centeredModal} modalScrollRef={modalScrollRef} dividerYRef={dividerYRef} hidePill={!!viewedAgentTask} hideSticky={!!viewedTeammateTask} newMessageCount={unseenDivider?.count ?? 0} onPillClick={() => {
+        <FullscreenLayout scrollRef={scrollRef} overlay={toolPermissionOverlay} bottomFloat={bottomFloat} modal={centeredModal} modalScrollRef={modalScrollRef} dividerYRef={dividerYRef} hidePill={!!viewedAgentTask} hideSticky={!!viewedTeammateTask} newMessageCount={unseenDivider?.count ?? 0} onPillClick={() => {
         setCursor(null);
         jumpToNew(scrollRef.current);
       }} scrollable={<>
@@ -4987,6 +5020,10 @@ export function REPL({
                       {"external" === 'ant' && skillImprovementSurvey.suggestion && <SkillImprovementSurvey isOpen={skillImprovementSurvey.isOpen} skillName={skillImprovementSurvey.suggestion.skillName} updates={skillImprovementSurvey.suggestion.updates} handleSelect={skillImprovementSurvey.handleSelect} inputValue={inputValue} setInputValue={setInputValue} />}
                       {showIssueFlagBanner && <IssueFlagBanner />}
                       {}
+                      {!isFullscreenEnvEnabled() && heyModeAvailable ? <Box width="100%" flexDirection="row">
+                          <Box flexGrow={1} />
+                          <HeyListeningIndicator state={hey.state} />
+                        </Box> : null}
                       <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={!!hasSuppressedDialogs} isLocalJSXCommandActive={isShowingLocalJSXCommand} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={
             // Works during isLoading — edit cancels first; uuid selection survives appends.
             feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? enterMessageActions : undefined} mcpClients={mcpClients} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onSubmit={onSubmit} onAgentSubmit={onAgentSubmit} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={isHelpOpen} setHelpOpen={setIsHelpOpen} insertTextRef={feature('VOICE_MODE') || heyModeAvailable ? insertTextRef : undefined} voiceInterimRange={voice.interimRange} />

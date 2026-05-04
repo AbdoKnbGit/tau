@@ -88,19 +88,9 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       ...(feature('MESSAGE_ACTIONS')
         ? { 'shift+up': 'chat:messageActions' as const }
         : {}),
-      // Voice activation (hold-to-talk). Registered so getShortcutDisplay
-      // finds it without hitting the fallback analytics log. To rebind,
-      // add a voice:pushToTalk entry (last wins); to disable, use /voice
-      // — null-unbinding space hits a pre-existing useKeybinding.ts trap
-      // where 'unbound' swallows the event (space dead for typing).
-      ...(feature('VOICE_MODE') ? { space: 'voice:pushToTalk' } : {}),
-      // Hey-mode activation (hold-V conversation: local whisper STT +
-      // auto-submit + native TTS reply). Bare-letter binding works the
-      // same way as 'space' for voice:pushToTalk — hold-detection swallows
-      // rapid auto-repeat, single taps flow through and type 'v' normally.
-      // The hey-mode handler only fires when /hey is enabled, so V types
-      // V everywhere else.
-      v: 'hey:pushToTalk',
+      // Hey-mode now owns the default hold-space binding for conversational
+      // local STT + native TTS. Single taps still type spaces normally.
+      space: 'hey:pushToTalk',
     },
   },
   {

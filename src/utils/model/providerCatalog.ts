@@ -26,11 +26,24 @@ import {
   type CursorVariantTag,
 } from '../../lanes/cursor/catalog.js'
 import { inferProviderLabelFromModelId } from './openrouterCatalog.js'
+import {
+  VOICE_CONVERSATION_LABEL,
+  VOICE_CONVERSATION_MODELS,
+  VOICE_CONVERSATION_PROVIDER,
+} from '../../voice/voiceConversation.js'
 
-export type BrowsableModelProvider = APIProvider
+export type BrowsableModelProvider =
+  | APIProvider
+  | typeof VOICE_CONVERSATION_PROVIDER
 
 export const BROWSABLE_MODEL_PROVIDERS: readonly BrowsableModelProvider[] =
-  SELECTABLE_PROVIDERS
+  [...SELECTABLE_PROVIDERS, VOICE_CONVERSATION_PROVIDER]
+
+export function isVoiceConversationProvider(
+  provider: BrowsableModelProvider,
+): provider is typeof VOICE_CONVERSATION_PROVIDER {
+  return provider === VOICE_CONVERSATION_PROVIDER
+}
 
 export function getDefaultBrowsableProvider(
   preferredProvider: APIProvider,
@@ -41,7 +54,7 @@ export function getDefaultBrowsableProvider(
 
   return (
     BROWSABLE_MODEL_PROVIDERS.find(provider =>
-      validateProviderAuth(provider).valid,
+      !isVoiceConversationProvider(provider) && validateProviderAuth(provider).valid,
     ) ?? 'firstParty'
   )
 }
@@ -55,6 +68,12 @@ function normalizeProviderQueryToken(
     claude: 'firstParty',
     firstparty: 'firstParty',
     'first-party': 'firstParty',
+    voice: VOICE_CONVERSATION_PROVIDER,
+    voiceconversation: VOICE_CONVERSATION_PROVIDER,
+    'voice-conversation': VOICE_CONVERSATION_PROVIDER,
+    geminivoice: VOICE_CONVERSATION_PROVIDER,
+    'gemini-voice': VOICE_CONVERSATION_PROVIDER,
+    gemini_voice: VOICE_CONVERSATION_PROVIDER,
   }
   if (alias[normalized]) {
     return alias[normalized]
@@ -105,6 +124,15 @@ export function parseProviderModelQuery(
 export async function loadProviderModels(
   provider: BrowsableModelProvider,
 ): Promise<ModelInfo[]> {
+  if (isVoiceConversationProvider(provider)) {
+    return VOICE_CONVERSATION_MODELS.map(model => ({
+      id: model.id,
+      name: model.name,
+      tags: model.tags,
+      provider: VOICE_CONVERSATION_LABEL,
+    }))
+  }
+
   if (provider === 'firstParty') {
     const models = ANTHROPIC_MODELS.map(model => ({
       id: model.id,
@@ -276,6 +304,22 @@ export function resolveProviderModelSelection(
 export async function loadProviderModelSections(
   provider: BrowsableModelProvider,
 ): Promise<ProviderModelSection[]> {
+  if (isVoiceConversationProvider(provider)) {
+    return [
+      {
+        id: 'voice-conversation',
+        title: VOICE_CONVERSATION_LABEL,
+        accent: 'cloud',
+        models: VOICE_CONVERSATION_MODELS.map(model => ({
+          id: model.id,
+          name: model.name,
+          tags: model.tags.filter(isModelTag),
+          provider: VOICE_CONVERSATION_LABEL,
+        })),
+      },
+    ]
+  }
+
   if (provider === 'firstParty') {
     return buildAnthropicSections()
   }
@@ -503,6 +547,9 @@ export function filterProviderModels(
 }
 
 export function getProviderBrowseLabel(provider: BrowsableModelProvider): string {
+  if (isVoiceConversationProvider(provider)) {
+    return VOICE_CONVERSATION_LABEL
+  }
   return PROVIDER_DISPLAY_NAMES[provider]
 }
 

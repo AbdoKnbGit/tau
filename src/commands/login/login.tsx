@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle'
 import * as React from 'react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { resetCostState } from '../../bootstrap/state.js'
 import {
   clearTrustedDeviceToken,
@@ -10,6 +10,7 @@ import type { LocalJSXCommandContext } from '../../commands.js'
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
 import { ConsoleOAuthFlow } from '../../components/ConsoleOAuthFlow.js'
 import { ProviderLoginFlow } from '../../components/ProviderLoginFlow.js'
+import TextInput from '../../components/TextInput.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { Box, Text, useInput } from '../../ink.js'
 import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growthbook.js'
@@ -35,6 +36,12 @@ import {
   resetBypassPermissionsCheck,
 } from '../../utils/permissions/bypassPermissionsKillswitch.js'
 import { resetUserCache } from '../../utils/user.js'
+import { validateKeyFormat } from '../../services/api/auth/api_key_manager.js'
+import {
+  activateGeminiVoiceConversation,
+  hasStoredVoiceConversationKey,
+  saveVoiceConversationApiKey,
+} from '../../voice/voiceConversation.js'
 
 // ─── Post-login refresh (shared between Anthropic and 3P flows) ──
 
@@ -93,9 +100,21 @@ export async function call(
   )
 }
 
-const LOGIN_PROVIDERS = SELECTABLE_PROVIDERS
+const GEMINI_VOICE_LOGIN_TARGET = 'geminiVoice' as const
+type LoginTarget = APIProvider | typeof GEMINI_VOICE_LOGIN_TARGET
 
-function getProviderAuthTypeLabel(provider: APIProvider): string {
+const LOGIN_PROVIDERS = [
+  ...SELECTABLE_PROVIDERS,
+  GEMINI_VOICE_LOGIN_TARGET,
+] as const satisfies readonly LoginTarget[]
+
+function getLoginTargetName(target: LoginTarget): string {
+  if (target === GEMINI_VOICE_LOGIN_TARGET) return 'Gemini Voice'
+  return PROVIDER_DISPLAY_NAMES[target]
+}
+
+function getProviderAuthTypeLabel(provider: LoginTarget): string {
+  if (provider === GEMINI_VOICE_LOGIN_TARGET) return 'Gemini API key'
   if (provider === 'firstParty') {
     return 'claude subscription / Console API / platform'
   }
@@ -112,7 +131,10 @@ function getProviderAuthTypeLabel(provider: APIProvider): string {
   return 'API key'
 }
 
-function getProviderConfiguredLabel(provider: APIProvider): string {
+function getProviderConfiguredLabel(provider: LoginTarget): string {
+  if (provider === GEMINI_VOICE_LOGIN_TARGET) {
+    return hasStoredVoiceConversationKey() ? ' [API key saved]' : ''
+  }
   const method = getProviderAuthMethod(provider)
   if (method === 'oauth') return ' [OAuth connected]'
   if (method === 'api_key') return ' [API key saved]'
@@ -126,7 +148,7 @@ function ProviderPickerLogin({
   initialProvider: APIProvider
   onDone: (success: boolean) => void
 }) {
-  const [selectedProvider, setSelectedProvider] = useState<APIProvider | null>(null)
+  const [selectedProvider, setSelectedProvider] = useState<LoginTarget | null>(null)
   const initialIndex = Math.max(0, LOGIN_PROVIDERS.indexOf(initialProvider))
   const [selectedIndex, setSelectedIndex] = useState(initialIndex)
 
@@ -155,7 +177,9 @@ function ProviderPickerLogin({
     const providerForLogin = selectedProvider
     const handleProviderDone = (success: boolean) => {
       if (success) {
-        setActiveProvider(providerForLogin)
+        if (providerForLogin !== GEMINI_VOICE_LOGIN_TARGET) {
+          setActiveProvider(providerForLogin)
+        }
         onDone(true)
         return
       }
@@ -164,6 +188,9 @@ function ProviderPickerLogin({
 
     if (providerForLogin === 'firstParty') {
       return <Login onDone={handleProviderDone} />
+    }
+    if (providerForLogin === GEMINI_VOICE_LOGIN_TARGET) {
+      return <GeminiVoiceLogin onDone={handleProviderDone} />
     }
     return (
       <ThirdPartyLogin
@@ -207,7 +234,7 @@ function ProviderPickerLogin({
                 dimColor={!isSelected}
               >
                 {isSelected ? '> ' : '  '}
-                {PROVIDER_DISPLAY_NAMES[provider]}
+                {getLoginTargetName(provider)}
               </Text>
               <Text dimColor>
                 {' '}({getProviderAuthTypeLabel(provider)})
@@ -219,6 +246,111 @@ function ProviderPickerLogin({
         <Box marginTop={1}>
           <Text dimColor>Use arrow keys, Enter to select, Esc to cancel</Text>
         </Box>
+      </Box>
+    </Dialog>
+  )
+}
+
+function GeminiVoiceLogin({
+  onDone,
+}: {
+  onDone: (success: boolean) => void
+}) {
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [apiKeyCursorOffset, setApiKeyCursorOffset] = useState(0)
+  const [state, setState] = useState<
+    | { step: 'input'; error?: string }
+    | { step: 'success'; message: string }
+    | { step: 'warning'; message: string }
+  >({ step: 'input' })
+  const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 12)
+
+  useEffect(() => {
+    if (state.step === 'input') return
+    const timer = setTimeout(() => onDone(true), state.step === 'warning' ? 1800 : 800)
+    return () => clearTimeout(timer)
+  }, [onDone, state.step])
+
+  function handleSubmit(value: string) {
+    const key = value.trim()
+    if (!key) {
+      setState({ step: 'input', error: 'API key cannot be empty.' })
+      return
+    }
+
+    saveVoiceConversationApiKey(key)
+    const result = activateGeminiVoiceConversation()
+    if (result.error) {
+      setState({
+        step: 'input',
+        error:
+          'Key saved, but Tau could not update settings. Check your settings file for syntax errors.',
+      })
+      return
+    }
+
+    const formatCheck = validateKeyFormat('gemini', key)
+    if (!formatCheck.valid && formatCheck.error) {
+      setState({
+        step: 'warning',
+        message: `Gemini voice key saved. Warning: ${formatCheck.error}`,
+      })
+      return
+    }
+
+    setState({
+      step: 'success',
+      message: 'Gemini voice key saved. Voice conversation is active for /hey.',
+    })
+  }
+
+  return (
+    <Dialog
+      title="Login - Gemini Voice"
+      onCancel={() => onDone(false)}
+      color="permission"
+    >
+      <Box flexDirection="column" paddingLeft={1}>
+        {state.step === 'input' && (
+          <>
+            <Text dimColor>
+              Get your API key at:{' '}
+              <Text color="suggestion">https://aistudio.google.com/apikey</Text>
+            </Text>
+            <Text dimColor>
+              Saved as gemini_voice and used immediately by /hey.
+            </Text>
+            {state.error && (
+              <Box marginTop={1}>
+                <Text color="error">{state.error}</Text>
+              </Box>
+            )}
+            <Box marginTop={1}>
+              <Text>API Key: </Text>
+              <TextInput
+                value={apiKeyInput}
+                onChange={setApiKeyInput}
+                onSubmit={handleSubmit}
+                mask="*"
+                placeholder="Paste your Gemini API key here..."
+                focus={true}
+                showCursor={true}
+                columns={inputColumns}
+                cursorOffset={apiKeyCursorOffset}
+                onChangeCursorOffset={setApiKeyCursorOffset}
+              />
+            </Box>
+            <Box marginTop={1}>
+              <Text dimColor>Enter to submit, Esc to cancel</Text>
+            </Box>
+          </>
+        )}
+        {state.step === 'success' && (
+          <Text color="success">{state.message}</Text>
+        )}
+        {state.step === 'warning' && (
+          <Text color="warning">{state.message}</Text>
+        )}
       </Box>
     </Dialog>
   )

@@ -1,15 +1,14 @@
 import type { Command } from '../../commands.js'
 import { isHeyModeFeatureOn } from '../../voice/heyModeEnabled.js'
 
-const hey = {
+const bye = {
   type: 'local',
-  name: 'hey',
-  description:
-    'Enable hey mode (hold Space to speak, release to submit, /bye disables it)',
+  name: 'bye',
+  description: 'Disable hey voice conversation mode',
   isEnabled: () => isHeyModeFeatureOn(),
   isHidden: false,
   supportsNonInteractive: false,
-  load: () => import('./hey.js'),
+  load: () => import('./bye.js'),
 } satisfies Command
 
-export default hey
+export default bye

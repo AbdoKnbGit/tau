@@ -18,12 +18,17 @@ import {
   filterProviderModels,
   getDefaultBrowsableProvider,
   getProviderBrowseLabel,
+  isVoiceConversationProvider,
   loadProviderModels,
   parseProviderModelQuery,
   resolveProviderModelSelection,
   type BrowsableModelProvider,
 } from '../../utils/model/providerCatalog.js'
 import { getProviderModelDisplayName } from '../../utils/model/display.js'
+import {
+  getVoiceConversationModelDisplayName,
+  setSelectedVoiceModel,
+} from '../../voice/voiceConversation.js'
 
 function renderSearchBadges(tags?: readonly string[]): string {
   if (!tags || tags.length === 0) {
@@ -56,6 +61,21 @@ function ModelsPickerWrapper({
   const initialProvider = lockedProvider ?? getDefaultBrowsableProvider(currentProvider)
 
   function handleSelect(provider: BrowsableModelProvider, modelId: string) {
+    if (isVoiceConversationProvider(provider)) {
+      const result = setSelectedVoiceModel(modelId)
+      if (result.error) {
+        onDone(
+          'Failed to save voice conversation model. Check your settings file for syntax errors.',
+          { display: 'system' },
+        )
+        return
+      }
+      const displayModel =
+        getVoiceConversationModelDisplayName(modelId) ?? modelId
+      onDone(`Set voice conversation model to ${chalk.bold(displayModel)}`)
+      return
+    }
+
     const selection = resolveProviderModelSelection(provider, modelId)
 
     const providerChanged = currentProvider !== provider

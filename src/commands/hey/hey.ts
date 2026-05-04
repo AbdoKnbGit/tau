@@ -6,7 +6,17 @@ import {
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
 import { isHeyModeFeatureOn } from '../../voice/heyModeEnabled.js'
-import { HEY_TTS_ENV, isHeyTtsEnabled } from '../../voice/heyTtsEnabled.js'
+import {
+  HEY_TEXT_ONLY_ENV,
+  getHeyTtsDisabledEnvName,
+  isHeyTtsEnabled,
+} from '../../voice/heyTtsEnabled.js'
+import {
+  getSelectedVoiceModel,
+  getSelectedVoiceProvider,
+  getVoiceConversationModelDisplayName,
+  hasVoiceConversationApiKey,
+} from '../../voice/voiceConversation.js'
 
 export const call: LocalCommandCall = async () => {
   if (!isHeyModeFeatureOn()) {
@@ -19,27 +29,15 @@ export const call: LocalCommandCall = async () => {
   const currentSettings = getInitialSettings()
   const isCurrentlyEnabled = currentSettings.heyEnabled === true
 
-  // Toggle OFF — no preflight needed.
+  // /hey is an explicit activator. /bye disables the mode.
   if (isCurrentlyEnabled) {
-    const result = updateSettingsForSource('userSettings', {
-      heyEnabled: false,
-    })
-    if (result.error) {
-      return {
-        type: 'text' as const,
-        value:
-          'Failed to update settings. Check your settings file for syntax errors.',
-      }
-    }
-    settingsChangeDetector.notifyChange('userSettings')
-    logEvent('tengu_hey_toggled', { enabled: false })
     return {
       type: 'text' as const,
-      value: 'Hey mode disabled.',
+      value: 'Hey mode is already enabled. Hold Space to talk; use /bye to turn it off.',
     }
   }
 
-  // Toggle ON: verify mic and whisper.cpp before saving so the user gets a
+  // Verify mic and speech-to-text before saving so the user gets a
   // clear error up front rather than mid-conversation.
   const { checkRecordingAvailability, checkVoiceDependencies } = await import(
     '../../services/voice.js'
@@ -63,30 +61,57 @@ export const call: LocalCommandCall = async () => {
     }
   }
 
-  const { checkWhisperAvailable } = await import(
-    '../../services/whisperLocal.js'
-  )
+  const geminiVoice = await import('../../services/geminiVoice.js')
+  const geminiSelected = getSelectedVoiceProvider() === 'gemini'
+  const geminiAvailable = geminiSelected
+    ? geminiVoice.checkGeminiVoiceAvailable()
+    : { available: false, reason: null }
+
+  const { checkWhisperAvailable } = await import('../../services/whisperLocal.js')
   const whisper = checkWhisperAvailable()
-  if (!whisper.available) {
+  if (!whisper.available && !geminiAvailable.available) {
+    const geminiHint =
+      geminiSelected && geminiAvailable.reason
+        ? `\n\nGemini voice is selected, but unavailable: ${geminiAvailable.reason}`
+        : ''
     return {
       type: 'text' as const,
-      value: `Hey mode needs whisper.cpp for local speech-to-text.\n\n${whisper.reason ?? ''}`,
+      value: `Hey mode needs whisper.cpp for local speech-to-text.${geminiHint}\n\n${whisper.reason ?? ''}`,
     }
   }
 
   const ttsEnabled = isHeyTtsEnabled()
   const tts = ttsEnabled
     ? (await import('../../services/ttsLocal.js')).checkTtsAvailable()
-    : { available: false, reason: null }
-  // Voice replies are opt-in because the OS TTS backend can be unstable on
-  // some Windows terminals. Text replies remain the default.
+    : { available: false, backend: null, reason: null }
+  // Voice replies are the point of /hey, so they are on by default. Keep an
+  // explicit env opt-out for terminals where OS TTS is unwanted.
+  const disabledEnvName = getHeyTtsDisabledEnvName()
   const ttsNote = ttsEnabled
     ? tts.available
-      ? '\nVoice replies are enabled.'
-      : `\nVoice replies requested, but TTS is unavailable (${tts.reason ?? 'unknown'}). Replies will be text-only.`
-    : `\nReplies are text-only by default. Set ${HEY_TTS_ENV}=1 to enable local voice replies.`
+      ? `\nVoice replies are enabled${tts.backend === 'gemini' ? ' with Gemini TTS' : ''}.`
+      : `\nVoice replies are enabled, but TTS is unavailable (${tts.reason ?? 'unknown'}). Replies will be text-only.`
+    : `\nVoice replies are disabled by ${disabledEnvName ?? HEY_TEXT_ONLY_ENV}=1. Remove it to speak replies.`
+  const sttNote =
+    geminiAvailable.available && geminiSelected
+      ? whisper.available
+        ? '\nGemini transcription is enabled; local Whisper is available as fallback.'
+        : '\nGemini transcription is enabled; local Whisper fallback is not installed.'
+      : ''
+  const voiceModelId = getSelectedVoiceModel()
+  const voiceModel =
+    getVoiceConversationModelDisplayName(voiceModelId) ?? voiceModelId
+  const voiceNote =
+    geminiSelected
+      ? hasVoiceConversationApiKey()
+        ? `\nVoice conversation model: ${voiceModel}.`
+        : '\nGemini voice is selected, but no key is saved yet. Run /login and choose Gemini Voice; local fallback will be used for now.'
+      : '\nVoice conversation is using local speech tools.'
 
-  const result = updateSettingsForSource('userSettings', { heyEnabled: true })
+  const result = updateSettingsForSource('userSettings', {
+    heyEnabled: true,
+    heyVoiceProvider: geminiSelected ? 'gemini' : 'local',
+  })
   if (result.error) {
     return {
       type: 'text' as const,
@@ -102,6 +127,6 @@ export const call: LocalCommandCall = async () => {
 
   return {
     type: 'text' as const,
-    value: `Hey mode enabled. Hold V to talk; release to send. Tau will show "Heard: ..." before sending.${ttsNote}`,
+    value: `Hey mode enabled. Hold Space to talk; release to send. Tau will show "Heard: ..." before sending.${ttsNote}${sttNote}${voiceNote}`,
   }
 }

@@ -9,6 +9,7 @@ import {
 import {
   BROWSABLE_MODEL_PROVIDERS,
   getProviderBrowseLabel,
+  isVoiceConversationProvider,
   loadProviderModelSections,
   type BrowsableModelProvider,
   type ModelVariantInfo,
@@ -27,6 +28,10 @@ import {
   isDeepSeekV4ThinkingModel,
   toggleDeepSeekV4Thinking,
 } from '../utils/model/deepseekThinking.js'
+import {
+  getVoiceConversationStatus,
+  hasVoiceConversationApiKey,
+} from '../voice/voiceConversation.js'
 
 type Props = {
   initialProvider: BrowsableModelProvider
@@ -67,6 +72,15 @@ const SECTION_ACCENT: Record<NonNullable<ProviderModelSection['accent']>, string
 }
 
 function getProviderStatusLabel(provider: BrowsableModelProvider): string {
+  if (isVoiceConversationProvider(provider)) {
+    const status = getVoiceConversationStatus()
+    if (status.provider === 'gemini' && hasVoiceConversationApiKey()) {
+      return 'configured'
+    }
+    if (status.provider === 'gemini') return 'needs key'
+    return 'local'
+  }
+
   if (provider === 'firstParty') {
     return getClaudeAIOAuthTokens()?.accessToken || hasAnthropicApiKeyAuth()
       ? 'configured'

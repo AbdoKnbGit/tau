@@ -1,15 +1,15 @@
 // Hey-mode integration: keybinding handler + audio capture + whisper
 // transcription + auto-submit. Mirrors useVoiceIntegration but stripped
-// down to what the conversational hold-V flow actually needs:
+// down to what the conversational hold-Space flow actually needs:
 //
 //   • No interim transcript injection into the prompt input (we transcribe
 //     once on release, not as you speak).
-//   • No anchor/interim-range bookkeeping — the transcript bypasses the
-//     prompt input entirely via onSubmit (handleIncomingPrompt).
+//   • No anchor/interim-range bookkeeping — the transcript submits through
+//     the REPL's normal onSubmit path.
 //   • No focus-mode auto-recording (always key-hold).
 //
-// What we *do* still need from the voice integration patterns: bare-char
-// hold detection so binding "v" doesn't break typing the letter v
+// What we *do* still need from the voice integration patterns: bare-key
+// hold detection so binding Space doesn't break typing a single space
 // (warmup flow-through + activation strip).
 
 import * as React from 'react'
@@ -26,7 +26,7 @@ import { useHey, type HeyState } from './useHey.js'
 import { useHeyEnabled } from './useHeyEnabled.js'
 
 // Use the same thresholds as voice integration so the hold-feel is
-// consistent across /voice (space) and /hey (v).
+// consistent across local hold-to-talk flows.
 const RAPID_KEY_GAP_MS = 120
 const HOLD_THRESHOLD = 5
 const WARMUP_THRESHOLD = 2
@@ -57,10 +57,10 @@ function matchesKeyboardEvent(
   return true
 }
 
-// Default to bare 'v' if there's no KeybindingProvider at all (headless,
+// Default to bare space if there's no KeybindingProvider at all (headless,
 // tests). Mirrors DEFAULT_VOICE_KEYSTROKE in useVoiceIntegration.
 const DEFAULT_HEY_KEYSTROKE: ParsedKeystroke = {
-  key: 'v',
+  key: ' ',
   ctrl: false,
   alt: false,
   shift: false,
@@ -75,7 +75,7 @@ type InsertTextHandle = {
 }
 
 type UseHeyIntegrationArgs = {
-  setInputValueRaw: React.Dispatch<React.SetStateAction<string>>
+  setInputValue: (value: string) => void
   inputValueRef: React.RefObject<string>
   insertTextRef: React.RefObject<InsertTextHandle | null>
   onSubmit: (text: string) => void
@@ -90,7 +90,7 @@ type UseHeyIntegrationResult = {
 }
 
 export function useHeyIntegration({
-  setInputValueRaw,
+  setInputValue,
   inputValueRef,
   insertTextRef,
   onSubmit,
@@ -121,11 +121,11 @@ export function useHeyIntegration({
       if (insertTextRef.current) {
         insertTextRef.current.setInputWithCursor(newValue, stripped.length)
       } else {
-        setInputValueRaw(newValue)
+        setInputValue(newValue)
       }
       return remaining
     },
-    [setInputValueRaw, inputValueRef, insertTextRef],
+    [setInputValue, inputValueRef, insertTextRef],
   )
 
   const heyEnabled = useHeyEnabled()
@@ -215,7 +215,7 @@ export function useHeyKeybindingHandler({
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Reset hold state once hey-mode toggles off or returns to idle, so the
-  // next V press goes through the normal hold threshold again.
+  // next hold key press goes through the normal hold threshold again.
   useEffect(() => {
     if (!heyEnabled || heyState === 'idle') {
       isHoldActiveRef.current = false
@@ -248,8 +248,8 @@ export function useHeyKeybindingHandler({
     }
 
     if (isHoldActiveRef.current && heyState !== 'idle') {
-      // Already recording — swallow continued V keypresses (so they don't
-      // type V's into the input) and forward to hey for release detection.
+      // Already recording — swallow continued hold-key repeats (so they don't
+      // type spaces into the input) and forward to hey for release detection.
       e.stopImmediatePropagation()
       if (bareChar !== null) {
         stripTrailing(repeatCount, bareChar, recordingFloorRef.current)
@@ -292,8 +292,8 @@ export function useHeyKeybindingHandler({
     }
 
     // ── Warmup: flow-through + swallow ────────────────────────
-    // First WARMUP_THRESHOLD chars flow into the input so a single V
-    // tap types V normally. Beyond that, swallow + strip so the input
+    // First WARMUP_THRESHOLD chars flow into the input so a single key
+    // tap types the key normally. Beyond that, swallow + strip so the input
     // stays clean as the hold reaches activation.
     if (countBefore >= WARMUP_THRESHOLD) {
       e.stopImmediatePropagation()

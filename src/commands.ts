@@ -2,6 +2,7 @@
 import addDir from './commands/add-dir/index.js'
 import autofixPr from './commands/autofix-pr/index.js'
 import backfillSessions from './commands/backfill-sessions/index.js'
+import bye from './commands/bye/index.js'
 import btw from './commands/btw/index.js'
 import github from './commands/github/index.js'
 import githubRun from './commands/github/github-run.js'
@@ -275,6 +276,7 @@ const COMMANDS = memoize((): Command[] => [
   agents,
   branch,
   clone,
+  bye,
   btw,
   chrome,
   clear,

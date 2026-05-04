@@ -9,6 +9,7 @@
 // Overrides via env vars:
 //   TAU_WHISPER_BIN   - path to whisper-cli (or main) binary
 //   TAU_WHISPER_MODEL - path to ggml-*.bin model file
+//   TAU_WHISPER_PROMPT - optional decoding prompt for better local STT accuracy
 // Legacy CLAUDEX_* names are still accepted for existing installs.
 
 import { spawn, spawnSync } from 'child_process'
@@ -21,8 +22,15 @@ import { logError } from '../utils/log.js'
 
 const WHISPER_BIN_ENV = 'TAU_WHISPER_BIN'
 const WHISPER_MODEL_ENV = 'TAU_WHISPER_MODEL'
+const WHISPER_PROMPT_ENV = 'TAU_WHISPER_PROMPT'
 const LEGACY_WHISPER_BIN_ENV = 'CLAUDEX_WHISPER_BIN'
 const LEGACY_WHISPER_MODEL_ENV = 'CLAUDEX_WHISPER_MODEL'
+const LEGACY_WHISPER_PROMPT_ENV = 'CLAUDEX_WHISPER_PROMPT'
+
+const DEFAULT_WHISPER_PROMPT = [
+  'This is a coding assistant voice conversation.',
+  'Common words and phrases include Tau, Codex, CLI, API, TypeScript, JavaScript, React, Node, PowerShell, file, files, folder, project, function, class, explain each file, and what each file does.',
+].join(' ')
 
 // Recording format used by src/services/voice.ts startRecording — must
 // match exactly. whisper.cpp accepts 16 kHz mono PCM natively, so we can
@@ -106,14 +114,18 @@ function findWhisperModel(): string | null {
   const home = homedir()
   const candidates = [
     // voicemode default layout
-    join(home, '.voicemode', 'models', 'whisper', 'ggml-base.en.bin'),
-    join(home, '.voicemode', 'models', 'whisper', 'ggml-base.bin'),
     join(home, '.voicemode', 'models', 'whisper', 'ggml-small.en.bin'),
     join(home, '.voicemode', 'models', 'whisper', 'ggml-small.bin'),
+    join(home, '.voicemode', 'models', 'whisper', 'ggml-base.en.bin'),
+    join(home, '.voicemode', 'models', 'whisper', 'ggml-base.bin'),
     // whisper.cpp clone default
+    join(home, 'whisper.cpp', 'models', 'ggml-small.en.bin'),
+    join(home, 'whisper.cpp', 'models', 'ggml-small.bin'),
     join(home, 'whisper.cpp', 'models', 'ggml-base.en.bin'),
     join(home, 'whisper.cpp', 'models', 'ggml-base.bin'),
     // Generic cache
+    join(home, '.cache', 'whisper', 'ggml-small.en.bin'),
+    join(home, '.cache', 'whisper', 'ggml-small.bin'),
     join(home, '.cache', 'whisper', 'ggml-base.en.bin'),
     join(home, '.cache', 'whisper', 'ggml-base.bin'),
   ]
@@ -155,9 +167,10 @@ function getInstallHint(missing: 'binary' | 'model'): string {
   }
   return [
     'Whisper model file not found.',
-    '  Download a model (ggml-base.en.bin recommended, ~142MB):',
-    '    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin',
-    `  Place at ~/.voicemode/models/whisper/ggml-base.en.bin or set ${WHISPER_MODEL_ENV}=/path/to/model.bin`,
+    '  Download a model (ggml-small.en.bin recommended for voice accuracy, ~466MB):',
+    '    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin',
+    '  ggml-base.en.bin is faster but less accurate for casual coding speech.',
+    `  Place at ~/.voicemode/models/whisper/ggml-small.en.bin or set ${WHISPER_MODEL_ENV}=/path/to/model.bin`,
   ].join('\n')
 }
 
@@ -221,7 +234,79 @@ function makeWavHeader(pcmByteLength: number): Buffer {
 
 export type TranscribeOptions = {
   language?: string
+  prompt?: string
   signal?: AbortSignal
+}
+
+function getWhisperPrompt(override?: string): string | undefined {
+  if (override !== undefined) return override.trim() || undefined
+  const envPrompt = getEnvWithLegacy(
+    WHISPER_PROMPT_ENV,
+    LEGACY_WHISPER_PROMPT_ENV,
+  )
+  if (envPrompt !== undefined) return envPrompt.trim() || undefined
+  return DEFAULT_WHISPER_PROMPT
+}
+
+function formatWhisperArgsForLog(args: string[]): string {
+  return args
+    .map((arg, index) => {
+      if (args[index - 1] === '--prompt') return `<prompt:${arg.length} chars>`
+      return arg
+    })
+    .join(' ')
+}
+
+function isUnsupportedPromptError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return (
+    /(?:unknown|invalid|unrecognized|unexpected).{0,80}(?:argument|option|prompt)/i.test(
+      message,
+    ) ||
+    /(?:argument|option|prompt).{0,80}(?:unknown|invalid|unrecognized)/i.test(
+      message,
+    )
+  )
+}
+
+async function runWhisperCli(
+  bin: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(bin, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString()
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+
+    const onAbort = () => {
+      child.kill('SIGTERM')
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+
+    child.on('close', code => {
+      signal?.removeEventListener('abort', onAbort)
+      if (code !== 0) {
+        const detail = `${stderr}\n${stdout}`.slice(-600).trim()
+        reject(new Error(`whisper-cli exited ${code}: ${detail}`))
+        return
+      }
+      resolve()
+    })
+    child.on('error', err => {
+      signal?.removeEventListener('abort', onAbort)
+      reject(err)
+    })
+  })
 }
 
 // Transcribe a 16 kHz / 16-bit / mono PCM buffer to text using whisper-cli.
@@ -262,44 +347,22 @@ export async function transcribePcm(
       '-of',
       txtStem,
     ]
+    const prompt = getWhisperPrompt(opts.prompt)
+    const argsWithPrompt = prompt ? [...args, '--prompt', prompt] : args
 
     logForDebugging(
-      `[hey] running ${avail.bin} ${args.join(' ')} (pcm ${pcm.length}B)`,
+      `[hey] running ${avail.bin} ${formatWhisperArgsForLog(argsWithPrompt)} (pcm ${pcm.length}B, promptChars=${prompt?.length ?? 0})`,
     )
 
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(avail.bin!, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-
-      let stderr = ''
-      child.stdout?.on('data', () => {})
-      child.stderr?.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString()
-      })
-
-      const onAbort = () => {
-        child.kill('SIGTERM')
-      }
-      opts.signal?.addEventListener('abort', onAbort, { once: true })
-
-      child.on('close', code => {
-        opts.signal?.removeEventListener('abort', onAbort)
-        if (code !== 0) {
-          reject(
-            new Error(
-              `whisper-cli exited ${code}: ${stderr.slice(-400).trim()}`,
-            ),
-          )
-          return
-        }
-        resolve()
-      })
-      child.on('error', err => {
-        opts.signal?.removeEventListener('abort', onAbort)
-        reject(err)
-      })
-    })
+    try {
+      await runWhisperCli(avail.bin, argsWithPrompt, opts.signal)
+    } catch (err) {
+      if (!prompt || !isUnsupportedPromptError(err)) throw err
+      logForDebugging(
+        '[hey] whisper prompt option unsupported by this build; retrying without --prompt',
+      )
+      await runWhisperCli(avail.bin, args, opts.signal)
+    }
 
     let raw = ''
     try {

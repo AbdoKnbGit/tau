@@ -221,9 +221,8 @@ function validateBlock(
       // Hold detection needs OS auto-repeat. Bare letters print into the
       // input during warmup and the activation strip is best-effort —
       // space (default) or a modifier combo like meta+k avoid that.
-      // Hey mode's default ('v') is a bare letter on purpose (the "hold V"
-      // UX matches the user's request) — same warning surfaces, same
-      // mitigation (warmup + strip via useVoiceKeybindingHandler).
+      // Hey mode's default is Space, so bare letters are usually accidental
+      // and should still warn.
       const ks = parseChord(key)[0]
       if (
         ks &&
@@ -232,12 +231,7 @@ function validateBlock(
         !ks.shift &&
         !ks.meta &&
         !ks.super &&
-        /^[a-z]$/.test(ks.key) &&
-        // 'v' bound to hey:pushToTalk is the documented default — don't
-        // warn on it. Suppressing the warning only for that pair keeps
-        // genuine misconfigurations (e.g. 'q' bound to hey:pushToTalk)
-        // visible.
-        !(action === 'hey:pushToTalk' && ks.key === 'v')
+        /^[a-z]$/.test(ks.key)
       ) {
         warnings.push({
           type: 'invalid_action',

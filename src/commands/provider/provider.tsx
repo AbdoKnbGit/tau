@@ -41,6 +41,7 @@ import {
   hasStoredKey,
   loadProviderKey,
   saveProviderKey,
+  validateKeyFormat,
 } from '../../services/api/auth/api_key_manager.js'
 import TextInput from '../../components/TextInput.js'
 import {
@@ -49,6 +50,17 @@ import {
 } from '../../utils/auth.js'
 import { performLogout } from '../logout/logout.js'
 import { Login as AnthropicLogin } from '../login/login.js'
+import {
+  GEMINI_VOICE_KEY,
+  VOICE_CONVERSATION_LABEL,
+  VOICE_CONVERSATION_PROVIDER,
+  activateGeminiVoiceConversation,
+  clearVoiceConversationCredentials,
+  deactivateVoiceConversation,
+  getVoiceConversationStatus,
+  hasStoredVoiceConversationKey,
+  saveVoiceConversationApiKey,
+} from '../../voice/voiceConversation.js'
 
 // ─── Config ──────────────────────────────────────────────────────
 
@@ -93,13 +105,26 @@ const MANAGEABLE_PROVIDERS = [
   'cursor',
 ] as const satisfies readonly APIProvider[]
 
-type ManageableProvider = (typeof MANAGEABLE_PROVIDERS)[number]
+const MANAGEABLE_PROVIDER_ROWS = [
+  ...MANAGEABLE_PROVIDERS,
+  VOICE_CONVERSATION_PROVIDER,
+] as const
+
+type ManageableProvider = (typeof MANAGEABLE_PROVIDER_ROWS)[number]
 
 /** Storage key for the user-supplied Ollama base URL (persisted in provider-keys.json). */
 const OLLAMA_BASE_URL_KEY = 'ollama_base_url'
 const OLLAMA_DEFAULT_BASE = 'http://localhost:11434'
 
-type KeyedProvider = Exclude<ManageableProvider, 'ollama' | 'firstParty'>
+type KeyedProvider = Exclude<
+  ManageableProvider,
+  'ollama' | 'firstParty' | typeof VOICE_CONVERSATION_PROVIDER
+>
+
+function getManageableProviderName(provider: ManageableProvider): string {
+  if (provider === VOICE_CONVERSATION_PROVIDER) return VOICE_CONVERSATION_LABEL
+  return PROVIDER_DISPLAY_NAMES[provider]
+}
 
 // ─── Auth state helpers ──────────────────────────────────────────
 
@@ -160,6 +185,17 @@ function formatGeminiBadge(): string {
   return chalk.green(`[${parts.join(' + ')} ✅]`)
 }
 
+function formatVoiceConversationBadge(): string {
+  const status = getVoiceConversationStatus()
+  if (status.provider === 'gemini' && status.keySource) {
+    return chalk.green('[Gemini voice key]')
+  }
+  if (status.provider === 'gemini') {
+    return chalk.yellow('[Gemini voice: needs key]')
+  }
+  return chalk.dim('[Local voice]')
+}
+
 // ─── Ollama reachability ──────────────────────────────────────────
 //
 // Ollama has no credentials — we treat the "state" as whether the
@@ -210,6 +246,10 @@ type View =
       kind: 'ollama_url_input'
       error?: string
     }
+  | {
+      kind: 'voice_key_input'
+      error?: string
+    }
   | { kind: 'anthropic_login' }
   | {
       kind: 'result'
@@ -221,6 +261,7 @@ type View =
 type ConfigureOption =
   | { kind: 'login' }
   | { kind: 'deactivate' }
+  | { kind: 'set_voice_key' }
   | { kind: 'set_ollama_url' }
   | { kind: 'reset_ollama_url' }
   | { kind: 'test_ollama' }
@@ -230,6 +271,19 @@ function buildConfigureOptions(
   provider: ManageableProvider,
   ollamaStatus: OllamaStatus,
 ): ConfigureOption[] {
+  if (provider === VOICE_CONVERSATION_PROVIDER) {
+    const options: ConfigureOption[] = []
+    options.push({ kind: 'set_voice_key' })
+    if (
+      getVoiceConversationStatus().provider === 'gemini' ||
+      hasStoredVoiceConversationKey()
+    ) {
+      options.push({ kind: 'deactivate' })
+    }
+    options.push({ kind: 'back' })
+    return options
+  }
+
   // Ollama has its own option set.
   if (provider === 'ollama') {
     const options: ConfigureOption[] = []
@@ -283,7 +337,11 @@ function labelConfigureOption(
         ? 'Log in with Anthropic (subscription / Console API / platform)'
         : 'Log in'
     case 'deactivate':
-      return 'Deactivate (clear all credentials)'
+      return provider === VOICE_CONVERSATION_PROVIDER
+        ? 'Deactivate voice conversation'
+        : 'Deactivate (clear all credentials)'
+    case 'set_voice_key':
+      return 'Set Gemini voice API key'
     case 'set_ollama_url':
       return 'Set custom base URL'
     case 'reset_ollama_url':
@@ -316,6 +374,8 @@ function ProviderManager({
 
   const [ollamaUrlInput, setOllamaUrlInput] = useState('')
   const [ollamaUrlCursorOffset, setOllamaUrlCursorOffset] = useState(0)
+  const [voiceKeyInput, setVoiceKeyInput] = useState('')
+  const [voiceKeyCursorOffset, setVoiceKeyCursorOffset] = useState(0)
   const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 14)
 
   // Live reachability status for Ollama, computed when we first render
@@ -351,7 +411,7 @@ function ProviderManager({
       view.kind === 'configure' || view.kind === 'result'
         ? view.provider
         : undefined
-    const idx = lastProvider ? MANAGEABLE_PROVIDERS.indexOf(lastProvider) : 0
+    const idx = lastProvider ? MANAGEABLE_PROVIDER_ROWS.indexOf(lastProvider) : 0
     setView({ kind: 'list', selectedIndex: idx >= 0 ? idx : 0 })
   }
 
@@ -370,7 +430,58 @@ function ProviderManager({
       kind: 'result',
       provider,
       tone: 'success',
-      message: `${PROVIDER_DISPLAY_NAMES[provider]} disconnected.`,
+      message: `${getManageableProviderName(provider)} disconnected.`,
+    })
+  }
+
+  function handleVoiceKeySubmit(value: string) {
+    const key = value.trim()
+    if (!key) {
+      setView({
+        kind: 'voice_key_input',
+        error: 'API key cannot be empty.',
+      })
+      return
+    }
+
+    saveVoiceConversationApiKey(key)
+    const result = activateGeminiVoiceConversation()
+    if (result.error) {
+      setView({
+        kind: 'voice_key_input',
+        error:
+          'Key saved, but Tau could not update settings. Check your settings file for syntax errors.',
+      })
+      return
+    }
+
+    setVoiceKeyInput('')
+    setVoiceKeyCursorOffset(0)
+    refresh()
+    const formatCheck = validateKeyFormat('gemini', key)
+    const warning =
+      !formatCheck.valid && formatCheck.error
+        ? ` Warning: ${formatCheck.error}`
+        : ''
+    setView({
+      kind: 'result',
+      provider: VOICE_CONVERSATION_PROVIDER,
+      tone: formatCheck.valid ? 'success' : 'error',
+      message: `Gemini voice key saved and activated.${warning}`,
+    })
+  }
+
+  function handleVoiceDeactivate() {
+    clearVoiceConversationCredentials()
+    const result = deactivateVoiceConversation()
+    refresh()
+    setView({
+      kind: 'result',
+      provider: VOICE_CONVERSATION_PROVIDER,
+      tone: result.error ? 'error' : 'success',
+      message: result.error
+        ? 'Voice credentials were cleared, but Tau could not update settings.'
+        : 'Voice conversation switched to local speech tools.',
     })
   }
 
@@ -475,8 +586,12 @@ function ProviderManager({
     escape?: boolean
   }) => {
     // Global: Esc cancels the whole flow from any non-input view.
-    // TextInput-backed views handle their own Esc (ollama_url_input).
-    if (key.escape && view.kind !== 'ollama_url_input') {
+    // TextInput-backed views handle their own Esc.
+    if (
+      key.escape &&
+      view.kind !== 'ollama_url_input' &&
+      view.kind !== 'voice_key_input'
+    ) {
       if (view.kind === 'list') {
         onDone('Provider setup closed.', { display: 'system' })
         return
@@ -493,6 +608,17 @@ function ProviderManager({
       return
     }
 
+    if (view.kind === 'voice_key_input' && key.escape) {
+      setVoiceKeyInput('')
+      setVoiceKeyCursorOffset(0)
+      setView({
+        kind: 'configure',
+        provider: VOICE_CONVERSATION_PROVIDER,
+        selectedIndex: 0,
+      })
+      return
+    }
+
     // ─── list view ───
     if (view.kind === 'list') {
       if (key.upArrow) {
@@ -501,7 +627,7 @@ function ProviderManager({
           selectedIndex:
             view.selectedIndex > 0
               ? view.selectedIndex - 1
-              : MANAGEABLE_PROVIDERS.length - 1,
+              : MANAGEABLE_PROVIDER_ROWS.length - 1,
         })
         return
       }
@@ -509,14 +635,14 @@ function ProviderManager({
         setView({
           kind: 'list',
           selectedIndex:
-            view.selectedIndex < MANAGEABLE_PROVIDERS.length - 1
+            view.selectedIndex < MANAGEABLE_PROVIDER_ROWS.length - 1
               ? view.selectedIndex + 1
               : 0,
         })
         return
       }
       if (key.return) {
-        const provider = MANAGEABLE_PROVIDERS[view.selectedIndex]
+        const provider = MANAGEABLE_PROVIDER_ROWS[view.selectedIndex]
         if (provider) enterConfigure(provider)
         return
       }
@@ -561,7 +687,16 @@ function ProviderManager({
               handleAnthropicDeactivate()
               return
             }
+            if (view.provider === VOICE_CONVERSATION_PROVIDER) {
+              handleVoiceDeactivate()
+              return
+            }
             if (view.provider !== 'ollama') handleDeactivate(view.provider)
+            return
+          case 'set_voice_key':
+            setVoiceKeyInput('')
+            setVoiceKeyCursorOffset(0)
+            setView({ kind: 'voice_key_input' })
             return
           case 'set_ollama_url':
             setOllamaUrlInput('')
@@ -608,12 +743,14 @@ function ProviderManager({
           can be active at once.
         </Text>
         <Box marginTop={1} flexDirection="column">
-          {MANAGEABLE_PROVIDERS.map((provider, i) => {
+          {MANAGEABLE_PROVIDER_ROWS.map((provider, i) => {
             const isSelected = i === view.selectedIndex
-            const name = PROVIDER_DISPLAY_NAMES[provider]
+            const name = getManageableProviderName(provider)
             const prefix = isSelected ? '>' : ' '
             const badge =
-              provider === 'ollama'
+              provider === VOICE_CONVERSATION_PROVIDER
+                ? formatVoiceConversationBadge()
+                : provider === 'ollama'
                 ? formatOllamaBadge(ollamaStatus)
                 : provider === 'gemini'
                   ? formatGeminiBadge()
@@ -645,10 +782,12 @@ function ProviderManager({
 
   if (view.kind === 'configure') {
     const provider = view.provider
-    const name = PROVIDER_DISPLAY_NAMES[provider]
+    const name = getManageableProviderName(provider)
     const options = buildConfigureOptions(provider, ollamaStatus)
     const badge =
-      provider === 'ollama'
+      provider === VOICE_CONVERSATION_PROVIDER
+        ? formatVoiceConversationBadge()
+        : provider === 'ollama'
         ? formatOllamaBadge(ollamaStatus)
         : provider === 'gemini'
           ? formatGeminiBadge()
@@ -656,6 +795,10 @@ function ProviderManager({
             ? formatBadge(getFirstPartyAuthState())
             : formatBadge(getAuthState(provider))
     const currentUrl = provider === 'ollama' ? getOllamaBaseUrl() : null
+    const voiceStatus =
+      provider === VOICE_CONVERSATION_PROVIDER
+        ? getVoiceConversationStatus()
+        : null
     return (
       <Box flexDirection="column" paddingLeft={1}>
         {header}
@@ -665,6 +808,15 @@ function ProviderManager({
         </Box>
         {currentUrl && (
           <Text dimColor>Base URL: {currentUrl}</Text>
+        )}
+        {voiceStatus && (
+          <>
+            <Text dimColor>Model: {voiceStatus.modelName}</Text>
+            <Text dimColor>Voice: {voiceStatus.voiceName}</Text>
+            <Text dimColor>
+              Key: {voiceStatus.keySource ?? 'not saved'}
+            </Text>
+          </>
         )}
         <Box marginTop={1} flexDirection="column">
           {options.map((option, i) => {
@@ -720,6 +872,45 @@ function ProviderManager({
             columns={inputColumns}
             cursorOffset={ollamaUrlCursorOffset}
             onChangeCursorOffset={setOllamaUrlCursorOffset}
+          />
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>Enter to submit · Esc to go back</Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  if (view.kind === 'voice_key_input') {
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        {header}
+        <Text bold>Set Gemini voice API key</Text>
+        <Text dimColor>
+          Get your API key at:{' '}
+          <Text color="suggestion">https://aistudio.google.com/apikey</Text>
+        </Text>
+        <Text dimColor>
+          Saved as {GEMINI_VOICE_KEY} and used immediately by /hey.
+        </Text>
+        {view.error && (
+          <Box marginTop={1}>
+            <Text color="error">{view.error}</Text>
+          </Box>
+        )}
+        <Box marginTop={1}>
+          <Text>API Key: </Text>
+          <TextInput
+            value={voiceKeyInput}
+            onChange={setVoiceKeyInput}
+            onSubmit={handleVoiceKeySubmit}
+            mask="*"
+            placeholder="Paste your Gemini API key here..."
+            focus={true}
+            showCursor={true}
+            columns={inputColumns}
+            cursorOffset={voiceKeyCursorOffset}
+            onChangeCursorOffset={setVoiceKeyCursorOffset}
           />
         </Box>
         <Box marginTop={1}>
