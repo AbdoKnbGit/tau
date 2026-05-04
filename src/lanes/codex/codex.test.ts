@@ -5,7 +5,7 @@
  */
 
 import { CodexApiError } from './api.js'
-import { codexLane, resolveReasoning } from './loop.js'
+import { codexLane, resolveReasoning, splitCodexSystemForCache } from './loop.js'
 import { assembleCodexSystemPrompt } from './prompt.js'
 import { getCodexRegistrationByNativeName } from './tools.js'
 import { setOpenAIReasoningLevel } from '../../utils/model/openaiReasoning.js'
@@ -111,6 +111,66 @@ async function main(): Promise<void> {
   await test('CodexApiError 429 is retryable, 400 is not', () => {
     assert(new CodexApiError(429, '').isRetryable, '429 should be retryable')
     assert(!new CodexApiError(400, '').isRetryable, '400 should NOT be retryable')
+  })
+
+  // ── splitCodexSystemForCache: cache-stability invariants ─────────
+  // These guard the surgical fix for "cache hits but is unstable" on
+  // tool-heavy / model-swap sessions. The Responses API hashes the
+  // `instructions` field as part of the prompt-cache prefix; if env /
+  // git / memory bytes leak in, every turn's hash drifts and the cache
+  // misses past the first divergence.
+
+  await test('splitCodexSystemForCache splits at SYSTEM_PROMPT_DYNAMIC_BOUNDARY', () => {
+    const text = 'STATIC PREAMBLE\n__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__\nDYNAMIC TAIL'
+    const { stable, volatile } = splitCodexSystemForCache(text)
+    assert(stable === 'STATIC PREAMBLE', `stable=${JSON.stringify(stable)}`)
+    assert(volatile === 'DYNAMIC TAIL', `volatile=${JSON.stringify(volatile)}`)
+  })
+
+  await test('splitCodexSystemForCache: stable bytes identical across env-only churn', () => {
+    // Simulate a long static preamble (so the 70%-tail cutoff is well
+    // past the static section) followed by an env block whose
+    // timestamp / git status changes turn-to-turn.
+    const preamble = 'You are Codex.\n'.repeat(200)
+    const env1 = '<env>\nWorking directory: /a\nDate: 2026-05-04T12:00:00Z\n</env>'
+    const env2 = '<env>\nWorking directory: /a\nDate: 2026-05-04T12:05:33Z\n</env>'
+    const a = splitCodexSystemForCache(preamble + env1)
+    const b = splitCodexSystemForCache(preamble + env2)
+    assert(a.stable === b.stable, 'stable drifted across env-only change')
+    assert(a.volatile !== b.volatile, 'volatile should differ')
+    assert(!a.stable.includes('<env>'), 'env leaked into stable slot')
+  })
+
+  await test('splitCodexSystemForCache: stable byte-stable across git status churn', () => {
+    const preamble = '# Codex preamble\n'.repeat(200)
+    const tail1 = '# gitStatus\nbranch: main · clean'
+    const tail2 = '# gitStatus\nbranch: main · 1 modified'
+    const a = splitCodexSystemForCache(`${preamble}\n${tail1}`)
+    const b = splitCodexSystemForCache(`${preamble}\n${tail2}`)
+    assert(a.stable === b.stable, 'stable drifted on git status flip')
+    assert(a.volatile !== b.volatile, 'volatile should reflect git delta')
+  })
+
+  await test('splitCodexSystemForCache: no-volatile input passes through', () => {
+    const text = 'Just a static prompt with no env or git markers anywhere.'
+    const { stable, volatile } = splitCodexSystemForCache(text)
+    assert(stable === text, 'stable should equal full text')
+    assert(volatile === '', `volatile should be empty; got ${JSON.stringify(volatile)}`)
+  })
+
+  await test('splitCodexSystemForCache: empty input returns empty pair', () => {
+    const { stable, volatile } = splitCodexSystemForCache('')
+    assert(stable === '', `stable=${JSON.stringify(stable)}`)
+    assert(volatile === '', `volatile=${JSON.stringify(volatile)}`)
+  })
+
+  await test('splitCodexSystemForCache: env mention in prompt body (head 70%) is NOT volatile', () => {
+    // A tool description in the middle of the prompt mentions <env>;
+    // we must not strip it just because the substring matches.
+    const head = '<env>\nfake context\n</env>\n' + 'X'.repeat(5000)
+    const { stable, volatile } = splitCodexSystemForCache(head)
+    assert(stable === head, 'should leave head-occurring matches alone')
+    assert(volatile === '', 'no volatile expected from head-region match')
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

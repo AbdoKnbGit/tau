@@ -92,10 +92,23 @@ export class CodexLane implements Lane {
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
     const { model, messages, system, tools, max_tokens, thinking, signal } = params
 
-    // Assemble system text. Codex's instructions field takes a plain string.
-    const rawInstructions = typeof system === 'string'
+    // Assemble the full system text the upstream sent us, then split it
+    // into a stable (cache-eligible) prefix and a volatile (per-turn) tail
+    // so the Responses API `instructions` field stays byte-identical
+    // across turns. Without this split, env / git status / memory bleed
+    // into `instructions` each turn → the OpenAI prompt-cache prefix hash
+    // drifts → cache hits land partially or not at all (the user-reported
+    // "cache hits but unstable" pattern under heavy tool-call sessions).
+    //
+    // We mirror the same primary-marker / regex-fallback strategy
+    // gemini_provider.ts ships, since claudex doesn't emit the
+    // `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` marker for non-firstParty
+    // providers (`shouldUseGlobalCacheScope()` is firstParty-only).
+    const fullSystemText = typeof system === 'string'
       ? system
       : (system ?? []).map(b => b.text).join('\n\n')
+    const { stable: rawInstructions, volatile: volatileSystemText } =
+      splitCodexSystemForCache(fullSystemText)
 
     // Build tool_use_id → native name map so function_call_output items
     // send back the correct call_id / name shape across the turn boundary.
@@ -103,6 +116,33 @@ export class CodexLane implements Lane {
 
     // Convert Anthropic history → Responses API input items.
     const inputItems = convertHistoryToCodex(messages, toolUseIdToCallId)
+
+    // Inject the volatile system tail as a `developer` input message
+    // right before the latest user message. Two reasons this exact slot:
+    //   1. The cache prefix runs through every item up to (but not
+    //      including) the new turn — putting volatile content at the
+    //      "fresh" boundary keeps everything before it byte-stable
+    //      across turns.
+    //   2. On the very first turn there is no prior history, so injecting
+    //      before user1 still gives the model the env/git/memory it
+    //      needs without breaking any existing cache (there isn't one
+    //      yet).
+    if (volatileSystemText) {
+      const insertionIndex = findLastUserMessageIndex(inputItems)
+      const volatileItem: CodexInputItem = {
+        type: 'message',
+        role: 'developer',
+        content: [{ type: 'input_text', text: volatileSystemText }],
+      }
+      if (insertionIndex >= 0) {
+        inputItems.splice(insertionIndex, 0, volatileItem)
+      } else {
+        // No user message in history (rare — agent loop sometimes calls
+        // with assistant-only history during continuations). Append so
+        // the model still sees the volatile context.
+        inputItems.push(volatileItem)
+      }
+    }
 
     // Map caller-provided tools → Codex Responses format. We honor the
     // native tool registry for tools we recognize (including apply_patch
@@ -817,6 +857,84 @@ function buildCodexToolsFromRequest(
     }
   }
   return out.length > 0 ? out : undefined
+}
+
+// ─── System-prompt stable / volatile split ───────────────────────
+//
+// Codex's `instructions` field gets hashed into the OpenAI prompt-cache
+// prefix exactly like the leading `input` items do. When env / git /
+// memory bytes leak into `instructions` they shift the prefix hash
+// turn-to-turn, which is the dominant cause of "cache hits but is
+// unstable" with heavy tool-call sessions or model swaps.
+//
+// claude.ts only inserts the explicit `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`
+// marker when `shouldUseGlobalCacheScope()` is true (firstParty only),
+// so the codex lane has to handle the no-marker case too. The fallback
+// regex set is the same one battle-tested in
+// `src/services/api/providers/gemini_provider.ts:splitSystemInstruction`
+// — it keys off the env block, current date, git status, and recent
+// commits/branch sections that claudex's prompt builder always emits at
+// the tail when a marker is absent.
+
+const CODEX_DYNAMIC_BOUNDARY = '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
+
+const CODEX_VOLATILE_PATTERNS: readonly RegExp[] = [
+  /<env>[\s\S]*?<\/env>/,                 // computeEnvInfo block
+  /# Environment\b[\s\S]*?(?=\n#|$)/,    // computeSimpleEnvInfo block
+  /# currentDate\n[^\n]+/,                 // "Today's date is …"
+  /# gitStatus\b[\s\S]*?(?=\n#|$)/,       // claude.ts gitStatus section
+  /gitStatus:[\s\S]*?(?=\n\n|\n#|$)/,    // alt key form
+  /Current branch:[\s\S]*?(?=\n\n|\n#|$)/, // recent commits + branch
+]
+
+export function splitCodexSystemForCache(text: string): {
+  stable: string
+  volatile: string
+} {
+  if (!text) return { stable: '', volatile: '' }
+
+  // Primary path: explicit boundary marker (firstParty rollouts).
+  const markerIdx = text.indexOf(CODEX_DYNAMIC_BOUNDARY)
+  if (markerIdx >= 0) {
+    return {
+      stable: text.slice(0, markerIdx).replace(/\s+$/, ''),
+      volatile: text.slice(markerIdx + CODEX_DYNAMIC_BOUNDARY.length).replace(/^\s+/, ''),
+    }
+  }
+
+  // Fallback: pull known volatile chunks out of the tail. We only treat
+  // a match as volatile if it lands in the last 30% of the text — the
+  // dynamic sections are always appended at the end of the system
+  // prompt, and we don't want to accidentally strip a tool description
+  // that happens to contain the word "Environment".
+  const cutoff = Math.floor(text.length * 0.7)
+  const matches: Array<{ start: number; end: number; text: string }> = []
+  for (const pattern of CODEX_VOLATILE_PATTERNS) {
+    const m = text.match(pattern)
+    if (m && m.index != null && m.index >= cutoff) {
+      matches.push({ start: m.index, end: m.index + m[0].length, text: m[0] })
+    }
+  }
+  if (matches.length === 0) return { stable: text, volatile: '' }
+
+  // Carve from the earliest match's start to end of text. Anything
+  // between matches stays attached to the volatile tail — even if it
+  // doesn't itself match a known pattern, it's downstream of dynamic
+  // content and therefore can't be stable.
+  matches.sort((a, b) => a.start - b.start)
+  const cut = matches[0]!.start
+  return {
+    stable: text.slice(0, cut).replace(/\s+$/, ''),
+    volatile: text.slice(cut).replace(/^\s+/, ''),
+  }
+}
+
+function findLastUserMessageIndex(items: CodexInputItem[]): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i]
+    if (it.type === 'message' && it.role === 'user') return i
+  }
+  return -1
 }
 
 // ─── Singleton ───────────────────────────────────────────────────
