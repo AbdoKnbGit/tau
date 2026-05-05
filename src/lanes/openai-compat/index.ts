@@ -26,6 +26,7 @@ export function initOpenAICompatLane(providers?: {
   nim?: { apiKey: string; baseUrl?: string }
   ollama?: { apiKey?: string; baseUrl?: string }
   openrouter?: { apiKey: string; baseUrl?: string }
+  agentrouter?: { apiKey: string; baseUrl?: string }
   cline?: { apiKey: string; baseUrl?: string }
   iflow?: { apiKey: string; baseUrl?: string }
   kilocode?: { apiKey: string; baseUrl?: string }
@@ -80,6 +81,14 @@ export function initOpenAICompatLane(providers?: {
     openaiCompatLane.registerProvider(
       'openrouter', orKey,
       p.openrouter?.baseUrl ?? 'https://openrouter.ai/api/v1',
+    )
+  }
+
+  const agentRouterKey = p.agentrouter?.apiKey ?? process.env.AGENT_ROUTER_TOKEN ?? process.env.AGENTROUTER_API_KEY
+  if (agentRouterKey) {
+    openaiCompatLane.registerProvider(
+      'agentrouter', agentRouterKey,
+      p.agentrouter?.baseUrl ?? 'https://agentrouter.org/v1',
     )
   }
 

@@ -84,7 +84,9 @@ export class LaneBackedProvider implements BaseProvider {
         thinking: params.thinking,
         signal: controller.signal,
         ...(
-          providerHint === 'copilot' || providerHint === 'openrouter'
+          providerHint === 'copilot'
+          || providerHint === 'openrouter'
+          || providerHint === 'agentrouter'
             ? { sessionId: getSessionId() }
             : {}
         ),

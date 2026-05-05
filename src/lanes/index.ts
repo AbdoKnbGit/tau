@@ -77,6 +77,8 @@ export function initLanes(opts?: {
   ollamaBaseUrl?: string
   // OpenRouter
   openrouterApiKey?: string
+  // AgentRouter (independent OpenRouter-style gateway)
+  agentrouterApiKey?: string
   // Qwen (DashScope)
   qwenApiKey?: string
   // OAuth-backed providers on the shared compat transport. iFlow uses a
@@ -172,6 +174,7 @@ export function initLanes(opts?: {
       ? { apiKey: opts?.ollamaApiKey ?? '', baseUrl: opts?.ollamaBaseUrl }
       : undefined,
     openrouter: opts?.openrouterApiKey ? { apiKey: opts.openrouterApiKey } : undefined,
+    agentrouter: opts?.agentrouterApiKey ? { apiKey: opts.agentrouterApiKey } : undefined,
     iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,
     kilocode: opts?.kilocodeApiKey ? { apiKey: opts.kilocodeApiKey } : undefined,
     copilot: opts?.copilotApiKey ? { apiKey: opts.copilotApiKey } : undefined,

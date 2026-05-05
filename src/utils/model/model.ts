@@ -24,7 +24,7 @@ import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider, isThirdPartyProvider } from './providers.js'
-import { getProviderModelSet } from './configs.js'
+import { getProviderModelSet, isAgentRouterModelId } from './configs.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
@@ -101,7 +101,11 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
 export function getMainLoopModel(): ModelName {
   const model = getUserSpecifiedModelSetting()
   if (model !== undefined && model !== null) {
-    return parseUserSpecifiedModel(model)
+    const resolved = parseUserSpecifiedModel(model)
+    if (getAPIProvider() === 'agentrouter' && !isAgentRouterModelId(resolved)) {
+      return getDefaultMainLoopModel()
+    }
+    return resolved
   }
   return getDefaultMainLoopModel()
 }

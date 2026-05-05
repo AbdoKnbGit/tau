@@ -110,6 +110,7 @@ function _ensureLanesInitialized(): void {
       ollamaApiKey: ollamaApiKey ?? undefined,
       ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? getProviderBaseUrl('ollama'),
       openrouterApiKey: getProviderApiKey('openrouter') ?? undefined,
+      agentrouterApiKey: getProviderApiKey('agentrouter') ?? undefined,
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
       iflowApiKey: iflowChatKey,
       kilocodeApiKey: kilocodeToken,
@@ -146,6 +147,7 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'nim':
     case 'ollama':
     case 'openrouter':
+    case 'agentrouter':
       return 'openai-compat'
     case 'cline':
       return 'cline'
@@ -264,6 +266,14 @@ function createProvider(provider: APIProvider): BaseProvider {
     }
     case 'openrouter':
       return new OpenRouterProvider({ apiKey })
+    case 'agentrouter':
+      // Routed through the openai-compat lane (LaneBackedProvider) above.
+      // We only reach this branch if the lane is unhealthy / not registered,
+      // so surface a useful message rather than constructing a stub.
+      throw new Error(
+        'AgentRouter chat requires the openai-compat lane to be healthy. '
+        + 'Run `/login` to authenticate, or check that AGENT_ROUTER_TOKEN or AGENTROUTER_API_KEY is set.',
+      )
     case 'groq':
       return new GroqProvider({ apiKey })
     case 'nim':
@@ -664,6 +674,7 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     case 'deepseek':
     case 'nim':
     case 'openrouter':
+    case 'agentrouter':
     case 'ollama':
       break
     default:

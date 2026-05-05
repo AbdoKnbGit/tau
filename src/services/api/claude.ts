@@ -335,6 +335,10 @@ export function getPromptCachingEnabled(model: string): boolean {
   // Global disable takes precedence
   if (isEnvTruthy(process.env.DISABLE_PROMPT_CACHING)) return false
 
+  if (getAPIProvider() === 'agentrouter' && !isAgentRouterClaudeModel(model)) {
+    return false
+  }
+
   // Check if we should disable for small/fast model
   if (isEnvTruthy(process.env.DISABLE_PROMPT_CACHING_HAIKU)) {
     const smallFastModel = getSmallFastModel()
@@ -354,6 +358,93 @@ export function getPromptCachingEnabled(model: string): boolean {
   }
 
   return true
+}
+
+function isAgentRouterClaudeModel(model: string): boolean {
+  return (
+    getAPIProvider() === 'agentrouter' &&
+    model.toLowerCase().startsWith('claude-')
+  )
+}
+
+function isAgentRouterThinkingEnabled(): boolean {
+  return (
+    isEnvTruthy(process.env.AGENTROUTER_ENABLE_THINKING) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_AGENTROUTER_ENABLE_THINKING)
+  )
+}
+
+function getProviderScopedThinkingConfig(
+  thinkingConfig: ThinkingConfig,
+  model: string,
+): ThinkingConfig {
+  if (
+    getAPIProvider() === 'agentrouter' &&
+    thinkingConfig.type !== 'disabled' &&
+    !isAgentRouterThinkingEnabled()
+  ) {
+    return { type: 'disabled' }
+  }
+  return thinkingConfig
+}
+
+function getAgentRouterMaxOutputTokenLimit(): number {
+  return 8192
+}
+
+function shouldUseAgentRouterPrimaryNonStreaming(model: string): boolean {
+  return (
+    getAPIProvider() === 'agentrouter' &&
+    isAgentRouterClaudeModel(model) &&
+    !isEnvTruthy(process.env.AGENTROUTER_ENABLE_STREAMING)
+  )
+}
+
+function getCacheHitPercent(usage: NonNullableUsage): number {
+  const cacheRead = usage.cache_read_input_tokens ?? 0
+  const cacheEligible =
+    usage.input_tokens +
+    (usage.cache_creation_input_tokens ?? 0) +
+    cacheRead
+  if (cacheEligible <= 0) return 0
+  return (cacheRead / cacheEligible) * 100
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
+  return `${Math.trunc(value)}`
+}
+
+function maybeNotifyAgentRouterCacheStats({
+  options,
+  usage,
+  enablePromptCaching,
+}: {
+  options: Options
+  usage: NonNullableUsage
+  enablePromptCaching: boolean
+}): void {
+  if (
+    getAPIProvider() !== 'agentrouter' ||
+    !enablePromptCaching ||
+    !options.querySource.startsWith('repl_main_thread')
+  ) {
+    return
+  }
+
+  const cacheRead = usage.cache_read_input_tokens ?? 0
+  const cacheWrite = usage.cache_creation_input_tokens ?? 0
+  const percent = getCacheHitPercent(usage)
+  options.addNotification?.({
+    key: 'agentrouter-cache-stats',
+    text:
+      `AgentRouter cache hit ${percent >= 10 ? percent.toFixed(0) : percent.toFixed(1)}%` +
+      ` | read ${formatTokenCount(cacheRead)}` +
+      ` | write ${formatTokenCount(cacheWrite)}`,
+    priority: 'low',
+    timeoutMs: 4500,
+  })
 }
 
 export function getCacheControl({
@@ -392,6 +483,10 @@ export function getCacheControl({
  * TTLs when GrowthBook's disk cache updates mid-request.
  */
 function should1hCacheTTL(querySource?: QuerySource): boolean {
+  if (getAPIProvider() === 'agentrouter') {
+    return false
+  }
+
   // 3P Bedrock users get 1h TTL when opted in via env var — they manage their own billing
   // No GrowthBook gating needed since 3P users don't have GrowthBook configured
   if (
@@ -862,7 +957,7 @@ export async function* executeNonStreamingRequest(
 
       try {
         // biome-ignore lint/plugin: non-streaming API call
-        return await anthropic.beta.messages.create(
+        const response = await anthropic.beta.messages.create(
           {
             ...adjustedParams,
             model: normalizeModelStringForAPI(adjustedParams.model),
@@ -872,6 +967,7 @@ export async function* executeNonStreamingRequest(
             timeout: fallbackTimeoutMs,
           },
         )
+        return normalizeNonStreamingMessageResponse(response)
       } catch (err) {
         // User aborts are not errors — re-throw immediately without logging
         if (err instanceof APIUserAbortError) throw err
@@ -915,6 +1011,28 @@ export async function* executeNonStreamingRequest(
   } while (!e.done)
 
   return e.value as BetaMessage
+}
+
+function normalizeNonStreamingMessageResponse(
+  response: BetaMessage | string,
+): BetaMessage {
+  if (typeof response !== 'string') {
+    return response
+  }
+
+  try {
+    const parsed = JSON.parse(response) as unknown
+    if (parsed && typeof parsed === 'object') {
+      logForDebugging(
+        'Non-streaming API returned stringified JSON; parsed response body',
+      )
+      return parsed as BetaMessage
+    }
+  } catch {
+    // Fall through to the explicit error below.
+  }
+
+  throw new Error('Non-streaming API returned an invalid string response')
 }
 
 /**
@@ -1079,6 +1197,19 @@ async function* queryModel(
   }
 
   let advisorModel: string | undefined
+  const requestThinkingConfig = getProviderScopedThinkingConfig(
+    thinkingConfig,
+    options.model,
+  )
+  if (
+    getAPIProvider() === 'agentrouter' &&
+    thinkingConfig.type !== requestThinkingConfig.type
+  ) {
+    logForDebugging(
+      'AgentRouter: disabled extended thinking for lower latency/cost. Set AGENTROUTER_ENABLE_THINKING=1 to opt in.',
+    )
+  }
+
   if (isAgenticQuery && isAdvisorEnabled()) {
     let advisorOption = options.advisorModel
 
@@ -1596,7 +1727,7 @@ async function* queryModel(
       getMaxOutputTokensForModel(options.model)
 
     const hasThinking =
-      thinkingConfig.type !== 'disabled' &&
+      requestThinkingConfig.type !== 'disabled' &&
       !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING)
     let thinking: BetaMessageStreamParams['thinking'] | undefined = undefined
 
@@ -1618,10 +1749,10 @@ async function* queryModel(
         // thinking budget unless explicitly specified.
         let thinkingBudget = getMaxThinkingTokensForModel(options.model)
         if (
-          thinkingConfig.type === 'enabled' &&
-          thinkingConfig.budgetTokens !== undefined
+          requestThinkingConfig.type === 'enabled' &&
+          requestThinkingConfig.budgetTokens !== undefined
         ) {
-          thinkingBudget = thinkingConfig.budgetTokens
+          thinkingBudget = requestThinkingConfig.budgetTokens
         }
         thinkingBudget = Math.min(maxOutputTokens - 1, thinkingBudget)
         thinking = {
@@ -1638,10 +1769,10 @@ async function* queryModel(
       // doesn't support thinking silently ignore the param.
       let thinkingBudget = 8192
       if (
-        thinkingConfig.type === 'enabled' &&
-        thinkingConfig.budgetTokens !== undefined
+        requestThinkingConfig.type === 'enabled' &&
+        requestThinkingConfig.budgetTokens !== undefined
       ) {
-        thinkingBudget = thinkingConfig.budgetTokens
+        thinkingBudget = requestThinkingConfig.budgetTokens
       }
       thinkingBudget = Math.min(maxOutputTokens - 1, thinkingBudget)
       thinking = {
@@ -1756,7 +1887,7 @@ async function* queryModel(
   {
     const queryParams = paramsFromContext({
       model: options.model,
-      thinkingConfig,
+      thinkingConfig: requestThinkingConfig,
     })
     const logMessagesLength = queryParams.messages.length
     const logBetas = useBetas ? (queryParams.betas ?? []) : []
@@ -1793,89 +1924,140 @@ async function* queryModel(
   let research: unknown = undefined
   let isFastModeRequest = isFastMode // Keep separate state as it may change if falling back
   let isAdvisorInProgress = false
+  const useAgentRouterPrimaryNonStreaming =
+    shouldUseAgentRouterPrimaryNonStreaming(options.model)
 
   try {
-    queryCheckpoint('query_client_creation_start')
-    const generator = withRetry(
-      () =>
-        getAnthropicClient({
-          maxRetries: 0, // Disabled auto-retry in favor of manual implementation
+    if (useAgentRouterPrimaryNonStreaming) {
+      logForDebugging(
+        'AgentRouter: using non-streaming Messages path for Claude model to avoid slow stream TTFB. Set AGENTROUTER_ENABLE_STREAMING=1 to opt back into streaming.',
+      )
+      const result = yield* executeNonStreamingRequest(
+        { model: options.model, source: options.querySource },
+        {
           model: options.model,
-          fetchOverride: options.fetchOverride,
-          source: options.querySource,
+          fallbackModel: options.fallbackModel,
+          thinkingConfig: requestThinkingConfig,
+          ...(isFastModeEnabled() && { fastMode: isFastMode }),
+          signal,
+          querySource: options.querySource,
+        },
+        paramsFromContext,
+        (attempt, attemptStart, tokens) => {
+          attemptNumber = attempt
+          start = attemptStart
+          attemptStartTimes.push(attemptStart)
+          maxOutputTokens = tokens
+        },
+        params => captureAPIRequest(params, options.querySource),
+        null,
+      )
+
+      const m: AssistantMessage = {
+        message: {
+          ...result,
+          content: normalizeContentFromAPI(
+            result.content,
+            tools,
+            options.agentId,
+          ),
+        },
+        type: 'assistant',
+        uuid: randomUUID(),
+        timestamp: new Date().toISOString(),
+        ...(process.env.USER_TYPE === 'ant' &&
+          research !== undefined && {
+            research,
+          }),
+        ...(advisorModel && {
+          advisorModel,
         }),
-      async (anthropic, attempt, context) => {
-        attemptNumber = attempt
-        isFastModeRequest = context.fastMode ?? false
-        start = Date.now()
-        attemptStartTimes.push(start)
-        // Client has been created by withRetry's getClient() call. This fires
-        // once per attempt; on retries the client is usually cached (withRetry
-        // only calls getClient() again after auth errors), so the delta from
-        // client_creation_start is meaningful on attempt 1.
-        queryCheckpoint('query_client_creation_end')
-
-        const params = paramsFromContext(context)
-        captureAPIRequest(params, options.querySource) // Capture for bug reports
-
-        maxOutputTokens = params.max_tokens
-
-        // Fire immediately before the fetch is dispatched. .withResponse() below
-        // awaits until response headers arrive, so this MUST be before the await
-        // or the "Network TTFB" phase measurement is wrong.
-        queryCheckpoint('query_api_request_sent')
-        if (!options.agentId) {
-          headlessProfilerCheckpoint('api_request_sent')
-        }
-
-        // Generate and track client request ID so timeouts (which return no
-        // server request ID) can still be correlated with server logs.
-        // First-party only — 3P providers don't log it (inc-4029 class).
-        clientRequestId =
-          getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
-            ? randomUUID()
-            : undefined
-
-        // Use raw stream instead of BetaMessageStream to avoid O(n²) partial JSON parsing
-        // BetaMessageStream calls partialParse() on every input_json_delta, which we don't need
-        // since we handle tool input accumulation ourselves
-        // biome-ignore lint/plugin: main conversation loop handles attribution separately
-        const result = await anthropic.beta.messages
-          .create(
-            { ...params, stream: true },
-            {
-              signal,
-              ...(clientRequestId && {
-                headers: { [CLIENT_REQUEST_ID_HEADER]: clientRequestId },
-              }),
-            },
-          )
-          .withResponse()
-        queryCheckpoint('query_response_headers_received')
-        streamRequestId = result.request_id
-        streamResponse = result.response
-        return result.data
-      },
-      {
-        model: options.model,
-        fallbackModel: options.fallbackModel,
-        thinkingConfig,
-        ...(isFastModeEnabled() ? { fastMode: isFastMode } : false),
-        signal,
-        querySource: options.querySource,
-      },
-    )
-
-    let e
-    do {
-      e = await generator.next()
-
-      // yield API error messages (the stream has a 'controller' property, error messages don't)
-      if (!('controller' in e.value)) {
-        yield e.value
       }
-    } while (!e.done)
-    stream = e.value as Stream<BetaRawMessageStreamEvent>
+      newMessages.push(m)
+      fallbackMessage = m
+      yield m
+    } else {
+      queryCheckpoint('query_client_creation_start')
+      const generator = withRetry(
+        () =>
+          getAnthropicClient({
+            maxRetries: 0, // Disabled auto-retry in favor of manual implementation
+            model: options.model,
+            fetchOverride: options.fetchOverride,
+            source: options.querySource,
+          }),
+        async (anthropic, attempt, context) => {
+          attemptNumber = attempt
+          isFastModeRequest = context.fastMode ?? false
+          start = Date.now()
+          attemptStartTimes.push(start)
+          // Client has been created by withRetry's getClient() call. This fires
+          // once per attempt; on retries the client is usually cached (withRetry
+          // only calls getClient() again after auth errors), so the delta from
+          // client_creation_start is meaningful on attempt 1.
+          queryCheckpoint('query_client_creation_end')
+
+          const params = paramsFromContext(context)
+          captureAPIRequest(params, options.querySource) // Capture for bug reports
+
+          maxOutputTokens = params.max_tokens
+
+          // Fire immediately before the fetch is dispatched. .withResponse() below
+          // awaits until response headers arrive, so this MUST be before the await
+          // or the "Network TTFB" phase measurement is wrong.
+          queryCheckpoint('query_api_request_sent')
+          if (!options.agentId) {
+            headlessProfilerCheckpoint('api_request_sent')
+          }
+
+          // Generate and track client request ID so timeouts (which return no
+          // server request ID) can still be correlated with server logs.
+          // First-party only — 3P providers don't log it (inc-4029 class).
+          clientRequestId =
+            getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+              ? randomUUID()
+              : undefined
+
+          // Use raw stream instead of BetaMessageStream to avoid O(n²) partial JSON parsing
+          // BetaMessageStream calls partialParse() on every input_json_delta, which we don't need
+          // since we handle tool input accumulation ourselves
+          // biome-ignore lint/plugin: main conversation loop handles attribution separately
+          const result = await anthropic.beta.messages
+            .create(
+              { ...params, stream: true },
+              {
+                signal,
+                ...(clientRequestId && {
+                  headers: { [CLIENT_REQUEST_ID_HEADER]: clientRequestId },
+                }),
+              },
+            )
+            .withResponse()
+          queryCheckpoint('query_response_headers_received')
+          streamRequestId = result.request_id
+          streamResponse = result.response
+          return result.data
+        },
+        {
+          model: options.model,
+          fallbackModel: options.fallbackModel,
+          thinkingConfig: requestThinkingConfig,
+          ...(isFastModeEnabled() ? { fastMode: isFastMode } : false),
+          signal,
+          querySource: options.querySource,
+        },
+      )
+
+      let e
+      do {
+        e = await generator.next()
+
+        // yield API error messages (the stream has a 'controller' property, error messages don't)
+        if (!('controller' in e.value)) {
+          yield e.value
+        }
+      } while (!e.done)
+      stream = e.value as Stream<BetaRawMessageStreamEvent>
 
     // reset state
     newMessages.length = 0
@@ -1892,11 +2074,26 @@ async function* queryModel(
     // kill hung streams. Without this, a silently dropped connection can hang
     // the session indefinitely since the SDK's request timeout only covers the
     // initial fetch(), not the streaming body.
-    const streamWatchdogEnabled = isEnvTruthy(
-      process.env.CLAUDE_ENABLE_STREAM_WATCHDOG,
+    const isAgentRouterRequest = getAPIProvider() === 'agentrouter'
+    const streamWatchdogEnabled =
+      isEnvTruthy(process.env.CLAUDE_ENABLE_STREAM_WATCHDOG) ||
+      (isAgentRouterRequest &&
+        !isEnvTruthy(process.env.AGENTROUTER_DISABLE_STREAM_WATCHDOG))
+    const configuredStreamIdleTimeoutMs = parseInt(
+      (isAgentRouterRequest
+        ? process.env.AGENTROUTER_STREAM_IDLE_TIMEOUT_MS
+        : undefined) ||
+        process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS ||
+        '',
+      10,
     )
     const STREAM_IDLE_TIMEOUT_MS =
-      parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000
+      Number.isFinite(configuredStreamIdleTimeoutMs) &&
+      configuredStreamIdleTimeoutMs > 0
+        ? configuredStreamIdleTimeoutMs
+        : isAgentRouterRequest
+          ? 15_000
+          : 90_000
     const STREAM_IDLE_WARNING_MS = STREAM_IDLE_TIMEOUT_MS / 2
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
@@ -2543,7 +2740,7 @@ async function* queryModel(
         attemptNumber,
         maxOutputTokens,
         thinkingType:
-          thinkingConfig.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          requestThinkingConfig.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         fallback_disabled: false,
         request_id: (streamRequestId ??
           'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -2574,7 +2771,7 @@ async function* queryModel(
         {
           model: options.model,
           fallbackModel: options.fallbackModel,
-          thinkingConfig,
+          thinkingConfig: requestThinkingConfig,
           ...(isFastModeEnabled() && { fastMode: isFastMode }),
           signal,
           initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0,
@@ -2615,6 +2812,7 @@ async function* queryModel(
       yield m
     } finally {
       clearStreamIdleTimers()
+    }
     }
   } catch (errorFromRetry) {
     // FallbackTriggeredError must propagate to query.ts, which performs the
@@ -2659,7 +2857,7 @@ async function* queryModel(
         attemptNumber,
         maxOutputTokens,
         thinkingType:
-          thinkingConfig.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          requestThinkingConfig.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         request_id:
           failedRequestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         fallback_cause:
@@ -2673,7 +2871,7 @@ async function* queryModel(
           {
             model: options.model,
             fallbackModel: options.fallbackModel,
-            thinkingConfig,
+            thinkingConfig: requestThinkingConfig,
             ...(isFastModeEnabled() && { fastMode: isFastMode }),
             signal,
           },
@@ -2869,6 +3067,12 @@ async function* queryModel(
   ) {
     setLastMainRequestId(streamRequestId)
   }
+
+  maybeNotifyAgentRouterCacheStats({
+    options,
+    usage,
+    enablePromptCaching,
+  })
 
   // Precompute scalars so the fire-and-forget .then() closure doesn't pin the
   // full messagesForAPI array (the entire conversation up to the context window
@@ -3419,6 +3623,10 @@ function isMaxTokensCapEnabled(): boolean {
 
 export function getMaxOutputTokensForModel(model: string): number {
   const maxOutputTokens = getModelMaxOutputTokens(model)
+  const agentRouterLimit =
+    getAPIProvider() === 'agentrouter'
+      ? getAgentRouterMaxOutputTokenLimit()
+      : undefined
 
   // Slot-reservation cap: drop default to 8k for all models. BQ p99 output
   // = 4,911 tokens; 32k/64k defaults over-reserve 8-16× slot capacity.
@@ -3429,12 +3637,20 @@ export function getMaxOutputTokensForModel(model: string): number {
   const defaultTokens = isMaxTokensCapEnabled()
     ? Math.min(maxOutputTokens.default, CAPPED_DEFAULT_MAX_TOKENS)
     : maxOutputTokens.default
+  const providerScopedDefault =
+    agentRouterLimit === undefined
+      ? defaultTokens
+      : Math.min(defaultTokens, agentRouterLimit)
+  const providerScopedUpperLimit =
+    agentRouterLimit === undefined
+      ? maxOutputTokens.upperLimit
+      : Math.min(maxOutputTokens.upperLimit, agentRouterLimit)
 
   const result = validateBoundedIntEnvVar(
     'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
     process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS,
-    defaultTokens,
-    maxOutputTokens.upperLimit,
+    providerScopedDefault,
+    providerScopedUpperLimit,
   )
   return result.effective
 }

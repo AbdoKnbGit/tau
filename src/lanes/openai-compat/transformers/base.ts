@@ -22,6 +22,7 @@ export type ProviderId =
   | 'nim'
   | 'ollama'
   | 'openrouter'
+  | 'agentrouter'
   | 'cline'
   | 'iflow'
   | 'kilocode'

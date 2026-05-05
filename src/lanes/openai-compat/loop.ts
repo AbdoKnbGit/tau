@@ -56,6 +56,7 @@ type ProviderType =
   | 'nim'
   | 'ollama'
   | 'openrouter'
+  | 'agentrouter'
   | 'cline'
   | 'iflow'
   | 'kilocode'
@@ -70,6 +71,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('mistral')) return 'mistral'
   if (b.includes('integrate.api.nvidia')) return 'nim'
   if (b.includes('localhost') || b.includes('127.0.0.1') || b.includes('0.0.0.0') || b.includes(':11434')) return 'ollama'
+  if (b.includes('agentrouter.org')) return 'agentrouter'
   if (b.includes('openrouter')) return 'openrouter'
   if (b.includes('cline.bot')) return 'cline'
   if (b.includes('iflow.cn') || b.includes('apis.iflow')) return 'iflow'
@@ -248,7 +250,10 @@ export class OpenAICompatLane implements Lane {
 
     const provider = cfg.provider
     const isLocal = isLocalBaseUrl(cfg.baseUrl)
-    const cacheSessionId = provider === 'copilot' || provider === 'openrouter' ? sessionId : undefined
+    const cacheSessionId =
+      provider === 'copilot' || provider === 'openrouter' || provider === 'agentrouter'
+        ? sessionId
+        : undefined
 
     // Assemble system text. We keep it simple for Phase-1 (caller's text).
     const rawSystemText = typeof system === 'string'
@@ -288,13 +293,12 @@ export class OpenAICompatLane implements Lane {
         messages: chatMessages,
         stream: true,
         stream_options: { include_usage: true },
-        // OpenRouter-only: surface detailed usage including cache_discount.
-        // Mirrors the Kilo lane's body. For DeepSeek-on-OR and OpenAI-on-OR
-        // implicit caching is server-side and free models on those families
-        // still pay zero — but without this flag the cache_read field is
-        // never populated, which is what made the user think every call
-        // was a cold miss.
-        ...(provider === 'openrouter' && { usage: { include: true } }),
+        // OpenRouter / AgentRouter: surface detailed usage including
+        // cache_discount. Mirrors the Kilo lane's body. Without this flag
+        // the cache_read / cache_write fields aren't populated on those
+        // gateways, which is what made every call look like a cold miss
+        // even when the upstream actually had a cache hit.
+        ...((provider === 'openrouter' || provider === 'agentrouter') && { usage: { include: true } }),
         // Ollama has supported OpenAI-compat function calling since
         // v0.3.0 (Jul 2024). The previous `!isLocal` gate stripped tools
         // for Ollama, so the model would say "let me explore" and stop
@@ -480,14 +484,42 @@ export class OpenAICompatLane implements Lane {
               chunk.usage.prompt_tokens_details?.cached_tokens
               ?? chunk.usage.prompt_cache_hit_tokens
               ?? reportedCachedInputTokens
-            cacheWriteTokens = provider === 'copilot' || provider === 'openrouter'
-              ? (
-                  chunk.usage.prompt_tokens_details?.cache_write_tokens
-                  ?? chunk.usage.cache_write_tokens
-                  ?? cacheWriteTokens
-                )
-              : 0
+            cacheWriteTokens =
+              provider === 'copilot' || provider === 'openrouter' || provider === 'agentrouter'
+                ? (
+                    chunk.usage.prompt_tokens_details?.cache_write_tokens
+                    ?? chunk.usage.cache_write_tokens
+                    ?? cacheWriteTokens
+                  )
+                : 0
             reasoningTokens = chunk.usage.completion_tokens_details?.reasoning_tokens ?? reasoningTokens
+
+            // AgentRouter forwards Anthropic responses verbatim, so the
+            // usage block on Claude rows often arrives in Anthropic-native
+            // shape: `cache_read_input_tokens` and
+            // `cache_creation_input_tokens` are additive (separate from
+            // each other and from `prompt_tokens`'s OpenAI total), not
+            // the OpenAI subtractive `cached_tokens` (which already
+            // includes writes). Without this fold we read 0 for both
+            // and surface cache_hit=0% even when upstream is hitting
+            // the cache hard — the smoking gun is the latency drop
+            // without the percentage moving. Pure response read; does
+            // not touch the outbound request shape.
+            if (provider === 'agentrouter') {
+              const arRead = typeof chunk.usage.cache_read_input_tokens === 'number'
+                ? chunk.usage.cache_read_input_tokens
+                : undefined
+              const arWrite = typeof chunk.usage.cache_creation_input_tokens === 'number'
+                ? chunk.usage.cache_creation_input_tokens
+                : undefined
+              if (arRead !== undefined || arWrite !== undefined) {
+                // Re-encode into the OpenAI subtractive convention the rest
+                // of the lane assumes: cached_total = read + write, and
+                // cache_write is its own bucket.
+                cacheWriteTokens = arWrite ?? 0
+                reportedCachedInputTokens = (arRead ?? 0) + (arWrite ?? 0)
+              }
+            }
           }
 
           const choice = chunk.choices?.[0]

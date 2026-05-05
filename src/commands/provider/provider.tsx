@@ -31,6 +31,7 @@ import type {
 } from '../../types/command.js'
 import { stripSignatureBlocks } from '../../utils/messages.js'
 import {
+  getAPIProvider,
   PROVIDER_DISPLAY_NAMES,
   setActiveProvider,
   type APIProvider,
@@ -94,6 +95,7 @@ const MANAGEABLE_PROVIDERS = [
   'gemini',
   'antigravity',
   'openrouter',
+  'agentrouter',
   'nim',
   'deepseek',
   'ollama',
@@ -259,6 +261,7 @@ type View =
     }
 
 type ConfigureOption =
+  | { kind: 'activate' }
   | { kind: 'login' }
   | { kind: 'deactivate' }
   | { kind: 'set_voice_key' }
@@ -318,6 +321,13 @@ function buildConfigureOptions(
     }
   } else {
     const state = getAuthState(provider)
+    if (
+      provider === 'agentrouter' &&
+      state !== 'inactive' &&
+      getAPIProvider() !== 'agentrouter'
+    ) {
+      options.push({ kind: 'activate' })
+    }
     if (state !== 'inactive') {
       options.push({ kind: 'deactivate' })
     }
@@ -332,6 +342,8 @@ function labelConfigureOption(
   provider: ManageableProvider,
 ): string {
   switch (option.kind) {
+    case 'activate':
+      return 'Activate AgentRouter'
     case 'login':
       return provider === 'firstParty'
         ? 'Log in with Anthropic (subscription / Console API / platform)'
@@ -431,6 +443,18 @@ function ProviderManager({
       provider,
       tone: 'success',
       message: `${getManageableProviderName(provider)} disconnected.`,
+    })
+  }
+
+  function handleActivateAgentRouter() {
+    setActiveProvider('agentrouter')
+    setMessages(stripSignatureBlocks)
+    refresh()
+    setView({
+      kind: 'result',
+      provider: 'agentrouter',
+      tone: 'success',
+      message: 'AgentRouter activated.',
     })
   }
 
@@ -676,6 +700,11 @@ function ProviderManager({
         const chosen = options[view.selectedIndex]
         if (!chosen) return
         switch (chosen.kind) {
+          case 'activate':
+            if (view.provider === 'agentrouter') {
+              handleActivateAgentRouter()
+            }
+            return
           case 'login':
             // Only firstParty uses this option today.
             if (view.provider === 'firstParty') {

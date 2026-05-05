@@ -296,6 +296,7 @@ function _envVarName(provider: APIProvider): string {
     gemini: 'GEMINI_API_KEY',
     antigravity: '(OAuth only)',
     openrouter: 'OPENROUTER_API_KEY',
+    agentrouter: 'AGENT_ROUTER_TOKEN',
     groq: 'GROQ_API_KEY',
     nim: 'NIM_API_KEY',
     deepseek: 'DEEPSEEK_API_KEY',

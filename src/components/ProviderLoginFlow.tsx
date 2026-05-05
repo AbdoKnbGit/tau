@@ -60,6 +60,12 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     getKeyUrl: 'https://openrouter.ai/keys',
     supportsOAuth: false,
   },
+  agentrouter: {
+    envVar: 'AGENT_ROUTER_TOKEN',
+    keyPrefix: 'sk-',
+    getKeyUrl: 'https://agentrouter.org/',
+    supportsOAuth: false,
+  },
   groq: {
     envVar: 'GROQ_API_KEY',
     keyPrefix: 'gsk_',
@@ -165,6 +171,10 @@ async function _testApiKey(
         url = 'https://openrouter.ai/api/v1/models'
         headers = { Authorization: `Bearer ${key}` }
         break
+      case 'agentrouter':
+        url = 'https://agentrouter.org/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
       default:
         // Can't test — accept optimistically
         return { ok: true }
@@ -205,6 +215,7 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
     provider === 'deepseek' ||
     provider === 'nim' ||
     provider === 'openrouter' ||
+    provider === 'agentrouter' ||
     provider === 'ollama'
   ) {
     void import('../services/api/providers/providerShim.js')
@@ -491,6 +502,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       }
       const envVar = meta?.envVar
       if (envVar) process.env[envVar] = key
+      if (provider === 'agentrouter') process.env.AGENTROUTER_API_KEY = key
       reloadSavedApiKeyInRuntime(provider)
       if (warnings.length > 0) {
         setState({

@@ -76,7 +76,7 @@ function main(): void {
 
   // ── Registry invariants ─────────────────────────────────────────
   const ids: Array<Transformer['id']> = [
-    'deepseek', 'groq', 'mistral', 'nim', 'ollama', 'openrouter', 'generic',
+    'deepseek', 'groq', 'mistral', 'nim', 'ollama', 'openrouter', 'agentrouter', 'generic',
   ]
   for (const id of ids) {
     test(`registry has ${id}`, () => {
@@ -423,6 +423,81 @@ function main(): void {
       TRANSFORMERS.openrouter.cacheControlMode('meta-llama/llama-3.3-70b-instruct') === 'none',
       'wanted none for Llama routing',
     )
+  })
+
+  // ── AgentRouter ─────────────────────────────────────────────────
+  test('agentrouter advertises its 8 catalog models', () => {
+    const ids = (TRANSFORMERS.agentrouter.staticCatalog?.() ?? []).map(m => m.id)
+    const expected = [
+      'claude-haiku-4-5-20251001',
+      'claude-opus-4-6',
+      'glm-4.5',
+      'glm-4.6',
+      'glm-5.1',
+      'deepseek-r1-0528',
+      'deepseek-v3.1',
+      'deepseek-v3.2',
+    ]
+    for (const id of expected) {
+      assert(ids.includes(id), `agentrouter catalog missing ${id}`)
+    }
+  })
+  test('agentrouter cache-control mode is last-only for Claude models', () => {
+    assert(
+      TRANSFORMERS.agentrouter.cacheControlMode('claude-haiku-4-5-20251001') === 'last-only',
+      'wanted last-only for AgentRouter Claude routing',
+    )
+    assert(
+      TRANSFORMERS.agentrouter.cacheControlMode('claude-opus-4-6') === 'last-only',
+      'wanted last-only for AgentRouter Claude routing',
+    )
+  })
+  test('agentrouter cache-control mode is none for GLM and DeepSeek', () => {
+    assert(
+      TRANSFORMERS.agentrouter.cacheControlMode('glm-5.1') === 'none',
+      'wanted none for GLM routing',
+    )
+    assert(
+      TRANSFORMERS.agentrouter.cacheControlMode('deepseek-v3.2') === 'none',
+      'wanted none for DeepSeek routing',
+    )
+  })
+  test('agentrouter does not stamp OpenRouter-style client headers', () => {
+    const h = TRANSFORMERS.agentrouter.buildHeaders?.('sk-agentrouter-xxx') ?? {}
+    assert(!('HTTP-Referer' in h), 'HTTP-Referer header should be omitted')
+    assert(!('X-Title' in h), 'X-Title header should be omitted')
+  })
+  test('agentrouter clamps max_tokens at 8192', () => {
+    assert(TRANSFORMERS.agentrouter.clampMaxTokens(16000) === 8192, 'no clamp')
+    assert(TRANSFORMERS.agentrouter.clampMaxTokens(4000) === 4000, 'over-clamped')
+  })
+  test('agentrouter stamps prompt_cache_key from sessionId on Claude rows', () => {
+    const body = mkBody('claude-haiku-4-5-20251001')
+    TRANSFORMERS.agentrouter.transformRequest(body, {
+      model: 'claude-haiku-4-5-20251001',
+      isReasoning: false,
+      reasoningEffort: null,
+      sessionId: 'session-fixed',
+    })
+    assert(body.prompt_cache_key === 'session-fixed', `prompt_cache_key=${body.prompt_cache_key}`)
+  })
+  test('agentrouter omits prompt_cache_key when sessionId is absent', () => {
+    const body = mkBody('claude-opus-4-6')
+    TRANSFORMERS.agentrouter.transformRequest(body, mkCtx('claude-opus-4-6'))
+    assert(body.prompt_cache_key === undefined, `prompt_cache_key=${body.prompt_cache_key}`)
+  })
+  test('agentrouter does not stamp prompt_cache_key for GLM/DeepSeek rows', () => {
+    for (const model of ['glm-4.6', 'deepseek-v3.2']) {
+      const body = mkBody(model)
+      TRANSFORMERS.agentrouter.transformRequest(body, {
+        model,
+        isReasoning: false,
+        reasoningEffort: null,
+        sessionId: 'session-fixed',
+      })
+      assert(body.prompt_cache_key === undefined,
+        `${model} prompt_cache_key=${body.prompt_cache_key}`)
+    }
   })
   test('copilot sends stable session affinity headers', () => {
     const h = TRANSFORMERS.copilot.buildHeaders?.('copilot-token', {

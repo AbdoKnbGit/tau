@@ -242,12 +242,14 @@ function formatModelUsage(): string {
   }
 
   let result = 'Usage by model:'
+  const showCacheHit = getAPIProvider() === 'agentrouter'
   for (const [shortName, usage] of Object.entries(usageByShortName)) {
     const usageString =
       `  ${formatNumber(usage.inputTokens)} input, ` +
       `${formatNumber(usage.outputTokens)} output, ` +
       `${formatNumber(usage.cacheReadInputTokens)} cache read, ` +
       `${formatNumber(usage.cacheCreationInputTokens)} cache write` +
+      (showCacheHit ? `, ${formatCacheHit(usage)} cache hit` : '') +
       (usage.webSearchRequests > 0
         ? `, ${formatNumber(usage.webSearchRequests)} web search`
         : '') +
@@ -255,6 +257,18 @@ function formatModelUsage(): string {
     result += `\n` + `${shortName}:`.padStart(21) + usageString
   }
   return result
+}
+
+function formatCacheHit(usage: ModelUsage): string {
+  const cacheEligible =
+    usage.inputTokens +
+    usage.cacheReadInputTokens +
+    usage.cacheCreationInputTokens
+  if (cacheEligible <= 0 || usage.cacheReadInputTokens <= 0) {
+    return '0%'
+  }
+  const percent = (usage.cacheReadInputTokens / cacheEligible) * 100
+  return `${percent >= 10 ? percent.toFixed(0) : percent.toFixed(1)}%`
 }
 
 export function formatTotalCost(): string {

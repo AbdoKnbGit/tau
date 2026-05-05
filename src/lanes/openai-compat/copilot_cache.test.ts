@@ -189,6 +189,85 @@ async function captureOpenRouterRequestWithSessionId(cacheRetention?: string): P
   }
 }
 
+type AgentRouterUsage = {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  prompt_tokens_details?: {
+    cached_tokens?: number
+    cache_write_tokens?: number
+  }
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+
+async function captureAgentRouterRequest(
+  sessionId?: string,
+  usage: AgentRouterUsage = {
+    prompt_tokens: 100,
+    completion_tokens: 9,
+    total_tokens: 109,
+    prompt_tokens_details: { cached_tokens: 75, cache_write_tokens: 25 },
+  },
+): Promise<{
+  request: CapturedRequest
+  events: AnthropicStreamEvent[]
+}> {
+  const lane = new OpenAICompatLane()
+  lane.registerProvider('agentrouter', 'agentrouter-token', 'https://agentrouter.org/v1')
+
+  const oldFetch = globalThis.fetch
+  let request: CapturedRequest | null = null
+
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    request = {
+      url: String(url),
+      headers: init?.headers as Record<string, string>,
+      body: JSON.parse(String(init?.body ?? '{}')) as Record<string, any>,
+    }
+    const sse = [
+      {
+        id: 'chatcmpl-agentrouter',
+        object: 'chat.completion.chunk',
+        model: 'claude-haiku-4-5-20251001',
+        choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }],
+      },
+      {
+        id: 'chatcmpl-agentrouter',
+        object: 'chat.completion.chunk',
+        model: 'claude-haiku-4-5-20251001',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        usage,
+      },
+    ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n'
+    return new Response(sse, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })
+  }) as typeof fetch
+
+  try {
+    const events: AnthropicStreamEvent[] = []
+    const stream = lane.streamAsProvider({
+      model: 'claude-haiku-4-5-20251001',
+      messages: [{ role: 'user', content: 'hello' }],
+      system: 'stable system prompt',
+      tools: [],
+      max_tokens: 128,
+      signal: new AbortController().signal,
+      sessionId,
+      providerHint: 'agentrouter',
+    })
+
+    for await (const ev of stream) events.push(ev)
+    assert(request !== null, 'fetch was not called')
+    return { request, events }
+  } finally {
+    globalThis.fetch = oldFetch
+    lane.unregisterProvider('agentrouter')
+  }
+}
+
 async function main(): Promise<void> {
   console.log('openai-compat cache affinity:')
 
@@ -279,6 +358,95 @@ async function main(): Promise<void> {
     assert(request.body.prompt_cache_key === 'session-fixed', `prompt_cache_key=${request.body.prompt_cache_key}`)
     assert(request.body.prompt_cache_retention === '24h',
       `prompt_cache_retention=${request.body.prompt_cache_retention}`)
+  })
+
+  await test('agentrouter sends prompt_cache_key + usage flag for Claude rows', async () => {
+    const { request } = await captureAgentRouterRequest('session-fixed')
+    assert(request.url === 'https://agentrouter.org/v1/chat/completions', `url=${request.url}`)
+    assert(request.body.prompt_cache_key === 'session-fixed',
+      `prompt_cache_key=${request.body.prompt_cache_key}`)
+    assert(request.body.usage?.include === true,
+      `usage.include=${JSON.stringify(request.body.usage)}`)
+    // No Copilot-style affinity headers — those are gateway-specific.
+    assert(request.headers.session_id === undefined, `session_id=${request.headers.session_id}`)
+    assert(request.headers['x-session-affinity'] === undefined,
+      `x-session-affinity=${request.headers['x-session-affinity']}`)
+  })
+
+  await test('agentrouter stamps cache_control on Claude rows (rolling 3-breakpoint)', async () => {
+    const { request } = await captureAgentRouterRequest('session-fixed')
+    const sys = request.body.messages.find((m: any) => m.role === 'system')
+    assert(Array.isArray(sys?.content), `system content not promoted to parts: ${JSON.stringify(sys?.content)}`)
+    const lastSystemPart = sys.content[sys.content.length - 1]
+    assert(lastSystemPart?.cache_control?.type === 'ephemeral',
+      `system last part missing cache_control: ${JSON.stringify(lastSystemPart)}`)
+    const user = request.body.messages.find((m: any) => m.role === 'user')
+    assert(Array.isArray(user?.content), `user content not promoted to parts: ${JSON.stringify(user?.content)}`)
+    const lastUserPart = user.content[user.content.length - 1]
+    assert(lastUserPart?.cache_control?.type === 'ephemeral',
+      `user last part missing cache_control: ${JSON.stringify(lastUserPart)}`)
+  })
+
+  await test('agentrouter omits prompt_cache_key when sessionId is absent', async () => {
+    const { request } = await captureAgentRouterRequest()
+    assert(request.body.prompt_cache_key === undefined,
+      `prompt_cache_key=${request.body.prompt_cache_key}`)
+  })
+
+  await test('agentrouter splits cache read and cache write usage buckets', async () => {
+    const { events } = await captureAgentRouterRequest('session-fixed')
+    const finalDelta = events.findLast(ev => ev.type === 'message_delta')
+    // prompt=100, cached=75, cache_write=25 → fresh=25, read=50, write=25.
+    assert(finalDelta?.usage?.input_tokens === 25,
+      `input_tokens=${finalDelta?.usage?.input_tokens}`)
+    assert(finalDelta?.usage?.cache_read_input_tokens === 50,
+      `cache_read_input_tokens=${finalDelta?.usage?.cache_read_input_tokens}`)
+    assert(finalDelta?.usage?.cache_creation_input_tokens === 25,
+      `cache_creation_input_tokens=${finalDelta?.usage?.cache_creation_input_tokens}`)
+  })
+
+  await test('agentrouter reads Anthropic-native usage shape (cache_read/creation_input_tokens)', async () => {
+    // The gateway forwards Anthropic responses verbatim, so usage often
+    // arrives as additive cache_read_input_tokens + cache_creation_input_tokens
+    // alongside the OpenAI-style prompt_tokens total. Without the fold the
+    // user saw cache_hit=0% even on warm sessions where latency had clearly
+    // dropped.
+    const { events } = await captureAgentRouterRequest('session-fixed', {
+      prompt_tokens: 700_000,
+      completion_tokens: 4_661,
+      total_tokens: 704_661,
+      cache_read_input_tokens: 600_000,
+      cache_creation_input_tokens: 50_000,
+    })
+    const finalDelta = events.findLast(ev => ev.type === 'message_delta')
+    // 700k total = 50k fresh + 600k read + 50k write.
+    assert(finalDelta?.usage?.input_tokens === 50_000,
+      `input_tokens=${finalDelta?.usage?.input_tokens}`)
+    assert(finalDelta?.usage?.cache_read_input_tokens === 600_000,
+      `cache_read_input_tokens=${finalDelta?.usage?.cache_read_input_tokens}`)
+    assert(finalDelta?.usage?.cache_creation_input_tokens === 50_000,
+      `cache_creation_input_tokens=${finalDelta?.usage?.cache_creation_input_tokens}`)
+  })
+
+  await test('agentrouter Anthropic-native fields override OpenAI-style cached_tokens=0', async () => {
+    // Real-world failure mode: the gateway sets cached_tokens=0 (so the
+    // OpenAI-style parse comes up empty) but still emits the Anthropic
+    // additive fields. The fold has to win in that conflict.
+    const { events } = await captureAgentRouterRequest('session-fixed', {
+      prompt_tokens: 100,
+      completion_tokens: 5,
+      total_tokens: 105,
+      prompt_tokens_details: { cached_tokens: 0 },
+      cache_read_input_tokens: 60,
+      cache_creation_input_tokens: 10,
+    })
+    const finalDelta = events.findLast(ev => ev.type === 'message_delta')
+    assert(finalDelta?.usage?.cache_read_input_tokens === 60,
+      `cache_read_input_tokens=${finalDelta?.usage?.cache_read_input_tokens}`)
+    assert(finalDelta?.usage?.cache_creation_input_tokens === 10,
+      `cache_creation_input_tokens=${finalDelta?.usage?.cache_creation_input_tokens}`)
+    assert(finalDelta?.usage?.input_tokens === 30,
+      `input_tokens=${finalDelta?.usage?.input_tokens}`)
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

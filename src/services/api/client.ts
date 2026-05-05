@@ -6,6 +6,8 @@ import {
   getAnthropicApiKey,
   getApiKeyFromApiKeyHelper,
   getClaudeAIOAuthTokens,
+  getProviderApiKey,
+  getProviderBaseUrl,
   isClaudeAISubscriber,
   refreshAndGetAwsCredentials,
   refreshGcpCredentialsIfNeeded,
@@ -87,6 +89,7 @@ function _autoCorrectProvider(
     current === 'kiro'
     || current === 'antigravity'
     || current === 'openrouter'
+    || current === 'agentrouter'
     || current === 'nim'
     || current === 'ollama'
     || current === 'cline'
@@ -210,6 +213,36 @@ export async function getAnthropicClient({
     if (authCheck.method === 'oauth') {
       const { resolveProviderAuth } = await import('./auth/provider_auth.js')
       await resolveProviderAuth(currentProvider)  // refreshes token if expired
+    }
+
+    // AgentRouter's Claude Code integration is Anthropic Messages-compatible,
+    // not the OpenAI chat-completions wire path. Its official setup uses
+    // ANTHROPIC_BASE_URL=https://agentrouter.org/ with the same token in
+    // ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY, so route the selectable provider
+    // through the real Anthropic SDK client and let the SDK emit the Claude Code
+    // request shape.
+    if (currentProvider === 'agentrouter') {
+      const agentRouterKey = getProviderApiKey('agentrouter')
+      if (!agentRouterKey) {
+        throw new Error('No credentials found for agentrouter. Set AGENT_ROUTER_TOKEN or run `/login`.')
+      }
+      const baseURL = getProviderBaseUrl('agentrouter').replace(/\/v1\/?$/i, '/')
+      return new Anthropic({
+        apiKey: agentRouterKey,
+        authToken: agentRouterKey,
+        baseURL,
+        defaultHeaders,
+        maxRetries,
+        timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+        dangerouslyAllowBrowser: true,
+        fetchOptions: getProxyFetchOptions({
+          forAnthropicAPI: true,
+        }) as ClientOptions['fetchOptions'],
+        ...(resolvedFetch && {
+          fetch: resolvedFetch,
+        }),
+        ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+      })
     }
 
     // Return the shim cast as Anthropic — it quacks like an Anthropic client

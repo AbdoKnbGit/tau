@@ -149,6 +149,7 @@ function detectKeyFormat(provider: string, key: string): string {
   const prefixes: Record<string, string> = {
     openai: 'sk-',
     openrouter: 'sk-or-',
+    agentrouter: 'sk-',
     groq: 'gsk_',
     nim: 'nvapi-',
     gemini: 'AIza',
@@ -171,6 +172,7 @@ interface KeyValidation {
 const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   openai: { prefix: 'sk-', minLength: 20, displayName: 'OpenAI' },
   openrouter: { prefix: 'sk-or-', minLength: 20, displayName: 'OpenRouter' },
+  agentrouter: { prefix: 'sk-', minLength: 16, displayName: 'AgentRouter' },
   groq: { prefix: 'gsk_', minLength: 20, displayName: 'Groq' },
   nim: { prefix: 'nvapi-', minLength: 20, displayName: 'NVIDIA NIM' },
   gemini: { prefix: 'AIza', minLength: 30, displayName: 'Gemini' },

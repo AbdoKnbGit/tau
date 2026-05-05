@@ -48,6 +48,28 @@ export interface ProviderModelConfig {
   supportsToolCalling: boolean
 }
 
+const AGENTROUTER_MODEL_IDS = new Set([
+  'claude-haiku-4-5-20251001',
+  'claude-opus-4-6',
+  'glm-4.5',
+  'glm-4.6',
+  'glm-5.1',
+  'deepseek-r1-0528',
+  'deepseek-v3.1',
+  'deepseek-v3.2',
+])
+
+export function isAgentRouterModelId(model: string): boolean {
+  const normalized = model.toLowerCase()
+  if (AGENTROUTER_MODEL_IDS.has(normalized)) {
+    return true
+  }
+  const configured = getProviderModelSet('agentrouter')
+  return Object.values(configured).some(
+    value => value.toLowerCase() === normalized,
+  )
+}
+
 /**
  * Detects the provider tier from env var or falls back to the provider's default.
  *
@@ -262,6 +284,38 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.OR_MODEL_OPUS   ?? 'anthropic/claude-opus-4.7',
         sonnet: process.env.OR_MODEL_SONNET ?? 'anthropic/claude-sonnet-4-6',
         haiku:  process.env.OR_MODEL_HAIKU  ?? 'google/gemini-3.1-flash-lite-preview',
+      },
+    },
+  },
+
+  // AgentRouter — independent OpenRouter-style gateway. Curated catalog
+  // of 8 models (claude-haiku-4-5-20251001, claude-opus-4-6, glm-4.5/4.6/5.1,
+  // deepseek-r1-0528 / -v3.1 / -v3.2). The default pro sonnet/haiku slots use
+  // Claude Haiku because it is the cheapest Claude Code-compatible target and
+  // preserves Anthropic prompt-cache usage through AgentRouter.
+  agentrouter: {
+    displayName: 'AgentRouter',
+    baseUrl: 'https://agentrouter.org/v1',
+    authType: 'bearer',
+    apiKeyEnv: 'AGENT_ROUTER_TOKEN',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.AR_MODEL_OPUS   ?? 'glm-4.6',
+        sonnet: process.env.AR_MODEL_SONNET ?? 'glm-4.6',
+        haiku:  process.env.AR_MODEL_HAIKU  ?? 'glm-4.5',
+      },
+      pro: {
+        opus:   process.env.AR_MODEL_OPUS   ?? 'claude-opus-4-6',
+        sonnet: process.env.AR_MODEL_SONNET ?? 'claude-haiku-4-5-20251001',
+        haiku:  process.env.AR_MODEL_HAIKU  ?? 'claude-haiku-4-5-20251001',
+      },
+      plus: {
+        opus:   process.env.AR_MODEL_OPUS   ?? 'claude-opus-4-6',
+        sonnet: process.env.AR_MODEL_SONNET ?? 'claude-opus-4-6',
+        haiku:  process.env.AR_MODEL_HAIKU  ?? 'claude-haiku-4-5-20251001',
       },
     },
   },
