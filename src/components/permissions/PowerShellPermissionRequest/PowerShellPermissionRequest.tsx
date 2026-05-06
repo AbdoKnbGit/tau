@@ -7,6 +7,7 @@ import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metada
 import { getDestructiveCommandWarning } from '../../../tools/PowerShellTool/destructiveCommandWarning.js';
 import { PowerShellTool } from '../../../tools/PowerShellTool/PowerShellTool.js';
 import { isAllowlistedCommand } from '../../../tools/PowerShellTool/readOnlyValidation.js';
+import { enableBypassPermissionsModeForSession } from '../../../utils/permissions/bypassPermissionsMode.js';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
 import { getCompoundCommandPrefixesStatic } from '../../../utils/powershell/staticPrefix.js';
 import { Select } from '../../CustomSelect/select.js';
@@ -120,7 +121,8 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
       yes: 1,
       'yes-apply-suggestions': 2,
       'yes-prefix-edited': 2,
-      no: 3
+      'yes-bypass-permissions': 3,
+      no: 4
     };
     logEvent('tengu_permission_request_option_selected', {
       option_index: optionIndex[value],
@@ -144,6 +146,20 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
         }];
         toolUseConfirm.onAllow(toolUseConfirm.input, prefixUpdates);
       }
+      onDone();
+      return;
+    }
+    if (value === 'yes-bypass-permissions') {
+      logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept');
+      if (!enableBypassPermissionsModeForSession(toolUseContext)) {
+        handleReject('Bypass Permissions mode is disabled by settings or policy.');
+        return;
+      }
+      logEvent('tengu_bypass_permissions_prompt_enabled', {
+        toolName: toolNameForAnalytics,
+        isMcp: toolUseConfirm.tool.isMcp ?? false
+      });
+      toolUseConfirm.onAllow(toolUseConfirm.input, []);
       onDone();
       return;
     }

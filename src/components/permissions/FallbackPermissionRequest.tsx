@@ -4,6 +4,8 @@ import { getOriginalCwd } from '../../bootstrap/state.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { sanitizeToolNameForAnalytics } from '../../services/analytics/metadata.js';
 import { env } from '../../utils/env.js';
+import { enableBypassPermissionsModeForSession } from '../../utils/permissions/bypassPermissionsMode.js';
+import { isBypassPermissionsModeDisabled } from '../../utils/permissions/permissionSetup.js';
 import { shouldShowAlwaysAllowOptions } from '../../utils/permissions/permissionsLoader.js';
 import { truncateToLines } from '../../utils/stringUtils.js';
 import { logUnaryEvent } from '../../utils/unaryLogging.js';
@@ -12,11 +14,12 @@ import { PermissionDialog } from './PermissionDialog.js';
 import { PermissionPrompt, type PermissionPromptOption, type ToolAnalyticsContext } from './PermissionPrompt.js';
 import type { PermissionRequestProps } from './PermissionRequest.js';
 import { PermissionRuleExplanation } from './PermissionRuleExplanation.js';
-type FallbackOptionValue = 'yes' | 'yes-dont-ask-again' | 'no';
+type FallbackOptionValue = 'yes' | 'yes-dont-ask-again' | 'yes-bypass-permissions' | 'no';
 export function FallbackPermissionRequest(t0) {
   const $ = _c(58);
   const {
     toolUseConfirm,
+    toolUseContext,
     onDone,
     onReject,
     workerBadge
@@ -86,6 +89,27 @@ export function FallbackPermissionRequest(t0) {
               behavior: "allow",
               destination: "localSettings"
             }]);
+            onDone();
+            break bb8;
+          }
+        case "yes-bypass-permissions":
+          {
+            logUnaryEvent({
+              completion_type: "tool_use_single",
+              event: "accept",
+              metadata: {
+                language_name: "none",
+                message_id: toolUseConfirm.assistantMessage.message.id,
+                platform: env.platform
+              }
+            });
+            if (!enableBypassPermissionsModeForSession(toolUseContext)) {
+              toolUseConfirm.onReject('Bypass Permissions mode is disabled by settings or policy.');
+              onReject();
+              onDone();
+              break bb8;
+            }
+            toolUseConfirm.onAllow(toolUseConfirm.input, [], feedback);
             onDone();
             break bb8;
           }
@@ -192,6 +216,13 @@ export function FallbackPermissionRequest(t0) {
       }
       result.push(t10);
     }
+    const bypassPermissionsDisabled = isBypassPermissionsModeDisabled();
+    result.push({
+      label: 'Yes, dangerously skip permissions for this session',
+      value: 'yes-bypass-permissions',
+      description: bypassPermissionsDisabled ? 'Disabled by settings or policy.' : 'Tau will stop asking before running tools.',
+      disabled: bypassPermissionsDisabled
+    });
     let t8;
     if ($[21] === Symbol.for("react.memo_cache_sentinel")) {
       t8 = {

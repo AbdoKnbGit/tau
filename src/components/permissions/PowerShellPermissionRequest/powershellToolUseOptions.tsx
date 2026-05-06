@@ -1,9 +1,10 @@
 import { POWERSHELL_TOOL_NAME } from '../../../tools/PowerShellTool/toolName.js';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
+import { isBypassPermissionsModeDisabled } from '../../../utils/permissions/permissionSetup.js';
 import { shouldShowAlwaysAllowOptions } from '../../../utils/permissions/permissionsLoader.js';
 import type { OptionWithDescription } from '../../CustomSelect/select.js';
 import { generateShellSuggestionsLabel } from '../shellPermissionHelpers.js';
-export type PowerShellToolUseOption = 'yes' | 'yes-apply-suggestions' | 'yes-prefix-edited' | 'no';
+export type PowerShellToolUseOption = 'yes' | 'yes-apply-suggestions' | 'yes-prefix-edited' | 'yes-bypass-permissions' | 'no';
 export function powershellToolUseOptions({
   suggestions = [],
   onRejectFeedbackChange,
@@ -71,6 +72,13 @@ export function powershellToolUseOptions({
       }
     }
   }
+  const bypassPermissionsDisabled = isBypassPermissionsModeDisabled();
+  options.push({
+    label: 'Yes, dangerously skip permissions for this session',
+    value: 'yes-bypass-permissions',
+    description: bypassPermissionsDisabled ? 'Disabled by settings or policy.' : 'Tau will stop asking before running tools.',
+    disabled: bypassPermissionsDisabled
+  });
   if (noInputMode) {
     options.push({
       type: 'input',

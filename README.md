@@ -52,6 +52,12 @@ npm install -g @abdoknbgit/tau
 tau
 ```
 
+Launch with skip permission mode:
+
+```bash
+tau --dangerously-skip-permissions
+```
+
 ---
 ## Update
 
@@ -120,6 +126,15 @@ Creates a clean content report for the session in Markdown, PDF, or HTML. This i
 
 **`/fallback` - Recover automatically**
 Automatic recovery when a model fails mid-session. Configure a fallback and keep working through provider outages.
+
+**`/dangerously-skip-permissions` - Skip permission prompts in a trusted sandbox**
+Session-only Bypass Permissions mode. Tau shows a warning before enabling it, permission prompts include the same session option, and `/dangerously-skip-permissions off` returns to Default mode.
+
+Launch Tau directly in this mode:
+
+```bash
+tau --dangerously-skip-permissions
+```
 
 **`/github` - GitHub automation (gh required)**
 GitHub workflows inside Tau, powered by the GitHub CLI.

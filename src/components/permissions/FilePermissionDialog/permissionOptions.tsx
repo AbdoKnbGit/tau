@@ -7,6 +7,7 @@ import { getShortcutDisplay } from '../../../keybindings/shortcutFormat.js';
 import type { ToolPermissionContext } from '../../../Tool.js';
 import { expandPath, getDirectoryForPath } from '../../../utils/path.js';
 import { normalizeCaseForComparison, pathInAllowedWorkingPath } from '../../../utils/permissions/filesystem.js';
+import { isBypassPermissionsModeDisabled } from '../../../utils/permissions/permissionSetup.js';
 import type { OptionWithDescription } from '../../CustomSelect/select.js';
 /**
  * Check if a path is within the project's .claude/ folder.
@@ -43,6 +44,8 @@ export type PermissionOption = {
 } | {
   type: 'accept-session';
   scope?: 'claude-folder' | 'global-claude-folder';
+} | {
+  type: 'bypass-permissions';
 } | {
   type: 'reject';
 };
@@ -148,6 +151,16 @@ export function getFilePermissionOptions({
       }
     });
   }
+  const bypassPermissionsDisabled = isBypassPermissionsModeDisabled();
+  options.push({
+    label: 'Yes, dangerously skip permissions for this session',
+    value: 'yes-bypass-permissions',
+    description: bypassPermissionsDisabled ? 'Disabled by settings or policy.' : 'Tau will stop asking before running tools.',
+    disabled: bypassPermissionsDisabled,
+    option: {
+      type: 'bypass-permissions'
+    }
+  });
 
   // When in input mode, show input field for reject
   if (noInputMode && onRejectFeedbackChange) {

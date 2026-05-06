@@ -1,10 +1,13 @@
 import { feature } from 'bun:bundle'
+import { setSessionBypassPermissionsMode } from '../../bootstrap/state.js'
 import type { ToolPermissionContext } from '../../Tool.js'
 import { logForDebugging } from '../debug.js'
+import { createBypassPermissionsContext } from './bypassPermissionsMode.js'
 import type { PermissionMode } from './PermissionMode.js'
 import {
   getAutoModeUnavailableReason,
   isAutoModeGateEnabled,
+  isBypassPermissionsModeDisabled,
   transitionPermissionMode,
 } from './permissionSetup.js'
 
@@ -28,6 +31,10 @@ function canCycleToAuto(ctx: ToolPermissionContext): boolean {
   return false
 }
 
+function canCycleToBypass(): boolean {
+  return !isBypassPermissionsModeDisabled()
+}
+
 /**
  * Determines the next permission mode when cycling through modes with Shift+Tab.
  */
@@ -39,7 +46,7 @@ export function getNextPermissionMode(
     case 'default':
       // Ants skip acceptEdits and plan — auto mode replaces them
       if (process.env.USER_TYPE === 'ant') {
-        if (toolPermissionContext.isBypassPermissionsModeAvailable) {
+        if (canCycleToBypass()) {
           return 'bypassPermissions'
         }
         if (canCycleToAuto(toolPermissionContext)) {
@@ -53,7 +60,7 @@ export function getNextPermissionMode(
       return 'plan'
 
     case 'plan':
-      if (toolPermissionContext.isBypassPermissionsModeAvailable) {
+      if (canCycleToBypass()) {
         return 'bypassPermissions'
       }
       if (canCycleToAuto(toolPermissionContext)) {
@@ -90,6 +97,16 @@ export function cyclePermissionMode(
   teamContext?: { leadAgentId: string },
 ): { nextMode: PermissionMode; context: ToolPermissionContext } {
   const nextMode = getNextPermissionMode(toolPermissionContext, teamContext)
+  if (nextMode === 'bypassPermissions') {
+    setSessionBypassPermissionsMode(true)
+    return {
+      nextMode,
+      context: createBypassPermissionsContext(toolPermissionContext),
+    }
+  }
+  if (toolPermissionContext.mode === 'bypassPermissions') {
+    setSessionBypassPermissionsMode(false)
+  }
   return {
     nextMode,
     context: transitionPermissionMode(

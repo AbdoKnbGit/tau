@@ -6,6 +6,7 @@ import {
   logEvent,
 } from '../../../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
+import type { ToolUseContext } from '../../../Tool.js'
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
 import type { CompletionType } from '../../../utils/unaryLogging.js'
 import type { ToolUseConfirm } from '../PermissionRequest.js'
@@ -29,6 +30,7 @@ export type UseFilePermissionDialogProps<T extends ToolInput> = {
   completionType: CompletionType
   languageName: string | Promise<string>
   toolUseConfirm: ToolUseConfirm
+  toolUseContext: ToolUseContext
   onDone: () => void
   onReject: () => void
   parseInput: (input: unknown) => T
@@ -55,6 +57,7 @@ export function useFilePermissionDialog<T extends ToolInput>({
   completionType,
   languageName,
   toolUseConfirm,
+  toolUseContext,
   onDone,
   onReject,
   parseInput,
@@ -93,6 +96,7 @@ export function useFilePermissionDialog<T extends ToolInput>({
         path: filePath,
         toolUseConfirm,
         toolPermissionContext,
+        toolUseContext,
         onDone,
         onReject,
         completionType,
@@ -115,9 +119,9 @@ export function useFilePermissionDialog<T extends ToolInput>({
         feedback,
         hasFeedback: !!feedback,
         enteredFeedbackMode:
-          option.type === 'accept-once'
-            ? yesFeedbackModeEntered
-            : noFeedbackModeEntered,
+          option.type === 'reject'
+            ? noFeedbackModeEntered
+            : yesFeedbackModeEntered,
         scope: option.type === 'accept-session' ? option.scope : undefined,
       })
     },
@@ -126,6 +130,7 @@ export function useFilePermissionDialog<T extends ToolInput>({
       completionType,
       languageName,
       toolUseConfirm,
+      toolUseContext,
       toolPermissionContext,
       onDone,
       onReject,

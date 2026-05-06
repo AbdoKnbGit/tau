@@ -64,8 +64,8 @@ const PERMISSION_MODE_CONFIG: Partial<
     external: 'acceptEdits',
   },
   bypassPermissions: {
-    title: 'Bypass Permissions',
-    shortTitle: 'Bypass',
+    title: 'Dangerously Skipping Permissions',
+    shortTitle: 'Danger',
     symbol: '⏵⏵',
     color: 'error',
     external: 'bypassPermissions',

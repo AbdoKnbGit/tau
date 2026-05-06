@@ -3,9 +3,14 @@ import chalk from 'chalk';
 import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { setSessionBypassPermissionsMode } from 'src/bootstrap/state.js';
 import { useAppState, useSetAppState } from 'src/state/AppState.js';
+import type { ToolPermissionContext } from 'src/Tool.js';
+import { enableBypassPermissionsModeForSession } from 'src/utils/permissions/bypassPermissionsMode.js';
+import { type PermissionMode, permissionModeTitle } from 'src/utils/permissions/PermissionMode.js';
 import { applyPermissionUpdate, persistPermissionUpdate } from 'src/utils/permissions/PermissionUpdate.js';
 import type { PermissionUpdateDestination } from 'src/utils/permissions/PermissionUpdateSchema.js';
+import { isBypassPermissionsModeDisabled, transitionPermissionMode } from 'src/utils/permissions/permissionSetup.js';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { Select } from '../../../components/CustomSelect/select.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../../hooks/useExitOnCtrlCDWithKeybindings.js';
@@ -30,7 +35,7 @@ import { PermissionRuleInput } from './PermissionRuleInput.js';
 import { RecentDenialsTab } from './RecentDenialsTab.js';
 import { RemoveWorkspaceDirectory } from './RemoveWorkspaceDirectory.js';
 import { WorkspaceTab } from './WorkspaceTab.js';
-type TabType = 'recent' | 'allow' | 'ask' | 'deny' | 'workspace';
+type TabType = 'mode' | 'recent' | 'allow' | 'ask' | 'deny' | 'workspace';
 type RuleSourceTextProps = {
   rule: PermissionRule;
 };
@@ -69,6 +74,86 @@ function getRuleBehaviorLabel(ruleBehavior: PermissionBehavior): string {
     case 'ask':
       return 'ask';
   }
+}
+
+type PermissionModeTabProps = {
+  toolPermissionContext: ToolPermissionContext;
+  setAppState: ReturnType<typeof useSetAppState>;
+  onModeChange: (message: string) => void;
+  onHeaderFocusChange?: (focused: boolean) => void;
+};
+
+function PermissionModeTab({
+  toolPermissionContext,
+  setAppState,
+  onModeChange,
+  onHeaderFocusChange
+}: PermissionModeTabProps) {
+  const {
+    headerFocused,
+    focusHeader
+  } = useTabHeaderFocus();
+  useEffect(() => {
+    onHeaderFocusChange?.(headerFocused);
+  }, [headerFocused, onHeaderFocusChange]);
+  const bypassPermissionsDisabled = isBypassPermissionsModeDisabled();
+  const currentMode = toolPermissionContext.mode;
+  const options = useMemo(() => {
+    const labelForMode = (mode: PermissionMode, label: string) => currentMode === mode ? <Text>{label} <Text dimColor>(active)</Text></Text> : label;
+    return [{
+      label: labelForMode('default', 'Default'),
+      value: 'default',
+      description: 'Ask before unsafe tools.'
+    }, {
+      label: labelForMode('acceptEdits', 'Accept edits'),
+      value: 'acceptEdits',
+      description: 'Auto-accept file edits, keep asking for commands.'
+    }, {
+      label: labelForMode('plan', 'Plan mode'),
+      value: 'plan',
+      description: 'Plan only, do not run tools.'
+    }, {
+      label: labelForMode('bypassPermissions', 'Dangerously skip permissions'),
+      value: 'bypassPermissions',
+      description: bypassPermissionsDisabled ? 'Disabled by settings or policy.' : 'Tau will stop asking before running tools.',
+      disabled: bypassPermissionsDisabled
+    }];
+  }, [bypassPermissionsDisabled, currentMode]);
+  const handleModeSelect = useCallback((value: string) => {
+    const mode = value as PermissionMode;
+    if (mode === currentMode) {
+      return;
+    }
+    if (mode === 'bypassPermissions') {
+      if (enableBypassPermissionsModeForSession({
+        setAppState
+      })) {
+        onModeChange('Dangerously skipping permissions activated for this session');
+      } else {
+        onModeChange('Bypass Permissions mode is disabled by settings or policy');
+      }
+      return;
+    }
+    setSessionBypassPermissionsMode(false);
+    setAppState(prev => {
+      const preparedContext = transitionPermissionMode(prev.toolPermissionContext.mode, mode, prev.toolPermissionContext);
+      return {
+        ...prev,
+        toolPermissionContext: applyPermissionUpdate(preparedContext, {
+          type: 'setMode',
+          mode,
+          destination: 'session'
+        })
+      };
+    });
+    onModeChange(`Permission mode set to ${permissionModeTitle(mode)}`);
+  }, [currentMode, onModeChange, setAppState]);
+  return <Box flexDirection="column">
+      <Text>Current mode: <Text bold>{permissionModeTitle(currentMode)}</Text></Text>
+      <Box marginTop={1}>
+        <Select options={options} onChange={handleModeSelect} visibleOptionCount={options.length} isDisabled={headerFocused} onUpFromFirstItem={focusHeader} inlineDescriptions />
+      </Box>
+    </Box>;
 }
 
 // Component for showing tool details and managing the interactive deletion workflow
@@ -485,7 +570,7 @@ export function PermissionRuleList(t0) {
     t1 = $[0];
   }
   const hasDenials = t1.length > 0;
-  const defaultTab = initialTab ?? (hasDenials ? "recent" : "allow");
+  const defaultTab = initialTab ?? "mode";
   let t2;
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
     t2 = [];
@@ -592,6 +677,7 @@ export function PermissionRuleList(t0) {
               return askRulesByKey;
             }
           case "workspace":
+          case "mode":
           case "recent":
             {
               return new Map();
@@ -599,7 +685,7 @@ export function PermissionRuleList(t0) {
         }
       })();
       const options = [];
-      if (tab !== "workspace" && tab !== "recent" && !query) {
+      if (tab !== "workspace" && tab !== "mode" && tab !== "recent" && !query) {
         options.push({
           label: `Add a new rule${figures.ellipsis}`,
           value: "add-new-rule"
@@ -901,7 +987,7 @@ export function PermissionRuleList(t0) {
     }
     return t23;
   }
-  if (addingRuleToTab && addingRuleToTab !== "workspace" && addingRuleToTab !== "recent") {
+  if (addingRuleToTab && addingRuleToTab !== "workspace" && addingRuleToTab !== "mode" && addingRuleToTab !== "recent") {
     let t22;
     if ($[45] !== addingRuleToTab) {
       t22 = <PermissionRuleInput onCancel={handleRuleInputCancel} onSubmit={handleRuleInputSubmit} ruleBehavior={addingRuleToTab} />;
@@ -1065,6 +1151,7 @@ export function PermissionRuleList(t0) {
   const sharedRulesProps = t22;
   const isHidden = !!selectedRule || !!addingRuleToTab || !!validatedRule || isAddingWorkspaceDirectory || !!removingDirectory;
   const t23 = !isSearchMode;
+  const modeTab = <Tab id="mode" title="Mode"><PermissionModeTab toolPermissionContext={toolPermissionContext} setAppState={setAppState} onModeChange={message => setChanges(prev => [...prev, message])} onHeaderFocusChange={handleHeaderFocusChange} /></Tab>;
   let t24;
   if ($[82] === Symbol.for("react.memo_cache_sentinel")) {
     t24 = <Tab id="recent" title="Recently denied"><RecentDenialsTab onHeaderFocusChange={handleHeaderFocusChange} onStateChange={handleDenialStateChange} /></Tab>;
@@ -1112,20 +1199,7 @@ export function PermissionRuleList(t0) {
   } else {
     t29 = $[92];
   }
-  let t30;
-  if ($[93] !== defaultTab || $[94] !== isHidden || $[95] !== t23 || $[96] !== t25 || $[97] !== t26 || $[98] !== t27 || $[99] !== t29) {
-    t30 = <Tabs title="Permissions:" color="permission" defaultTab={defaultTab} hidden={isHidden} initialHeaderFocused={!hasDenials} navFromContent={t23}>{t24}{t25}{t26}{t27}{t29}</Tabs>;
-    $[93] = defaultTab;
-    $[94] = isHidden;
-    $[95] = t23;
-    $[96] = t25;
-    $[97] = t26;
-    $[98] = t27;
-    $[99] = t29;
-    $[100] = t30;
-  } else {
-    t30 = $[100];
-  }
+  const t30 = <Tabs title="Permissions:" color="permission" defaultTab={defaultTab} hidden={isHidden} initialHeaderFocused={!hasDenials} navFromContent={t23}>{modeTab}{t24}{t25}{t26}{t27}{t29}</Tabs>;
   let t31;
   if ($[101] !== defaultTab || $[102] !== exitState.keyName || $[103] !== exitState.pending || $[104] !== headerFocused || $[105] !== isSearchMode) {
     t31 = <Box marginTop={1} paddingLeft={1}><Text dimColor={true}>{exitState.pending ? <>Press {exitState.keyName} again to exit</> : headerFocused ? <>←/→ tab switch · ↓ return · Esc cancel</> : isSearchMode ? <>Type to filter · Enter/↓ select · ↑ tabs · Esc clear</> : hasDenials && defaultTab === "recent" ? <>Enter approve · r retry · ↑↓ navigate · ←/→ switch · Esc cancel</> : <>↑↓ navigate · Enter select · Type to search · ←/→ switch · Esc cancel</>}</Text></Box>;

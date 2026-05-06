@@ -92,6 +92,7 @@ export function FilePermissionDialog<T extends ToolInput = ToolInput>({
     completionType,
     languageName,
     toolUseConfirm,
+    toolUseContext,
     onDone,
     onReject,
     parseInput,

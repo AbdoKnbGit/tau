@@ -3,13 +3,14 @@ import {
   logEvent,
 } from '../../../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
-import type { ToolPermissionContext } from '../../../Tool.js'
+import type { ToolPermissionContext, ToolUseContext } from '../../../Tool.js'
 import {
   CLAUDE_FOLDER_PERMISSION_PATTERN,
   FILE_EDIT_TOOL_NAME,
   GLOBAL_CLAUDE_FOLDER_PERMISSION_PATTERN,
 } from '../../../tools/FileEditTool/constants.js'
 import { env } from '../../../utils/env.js'
+import { enableBypassPermissionsModeForSession } from '../../../utils/permissions/bypassPermissionsMode.js'
 import { generateSuggestions } from '../../../utils/permissions/filesystem.js'
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
 import {
@@ -46,6 +47,7 @@ export type PermissionHandlerParams = {
   path: string | null
   toolUseConfirm: ToolUseConfirm
   toolPermissionContext: ToolPermissionContext
+  toolUseContext: ToolUseContext
   onDone: () => void
   onReject: () => void
   completionType: CompletionType
@@ -138,6 +140,38 @@ function handleAcceptSession(
   toolUseConfirm.onAllow(toolUseConfirm.input, suggestions)
 }
 
+function handleBypassPermissions(params: PermissionHandlerParams): void {
+  const {
+    messageId,
+    toolUseConfirm,
+    toolUseContext,
+    onDone,
+    onReject,
+    completionType,
+    languageName,
+  } = params
+
+  if (!enableBypassPermissionsModeForSession(toolUseContext)) {
+    onDone()
+    onReject()
+    toolUseConfirm.onReject(
+      'Bypass Permissions mode is disabled by settings or policy.',
+    )
+    return
+  }
+
+  logPermissionEvent('accept', completionType, languageName, messageId)
+  logEvent('tengu_bypass_permissions_prompt_enabled', {
+    toolName: sanitizeToolNameForAnalytics(
+      toolUseConfirm.tool.name,
+    ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    isMcp: toolUseConfirm.tool.isMcp ?? false,
+  })
+
+  onDone()
+  toolUseConfirm.onAllow(toolUseConfirm.input, [])
+}
+
 function handleReject(
   params: PermissionHandlerParams,
   options?: PermissionHandlerOptions,
@@ -181,5 +215,6 @@ export const PERMISSION_HANDLERS: Record<
 > = {
   'accept-once': handleAcceptOnce,
   'accept-session': handleAcceptSession,
+  'bypass-permissions': handleBypassPermissions,
   reject: handleReject,
 }

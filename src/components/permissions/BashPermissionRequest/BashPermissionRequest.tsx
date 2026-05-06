@@ -15,6 +15,7 @@ import { parseSedEditCommand } from '../../../tools/BashTool/sedEditParser.js';
 import { shouldUseSandbox } from '../../../tools/BashTool/shouldUseSandbox.js';
 import { getCompoundCommandPrefixesStatic } from '../../../utils/bash/prefix.js';
 import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../utils/permissions/bashClassifier.js';
+import { enableBypassPermissionsModeForSession } from '../../../utils/permissions/bypassPermissionsMode.js';
 import { extractRules } from '../../../utils/permissions/PermissionUpdate.js';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
 import { SandboxManager } from '../../../utils/sandbox/sandbox-adapter.js';
@@ -323,7 +324,8 @@ function BashPermissionRequestInner({
       yes: 1,
       'yes-apply-suggestions': 2,
       'yes-prefix-edited': 2,
-      no: 3
+      'yes-bypass-permissions': 3,
+      no: 4
     };
     if (feature('BASH_CLASSIFIER')) {
       optionIndex = {
@@ -331,7 +333,8 @@ function BashPermissionRequestInner({
         'yes-apply-suggestions': 2,
         'yes-prefix-edited': 2,
         'yes-classifier-reviewed': 3,
-        no: 4
+        'yes-bypass-permissions': 4,
+        no: 5
       };
     }
     logEvent('tengu_permission_request_option_selected', {
@@ -376,6 +379,20 @@ function BashPermissionRequestInner({
         }];
         toolUseConfirm.onAllow(toolUseConfirm.input, permissionUpdates);
       }
+      onDone();
+      return;
+    }
+    if (value_0 === 'yes-bypass-permissions') {
+      logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept');
+      if (!enableBypassPermissionsModeForSession(toolUseContext)) {
+        handleReject('Bypass Permissions mode is disabled by settings or policy.');
+        return;
+      }
+      logEvent('tengu_bypass_permissions_prompt_enabled', {
+        toolName: toolNameForAnalytics,
+        isMcp: toolUseConfirm.tool.isMcp ?? false
+      });
+      toolUseConfirm.onAllow(toolUseConfirm.input, []);
       onDone();
       return;
     }
