@@ -221,10 +221,7 @@ export async function getAnthropicClient({
     // ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY, so route the selectable provider
     // through the real Anthropic SDK client and let the SDK emit the Claude Code
     // request shape.
-    const useAgentRouterOpenAICompat = isEnvTruthy(
-      process.env.AGENTROUTER_USE_OPENAI_COMPAT,
-    )
-    if (currentProvider === 'agentrouter' && !useAgentRouterOpenAICompat) {
+    if (currentProvider === 'agentrouter') {
       const agentRouterKey = getProviderApiKey('agentrouter')
       if (!agentRouterKey) {
         throw new Error('No credentials found for agentrouter. Set AGENT_ROUTER_TOKEN or run `/login`.')
@@ -246,11 +243,6 @@ export async function getAnthropicClient({
         }),
         ...(isDebugToStdErr() && { logger: createStderrLogger() }),
       })
-    }
-    if (currentProvider === 'agentrouter') {
-      logForDebugging(
-        'AgentRouter: using OpenAI-compatible chat completions path because AGENTROUTER_USE_OPENAI_COMPAT=1.',
-      )
     }
 
     // Return the shim cast as Anthropic — it quacks like an Anthropic client

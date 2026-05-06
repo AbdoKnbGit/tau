@@ -150,7 +150,7 @@ GitHub workflows inside Tau, powered by the GitHub CLI.
 | Cursor | Peak performance on Plan mode |
 | KiloCode | Lots of free models and decent to try for low-cost side tasks |
 | Kiro | Best performance/cost provider with large free credit |
-| AgentRouter | Includes free $125 usage. Latency is server-side, and the API still has issues. claude_haiku is currently the only model I made work well |
+| AgentRouter | Includes free $125 usage. Latency is server-side, and the API still has issues. claude_haiku is currently the only model I made work well. For AgentRouter only, Windows is currently supported; Linux and macOS support is being worked on |
 
 ---
 

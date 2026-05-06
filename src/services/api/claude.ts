@@ -367,6 +367,15 @@ function isAgentRouterClaudeModel(model: string): boolean {
   )
 }
 
+function isAgentRouterHaikuModel(model: string): boolean {
+  const normalizedModel = normalizeModelStringForAPI(model).toLowerCase()
+  return (
+    getAPIProvider() === 'agentrouter' &&
+    (normalizedModel === 'claude-haiku-4-5' ||
+      normalizedModel === 'claude-haiku-4-5-20251001')
+  )
+}
+
 function isAgentRouterThinkingEnabled(): boolean {
   return (
     isEnvTruthy(process.env.AGENTROUTER_ENABLE_THINKING) ||
@@ -394,8 +403,7 @@ function getAgentRouterMaxOutputTokenLimit(): number {
 
 function shouldUseAgentRouterPrimaryNonStreaming(model: string): boolean {
   return (
-    getAPIProvider() === 'agentrouter' &&
-    isAgentRouterClaudeModel(model) &&
+    isAgentRouterHaikuModel(model) &&
     !isEnvTruthy(process.env.AGENTROUTER_ENABLE_STREAMING)
   )
 }
@@ -967,7 +975,7 @@ export async function* executeNonStreamingRequest(
             timeout: fallbackTimeoutMs,
           },
         )
-        return normalizeNonStreamingMessageResponse(response)
+        return normalizeNonStreamingMessageResponse(response, adjustedParams.model)
       } catch (err) {
         // User aborts are not errors — re-throw immediately without logging
         if (err instanceof APIUserAbortError) throw err
@@ -1015,24 +1023,320 @@ export async function* executeNonStreamingRequest(
 
 function normalizeNonStreamingMessageResponse(
   response: BetaMessage | string,
+  model: string,
 ): BetaMessage {
+  const isAgentRouterHaiku = isAgentRouterHaikuModel(model)
+
   if (typeof response !== 'string') {
+    if (isAgentRouterHaiku) {
+      const normalized = normalizeAgentRouterStringResponse(response, model)
+      if (normalized) {
+        return normalized
+      }
+      throw new Error(
+        `AgentRouter Haiku returned no assistant text (${describeAgentRouterResponseShape(response)})`,
+      )
+    }
     return response
   }
 
+  let textResponse = response
   try {
     const parsed = JSON.parse(response) as unknown
     if (parsed && typeof parsed === 'object') {
+      if (isAgentRouterHaiku) {
+        const normalized = normalizeAgentRouterStringResponse(parsed, model)
+        if (normalized) {
+          return normalized
+        }
+        throw new Error(
+          `AgentRouter Haiku returned no assistant text (${describeAgentRouterResponseShape(parsed)})`,
+        )
+      }
       logForDebugging(
         'Non-streaming API returned stringified JSON; parsed response body',
       )
       return parsed as BetaMessage
     }
+    if (typeof parsed === 'string') {
+      textResponse = parsed
+    }
   } catch {
     // Fall through to the explicit error below.
   }
 
+  const text = textResponse.trim()
+  if (isAgentRouterHaiku && text) {
+    const extractedText = extractAgentRouterText(text) ?? text
+    logForDebugging(
+      'AgentRouter non-streaming API returned a text response; wrapping as an Anthropic message',
+    )
+    return buildAgentRouterTextMessage(extractedText, model)
+  }
+
+  if (isAgentRouterHaiku) {
+    throw new Error(
+      `AgentRouter Haiku returned no assistant text (${describeAgentRouterResponseShape(response)})`,
+    )
+  }
+
   throw new Error('Non-streaming API returned an invalid string response')
+}
+
+function normalizeAgentRouterStringResponse(
+  parsed: unknown,
+  model: string,
+): BetaMessage | null {
+  if (!parsed || typeof parsed !== 'object') {
+    return null
+  }
+
+  const candidate = parsed as Record<string, unknown>
+  if (hasUsableAnthropicContent(candidate.content)) {
+    return candidate as BetaMessage
+  }
+
+  const text = extractAgentRouterText(candidate)
+  if (!text) {
+    return null
+  }
+
+  logForDebugging(
+    'AgentRouter non-streaming API returned JSON text content; wrapping as an Anthropic message',
+  )
+  return buildAgentRouterTextMessage(text, model, candidate)
+}
+
+function hasUsableAnthropicContent(content: unknown): boolean {
+  if (!Array.isArray(content)) {
+    return false
+  }
+
+  let hasVisibleTextOrToolUse = false
+  for (const block of content) {
+    if (!block || typeof block !== 'object') {
+      return false
+    }
+
+    const record = block as Record<string, unknown>
+    if (record.type === 'text') {
+      if (typeof record.text === 'string' && record.text.trim()) {
+        hasVisibleTextOrToolUse = true
+      }
+      continue
+    }
+
+    if (
+      record.type === 'tool_use' ||
+      record.type === 'server_tool_use' ||
+      record.type === 'mcp_tool_use'
+    ) {
+      hasVisibleTextOrToolUse = true
+      continue
+    }
+
+    if (
+      record.type === 'thinking' ||
+      record.type === 'redacted_thinking' ||
+      record.type === 'code_execution_tool_result' ||
+      record.type === 'mcp_tool_result' ||
+      record.type === 'container_upload'
+    ) {
+      continue
+    }
+
+    return false
+  }
+
+  return hasVisibleTextOrToolUse
+}
+
+function extractAgentRouterText(value: unknown): string | null {
+  const text = collectAgentRouterText(value, new WeakSet<object>()).join('').trim()
+  return text || null
+}
+
+function collectAgentRouterText(
+  value: unknown,
+  seen: WeakSet<object>,
+): string[] {
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (!text) {
+      return []
+    }
+
+    const fromSSE = collectAgentRouterSSEText(text, seen)
+    if (fromSSE.length > 0) {
+      return fromSSE
+    }
+
+    const parsed = parseAgentRouterJSONText(text)
+    if (parsed !== null) {
+      return collectAgentRouterText(parsed, seen)
+    }
+
+    return [text]
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap(item => collectAgentRouterText(item, seen))
+  }
+
+  if (!value || typeof value !== 'object') {
+    return []
+  }
+
+  if (seen.has(value)) {
+    return []
+  }
+  seen.add(value)
+
+  const record = value as Record<string, unknown>
+  if (
+    (record.type === 'text' ||
+      record.type === 'output_text' ||
+      record.type === 'text_delta') &&
+    typeof record.text === 'string'
+  ) {
+    return collectAgentRouterText(record.text, seen)
+  }
+
+  if (
+    record.type === 'response.output_text.delta' &&
+    typeof record.delta === 'string'
+  ) {
+    return collectAgentRouterText(record.delta, seen)
+  }
+
+  const orderedFields = [
+    'content',
+    'text',
+    'output_text',
+    'completion',
+    'response',
+    'answer',
+    'result',
+    'generated_text',
+    'message',
+    'delta',
+    'data',
+    'output',
+    'outputs',
+    'choices',
+  ]
+  for (const field of orderedFields) {
+    const parts = collectAgentRouterText(record[field], seen)
+    if (parts.length > 0) {
+      return parts
+    }
+  }
+
+  return []
+}
+
+function collectAgentRouterSSEText(
+  text: string,
+  seen: WeakSet<object>,
+): string[] {
+  if (!text.startsWith('data:') && !text.includes('\ndata:')) {
+    return []
+  }
+
+  const parts: string[] = []
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) {
+      continue
+    }
+
+    const data = trimmed.slice('data:'.length).trim()
+    if (!data || data === '[DONE]') {
+      continue
+    }
+
+    const parsed = parseAgentRouterJSONText(data)
+    parts.push(
+      ...(parsed === null
+        ? collectAgentRouterText(data, seen)
+        : collectAgentRouterText(parsed, seen)),
+    )
+  }
+  return parts
+}
+
+function parseAgentRouterJSONText(text: string): unknown | null {
+  const first = text[0]
+  if (first !== '{' && first !== '[' && first !== '"') {
+    return null
+  }
+
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return null
+  }
+}
+
+function describeAgentRouterResponseShape(value: unknown): string {
+  if (typeof value === 'string') {
+    return `string length ${value.length}`
+  }
+  if (Array.isArray(value)) {
+    return `array length ${value.length}`
+  }
+  if (!value || typeof value !== 'object') {
+    return typeof value
+  }
+
+  const record = value as Record<string, unknown>
+  const keys = Object.keys(record).slice(0, 8).join(',')
+  const contentTypes = Array.isArray(record.content)
+    ? record.content
+        .map(block =>
+          block && typeof block === 'object'
+            ? String((block as Record<string, unknown>).type ?? 'unknown')
+            : typeof block,
+        )
+        .slice(0, 8)
+        .join(',')
+    : 'none'
+  return `object keys [${keys}], content types [${contentTypes}]`
+}
+
+function buildAgentRouterTextMessage(
+  text: string,
+  model: string,
+  source?: Record<string, unknown>,
+): BetaMessage {
+  const usage =
+    source?.usage && typeof source.usage === 'object'
+      ? (source.usage as BetaUsage)
+      : {
+          input_tokens: 0,
+          output_tokens: 0,
+        }
+
+  return {
+    id:
+      typeof source?.id === 'string'
+        ? source.id
+        : `msg_agentrouter_${Date.now()}`,
+    type: 'message',
+    role: 'assistant',
+    model:
+      typeof source?.model === 'string'
+        ? source.model
+        : normalizeModelStringForAPI(model),
+    content: [{ type: 'text', text }],
+    stop_reason:
+      typeof source?.stop_reason === 'string'
+        ? (source.stop_reason as BetaStopReason)
+        : 'end_turn',
+    stop_sequence:
+      typeof source?.stop_sequence === 'string' ? source.stop_sequence : null,
+    usage,
+  } as BetaMessage
 }
 
 /**
