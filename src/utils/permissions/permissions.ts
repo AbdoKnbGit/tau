@@ -22,7 +22,10 @@ import {
   SETTING_SOURCES,
 } from '../settings/constants.js'
 import { plural } from '../stringUtils.js'
-import { permissionModeTitle } from './PermissionMode.js'
+import {
+  permissionModeTitle,
+  type PermissionMode,
+} from './PermissionMode.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -65,6 +68,7 @@ const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
 
 import {
   addToTurnClassifierDuration,
+  getSessionBypassPermissionsMode,
   getTotalCacheCreationInputTokens,
   getTotalCacheReadInputTokens,
   getTotalInputTokens,
@@ -112,6 +116,26 @@ const PERMISSION_RULE_SOURCES = [
   'command',
   'session',
 ] as const satisfies readonly PermissionRuleSource[]
+
+function shouldBypassPermissionPrompts(
+  toolPermissionContext: ToolPermissionContext,
+): boolean {
+  return (
+    getSessionBypassPermissionsMode() ||
+    toolPermissionContext.mode === 'bypassPermissions' ||
+    (toolPermissionContext.mode === 'plan' &&
+      toolPermissionContext.isBypassPermissionsModeAvailable)
+  )
+}
+
+function getBypassDecisionMode(
+  toolPermissionContext: ToolPermissionContext,
+): PermissionMode {
+  return toolPermissionContext.mode === 'bypassPermissions' ||
+    toolPermissionContext.mode === 'plan'
+    ? toolPermissionContext.mode
+    : 'bypassPermissions'
+}
 
 export function permissionRuleSourceDisplayString(
   source: PermissionRuleSource,
@@ -1058,13 +1082,12 @@ function handleDenialLimitExceeded(
 }
 
 /**
- * Check only the rule-based steps of the permission pipeline — the subset
- * that bypassPermissions mode respects (everything that fires before step 2a).
+ * Check only the rule-based steps of the permission pipeline.
  *
  * Returns a deny/ask decision if a rule blocks the tool, or null if no rule
- * objects. Unlike hasPermissionsToUseTool, this does NOT run the auto mode classifier,
- * mode-based transformations (dontAsk/auto/asyncAgent), PermissionRequest hooks,
- * or bypassPermissions / always-allowed checks.
+ * objects. Dangerous bypass mode suppresses ask decisions here too, so a
+ * PreToolUse hook allow cannot resurrect a manual prompt while permissions
+ * are explicitly bypassed.
  *
  * Caller must pre-check tool.requiresUserInteraction() — step 1e is not replicated.
  */
@@ -1074,6 +1097,9 @@ export async function checkRuleBasedPermissions(
   context: ToolUseContext,
 ): Promise<PermissionAskDecision | PermissionDenyDecision | null> {
   const appState = context.getAppState()
+  const bypassPermissionPrompts = shouldBypassPermissionPrompts(
+    appState.toolPermissionContext,
+  )
 
   // 1a. Entire tool is denied by rule
   const denyRule = getDenyRuleForTool(appState.toolPermissionContext, tool)
@@ -1090,7 +1116,7 @@ export async function checkRuleBasedPermissions(
 
   // 1b. Entire tool has an ask rule
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
-  if (askRule) {
+  if (askRule && !bypassPermissionPrompts) {
     const canSandboxAutoAllow =
       tool.name === BASH_TOOL_NAME &&
       SandboxManager.isSandboxingEnabled() &&
@@ -1136,17 +1162,18 @@ export async function checkRuleBasedPermissions(
   if (
     toolPermissionResult?.behavior === 'ask' &&
     toolPermissionResult.decisionReason?.type === 'rule' &&
-    toolPermissionResult.decisionReason.rule.ruleBehavior === 'ask'
+    toolPermissionResult.decisionReason.rule.ruleBehavior === 'ask' &&
+    !shouldBypassPermissionPrompts(context.getAppState().toolPermissionContext)
   ) {
     return toolPermissionResult
   }
 
-  // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
-  // bypass-immune — they must prompt even when a PreToolUse hook returned
-  // allow. checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these.
+  // 1g. Safety checks normally prompt even when a PreToolUse hook returned
+  // allow. Dangerous bypass mode suppresses that prompt.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    toolPermissionResult.decisionReason?.type === 'safetyCheck'
+    toolPermissionResult.decisionReason?.type === 'safetyCheck' &&
+    !shouldBypassPermissionPrompts(context.getAppState().toolPermissionContext)
   ) {
     return toolPermissionResult
   }
@@ -1182,7 +1209,10 @@ async function hasPermissionsToUseToolInner(
 
   // 1b. Check if the entire tool should always ask for permission
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
-  if (askRule) {
+  if (
+    askRule &&
+    !shouldBypassPermissionPrompts(appState.toolPermissionContext)
+  ) {
     // When autoAllowBashIfSandboxed is on, sandboxed commands skip the ask rule and
     // auto-allow via Bash's checkPermissions. Commands that won't be sandboxed (excluded
     // commands, dangerouslyDisableSandbox) still need to respect the ask rule.
@@ -1227,34 +1257,31 @@ async function hasPermissionsToUseToolInner(
     return toolPermissionResult
   }
 
-  // 1e. Tool requires user interaction even in bypass mode
+  // 1e. Tool requires user interaction unless dangerous bypass is active.
   if (
     tool.requiresUserInteraction?.() &&
-    toolPermissionResult?.behavior === 'ask'
+    toolPermissionResult?.behavior === 'ask' &&
+    !shouldBypassPermissionPrompts(context.getAppState().toolPermissionContext)
   ) {
     return toolPermissionResult
   }
 
-  // 1f. Content-specific ask rules from tool.checkPermissions take precedence
-  // over bypassPermissions mode. When a user explicitly configures a
-  // content-specific ask rule (e.g. Bash(npm publish:*)), the tool's
-  // checkPermissions returns {behavior:'ask', decisionReason:{type:'rule',
-  // rule:{ruleBehavior:'ask'}}}. This must be respected even in bypass mode,
-  // just as deny rules are respected at step 1d.
+  // 1f. Content-specific ask rules from tool.checkPermissions normally prompt,
+  // but dangerous bypass mode suppresses that prompt.
   if (
     toolPermissionResult?.behavior === 'ask' &&
     toolPermissionResult.decisionReason?.type === 'rule' &&
-    toolPermissionResult.decisionReason.rule.ruleBehavior === 'ask'
+    toolPermissionResult.decisionReason.rule.ruleBehavior === 'ask' &&
+    !shouldBypassPermissionPrompts(context.getAppState().toolPermissionContext)
   ) {
     return toolPermissionResult
   }
 
-  // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
-  // bypass-immune — they must prompt even in bypassPermissions mode.
-  // checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these paths.
+  // 1g. Safety checks normally prompt; dangerous bypass mode suppresses them.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    toolPermissionResult.decisionReason?.type === 'safetyCheck'
+    toolPermissionResult.decisionReason?.type === 'safetyCheck' &&
+    !shouldBypassPermissionPrompts(context.getAppState().toolPermissionContext)
   ) {
     return toolPermissionResult
   }
@@ -1262,20 +1289,13 @@ async function hasPermissionsToUseToolInner(
   // 2a. Check if mode allows the tool to run
   // IMPORTANT: Call getAppState() to get the latest value
   appState = context.getAppState()
-  // Check if permissions should be bypassed:
-  // - Direct bypassPermissions mode
-  // - Plan mode when the user originally started with bypass mode (isBypassPermissionsModeAvailable)
-  const shouldBypassPermissions =
-    appState.toolPermissionContext.mode === 'bypassPermissions' ||
-    (appState.toolPermissionContext.mode === 'plan' &&
-      appState.toolPermissionContext.isBypassPermissionsModeAvailable)
-  if (shouldBypassPermissions) {
+  if (shouldBypassPermissionPrompts(appState.toolPermissionContext)) {
     return {
       behavior: 'allow',
       updatedInput: getUpdatedInputOrFallback(toolPermissionResult, input),
       decisionReason: {
         type: 'mode',
-        mode: appState.toolPermissionContext.mode,
+        mode: getBypassDecisionMode(appState.toolPermissionContext),
       },
     }
   }
