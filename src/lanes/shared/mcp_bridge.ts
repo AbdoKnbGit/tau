@@ -27,6 +27,7 @@ export type LaneSchemaProfile =
   | 'anthropic'
   | 'openai-strict'
   | 'openai-loose'
+  | 'glm'
   | 'groq'
   | 'mistral'
   | 'ollama'
@@ -92,6 +93,7 @@ const DROP_BY_PROFILE: Record<LaneSchemaProfile, Set<string>> = {
   // OpenAI strict mode rejects additionalProperties=false+extra metadata.
   'openai-strict': new Set(['$schema', '$id', '$ref', '$comment', 'default']),
   'openai-loose': new Set(['$schema', '$id', '$ref', '$comment']),
+  glm: new Set(['$schema', '$id', '$ref', '$comment', 'strict', 'format', 'default']),
   // Groq: actively fails on $schema in tool params; also strips strict.
   groq: new Set(['$schema', '$id', '$ref', '$comment', 'strict', 'additionalProperties']),
   // Mistral: grammar validator chokes on several keywords.
@@ -328,7 +330,7 @@ When a command fails, diagnose first — read the exit code (127=not found, 2=mi
 `
 
 /**
- * OpenAI-compatible lane rules. Covers DeepSeek, Groq, Mistral, NIM,
+ * OpenAI-compatible lane rules. Covers DeepSeek, GLM, Groq, Mistral, NIM,
  * Ollama, OpenRouter + long tail. Kept general because the same text
  * ships to every provider.
  */

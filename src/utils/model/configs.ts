@@ -23,6 +23,14 @@ export type ModelConfig = Record<AnthropicProvider, ModelName>
 
 export type ProviderTier = 'free' | 'pro' | 'plus'
 
+const GLM_BASE_URL = process.env.GLM_BASE_URL
+  ?? process.env.GLM_API_URL
+  ?? process.env.BIGMODEL_BASE_URL
+  ?? process.env.ZHIPU_BASE_URL
+  ?? process.env.ZAI_BASE_URL
+  ?? process.env.Z_AI_BASE_URL
+  ?? 'https://open.bigmodel.cn/api/paas/v4'
+
 export interface TierModelSet {
   opus: string    // Best reasoning / most capable model
   sonnet: string  // Balanced quality/speed for everyday tasks
@@ -370,6 +378,33 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.DEEPSEEK_MODEL_OPUS   ?? 'deepseek-reasoner',
         sonnet: process.env.DEEPSEEK_MODEL_SONNET ?? 'deepseek-reasoner',
         haiku:  process.env.DEEPSEEK_MODEL_HAIKU  ?? 'deepseek-chat',
+      },
+    },
+  },
+
+  glm: {
+    displayName: 'GLM',
+    baseUrl: GLM_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'GLM_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.GLM_MODEL_OPUS_FREE   ?? 'glm-4.7',
+        sonnet: process.env.GLM_MODEL_SONNET_FREE ?? 'glm-4.7',
+        haiku:  process.env.GLM_MODEL_HAIKU_FREE  ?? 'glm-4.7',
+      },
+      pro: {
+        opus:   process.env.GLM_MODEL_OPUS   ?? 'glm-5.1',
+        sonnet: process.env.GLM_MODEL_SONNET ?? 'glm-5-turbo',
+        haiku:  process.env.GLM_MODEL_HAIKU  ?? 'glm-4.7',
+      },
+      plus: {
+        opus:   process.env.GLM_MODEL_OPUS   ?? 'glm-5.1',
+        sonnet: process.env.GLM_MODEL_SONNET ?? 'glm-5',
+        haiku:  process.env.GLM_MODEL_HAIKU  ?? 'glm-4.7',
       },
     },
   },

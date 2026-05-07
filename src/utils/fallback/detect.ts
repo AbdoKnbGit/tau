@@ -85,7 +85,9 @@ function hasProviderLimitOrAuthText(text: string): boolean {
     /\bextra usage\b/i.test(text) ||
     /\bbilling\b/i.test(text) ||
     /\bcredit balance\b/i.test(text) ||
+    /\bresource package\b/i.test(text) ||
     /\binsufficient[_\s-]?(?:quota|balance|credits?)\b/i.test(text) ||
+    /余额不足|无可用资源包|请充值/.test(text) ||
     /\bpayment required\b/i.test(text) ||
     /\binvalid api key\b/i.test(text) ||
     /\bapi key\b.*\b(?:invalid|expired)\b/i.test(text) ||
@@ -120,7 +122,7 @@ function hasFallbackEligibleProviderText(text: string): boolean {
 }
 
 function hasLaneProviderErrorPrefix(text: string): boolean {
-  return /^(?:openrouter|ollama|cline|kilo|kiro|iflow|kilocode|deepseek|groq|mistral|nim|copilot|generic)\s+API\s+error\s+\d{3}\b/i.test(
+  return /^(?:openrouter|ollama|cline|kilo|kiro|iflow|kilocode|deepseek|glm|groq|mistral|nim|copilot|generic)\s+API\s+error\s+\d{3}\b/i.test(
     text.trim(),
   )
 }

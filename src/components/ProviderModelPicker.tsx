@@ -29,6 +29,11 @@ import {
   toggleDeepSeekV4Thinking,
 } from '../utils/model/deepseekThinking.js'
 import {
+  getGlmThinking,
+  isGlmThinkingModel,
+  toggleGlmThinking,
+} from '../utils/model/glmThinking.js'
+import {
   getVoiceConversationStatus,
   hasVoiceConversationApiKey,
 } from '../voice/voiceConversation.js'
@@ -222,6 +227,7 @@ export function ProviderModelPicker({
   const [sections, setSections] = useState<ProviderModelSection[]>([])
   const [reasoningLevel, setReasoningLevel] = useState(getOpenAIReasoningLevel)
   const [deepseekV4Thinking, setDeepseekV4Thinking] = useState(getDeepSeekV4Thinking)
+  const [glmThinking, setGlmThinking] = useState(getGlmThinking)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
 
   const selectedProvider =
@@ -423,6 +429,15 @@ export function ProviderModelPicker({
         && isDeepSeekV4ThinkingModel(row.model.id)
       ) {
         setDeepseekV4Thinking(toggleDeepSeekV4Thinking())
+        return
+      }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'glm'
+        && isGlmThinkingModel(row.model.id)
+      ) {
+        setGlmThinking(toggleGlmThinking())
       }
       return
     }
@@ -558,6 +573,7 @@ export function ProviderModelPicker({
                   : model.id
               const isReasoning = selectedProvider === 'openai' && modelSupportsReasoning(model.id)
               const isDeepseekV4 = selectedProvider === 'deepseek' && isDeepSeekV4ThinkingModel(model.id)
+              const isGlmThinking = selectedProvider === 'glm' && isGlmThinkingModel(model.id)
               const selectedVariant = getSelectedVariant(
                 selectedProvider,
                 model,
@@ -590,6 +606,11 @@ export function ProviderModelPicker({
                   {isDeepseekV4 && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ Thinking {deepseekV4Thinking ? 'ON' : 'OFF'} ▶
+                    </Text>
+                  )}
+                  {isGlmThinking && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ Thinking {glmThinking ? 'ON' : 'OFF'} ▶
                     </Text>
                   )}
                   {showVariant && selectedVariant && (

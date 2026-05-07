@@ -1753,6 +1753,7 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   groq:        ['api_key'],
   nim:         ['api_key'],
   deepseek:    ['api_key'],
+  glm:         ['api_key'],
   ollama:      ['api_key'],
   cline:       ['oauth'],
   copilot:     ['oauth'],
@@ -1816,6 +1817,7 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'gemini':      return process.env.GEMINI_API_KEY ?? _loadStoredKey('gemini')
     case 'antigravity': return null  // OAuth-only provider
     case 'deepseek':    return process.env.DEEPSEEK_API_KEY ?? _loadStoredKey('deepseek')
+    case 'glm':         return process.env.GLM_API_KEY ?? process.env.BIGMODEL_API_KEY ?? process.env.ZHIPU_API_KEY ?? process.env.ZAI_API_KEY ?? process.env.Z_AI_API_KEY ?? _loadStoredKey('glm')
     case 'ollama':      return process.env.OLLAMA_API_KEY ?? _loadStoredKey('ollama') ?? 'ollama'
     case 'cline':       return null  // OAuth-only
     case 'copilot':     return null  // OAuth-only
@@ -1928,6 +1930,7 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'gemini':      return 'https://generativelanguage.googleapis.com/v1beta'
     case 'antigravity': return 'https://cloudcode-pa.googleapis.com/v1internal'
     case 'deepseek':    return process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1'
+    case 'glm':         return process.env.GLM_BASE_URL ?? process.env.GLM_API_URL ?? process.env.BIGMODEL_BASE_URL ?? process.env.ZHIPU_BASE_URL ?? process.env.ZAI_BASE_URL ?? process.env.Z_AI_BASE_URL ?? 'https://open.bigmodel.cn/api/paas/v4'
     case 'ollama':      return process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1'
     case 'cline':       return process.env.CLINE_BASE_URL ?? 'https://api.cline.bot/v1'
     case 'copilot':     return 'https://api.githubcopilot.com'
@@ -1950,7 +1953,8 @@ export function isUsingThirdPartyLLM(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_AGENTROUTER) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GROQ) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_NIM) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_DEEPSEEK)
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_DEEPSEEK) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_GLM)
   )
 }
 
@@ -2001,6 +2005,7 @@ function _getApiKeyEnvName(provider: APIProvider): string {
     case 'gemini':      return 'GEMINI_API_KEY'
     case 'antigravity': return '(OAuth only — no API key)'
     case 'deepseek':    return 'DEEPSEEK_API_KEY'
+    case 'glm':         return 'GLM_API_KEY'
     case 'ollama':      return 'OLLAMA_API_KEY'
     case 'cline':       return '(OAuth only — no API key)'
     case 'copilot':     return '(OAuth only — no API key)'
@@ -2022,6 +2027,7 @@ function _validateKeyFormat(provider: APIProvider, key: string): { valid: boolea
     nim:         { prefix: 'nvapi-', minLen: 20 },
     gemini:      { minLen: 10 },
     deepseek:    { prefix: 'sk-', minLen: 20 },
+    glm:         { minLen: 10 },
   }
   const check = checks[provider]
   if (!check) return { valid: true }

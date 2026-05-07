@@ -5,13 +5,13 @@ import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 export type APIProvider =
   | 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
   | 'openai' | 'gemini' | 'antigravity'
-  | 'openrouter' | 'agentrouter' | 'groq' | 'nim' | 'deepseek' | 'ollama'
+  | 'openrouter' | 'agentrouter' | 'groq' | 'nim' | 'deepseek' | 'glm' | 'ollama'
   | 'cline' | 'copilot' | 'cursor' | 'iflow' | 'kilocode' | 'kiro'
 
 const VALID_PROVIDERS: readonly APIProvider[] = [
   'firstParty', 'bedrock', 'vertex', 'foundry',
   'openai', 'gemini', 'antigravity',
-  'openrouter', 'agentrouter', 'groq', 'nim', 'deepseek', 'ollama',
+  'openrouter', 'agentrouter', 'groq', 'nim', 'deepseek', 'glm', 'ollama',
   'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
 ]
 
@@ -54,6 +54,7 @@ function _resolveAPIProvider(): APIProvider {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_GROQ))       return 'groq'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_NIM))        return 'nim'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_DEEPSEEK))   return 'deepseek'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_GLM))        return 'glm'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OLLAMA))    return 'ollama'
   return 'firstParty'
 }
@@ -105,6 +106,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   groq: 'Groq',
   nim: 'NVIDIA NIM',
   deepseek: 'DeepSeek',
+  glm: 'GLM',
   ollama: 'Ollama',
   cline: 'Cline',
   copilot: 'GitHub Copilot',
@@ -122,19 +124,19 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
 // APIProvider union, env detection, auth flow, transformer, and routing are
 // all kept intact.
 export const SELECTABLE_PROVIDERS: readonly APIProvider[] = [
-  'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'nim', 'deepseek', 'ollama',
+  'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'nim', 'deepseek', 'glm', 'ollama',
   'cline', 'copilot', 'cursor', 'kilocode', 'kiro',
 ]
 
 /** Providers that use OpenAI-compatible chat completions API */
 export function isOpenAICompatibleProvider(p: APIProvider): boolean {
-  return ['openai', 'openrouter', 'agentrouter', 'groq', 'nim', 'deepseek', 'ollama',
+  return ['openai', 'openrouter', 'agentrouter', 'groq', 'nim', 'deepseek', 'glm', 'ollama',
           'cline', 'copilot', 'iflow', 'kilocode'].includes(p)
 }
 
 /** All non-Anthropic third-party LLM providers */
 export function isThirdPartyProvider(p: APIProvider): boolean {
-  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'groq', 'nim', 'deepseek', 'ollama',
+  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'groq', 'nim', 'deepseek', 'glm', 'ollama',
           'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro'].includes(p)
 }
 

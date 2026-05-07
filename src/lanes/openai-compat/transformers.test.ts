@@ -29,6 +29,7 @@ import type { OpenAIChatMessage, OpenAIChatRequest } from './transformers/shared
 import { selectEditToolSet, OPENAI_COMPAT_TOOL_REGISTRY } from './tools.js'
 import { resolveEditFormat, resolveCapabilities } from './capabilities.js'
 import { setDeepSeekV4Thinking } from '../../utils/model/deepseekThinking.js'
+import { setGlmThinking } from '../../utils/model/glmThinking.js'
 
 let passed = 0
 let failed = 0
@@ -76,7 +77,7 @@ function main(): void {
 
   // ── Registry invariants ─────────────────────────────────────────
   const ids: Array<Transformer['id']> = [
-    'deepseek', 'groq', 'mistral', 'nim', 'ollama', 'openrouter', 'agentrouter', 'generic',
+    'deepseek', 'glm', 'groq', 'mistral', 'nim', 'ollama', 'openrouter', 'agentrouter', 'generic',
   ]
   for (const id of ids) {
     test(`registry has ${id}`, () => {
@@ -100,6 +101,32 @@ function main(): void {
   }
 
   // ── DeepSeek max_tokens clamp ───────────────────────────────────
+  test('glm disables thinking when picker toggle is OFF', () => {
+    setGlmThinking(false)
+    try {
+      for (const model of ['glm-5.1', 'glm-5-turbo', 'glm-5', 'glm-4.7']) {
+        const body = mkBody(model)
+        // The picker toggle is authoritative for GLM; /thinking does not drive it.
+        TRANSFORMERS.glm.transformRequest(body, mkCtx(model, true))
+        assert(body.thinking?.type === 'disabled', `${model} thinking=${JSON.stringify(body.thinking)}`)
+      }
+    } finally {
+      setGlmThinking(false)
+    }
+  })
+  test('glm enables thinking when picker toggle is ON', () => {
+    setGlmThinking(true)
+    try {
+      for (const model of ['glm-5.1', 'glm-5-turbo', 'glm-5', 'glm-4.7']) {
+        const body = mkBody(model)
+        TRANSFORMERS.glm.transformRequest(body, mkCtx(model, false))
+        assert(body.thinking?.type === 'enabled', `${model} thinking=${JSON.stringify(body.thinking)}`)
+      }
+    } finally {
+      setGlmThinking(false)
+    }
+  })
+
   test('deepseek clamps max_tokens at 8192', () => {
     assert(TRANSFORMERS.deepseek.clampMaxTokens(16000) === 8192, 'no clamp')
     assert(TRANSFORMERS.deepseek.clampMaxTokens(4096) === 4096, 'unnecessary clamp')
@@ -639,6 +666,10 @@ function main(): void {
   // ── Reasoning detection ─────────────────────────────────────────
   test('deepseek-r1 is reasoning-capable', () => {
     const caps = resolveCapabilities('deepseek', 'deepseek-r1')
+    assert(caps.supportsReasoning, 'should support reasoning')
+  })
+  test('glm-5 is reasoning-capable', () => {
+    const caps = resolveCapabilities('glm', 'glm-5')
     assert(caps.supportsReasoning, 'should support reasoning')
   })
   test('plain llama-3.1 is NOT reasoning-capable', () => {

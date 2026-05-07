@@ -48,6 +48,7 @@ const DOCS = {
   openai: 'https://platform.openai.com/docs/api-reference/usage/costs',
   openrouter: 'https://openrouter.ai/docs/api-reference/credits/get-credits',
   deepseek: 'https://api-docs.deepseek.com/api/get-user-balance/',
+  glm: 'https://bigmodel.cn/finance/expensebill/list',
   cursor: 'https://docs.cursor.com/en/account/teams/admin-api',
   copilot: 'https://docs.github.com/en/copilot/reference/copilot-usage-metrics/copilot-usage-metrics',
 } as const
@@ -124,6 +125,7 @@ const REPORTERS: Reporter[] = [
   reportAntigravity,
   reportOpenRouter,
   reportDeepSeek,
+  reportGLM,
   reportOllama,
   reportCline,
   reportCopilot,
@@ -161,6 +163,7 @@ function nameToProvider(name: string): ProviderUsageId {
     case 'groq': return 'groq'
     case 'nim': return 'nim'
     case 'deepseek': return 'deepseek'
+    case 'glm': return 'glm'
     case 'ollama': return 'ollama'
     case 'cline': return 'cline'
     case 'copilot': return 'copilot'
@@ -613,6 +616,48 @@ async function reportDeepSeek(): Promise<ProviderUsageReport> {
     detail: 'Set CLAUDEX_USAGE_DEEPSEEK_BUDGET_USD to turn remaining balance into a percent-used bar.',
     metrics,
     docsUrl: DOCS.deepseek,
+  }
+}
+
+async function reportGLM(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('glm')
+  if (!apiKey) {
+    return {
+      ...baseReport(
+        'glm',
+        'not_configured',
+        'none',
+        'BigModel usage',
+        'No GLM API key is configured.',
+      ),
+      docsUrl: DOCS.glm,
+      links: [{
+        label: 'BigModel API keys',
+        url: 'https://open.bigmodel.cn/usercenter/apikeys',
+      }],
+    }
+  }
+
+  return {
+    ...baseReport(
+      'glm',
+      'connected',
+      'api_key',
+      'BigModel usage',
+      'GLM API key is configured.',
+    ),
+    detail: 'BigModel usage and balance are available in the BigModel console; no public balance API is documented.',
+    docsUrl: DOCS.glm,
+    links: [
+      {
+        label: 'BigModel API keys',
+        url: 'https://open.bigmodel.cn/usercenter/apikeys',
+      },
+      {
+        label: 'BigModel expense bill',
+        url: 'https://bigmodel.cn/finance/expensebill/list',
+      },
+    ],
   }
 }
 

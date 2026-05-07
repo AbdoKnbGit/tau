@@ -16,7 +16,7 @@
 
 Tau is the true free Claude Code agent. It gives you a full agentic Claude Code environment - tools, MCP servers, hooks, skills, file editing, shell execution, and session control - without locking you into one paid route.
 
-It is not a proxy and not a wrapper around someone else's wrapper. Tau has native adapters for 14 providers, built to make them work directly inside your agentic Claude Code environment. When you use Gemini, Tau speaks Gemini's API directly. Same for OpenAI, DeepSeek, OpenRouter, AgentRouter, and the rest.
+It is not a proxy and not a wrapper around someone else's wrapper. Tau has native adapters for 15 providers, built to make them work directly inside your agentic Claude Code environment. When you use Gemini, Tau speaks Gemini's API directly. Same for OpenAI, GLM, DeepSeek, OpenRouter, AgentRouter, and the rest.
 
 You install it once. You type `/login`. You pick a provider. You work.
 
@@ -159,6 +159,7 @@ GitHub workflows inside Tau, powered by the GitHub CLI.
 | OpenRouter | Would use this full-time if the bills didn't care |
 | NVIDIA NIM | Gets slow under server load, especially for newest models like Kimi K2 |
 | DeepSeek | Solid |
+| GLM / BigModel | Works with your BigModel plan or the small amount of free credit they give you |
 | Ollama | Local and private, but you knew that already |
 | Cline | Moonshot AI's Kimi K2.6 through here is still the big win. Note: the old free tier is no longer fully free, but you still get some free credit |
 | GitHub Copilot | Recommended for enterprise plans; free models are also usable for lighter work |
@@ -172,7 +173,7 @@ GitHub workflows inside Tau, powered by the GitHub CLI.
 ## Features
 
 **Multi-provider, natively**
-Fourteen providers with native adapters. Not a routing layer, not a translation proxy — each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool schema sanitization per provider.
+15 providers with native adapters. Not a routing layer, not a translation proxy — each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool schema sanitization per provider.
 
 **The full agent loop**
 File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management — all present, all working across every provider.

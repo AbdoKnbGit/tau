@@ -35,6 +35,11 @@ const GHA_SUBPROCESS_SCRUB = [
   'NIM_API_KEY',
   'GEMINI_API_KEY',
   'DEEPSEEK_API_KEY',
+  'GLM_API_KEY',
+  'BIGMODEL_API_KEY',
+  'ZHIPU_API_KEY',
+  'ZAI_API_KEY',
+  'Z_AI_API_KEY',
   'OLLAMA_API_KEY',
 
   // Cloud provider creds — same pattern (lazy SDK reads)

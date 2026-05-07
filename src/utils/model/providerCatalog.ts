@@ -148,10 +148,10 @@ export async function loadProviderModels(
 
   const models = await getProvider(provider).listModels()
   recordProviderModelContextWindows(provider, models)
-  if (provider === 'cursor' || provider === 'cline') {
+  if (provider === 'cursor' || provider === 'cline' || provider === 'glm') {
     // Cursor's native picker order is provider-owned and should not be
     // alphabetized away; the ids intentionally mirror Cursor's own model surface.
-    // Cline also returns a curated, provider-owned order.
+    // Cline and GLM also return curated, provider-owned orders.
     return models
   }
   if (provider === 'openrouter' || provider === 'nim') {

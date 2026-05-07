@@ -13,11 +13,13 @@
  *            and litellm/llms/<provider>/chat/transformation.py
  */
 
+import type { ModelInfo } from '../../../services/api/providers/base_provider.js'
 import type { OpenAIChatRequest, OpenAIChatMessage } from './shared_types.js'
 
 export type ProviderId =
   | 'deepseek'
   | 'groq'
+  | 'glm'
   | 'mistral'
   | 'nim'
   | 'ollama'
@@ -137,7 +139,7 @@ export interface Transformer {
    * is unreliable (auth-gated, paginated, returns sub-aliases) or where
    * a curated, stable list is preferable to whatever the gateway emits.
    */
-  staticCatalog?(): Array<{ id: string; name: string }>
+  staticCatalog?(): ModelInfo[]
 
   /**
    * Optional hint: prefer the live `/v1/models` response and use

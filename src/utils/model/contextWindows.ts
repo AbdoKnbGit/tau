@@ -28,6 +28,12 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     'claude-4-sonnet-1m': 1_000_000,
     'claude-4-sonnet-1m-thinking': 1_000_000,
   },
+  glm: {
+    'glm-5.1': 200_000,
+    'glm-5-turbo': 200_000,
+    'glm-5': 200_000,
+    'glm-4.7': 200_000,
+  },
 }
 
 const KNOWN_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
@@ -81,7 +87,10 @@ const KNOWN_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
   'deepseek-3.2': 164_000,
   'minimax-m2.5': 196_000,
   'minimax-m2.1': 196_000,
+  'glm-5.1': 200_000,
+  'glm-5-turbo': 200_000,
   'glm-5': 200_000,
+  'glm-4.7': 200_000,
   'qwen3-coder-next': 256_000,
 
   // Ollama common models.
@@ -120,6 +129,10 @@ const PREFIX_CONTEXT_WINDOWS: ContextWindowMap = {
   'deepseek-chat': 128_000,
   'deepseek-reasoner': 128_000,
   'deepseek-coder': 128_000,
+  'glm-5.1': 200_000,
+  'glm-5-turbo': 200_000,
+  'glm-5': 200_000,
+  'glm-4.7': 200_000,
   'llama3.3': 128_000,
   'llama3.2': 128_000,
   'llama3.1': 128_000,

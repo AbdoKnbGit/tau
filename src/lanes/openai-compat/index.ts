@@ -1,7 +1,7 @@
 /**
  * OpenAI-Compatible Lane — Entry Point
  *
- * Handles: DeepSeek, Groq, NIM, Ollama, OpenRouter, and any other
+ * Handles: DeepSeek, GLM, Groq, NIM, Ollama, OpenRouter, and any other
  * provider that speaks OpenAI Chat Completions format.
  *
  * Each provider is registered with its own API key and base URL.
@@ -21,6 +21,7 @@ import { registerLane } from '../dispatcher.js'
  */
 export function initOpenAICompatLane(providers?: {
   deepseek?: { apiKey: string; baseUrl?: string }
+  glm?: { apiKey: string; baseUrl?: string }
   groq?: { apiKey: string; baseUrl?: string }
   mistral?: { apiKey: string; baseUrl?: string }
   nim?: { apiKey: string; baseUrl?: string }
@@ -39,6 +40,27 @@ export function initOpenAICompatLane(providers?: {
     openaiCompatLane.registerProvider(
       'deepseek', dsKey,
       p.deepseek?.baseUrl ?? 'https://api.deepseek.com/v1',
+    )
+  }
+
+  const glmKey = p.glm?.apiKey
+    ?? process.env.GLM_API_KEY
+    ?? process.env.BIGMODEL_API_KEY
+    ?? process.env.ZHIPU_API_KEY
+    ?? process.env.ZAI_API_KEY
+    ?? process.env.Z_AI_API_KEY
+  if (glmKey) {
+    openaiCompatLane.registerProvider(
+      'glm',
+      glmKey,
+      p.glm?.baseUrl
+        ?? process.env.GLM_BASE_URL
+        ?? process.env.GLM_API_URL
+        ?? process.env.BIGMODEL_BASE_URL
+        ?? process.env.ZHIPU_BASE_URL
+        ?? process.env.ZAI_BASE_URL
+        ?? process.env.Z_AI_BASE_URL
+        ?? 'https://open.bigmodel.cn/api/paas/v4',
     )
   }
 

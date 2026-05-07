@@ -91,6 +91,7 @@ function _autoCorrectProvider(
     || current === 'openrouter'
     || current === 'agentrouter'
     || current === 'nim'
+    || current === 'glm'
     || current === 'ollama'
     || current === 'cline'
     || current === 'iflow'

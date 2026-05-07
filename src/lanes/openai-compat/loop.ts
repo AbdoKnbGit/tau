@@ -52,6 +52,7 @@ import {
 type ProviderType =
   | 'deepseek'
   | 'groq'
+  | 'glm'
   | 'mistral'
   | 'nim'
   | 'ollama'
@@ -67,6 +68,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   const b = baseUrl.toLowerCase()
   const m = model.toLowerCase()
   if (b.includes('deepseek')) return 'deepseek'
+  if (b.includes('bigmodel') || b.includes('zhipu')) return 'glm'
   if (b.includes('groq')) return 'groq'
   if (b.includes('mistral')) return 'mistral'
   if (b.includes('integrate.api.nvidia')) return 'nim'
@@ -78,6 +80,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('kilocode.ai') || b.includes('kilo.ai')) return 'kilocode'
   if (b.includes('githubcopilot.com')) return 'copilot'
   if (m.includes('deepseek')) return 'deepseek'
+  if (m.startsWith('glm-')) return 'glm'
   if (m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) return 'groq'
   if (m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) return 'mistral'
   // qwen removed — handled by the dedicated Qwen lane (src/lanes/qwen/).
@@ -189,6 +192,10 @@ export class OpenAICompatLane implements Lane {
     if (m.includes('deepseek') && this.configs.has('deepseek')) {
       const c = this.configs.get('deepseek')!
       return { ...c, provider: 'deepseek' }
+    }
+    if (m.startsWith('glm-') && this.configs.has('glm')) {
+      const c = this.configs.get('glm')!
+      return { ...c, provider: 'glm' }
     }
     if ((m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) && this.configs.has('groq')) {
       const c = this.configs.get('groq')!
@@ -433,10 +440,7 @@ export class OpenAICompatLane implements Lane {
       const markers = transformer.contextExceededMarkers()
       const lowered = errText.toLowerCase()
       const isPromptTooLong = markers.some(m => lowered.includes(m.toLowerCase()))
-      const headline = isPromptTooLong
-        ? `Prompt is too long (${provider} ${response.status})`
-        : `${provider} API error ${response.status}`
-      yield* emitErrorText(`${headline}: ${errText.slice(0, 500)}`)
+      yield* emitErrorText(formatProviderHttpError(provider, response.status, errText, isPromptTooLong))
       yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
       yield { type: 'message_stop' }
       return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
@@ -845,6 +849,77 @@ function* emitErrorText(text: string): Generator<AnthropicStreamEvent> {
   yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
   yield { type: 'content_block_stop', index: 0 }
+}
+
+interface ProviderErrorPayload {
+  code?: string
+  message?: string
+}
+
+function formatProviderHttpError(
+  provider: ProviderType,
+  status: number,
+  errText: string,
+  isPromptTooLong: boolean,
+): string {
+  if (provider === 'glm') {
+    return formatGlmHttpError(status, errText, isPromptTooLong)
+  }
+  const headline = isPromptTooLong
+    ? `Prompt is too long (${provider} ${status})`
+    : `${provider} API error ${status}`
+  return `${headline}: ${errText.slice(0, 500)}`
+}
+
+function formatGlmHttpError(
+  status: number,
+  errText: string,
+  isPromptTooLong: boolean,
+): string {
+  if (isPromptTooLong) {
+    return `Prompt is too long (glm ${status})`
+  }
+
+  const parsed = parseProviderErrorPayload(errText)
+  const code = parsed?.code
+  const detail = parsed?.message ?? errText.trim()
+  const isInsufficientBalance =
+    status === 429 &&
+    (code === '1113' ||
+      /余额不足|无可用资源包|请充值|\binsufficient\b|\bbalance\b|\bquota\b|\bresource package\b/i.test(
+        detail,
+      ))
+
+  if (isInsufficientBalance) {
+    return [
+      `glm API error ${status}: BigModel balance is insufficient or no resource package is available.`,
+      'Open /usage for BigModel links, recharge the account, or switch provider/model with /models.',
+    ].join(' ')
+  }
+
+  const suffix = code ? ` (${code})` : ''
+  const text = detail || errText
+  return `glm API error ${status}${suffix}: ${text.slice(0, 500)}`
+}
+
+function parseProviderErrorPayload(raw: string): ProviderErrorPayload | null {
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!value || typeof value !== 'object') return null
+    const root = value as Record<string, unknown>
+    const error =
+      root.error && typeof root.error === 'object'
+        ? root.error as Record<string, unknown>
+        : root
+    const code = error.code
+    const message = error.message
+    return {
+      code: typeof code === 'string' || typeof code === 'number' ? String(code) : undefined,
+      message: typeof message === 'string' ? message : undefined,
+    }
+  } catch {
+    return null
+  }
 }
 
 function normalizeBaseUrl(baseUrl: string): string {

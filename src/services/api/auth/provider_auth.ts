@@ -20,6 +20,7 @@
  *   │ Groq       │ ✓       │ ✗     │ API key only                    │
  *   │ NIM        │ ✓       │ ✗     │ API key only                    │
  *   │ DeepSeek   │ ✓       │ ✗     │ API key only                    │
+ *   │ GLM        │ ✓       │ ✗     │ API key only                    │
  *   │ KiloCode   │ ✗       │ ✓     │ Custom device auth              │
  *   │ Cline      │ ✗       │ ✓     │ Authorization-code flow         │
  *   │ iFlow      │ ✗       │ ✓     │ OAuth2 code + Basic Auth        │
@@ -300,6 +301,7 @@ function _envVarName(provider: APIProvider): string {
     groq: 'GROQ_API_KEY',
     nim: 'NIM_API_KEY',
     deepseek: 'DEEPSEEK_API_KEY',
+    glm: 'GLM_API_KEY',
     kilocode: '(OAuth only)',
     cline: '(OAuth only)',
     iflow: '(OAuth only)',

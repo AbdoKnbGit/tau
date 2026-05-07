@@ -270,5 +270,11 @@ export function deleteAllProviderCredentials(provider: string): void {
         reloadOpenAICompatProviderAuth('ollama'),
       )
       .catch(() => {})
+  } else if (provider === 'glm') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadOpenAICompatProviderAuth }) =>
+        reloadOpenAICompatProviderAuth('glm'),
+      )
+      .catch(() => {})
   }
 }

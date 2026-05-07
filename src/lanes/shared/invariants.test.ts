@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     additionalProperties: false,
     strict: true,
   }
-  for (const profile of ['gemini', 'codex', 'anthropic', 'openai-strict', 'openai-loose', 'groq', 'mistral', 'ollama', 'qwen', 'deepseek', 'openrouter', 'nim', 'generic'] as const) {
+  for (const profile of ['gemini', 'codex', 'anthropic', 'openai-strict', 'openai-loose', 'glm', 'groq', 'mistral', 'ollama', 'qwen', 'deepseek', 'openrouter', 'nim', 'generic'] as const) {
     test(`sanitize ${profile} profile is defined and round-trippable`, () => {
       const out = sanitizeSchemaForLane(complexSchema, profile)
       assert(typeof out === 'object' && out !== null, 'sanitize returned non-object')

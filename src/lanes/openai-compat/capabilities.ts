@@ -64,6 +64,7 @@ const REASONING_CAPABLE_MODELS: RegExp[] = [
   /claude-opus/i,
   /gemini-[23]/i,
   /gpt-oss/i,
+  /^glm-(?:4\.7|5)/i,
 ]
 
 const NO_TOOL_SUPPORT: RegExp[] = [
