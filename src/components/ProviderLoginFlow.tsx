@@ -95,6 +95,11 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     getKeyUrl: 'https://platform.kimi.ai/console/api-keys',
     supportsOAuth: false,
   },
+  minimax: {
+    envVar: 'MINIMAX_API_KEY',
+    getKeyUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key',
+    supportsOAuth: false,
+  },
   ollama: {
     envVar: 'OLLAMA_API_KEY',
     getKeyUrl: 'https://ollama.com/settings/keys',
@@ -186,6 +191,10 @@ async function _testApiKey(
         url = 'https://api.moonshot.ai/v1/models'
         headers = { Authorization: `Bearer ${key}` }
         break
+      case 'minimax':
+        url = 'https://api.minimax.io/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
       case 'openrouter':
         url = 'https://openrouter.ai/api/v1/models'
         headers = { Authorization: `Bearer ${key}` }
@@ -237,6 +246,7 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
     provider === 'nim' ||
     provider === 'openrouter' ||
     provider === 'agentrouter' ||
+    provider === 'minimax' ||
     provider === 'ollama'
   ) {
     void import('../services/api/providers/providerShim.js')

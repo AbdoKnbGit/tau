@@ -56,6 +56,7 @@ const FEATURED_PROVIDERS: APIProvider[] = [
   'openrouter',
   'deepseek',
   'moonshot',
+  'minimax',
   'groq',
   'nim',
 ]

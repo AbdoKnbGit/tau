@@ -51,6 +51,7 @@ const DOCS = {
   deepseek: 'https://api-docs.deepseek.com/api/get-user-balance/',
   glm: 'https://bigmodel.cn/finance/expensebill/list',
   moonshot: 'https://platform.kimi.ai/docs/api/balance',
+  minimax: 'https://platform.minimax.io/docs/token-plan/faq',
   cursor: 'https://docs.cursor.com/en/account/teams/admin-api',
   copilot: 'https://docs.github.com/en/copilot/reference/copilot-usage-metrics/copilot-usage-metrics',
 } as const
@@ -129,6 +130,7 @@ const REPORTERS: Reporter[] = [
   reportDeepSeek,
   reportGLM,
   reportMoonshot,
+  reportMiniMax,
   reportOllama,
   reportCline,
   reportCopilot,
@@ -168,6 +170,7 @@ function nameToProvider(name: string): ProviderUsageId {
     case 'deepseek': return 'deepseek'
     case 'glm': return 'glm'
     case 'moonshot': return 'moonshot'
+    case 'minimax': return 'minimax'
     case 'ollama': return 'ollama'
     case 'cline': return 'cline'
     case 'copilot': return 'copilot'
@@ -737,6 +740,81 @@ async function reportMoonshot(): Promise<ProviderUsageReport> {
   }
 }
 
+async function reportMiniMax(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('minimax')
+  const links: UsageLink[] = [
+    {
+      label: 'MiniMax API keys',
+      url: 'https://platform.minimax.io/user-center/basic-information/interface-key',
+    },
+    {
+      label: 'MiniMax Token Plan',
+      url: 'https://platform.minimax.io/user-center/payment/coding-plan',
+    },
+  ]
+
+  if (!apiKey) {
+    return {
+      ...baseReport(
+        'minimax',
+        'not_configured',
+        'none',
+        'MiniMax Token Plan remains',
+        'No MiniMax API key is configured.',
+      ),
+      docsUrl: DOCS.minimax,
+      links,
+    }
+  }
+
+  let data: unknown
+  try {
+    data = await fetchMiniMaxUsage(apiKey)
+  } catch (error) {
+    return {
+      ...baseReport(
+        'minimax',
+        'error',
+        'api_key',
+        'MiniMax Token Plan remains',
+        'MiniMax usage API request failed.',
+      ),
+      detail: messageFromError(error),
+      docsUrl: DOCS.minimax,
+      links,
+    }
+  }
+
+  const parsed = parseMiniMaxUsage(data)
+  if (!parsed) {
+    return {
+      ...baseReport(
+        'minimax',
+        'error',
+        'api_key',
+        'MiniMax Token Plan remains',
+        'MiniMax returned an unrecognized usage response.',
+      ),
+      docsUrl: DOCS.minimax,
+      links,
+    }
+  }
+
+  return {
+    ...baseReport(
+      'minimax',
+      'ok',
+      'api_key',
+      'MiniMax Token Plan remains',
+      parsed.summary,
+    ),
+    detail: parsed.detail,
+    metrics: parsed.metrics,
+    docsUrl: DOCS.minimax,
+    links,
+  }
+}
+
 async function reportOllama(): Promise<ProviderUsageReport> {
   return {
     ...baseReport(
@@ -1210,6 +1288,212 @@ function parseMoonshotBalance(data: unknown): {
   ).toUpperCase()
 
   return { currency, available, cash, voucher }
+}
+
+async function fetchMiniMaxUsage(apiKey: string): Promise<unknown> {
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  }
+  const endpoints = [
+    'https://www.minimax.io/v1/token_plan/remains',
+    'https://www.minimax.io/v1/api/openplatform/coding_plan/remains',
+  ]
+  const groupId = getEnv('MINIMAX_GROUP_ID')
+  if (groupId) {
+    const url = new URL('https://platform.minimax.io/v1/api/openplatform/coding_plan/remains')
+    url.searchParams.set('GroupId', groupId)
+    endpoints.push(url.toString())
+  }
+
+  const errors: string[] = []
+  for (const endpoint of endpoints) {
+    try {
+      return await fetchJson(endpoint, { headers })
+    } catch (error) {
+      errors.push(`${endpoint}: ${messageFromError(error)}`)
+    }
+  }
+  throw new Error(errors.join('; ') || 'no MiniMax usage endpoint responded')
+}
+
+function parseMiniMaxUsage(data: unknown): {
+  summary: string
+  detail?: string
+  metrics: UsageMetric[]
+} | null {
+  const rows = collectMiniMaxUsageRows(data)
+  if (rows.length === 0) return null
+
+  const metrics = rows.map(row => ({
+    label: row.label,
+    usedPercent: row.total > 0 ? clampPercent(row.used / row.total * 100) : undefined,
+    summary: `${formatNumber(row.used)} / ${formatNumber(row.total)} used (${formatNumber(row.remaining)} remaining)`,
+    resetsAt: row.resetsAt,
+  }))
+  const primary = rows[0]
+  const plan = findFirstStringByKey(data, ['plan', 'plan_name', 'planName', 'subscription', 'subscription_name'])
+  const detailParts = [
+    plan ? `Plan: ${plan}.` : null,
+    primary.resetsAt ? `Next reset: ${primary.resetsAt}.` : null,
+    'MiniMax Token Plan usage is fetched from the official remains endpoint.',
+  ].filter((part): part is string => part !== null)
+
+  return {
+    summary: `${formatNumber(primary.remaining)} of ${formatNumber(primary.total)} ${primary.unit} remaining.`,
+    detail: detailParts.join(' '),
+    metrics,
+  }
+}
+
+function collectMiniMaxUsageRows(data: unknown): Array<{
+  label: string
+  used: number
+  total: number
+  remaining: number
+  unit: string
+  resetsAt?: string | null
+}> {
+  const rows: Array<{
+    label: string
+    used: number
+    total: number
+    remaining: number
+    unit: string
+    resetsAt?: string | null
+  }> = []
+  const seen = new Set<string>()
+
+  const scan = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) scan(item)
+      return
+    }
+    const record = asRecord(value)
+    if (!record) return
+    const row = parseMiniMaxUsageRecord(record)
+    if (row) {
+      const signature = `${row.label}:${row.used}:${row.total}:${row.remaining}`
+      if (!seen.has(signature)) {
+        seen.add(signature)
+        rows.push(row)
+      }
+    }
+    for (const item of Object.values(record)) scan(item)
+  }
+  scan(data)
+
+  const root = asRecord(data)
+  const source = asRecord(root?.data) ?? asRecord(root?.result) ?? root
+  if (source) {
+    const rootRow = parseMiniMaxUsageRecord(source)
+    if (rootRow) {
+      const signature = `${rootRow.label}:${rootRow.used}:${rootRow.total}:${rootRow.remaining}`
+      if (!seen.has(signature)) rows.unshift(rootRow)
+    }
+  }
+
+  return rows.sort((a, b) => {
+    if (a.label === 'Token Plan') return -1
+    if (b.label === 'Token Plan') return 1
+    return a.label.localeCompare(b.label)
+  })
+}
+
+function parseMiniMaxUsageRecord(record: Record<string, unknown>): {
+  label: string
+  used: number
+  total: number
+  remaining: number
+  unit: string
+  resetsAt?: string | null
+} | null {
+  const used =
+    readNumber(record.used)
+    ?? readNumber(record.used_count)
+    ?? readNumber(record.usedCount)
+    ?? readNumber(record.current_usage)
+    ?? readNumber(record.currentUsage)
+    ?? readNumber(record.current_interval_usage_count)
+    ?? readNumber(record.currentIntervalUsageCount)
+    ?? readNumber(record.used_prompts)
+    ?? readNumber(record.usedPrompts)
+    ?? readNumber(record.usage)
+  const remaining =
+    readNumber(record.remaining)
+    ?? readNumber(record.remain)
+    ?? readNumber(record.remains)
+    ?? readNumber(record.left)
+    ?? readNumber(record.available)
+    ?? readNumber(record.remaining_count)
+    ?? readNumber(record.remainingCount)
+    ?? readNumber(record.remain_count)
+    ?? readNumber(record.remainCount)
+  const explicitTotal =
+    readNumber(record.total)
+    ?? readNumber(record.limit)
+    ?? readNumber(record.quota)
+    ?? readNumber(record.total_quota)
+    ?? readNumber(record.totalQuota)
+    ?? readNumber(record.usage_limit)
+    ?? readNumber(record.usageLimit)
+    ?? readNumber(record.total_count)
+    ?? readNumber(record.totalCount)
+    ?? readNumber(record.current_interval_quota)
+    ?? readNumber(record.currentIntervalQuota)
+    ?? readNumber(record.max)
+
+  const total = explicitTotal ?? (
+    used !== null && remaining !== null ? used + remaining : null
+  )
+  if (total === null || total <= 0) return null
+
+  const normalizedUsed = used ?? (
+    remaining !== null ? Math.max(0, total - remaining) : null
+  )
+  const normalizedRemaining = remaining ?? (
+    normalizedUsed !== null ? Math.max(0, total - normalizedUsed) : null
+  )
+  if (normalizedUsed === null || normalizedRemaining === null) return null
+
+  return {
+    label: readString(record.model)
+      ?? readString(record.model_id)
+      ?? readString(record.modelId)
+      ?? readString(record.resource)
+      ?? readString(record.resource_type)
+      ?? readString(record.resourceType)
+      ?? readString(record.name)
+      ?? 'Token Plan',
+    used: normalizedUsed,
+    total,
+    remaining: normalizedRemaining,
+    unit: readString(record.unit) ?? readString(record.quota_unit) ?? 'requests',
+    resetsAt: normalizeMiniMaxReset(record),
+  }
+}
+
+function normalizeMiniMaxReset(record: Record<string, unknown>): string | null {
+  const raw =
+    readString(record.reset_at)
+    ?? readString(record.resetAt)
+    ?? readString(record.reset_time)
+    ?? readString(record.resetTime)
+    ?? readString(record.next_reset)
+    ?? readString(record.nextReset)
+    ?? readString(record.expire_at)
+    ?? readString(record.expireAt)
+  const iso = validFutureIso(raw)
+  if (iso) return iso
+  return epochSecondsToIso(record.reset_at)
+    ?? epochSecondsToIso(record.resetAt)
+    ?? epochSecondsToIso(record.reset_time)
+    ?? epochSecondsToIso(record.resetTime)
+    ?? epochSecondsToIso(record.next_reset)
+    ?? epochSecondsToIso(record.nextReset)
+    ?? epochSecondsToIso(record.expire_at)
+    ?? epochSecondsToIso(record.expireAt)
 }
 
 function copilotMetricsFromStoredPlan(blob: StoredOAuthBlob | null): UsageMetric[] {

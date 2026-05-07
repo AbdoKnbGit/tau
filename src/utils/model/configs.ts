@@ -35,6 +35,10 @@ const MOONSHOT_BASE_URL = process.env.MOONSHOT_BASE_URL
   ?? process.env.MOONSHOT_API_BASE_URL
   ?? 'https://api.moonshot.ai/v1'
 
+const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL
+  ?? process.env.MINIMAX_API_BASE_URL
+  ?? 'https://api.minimax.io/v1'
+
 export interface TierModelSet {
   opus: string    // Best reasoning / most capable model
   sonnet: string  // Balanced quality/speed for everyday tasks
@@ -436,6 +440,33 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.MOONSHOT_MODEL_OPUS   ?? 'kimi-k2.6',
         sonnet: process.env.MOONSHOT_MODEL_SONNET ?? 'kimi-k2.6',
         haiku:  process.env.MOONSHOT_MODEL_HAIKU  ?? 'kimi-k2-turbo-preview',
+      },
+    },
+  },
+
+  minimax: {
+    displayName: 'MiniMax AI',
+    baseUrl: MINIMAX_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'MINIMAX_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   'MiniMax-M2.7',
+        sonnet: 'MiniMax-M2.7',
+        haiku:  'MiniMax-M2.7-highspeed',
+      },
+      pro: {
+        opus:   process.env.MINIMAX_MODEL_OPUS   ?? 'MiniMax-M2.7',
+        sonnet: process.env.MINIMAX_MODEL_SONNET ?? 'MiniMax-M2.7',
+        haiku:  process.env.MINIMAX_MODEL_HAIKU  ?? 'MiniMax-M2.7-highspeed',
+      },
+      plus: {
+        opus:   process.env.MINIMAX_MODEL_OPUS   ?? 'MiniMax-M2.7',
+        sonnet: process.env.MINIMAX_MODEL_SONNET ?? 'MiniMax-M2.7',
+        haiku:  process.env.MINIMAX_MODEL_HAIKU  ?? 'MiniMax-M2.7-highspeed',
       },
     },
   },

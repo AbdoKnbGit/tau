@@ -1755,6 +1755,7 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   deepseek:    ['api_key'],
   glm:         ['api_key'],
   moonshot:    ['api_key'],
+  minimax:     ['api_key'],
   ollama:      ['api_key'],
   cline:       ['oauth'],
   copilot:     ['oauth'],
@@ -1820,6 +1821,7 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'deepseek':    return process.env.DEEPSEEK_API_KEY ?? _loadStoredKey('deepseek')
     case 'glm':         return process.env.GLM_API_KEY ?? process.env.BIGMODEL_API_KEY ?? process.env.ZHIPU_API_KEY ?? process.env.ZAI_API_KEY ?? process.env.Z_AI_API_KEY ?? _loadStoredKey('glm')
     case 'moonshot':    return process.env.MOONSHOT_API_KEY ?? process.env.MOONSHOTAI_API_KEY ?? _loadStoredKey('moonshot')
+    case 'minimax':     return process.env.MINIMAX_API_KEY ?? _loadStoredKey('minimax')
     case 'ollama':      return process.env.OLLAMA_API_KEY ?? _loadStoredKey('ollama') ?? 'ollama'
     case 'cline':       return null  // OAuth-only
     case 'copilot':     return null  // OAuth-only
@@ -1934,6 +1936,7 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'deepseek':    return process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1'
     case 'glm':         return process.env.GLM_BASE_URL ?? process.env.GLM_API_URL ?? process.env.BIGMODEL_BASE_URL ?? process.env.ZHIPU_BASE_URL ?? process.env.ZAI_BASE_URL ?? process.env.Z_AI_BASE_URL ?? 'https://open.bigmodel.cn/api/paas/v4'
     case 'moonshot':    return process.env.MOONSHOT_BASE_URL ?? process.env.MOONSHOT_API_BASE_URL ?? 'https://api.moonshot.ai/v1'
+    case 'minimax':     return process.env.MINIMAX_BASE_URL ?? process.env.MINIMAX_API_BASE_URL ?? 'https://api.minimax.io/v1'
     case 'ollama':      return process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1'
     case 'cline':       return process.env.CLINE_BASE_URL ?? 'https://api.cline.bot/v1'
     case 'copilot':     return 'https://api.githubcopilot.com'
@@ -1958,7 +1961,8 @@ export function isUsingThirdPartyLLM(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_NIM) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_DEEPSEEK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GLM) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_MOONSHOT)
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_MOONSHOT) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_MINIMAX)
   )
 }
 
@@ -2011,6 +2015,7 @@ function _getApiKeyEnvName(provider: APIProvider): string {
     case 'deepseek':    return 'DEEPSEEK_API_KEY'
     case 'glm':         return 'GLM_API_KEY'
     case 'moonshot':    return 'MOONSHOT_API_KEY'
+    case 'minimax':     return 'MINIMAX_API_KEY'
     case 'ollama':      return 'OLLAMA_API_KEY'
     case 'cline':       return '(OAuth only — no API key)'
     case 'copilot':     return '(OAuth only — no API key)'
@@ -2034,6 +2039,7 @@ function _validateKeyFormat(provider: APIProvider, key: string): { valid: boolea
     deepseek:    { prefix: 'sk-', minLen: 20 },
     glm:         { minLen: 10 },
     moonshot:    { prefix: 'sk-', minLen: 20 },
+    minimax:     { minLen: 10 },
   }
   const check = checks[provider]
   if (!check) return { valid: true }

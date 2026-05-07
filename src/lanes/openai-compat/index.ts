@@ -23,6 +23,7 @@ export function initOpenAICompatLane(providers?: {
   deepseek?: { apiKey: string; baseUrl?: string }
   glm?: { apiKey: string; baseUrl?: string }
   moonshot?: { apiKey: string; baseUrl?: string }
+  minimax?: { apiKey: string; baseUrl?: string }
   groq?: { apiKey: string; baseUrl?: string }
   mistral?: { apiKey: string; baseUrl?: string }
   nim?: { apiKey: string; baseUrl?: string }
@@ -74,6 +75,18 @@ export function initOpenAICompatLane(providers?: {
         ?? process.env.MOONSHOT_BASE_URL
         ?? process.env.MOONSHOT_API_BASE_URL
         ?? 'https://api.moonshot.ai/v1',
+    )
+  }
+
+  const minimaxKey = p.minimax?.apiKey ?? process.env.MINIMAX_API_KEY
+  if (minimaxKey) {
+    openaiCompatLane.registerProvider(
+      'minimax',
+      minimaxKey,
+      p.minimax?.baseUrl
+        ?? process.env.MINIMAX_BASE_URL
+        ?? process.env.MINIMAX_API_BASE_URL
+        ?? 'https://api.minimax.io/v1',
     )
   }
 

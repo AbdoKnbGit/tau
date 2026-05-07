@@ -43,6 +43,14 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     'kimi-k2-0905-preview': 262_144,
     'kimi-k2-0711-preview': 131_072,
   },
+  minimax: {
+    'minimax-m2.7': 204_800,
+    'minimax-m2.7-highspeed': 204_800,
+    'minimax-m2.5': 196_000,
+    'minimax-m2.5-highspeed': 196_000,
+    'minimax-m2.1': 196_000,
+    'minimax-m2.1-highspeed': 196_000,
+  },
 }
 
 const KNOWN_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
@@ -93,6 +101,8 @@ const KNOWN_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
   'deepseek-chat': 128_000,
   'deepseek-reasoner': 128_000,
   'deepseek-coder': 128_000,
+  'minimax-m2.7': 204_800,
+  'minimax-m2.7-highspeed': 204_800,
   'deepseek-3.2': 164_000,
   'minimax-m2.5': 196_000,
   'minimax-m2.1': 196_000,
@@ -145,6 +155,12 @@ const PREFIX_CONTEXT_WINDOWS: ContextWindowMap = {
   'deepseek-chat': 128_000,
   'deepseek-reasoner': 128_000,
   'deepseek-coder': 128_000,
+  'minimax-m2.7': 204_800,
+  'minimax-m2.7-highspeed': 204_800,
+  'minimax-m2.5': 196_000,
+  'minimax-m2.5-highspeed': 196_000,
+  'minimax-m2.1': 196_000,
+  'minimax-m2.1-highspeed': 196_000,
   'glm-5.1': 200_000,
   'glm-5-turbo': 200_000,
   'glm-5': 200_000,

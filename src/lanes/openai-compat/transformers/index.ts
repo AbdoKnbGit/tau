@@ -7,6 +7,7 @@ import { deepseekTransformer } from './deepseek.js'
 import { groqTransformer } from './groq.js'
 import { glmTransformer } from './glm.js'
 import { moonshotTransformer } from './moonshot.js'
+import { minimaxTransformer } from './minimax.js'
 import { mistralTransformer } from './mistral.js'
 import { nimTransformer } from './nim.js'
 import { ollamaTransformer } from './ollama.js'
@@ -24,6 +25,7 @@ export const TRANSFORMERS: Record<ProviderId, Transformer> = {
   groq: groqTransformer,
   glm: glmTransformer,
   moonshot: moonshotTransformer,
+  minimax: minimaxTransformer,
   mistral: mistralTransformer,
   nim: nimTransformer,
   ollama: ollamaTransformer,
@@ -42,7 +44,7 @@ export function getTransformer(provider: ProviderId): Transformer {
 
 export {
   deepseekTransformer, groqTransformer, mistralTransformer, nimTransformer,
-  glmTransformer, moonshotTransformer, ollamaTransformer, openrouterTransformer, agentrouterTransformer, genericTransformer,
+  glmTransformer, moonshotTransformer, minimaxTransformer, ollamaTransformer, openrouterTransformer, agentrouterTransformer, genericTransformer,
   clineTransformer, iflowTransformer, kilocodeTransformer, copilotTransformer,
 }
 export type { Transformer, ProviderId, TransformContext } from './base.js'

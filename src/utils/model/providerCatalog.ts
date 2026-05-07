@@ -79,6 +79,9 @@ function normalizeProviderQueryToken(
     'moonshot-ai': 'moonshot',
     moonshoot: 'moonshot',
     moonshootai: 'moonshot',
+    minimaxai: 'minimax',
+    'minimax-ai': 'minimax',
+    'mini-max': 'minimax',
   }
   if (alias[normalized]) {
     return alias[normalized]
@@ -153,10 +156,10 @@ export async function loadProviderModels(
 
   const models = await getProvider(provider).listModels()
   recordProviderModelContextWindows(provider, models)
-  if (provider === 'cursor' || provider === 'cline' || provider === 'glm' || provider === 'moonshot') {
+  if (provider === 'cursor' || provider === 'cline' || provider === 'glm' || provider === 'moonshot' || provider === 'minimax') {
     // Cursor's native picker order is provider-owned and should not be
     // alphabetized away; the ids intentionally mirror Cursor's own model surface.
-    // Cline, GLM, and Moonshot also return curated, provider-owned orders.
+    // Cline, GLM, Moonshot, and MiniMax also return curated, provider-owned orders.
     return models
   }
   if (provider === 'openrouter' || provider === 'nim') {

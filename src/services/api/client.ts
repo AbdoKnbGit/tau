@@ -93,6 +93,7 @@ function _autoCorrectProvider(
     || current === 'nim'
     || current === 'glm'
     || current === 'moonshot'
+    || current === 'minimax'
     || current === 'ollama'
     || current === 'cline'
     || current === 'iflow'

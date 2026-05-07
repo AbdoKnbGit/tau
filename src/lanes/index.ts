@@ -72,6 +72,9 @@ export function initLanes(opts?: {
   // Moonshot AI / Kimi
   moonshotApiKey?: string
   moonshotBaseUrl?: string
+  // MiniMax AI
+  minimaxApiKey?: string
+  minimaxBaseUrl?: string
   // Groq
   groqApiKey?: string
   // Mistral
@@ -175,6 +178,7 @@ export function initLanes(opts?: {
     deepseek: opts?.deepseekApiKey ? { apiKey: opts.deepseekApiKey } : undefined,
     glm: opts?.glmApiKey ? { apiKey: opts.glmApiKey, baseUrl: opts.glmBaseUrl } : undefined,
     moonshot: opts?.moonshotApiKey ? { apiKey: opts.moonshotApiKey, baseUrl: opts.moonshotBaseUrl } : undefined,
+    minimax: opts?.minimaxApiKey ? { apiKey: opts.minimaxApiKey, baseUrl: opts.minimaxBaseUrl } : undefined,
     groq: opts?.groqApiKey ? { apiKey: opts.groqApiKey } : undefined,
     mistral: opts?.mistralApiKey ? { apiKey: opts.mistralApiKey } : undefined,
     nim: opts?.nimApiKey ? { apiKey: opts.nimApiKey } : undefined,

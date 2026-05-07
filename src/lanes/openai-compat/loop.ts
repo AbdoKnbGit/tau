@@ -55,6 +55,7 @@ type ProviderType =
   | 'groq'
   | 'glm'
   | 'moonshot'
+  | 'minimax'
   | 'mistral'
   | 'nim'
   | 'ollama'
@@ -72,6 +73,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('deepseek')) return 'deepseek'
   if (b.includes('bigmodel') || b.includes('zhipu')) return 'glm'
   if (b.includes('moonshot') || b.includes('kimi')) return 'moonshot'
+  if (b.includes('minimax')) return 'minimax'
   if (b.includes('groq')) return 'groq'
   if (b.includes('mistral')) return 'mistral'
   if (b.includes('integrate.api.nvidia')) return 'nim'
@@ -85,6 +87,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (m.includes('deepseek')) return 'deepseek'
   if (m.startsWith('glm-')) return 'glm'
   if (m.startsWith('kimi-') || m.includes('moonshot')) return 'moonshot'
+  if (m.startsWith('minimax-') || m.includes('minimax')) return 'minimax'
   if (m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) return 'groq'
   if (m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) return 'mistral'
   // qwen removed — handled by the dedicated Qwen lane (src/lanes/qwen/).
@@ -151,7 +154,7 @@ interface CompatCatalogModel extends OpenRouterCatalogModel {
 
 export class OpenAICompatLane implements Lane {
   readonly name = 'openai-compat'
-  readonly displayName = 'OpenAI-Compatible (DeepSeek, GLM, Moonshot, Groq, Mistral, NIM, Ollama, OpenRouter, ...)'
+  readonly displayName = 'OpenAI-Compatible (DeepSeek, GLM, Moonshot, MiniMax, Groq, Mistral, NIM, Ollama, OpenRouter, ...)'
 
   private configs = new Map<string, { apiKey: string; baseUrl: string }>()
   private _healthy = true
@@ -204,6 +207,10 @@ export class OpenAICompatLane implements Lane {
     if ((m.startsWith('kimi-') || m.includes('moonshot')) && this.configs.has('moonshot')) {
       const c = this.configs.get('moonshot')!
       return { ...c, provider: 'moonshot' }
+    }
+    if ((m.startsWith('minimax-') || m.includes('minimax')) && this.configs.has('minimax')) {
+      const c = this.configs.get('minimax')!
+      return { ...c, provider: 'minimax' }
     }
     if ((m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) && this.configs.has('groq')) {
       const c = this.configs.get('groq')!

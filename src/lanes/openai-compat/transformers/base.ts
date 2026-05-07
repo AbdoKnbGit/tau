@@ -21,6 +21,7 @@ export type ProviderId =
   | 'groq'
   | 'glm'
   | 'moonshot'
+  | 'minimax'
   | 'mistral'
   | 'nim'
   | 'ollama'

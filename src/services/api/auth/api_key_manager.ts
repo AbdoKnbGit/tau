@@ -179,6 +179,7 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   gemini: { prefix: 'AIza', minLength: 30, displayName: 'Gemini' },
   deepseek: { prefix: 'sk-', minLength: 20, displayName: 'DeepSeek' },
   moonshot: { prefix: 'sk-', minLength: 20, displayName: 'Moonshot AI' },
+  minimax: { prefix: '', minLength: 10, displayName: 'MiniMax AI' },
 }
 
 /**
@@ -282,6 +283,12 @@ export function deleteAllProviderCredentials(provider: string): void {
     void import('../providers/providerShim.js')
       .then(({ reloadOpenAICompatProviderAuth }) =>
         reloadOpenAICompatProviderAuth('moonshot'),
+      )
+      .catch(() => {})
+  } else if (provider === 'minimax') {
+    void import('../providers/providerShim.js')
+      .then(({ reloadOpenAICompatProviderAuth }) =>
+        reloadOpenAICompatProviderAuth('minimax'),
       )
       .catch(() => {})
   }

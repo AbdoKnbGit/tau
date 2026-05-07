@@ -304,6 +304,7 @@ function _envVarName(provider: APIProvider): string {
     deepseek: 'DEEPSEEK_API_KEY',
     glm: 'GLM_API_KEY',
     moonshot: 'MOONSHOT_API_KEY',
+    minimax: 'MINIMAX_API_KEY',
     kilocode: '(OAuth only)',
     cline: '(OAuth only)',
     iflow: '(OAuth only)',
