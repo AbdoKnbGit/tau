@@ -2237,7 +2237,7 @@ function PromptInput({
 
     // In-process teammates run headless - don't apply teammate colors to leader UI
     if (isInProcessTeammate()) {
-      return 'promptBorder';
+      return 'primary';
     }
 
     // Check for teammate color from environment
@@ -2245,15 +2245,17 @@ function PromptInput({
     if (teammateColorName && AGENT_COLORS.includes(teammateColorName as AgentColorName)) {
       return AGENT_COLOR_TO_THEME_COLOR[teammateColorName as AgentColorName];
     }
-    return 'promptBorder';
+    return 'primary';
   };
   if (isExternalEditorActive) {
-    // Studio prompt frame: top + left border in mode color, ╵ foot below.
+    // Studio prompt frame: left bar in mode color + ╵ foot below.
     return <>
-        <Box flexDirection="row" alignItems="center" justifyContent="center" borderColor={getBorderColor()} borderStyle="round" borderRight={false} borderBottom={false} width="100%">
-          <Text dimColor italic>
-            Save and close editor to continue...
-          </Text>
+        <Box flexDirection="row" alignItems="center" justifyContent="center" borderColor={getBorderColor()} borderStyle="round" borderTop={false} borderRight={false} borderBottom={false} width="100%">
+          <Box flexGrow={1} paddingLeft={1}>
+            <Text dimColor italic>
+              Save and close editor to continue...
+            </Text>
+          </Box>
         </Box>
         <Box height={1} flexShrink={0}>
           <Text color={getBorderColor()}>╵</Text>
@@ -2286,11 +2288,13 @@ function PromptInput({
           </Box>
           <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
         </> : <>
-          {/* Studio prompt frame: top + left border in mode color, ╵ foot below. */}
-          <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" borderRight={false} borderBottom={false} width="100%" borderText={buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown)}>
-            <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
-            <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
-              {textInputElement}
+          {/* Studio prompt frame: left bar in mode color + ╵ foot below. */}
+          <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" borderTop={false} borderRight={false} borderBottom={false} width="100%">
+            <Box flexDirection="row" flexGrow={1} flexShrink={1} paddingLeft={1} onClick={handleInputClick}>
+              <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
+              <Box flexGrow={1} flexShrink={1}>
+                {textInputElement}
+              </Box>
             </Box>
           </Box>
           <Box height={1} flexShrink={0}>
