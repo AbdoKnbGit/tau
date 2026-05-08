@@ -81,6 +81,9 @@ class WhatsAppClient {
   // short-lived signature of sent text so Tau never treats its own reply as the
   // next prompt in the self-chat.
   private recentSentTextSignatures = new Map<string, number>()
+  // Some linked-device echoes change the message id but keep the generated id
+  // family/prefix. Track that too so formatted echoes are still suppressed.
+  private recentSentIdFamilies = new Map<string, number>()
   // The connected account's own identifiers, derived from sock.user at
   // socket open. WhatsApp Multi-Device exposes both a phone-number JID
   // (id, "1234:N@s.whatsapp.net") and a privacy LID (lid,
@@ -490,11 +493,21 @@ class WhatsAppClient {
             continue
           }
 
-          // fromMe messages in the self-chat come from two sources:
-          // (1) Tau's own replies echoed back — skip by tracked id or text.
-          // (2) you typing in "Message yourself" — process as a prompt.
-          if (fromMe && msgId && this.ourSentIds.has(msgId)) continue
-          if (fromMe && text && this.consumeRecentSentText(text)) continue
+          // Self-chat echoes are not stable across linked-device paths: the
+          // same Tau reply can come back with a different message id and may
+          // not always be flagged fromMe. Suppress by sent text before routing.
+          if (fromMe && msgId && this.ourSentIds.has(msgId)) {
+            log('upsert dropped: sent id echo')
+            continue
+          }
+          if (fromMe && msgId && this.isRecentSentIdFamily(msgId)) {
+            log('upsert dropped: sent id-family echo')
+            continue
+          }
+          if (text && this.consumeRecentSentText(text)) {
+            log('upsert dropped: sent text echo')
+            continue
+          }
 
           const participant = msg.key.participant
 
@@ -568,6 +581,7 @@ class WhatsAppClient {
 
   private trackSent(id: string): void {
     this.ourSentIds.add(id)
+    this.trackSentIdFamily(id)
     // FIFO eviction — Set preserves insertion order. Cap at 500 so a
     // long-running session doesn't grow unbounded.
     if (this.ourSentIds.size > 500) {
@@ -599,7 +613,6 @@ class WhatsAppClient {
       this.recentSentTextSignatures.delete(signature)
       return false
     }
-    this.recentSentTextSignatures.delete(signature)
     return true
   }
 
@@ -612,6 +625,39 @@ class WhatsAppClient {
         break
       }
       this.recentSentTextSignatures.delete(signature)
+    }
+  }
+
+  private trackSentIdFamily(id: string): void {
+    const family = messageIdFamily(id)
+    if (!family) return
+    const now = Date.now()
+    this.recentSentIdFamilies.set(family, now)
+    this.evictSentIdFamilies(now)
+  }
+
+  private isRecentSentIdFamily(id: string): boolean {
+    const family = messageIdFamily(id)
+    if (!family) return false
+    const sentAt = this.recentSentIdFamilies.get(family)
+    if (!sentAt) return false
+    const now = Date.now()
+    if (now - sentAt > SENT_ECHO_TTL) {
+      this.recentSentIdFamilies.delete(family)
+      return false
+    }
+    return true
+  }
+
+  private evictSentIdFamilies(now: number): void {
+    for (const [family, sentAt] of this.recentSentIdFamilies) {
+      if (
+        now - sentAt <= SENT_ECHO_TTL &&
+        this.recentSentIdFamilies.size <= SENT_ECHO_MAX
+      ) {
+        break
+      }
+      this.recentSentIdFamilies.delete(family)
     }
   }
 }
@@ -660,6 +706,10 @@ function textSignature(text: string): string | null {
     hash = Math.imul(hash, 16777619)
   }
   return `${normalized.length}:${(hash >>> 0).toString(36)}`
+}
+
+function messageIdFamily(id: string): string | null {
+  return id.length >= 4 ? id.slice(0, 4) : null
 }
 
 // Baileys crypto errors should reconnect, not crash. Keep handler scoped.
