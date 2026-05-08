@@ -175,7 +175,12 @@ export async function runSafetestFromArgs(
     recommendation?.selectedAlias ??
     config.defaultTemplate
   const resolvedTemplate = resolveTemplateName(selectedAlias, config)
-  const command = deriveDefaultCommand(file.relativePath)
+  const placeholderError = detectPlaceholderTemplateId(selectedAlias, resolvedTemplate)
+  if (placeholderError) {
+    return { output: placeholderError, ranSandbox: false }
+  }
+  const templateKind = isWineLikeAlias(selectedAlias) ? 'wine' : 'default'
+  const command = deriveDefaultCommand(file.relativePath, templateKind)
 
   const createOptions: SandboxOpts = {
     apiKey: auth.apiKey,
@@ -474,8 +479,14 @@ function getUnavailableTemplateMessage(
     'Run now with the safe fallback:',
     `  /safetest ${info.fallback} @${file.absPath}`,
     '',
-    `To enable /safetest ${selectedTemplate} @file, add an E2B template alias to safetest.config.json:`,
-    JSON.stringify({ aliases: { [selectedTemplate]: 'your-e2b-template-id' } }, null, 2),
+    `To enable /safetest ${selectedTemplate} @file, build a custom E2B template (e.g. \`e2b template build\`) and add its ID to safetest.config.json:`,
+    JSON.stringify(
+      { aliases: { [selectedTemplate]: '<paste-the-id-from-e2b-template-build>' } },
+      null,
+      2,
+    ),
+    '',
+    'Replace the angle-bracket placeholder with the real template ID — leaving it as <…> will fail with "no such file".',
   ].join('\n')
 }
 
@@ -579,23 +590,65 @@ function resolveTemplateName(template: string | null, config: TemplateConfig): s
   return config.aliases[template] ?? template
 }
 
-function deriveDefaultCommand(relativePath: string): string {
+const PLACEHOLDER_TEMPLATE_PATTERNS: RegExp[] = [
+  /^your[-_]?(e2b[-_]?)?template[-_]?id$/i,
+  /^<.*template.*>$/i,
+  /^replace[-_]?(me|with).*$/i,
+  /^template[-_]?id[-_]?here$/i,
+  /^<your[-_].*>$/i,
+]
+
+function detectPlaceholderTemplateId(
+  alias: string | null,
+  resolved: string | null,
+): string | null {
+  if (!resolved) return null
+  if (!PLACEHOLDER_TEMPLATE_PATTERNS.some(pattern => pattern.test(resolved))) {
+    return null
+  }
+  return [
+    `Safetest cannot start: the alias "${alias ?? resolved}" points at "${resolved}", which is a placeholder, not a real E2B template ID.`,
+    '',
+    'Edit safetest.config.json (in this folder or ~/.safeclaudecode/) and replace the placeholder with the template ID printed by `e2b template build`.',
+    'Until then, /safetest will use the built-in templates (auto, base, code, desktop, mcp).',
+  ].join('\n')
+}
+
+function isWineLikeAlias(alias: string | null): boolean {
+  if (!alias) return false
+  const lower = alias.toLowerCase()
+  return lower === 'wine' || lower === 'windows' || lower === 'windows-analysis'
+}
+
+function deriveDefaultCommand(relativePath: string, templateKind: 'wine' | 'default'): string {
   const target = shellQuote(`./${toPosixPath(relativePath)}`)
+  const kind = shellQuote(templateKind)
 
   return [
     `target=${target}`,
+    `export SAFETEST_TEMPLATE_KIND=${kind}`,
     'echo "--- safetest file classification ---"',
     'printf "target=%s\\n" "$target"',
     'if command -v file >/dev/null 2>&1; then file "$target"; else echo "file command unavailable"; fi',
     'if command -v stat >/dev/null 2>&1; then stat -c "mode=%A size=%s bytes" "$target" 2>/dev/null || true; fi',
     'lower=$(printf "%s" "$target" | tr "[:upper:]" "[:lower:]")',
     'run_or_explain() { tool="$1"; shift; if command -v "$tool" >/dev/null 2>&1; then "$tool" "$@"; else echo "required runtime not installed in this template: $tool"; return 126; fi; }',
-    // run_with_display: when the sandbox is headless ($DISPLAY unset) but xvfb-run
-    // is installed, transparently start a virtual display so GUI libraries like
-    // tkinter / PyQt / pygame / selenium don't crash with "no $DISPLAY".
-    'run_with_display() { tool="$1"; shift; if ! command -v "$tool" >/dev/null 2>&1; then echo "required runtime not installed in this template: $tool"; return 126; fi; if [ -z "$DISPLAY" ] && command -v xvfb-run >/dev/null 2>&1; then xvfb-run -a "$tool" "$@"; else "$tool" "$@"; fi; }',
-    'static_preview() { echo "--- safetest static preview ---"; if command -v sha256sum >/dev/null 2>&1; then sha256sum "$target"; fi; if command -v exiftool >/dev/null 2>&1; then exiftool "$target" 2>/dev/null | sed -n "1,80p" || true; fi; if command -v objdump >/dev/null 2>&1; then objdump -x "$target" 2>/dev/null | sed -n "1,120p" || true; fi; if command -v strings >/dev/null 2>&1; then strings -a "$target" | sed -n "1,80p"; else od -An -tx1 -N 256 "$target" | sed -n "1,16p"; fi; }',
-    'run_wine() { if ! command -v wine >/dev/null 2>&1; then echo "Windows executable detected. The active E2B template does not have Wine installed; configure a wine template for full detonation."; exit 126; fi; if command -v xvfb-run >/dev/null 2>&1; then xvfb-run -a wine "$@"; else wine "$@"; fi; }',
+    // ensure_display: try, in order, the existing $DISPLAY, xvfb-run (needs
+    // xauth), or a raw Xvfb :99 server. Some templates ship Xvfb without xauth
+    // and that breaks xvfb-run with "X authority files" — falling back to a
+    // direct Xvfb server keeps GUI runs working in those images.
+    'ensure_display() { if [ -n "$DISPLAY" ]; then return 0; fi; if command -v xvfb-run >/dev/null 2>&1 && command -v xauth >/dev/null 2>&1; then export __SAFETEST_DISPLAY_MODE=xvfb-run; return 0; fi; if command -v Xvfb >/dev/null 2>&1; then if [ -z "$XAUTHORITY" ]; then export XAUTHORITY="$HOME/.Xauthority"; fi; [ -f "$XAUTHORITY" ] || touch "$XAUTHORITY"; Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/tmp/xvfb.log 2>&1 & __SAFETEST_XVFB_PID=$!; sleep 1; export DISPLAY=:99 __SAFETEST_DISPLAY_MODE=xvfb-direct; return 0; fi; return 1; }',
+    'cleanup_display() { if [ -n "$__SAFETEST_XVFB_PID" ]; then kill "$__SAFETEST_XVFB_PID" 2>/dev/null || true; unset __SAFETEST_XVFB_PID; fi; }',
+    // run_with_display: route Python/Node/Java/etc through ensure_display so
+    // GUI libraries (tkinter, PyQt, pygame, selenium, electron, …) don't crash
+    // on $DISPLAY in a headless template.
+    'run_with_display() { tool="$1"; shift; if ! command -v "$tool" >/dev/null 2>&1; then echo "required runtime not installed in this template: $tool"; return 126; fi; if ! ensure_display; then echo "headless template: install xvfb (and xauth), or pick the desktop template"; return 126; fi; rc=0; if [ "$__SAFETEST_DISPLAY_MODE" = "xvfb-run" ]; then xvfb-run -a -e /dev/stderr "$tool" "$@"; rc=$?; else "$tool" "$@"; rc=$?; cleanup_display; fi; return $rc; }',
+    // static_analysis: comprehensive read-only inspection. Reported as "Static
+    // analysis (file not executed)" so the verdict line is honest about not
+    // having run the file. Sections only show when the relevant tool exists.
+    'static_analysis() { echo "=== Static analysis (file not executed) ==="; if command -v file >/dev/null 2>&1; then echo; echo "[file type]"; file "$target"; fi; echo; echo "[hashes]"; if command -v sha256sum >/dev/null 2>&1; then sha256sum "$target"; fi; if command -v md5sum >/dev/null 2>&1; then md5sum "$target"; fi; if command -v exiftool >/dev/null 2>&1; then echo; echo "[exiftool metadata]"; exiftool "$target" 2>/dev/null | sed -n "1,40p" || true; fi; if command -v objdump >/dev/null 2>&1; then echo; echo "[objdump headers]"; objdump -x "$target" 2>/dev/null | sed -n "1,80p" || true; echo; echo "[imports / dynamic deps]"; objdump -p "$target" 2>/dev/null | grep -iE "DLL Name|NEEDED|Import" | sed -n "1,40p" || true; fi; if command -v strings >/dev/null 2>&1; then echo; echo "[interesting strings: URLs / paths / registry / common APIs]"; strings -a "$target" | grep -iE "^(https?://|file://|ftp://|[A-Z]:\\\\|/etc/|/proc/|/usr/|/root/|/home/|HKEY_|SOFTWARE\\\\|SYSTEM\\\\|RegOpen|RegQuery|RegSet|CreateProcess|ShellExecute|VirtualAlloc|WriteProcess|LoadLibrary|GetProcAddress|InternetOpen|WinHttp|socket|connect|recv|send|user32|kernel32|advapi32|ws2_32|wininet)" 2>/dev/null | sed -n "1,80p" || true; echo; echo "[strings sample (first 60)]"; strings -a "$target" | sed -n "1,60p"; else echo; echo "[hex sample, first 256 bytes]"; od -An -tx1 -N 256 "$target" | sed -n "1,16p"; fi; }',
+    'static_preview() { static_analysis; }',
+    'run_wine() { if ! command -v wine >/dev/null 2>&1; then echo "Windows binary detected. Wine is not installed in this template, so safetest reports static analysis only."; static_analysis; exit 0; fi; if ! ensure_display; then echo "Wine is installed but no display (xvfb/xauth) is available. Falling back to static analysis."; static_analysis; return 0; fi; rc=0; if [ "$__SAFETEST_DISPLAY_MODE" = "xvfb-run" ]; then xvfb-run -a -e /dev/stderr wine "$@"; rc=$?; else wine "$@"; rc=$?; cleanup_display; fi; return $rc; }',
     'echo "--- safetest execution ---"',
     'case "$lower" in',
     '  *.sh|*.bash) run_or_explain bash "$target" ;;',
@@ -610,15 +663,26 @@ function deriveDefaultCommand(relativePath: string): string {
     '  *.lua) run_or_explain lua "$target" ;;',
     '  *.jar) run_with_display java -jar "$target" ;;',
     '  *.ps1) run_or_explain pwsh -File "$target" ;;',
-    '  *.dll) echo "Windows DLL detected. DLLs are not standalone programs; safetest will inspect it instead of executing it."; static_preview; exit 0 ;;',
-    '  *.msi) echo "Windows installer detected. MSI packages are not installed by default; safetest will inspect it instead."; static_preview; exit 0 ;;',
-    '  *.bat|*.cmd) run_wine cmd /c "$target" ;;',
-    '  *.exe|*.scr|*.com) run_wine "$target" ;;',
+    '  *.dll|*.msi|*.exe|*.scr|*.com|*.bat|*.cmd)',
+    '    if [ "$SAFETEST_TEMPLATE_KIND" = "wine" ] && command -v wine >/dev/null 2>&1; then',
+    '      case "$lower" in',
+    '        *.bat|*.cmd) run_wine cmd /c "$target" ;;',
+    '        *.dll) echo "DLLs are not standalone programs — analyzing statically."; static_analysis; exit 0 ;;',
+    '        *.msi) echo "MSI installers are not detonated automatically — analyzing statically."; static_analysis; exit 0 ;;',
+    '        *) run_wine "$target" ;;',
+    '      esac',
+    '    else',
+    '      echo "Windows binary on a non-Wine template — safetest reports static analysis only (no execution)."',
+    '      echo "To execute it, build a custom E2B template with Wine and run /safetest wine @./<file>."',
+    '      static_analysis',
+    '      exit 0',
+    '    fi',
+    '    ;;',
     '  *)',
     '    description=$(file -b "$target" 2>/dev/null || true)',
     '    case "$description" in',
     '      *ELF*|*Mach-O*|*executable*|*script*) chmod +x "$target" 2>/dev/null || true; "$target" ;;',
-    '      *) echo "No safe default executor for this file type. Static preview only."; static_preview; exit 0 ;;',
+    '      *) echo "No safe default executor for this file type — static analysis only."; static_analysis; exit 0 ;;',
     '    esac',
     '    ;;',
     'esac',
@@ -812,6 +876,19 @@ function truncate(text: string, max: number): string {
 function diagnoseStderr(stderr: string): string | null {
   if (!stderr) return null
   const text = stderr.toLowerCase()
+
+  if (
+    text.includes('xauth') ||
+    text.includes('x authority') ||
+    text.includes("couldn't get a file descriptor referring to the console")
+  ) {
+    return [
+      'Hint: the sandbox image has Xvfb but is missing the xauth package, so xvfb-run cannot create an X authority file.',
+      'Safetest tries a raw Xvfb :99 fallback when xauth is missing — this hint means even that path is blocked.',
+      'Fix: rebuild the E2B template with `apt-get install -y xauth xvfb`, or pick a template that already has both.',
+    ].join('\n')
+  }
+
   if (
     text.includes('no display name and no $display') ||
     text.includes('cannot connect to x server') ||
@@ -823,6 +900,19 @@ function diagnoseStderr(stderr: string): string | null {
       '  /safetest desktop @./<file>',
     ].join('\n')
   }
+
+  if (
+    text.includes('wine: command not found') ||
+    text.includes('the active e2b template has no wine installed')
+  ) {
+    return [
+      'Hint: no public E2B template ships with Wine. To detonate .exe/.bat/.cmd files, build your own:',
+      '  1. Create a Dockerfile based on `e2bdev/code-interpreter` and `apt-get install -y wine xvfb xauth`',
+      '  2. `e2b template build` to publish it',
+      '  3. Add the template ID to safetest.config.json under {"aliases":{"wine":"<template-id>"}}',
+    ].join('\n')
+  }
+
   return null
 }
 
@@ -831,15 +921,24 @@ function formatTemplateMenu(
   selectedAlias: string | null,
 ): string {
   const rows = templateRows(config)
-  const nameWidth = Math.max(...rows.map(row => row.name.length), 'template'.length)
-  const filesWidth = Math.max(...rows.map(row => row.files.length), 'file types'.length)
+  const optionalRows = optionalTemplateRows(config)
+  const nameWidth = Math.max(
+    ...rows.map(row => row.name.length),
+    ...optionalRows.map(row => row.name.length),
+    'template'.length,
+  )
+  const filesWidth = Math.max(
+    ...rows.map(row => row.files.length),
+    ...optionalRows.map(row => row.files.length),
+    'file types'.length,
+  )
 
   return [
     'Safetest — run a file inside a disposable E2B sandbox.',
     '',
     'How to use:',
     '  /safetest @./file               auto-pick the template (detects GUI imports)',
-    '  /safetest base @./script.sh     minimal Linux',
+    '  /safetest base @./script.sh     minimal Linux (bash, sh, zsh)',
     '  /safetest code @./payload.py    Python + Jupyter (code-interpreter)',
     '  /safetest desktop @./gui.py     GUI scripts (tkinter, PyQt, selenium…)',
     '  /safetest --allow-internet @./file   enable network access in the sandbox',
@@ -856,11 +955,34 @@ function formatTemplateMenu(
     ...rows.map(row =>
       `${row.name.padEnd(nameWidth)}  ${row.files.padEnd(filesWidth)}  ${row.runs}`,
     ),
+    optionalRows.length > 0 ? '' : null,
+    optionalRows.length > 0
+      ? 'Optional templates (build a custom E2B template, then add to safetest.config.json):'
+      : null,
+    ...optionalRows.map(row =>
+      `${row.name.padEnd(nameWidth)}  ${row.files.padEnd(filesWidth)}  ${row.runs}`,
+    ),
     '',
     'Network is off by default. After /login → E2B Security, /safetest is ready to go.',
   ]
     .filter((line): line is string => line !== null)
     .join('\n')
+}
+
+function optionalTemplateRows(config: TemplateConfig): Array<{
+  name: string
+  files: string
+  runs: string
+}> {
+  // Hide rows the user has already configured — those show up under the
+  // built-in table via templateRows-derived data instead.
+  return Object.entries(OPTIONAL_TEMPLATE_ALIASES)
+    .filter(([alias]) => !Object.hasOwn(config.aliases, alias))
+    .map(([alias, info]) => ({
+      name: alias,
+      files: info.files,
+      runs: info.use,
+    }))
 }
 
 function templateRows(_config: TemplateConfig): Array<{

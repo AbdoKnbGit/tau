@@ -146,6 +146,50 @@ GitHub workflows inside Tau, powered by the GitHub CLI.
 - `triage` - Classify issues (labels/status) with explicit confirmation before visible changes.
 - `release` - Release flow: inspect dirty working tree, check CI/CD workflow status, then tag/publish and list runs.
 
+**`/safetest` - Run a file inside a disposable cloud sandbox**
+Upload one file to a fresh E2B VM, run it there, get a clean report back. The local machine never executes anything. Each run gets its own throwaway sandbox that's destroyed at the end.
+
+Setup is one step: `/login` → **E2B Security** → pick "Auth login" (opens the E2B dashboard in your browser) or "API key" (just paste). After that, `/safetest` is ready — no env variables, no extra config.
+
+**Templates (the sandbox image used for the run):**
+
+| Built-in (work right after login) | What it's for |
+|---|---|
+| `auto` | The default. Looks at the file extension and a quick scan of imports, then picks the right template. |
+| `base` | Minimal Linux. Bash, sh, zsh, unknown plain files. |
+| `code` | Code-interpreter (Python + Node + Jupyter). The default for normal scripts. |
+| `desktop` | E2B's official desktop image — Xvfb + a real display. Used automatically when the script imports a GUI library (tkinter, PyQt, PySide, wx, pygame, selenium, playwright, pyautogui, electron, puppeteer). |
+| `mcp` | mcp-gateway, for MCP workflow files. |
+
+| Optional (require a custom E2B template you build with `e2b template build`) | What it's for |
+|---|---|
+| `wine`, `windows`, `windows-analysis` | Detonating `.exe`, `.bat`, `.cmd` under Wine. |
+| `powershell` | `.ps1` / `.psm1` with pwsh installed. |
+| `browser` | `.html`, `.svg` for DOM behavior checks. |
+| `security` | Static triage tools — strings, exiftool, yara, binwalk. |
+| `network` | Controlled phone-home testing (used together with `--allow-internet`). |
+
+**File types it runs out of the box:**
+
+- **Scripts that just work:** `.sh`, `.bash`, `.py`, `.pyw`, `.ipynb`, `.js`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.rb`, `.pl`, `.php`, `.lua`, `.jar` — auto-routed to `code` or `desktop`, including a virtual display when needed.
+- **Shell variants** (`.zsh`, `.fish`) and **PowerShell** (`.ps1`) run when the chosen template ships those interpreters; otherwise you get a clear "runtime not installed in this template" message instead of a crash.
+- **Linux native binaries** (ELF / Mach-O / executables) — chmod'd and run directly under the chosen template.
+
+**File types that get static analysis instead of execution:**
+
+- **Windows binaries** (`.exe`, `.dll`, `.msi`, `.scr`, `.com`, `.bat`, `.cmd`) — there is no public E2B template with Wine, so by default `/safetest` reports a comprehensive static analysis (file type, sha256/md5, exiftool metadata, objdump headers, imports/DLL deps, filtered strings: URLs, registry keys, common Win32 / network APIs) without ever executing the binary. To actually detonate one, you'd need to build a custom Wine template and run `/safetest wine @./<file>`.
+- **Documents and archives** (`.pdf`, `.docx`, `.xlsx`, `.zip`, `.iso`, `.apk`, etc.) — same rule: static analysis only, unless you've configured a `security` / `document` template.
+
+**Edge cases worth knowing about:**
+
+- **No login yet.** `/safetest` tells you exactly what to do (`/login` → E2B Security) instead of erroring. After login, it just works.
+- **Headless display gotchas.** GUI scripts get an automatic virtual display. The shell tries `xvfb-run` first, falls back to a raw `Xvfb :99` server when the template ships Xvfb but no `xauth`, and emits a specific hint if both are missing telling you which packages to add.
+- **Network is off by default.** Add `--allow-internet` if your script needs network access in the sandbox.
+- **The "Account Checker" / suspect-binary case.** If a file looks like a credential-abuse tool, `/safetest` won't pretend it can detonate it — you get the static report and that's it. The whole point of the sandbox is safe inspection, not normalising execution of arbitrary attack tools.
+- **Placeholder template IDs.** If `safetest.config.json` still has `<paste-the-id-from-e2b-template-build>` (or other placeholder strings) instead of a real template ID, `/safetest` refuses to start with a clear error pointing at the config file — no more "no such file or directory" mystery.
+- **File size guard.** Files above 10 MB are rejected before upload; raise it explicitly with `--max-file-bytes` when you really mean it.
+- **Disposable sandbox.** Every run creates a fresh VM and kills it at the end. Output includes the sandbox ID so you can verify it.
+
 ---
 
 ## Supported Providers
