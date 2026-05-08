@@ -136,6 +136,9 @@ Launch Tau directly in this mode:
 tau --dangerously-skip-permissions
 ```
 
+**`/whatsapp` - Remote control Tau from WhatsApp**
+Link WhatsApp and control Tau from your phone.
+
 **`/github` - GitHub automation (gh required)**
 GitHub workflows inside Tau, powered by the GitHub CLI.
 
