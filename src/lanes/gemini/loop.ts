@@ -524,7 +524,14 @@ export class GeminiLane implements Lane {
         yield {
           type: 'message_delta',
           delta: { stop_reason: 'end_turn' },
-          usage: { output_tokens: outputTokens },
+          usage: {
+            output_tokens: outputTokens,
+            input_tokens: inputTokens,
+            ...(cacheReadTokens > 0 && {
+              cache_read_input_tokens: cacheReadTokens,
+              cache_creation_input_tokens: 0,
+            }),
+          },
         }
         yield { type: 'message_stop' }
         return {
@@ -583,7 +590,14 @@ export class GeminiLane implements Lane {
       yield {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn' },
-        usage: { output_tokens: outputTokens },
+        usage: {
+          output_tokens: outputTokens,
+          input_tokens: inputTokens,
+          ...(cacheReadTokens > 0 && {
+            cache_read_input_tokens: cacheReadTokens,
+            cache_creation_input_tokens: 0,
+          }),
+        },
       }
       yield { type: 'message_stop' }
       return {
@@ -622,7 +636,19 @@ export class GeminiLane implements Lane {
     yield {
       type: 'message_delta',
       delta: { stop_reason: stopReason },
-      usage: { output_tokens: outputTokens },
+      // Fold end-of-stream usage into message_delta. Gemini delivers
+      // usageMetadata only in the final chunk, so message_start was emitted
+      // with zeros. updateUsage (claude.ts) picks these up via its > 0 guard
+      // — without this, cache_read_input_tokens always displays as 0 on the
+      // CLI / Google-account path even when Gemini reports a cache hit.
+      usage: {
+        output_tokens: outputTokens,
+        input_tokens: inputTokens,
+        ...(cacheReadTokens > 0 && {
+          cache_read_input_tokens: cacheReadTokens,
+          cache_creation_input_tokens: 0,
+        }),
+      },
     }
     yield { type: 'message_stop' }
 
