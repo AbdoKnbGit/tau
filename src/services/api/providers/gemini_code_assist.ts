@@ -909,6 +909,21 @@ export function warmupCodeAssist(
 
 /**
  * Parse a Code Assist SSE stream and yield unwrapped Gemini chunks.
+ *
+ * Handles two emission shapes the upstream proxy uses interchangeably:
+ *   1. Per-line: one full JSON event per `data:` line (the classic
+ *      Antigravity / Code Assist format). Yielded immediately so the UI
+ *      streams as the bytes arrive — waiting for a blank-line separator
+ *      stalls Antigravity, which doesn't always send one.
+ *   2. Multi-line: a single JSON event split across consecutive `data:`
+ *      lines, terminated by a blank line. We accumulate fragments until
+ *      the joined payload parses (or the blank line forces a flush).
+ *
+ * Strategy: push each `data:` line into an accumulator and eagerly try
+ * to JSON.parse the joined buffer. A successful parse yields and resets
+ * the accumulator (handling shape 1); a failure keeps buffering until a
+ * later fragment closes the JSON (handling shape 2). Blank lines and
+ * end-of-stream flush whatever remains.
  */
 export async function* parseCodeAssistSSE(
   body: ReadableStream<Uint8Array>,
@@ -916,6 +931,58 @@ export async function* parseCodeAssistSSE(
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let dataLines: string[] = []
+
+  const tryParseAccumulator = (): { done: boolean; chunks: GeminiStreamChunk[] } => {
+    if (dataLines.length === 0) return { done: false, chunks: [] }
+
+    const payload = dataLines.join('\n').trim()
+    if (!payload) {
+      dataLines = []
+      return { done: false, chunks: [] }
+    }
+    if (payload === '[DONE]') {
+      dataLines = []
+      return { done: true, chunks: [] }
+    }
+
+    try {
+      const wrapped = JSON.parse(payload) as {
+        response?: GeminiStreamChunk
+      }
+      dataLines = []
+      return {
+        done: false,
+        chunks: wrapped.response ? [wrapped.response] : [],
+      }
+    } catch {
+      return { done: false, chunks: [] }
+    }
+  }
+
+  const flushEvent = (): { done: boolean; chunks: GeminiStreamChunk[] } => {
+    const result = tryParseAccumulator()
+    // Force-clear on flush so a malformed accumulated payload can't poison
+    // the next event.
+    dataLines = []
+    return result
+  }
+
+  const processLine = (rawLine: string): { done: boolean; chunks: GeminiStreamChunk[] } => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
+
+    if (line.trim() === '') {
+      return flushEvent()
+    }
+
+    if (!line.startsWith('data:')) {
+      return { done: false, chunks: [] }
+    }
+
+    const value = line.slice(5)
+    dataLines.push(value.startsWith(' ') ? value.slice(1) : value)
+    return tryParseAccumulator()
+  }
 
   try {
     while (true) {
@@ -924,45 +991,37 @@ export async function* parseCodeAssistSSE(
 
       buffer += decoder.decode(value, { stream: true })
 
-      // SSE may deliver payloads split across chunks — only commit complete
-      // lines and keep the trailing partial in `buffer`.
+      // SSE may deliver payload lines across chunks. Commit complete lines
+      // here; processLine yields per-line events eagerly and accumulates
+      // multi-line ones until they parse.
       const lines = buffer.split('\n')
       buffer = lines.pop() ?? ''
 
       for (const rawLine of lines) {
-        const line = rawLine.trim()
-        if (!line.startsWith('data: ')) continue
-        const jsonStr = line.slice(6)
-        if (jsonStr === '[DONE]') return
-        try {
-          const wrapped = JSON.parse(jsonStr) as {
-            response?: GeminiStreamChunk
-          }
-          if (wrapped.response) {
-            yield wrapped.response
-          }
-        } catch {
-          // Malformed chunk — skip and continue.
+        const event = processLine(rawLine)
+        if (event.done) return
+        for (const chunk of event.chunks) {
+          yield chunk
         }
       }
     }
 
-    // Flush any trailing partial on end-of-stream.
-    const tail = buffer.trim()
-    if (tail.startsWith('data: ')) {
-      const jsonStr = tail.slice(6)
-      if (jsonStr && jsonStr !== '[DONE]') {
-        try {
-          const wrapped = JSON.parse(jsonStr) as {
-            response?: GeminiStreamChunk
-          }
-          if (wrapped.response) {
-            yield wrapped.response
-          }
-        } catch {
-          // ignore
+    buffer += decoder.decode()
+
+    if (buffer) {
+      for (const rawLine of buffer.split('\n')) {
+        const event = processLine(rawLine)
+        if (event.done) return
+        for (const chunk of event.chunks) {
+          yield chunk
         }
       }
+    }
+
+    const event = flushEvent()
+    if (event.done) return
+    for (const chunk of event.chunks) {
+      yield chunk
     }
   } finally {
     reader.releaseLock()

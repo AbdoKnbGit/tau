@@ -42,7 +42,7 @@ import {
   GEMINI_TOOL_REGISTRY,
 } from './tools.js'
 import { geminiApi } from './api.js'
-import { getOrCreateCache, invalidateCache } from '../../services/api/providers/gemini_cache.js'
+import { getOrCreateCacheWithUsage, invalidateCache } from '../../services/api/providers/gemini_cache.js'
 import {
   sanitizeSchemaForLane,
   appendStrictParamsHint,
@@ -52,6 +52,10 @@ import {
 // ─── Constants ───────────────────────────────────────────────────
 
 const MAX_TURNS = 100
+
+function uncachedInputTokens(promptTokens: number, cacheReadTokens: number): number {
+  return Math.max(0, promptTokens - cacheReadTokens)
+}
 
 // ─── Gemini Native Message Types ─────────────────────────────────
 
@@ -143,19 +147,23 @@ export class GeminiLane implements Lane {
     const cacheTools = functionDeclarations.length > 0 ? [{ functionDeclarations }] : undefined
 
     let cacheName: string | null = null
-    if (geminiApi.supportsServerCache()) {
+    let cacheWriteTokens = 0
+    if (geminiApi.supportsServerCache(model)) {
       const apiKey = geminiApi.getApiKey()
       if (apiKey) {
         try {
-          cacheName = await getOrCreateCache({
+          const cache = await getOrCreateCacheWithUsage({
             model,
             baseUrl: geminiApi.cacheBaseUrl,
             apiKey,
             systemInstruction: cacheSystemInstruction,
             tools: cacheTools,
           })
+          cacheName = cache?.cacheName ?? null
+          cacheWriteTokens = cache?.createdTokens ?? 0
         } catch {
           cacheName = null
+          cacheWriteTokens = 0
         }
       }
     }
@@ -175,11 +183,11 @@ export class GeminiLane implements Lane {
     })
 
     // Track usage across the stream.
+    let promptTokens = 0
     let inputTokens = 0
     let outputTokens = 0
     let thinkingTokens = 0
     let cacheReadTokens = 0
-    const cacheWriteTokens = 0
 
     // Stream state per turn.
     const messageId = `gemini-${Date.now()}`
@@ -316,6 +324,14 @@ export class GeminiLane implements Lane {
     const emitMessageStart = () => {
       if (messageStartEmitted) return
       messageStartEmitted = true
+      const cacheUsage = {
+        ...(cacheReadTokens > 0 && {
+          cache_read_input_tokens: cacheReadTokens,
+        }),
+        ...(cacheWriteTokens > 0 && {
+          cache_creation_input_tokens: cacheWriteTokens,
+        }),
+      }
       return {
         type: 'message_start' as const,
         message: {
@@ -329,10 +345,7 @@ export class GeminiLane implements Lane {
           usage: {
             input_tokens: inputTokens,
             output_tokens: 0,
-            ...(cacheReadTokens > 0 && {
-              cache_read_input_tokens: cacheReadTokens,
-              cache_creation_input_tokens: 0,
-            }),
+            ...cacheUsage,
           },
         },
       }
@@ -348,10 +361,11 @@ export class GeminiLane implements Lane {
         // the correct cache-hit numbers before any blocks flow.
         if (chunk.usageMetadata) {
           const u = chunk.usageMetadata
-          inputTokens = u.promptTokenCount ?? inputTokens
+          promptTokens = u.promptTokenCount ?? promptTokens
           outputTokens = u.candidatesTokenCount ?? outputTokens
           thinkingTokens = u.thoughtsTokenCount ?? thinkingTokens
           cacheReadTokens = u.cachedContentTokenCount ?? cacheReadTokens
+          inputTokens = uncachedInputTokens(promptTokens, cacheReadTokens)
         }
 
         if (!messageStartEmitted) {
@@ -529,7 +543,9 @@ export class GeminiLane implements Lane {
             input_tokens: inputTokens,
             ...(cacheReadTokens > 0 && {
               cache_read_input_tokens: cacheReadTokens,
-              cache_creation_input_tokens: 0,
+            }),
+            ...(cacheWriteTokens > 0 && {
+              cache_creation_input_tokens: cacheWriteTokens,
             }),
           },
         }
@@ -595,7 +611,9 @@ export class GeminiLane implements Lane {
           input_tokens: inputTokens,
           ...(cacheReadTokens > 0 && {
             cache_read_input_tokens: cacheReadTokens,
-            cache_creation_input_tokens: 0,
+          }),
+          ...(cacheWriteTokens > 0 && {
+            cache_creation_input_tokens: cacheWriteTokens,
           }),
         },
       }
@@ -646,7 +664,9 @@ export class GeminiLane implements Lane {
         input_tokens: inputTokens,
         ...(cacheReadTokens > 0 && {
           cache_read_input_tokens: cacheReadTokens,
-          cache_creation_input_tokens: 0,
+        }),
+        ...(cacheWriteTokens > 0 && {
+          cache_creation_input_tokens: cacheWriteTokens,
         }),
       },
     }

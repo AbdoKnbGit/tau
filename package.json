@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/tau",
-  "version": "0.7.9",
+  "version": "0.8.0",
   "description": "Tau - multi-provider AI coding CLI with OpenAI, Gemini, GLM, Groq, DeepSeek, Ollama and more.",
   "author": "AbdoKnbGit",
   "repository": {

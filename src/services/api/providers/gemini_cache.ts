@@ -36,7 +36,12 @@ interface CacheEntry {
 
 interface CacheMiss {
   reason: 'too_small' | 'unsupported' | 'error'
-  retryAfter: number // epoch ms — don't retry until after this
+  retryAfter: number // epoch ms - don't retry until after this
+}
+
+export interface CacheLookupResult {
+  cacheName: string
+  createdTokens: number
 }
 
 // Server-side TTL is set to 600s (10 min) for breathing room. We expire
@@ -139,7 +144,7 @@ function _cacheHeaders(apiKey: string): Record<string, string> {
 async function _createCacheOnServer(
   key: string,
   args: GetOrCreateCacheArgs,
-): Promise<string | null> {
+): Promise<CacheLookupResult | null> {
   const { model, baseUrl, apiKey, systemInstruction, tools } = args
   try {
     const body: Record<string, unknown> = {
@@ -171,7 +176,13 @@ async function _createCacheOnServer(
       return null
     }
 
-    const data = (await response.json()) as { name?: string }
+    const data = (await response.json()) as {
+      name?: string
+      usageMetadata?: {
+        totalTokenCount?: number
+        promptTokenCount?: number
+      }
+    }
     if (!data.name) {
       _misses.set(key, {
         reason: 'error',
@@ -186,7 +197,13 @@ async function _createCacheOnServer(
       expiresAt: Date.now() + CACHE_TTL_MS,
       model,
     })
-    return data.name
+    return {
+      cacheName: data.name,
+      createdTokens:
+        data.usageMetadata?.totalTokenCount
+        ?? data.usageMetadata?.promptTokenCount
+        ?? 0,
+    }
   } catch {
     _misses.set(key, {
       reason: 'error',
@@ -230,9 +247,9 @@ export interface GetOrCreateCacheArgs {
  * When an existing cache is close to expiry (< REFRESH_THRESHOLD_MS),
  * a background refresh is triggered so the next request has a warm cache.
  */
-export async function getOrCreateCache(
+export async function getOrCreateCacheWithUsage(
   args: GetOrCreateCacheArgs,
-): Promise<string | null> {
+): Promise<CacheLookupResult | null> {
   const { model, apiKey, systemInstruction, tools } = args
 
   if (!supportsCaching(model)) return null
@@ -259,13 +276,19 @@ export async function getOrCreateCache(
     if (remaining < REFRESH_THRESHOLD_MS) {
       _refreshInBackground(args, key)
     }
-    return existing.cacheName
+    return { cacheName: existing.cacheName, createdTokens: 0 }
   }
   if (existing) _caches.delete(key)
 
   // Create a new cache.
   _stats.creates++
   return _createCacheOnServer(key, args)
+}
+
+export async function getOrCreateCache(
+  args: GetOrCreateCacheArgs,
+): Promise<string | null> {
+  return (await getOrCreateCacheWithUsage(args))?.cacheName ?? null
 }
 
 /**

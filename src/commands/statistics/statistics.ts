@@ -225,10 +225,7 @@ function emptyLine(text: string): string {
 }
 
 function modelUsageLine(name: string, usage: ModelStats): string {
-  if (
-    !isOpenRouterUsageModel(name) ||
-    (usage.cacheReadInputTokens <= 0 && usage.cacheCreationInputTokens <= 0)
-  ) {
+  if (!shouldShowDetailedCacheUsage(name, usage)) {
     return `${name.padEnd(24)} input: ${formatInteger(usage.inputTokens)} | output: ${formatInteger(usage.outputTokens)} | cache_hit: ${formatCacheHit(usage)}`
   }
 
@@ -273,6 +270,17 @@ function isSubagentToolName(name: string): boolean {
 
 function isOpenRouterUsageModel(model: string): boolean {
   return getAPIProvider() === 'openrouter' && model.includes('/')
+}
+
+function isGoogleGeminiUsageModel(model: string): boolean {
+  if (getAPIProvider() !== 'gemini') return false
+  const lower = model.toLowerCase()
+  return lower.startsWith('gemini-') || lower.startsWith('gemma-')
+}
+
+function shouldShowDetailedCacheUsage(model: string, usage: ModelStats): boolean {
+  if (!hasCacheUsage(usage)) return false
+  return isOpenRouterUsageModel(model) || isGoogleGeminiUsageModel(model)
 }
 
 function hasCacheUsage(usage: ModelStats): boolean {
@@ -427,7 +435,7 @@ function collectResponseModelStats(messages: Message[]): ResponseModelStats[] {
     const responseKey = getResponseKey(message, model, index)
     const stats = modelStatsFromUsage(usage)
     const existing = responses.get(responseKey)
-    if (existing && isOpenRouterUsageModel(model) && hasCacheUsage(stats)) {
+    if (existing && shouldShowDetailedCacheUsage(model, stats)) {
       mergeResponseStats(existing.stats, stats)
     } else if (!existing) {
       responses.set(responseKey, { model, stats })

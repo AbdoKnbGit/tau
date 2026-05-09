@@ -38,6 +38,7 @@ import {
   getAntigravityRotation,
   familyForAntigravityModel,
 } from './rotation.js'
+import { parseGeminiApiSSE as parseGeminiApiSSEEvent } from './api_sse.js'
 
 // Duplicated from services/api/errors.ts to avoid pulling in its
 // transitive import of utils/messages.ts (which has build-time-only
@@ -68,6 +69,85 @@ export interface GeminiStreamChunk {
     cachedContentTokenCount?: number
     thoughtsTokenCount?: number
     totalTokenCount?: number
+  }
+}
+
+export async function* parseGeminiApiSSE(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<GeminiStreamChunk> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let dataLines: string[] = []
+
+  const flushEvent = (): { done: boolean; chunks: GeminiStreamChunk[] } => {
+    if (dataLines.length === 0) return { done: false, chunks: [] }
+
+    const payload = dataLines.join('\n').trim()
+    dataLines = []
+
+    if (!payload) return { done: false, chunks: [] }
+    if (payload === '[DONE]') return { done: true, chunks: [] }
+
+    try {
+      return { done: false, chunks: [JSON.parse(payload) as GeminiStreamChunk] }
+    } catch {
+      return { done: false, chunks: [] }
+    }
+  }
+
+  const processLine = (rawLine: string): { done: boolean; chunks: GeminiStreamChunk[] } => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
+
+    if (line.trim() === '') {
+      return flushEvent()
+    }
+
+    if (!line.startsWith('data:')) {
+      return { done: false, chunks: [] }
+    }
+
+    const value = line.slice(5)
+    dataLines.push(value.startsWith(' ') ? value.slice(1) : value)
+    return { done: false, chunks: [] }
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const rawLine of lines) {
+        const event = processLine(rawLine)
+        if (event.done) return
+        for (const chunk of event.chunks) {
+          yield chunk
+        }
+      }
+    }
+
+    buffer += decoder.decode()
+    if (buffer) {
+      for (const rawLine of buffer.split('\n')) {
+        const event = processLine(rawLine)
+        if (event.done) return
+        for (const chunk of event.chunks) {
+          yield chunk
+        }
+      }
+    }
+
+    const event = flushEvent()
+    if (event.done) return
+    for (const chunk of event.chunks) {
+      yield chunk
+    }
+  } finally {
+    reader.releaseLock()
   }
 }
 
@@ -137,11 +217,12 @@ class GeminiApiClient {
   }
 
   /** Whether the current auth path supports Google's cachedContents API. */
-  supportsServerCache(): boolean {
+  supportsServerCache(model?: string): boolean {
     // Google's cachedContents API is API-key-path only. The Code Assist
-    // OAuth proxy doesn't expose it. If we ever find a verified path via
-    // the proxy, flip this.
-    return !!this.apiKey && !this.hasOAuth
+    // OAuth proxy doesn't expose it. Check the model route, not just
+    // whether any OAuth token exists, so Antigravity can coexist with a
+    // regular Gemini API key without disabling API-key caching.
+    return !!this.apiKey && !this._tokenForModel(model ?? '')
   }
 
   /** Base URL for cache API calls. */
@@ -467,49 +548,8 @@ class GeminiApiClient {
       { signal },
     )
 
-    // Parse SSE stream
-    const reader = response.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-
-        // Process complete SSE events
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? '' // Keep incomplete last line
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim()
-            if (data === '[DONE]') return
-            if (!data) continue
-
-            try {
-              const chunk: GeminiStreamChunk = JSON.parse(data)
-              yield chunk
-            } catch {
-              // Skip malformed JSON chunks
-            }
-          }
-        }
-      }
-
-      // Process any remaining data in buffer
-      if (buffer.startsWith('data: ')) {
-        const data = buffer.slice(6).trim()
-        if (data && data !== '[DONE]') {
-          try {
-            yield JSON.parse(data)
-          } catch { /* skip */ }
-        }
-      }
-    } finally {
-      reader.releaseLock()
+    for await (const chunk of parseGeminiApiSSEEvent<GeminiStreamChunk>(response.body!)) {
+      yield chunk
     }
   }
 
@@ -665,6 +705,43 @@ class GeminiApiClient {
    * rejected as restricted_client), or the live API-key catalog otherwise.
    */
   async listModels(providerFilter?: string): Promise<ModelInfo[]> {
+    const listApiKeyModels = async (): Promise<ModelInfo[]> => {
+      if (!this.apiKey) return []
+
+      const url = `${AI_STUDIO_BASE}/models?key=${encodeURIComponent(this.apiKey)}`
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { Connection: 'keep-alive' },
+      })
+
+      if (!response.ok) return []
+
+      const data = await response.json()
+      return (data.models ?? [])
+        .filter((m: any) => m.name?.includes('gemini'))
+        .map((m: any) => ({
+          id: m.name?.replace('models/', '') ?? m.name,
+          name: m.displayName ?? m.name,
+          contextWindow: m.inputTokenLimit,
+          supportsToolCalling: m.supportedGenerationMethods?.includes('generateContent'),
+        }))
+    }
+
+    if (providerFilter === 'gemini' && !this.cliOAuthToken) {
+      return listApiKeyModels()
+    }
+
+    if (providerFilter === 'antigravity') {
+      if (!this.antigravityOAuthToken) return []
+      return [
+        { id: 'gemini-3.1-pro-high',        name: 'Gemini 3.1 Pro Â· high thinking', contextWindow: 1048576 },
+        { id: 'gemini-3.1-pro-low',         name: 'Gemini 3.1 Pro Â· low thinking', contextWindow: 1048576 },
+        { id: 'gemini-3-flash',             name: 'Gemini 3 Flash', contextWindow: 1048576 },
+        { id: 'claude-sonnet-4-6',          name: 'Claude Sonnet 4.6 (via Antigravity)' },
+        { id: 'claude-opus-4-6-thinking',   name: 'Claude Opus 4.6 Â· thinking (via Antigravity)' },
+      ]
+    }
+
     // `providerFilter` is how the UX split between the Gemini row and the
     // Antigravity row lands here: both routes go through this same lane
     // (Code Assist proxy), they differ only in which OAuth token + body

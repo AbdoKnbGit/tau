@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Logo.webp" alt="Tau logo" width="120">
+  <img src="Logo.png" alt="Tau logo" width="120">
 </p>
 
 # The True Free Claude Code
@@ -42,7 +42,7 @@ That's the point. Same experience. Different brain. Zero dependencies on the ori
 npm install -g @abdoknbgit/tau
 ```
 
-**Requirements:** Node.js >= 20.0.0, Bash, gh for GitHub automation
+**Requirements:** Node.js >= 20.0.0, Git, Bash, gh for GitHub automation
 
 ---
 

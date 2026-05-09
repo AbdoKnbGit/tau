@@ -17,6 +17,10 @@ import { storeThoughtSignature } from './gemini_thought_cache.js'
 import { originalToolNameFromGemini } from './anthropic_to_gemini.js'
 import { coerceToolCallArgs } from './tool_schema_cache.js'
 
+function uncachedInputTokens(promptTokens: number, cacheReadTokens: number): number {
+  return Math.max(0, promptTokens - cacheReadTokens)
+}
+
 // ─── Gemini response types ─────────────────────────────────────────
 
 export interface GeminiStreamChunk {
@@ -109,7 +113,8 @@ export function geminiMessageToAnthropic(
     : content.some(c => c.type === 'tool_use') ? 'tool_use'
     : 'end_turn'
 
-  const cachedTokens = response.usageMetadata?.cachedContentTokenCount
+  const promptTokens = response.usageMetadata?.promptTokenCount ?? 0
+  const cachedTokens = response.usageMetadata?.cachedContentTokenCount ?? 0
   return {
     id: `msg_gemini_${Date.now()}`,
     type: 'message',
@@ -119,14 +124,14 @@ export function geminiMessageToAnthropic(
     stop_reason: stopReason as AnthropicMessage['stop_reason'],
     stop_sequence: null,
     usage: {
-      input_tokens: response.usageMetadata?.promptTokenCount ?? 0,
+      input_tokens: uncachedInputTokens(promptTokens, cachedTokens),
       output_tokens: response.usageMetadata?.candidatesTokenCount ?? 0,
       // Gemini's `cachedContentTokenCount` is the subset of prompt tokens
       // served from a `cachedContents/...` reference — maps cleanly onto
       // Anthropic's cache_read accounting. cache_creation is always 0
       // from our side because cache creation happens in a separate
       // request, not as a side effect of generateContent.
-      ...(cachedTokens !== undefined && cachedTokens > 0
+      ...(cachedTokens > 0
         ? {
             cache_read_input_tokens: cachedTokens,
             cache_creation_input_tokens: 0,
@@ -144,6 +149,7 @@ export async function* geminiStreamToAnthropicEvents(
 ): AsyncGenerator<AnthropicStreamEvent> {
   let messageStarted = false
   let blockIndex = 0
+  let promptTokens = 0
   let inputTokens = 0
   let outputTokens = 0
   let cacheReadTokens = 0
@@ -157,11 +163,12 @@ export async function* geminiStreamToAnthropicEvents(
   for await (const chunk of geminiStream) {
     // Update usage
     if (chunk.usageMetadata) {
-      inputTokens = chunk.usageMetadata.promptTokenCount ?? inputTokens
+      promptTokens = chunk.usageMetadata.promptTokenCount ?? promptTokens
       outputTokens = chunk.usageMetadata.candidatesTokenCount ?? outputTokens
       if (chunk.usageMetadata.cachedContentTokenCount !== undefined) {
         cacheReadTokens = chunk.usageMetadata.cachedContentTokenCount
       }
+      inputTokens = uncachedInputTokens(promptTokens, cacheReadTokens)
     }
 
     const candidate = chunk.candidates?.[0]
@@ -325,7 +332,16 @@ export async function* geminiStreamToAnthropicEvents(
       yield {
         type: 'message_delta',
         delta: { stop_reason: stopReason, stop_sequence: null },
-        usage: { output_tokens: outputTokens },
+        usage: {
+          output_tokens: outputTokens,
+          input_tokens: inputTokens,
+          ...(cacheReadTokens > 0
+            ? {
+                cache_read_input_tokens: cacheReadTokens,
+                cache_creation_input_tokens: 0,
+              }
+            : {}),
+        },
       }
 
       yield { type: 'message_stop' }
@@ -344,7 +360,16 @@ export async function* geminiStreamToAnthropicEvents(
     yield {
       type: 'message_delta',
       delta: { stop_reason: hasToolUse ? 'tool_use' : 'end_turn', stop_sequence: null },
-      usage: { output_tokens: outputTokens },
+      usage: {
+        output_tokens: outputTokens,
+        input_tokens: inputTokens,
+        ...(cacheReadTokens > 0
+          ? {
+              cache_read_input_tokens: cacheReadTokens,
+              cache_creation_input_tokens: 0,
+            }
+          : {}),
+      },
     }
     yield { type: 'message_stop' }
   }
@@ -366,6 +391,39 @@ export async function* parseGeminiSSE(
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let dataLines: string[] = []
+
+  const flushEvent = (): { done: boolean; chunks: GeminiStreamChunk[] } => {
+    if (dataLines.length === 0) return { done: false, chunks: [] }
+
+    const payload = dataLines.join('\n').trim()
+    dataLines = []
+
+    if (!payload) return { done: false, chunks: [] }
+    if (payload === '[DONE]') return { done: true, chunks: [] }
+
+    try {
+      return { done: false, chunks: [JSON.parse(payload) as GeminiStreamChunk] }
+    } catch {
+      return { done: false, chunks: [] }
+    }
+  }
+
+  const processLine = (rawLine: string): { done: boolean; chunks: GeminiStreamChunk[] } => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
+
+    if (line.trim() === '') {
+      return flushEvent()
+    }
+
+    if (!line.startsWith('data:')) {
+      return { done: false, chunks: [] }
+    }
+
+    const value = line.slice(5)
+    dataLines.push(value.startsWith(' ') ? value.slice(1) : value)
+    return { done: false, chunks: [] }
+  }
 
   try {
     while (true) {
@@ -374,42 +432,33 @@ export async function* parseGeminiSSE(
 
       buffer += decoder.decode(value, { stream: true })
 
-      // SSE events are separated by "\n\n". Only process complete events;
-      // keep the trailing partial in `buffer` for the next read.
-      const segments = buffer.split('\n\n')
-      buffer = segments.pop() ?? ''  // last segment is incomplete
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
 
-      for (const segment of segments) {
-        for (const rawLine of segment.split('\n')) {
-          const line = rawLine.trim()
-          if (!line.startsWith('data: ')) continue
-
-          const jsonStr = line.slice(6)
-          if (jsonStr === '[DONE]') return
-
-          try {
-            const chunk = JSON.parse(jsonStr) as GeminiStreamChunk
-            yield chunk
-          } catch {
-            // Malformed JSON in a complete SSE event — skip it.
-          }
+      for (const rawLine of lines) {
+        const event = processLine(rawLine)
+        if (event.done) return
+        for (const chunk of event.chunks) {
+          yield chunk
         }
       }
     }
 
-    // Flush any trailing data left in the buffer at end-of-stream.
-    if (buffer.trim()) {
+    buffer += decoder.decode()
+    if (buffer) {
       for (const rawLine of buffer.split('\n')) {
-        const line = rawLine.trim()
-        if (!line.startsWith('data: ')) continue
-        const jsonStr = line.slice(6)
-        if (jsonStr === '[DONE]') return
-        try {
-          yield JSON.parse(jsonStr) as GeminiStreamChunk
-        } catch {
-          // ignore
+        const event = processLine(rawLine)
+        if (event.done) return
+        for (const chunk of event.chunks) {
+          yield chunk
         }
       }
+    }
+
+    const event = flushEvent()
+    if (event.done) return
+    for (const chunk of event.chunks) {
+      yield chunk
     }
   } finally {
     reader.releaseLock()
