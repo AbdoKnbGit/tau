@@ -28,7 +28,13 @@ export type ScrollDirection = 'up' | 'down' | 'left' | 'right'
 let nutPromise: Promise<NutModule> | undefined
 
 async function getNut(): Promise<NutModule> {
-  nutPromise ??= import('@computer-use/nut-js')
+  nutPromise ??= import('@computer-use/nut-js').catch(err => {
+    nutPromise = undefined
+    throw new Error(
+      'Computer tool requires optional dependency @computer-use/nut-js. Install it in the same environment to enable desktop control.',
+      { cause: err },
+    )
+  })
   return nutPromise
 }
 

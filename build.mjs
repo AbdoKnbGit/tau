@@ -13,6 +13,38 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'f
 import { isAbsolute, join, resolve } from 'path'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
+const bundledRuntimePackages = new Set(['e2b', 'google-auth-library'])
+const optionalExternalPackages = new Set([
+  '@anthropic-ai/bedrock-sdk',
+  '@anthropic-ai/foundry-sdk',
+  '@anthropic-ai/mcpb',
+  '@anthropic-ai/vertex-sdk',
+  '@aws-sdk/client-bedrock',
+  '@aws-sdk/client-sts',
+  '@azure/identity',
+  '@computer-use/nut-js',
+  '@opentelemetry/exporter-logs-otlp-grpc',
+  '@opentelemetry/exporter-logs-otlp-http',
+  '@opentelemetry/exporter-logs-otlp-proto',
+  '@opentelemetry/exporter-metrics-otlp-grpc',
+  '@opentelemetry/exporter-metrics-otlp-http',
+  '@opentelemetry/exporter-metrics-otlp-proto',
+  '@opentelemetry/exporter-prometheus',
+  '@opentelemetry/exporter-trace-otlp-grpc',
+  '@opentelemetry/exporter-trace-otlp-http',
+  '@opentelemetry/exporter-trace-otlp-proto',
+  'modifiers-napi',
+  'yaml',
+])
+const runtimeDependencies = Object.keys(pkg.dependencies ?? {})
+const externalRuntimePackages = [
+  ...runtimeDependencies.filter(name => !bundledRuntimePackages.has(name)),
+  ...optionalExternalPackages,
+]
+const externalRuntimePatterns = externalRuntimePackages.flatMap(name => [
+  name,
+  `${name}/*`,
+])
 
 // ─── Shim for missing internal/ant assets ──────────────────────────
 
@@ -207,9 +239,9 @@ const result = await build({
   sourcemap: 'linked',
   splitting: false,
   target: 'node20',
-  // Externalize all node_modules — they're resolved at runtime from
-  // the npm install. Only our own source is bundled.
-  packages: 'external',
+  // Externalize declared runtime deps. Bundle selected JS-only integrations
+  // whose upstream dependency ranges still pull deprecated packages on install.
+  external: externalRuntimePatterns,
   jsx: 'automatic',
   jsxImportSource: 'react',
   loader: {
