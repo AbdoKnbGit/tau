@@ -26,6 +26,7 @@ import {
   renderVolatileSlot,
   flatten,
 } from '../shared/system_slots.js'
+import { WEB_SEARCH_AUTO_USE_GUIDANCE } from '../../tools/WebSearchTool/prompt.js'
 
 // ─── Model-Family Detection ──────────────────────────────────────
 
@@ -93,7 +94,7 @@ function toolUsageGuidelines(): string {
 - **run_shell_command**: Include a description of what the command does. Prefer dedicated tools (read_file, grep_search) over shell equivalents (cat, grep).
 - **grep_search**: Use for searching code content. Preferred over run_shell_command with grep.
 - **glob**: Use for finding files by pattern. Preferred over run_shell_command with find.
-- **google_web_search**: Use when you need current documentation or information not in the codebase.
+- **google_web_search**: ${WEB_SEARCH_AUTO_USE_GUIDANCE}
 - **web_fetch**: Use to read web pages, documentation URLs, or GitHub files.
 
 Do NOT use tools when you can answer from context. Do NOT read files you've already read in this conversation unless they may have changed.`

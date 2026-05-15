@@ -136,7 +136,7 @@ export function hasStoredKey(provider: string): boolean {
  */
 export function hasAnyThirdPartyProviderConfigured(): boolean {
   const store = readStore()
-  return Object.keys(store.keys).length > 0
+  return Object.keys(store.keys).some(key => key !== 'firecrawl')
 }
 
 /**
@@ -156,6 +156,7 @@ function detectKeyFormat(provider: string, key: string): string {
     gemini: 'AIza',
     deepseek: 'sk-',
     moonshot: 'sk-',
+    firecrawl: 'fc-',
   }
   const expected = prefixes[provider]
   if (expected && key.startsWith(expected)) return 'standard'
@@ -182,6 +183,7 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   deepseek: { prefix: 'sk-', minLength: 20, displayName: 'DeepSeek' },
   moonshot: { prefix: 'sk-', minLength: 20, displayName: 'Moonshot AI' },
   minimax: { prefix: '', minLength: 10, displayName: 'MiniMax AI' },
+  firecrawl: { prefix: 'fc-', minLength: 10, displayName: 'Firecrawl' },
 }
 
 /**

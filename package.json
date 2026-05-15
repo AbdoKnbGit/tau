@@ -1,7 +1,7 @@
 {
   "name": "@abdoknbgit/tau",
-  "version": "0.8.1",
-  "description": "Tau - multi-provider AI coding CLI with OpenAI, Gemini, GLM, Groq, DeepSeek, Ollama and more.",
+  "version": "0.8.2",
+  "description": "Tau - multi-provider AI coding CLI with Firecrawl-hosted WebSearch. Firecrawl offers 1k searches/month on free trials; just enter your API key.",
   "author": "AbdoKnbGit",
   "repository": {
     "type": "git",

@@ -45,6 +45,7 @@ import {
   checkKiroPayloadSize,
   trimKiroPayloadToLimit,
 } from './payload_guards.js'
+import { WEB_SEARCH_NATIVE_DESCRIPTION } from '../../tools/WebSearchTool/prompt.js'
 
 interface KiroToolSpec {
   toolSpecification: {
@@ -381,7 +382,7 @@ function _buildKiroToolSelectionGuide(
 
   addCategory('Web', collect(
     pick('WebFetch', 'fetch web content'),
-    pick('WebSearch', 'search the web'),
+    pick('WebSearch', WEB_SEARCH_NATIVE_DESCRIPTION),
   ))
 
   addCategory('Interaction', collect(

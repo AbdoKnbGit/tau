@@ -2,6 +2,7 @@ import type { ProviderTool } from '../../services/api/providers/base_provider.js
 import type { LaneToolRegistration } from '../types.js'
 import { windowsPathToPosixPath } from '../../utils/windowsPaths.js'
 import { GEMINI_TOOL_REGISTRY } from '../gemini/tools.js'
+import { WEB_SEARCH_NATIVE_DESCRIPTION } from '../../tools/WebSearchTool/prompt.js'
 
 export const CURSOR_CLIENT_SIDE_TOOL_V2 = {
   READ_SEMSEARCH_FILES: 1,
@@ -578,7 +579,7 @@ const CURSOR_EXTRA_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
     nativeName: 'web_search',
     implId: 'WebSearch',
-    nativeDescription: 'Search the web for up-to-date information.',
+    nativeDescription: WEB_SEARCH_NATIVE_DESCRIPTION,
     nativeSchema: {
       type: 'object',
       properties: {

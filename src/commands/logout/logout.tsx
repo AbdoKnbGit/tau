@@ -28,6 +28,11 @@ import {
   deleteAllProviderCredentials,
   hasStoredKey,
 } from '../../services/api/auth/api_key_manager.js'
+import {
+  FIRECRAWL_API_KEY_ENV,
+  FIRECRAWL_DISPLAY_NAME,
+  FIRECRAWL_PROVIDER_KEY,
+} from '../../tools/WebSearchTool/firecrawl.js'
 import { clearAllAntigravityAccounts } from '../../lanes/shared/antigravity_auth.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
@@ -158,6 +163,21 @@ function providerIsConfigured(p: APIProvider): boolean {
   return false
 }
 
+const FIRECRAWL_LOGOUT_TARGET = FIRECRAWL_PROVIDER_KEY
+type LogoutTarget = APIProvider | typeof FIRECRAWL_LOGOUT_TARGET
+
+function firecrawlIsConfigured(): boolean {
+  return (
+    hasStoredKey(FIRECRAWL_PROVIDER_KEY) ||
+    !!process.env[FIRECRAWL_API_KEY_ENV]?.trim()
+  )
+}
+
+function getLogoutTargetName(target: LogoutTarget): string {
+  if (target === FIRECRAWL_LOGOUT_TARGET) return FIRECRAWL_DISPLAY_NAME
+  return PROVIDER_DISPLAY_NAMES[target]
+}
+
 function ProviderPickerLogout({
   onDone,
 }: {
@@ -166,10 +186,12 @@ function ProviderPickerLogout({
   const activeProvider = getAPIProvider()
 
   // Only show providers that actually have something to sign out from.
-  const eligibleProviders = useMemo(
-    () => SELECTABLE_PROVIDERS.filter(providerIsConfigured),
-    [],
-  )
+  const eligibleProviders = useMemo<LogoutTarget[]>(() => {
+    const providers: LogoutTarget[] =
+      SELECTABLE_PROVIDERS.filter(providerIsConfigured)
+    if (firecrawlIsConfigured()) providers.push(FIRECRAWL_LOGOUT_TARGET)
+    return providers
+  }, [])
 
   const initialIndex = useMemo(() => {
     const idx = eligibleProviders.indexOf(activeProvider)
@@ -179,8 +201,8 @@ function ProviderPickerLogout({
   const [selectedIndex, setSelectedIndex] = useState(initialIndex)
   const [status, setStatus] = useState<
     | { kind: 'idle' }
-    | { kind: 'working'; provider: APIProvider }
-    | { kind: 'done'; provider: APIProvider }
+    | { kind: 'working'; provider: LogoutTarget }
+    | { kind: 'done'; provider: LogoutTarget }
     | { kind: 'error'; message: string }
   >({ kind: 'idle' })
 
@@ -209,13 +231,21 @@ function ProviderPickerLogout({
       const provider = eligibleProviders[selectedIndex]
       if (!provider) return
       setStatus({ kind: 'working', provider })
-      performLogout({
-        clearOnboarding: !isThirdPartyProvider(provider),
-        provider,
-      })
+      const logoutPromise =
+        provider === FIRECRAWL_LOGOUT_TARGET
+          ? Promise.resolve().then(async () => {
+              deleteAllProviderCredentials(FIRECRAWL_PROVIDER_KEY)
+              delete process.env[FIRECRAWL_API_KEY_ENV]
+              await clearAuthRelatedCaches()
+            })
+          : performLogout({
+              clearOnboarding: !isThirdPartyProvider(provider),
+              provider,
+            })
+      logoutPromise
         .then(() => {
           setStatus({ kind: 'done', provider })
-          const name = PROVIDER_DISPLAY_NAMES[provider]
+          const name = getLogoutTargetName(provider)
           setTimeout(() => onDone(`Signed out from ${name}.`), 900)
         })
         .catch((err) => {
@@ -265,8 +295,9 @@ function ProviderPickerLogout({
           <>
             {eligibleProviders.map((p, i) => {
               const isSelected = i === selectedIndex
-              const name = PROVIDER_DISPLAY_NAMES[p]
-              const isActive = p === activeProvider
+              const name = getLogoutTargetName(p)
+              const isFirecrawl = p === FIRECRAWL_LOGOUT_TARGET
+              const isActive = !isFirecrawl && p === activeProvider
               const hasApi = p !== 'firstParty' && hasStoredKey(p)
               const hasOauthCli =
                 p === 'gemini' && hasStoredKey('gemini_oauth_cli')
@@ -282,7 +313,11 @@ function ProviderPickerLogout({
                     ? ' (Google login)'
                     : ''
               const credLabel =
-                p === 'firstParty'
+                isFirecrawl
+                  ? process.env[FIRECRAWL_API_KEY_ENV]?.trim()
+                    ? 'API key (env)'
+                    : 'API key'
+                  : p === 'firstParty'
                   ? 'Anthropic account'
                   : hasApi && hasOauth
                     ? `OAuth${oauthDetail} + API key`
@@ -318,13 +353,13 @@ function ProviderPickerLogout({
 
         {status.kind === 'working' && (
           <Text color="warning">
-            Signing out from {PROVIDER_DISPLAY_NAMES[status.provider]}…
+            Signing out from {getLogoutTargetName(status.provider)}…
           </Text>
         )}
 
         {status.kind === 'done' && (
           <Text color="success">
-            Signed out from {PROVIDER_DISPLAY_NAMES[status.provider]}.
+            Signed out from {getLogoutTargetName(status.provider)}.
           </Text>
         )}
 

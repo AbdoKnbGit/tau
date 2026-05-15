@@ -36,12 +36,22 @@ import {
   resetBypassPermissionsCheck,
 } from '../../utils/permissions/bypassPermissionsKillswitch.js'
 import { resetUserCache } from '../../utils/user.js'
-import { validateKeyFormat } from '../../services/api/auth/api_key_manager.js'
+import {
+  hasStoredKey,
+  saveProviderKey,
+  validateKeyFormat,
+} from '../../services/api/auth/api_key_manager.js'
 import {
   activateGeminiVoiceConversation,
   hasStoredVoiceConversationKey,
   saveVoiceConversationApiKey,
 } from '../../voice/voiceConversation.js'
+import {
+  FIRECRAWL_API_KEY_ENV,
+  FIRECRAWL_DISPLAY_NAME,
+  FIRECRAWL_PROVIDER_KEY,
+  testFirecrawlApiKey,
+} from '../../tools/WebSearchTool/firecrawl.js'
 import {
   E2B_DASHBOARD_URL,
   E2B_SECURITY_DISPLAY_NAME,
@@ -106,6 +116,9 @@ export async function call(
   if (matchesE2BSecurityArg(args)) {
     return <E2BSecurityLogin onDone={finish} />
   }
+  if (matchesFirecrawlArg(args)) {
+    return <FirecrawlLogin onDone={finish} />
+  }
 
   return (
     <ProviderPickerLogin
@@ -120,28 +133,38 @@ function matchesE2BSecurityArg(args: string): boolean {
   return first === E2B_SECURITY_PROVIDER || first === 'e2b'
 }
 
+function matchesFirecrawlArg(args: string): boolean {
+  const first = args.trim().toLowerCase().split(/\s+/)[0]
+  return first === FIRECRAWL_PROVIDER_KEY || first === 'websearch'
+}
+
 const GEMINI_VOICE_LOGIN_TARGET = 'geminiVoice' as const
 const E2B_SECURITY_LOGIN_TARGET = E2B_SECURITY_PROVIDER
+const FIRECRAWL_LOGIN_TARGET = FIRECRAWL_PROVIDER_KEY
 type LoginTarget =
   | APIProvider
   | typeof GEMINI_VOICE_LOGIN_TARGET
   | typeof E2B_SECURITY_LOGIN_TARGET
+  | typeof FIRECRAWL_LOGIN_TARGET
 
 const LOGIN_PROVIDERS = [
   ...SELECTABLE_PROVIDERS,
   GEMINI_VOICE_LOGIN_TARGET,
   E2B_SECURITY_LOGIN_TARGET,
+  FIRECRAWL_LOGIN_TARGET,
 ] as const satisfies readonly LoginTarget[]
 
 function getLoginTargetName(target: LoginTarget): string {
   if (target === GEMINI_VOICE_LOGIN_TARGET) return 'Gemini Voice'
   if (target === E2B_SECURITY_LOGIN_TARGET) return E2B_SECURITY_DISPLAY_NAME
+  if (target === FIRECRAWL_LOGIN_TARGET) return FIRECRAWL_DISPLAY_NAME
   return PROVIDER_DISPLAY_NAMES[target]
 }
 
 function getProviderAuthTypeLabel(provider: LoginTarget): string {
   if (provider === GEMINI_VOICE_LOGIN_TARGET) return 'Gemini API key'
   if (provider === E2B_SECURITY_LOGIN_TARGET) return 'E2B API key / auth token'
+  if (provider === FIRECRAWL_LOGIN_TARGET) return 'Firecrawl API key'
   if (provider === 'firstParty') {
     return 'claude subscription / Console API / platform'
   }
@@ -164,6 +187,10 @@ function getProviderConfiguredLabel(provider: LoginTarget): string {
   }
   if (provider === E2B_SECURITY_LOGIN_TARGET) {
     return hasE2BSecurityAuth() ? ' [auth ready]' : ''
+  }
+  if (provider === FIRECRAWL_LOGIN_TARGET) {
+    if (process.env[FIRECRAWL_API_KEY_ENV]?.trim()) return ' [env key ready]'
+    return hasStoredKey(FIRECRAWL_PROVIDER_KEY) ? ' [API key saved]' : ''
   }
   const method = getProviderAuthMethod(provider)
   if (method === 'oauth') return ' [OAuth connected]'
@@ -209,7 +236,8 @@ function ProviderPickerLogin({
       if (success) {
         if (
           providerForLogin !== GEMINI_VOICE_LOGIN_TARGET &&
-          providerForLogin !== E2B_SECURITY_LOGIN_TARGET
+          providerForLogin !== E2B_SECURITY_LOGIN_TARGET &&
+          providerForLogin !== FIRECRAWL_LOGIN_TARGET
         ) {
           setActiveProvider(providerForLogin)
         }
@@ -227,6 +255,9 @@ function ProviderPickerLogin({
     }
     if (providerForLogin === E2B_SECURITY_LOGIN_TARGET) {
       return <E2BSecurityLogin onDone={handleProviderDone} />
+    }
+    if (providerForLogin === FIRECRAWL_LOGIN_TARGET) {
+      return <FirecrawlLogin onDone={handleProviderDone} />
     }
     return (
       <ThirdPartyLogin
@@ -392,7 +423,124 @@ function GeminiVoiceLogin({
   )
 }
 
-// ─── Anthropic login dialog (exported for the onboarding flow) ───
+// ─── Auxiliary login dialogs ───
+
+function FirecrawlLogin({
+  onDone,
+}: {
+  onDone: (success: boolean) => void
+}) {
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [apiKeyCursorOffset, setApiKeyCursorOffset] = useState(0)
+  const [state, setState] = useState<
+    | { step: 'input'; error?: string }
+    | { step: 'validating' }
+    | { step: 'success'; message: string }
+    | { step: 'warning'; message: string }
+  >({ step: 'input' })
+  const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 12)
+
+  useEffect(() => {
+    if (state.step !== 'success' && state.step !== 'warning') return
+    const timer = setTimeout(
+      () => onDone(true),
+      state.step === 'warning' ? 2000 : 800,
+    )
+    return () => clearTimeout(timer)
+  }, [onDone, state.step])
+
+  function handleSubmit(value: string) {
+    const key = value.trim()
+    if (!key) {
+      setState({ step: 'input', error: 'Firecrawl API key cannot be empty.' })
+      return
+    }
+
+    setState({ step: 'validating' })
+    const warnings: string[] = []
+    const formatCheck = validateKeyFormat(FIRECRAWL_PROVIDER_KEY, key)
+    if (!formatCheck.valid && formatCheck.error) {
+      warnings.push(formatCheck.error)
+    }
+
+    const persistAndFinish = () => {
+      saveProviderKey(FIRECRAWL_PROVIDER_KEY, key)
+      process.env[FIRECRAWL_API_KEY_ENV] = key
+      if (warnings.length > 0) {
+        setState({
+          step: 'warning',
+          message: `Firecrawl key saved. Warning: ${warnings.join(' ')}`,
+        })
+        return
+      }
+      setState({
+        step: 'success',
+        message: 'Firecrawl key saved. WebSearch is available for all providers.',
+      })
+    }
+
+    testFirecrawlApiKey(key)
+      .then(testResult => {
+        if (!testResult.ok) warnings.push(testResult.error)
+        persistAndFinish()
+      })
+      .catch(() => persistAndFinish())
+  }
+
+  return (
+    <Dialog
+      title={`Login - ${FIRECRAWL_DISPLAY_NAME}`}
+      onCancel={() => onDone(false)}
+      color="permission"
+    >
+      <Box flexDirection="column" paddingLeft={1}>
+        {state.step === 'input' && (
+          <>
+            <Text dimColor>
+              Get your API key at:{' '}
+              <Text color="suggestion">https://www.firecrawl.dev/app/api-keys</Text>
+            </Text>
+            <Text dimColor>
+              Used by WebSearch when the active model provider has no native web search.
+            </Text>
+            {state.error && (
+              <Box marginTop={1}>
+                <Text color="error">{state.error}</Text>
+              </Box>
+            )}
+            <Box marginTop={1}>
+              <Text>API Key: </Text>
+              <TextInput
+                value={apiKeyInput}
+                onChange={setApiKeyInput}
+                onSubmit={handleSubmit}
+                mask="*"
+                placeholder="Paste your Firecrawl API key here..."
+                focus={true}
+                showCursor={true}
+                columns={inputColumns}
+                cursorOffset={apiKeyCursorOffset}
+                onChangeCursorOffset={setApiKeyCursorOffset}
+              />
+            </Box>
+            <Box marginTop={1}>
+              <Text dimColor>Enter to submit, Esc to cancel</Text>
+            </Box>
+          </>
+        )}
+        {state.step === 'validating' && (
+          <Text color="warning">Validating Firecrawl credentials...</Text>
+        )}
+        {state.step === 'success' && (
+          <Text color="success">{state.message}</Text>
+        )}
+        {state.step === 'warning' && (
+          <Text color="warning">{state.message}</Text>
+        )}
+      </Box>
+    </Dialog>
+  )
+}
 
 type E2BSecurityLoginMethod = 'authLogin' | 'apiKey'
 

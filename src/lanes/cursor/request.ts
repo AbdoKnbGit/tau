@@ -174,8 +174,8 @@ function _buildCursorToolSelectionGuide(
 
   addCategory('Interaction', add([
     hasEncoded('ask_question') ? 'ask_question (ask the user a structured question)' : null,
-    hasEncoded('web_search') ? 'web_search (search the web)' : null,
-    hasEncoded('google_web_search') ? 'google_web_search (search the web)' : null,
+    hasEncoded('web_search') ? 'web_search (current/live web information)' : null,
+    hasEncoded('google_web_search') ? 'google_web_search (current/live web information)' : null,
     hasEncoded('web_fetch') ? 'web_fetch (fetch a specific URL)' : null,
   ]))
 

@@ -24,6 +24,7 @@
  */
 
 import type { LaneToolRegistration } from '../types.js'
+import { WEB_SEARCH_NATIVE_DESCRIPTION } from '../../tools/WebSearchTool/prompt.js'
 
 export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
@@ -189,7 +190,7 @@ export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
     nativeName: 'web_search',
     implId: 'WebSearch',
-    nativeDescription: 'Search the web.',
+    nativeDescription: WEB_SEARCH_NATIVE_DESCRIPTION,
     nativeSchema: {
       type: 'object',
       properties: {

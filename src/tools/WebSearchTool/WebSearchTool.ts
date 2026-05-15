@@ -1,6 +1,6 @@
 import type {
   BetaContentBlock,
-  BetaWebSearchTool20250305,
+  BetaToolUnion,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { getAPIProvider } from 'src/utils/model/providers.js'
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js'
@@ -12,8 +12,13 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getMainLoopModel, getSmallFastModel } from '../../utils/model/model.js'
-import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
+import { jsonParse } from '../../utils/slowOperations.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import {
+  hasFirecrawlSearchConfig,
+  runFirecrawlWebSearch,
+  type FirecrawlSearchHit,
+} from './firecrawl.js'
 import { getWebSearchPrompt, WEB_SEARCH_TOOL_NAME } from './prompt.js'
 import {
   getToolUseSummary,
@@ -28,11 +33,11 @@ const inputSchema = lazySchema(() =>
     allowed_domains: z
       .array(z.string())
       .optional()
-      .describe('Only include search results from these domains'),
+      .describe('Only include search results from these hostnames, without protocol or path'),
     blocked_domains: z
       .array(z.string())
       .optional()
-      .describe('Never include search results from these domains'),
+      .describe('Never include search results from these hostnames, without protocol or path'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -43,6 +48,14 @@ const searchResultSchema = lazySchema(() => {
   const searchHitSchema = z.object({
     title: z.string().describe('The title of the search result'),
     url: z.string().describe('The URL of the search result'),
+    description: z
+      .string()
+      .optional()
+      .describe('Short search result description or snippet'),
+    content: z
+      .string()
+      .optional()
+      .describe('Extracted page content or markdown excerpt when available'),
   })
 
   return z.object({
@@ -68,18 +81,90 @@ type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
 
+type SearchHitForModel = {
+  title: string
+  url: string
+  description?: string
+  content?: string
+}
+
+const TOOL_RESULT_MAX_CONTENT_CHARS = 6_000
+
+function truncateForToolResult(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value
+  const truncated = value.slice(0, maxChars).replace(/\s+\S*$/, '').trimEnd()
+  return `${truncated}\n[content truncated]`
+}
+
+function formatSearchHitForModel(
+  hit: SearchHitForModel,
+  index: number,
+): string {
+  const lines = [`Result ${index}:`, `Title: ${hit.title}`, `URL: ${hit.url}`]
+  if (hit.description) {
+    lines.push(`Description: ${truncateForToolResult(hit.description, 1_000)}`)
+  }
+  if (hit.content) {
+    lines.push(
+      `Content excerpt:\n${truncateForToolResult(
+        hit.content,
+        TOOL_RESULT_MAX_CONTENT_CHARS,
+      )}`,
+    )
+  }
+  return lines.join('\n')
+}
+
 // Re-export WebSearchProgress from centralized types to break import cycles
 export type { WebSearchProgress } from '../../types/tools.js'
 
 import type { WebSearchProgress } from '../../types/tools.js'
 
-function makeToolSchema(input: Input): BetaWebSearchTool20250305 {
+const ANTHROPIC_WEB_SEARCH_TOOL_TYPE = 'web_search_20260209'
+
+function supportsAnthropicServerWebSearch(): boolean {
+  const provider = getAPIProvider()
+  const model = getMainLoopModel()
+
+  if (provider === 'firstParty') {
+    return true
+  }
+
+  if (provider === 'vertex') {
+    return (
+      model.includes('claude-opus-4') ||
+      model.includes('claude-sonnet-4') ||
+      model.includes('claude-haiku-4')
+    )
+  }
+
+  return provider === 'foundry'
+}
+
+function makeToolSchema(input: Input): BetaToolUnion {
   return {
-    type: 'web_search_20250305',
+    type: ANTHROPIC_WEB_SEARCH_TOOL_TYPE,
     name: 'web_search',
     allowed_domains: input.allowed_domains,
     blocked_domains: input.blocked_domains,
     max_uses: 8, // Hardcoded to 8 searches maximum
+  } as unknown as BetaToolUnion
+}
+
+function makeOutputFromFirecrawlResponse(
+  hits: FirecrawlSearchHit[],
+  query: string,
+  durationSeconds: number,
+): Output {
+  return {
+    query,
+    results: [
+      {
+        tool_use_id: `firecrawl-search-${Date.now()}`,
+        content: hits,
+      },
+    ],
+    durationSeconds,
   }
 }
 
@@ -155,7 +240,7 @@ export const WebSearchTool = buildTool({
   maxResultSizeChars: 100_000,
   shouldDefer: true,
   async description(input) {
-    return `Claude wants to search the web for: ${input.query}`
+    return `Search the web for: ${input.query}`
   },
   userFacingName() {
     return 'Web Search'
@@ -166,30 +251,7 @@ export const WebSearchTool = buildTool({
     return summary ? `Searching for ${summary}` : 'Searching the web'
   },
   isEnabled() {
-    const provider = getAPIProvider()
-    const model = getMainLoopModel()
-
-    // Enable for firstParty
-    if (provider === 'firstParty') {
-      return true
-    }
-
-    // Enable for Vertex AI with supported models (Claude 4.0+)
-    if (provider === 'vertex') {
-      const supportsWebSearch =
-        model.includes('claude-opus-4') ||
-        model.includes('claude-sonnet-4') ||
-        model.includes('claude-haiku-4')
-
-      return supportsWebSearch
-    }
-
-    // Foundry only ships models that already support Web Search
-    if (provider === 'foundry') {
-      return true
-    }
-
-    return false
+    return supportsAnthropicServerWebSearch() || hasFirecrawlSearchConfig()
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -254,6 +316,40 @@ export const WebSearchTool = buildTool({
   async call(input, context, _canUseTool, _parentMessage, onProgress) {
     const startTime = performance.now()
     const { query } = input
+    const runFirecrawlSearch = async () => {
+      onProgress?.({
+        toolUseID: 'firecrawl-search-query',
+        data: {
+          type: 'query_update',
+          query,
+        },
+      })
+      const result = await runFirecrawlWebSearch(
+        input,
+        context.abortController.signal,
+      )
+      onProgress?.({
+        toolUseID: 'firecrawl-search-results',
+        data: {
+          type: 'search_results_received',
+          resultCount: result.hits.length,
+          query,
+        },
+      })
+      return {
+        data: makeOutputFromFirecrawlResponse(
+          result.hits,
+          query,
+          result.durationSeconds,
+        ),
+      }
+    }
+
+    if (!supportsAnthropicServerWebSearch()) {
+      return runFirecrawlSearch()
+    }
+
+    try {
     const userMessage = createUserMessage({
       content: 'Perform a web search for the query: ' + query,
     })
@@ -397,15 +493,23 @@ export const WebSearchTool = buildTool({
       durationSeconds,
     )
     return { data }
+    } catch (error) {
+      if (!hasFirecrawlSearchConfig()) {
+        throw error
+      }
+      logError(error instanceof Error ? error : new Error(String(error)))
+      return runFirecrawlSearch()
+    }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     const { query, results } = output
 
     let formattedOutput = `Web search results for query: "${query}"\n\n`
 
-    // Process the results array - it can contain both string summaries and search result objects.
-    // Guard against null/undefined entries that can appear after JSON round-tripping
-    // (e.g., from compaction or transcript deserialization).
+    let resultIndex = 1
+
+    // Results can contain both text summaries and structured search hits.
+    // Guard against null/undefined entries that can appear after JSON round-tripping.
     ;(results ?? []).forEach(result => {
       if (result == null) {
         return
@@ -414,17 +518,19 @@ export const WebSearchTool = buildTool({
         // Text summary
         formattedOutput += result + '\n\n'
       } else {
-        // Search result with links
         if (result.content?.length > 0) {
-          formattedOutput += `Links: ${jsonStringify(result.content)}\n\n`
+          formattedOutput +=
+            result.content
+              .map(hit => formatSearchHitForModel(hit, resultIndex++))
+              .join('\n\n') + '\n\n'
         } else {
-          formattedOutput += 'No links found.\n\n'
+          formattedOutput += 'No search results found.\n\n'
         }
       }
     })
 
     formattedOutput +=
-      '\nREMINDER: You MUST include the sources above in your response to the user using markdown hyperlinks.'
+      '\nREMINDER: Use the content excerpts above to answer directly when they contain the requested facts. You MUST include the sources above in your response to the user using markdown hyperlinks.'
 
     return {
       tool_use_id: toolUseID,

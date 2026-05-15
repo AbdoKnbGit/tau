@@ -16,6 +16,10 @@ import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
+import {
+  WEB_SEARCH_AUTO_USE_GUIDANCE,
+  WEB_SEARCH_TOOL_NAME,
+} from '../tools/WebSearchTool/prompt.js'
 import type { Tools } from '../Tool.js'
 import type { Command } from '../types/command.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
@@ -354,6 +358,7 @@ function getSessionSpecificGuidanceSection(
   skillToolCommands: Command[],
 ): string | null {
   const hasAskUserQuestionTool = enabledTools.has(ASK_USER_QUESTION_TOOL_NAME)
+  const hasWebSearchTool = enabledTools.has(WEB_SEARCH_TOOL_NAME)
   const hasSkills =
     skillToolCommands.length > 0 && enabledTools.has(SKILL_TOOL_NAME)
   const hasAgentTool = enabledTools.has(AGENT_TOOL_NAME)
@@ -364,6 +369,9 @@ function getSessionSpecificGuidanceSection(
   const items = [
     hasAskUserQuestionTool
       ? `If you do not understand why the user has denied a tool call, use the ${ASK_USER_QUESTION_TOOL_NAME} to ask them.`
+      : null,
+    hasWebSearchTool
+      ? `${WEB_SEARCH_AUTO_USE_GUIDANCE} Do not say you cannot access live information or tell the user to search manually when ${WEB_SEARCH_TOOL_NAME} is available; call ${WEB_SEARCH_TOOL_NAME} first, then answer with sources.`
       : null,
     getIsNonInteractiveSession()
       ? null

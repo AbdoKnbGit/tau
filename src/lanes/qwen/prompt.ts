@@ -14,6 +14,7 @@ import {
   renderVolatileSlot,
   flatten,
 } from '../shared/system_slots.js'
+import { WEB_SEARCH_AUTO_USE_GUIDANCE } from '../../tools/WebSearchTool/prompt.js'
 
 // ─── Stable preamble ──────────────────────────────────────────────
 
@@ -53,7 +54,8 @@ function toolUsage(): string {
 - 'run_shell_command': include a 'description' of what the command does. Prefer native tools (read_file, search_file_content) over shell (cat, grep).
 - 'search_file_content': regex search in file contents. Use this over 'run_shell_command grep'.
 - 'glob': find files by pattern. Use this over 'run_shell_command find'.
-- 'web_search' / 'web_fetch': for external docs or URLs.
+- 'web_search': ${WEB_SEARCH_AUTO_USE_GUIDANCE}
+- 'web_fetch': fetch a specific URL when you already have one.
 
 Never call a tool when the answer is already in the current context. Don't re-read files you've just read unless they may have changed.`
 }

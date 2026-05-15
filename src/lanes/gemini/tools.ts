@@ -17,6 +17,7 @@
 
 import type { LaneToolRegistration } from '../types.js'
 import { windowsPathToPosixPath } from '../../utils/windowsPaths.js'
+import { WEB_SEARCH_NATIVE_DESCRIPTION } from '../../tools/WebSearchTool/prompt.js'
 
 type AskUserOption = {
   label: string
@@ -379,8 +380,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
     nativeName: 'google_web_search',
     implId: 'WebSearch',
-    nativeDescription:
-      "Performs a grounded Google Search to find information across the internet. Returns a synthesized answer with citations (e.g., [1]) and source URIs. Best for finding up-to-date documentation, troubleshooting obscure errors, or broad research. Use this when you don't have a specific URL. If a search result requires deeper analysis, follow up by using 'web_fetch' on the provided URI.",
+    nativeDescription: WEB_SEARCH_NATIVE_DESCRIPTION,
     nativeSchema: {
       type: 'object',
       properties: {

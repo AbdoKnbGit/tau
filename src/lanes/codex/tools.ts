@@ -11,6 +11,7 @@
 
 import type { LaneToolRegistration } from '../types.js'
 import { parsePatch } from '../shared/apply_patch.js'
+import { WEB_SEARCH_NATIVE_DESCRIPTION } from '../../tools/WebSearchTool/prompt.js'
 
 /**
  * `apply_patch` is Codex's native edit primitive. Codex emits patches in
@@ -253,7 +254,7 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
     nativeName: 'web_search',
     implId: 'WebSearch',
-    nativeDescription: 'Search the web for information.',
+    nativeDescription: WEB_SEARCH_NATIVE_DESCRIPTION,
     nativeSchema: {
       type: 'object',
       properties: {
