@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/tau",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Tau - multi-provider AI coding CLI with Firecrawl-hosted WebSearch. Firecrawl offers 1k searches/month on free trials; just enter your API key.",
   "author": "AbdoKnbGit",
   "repository": {
@@ -79,6 +79,7 @@
     "emoji-regex": "^10.4.0",
     "env-paths": "^3.0.0",
     "execa": "^9.5.2",
+    "fflate": "^0.8.2",
     "figures": "^6.1.0",
     "fuse.js": "^7.0.0",
     "get-east-asian-width": "^1.3.0",
@@ -133,13 +134,13 @@
   },
   "devDependencies": {
     "@computer-use/nut-js": "^4.2.0",
-    "e2b": "^2.10.0",
-    "google-auth-library": "^9.15.1",
     "@types/bun": "^1.2.10",
     "@types/node": "^22.14.0",
     "@types/pdfkit": "^0.17.6",
     "@types/react": "^19.1.0",
+    "e2b": "^2.10.0",
     "esbuild": "^0.28.0",
+    "google-auth-library": "^9.15.1",
     "typescript": "^5.7.3"
   }
 }
