@@ -69,6 +69,11 @@ function normalizeOllamaApiKey(apiKey: string | null | undefined): string | null
   return key && key !== 'ollama' ? key : null
 }
 
+function normalizeLmStudioApiKey(apiKey: string | null | undefined): string | null {
+  const key = apiKey?.trim()
+  return key || 'lm-studio'
+}
+
 function _ensureLanesInitialized(): void {
   if (_lanesInitialized) return
   _lanesInitialized = true
@@ -100,6 +105,7 @@ function _ensureLanesInitialized(): void {
     const cursorToken = getValidCursorOAuthToken() ?? undefined
     const cursorMachineId = getCursorMachineId() ?? undefined
     const ollamaApiKey = normalizeOllamaApiKey(getProviderApiKey('ollama'))
+    const lmStudioApiKey = normalizeLmStudioApiKey(getProviderApiKey('lmstudio'))
     initLanes({
       geminiApiKey: getProviderApiKey('gemini') ?? undefined,
       geminiCliOAuthToken: cliOAuthToken,
@@ -119,6 +125,8 @@ function _ensureLanesInitialized(): void {
       nimApiKey: getProviderApiKey('nim') ?? undefined,
       ollamaApiKey: ollamaApiKey ?? undefined,
       ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? getProviderBaseUrl('ollama'),
+      lmstudioApiKey: lmStudioApiKey ?? undefined,
+      lmstudioBaseUrl: getProviderBaseUrl('lmstudio'),
       openrouterApiKey: getProviderApiKey('openrouter') ?? undefined,
       agentrouterApiKey: getProviderApiKey('agentrouter') ?? undefined,
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
@@ -160,6 +168,7 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'mistral':
     case 'nim':
     case 'ollama':
+    case 'lmstudio':
     case 'openrouter':
     case 'agentrouter':
       return 'openai-compat'
@@ -307,6 +316,8 @@ function createProvider(provider: APIProvider): BaseProvider {
       return new MiniMaxProvider({ apiKey, baseUrl })
     case 'ollama':
       return new OllamaProvider({ apiKey, baseUrl })
+    case 'lmstudio':
+      return new OpenAIProvider({ apiKey: apiKey || 'lm-studio', baseUrl })
     // Phase 4 / Phase 5 OAuth-compat providers: they're expected to reach
     // the openai-compat lane above. If we got here, the lane is unhealthy
     // (missing creds or the register step failed) — surface a useful
@@ -705,6 +716,7 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     case 'openrouter':
     case 'agentrouter':
     case 'ollama':
+    case 'lmstudio':
       break
     default:
       return
@@ -716,6 +728,16 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
       'ollama',
       normalizeOllamaApiKey(getProviderApiKey('ollama')) ?? '',
       getProviderBaseUrl('ollama'),
+    )
+    openaiCompatLane.setHealthy(true)
+    return
+  }
+
+  if (provider === 'lmstudio') {
+    openaiCompatLane.registerProvider(
+      'lmstudio',
+      normalizeLmStudioApiKey(getProviderApiKey('lmstudio')) ?? '',
+      getProviderBaseUrl('lmstudio'),
     )
     openaiCompatLane.setHealthy(true)
     return

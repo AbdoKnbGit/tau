@@ -95,6 +95,7 @@ function _autoCorrectProvider(
     || current === 'moonshot'
     || current === 'minimax'
     || current === 'ollama'
+    || current === 'lmstudio'
     || current === 'cline'
     || current === 'iflow'
     || current === 'kilocode'

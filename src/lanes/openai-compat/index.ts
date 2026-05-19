@@ -1,7 +1,7 @@
 /**
  * OpenAI-Compatible Lane — Entry Point
  *
- * Handles: DeepSeek, GLM, Moonshot, Groq, Mistral, NIM, Ollama, OpenRouter, and any other
+ * Handles: DeepSeek, GLM, Moonshot, Groq, Mistral, NIM, Ollama, LM Studio, OpenRouter, and any other
  * provider that speaks OpenAI Chat Completions format.
  *
  * Each provider is registered with its own API key and base URL.
@@ -28,6 +28,7 @@ export function initOpenAICompatLane(providers?: {
   mistral?: { apiKey: string; baseUrl?: string }
   nim?: { apiKey: string; baseUrl?: string }
   ollama?: { apiKey?: string; baseUrl?: string }
+  lmstudio?: { apiKey?: string; baseUrl?: string }
   openrouter?: { apiKey: string; baseUrl?: string }
   agentrouter?: { apiKey: string; baseUrl?: string }
   cline?: { apiKey: string; baseUrl?: string }
@@ -127,6 +128,17 @@ export function initOpenAICompatLane(providers?: {
   const ollamaKey = normalizeOllamaApiKey(p.ollama?.apiKey ?? process.env.OLLAMA_API_KEY)
   openaiCompatLane.registerProvider('ollama', ollamaKey, ollamaUrl)
 
+  const lmStudioUrl = normalizeLmStudioBaseUrl(
+    p.lmstudio?.baseUrl
+      ?? process.env.LMSTUDIO_BASE_URL
+      ?? process.env.LM_STUDIO_BASE_URL
+      ?? 'http://localhost:1234/v1',
+  )
+  const lmStudioKey = normalizeLmStudioApiKey(
+    p.lmstudio?.apiKey ?? process.env.LMSTUDIO_API_KEY,
+  )
+  openaiCompatLane.registerProvider('lmstudio', lmStudioKey, lmStudioUrl)
+
   const orKey = p.openrouter?.apiKey ?? process.env.OPENROUTER_API_KEY
   if (orKey) {
     openaiCompatLane.registerProvider(
@@ -186,4 +198,15 @@ export function initOpenAICompatLane(providers?: {
 function normalizeOllamaApiKey(apiKey: string | undefined): string {
   const key = apiKey?.trim()
   return key && key !== 'ollama' ? key : ''
+}
+
+function normalizeLmStudioApiKey(apiKey: string | undefined): string {
+  const key = apiKey?.trim()
+  return key || 'lm-studio'
+}
+
+function normalizeLmStudioBaseUrl(raw: string): string {
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`
+  const trimmed = withScheme.replace(/\/+$/, '')
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`
 }

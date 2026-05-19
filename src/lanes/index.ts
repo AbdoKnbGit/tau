@@ -85,6 +85,9 @@ export function initLanes(opts?: {
   // Ollama
   ollamaApiKey?: string
   ollamaBaseUrl?: string
+  // LM Studio
+  lmstudioApiKey?: string
+  lmstudioBaseUrl?: string
   // OpenRouter
   openrouterApiKey?: string
   // AgentRouter (independent OpenRouter-style gateway)
@@ -185,6 +188,9 @@ export function initLanes(opts?: {
     nim: opts?.nimApiKey ? { apiKey: opts.nimApiKey } : undefined,
     ollama: opts?.ollamaApiKey || opts?.ollamaBaseUrl
       ? { apiKey: opts?.ollamaApiKey ?? '', baseUrl: opts?.ollamaBaseUrl }
+      : undefined,
+    lmstudio: opts?.lmstudioApiKey || opts?.lmstudioBaseUrl
+      ? { apiKey: opts?.lmstudioApiKey ?? '', baseUrl: opts?.lmstudioBaseUrl }
       : undefined,
     openrouter: opts?.openrouterApiKey ? { apiKey: opts.openrouterApiKey } : undefined,
     agentrouter: opts?.agentrouterApiKey ? { apiKey: opts.agentrouterApiKey } : undefined,

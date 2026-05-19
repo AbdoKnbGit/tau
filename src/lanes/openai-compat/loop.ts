@@ -47,6 +47,7 @@ import {
   type OpenRouterCatalogModel,
 } from '../../utils/model/openrouterCatalog.js'
 import { isMoonshotThinkingModel } from '../../utils/model/moonshotCatalog.js'
+import { recordProviderModelContextWindows } from '../../utils/model/contextWindows.js'
 
 // ─── Provider Detection ──────────────────────────────────────────
 
@@ -59,6 +60,7 @@ type ProviderType =
   | 'mistral'
   | 'nim'
   | 'ollama'
+  | 'lmstudio'
   | 'openrouter'
   | 'agentrouter'
   | 'cline'
@@ -77,6 +79,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('groq')) return 'groq'
   if (b.includes('mistral')) return 'mistral'
   if (b.includes('integrate.api.nvidia')) return 'nim'
+  if (b.includes('lmstudio') || b.includes('lm-studio')) return 'lmstudio'
   if (b.includes('localhost') || b.includes('127.0.0.1') || b.includes('0.0.0.0') || b.includes(':11434')) return 'ollama'
   if (b.includes('agentrouter.org')) return 'agentrouter'
   if (b.includes('openrouter')) return 'openrouter'
@@ -156,11 +159,37 @@ interface CompatCatalogModel extends OpenRouterCatalogModel {
   }
 }
 
+interface LmStudioNativeModel {
+  type?: string
+  key?: string
+  display_name?: string
+  context_length?: number
+  max_context_length?: number
+  selected_variant?: string
+  variants?: string[]
+  loaded_instances?: Array<{
+    id?: string
+    config?: {
+      context_length?: number
+    }
+  }>
+  capabilities?: {
+    trained_for_tool_use?: boolean
+    vision?: boolean
+  }
+}
+
+type LmStudioModelInfo = ModelInfo & {
+  lmStudioAliases?: string[]
+  lmStudioLoadedContextWindow?: number
+  lmStudioMaxContextWindow?: number
+}
+
 // ─── Lane Implementation ─────────────────────────────────────────
 
 export class OpenAICompatLane implements Lane {
   readonly name = 'openai-compat'
-  readonly displayName = 'OpenAI-Compatible (DeepSeek, GLM, Moonshot, MiniMax, Groq, Mistral, NIM, Ollama, OpenRouter, ...)'
+  readonly displayName = 'OpenAI-Compatible (DeepSeek, GLM, Moonshot, MiniMax, Groq, Mistral, NIM, Ollama, LM Studio, OpenRouter, ...)'
 
   private configs = new Map<string, { apiKey: string; baseUrl: string }>()
   private _healthy = true
@@ -243,6 +272,10 @@ export class OpenAICompatLane implements Lane {
     if (this.configs.has('ollama')) {
       const c = this.configs.get('ollama')!
       return { ...c, provider: 'ollama' }
+    }
+    if (this.configs.has('lmstudio')) {
+      const c = this.configs.get('lmstudio')!
+      return { ...c, provider: 'lmstudio' }
     }
     // Fallback: first registered config.
     const first = this.configs.values().next().value
@@ -327,14 +360,11 @@ export class OpenAICompatLane implements Lane {
         // gateways, which is what made every call look like a cold miss
         // even when the upstream actually had a cache hit.
         ...((provider === 'openrouter' || provider === 'agentrouter') && { usage: { include: true } }),
-        // Ollama has supported OpenAI-compat function calling since
-        // v0.3.0 (Jul 2024). The previous `!isLocal` gate stripped tools
-        // for Ollama, so the model would say "let me explore" and stop
-        // because it had no read_file / execute_command to call. Limit
-        // the unblock to provider === 'ollama' so any other localhost-
-        // hosted generic endpoint keeps its old behavior unchanged.
-        tools: openaiTools.length > 0 && (provider === 'ollama' || !isLocal) ? openaiTools : undefined,
-        tool_choice: openaiTools.length > 0 && (provider === 'ollama' || !isLocal) ? 'auto' : undefined,
+        // Ollama and LM Studio expose local OpenAI-compatible tool calling.
+        // Keep generic localhost endpoints on the old gate unless they are
+        // explicitly selected as one of these local providers.
+        tools: openaiTools.length > 0 && (provider === 'ollama' || provider === 'lmstudio' || !isLocal) ? openaiTools : undefined,
+        tool_choice: openaiTools.length > 0 && (provider === 'ollama' || provider === 'lmstudio' || !isLocal) ? 'auto' : undefined,
         max_tokens: clampMaxTokens(provider, max_tokens),
         temperature: temperature ?? (isLocal ? 0.7 : undefined),
         stop: stop_sequences?.length ? stop_sequences : undefined,
@@ -380,6 +410,7 @@ export class OpenAICompatLane implements Lane {
     let inThinkingBlock = false
     const toolCallBuffers = new Map<number, { id: string; name: string; args: string; anthropicIndex: number }>()
     let emittedAnyToolUse = false
+    let emittedAnyAssistantOutput = false
 
     const emitMessageStart = () => {
       if (messageStartEmitted) return undefined
@@ -404,6 +435,18 @@ export class OpenAICompatLane implements Lane {
       }
     }
 
+    if (provider === 'lmstudio') {
+      const contextMessage = await getLmStudioContextPreflightMessage(cfg, model, body).catch(() => null)
+      if (contextMessage) {
+        const mst = emitMessageStart()
+        if (mst) yield mst
+        yield* emitErrorText(contextMessage)
+        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
+        yield { type: 'message_stop' }
+        return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
+      }
+    }
+
     let response: Response
     try {
       response = await fetch(url, {
@@ -417,7 +460,11 @@ export class OpenAICompatLane implements Lane {
         const mst = emitMessageStart()
         if (mst) yield mst
       }
-      yield* emitErrorText(`${provider} API connection error: ${err?.message ?? String(err)}`)
+      const message = err?.message ?? String(err)
+      const detail = provider === 'lmstudio'
+        ? `LM Studio server unreachable at ${normalizeBaseUrl(cfg.baseUrl)} (${message}). Start the LM Studio local server and retry.`
+        : message
+      yield* emitErrorText(`${provider} API connection error: ${detail}`)
       yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
       yield { type: 'message_stop' }
       return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
@@ -478,11 +525,14 @@ export class OpenAICompatLane implements Lane {
     try {
       reading: while (true) {
         const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
+        if (!done) {
+          buffer += decoder.decode(value, { stream: true })
+        } else {
+          buffer += decoder.decode()
+        }
 
         const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
+        buffer = done ? '' : (lines.pop() ?? '')
 
         for (const rawLine of lines) {
           const line = rawLine.trim()
@@ -565,6 +615,7 @@ export class OpenAICompatLane implements Lane {
           const thinkingDelta: string | undefined =
             delta.thinking ?? delta.reasoning_content ?? delta.reasoning
           if (typeof thinkingDelta === 'string' && thinkingDelta.length > 0) {
+            emittedAnyAssistantOutput = true
             if (inTextBlock) {
               yield { type: 'content_block_stop', index: currentBlockIndex }
               currentBlockIndex++
@@ -587,6 +638,7 @@ export class OpenAICompatLane implements Lane {
 
           // Text content.
           if (typeof delta.content === 'string' && delta.content.length > 0) {
+            emittedAnyAssistantOutput = true
             if (inThinkingBlock) {
               yield { type: 'content_block_stop', index: currentBlockIndex }
               currentBlockIndex++
@@ -611,6 +663,7 @@ export class OpenAICompatLane implements Lane {
           // indexed by position. We accumulate args until finish_reason
           // signals completion.
           if (Array.isArray(delta.tool_calls)) {
+            if (delta.tool_calls.length > 0) emittedAnyAssistantOutput = true
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0
               let buf = toolCallBuffers.get(idx)
@@ -685,9 +738,120 @@ export class OpenAICompatLane implements Lane {
             toolCallBuffers.clear()
           }
         }
+
+        if (done) break
       }
     } finally {
       reader.releaseLock()
+    }
+
+    if (provider === 'lmstudio' && !emittedAnyAssistantOutput) {
+      const fallback = await fetchLmStudioNonStreamingCompletion(cfg, body, model, signal).catch(() => null)
+      const textOnlyFallback = !fallback?.text?.trim() && !fallback?.thinking?.trim() && !(fallback?.toolCalls?.length)
+        ? await fetchLmStudioNonStreamingCompletion(cfg, body, model, signal, true).catch(() => null)
+        : null
+      const recovered = textOnlyFallback ?? fallback
+      const fallbackText = recovered?.text?.trim()
+      const fallbackThinking = recovered?.thinking?.trim()
+      const fallbackToolCalls = recovered?.toolCalls ?? []
+      if (fallbackText || fallbackThinking || fallbackToolCalls.length > 0) {
+        inputTokens = recovered?.usage?.prompt_tokens ?? inputTokens
+        outputTokens = recovered?.usage?.completion_tokens ?? outputTokens
+        reasoningTokens = recovered?.usage?.completion_tokens_details?.reasoning_tokens ?? reasoningTokens
+
+        if (!messageStartEmitted) {
+          const mst = emitMessageStart()
+          if (mst) yield mst
+        }
+
+        if (fallbackThinking) {
+          yield {
+            type: 'content_block_start',
+            index: currentBlockIndex,
+            content_block: { type: 'thinking', thinking: '' },
+          }
+          yield {
+            type: 'content_block_delta',
+            index: currentBlockIndex,
+            delta: { type: 'thinking_delta', thinking: fallbackThinking },
+          }
+          yield { type: 'content_block_stop', index: currentBlockIndex }
+          currentBlockIndex++
+        }
+
+        if (fallbackText) {
+          yield {
+            type: 'content_block_start',
+            index: currentBlockIndex,
+            content_block: { type: 'text', text: '' },
+          }
+          yield {
+            type: 'content_block_delta',
+            index: currentBlockIndex,
+            delta: { type: 'text_delta', text: fallbackText },
+          }
+          yield { type: 'content_block_stop', index: currentBlockIndex }
+          currentBlockIndex++
+        }
+
+        for (const toolCall of fallbackToolCalls) {
+          const toolName = toolCall.function?.name
+          if (!toolName) continue
+          const implId = normalizeToolName(toolName)
+          let input: Record<string, unknown>
+          try {
+            input = toolCall.function?.arguments ? JSON.parse(toolCall.function.arguments) : {}
+          } catch {
+            input = { _raw: toolCall.function?.arguments ?? '' }
+          }
+          const toolId = toolCall.id?.startsWith('toolu_') ? toolCall.id : `toolu_compat_${toolCall.id ?? `lmstudio_${currentBlockIndex}`}`
+          yield {
+            type: 'content_block_start',
+            index: currentBlockIndex,
+            content_block: {
+              type: 'tool_use',
+              id: toolId,
+              name: implId,
+              input: {},
+            },
+          }
+          yield {
+            type: 'content_block_delta',
+            index: currentBlockIndex,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: JSON.stringify(input ?? {}),
+            },
+          }
+          yield { type: 'content_block_stop', index: currentBlockIndex }
+          currentBlockIndex++
+          emittedAnyToolUse = true
+        }
+
+        const stopReason: 'tool_use' | 'end_turn' = emittedAnyToolUse ? 'tool_use' : 'end_turn'
+        yield {
+          type: 'message_delta',
+          delta: { stop_reason: stopReason },
+          usage: {
+            output_tokens: outputTokens,
+            input_tokens: inputTokens,
+          },
+        }
+        yield { type: 'message_stop' }
+        return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
+      }
+
+      if (!signal?.aborted) {
+        if (!messageStartEmitted) {
+          const mst = emitMessageStart()
+          if (mst) yield mst
+        }
+        const contextMessage = await getLmStudioContextPreflightMessage(cfg, model, body).catch(() => null)
+        yield* emitErrorText(contextMessage ?? 'LM Studio returned an empty response. Check LM Studio logs for the selected local model and retry.')
+        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
+        yield { type: 'message_stop' }
+        return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
+      }
     }
 
     if (!messageStartEmitted) {
@@ -742,6 +906,13 @@ export class OpenAICompatLane implements Lane {
     const entries = Array.from(this.configs.entries())
       .filter(([name]) => !providerFilter || name === providerFilter)
     const results = await Promise.allSettled(entries.map(async ([providerName, cfg]) => {
+      if (providerName === 'lmstudio') {
+        const openAIModels = await listLmStudioOpenAIModels(cfg)
+        if (openAIModels.length > 0) return openAIModels
+        const nativeModels = await listLmStudioNativeModels(cfg)
+        if (nativeModels.length > 0) return nativeModels
+      }
+
       const transformer = getTransformer(providerName as ProviderId)
       // Most compat providers either want a fully-curated catalog or a
       // direct pass-through from `/models`. Copilot is the main exception:
@@ -785,7 +956,13 @@ export class OpenAICompatLane implements Lane {
       // staticCatalog widens; backfill from id when the upstream omitted it.
       for (const m of r.value) out.push({ ...m, name: m.name ?? m.id })
     }
-    _modelsCacheByProvider.set(cacheKey, { models: out, at: now })
+    const hasIncompleteLmStudioContext =
+      providerFilter === 'lmstudio'
+      && out.length > 0
+      && out.some(model => typeof model.contextWindow !== 'number' || model.contextWindow <= 0)
+    if (!hasIncompleteLmStudioContext) {
+      _modelsCacheByProvider.set(cacheKey, { models: out, at: now })
+    }
     return out
   }
 
@@ -984,6 +1161,237 @@ function isMistralReasoningModelId(modelId: string): boolean {
     m === 'mistral-medium-3-5' ||
     m === 'mistral-medium-latest'
   )
+}
+
+async function listLmStudioNativeModels(
+  cfg: { apiKey: string; baseUrl: string },
+): Promise<LmStudioModelInfo[]> {
+  const url = `${lmStudioServerRoot(cfg.baseUrl)}/api/v1/models`
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 5_000)
+    try {
+      const resp = await fetch(url, { headers, method: 'GET', signal: controller.signal })
+      if (!resp.ok) continue
+      const data = await resp.json() as { models?: LmStudioNativeModel[] }
+      const models = (data.models ?? [])
+        .map(toLmStudioNativeModelInfo)
+        .filter((model): model is LmStudioModelInfo => model !== null)
+      if (models.length > 0) {
+        recordProviderModelContextWindows('lmstudio', models)
+        return models
+      }
+    } catch {
+      // Retry once. LM Studio can briefly reject metadata requests while
+      // loading or swapping a local model.
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+  return []
+}
+
+async function getLmStudioContextPreflightMessage(
+  cfg: { apiKey: string; baseUrl: string },
+  model: string,
+  body: OpenAIChatRequest,
+): Promise<string | null> {
+  const info = await getLmStudioModelInfo(cfg, model)
+  const loadedContextWindow = info?.lmStudioLoadedContextWindow
+  if (!loadedContextWindow || loadedContextWindow <= 0) return null
+
+  const estimatedInputTokens = estimateOpenAICompatRequestTokens(body)
+  if (estimatedInputTokens < loadedContextWindow) return null
+
+  const maxContextWindow = info.lmStudioMaxContextWindow ?? info.contextWindow
+  const suggestedContextWindow = maxContextWindow
+    ? Math.min(
+        maxContextWindow,
+        roundUpToMultiple(estimatedInputTokens + 4096, 8192),
+      )
+    : undefined
+  const reloadHint = suggestedContextWindow && suggestedContextWindow > loadedContextWindow
+    ? ` Reload it with a larger context, for example: lms unload "${model}"; lms load "${model}" -c ${suggestedContextWindow} -y --identifier "${model}".`
+    : ''
+
+  return `LM Studio has "${model}" loaded with ${formatTokenCount(loadedContextWindow)} context tokens, but Tau's agent request is about ${formatTokenCount(estimatedInputTokens)} tokens before generation. LM Studio can return an empty response in that state.${maxContextWindow ? ` This model reports up to ${formatTokenCount(maxContextWindow)} tokens available.` : ''}${reloadHint}`
+}
+
+async function getLmStudioModelInfo(
+  cfg: { apiKey: string; baseUrl: string },
+  modelId: string,
+): Promise<LmStudioModelInfo | null> {
+  const models = await listLmStudioNativeModels(cfg)
+  const byId = new Map<string, LmStudioModelInfo>()
+  for (const model of models) {
+    byId.set(model.id, model)
+    for (const alias of model.lmStudioAliases ?? []) byId.set(alias, model)
+  }
+  return byId.get(modelId) ?? null
+}
+
+function estimateOpenAICompatRequestTokens(body: OpenAIChatRequest): number {
+  const messageChars = JSON.stringify(body.messages).length
+  const toolChars = body.tools ? JSON.stringify(body.tools).length : 0
+  return Math.ceil((messageChars + toolChars) / 4)
+}
+
+function roundUpToMultiple(value: number, multiple: number): number {
+  return Math.ceil(value / multiple) * multiple
+}
+
+function formatTokenCount(value: number): string {
+  return Math.round(value).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
+async function fetchLmStudioNonStreamingCompletion(
+  cfg: { apiKey: string; baseUrl: string },
+  body: OpenAIChatRequest,
+  model: string,
+  signal?: AbortSignal,
+  textOnly = false,
+): Promise<{
+  text?: string
+  thinking?: string
+  toolCalls?: NonNullable<OpenAIChatMessage['tool_calls']>
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    completion_tokens_details?: { reasoning_tokens?: number }
+  }
+} | null> {
+  const headers = buildRequestHeaders('lmstudio', cfg.apiKey, model)
+  const fallbackBody: OpenAIChatRequest = { ...body, stream: false }
+  delete fallbackBody.stream_options
+  if (textOnly) {
+    delete fallbackBody.tools
+    fallbackBody.tool_choice = 'none'
+  }
+  fallbackBody.thinking = { type: 'disabled' }
+
+  const resp = await fetch(`${normalizeBaseUrl(cfg.baseUrl)}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(fallbackBody),
+    signal,
+  })
+  if (!resp.ok) return null
+
+  const data = await resp.json() as {
+    choices?: Array<{
+      message?: {
+        content?: string | null
+        reasoning_content?: string
+        reasoning?: string
+        thinking?: string
+        tool_calls?: NonNullable<OpenAIChatMessage['tool_calls']>
+      }
+    }>
+    usage?: {
+      prompt_tokens?: number
+      completion_tokens?: number
+      completion_tokens_details?: { reasoning_tokens?: number }
+    }
+  }
+  const message = data.choices?.[0]?.message
+  if (!message) return null
+  return {
+    text: typeof message.content === 'string' ? message.content : undefined,
+    thinking: message.thinking ?? message.reasoning_content ?? message.reasoning,
+    toolCalls: message.tool_calls,
+    usage: data.usage,
+  }
+}
+
+async function listLmStudioOpenAIModels(
+  cfg: { apiKey: string; baseUrl: string },
+): Promise<ModelInfo[]> {
+  try {
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`
+    const resp = await fetch(`${normalizeBaseUrl(cfg.baseUrl)}/models`, {
+      headers,
+      method: 'GET',
+    })
+    if (!resp.ok) return []
+    const data = await resp.json() as { data?: CompatCatalogModel[] }
+    const openAIModels = (data.data ?? [])
+      .map(model => toCompatCatalogModel('lmstudio', model))
+      .filter((model): model is ModelInfo => model !== null)
+      .filter(model => !looksLikeEmbeddingModel(model.id))
+
+    const nativeModels = await listLmStudioNativeModels(cfg)
+    if (nativeModels.length === 0) return openAIModels
+
+    const nativeById = new Map<string, ModelInfo>()
+    for (const model of nativeModels) {
+      nativeById.set(model.id, model)
+      const variantIds = (model as ModelInfo & { lmStudioAliases?: string[] }).lmStudioAliases ?? []
+      for (const alias of variantIds) nativeById.set(alias, model)
+    }
+    const enriched = openAIModels
+      .filter(model => nativeById.has(model.id))
+      .map(model => {
+        const native = nativeById.get(model.id)
+        return {
+          ...model,
+          ...(native ?? {}),
+          id: model.id,
+        }
+      })
+    return enriched.length > 0 ? enriched : openAIModels
+  } catch {
+    return []
+  }
+}
+
+function toLmStudioNativeModelInfo(model: LmStudioNativeModel): LmStudioModelInfo | null {
+  if (model.type && model.type !== 'llm') return null
+  if (typeof model.key !== 'string' || model.key.length === 0) return null
+
+  const loaded =
+    model.loaded_instances?.find(instance =>
+      instance.id === model.key || instance.id?.startsWith(`${model.key}@`),
+    )
+    ?? model.loaded_instances?.[0]
+  const contextWindow =
+    model.max_context_length
+    ?? model.context_length
+    ?? loaded?.config?.context_length
+    ?? undefined
+  const loadedContextWindow = loaded?.config?.context_length
+  const aliases = [
+    ...(model.selected_variant ? [model.selected_variant] : []),
+    ...(model.variants ?? []),
+    ...(model.loaded_instances ?? []).map(instance => instance.id).filter((id): id is string => typeof id === 'string' && id.length > 0),
+  ]
+
+  return {
+    id: model.key,
+    name: typeof model.display_name === 'string' && model.display_name.length > 0
+      ? model.display_name
+      : model.key,
+    ...(contextWindow ? { contextWindow } : {}),
+    ...(loadedContextWindow ? { lmStudioLoadedContextWindow: loadedContextWindow } : {}),
+    ...(model.max_context_length ? { lmStudioMaxContextWindow: model.max_context_length } : {}),
+    ...(typeof model.capabilities?.trained_for_tool_use === 'boolean'
+      ? { supportsToolCalling: model.capabilities.trained_for_tool_use }
+      : {}),
+    ...(aliases.length > 0 ? { lmStudioAliases: aliases } : {}),
+    provider: 'LM Studio',
+  }
+}
+
+function looksLikeEmbeddingModel(modelId: string): boolean {
+  const normalized = modelId.toLowerCase()
+  return normalized.includes('embedding') || normalized.includes('embed')
+}
+
+function lmStudioServerRoot(baseUrl: string): string {
+  return normalizeBaseUrl(baseUrl).replace(/\/(?:api\/)?v1$/i, '')
 }
 
 function normalizeBaseUrl(baseUrl: string): string {

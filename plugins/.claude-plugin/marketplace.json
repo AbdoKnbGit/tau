@@ -1,0 +1,19 @@
+{
+  "name": "claude-code-git-memory",
+  "owner": {
+    "name": "AbdoKnbGit"
+  },
+  "plugins": [
+    {
+      "name": "tau-git-memory",
+      "version": "0.1.3",
+      "description": "Git-backed local memory store for Tau sessions, with branch-aware recall and manual capture.",
+      "source": "./tau-git-memory",
+      "category": "memory",
+      "tags": ["memory", "git", "branch"]
+    }
+  ],
+  "metadata": {
+    "description": "Git-backed memory plugin for Tau / Claude Code compatible plugin runtimes."
+  }
+}

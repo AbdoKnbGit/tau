@@ -11,6 +11,7 @@ import { minimaxTransformer } from './minimax.js'
 import { mistralTransformer } from './mistral.js'
 import { nimTransformer } from './nim.js'
 import { ollamaTransformer } from './ollama.js'
+import { lmStudioTransformer } from './lmstudio.js'
 import { openrouterTransformer } from './openrouter.js'
 import { agentrouterTransformer } from './agentrouter.js'
 import { clineTransformer } from './cline.js'
@@ -29,6 +30,7 @@ export const TRANSFORMERS: Record<ProviderId, Transformer> = {
   mistral: mistralTransformer,
   nim: nimTransformer,
   ollama: ollamaTransformer,
+  lmstudio: lmStudioTransformer,
   openrouter: openrouterTransformer,
   agentrouter: agentrouterTransformer,
   cline: clineTransformer,
@@ -44,7 +46,7 @@ export function getTransformer(provider: ProviderId): Transformer {
 
 export {
   deepseekTransformer, groqTransformer, mistralTransformer, nimTransformer,
-  glmTransformer, moonshotTransformer, minimaxTransformer, ollamaTransformer, openrouterTransformer, agentrouterTransformer, genericTransformer,
+  glmTransformer, moonshotTransformer, minimaxTransformer, ollamaTransformer, lmStudioTransformer, openrouterTransformer, agentrouterTransformer, genericTransformer,
   clineTransformer, iflowTransformer, kilocodeTransformer, copilotTransformer,
 }
 export type { Transformer, ProviderId, TransformContext } from './base.js'

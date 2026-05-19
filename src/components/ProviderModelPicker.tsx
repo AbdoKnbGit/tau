@@ -93,9 +93,9 @@ function getProviderStatusLabel(provider: BrowsableModelProvider): string {
   }
 
   const authStatus = validateProviderAuth(provider)
-  if (provider === 'ollama' && authStatus.method === 'none') return 'local'
+  if ((provider === 'ollama' || provider === 'lmstudio') && authStatus.method === 'none') return 'local'
   if (authStatus.valid) return 'configured'
-  return provider === 'ollama' ? 'local' : 'login required'
+  return provider === 'ollama' || provider === 'lmstudio' ? 'local' : 'login required'
 }
 
 function filterSections(

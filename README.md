@@ -79,6 +79,14 @@ tau update
 **`/login` - Start here**
 Pick a provider, enter your credentials, and Tau saves the setup. No env variables, no config hunt.
 
+Before using **LM Studio**, start its local API server first:
+
+```bash
+lms server start
+```
+
+LM Studio defaults to `http://localhost:1234/v1` in Tau. Make sure LM Studio is running and a model is loaded before you select it in `/login`.
+
 ### Models
 
 **`/models` - Pick your model**
@@ -185,6 +193,7 @@ Save a sentence (or two) and Tau quietly appends it to the end of every message 
 | NVIDIA NIM | Gets slow under server load, especially for newest models like Kimi K2 |
 | DeepSeek | Solid |
 | GLM / BigModel | Works with your BigModel plan or the small amount of free credit they give you |
+| LM Studio | Local OpenAI-compatible server. Start it with `lms server start`; Tau uses `http://localhost:1234/v1` by default |
 | Ollama | Local and private, but you knew that already |
 | Cline | Moonshot AI's Kimi K2.6 through here is still the big win. Note: the old free tier is no longer fully free, but you still get some free credit |
 | GitHub Copilot | Recommended for enterprise plans; free models are also usable for lighter work |

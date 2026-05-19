@@ -43,6 +43,10 @@ const MISTRAL_BASE_URL = process.env.MISTRAL_BASE_URL
   ?? process.env.MISTRAL_API_BASE_URL
   ?? 'https://api.mistral.ai/v1'
 
+const LMSTUDIO_BASE_URL = process.env.LMSTUDIO_BASE_URL
+  ?? process.env.LM_STUDIO_BASE_URL
+  ?? 'http://localhost:1234/v1'
+
 export interface TierModelSet {
   opus: string    // Best reasoning / most capable model
   sonnet: string  // Balanced quality/speed for everyday tasks
@@ -498,6 +502,33 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.MINIMAX_MODEL_OPUS   ?? 'MiniMax-M2.7',
         sonnet: process.env.MINIMAX_MODEL_SONNET ?? 'MiniMax-M2.7',
         haiku:  process.env.MINIMAX_MODEL_HAIKU  ?? 'MiniMax-M2.7-highspeed',
+      },
+    },
+  },
+
+  lmstudio: {
+    displayName: 'LM Studio',
+    baseUrl: LMSTUDIO_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'LMSTUDIO_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.LMSTUDIO_MODEL_OPUS   ?? process.env.LMSTUDIO_MODEL ?? 'local-model',
+        sonnet: process.env.LMSTUDIO_MODEL_SONNET ?? process.env.LMSTUDIO_MODEL ?? 'local-model',
+        haiku:  process.env.LMSTUDIO_MODEL_HAIKU  ?? process.env.LMSTUDIO_MODEL ?? 'local-model',
+      },
+      pro: {
+        opus:   process.env.LMSTUDIO_MODEL_OPUS   ?? process.env.LMSTUDIO_MODEL ?? 'local-model',
+        sonnet: process.env.LMSTUDIO_MODEL_SONNET ?? process.env.LMSTUDIO_MODEL ?? 'local-model',
+        haiku:  process.env.LMSTUDIO_MODEL_HAIKU  ?? process.env.LMSTUDIO_MODEL ?? 'local-model',
+      },
+      plus: {
+        opus:   process.env.LMSTUDIO_MODEL_OPUS   ?? process.env.LMSTUDIO_MODEL ?? 'local-model',
+        sonnet: process.env.LMSTUDIO_MODEL_SONNET ?? process.env.LMSTUDIO_MODEL ?? 'local-model',
+        haiku:  process.env.LMSTUDIO_MODEL_HAIKU  ?? process.env.LMSTUDIO_MODEL ?? 'local-model',
       },
     },
   },

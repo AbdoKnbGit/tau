@@ -1758,6 +1758,7 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   moonshot:    ['api_key'],
   minimax:     ['api_key'],
   ollama:      ['api_key'],
+  lmstudio:    ['api_key'],
   cline:       ['oauth'],
   copilot:     ['oauth'],
   cursor:      ['oauth'],
@@ -1794,6 +1795,12 @@ export function getProviderAuthMethod(provider: APIProvider): ProviderAuthMethod
       : 'none'
   }
 
+  if (provider === 'lmstudio') {
+    return process.env.LMSTUDIO_API_KEY ?? _loadStoredKey('lmstudio')
+      ? 'api_key'
+      : 'none'
+  }
+
   // Fall back to API key
   const key = _getApiKeyDirect(provider)
   if (key) return 'api_key'
@@ -1825,6 +1832,7 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'moonshot':    return process.env.MOONSHOT_API_KEY ?? process.env.MOONSHOTAI_API_KEY ?? _loadStoredKey('moonshot')
     case 'minimax':     return process.env.MINIMAX_API_KEY ?? _loadStoredKey('minimax')
     case 'ollama':      return process.env.OLLAMA_API_KEY ?? _loadStoredKey('ollama') ?? 'ollama'
+    case 'lmstudio':    return process.env.LMSTUDIO_API_KEY ?? _loadStoredKey('lmstudio') ?? 'lm-studio'
     case 'cline':       return null  // OAuth-only
     case 'copilot':     return null  // OAuth-only
     case 'cursor':      return null  // OAuth-only
@@ -1941,6 +1949,7 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'moonshot':    return process.env.MOONSHOT_BASE_URL ?? process.env.MOONSHOT_API_BASE_URL ?? 'https://api.moonshot.ai/v1'
     case 'minimax':     return process.env.MINIMAX_BASE_URL ?? process.env.MINIMAX_API_BASE_URL ?? 'https://api.minimax.io/v1'
     case 'ollama':      return process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1'
+    case 'lmstudio':    return normalizeLmStudioBaseUrl(process.env.LMSTUDIO_BASE_URL ?? process.env.LM_STUDIO_BASE_URL ?? _loadStoredKey('lmstudio_base_url') ?? 'http://localhost:1234/v1')
     case 'cline':       return process.env.CLINE_BASE_URL ?? 'https://api.cline.bot/v1'
     case 'copilot':     return 'https://api.githubcopilot.com'
     case 'cursor':      return 'https://api2.cursor.sh'
@@ -1966,8 +1975,15 @@ export function isUsingThirdPartyLLM(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_DEEPSEEK) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GLM) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_MOONSHOT) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_MINIMAX)
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_MINIMAX) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_LMSTUDIO)
   )
+}
+
+function normalizeLmStudioBaseUrl(raw: string): string {
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`
+  const trimmed = withScheme.replace(/\/+$/, '')
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`
 }
 
 /**
@@ -1990,7 +2006,7 @@ export function validateProviderAuth(provider: APIProvider): { valid: boolean; m
   }
 
   // No auth found — build helpful error message
-  if (provider === 'ollama') {
+  if (provider === 'ollama' || provider === 'lmstudio') {
     return { valid: true, method: 'none' }
   }
 
@@ -2022,6 +2038,7 @@ function _getApiKeyEnvName(provider: APIProvider): string {
     case 'moonshot':    return 'MOONSHOT_API_KEY'
     case 'minimax':     return 'MINIMAX_API_KEY'
     case 'ollama':      return 'OLLAMA_API_KEY'
+    case 'lmstudio':    return 'LMSTUDIO_API_KEY'
     case 'cline':       return '(OAuth only — no API key)'
     case 'copilot':     return '(OAuth only — no API key)'
     case 'cursor':      return '(OAuth only — no API key)'

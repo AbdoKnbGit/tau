@@ -84,6 +84,9 @@ function normalizeProviderQueryToken(
     'mini-max': 'minimax',
     mistralai: 'mistral',
     'mistral-ai': 'mistral',
+    lm: 'lmstudio',
+    lmstudio: 'lmstudio',
+    'lm-studio': 'lmstudio',
   }
   if (alias[normalized]) {
     return alias[normalized]
@@ -337,6 +340,21 @@ export async function loadProviderModelSections(
   if (provider === 'ollama') {
     const catalog = await getOllamaCatalog()
     return buildOllamaSections(catalog)
+  }
+
+  if (provider === 'lmstudio') {
+    const models = await loadProviderModels(provider)
+    return [
+      {
+        id: 'local',
+        title: 'Local models',
+        accent: 'local',
+        models: models.map(model => ({
+          ...model,
+          tags: mergeModelTags(pickKnownModelTags(model), ['local', 'tools']),
+        })),
+      },
+    ]
   }
 
   if (provider === 'cursor') {

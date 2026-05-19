@@ -25,6 +25,7 @@ export type ProviderId =
   | 'mistral'
   | 'nim'
   | 'ollama'
+  | 'lmstudio'
   | 'openrouter'
   | 'agentrouter'
   | 'cline'

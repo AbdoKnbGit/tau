@@ -22,6 +22,7 @@ import { formatFileSize } from './format.js'
 import { logError } from './log.js'
 import { getProjectDir } from './sessionStorage.js'
 import { jsonStringify } from './slowOperations.js'
+import { selectToolResultPreview } from './toolResultCompression.js'
 
 // Subdirectory name for tool results within a session
 export const TOOL_RESULTS_SUBDIR = 'tool-results'
@@ -188,11 +189,20 @@ export async function persistToolResult(
  */
 export function buildLargeToolResultMessage(
   result: PersistedToolResult,
+  originalContent?: NonNullable<ToolResultBlockParam['content']>,
 ): string {
+  const preview = selectToolResultPreview(
+    result.preview,
+    originalContent,
+    PREVIEW_SIZE_BYTES,
+  )
   let message = `${PERSISTED_OUTPUT_TAG}\n`
   message += `Output too large (${formatFileSize(result.originalSize)}). Full output saved to: ${result.filepath}\n\n`
-  message += `Preview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):\n`
-  message += result.preview
+  message +=
+    preview === result.preview
+      ? `Preview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):\n`
+      : `Preview (compressed to ${formatFileSize(PREVIEW_SIZE_BYTES)}):\n`
+  message += preview
   message += result.hasMore ? '\n...\n' : '\n'
   message += PERSISTED_OUTPUT_CLOSING_TAG
   return message
@@ -318,7 +328,7 @@ async function maybePersistLargeToolResult(
     return toolResultBlock
   }
 
-  const message = buildLargeToolResultMessage(result)
+  const message = buildLargeToolResultMessage(result, content)
 
   // Log analytics
   logEvent('tengu_tool_result_persisted', {
@@ -731,7 +741,7 @@ async function buildReplacement(
   const result = await persistToolResult(candidate.content, candidate.toolUseId)
   if (isPersistError(result)) return null
   return {
-    content: buildLargeToolResultMessage(result),
+    content: buildLargeToolResultMessage(result, candidate.content),
     originalSize: result.originalSize,
   }
 }

@@ -5,13 +5,13 @@ import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 export type APIProvider =
   | 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
   | 'openai' | 'gemini' | 'antigravity'
-  | 'openrouter' | 'agentrouter' | 'groq' | 'mistral' | 'nim' | 'deepseek' | 'glm' | 'moonshot' | 'minimax' | 'ollama'
+  | 'openrouter' | 'agentrouter' | 'groq' | 'mistral' | 'nim' | 'deepseek' | 'glm' | 'moonshot' | 'minimax' | 'ollama' | 'lmstudio'
   | 'cline' | 'copilot' | 'cursor' | 'iflow' | 'kilocode' | 'kiro'
 
 const VALID_PROVIDERS: readonly APIProvider[] = [
   'firstParty', 'bedrock', 'vertex', 'foundry',
   'openai', 'gemini', 'antigravity',
-  'openrouter', 'agentrouter', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama',
+  'openrouter', 'agentrouter', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
   'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
 ]
 
@@ -59,6 +59,7 @@ function _resolveAPIProvider(): APIProvider {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_MOONSHOT))   return 'moonshot'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_MINIMAX))    return 'minimax'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OLLAMA))    return 'ollama'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_LMSTUDIO))  return 'lmstudio'
   return 'firstParty'
 }
 
@@ -114,6 +115,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   moonshot: 'Moonshot AI',
   minimax: 'MiniMax AI',
   ollama: 'Ollama',
+  lmstudio: 'LM Studio',
   cline: 'Cline',
   copilot: 'GitHub Copilot',
   cursor: 'Cursor',
@@ -130,19 +132,19 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
 // APIProvider union, env detection, auth flow, transformer, and routing are
 // all kept intact.
 export const SELECTABLE_PROVIDERS: readonly APIProvider[] = [
-  'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama',
+  'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
   'cline', 'copilot', 'cursor', 'kilocode', 'kiro',
 ]
 
 /** Providers that use OpenAI-compatible chat completions API */
 export function isOpenAICompatibleProvider(p: APIProvider): boolean {
-  return ['openai', 'openrouter', 'agentrouter', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama',
+  return ['openai', 'openrouter', 'agentrouter', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
           'cline', 'copilot', 'iflow', 'kilocode'].includes(p)
 }
 
 /** All non-Anthropic third-party LLM providers */
 export function isThirdPartyProvider(p: APIProvider): boolean {
-  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama',
+  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
           'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro'].includes(p)
 }
 

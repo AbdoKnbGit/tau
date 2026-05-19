@@ -113,6 +113,7 @@ const MANAGEABLE_PROVIDERS = [
   'moonshot',
   'minimax',
   'ollama',
+  'lmstudio',
   // Phase 4 (v0.4.0) — 3 full-chat + 3 login-only stubs.
   'kilocode',
   'cline',
@@ -132,10 +133,13 @@ type ManageableProvider = (typeof MANAGEABLE_PROVIDER_ROWS)[number]
 /** Storage key for the user-supplied Ollama base URL (persisted in provider-keys.json). */
 const OLLAMA_BASE_URL_KEY = 'ollama_base_url'
 const OLLAMA_DEFAULT_BASE = 'http://localhost:11434'
+const LMSTUDIO_BASE_URL_KEY = 'lmstudio_base_url'
+const LMSTUDIO_DEFAULT_BASE = 'http://localhost:1234/v1'
 
 type KeyedProvider = Exclude<
   ManageableProvider,
   | 'ollama'
+  | 'lmstudio'
   | 'firstParty'
   | typeof VOICE_CONVERSATION_PROVIDER
   | typeof E2B_SECURITY_PROVIDER
@@ -258,6 +262,55 @@ function formatOllamaBadge(status: OllamaStatus): string {
   }
 }
 
+type LmStudioStatus = 'unknown' | 'running' | 'offline'
+
+function normalizeLmStudioBaseUrl(raw: string): string {
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`
+  const trimmed = withScheme.replace(/\/+$/, '')
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`
+}
+
+function getLmStudioBaseUrl(): string {
+  const raw =
+    process.env.LMSTUDIO_BASE_URL
+    ?? process.env.LM_STUDIO_BASE_URL
+    ?? loadProviderKey(LMSTUDIO_BASE_URL_KEY)
+    ?? LMSTUDIO_DEFAULT_BASE
+  return normalizeLmStudioBaseUrl(raw)
+}
+
+async function probeLmStudio(baseUrl: string, signal?: AbortSignal): Promise<boolean> {
+  const rootUrl = normalizeLmStudioBaseUrl(baseUrl).replace(/\/(?:api\/)?v1$/i, '')
+  const urls = [
+    `${normalizeLmStudioBaseUrl(baseUrl).replace(/\/+$/, '')}/models`,
+    `${rootUrl}/api/v1/models`,
+  ]
+
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { signal })
+      if (res.ok || res.status === 401 || res.status === 403) {
+        return true
+      }
+    } catch {
+      if (signal?.aborted) return false
+    }
+  }
+  return false
+}
+
+function formatLmStudioBadge(status: LmStudioStatus): string {
+  const active = getAPIProvider() === 'lmstudio' ? `${chalk.green('[Active]')} ` : ''
+  switch (status) {
+    case 'running':
+      return `${active}${chalk.green('[Running]')}`
+    case 'offline':
+      return `${active}${chalk.red('[Offline]')}`
+    case 'unknown':
+      return `${active}${chalk.dim('[   ?   ]')}`
+  }
+}
+
 // ─── View state machine ─────────────────────────────────────────
 
 type View =
@@ -265,6 +318,10 @@ type View =
   | { kind: 'configure'; provider: ManageableProvider; selectedIndex: number }
   | {
       kind: 'ollama_url_input'
+      error?: string
+    }
+  | {
+      kind: 'lmstudio_url_input'
       error?: string
     }
   | {
@@ -288,11 +345,15 @@ type ConfigureOption =
   | { kind: 'set_ollama_url' }
   | { kind: 'reset_ollama_url' }
   | { kind: 'test_ollama' }
+  | { kind: 'set_lmstudio_url' }
+  | { kind: 'reset_lmstudio_url' }
+  | { kind: 'test_lmstudio' }
   | { kind: 'back' }
 
 function buildConfigureOptions(
   provider: ManageableProvider,
   ollamaStatus: OllamaStatus,
+  lmStudioStatus: LmStudioStatus,
 ): ConfigureOption[] {
   if (provider === VOICE_CONVERSATION_PROVIDER) {
     const options: ConfigureOption[] = []
@@ -327,6 +388,21 @@ function buildConfigureOptions(
     }
     options.push({ kind: 'back' })
     void ollamaStatus
+    return options
+  }
+
+  if (provider === 'lmstudio') {
+    const options: ConfigureOption[] = []
+    if (getAPIProvider() !== 'lmstudio') {
+      options.push({ kind: 'activate' })
+    }
+    options.push({ kind: 'test_lmstudio' })
+    options.push({ kind: 'set_lmstudio_url' })
+    if (hasStoredKey(LMSTUDIO_BASE_URL_KEY)) {
+      options.push({ kind: 'reset_lmstudio_url' })
+    }
+    options.push({ kind: 'back' })
+    void lmStudioStatus
     return options
   }
 
@@ -373,7 +449,9 @@ function labelConfigureOption(
 ): string {
   switch (option.kind) {
     case 'activate':
-      return 'Activate AgentRouter'
+      return provider === 'agentrouter'
+        ? 'Activate AgentRouter'
+        : `Activate ${getManageableProviderName(provider)}`
     case 'login':
       return provider === 'firstParty'
         ? 'Log in with Anthropic (subscription / Console API / platform)'
@@ -393,6 +471,12 @@ function labelConfigureOption(
     case 'reset_ollama_url':
       return 'Reset base URL to default (http://localhost:11434)'
     case 'test_ollama':
+      return 'Test connection'
+    case 'set_lmstudio_url':
+      return 'Set custom base URL'
+    case 'reset_lmstudio_url':
+      return 'Reset base URL to default (http://localhost:1234/v1)'
+    case 'test_lmstudio':
       return 'Test connection'
     case 'back':
       return '← Back to provider list'
@@ -420,6 +504,8 @@ function ProviderManager({
 
   const [ollamaUrlInput, setOllamaUrlInput] = useState('')
   const [ollamaUrlCursorOffset, setOllamaUrlCursorOffset] = useState(0)
+  const [lmStudioUrlInput, setLmStudioUrlInput] = useState('')
+  const [lmStudioUrlCursorOffset, setLmStudioUrlCursorOffset] = useState(0)
   const [voiceKeyInput, setVoiceKeyInput] = useState('')
   const [voiceKeyCursorOffset, setVoiceKeyCursorOffset] = useState(0)
   const inputColumns = Math.max(20, (process.stdout.columns ?? 80) - 14)
@@ -428,6 +514,7 @@ function ProviderManager({
   // the list or configure view and refreshed when the user asks for it.
   // The badge starts at "unknown" and flips after the probe resolves.
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>('unknown')
+  const [lmStudioStatus, setLmStudioStatus] = useState<LmStudioStatus>('unknown')
 
   useEffect(() => {
     let cancelled = false
@@ -437,6 +524,22 @@ function ProviderManager({
     probeOllama(getOllamaBaseUrl(), controller.signal).then(ok => {
       if (cancelled) return
       setOllamaStatus(ok ? 'running' : 'offline')
+    })
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      controller.abort()
+    }
+  }, [refreshTick])
+
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 1500)
+    setLmStudioStatus('unknown')
+    probeLmStudio(getLmStudioBaseUrl(), controller.signal).then(ok => {
+      if (cancelled) return
+      setLmStudioStatus(ok ? 'running' : 'offline')
     })
     return () => {
       cancelled = true
@@ -489,6 +592,17 @@ function ProviderManager({
       provider: 'agentrouter',
       tone: 'success',
       message: 'AgentRouter activated.',
+    })
+  }
+
+  function handleActivateLmStudio() {
+    setActiveProvider('lmstudio')
+    refresh()
+    setView({
+      kind: 'result',
+      provider: 'lmstudio',
+      tone: 'success',
+      message: 'LM Studio activated.',
     })
   }
 
@@ -664,6 +778,70 @@ function ProviderManager({
     })
   }
 
+  function reloadLmStudioInRuntime() {
+    void import('../../services/api/providers/providerShim.js')
+      .then(({ reloadOpenAICompatProviderAuth }) =>
+        reloadOpenAICompatProviderAuth('lmstudio'),
+      )
+      .catch(() => {})
+  }
+
+  function handleTestLmStudio() {
+    setLmStudioStatus('unknown')
+    refresh()
+  }
+
+  function handleLmStudioUrlSubmit(value: string) {
+    const raw = value.trim()
+    if (!raw) return
+
+    const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`
+    try {
+      const parsed = new URL(withScheme)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('bad protocol')
+      }
+    } catch {
+      setView({
+        kind: 'lmstudio_url_input',
+        error: 'Not a valid URL. Try "http://localhost:1234/v1" or "my-box:1234".',
+      })
+      return
+    }
+
+    const normalised = normalizeLmStudioBaseUrl(withScheme)
+    saveProviderKey(LMSTUDIO_BASE_URL_KEY, normalised)
+    process.env.LMSTUDIO_BASE_URL = normalised
+    delete process.env.LM_STUDIO_BASE_URL
+    reloadLmStudioInRuntime()
+
+    setLmStudioUrlInput('')
+    setLmStudioUrlCursorOffset(0)
+    setLmStudioStatus('unknown')
+    refresh()
+    setView({
+      kind: 'result',
+      provider: 'lmstudio',
+      tone: 'success',
+      message: `LM Studio base URL set to ${normalised}. Testing connection...`,
+    })
+  }
+
+  function handleResetLmStudioUrl() {
+    deleteProviderKey(LMSTUDIO_BASE_URL_KEY)
+    delete process.env.LMSTUDIO_BASE_URL
+    delete process.env.LM_STUDIO_BASE_URL
+    reloadLmStudioInRuntime()
+    setLmStudioStatus('unknown')
+    refresh()
+    setView({
+      kind: 'result',
+      provider: 'lmstudio',
+      tone: 'success',
+      message: `LM Studio base URL reset to ${LMSTUDIO_DEFAULT_BASE}.`,
+    })
+  }
+
   // ─── Input routing ────────────────────────────────────────────
 
   useInput((input: string, key: {
@@ -677,6 +855,7 @@ function ProviderManager({
     if (
       key.escape &&
       view.kind !== 'ollama_url_input' &&
+      view.kind !== 'lmstudio_url_input' &&
       view.kind !== 'voice_key_input'
     ) {
       if (view.kind === 'list') {
@@ -692,6 +871,13 @@ function ProviderManager({
       setOllamaUrlInput('')
       setOllamaUrlCursorOffset(0)
       setView({ kind: 'configure', provider: 'ollama', selectedIndex: 0 })
+      return
+    }
+
+    if (view.kind === 'lmstudio_url_input' && key.escape) {
+      setLmStudioUrlInput('')
+      setLmStudioUrlCursorOffset(0)
+      setView({ kind: 'configure', provider: 'lmstudio', selectedIndex: 0 })
       return
     }
 
@@ -738,7 +924,7 @@ function ProviderManager({
 
     // ─── configure view ───
     if (view.kind === 'configure') {
-      const options = buildConfigureOptions(view.provider, ollamaStatus)
+      const options = buildConfigureOptions(view.provider, ollamaStatus, lmStudioStatus)
       if (key.upArrow) {
         setView({
           ...view,
@@ -767,6 +953,9 @@ function ProviderManager({
             if (view.provider === 'agentrouter') {
               handleActivateAgentRouter()
             }
+            if (view.provider === 'lmstudio') {
+              handleActivateLmStudio()
+            }
             return
           case 'login':
             if (view.provider === 'firstParty') {
@@ -789,7 +978,9 @@ function ProviderManager({
               handleE2BDeactivate()
               return
             }
-            if (view.provider !== 'ollama') handleDeactivate(view.provider)
+            if (view.provider !== 'ollama' && view.provider !== 'lmstudio') {
+              handleDeactivate(view.provider)
+            }
             return
           case 'set_voice_key':
             setVoiceKeyInput('')
@@ -806,6 +997,17 @@ function ProviderManager({
             return
           case 'test_ollama':
             handleTestOllama()
+            return
+          case 'set_lmstudio_url':
+            setLmStudioUrlInput('')
+            setLmStudioUrlCursorOffset(0)
+            setView({ kind: 'lmstudio_url_input' })
+            return
+          case 'reset_lmstudio_url':
+            handleResetLmStudioUrl()
+            return
+          case 'test_lmstudio':
+            handleTestLmStudio()
             return
           case 'back':
             backToList()
@@ -852,6 +1054,8 @@ function ProviderManager({
                 ? chalk.green(formatE2BSecurityBadge())
                 : provider === 'ollama'
                 ? formatOllamaBadge(ollamaStatus)
+                : provider === 'lmstudio'
+                ? formatLmStudioBadge(lmStudioStatus)
                 : provider === 'gemini'
                   ? formatGeminiBadge()
                   : provider === 'firstParty'
@@ -883,7 +1087,7 @@ function ProviderManager({
   if (view.kind === 'configure') {
     const provider = view.provider
     const name = getManageableProviderName(provider)
-    const options = buildConfigureOptions(provider, ollamaStatus)
+    const options = buildConfigureOptions(provider, ollamaStatus, lmStudioStatus)
     const badge =
       provider === VOICE_CONVERSATION_PROVIDER
         ? formatVoiceConversationBadge()
@@ -891,12 +1095,19 @@ function ProviderManager({
         ? chalk.green(formatE2BSecurityBadge())
         : provider === 'ollama'
         ? formatOllamaBadge(ollamaStatus)
+        : provider === 'lmstudio'
+        ? formatLmStudioBadge(lmStudioStatus)
         : provider === 'gemini'
           ? formatGeminiBadge()
           : provider === 'firstParty'
             ? formatBadge(getFirstPartyAuthState())
             : formatBadge(getAuthState(provider))
-    const currentUrl = provider === 'ollama' ? getOllamaBaseUrl() : null
+    const currentUrl =
+      provider === 'ollama'
+        ? getOllamaBaseUrl()
+        : provider === 'lmstudio'
+          ? getLmStudioBaseUrl()
+          : null
     const voiceStatus =
       provider === VOICE_CONVERSATION_PROVIDER
         ? getVoiceConversationStatus()
@@ -978,6 +1189,43 @@ function ProviderManager({
         </Box>
         <Box marginTop={1}>
           <Text dimColor>Enter to submit · Esc to go back</Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  if (view.kind === 'lmstudio_url_input') {
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        {header}
+        <Text bold>Set LM Studio base URL</Text>
+        <Text dimColor>
+          Default: <Text color="suggestion">{LMSTUDIO_DEFAULT_BASE}</Text>
+        </Text>
+        <Text dimColor>
+          Accepts full URLs (http://host:port/v1) or host:port shorthand.
+        </Text>
+        {view.error && (
+          <Box marginTop={1}>
+            <Text color="error">{view.error}</Text>
+          </Box>
+        )}
+        <Box marginTop={1}>
+          <Text>URL: </Text>
+          <TextInput
+            value={lmStudioUrlInput}
+            onChange={setLmStudioUrlInput}
+            onSubmit={handleLmStudioUrlSubmit}
+            placeholder="http://localhost:1234/v1"
+            focus={true}
+            showCursor={true}
+            columns={inputColumns}
+            cursorOffset={lmStudioUrlCursorOffset}
+            onChangeCursorOffset={setLmStudioUrlCursorOffset}
+          />
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>Enter to submit Â· Esc to go back</Text>
         </Box>
       </Box>
     )
