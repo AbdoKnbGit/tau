@@ -34,6 +34,7 @@ import {
   type GeminiGenerateContentResponse,
 } from '../adapters/gemini_to_anthropic.js'
 import {
+  ANTIGRAVITY_MODELS,
   GEMINI_TIER_FREE,
   GEMINI_TIER_LEGACY,
   ensureCodeAssistReady,
@@ -48,7 +49,7 @@ import {
   wrapForGeminiCLI,
   geminiCLIApiHeaders,
   antigravityApiHeaders,
-  codeAssistGenerationBase,
+  codeAssistGenerationBases,
   clearCodeAssistCache,
 } from './gemini_code_assist.js'
 import { getOrCreateCache, invalidateCache } from './gemini_cache.js'
@@ -247,7 +248,7 @@ export const GEMINI_CLI_FLASH_MODELS: ModelInfo[] = [
 /**
  * Pro/preview models that paid Google CLI accounts (standard-tier and
  * higher) can call through the Code Assist proxy on top of the flash/
- * lite list above. These IDs are NOT in ANTIGRAVITY_MODEL_SET, so
+ * lite list above. These IDs are NOT in ANTIGRAVITY_MODEL_IDS, so
  * `executorForModel` keeps them on the CLI executor — no Antigravity
  * token needed. Free-tier accounts never see these because their
  * tier id is `free-tier` (or `legacy-tier`) and the picker filters
@@ -333,19 +334,6 @@ export function resolveCliProModelsToShow(): ModelInfo[] {
 export function resolveCliModelsForPicker(): ModelInfo[] {
   return [...GEMINI_CLI_FLASH_MODELS, ...resolveCliProModelsToShow()]
 }
-
-/**
- * Models available via the Antigravity OAuth client (pro/premium tier).
- * These use the Antigravity quota pool with higher rate limits.
- * MUST stay in sync with ANTIGRAVITY_MODEL_SET in gemini_code_assist.ts.
- */
-const ANTIGRAVITY_MODELS: ModelInfo[] = [
-  { id: 'gemini-3.1-pro-high',                 name: 'Gemini 3.1 Pro · high thinking' },
-  { id: 'gemini-3.1-pro-low',                  name: 'Gemini 3.1 Pro · low thinking' },
-  { id: 'gemini-3-flash',                      name: 'Gemini 3 Flash' },
-  { id: 'claude-sonnet-4-6',                   name: 'Claude Sonnet 4.6 (via Antigravity)' },
-  { id: 'claude-opus-4-6-thinking',            name: 'Claude Opus 4.6 · thinking (via Antigravity)' },
-]
 
 /**
  * Generative models that live on v1beta/models but are NOT chat-completion
@@ -653,17 +641,26 @@ export class GeminiProvider extends BaseProvider {
         }
         : { ...geminiCLIApiHeaders(oauthToken, model), 'Connection': 'keep-alive' }
 
-      const url = `${codeAssistGenerationBase(executor)}:streamGenerateContent?alt=sse`
       const ac = new AbortController()
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(wrapped),
-        signal: ac.signal,
-      })
+      let response: Response | null = null
+      let errText = ''
+      const urls = codeAssistGenerationBases(executor).map(base => `${base}:streamGenerateContent?alt=sse`)
+      for (let i = 0; i < urls.length; i++) {
+        response = await fetch(urls[i]!, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(wrapped),
+          signal: ac.signal,
+        })
+        if (response.ok) break
+        errText = await response.text().catch(() => '')
+        if (!(executor === 'antigravity' && response.status === 404 && i < urls.length - 1)) break
+      }
+      if (!response) {
+        throw new Error('Gemini Code Assist error: no endpoint attempted')
+      }
 
       if (!response.ok) {
-        const errText = await response.text().catch(() => '')
         this._adjustRpmFromError(response.status, response.headers)
 
         // Auto-recover from stale project ID: if Code Assist returns 403
@@ -755,15 +752,24 @@ export class GeminiProvider extends BaseProvider {
         }
         : { ...geminiCLIApiHeaders(oauthToken, model), 'Connection': 'keep-alive' }
 
-      const url = `${codeAssistGenerationBase(executor)}:generateContent`
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(wrapped),
-      })
+      let response: Response | null = null
+      let errText = ''
+      const urls = codeAssistGenerationBases(executor).map(base => `${base}:generateContent`)
+      for (let i = 0; i < urls.length; i++) {
+        response = await fetch(urls[i]!, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(wrapped),
+        })
+        if (response.ok) break
+        errText = await response.text().catch(() => '')
+        if (!(executor === 'antigravity' && response.status === 404 && i < urls.length - 1)) break
+      }
+      if (!response) {
+        throw new Error('Gemini Code Assist error: no endpoint attempted')
+      }
 
       if (!response.ok) {
-        const errText = await response.text().catch(() => '')
         this._adjustRpmFromError(response.status, response.headers)
 
         // Auto-recover from stale project ID (same as streaming path).

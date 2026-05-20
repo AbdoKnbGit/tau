@@ -1,4 +1,5 @@
 import { getCursorModelDisplayName } from '../../lanes/cursor/catalog.js'
+import { getAntigravityModelDisplayName } from '../../services/api/providers/gemini_code_assist.js'
 import type { APIProvider } from './providers.js'
 
 export function getProviderModelDisplayName(
@@ -10,6 +11,8 @@ export function getProviderModelDisplayName(
       return getAnthropicModelDisplayName(modelId)
     case 'cursor':
       return getCursorModelDisplayName(modelId)
+    case 'antigravity':
+      return getAntigravityModelDisplayName(modelId)
     default:
       return null
   }

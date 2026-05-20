@@ -16,6 +16,7 @@
 
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import {
+  ANTIGRAVITY_MODELS,
   ensureCodeAssistReady,
   executorForModel,
   parseCodeAssistSSE,
@@ -24,7 +25,7 @@ import {
   wrapForGeminiCLI,
   geminiCLIApiHeaders,
   antigravityApiHeaders,
-  codeAssistGenerationBase,
+  codeAssistGenerationBases,
   clearCodeAssistCache,
   warmupCodeAssist,
 } from '../../services/api/providers/gemini_code_assist.js'
@@ -378,8 +379,8 @@ class GeminiApiClient {
       // outside retryWithBackoff and the cleared cache was moot).
       let reonboardsLeft = 1
       let sigStripsLeft = 1
-      const urlForExecutor = (executor: 'cli' | 'antigravity') =>
-        `${codeAssistGenerationBase(executor)}:streamGenerateContent?alt=sse`
+      const urlsForExecutor = (executor: 'cli' | 'antigravity') =>
+        codeAssistGenerationBases(executor).map(base => `${base}:streamGenerateContent?alt=sse`)
       const rotation = getAntigravityRotation()
 
       const response = await retryWithBackoff(
@@ -412,14 +413,27 @@ class GeminiApiClient {
           const serialized = JSON.stringify(wrappedBody)
             .replace(/"thoughtSignature"\s*:/g, '"thought_signature":')
 
-          const resp = await fetch(urlForExecutor(executor), {
-            method: 'POST',
-            headers,
-            body: serialized,
-            signal,
-          })
+          let resp: Response | null = null
+          let errText = ''
+          const urls = urlsForExecutor(executor)
+          for (let i = 0; i < urls.length; i++) {
+            resp = await fetch(urls[i]!, {
+              method: 'POST',
+              headers,
+              body: serialized,
+              signal,
+            })
+            if (resp.ok) break
+            errText = await resp.text().catch(() => '')
+            if (!(executor === 'antigravity' && resp.status === 404 && i < urls.length - 1)) break
+          }
+          if (!resp) {
+            throw new GeminiApiError(0, 'No Code Assist endpoint attempted', undefined, {
+              kind: 'non-retryable',
+              details: {},
+            })
+          }
           if (!resp.ok) {
-            const errText = await resp.text().catch(() => '')
             const cls = classifyGeminiError(resp.status, errText)
             const retryAfterMs = cls.retryAfterMs
               ?? parseRetryAfter(resp.headers.get('retry-after'))
@@ -569,8 +583,8 @@ class GeminiApiClient {
     if (oauthRouting) {
       let reonboardsLeft = 1
       let sigStripsLeft = 1
-      const urlForExecutor = (executor: 'cli' | 'antigravity') =>
-        `${codeAssistGenerationBase(executor)}:generateContent`
+      const urlsForExecutor = (executor: 'cli' | 'antigravity') =>
+        codeAssistGenerationBases(executor).map(base => `${base}:generateContent`)
       const rotation = getAntigravityRotation()
 
       const data = await retryWithBackoff(
@@ -598,14 +612,27 @@ class GeminiApiClient {
           const serialized = JSON.stringify(wrappedBody)
             .replace(/"thoughtSignature"\s*:/g, '"thought_signature":')
 
-          const resp = await fetch(urlForExecutor(executor), {
-            method: 'POST',
-            headers,
-            body: serialized,
-            signal,
-          })
+          let resp: Response | null = null
+          let errText = ''
+          const urls = urlsForExecutor(executor)
+          for (let i = 0; i < urls.length; i++) {
+            resp = await fetch(urls[i]!, {
+              method: 'POST',
+              headers,
+              body: serialized,
+              signal,
+            })
+            if (resp.ok) break
+            errText = await resp.text().catch(() => '')
+            if (!(executor === 'antigravity' && resp.status === 404 && i < urls.length - 1)) break
+          }
+          if (!resp) {
+            throw new GeminiApiError(0, 'No Code Assist endpoint attempted', undefined, {
+              kind: 'non-retryable',
+              details: {},
+            })
+          }
           if (!resp.ok) {
-            const errText = await resp.text().catch(() => '')
             const cls = classifyGeminiError(resp.status, errText)
             const retryAfterMs = cls.retryAfterMs
               ?? parseRetryAfter(resp.headers.get('retry-after'))
@@ -733,13 +760,7 @@ class GeminiApiClient {
 
     if (providerFilter === 'antigravity') {
       if (!this.antigravityOAuthToken) return []
-      return [
-        { id: 'gemini-3.1-pro-high',        name: 'Gemini 3.1 Pro Â· high thinking', contextWindow: 1048576 },
-        { id: 'gemini-3.1-pro-low',         name: 'Gemini 3.1 Pro Â· low thinking', contextWindow: 1048576 },
-        { id: 'gemini-3-flash',             name: 'Gemini 3 Flash', contextWindow: 1048576 },
-        { id: 'claude-sonnet-4-6',          name: 'Claude Sonnet 4.6 (via Antigravity)' },
-        { id: 'claude-opus-4-6-thinking',   name: 'Claude Opus 4.6 Â· thinking (via Antigravity)' },
-      ]
+      return [...ANTIGRAVITY_MODELS]
     }
 
     // `providerFilter` is how the UX split between the Gemini row and the
@@ -773,13 +794,7 @@ class GeminiApiClient {
         models.push(...resolveCliModelsForPicker())
       }
       if (showAntigravity && this.antigravityOAuthToken) {
-        models.push(
-          { id: 'gemini-3.1-pro-high',        name: 'Gemini 3.1 Pro · high thinking', contextWindow: 1048576 },
-          { id: 'gemini-3.1-pro-low',         name: 'Gemini 3.1 Pro · low thinking', contextWindow: 1048576 },
-          { id: 'gemini-3-flash',             name: 'Gemini 3 Flash', contextWindow: 1048576 },
-          { id: 'claude-sonnet-4-6',          name: 'Claude Sonnet 4.6 (via Antigravity)' },
-          { id: 'claude-opus-4-6-thinking',   name: 'Claude Opus 4.6 · thinking (via Antigravity)' },
-        )
+        models.push(...ANTIGRAVITY_MODELS)
       }
       return models
     }

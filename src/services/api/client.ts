@@ -33,6 +33,7 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
+import { ANTIGRAVITY_MODEL_IDS } from './providers/gemini_code_assist.js'
 
 /**
  * Environment variables for different client types:
@@ -85,6 +86,10 @@ function _autoCorrectProvider(
   model: string,
 ): import('../../utils/model/providers.js').APIProvider {
   const m = model.toLowerCase()
+  if (ANTIGRAVITY_MODEL_IDS.has(m)) {
+    return 'antigravity'
+  }
+
   if (
     current === 'kiro'
     || current === 'antigravity'

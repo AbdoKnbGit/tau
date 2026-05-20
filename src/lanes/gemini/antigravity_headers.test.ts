@@ -35,6 +35,7 @@ function main(): void {
   console.log('antigravity headers:')
 
   test('generateContent headers advertise the current Antigravity API version', () => {
+    assert(ANTIGRAVITY_API_VERSION === '2.0.0', `unexpected Antigravity version: ${ANTIGRAVITY_API_VERSION}`)
     const headers = antigravityApiHeaders('token')
     assert(
       headers['User-Agent']?.startsWith(`antigravity/${ANTIGRAVITY_API_VERSION} `),
@@ -48,6 +49,10 @@ function main(): void {
     assert(
       codeAssistGenerationBase('antigravity') === ANTIGRAVITY_GENERATION_BASE,
       'Antigravity generation base should use daily endpoint',
+    )
+    assert(
+      ANTIGRAVITY_GENERATION_BASE === 'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal',
+      `wrong Antigravity generation base: ${ANTIGRAVITY_GENERATION_BASE}`,
     )
     assert(
       codeAssistGenerationBase('cli') === CODE_ASSIST_BASE,

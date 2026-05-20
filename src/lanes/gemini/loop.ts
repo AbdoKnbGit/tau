@@ -44,6 +44,10 @@ import {
 import { geminiApi } from './api.js'
 import { getOrCreateCacheWithUsage, invalidateCache } from '../../services/api/providers/gemini_cache.js'
 import {
+  ANTIGRAVITY_MODEL_IDS,
+  resolveAntigravityWireModel,
+} from '../../services/api/providers/gemini_code_assist.js'
+import {
   sanitizeSchemaForLane,
   appendStrictParamsHint,
   GEMINI_TOOL_USAGE_RULES,
@@ -870,10 +874,9 @@ function resolveThinkingConfig(
   const lower = model.toLowerCase()
   // Match explicit suffix first — the suffix encodes the user's choice.
   let level: 'low' | 'medium' | 'high' | null = null
-  if (/-pro-high$/.test(lower)) level = 'high'
-  else if (/-pro-low$/.test(lower)) level = 'low'
-  else if (/-pro-medium$/.test(lower)) level = 'medium'
-  else if (/^gemini-3-flash$/.test(lower)) level = 'low' // Antigravity flash defaults to "low"
+  const levelMatch = lower.match(/^gemini-\d+(?:\.\d+)?-(?:pro|flash)-(high|medium|low)$/)
+  if (levelMatch) level = levelMatch[1] as 'low' | 'medium' | 'high'
+  else if (/^gemini-3(?:\.\d+)?-flash$/.test(lower)) level = 'low' // Antigravity flash defaults to "low"
 
   if (level) {
     return {
@@ -1308,14 +1311,8 @@ function buildGeminiRequest(config: GeminiRequestConfig): Record<string, unknown
 
 // Antigravity-only model ids — these route through the Antigravity
 // quota pool and 403 if the user only has the Gemini-CLI OAuth token.
-// Kept in sync with ANTIGRAVITY_MODEL_SET in gemini_code_assist.ts.
-const ANTIGRAVITY_ONLY_MODEL_IDS = new Set([
-  'gemini-3.1-pro-high',
-  'gemini-3.1-pro-low',
-  'gemini-3-flash',
-  'claude-sonnet-4-6',
-  'claude-opus-4-6-thinking',
-])
+// Kept in sync with the routing catalog in gemini_code_assist.ts.
+const ANTIGRAVITY_ONLY_MODEL_IDS = ANTIGRAVITY_MODEL_IDS
 
 function buildAuthErrorMessage(err: any, model?: string): string {
   const status = err?.status
@@ -1323,13 +1320,15 @@ function buildAuthErrorMessage(err: any, model?: string): string {
   const detail = (err?.body && typeof err.body === 'string')
     ? err.body.slice(0, 180).replace(/\s+/g, ' ').trim()
     : (err?.message ?? String(err))
+  const normalizedModel = model?.toLowerCase()
+  const isAntigravityOnly = !!normalizedModel && ANTIGRAVITY_ONLY_MODEL_IDS.has(normalizedModel)
+  const wireModel = isAntigravityOnly && model ? resolveAntigravityWireModel(model) : null
   const modelLine = model ? `Model attempted: ${model}` : null
+  const wireModelLine = wireModel && wireModel !== model ? `Antigravity wire model: ${wireModel}` : null
 
-  // Detect the most common actionable mistake: user picked an
-  // Antigravity-only model but only has the Gemini CLI OAuth token
-  // configured. This is a user-fixable case (run /login antigravity)
-  // — distinct from the server-side ghost-project bug below.
-  const isAntigravityOnly = !!model && ANTIGRAVITY_ONLY_MODEL_IDS.has(model)
+  // Antigravity-only models must stay on the Antigravity executor. Status
+  // determines whether the likely problem is OAuth/account access or an
+  // endpoint/wire-model rejection.
 
   // Detect the Google "ghost project" 403 pattern. Per gemini-cli
   // issues #24747 / #25189 / #25609, Google AI Pro/Ultra subscribers
@@ -1346,22 +1345,32 @@ function buildAuthErrorMessage(err: any, model?: string): string {
   const lines = [
     '',
     '',
-    `${statusPrefix}authentication failed — the request was rejected before it reached the model.`,
+    `${statusPrefix}request failed before it reached the model.`,
     '',
     ...(modelLine ? [modelLine, ''] : []),
+    ...(wireModelLine ? [wireModelLine, ''] : []),
     `Server said: ${detail}`,
     '',
   ]
 
   if (isAntigravityOnly) {
-    lines.push(
-      'This model only routes through the Antigravity quota pool, but',
-      'no Antigravity OAuth is configured. To use it:',
-      '  1. Run `/login antigravity` to authorize the Antigravity flow, or',
-      '  2. Pick a different Pro model (gemini-3.1-pro-preview,',
-      '     gemini-3-pro-preview, gemini-2.5-pro) which routes through',
-      '     the Gemini CLI executor.',
-    )
+    if (status === 404) {
+      lines.push(
+        'This model only routes through the Antigravity quota pool.',
+        'A 404 here means the Antigravity backend rejected the endpoint or wire model before generation started.',
+        'Tau sends Gemini 3.5 Flash through the model keys returned by Antigravity quota discovery and keeps the selected thinking level.',
+        'If this continues, run `/login antigravity` to refresh the Antigravity account or pick another model temporarily.',
+      )
+    } else {
+      lines.push(
+        'This model only routes through the Antigravity quota pool.',
+        'Make sure the Antigravity account is connected and has access:',
+        '  1. Run `/login antigravity` to refresh the Antigravity flow, or',
+        '  2. Pick a different Pro model (gemini-3.1-pro-preview,',
+        '     gemini-3-pro-preview, gemini-2.5-pro) which routes through',
+        '     the Gemini CLI executor.',
+      )
+    }
   } else if (looksLikeGhostProject) {
     lines.push(
       'This is the known "ghost cloudaicompanionProject" 403 that hits',
@@ -1408,7 +1417,7 @@ function buildQuotaErrorMessage(err: any, model?: string): string {
     ? `Retry after: about ${Math.ceil(retryAfterMs / 1000)} seconds`
     : null
   const modelLine = model ? `Model attempted: ${model}` : null
-  const isAntigravityModel = !!model && ANTIGRAVITY_ONLY_MODEL_IDS.has(model)
+  const isAntigravityModel = !!model && ANTIGRAVITY_ONLY_MODEL_IDS.has(model.toLowerCase())
 
   const lines = [
     '',

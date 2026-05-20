@@ -85,6 +85,7 @@ const CACHE_CAPABLE_MODEL_PREFIXES = [
   'gemini-3-flash',
   'gemini-3.1-pro',
   'gemini-3.1-flash',
+  'gemini-3.5-flash',
 ]
 
 // In-process stores. Per-process is correct here — caches are tied to

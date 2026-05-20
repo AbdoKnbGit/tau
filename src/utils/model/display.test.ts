@@ -45,6 +45,17 @@ function main(): void {
     )
   })
 
+  test('antigravity uses clean provider-owned labels', () => {
+    assert(
+      getProviderModelDisplayName('antigravity', 'gemini-3.5-flash-high') === 'Gemini 3.5 Flash (High)',
+      'expected Gemini 3.5 Flash High label',
+    )
+    assert(
+      getProviderModelDisplayName('antigravity', 'claude-opus-4-6-thinking') === 'Claude Opus 4.6',
+      'expected Claude Opus Antigravity label without thinking suffix',
+    )
+  })
+
   test('cursor lookup covers extra-high labels', () => {
     assert(
       getProviderModelDisplayName('cursor', 'gpt-5.3-codex-xhigh') === 'GPT-5.3 Codex XHigh',

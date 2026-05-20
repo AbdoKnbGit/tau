@@ -9,14 +9,23 @@ import {
 import { getGeminiOAuthToken } from './auth/google_oauth.js'
 import { loadProviderKey } from './auth/api_key_manager.js'
 import {
-  CODE_ASSIST_BASE,
   antigravityApiHeaders,
   ensureCodeAssistReady,
   fetchGeminiCliQuotaBuckets,
   getGeminiTier,
   type GeminiQuotaBucket,
 } from './providers/gemini_code_assist.js'
-import { ANTIGRAVITY_API_VERSION } from '../../constants/antigravity.js'
+import {
+  extractAntigravityModels,
+  hasAntigravity35FlashUsagePair,
+  parseAntigravityUsage,
+} from './antigravityUsageParser.js'
+import {
+  ANTIGRAVITY_API_VERSION,
+  ANTIGRAVITY_ENDPOINT_AUTOPUSH,
+  ANTIGRAVITY_ENDPOINT_DAILY,
+  ANTIGRAVITY_ENDPOINT_PROD,
+} from '../../constants/antigravity.js'
 import { fetchUtilization, type Utilization } from './usage.js'
 import {
   loadStore,
@@ -36,14 +45,7 @@ import {
 } from '../../utils/model/providers.js'
 
 const TIMEOUT_MS = 8_000
-const ANTIGRAVITY_USAGE_MODEL_KEYS = [
-  'claude-opus-4-6-thinking',
-  'claude-sonnet-4-6',
-  'gemini-3-flash',
-  'gemini-3.1-pro-high',
-  'gemini-3.1-pro-low',
-  'gpt-oss-120b-medium',
-] as const
+const ANTIGRAVITY_APP_DAILY_ENDPOINT = 'https://daily-cloudcode-pa.googleapis.com'
 const DOCS = {
   anthropic: 'https://platform.claude.com/docs/en/build-with-claude/usage-cost-api',
   openai: 'https://platform.openai.com/docs/api-reference/usage/costs',
@@ -471,6 +473,9 @@ async function reportAntigravity(): Promise<ProviderUsageReport> {
   }
 
   const project = account?.projectId ?? await ensureAntigravityProject(accessToken)
+  const accountLabel = account?.email
+    ?? await fetchGoogleOAuthEmail(accessToken)
+    ?? 'Antigravity OAuth'
   let data: unknown
   try {
     data = await fetchAntigravityAvailableModels(accessToken, project)
@@ -487,7 +492,6 @@ async function reportAntigravity(): Promise<ProviderUsageReport> {
     }
   }
   const metrics = parseAntigravityUsage(data)
-  const accountLabel = account?.email ?? 'Antigravity OAuth'
 
   if (metrics.length === 0) {
     return {
@@ -510,7 +514,7 @@ async function reportAntigravity(): Promise<ProviderUsageReport> {
       'Google Code Assist',
       'Fetched model quota remaining from Antigravity.',
     ),
-    detail: `Account: ${accountLabel}. Usage is calculated per model from quotaInfo.remainingFraction.`,
+    detail: `Account: ${accountLabel}. Usage is calculated per model from Antigravity quotaInfo.remainingFraction.`,
     metrics,
   }
 }
@@ -1271,41 +1275,6 @@ function parseCodexUsage(data: unknown): UsageMetric[] {
   return metrics
 }
 
-function parseAntigravityUsage(data: unknown): UsageMetric[] {
-  const models = extractAntigravityModels(data)
-  if (!models) return []
-
-  return ANTIGRAVITY_USAGE_MODEL_KEYS
-    .map((modelKey) => {
-      const value = models[modelKey]
-      const info = asRecord(value)
-      if (!info || info.isInternal === true || info.disabled === true) return null
-      const quota = asRecord(info.quotaInfo)
-      if (!quota) return null
-      const remaining = readNumber(quota.remainingFraction)
-      if (remaining === null || remaining < 0 || remaining > 1) return null
-      const display = readString(info.displayName) ?? modelKey
-      const reset = validFutureIso(readString(quota.resetTime))
-      return {
-        label: display,
-        usedPercent: clampPercent((1 - remaining) * 100),
-        summary: `${Math.round(clampPercent(remaining * 100))}% remaining`,
-        resetsAt: reset ?? epochSecondsToIso(quota.resetAt),
-      } satisfies UsageMetric
-    })
-    .filter((metric): metric is UsageMetric => metric !== null)
-    .sort((a, b) => a.label.localeCompare(b.label))
-}
-
-function extractAntigravityModels(data: unknown): Record<string, unknown> | null {
-  const root = asRecord(data)
-  const response = asRecord(root?.response)
-  const wrappedData = asRecord(root?.data)
-  return asRecord(root?.models)
-    ?? asRecord(response?.models)
-    ?? asRecord(wrappedData?.models)
-}
-
 function parseOpenRouterCredits(data: unknown): { total: number; used: number; remaining: number } | null {
   const root = asRecord(data)
   const source = asRecord(root?.data) ?? root
@@ -1888,7 +1857,11 @@ function parseKiroUsage(data: unknown): UsageMetric[] {
 async function getAntigravityAccount(): Promise<AntigravityAccount | null> {
   const store = loadStore()
   if (store.accounts.length === 0) return null
-  const active = store.accounts[store.activeIndex] ?? store.accounts.find(account => account.enabled)
+  const preferredIndex = store.activeIndexByFamily['gemini-flash']
+    ?? store.activeIndexByFamily['gemini-pro']
+    ?? store.activeIndexByFamily.claude
+    ?? store.activeIndex
+  const active = store.accounts[preferredIndex] ?? store.accounts.find(account => account.enabled)
   if (!active) return null
   if (active.expires > Date.now() + 5 * 60 * 1000) return active
   try {
@@ -1899,6 +1872,20 @@ async function getAntigravityAccount(): Promise<AntigravityAccount | null> {
     return active
   } catch {
     return active
+  }
+}
+
+async function fetchGoogleOAuthEmail(accessToken: string): Promise<string | null> {
+  try {
+    const data = await fetchJson('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    })
+    return readString(asRecord(data)?.email)
+  } catch {
+    return null
   }
 }
 
@@ -1915,8 +1902,10 @@ async function fetchAntigravityAvailableModels(
   projectId: string | null,
 ): Promise<unknown> {
   const bases = [
-    CODE_ASSIST_BASE,
-    'https://daily-cloudcode-pa.googleapis.com',
+    ANTIGRAVITY_APP_DAILY_ENDPOINT,
+    ANTIGRAVITY_ENDPOINT_DAILY,
+    ANTIGRAVITY_ENDPOINT_PROD,
+    ANTIGRAVITY_ENDPOINT_AUTOPUSH,
   ]
   const payloads = projectId ? [{ project: projectId }, {}] : [{}]
   const headers = {
@@ -1937,8 +1926,13 @@ async function fetchAntigravityAvailableModels(
           headers,
           body: JSON.stringify(payload),
         })
-        if (extractAntigravityModels(data)) return data
-        bestData = data
+        const models = extractAntigravityModels(data)
+        if (models) {
+          bestData = data
+          if (hasAntigravity35FlashUsagePair(models)) return data
+          continue
+        }
+        if (bestData === null) bestData = data
       } catch (error) {
         errors.push(`${base}: ${messageFromError(error)}`)
       }

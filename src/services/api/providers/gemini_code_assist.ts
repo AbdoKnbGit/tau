@@ -10,7 +10,7 @@
  *
  * Code Assist endpoints:
  *   https://cloudcode-pa.googleapis.com/v1internal:{method}
- *   https://daily-cloudcode-pa.googleapis.com/v1internal:{method} for
+ *   https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:{method} for
  *   Antigravity generateContent / streamGenerateContent
  *
  * Request body is wrapped (Antigravity format from CLIProxyAPI):
@@ -45,10 +45,16 @@ import type {
   GeminiGenerateContentResponse,
   GeminiStreamChunk,
 } from '../adapters/gemini_to_anthropic.js'
-import { ANTIGRAVITY_API_VERSION } from '../../../constants/antigravity.js'
+import type { ModelInfo } from './base_provider.js'
+import {
+  ANTIGRAVITY_API_VERSION,
+  ANTIGRAVITY_ENDPOINT_AUTOPUSH,
+  ANTIGRAVITY_ENDPOINT_DAILY,
+  ANTIGRAVITY_ENDPOINT_PROD,
+} from '../../../constants/antigravity.js'
 
-export const CODE_ASSIST_BASE = 'https://cloudcode-pa.googleapis.com/v1internal'
-export const ANTIGRAVITY_GENERATION_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal'
+export const CODE_ASSIST_BASE = `${ANTIGRAVITY_ENDPOINT_PROD}/v1internal`
+export const ANTIGRAVITY_GENERATION_BASE = `${ANTIGRAVITY_ENDPOINT_DAILY}/v1internal`
 
 // ─── Executor types ──────────────────────────────────────────────────
 // Two distinct executors route to the same Code Assist proxy but with
@@ -60,21 +66,64 @@ export function codeAssistGenerationBase(executor: GeminiExecutor): string {
   return executor === 'antigravity' ? ANTIGRAVITY_GENERATION_BASE : CODE_ASSIST_BASE
 }
 
+export function codeAssistGenerationBases(executor: GeminiExecutor): readonly string[] {
+  return executor === 'antigravity'
+    ? [
+      ANTIGRAVITY_GENERATION_BASE,
+      `${ANTIGRAVITY_ENDPOINT_AUTOPUSH}/v1internal`,
+      CODE_ASSIST_BASE,
+    ]
+    : [CODE_ASSIST_BASE]
+}
+
 // Antigravity-specific models — everything else is Gemini CLI.
 // Includes Claude models that Antigravity re-sells through the same
 // Code Assist proxy (cloudcode-pa). They share the `userAgent: "antigravity"`
 // envelope but need small content-level fixes (see wrapForCodeAssist).
-const ANTIGRAVITY_MODEL_SET = new Set([
-  'gemini-3.1-pro-high',
-  'gemini-3.1-pro-low',
-  'gemini-3-flash',
-  'claude-sonnet-4-6',
-  'claude-opus-4-6-thinking',
+export const ANTIGRAVITY_MODELS: readonly ModelInfo[] = [
+  { id: 'gemini-3.5-flash-high', name: 'Gemini 3.5 Flash (High)', contextWindow: 1048576 },
+  { id: 'gemini-3.5-flash-medium', name: 'Gemini 3.5 Flash (Medium)', contextWindow: 1048576 },
+  { id: 'gemini-3.1-pro-high', name: 'Gemini 3.1 Pro (High)', contextWindow: 1048576 },
+  { id: 'gemini-3.1-pro-low', name: 'Gemini 3.1 Pro (Low)', contextWindow: 1048576 },
+  { id: 'gemini-3-flash', name: 'Gemini 3 Flash', contextWindow: 1048576 },
+  { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+  { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
+]
+
+const ANTIGRAVITY_WIRE_MODEL_DISPLAY_NAMES = new Map<string, string>([
+  ['gemini-3.5-flash', 'Gemini 3.5 Flash'],
+  ['gemini-3.5-flash-low', 'Gemini 3.5 Flash (Medium)'],
+  ['gemini-3-flash-agent', 'Gemini 3.5 Flash (High)'],
+  ['gemini-3-flash-high', 'Gemini 3 Flash (High)'],
+  ['gemini-3-flash-medium', 'Gemini 3 Flash (Medium)'],
+  ['gemini-3-flash-low', 'Gemini 3 Flash (Low)'],
 ])
+
+export const ANTIGRAVITY_MODEL_IDS = new Set([
+  ...ANTIGRAVITY_MODELS.map(model => model.id),
+])
+
+export function getAntigravityModelDisplayName(model: string): string | null {
+  const normalized = model.toLowerCase().replace(/^models\//, '')
+  return ANTIGRAVITY_MODELS.find(candidate => candidate.id === normalized)?.name
+    ?? ANTIGRAVITY_WIRE_MODEL_DISPLAY_NAMES.get(normalized)
+    ?? null
+}
+
+export function resolveAntigravityWireModel(model: string): string {
+  const normalized = model.toLowerCase()
+  if (normalized === 'gemini-3.5-flash-high') {
+    return 'gemini-3-flash-agent'
+  }
+  if (normalized === 'gemini-3.5-flash-medium') {
+    return 'gemini-3.5-flash-low'
+  }
+  return model
+}
 
 /** Determine which executor a model belongs to. */
 export function executorForModel(model: string): GeminiExecutor {
-  return ANTIGRAVITY_MODEL_SET.has(model) ? 'antigravity' : 'cli'
+  return ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase()) ? 'antigravity' : 'cli'
 }
 
 // CLIProxyAPI's Antigravity onboarding headers. These are used during
@@ -719,9 +768,10 @@ export function wrapForCodeAssist(
   // Strip safetySettings — the Antigravity executor always removes them.
   // Also strip maxOutputTokens for non-Claude models (Antigravity executor
   // deletes request.generationConfig.maxOutputTokens for Gemini models).
+  const wireModel = resolveAntigravityWireModel(model)
   const request = { ...innerRequest }
   delete request.safetySettings
-  const isClaude = model.includes('claude')
+  const isClaude = wireModel.includes('claude')
   if (!isClaude) {
     const gc = request.generationConfig as Record<string, unknown> | undefined
     if (gc) {
@@ -743,11 +793,11 @@ export function wrapForCodeAssist(
   request.sessionId = _stableSessionId(request)
 
   return {
-    model,
+    model: wireModel,
     userAgent: 'antigravity',
-    requestType: model.includes('image') ? 'image_gen' : 'agent',
+    requestType: wireModel.includes('image') ? 'image_gen' : 'agent',
     project: projectId ?? _randomProjectId(),
-    requestId: model.includes('image')
+    requestId: wireModel.includes('image')
       ? `image_gen/${Date.now()}/${randomUUID()}/12`
       : `agent-${randomUUID()}`,
     request,

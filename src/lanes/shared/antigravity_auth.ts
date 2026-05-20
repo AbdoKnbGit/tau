@@ -30,7 +30,12 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, chmodSy
 import { join } from 'path'
 import { homedir, platform } from 'os'
 import { URL } from 'url'
-import { ANTIGRAVITY_API_VERSION } from '../../constants/antigravity.js'
+import {
+  ANTIGRAVITY_API_VERSION,
+  ANTIGRAVITY_ENDPOINT_AUTOPUSH,
+  ANTIGRAVITY_ENDPOINT_DAILY,
+  ANTIGRAVITY_ENDPOINT_PROD,
+} from '../../constants/antigravity.js'
 
 // Hardcoded from upstream plugin. These are public installed-app credentials
 // — not sensitive per Google's OAuth-for-installed-apps docs. OpenCode /
@@ -56,9 +61,9 @@ export const ANTIGRAVITY_SCOPES = [
 
 // Endpoints with daily → autopush → prod fallback for requests.
 // Project discovery always hits prod first since it has the best coverage.
-export const ENDPOINT_DAILY = 'https://daily-cloudcode-pa.sandbox.googleapis.com'
-export const ENDPOINT_AUTOPUSH = 'https://autopush-cloudcode-pa.sandbox.googleapis.com'
-export const ENDPOINT_PROD = 'https://cloudcode-pa.googleapis.com'
+export const ENDPOINT_DAILY = ANTIGRAVITY_ENDPOINT_DAILY
+export const ENDPOINT_AUTOPUSH = ANTIGRAVITY_ENDPOINT_AUTOPUSH
+export const ENDPOINT_PROD = ANTIGRAVITY_ENDPOINT_PROD
 
 export const ANTIGRAVITY_DEFAULT_PROJECT_ID = 'rising-fact-p41fc'
 
