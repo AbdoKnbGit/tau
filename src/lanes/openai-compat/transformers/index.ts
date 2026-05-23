@@ -17,6 +17,7 @@ import { agentrouterTransformer } from './agentrouter.js'
 import { modelRouterTransformer } from './modelrouter.js'
 import { vercelTransformer } from './vercel.js'
 import { requestyTransformer } from './requesty.js'
+import { opencodeTransformer } from './opencode.js'
 import { clineTransformer } from './cline.js'
 import { iflowTransformer } from './iflow.js'
 import { kilocodeTransformer } from './kilocode.js'
@@ -39,6 +40,7 @@ export const TRANSFORMERS: Record<ProviderId, Transformer> = {
   modelrouter: modelRouterTransformer,
   vercel: vercelTransformer,
   requesty: requestyTransformer,
+  opencode: opencodeTransformer,
   cline: clineTransformer,
   iflow: iflowTransformer,
   kilocode: kilocodeTransformer,
@@ -52,7 +54,7 @@ export function getTransformer(provider: ProviderId): Transformer {
 
 export {
   deepseekTransformer, groqTransformer, mistralTransformer, nimTransformer,
-  glmTransformer, moonshotTransformer, minimaxTransformer, ollamaTransformer, lmStudioTransformer, openrouterTransformer, agentrouterTransformer, modelRouterTransformer, vercelTransformer, requestyTransformer, genericTransformer,
+  glmTransformer, moonshotTransformer, minimaxTransformer, ollamaTransformer, lmStudioTransformer, openrouterTransformer, agentrouterTransformer, modelRouterTransformer, vercelTransformer, requestyTransformer, opencodeTransformer, genericTransformer,
   clineTransformer, iflowTransformer, kilocodeTransformer, copilotTransformer,
 }
 export type { Transformer, ProviderId, TransformContext } from './base.js'

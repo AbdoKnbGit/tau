@@ -81,6 +81,11 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     getKeyUrl: 'https://app.requesty.ai/api-keys',
     supportsOAuth: false,
   },
+  opencode: {
+    envVar: 'OPENCODE_API_KEY',
+    getKeyUrl: 'https://opencode.ai/auth',
+    supportsOAuth: false,
+  },
   mistral: {
     envVar: 'MISTRAL_API_KEY',
     getKeyUrl: 'https://console.mistral.ai/api-keys',
@@ -229,6 +234,10 @@ async function _testApiKey(
         url = 'https://router.requesty.ai/v1/models'
         headers = { Authorization: `Bearer ${key}` }
         break
+      case 'opencode':
+        url = 'https://opencode.ai/zen/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
       default:
         // Can't test — accept optimistically
         return { ok: true }
@@ -276,6 +285,7 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
     provider === 'modelrouter' ||
     provider === 'vercel' ||
     provider === 'requesty' ||
+    provider === 'opencode' ||
     provider === 'minimax' ||
     provider === 'ollama'
   ) {
@@ -566,6 +576,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       if (provider === 'agentrouter') process.env.AGENTROUTER_API_KEY = key
       if (provider === 'modelrouter') process.env.MODELROUTER_API_KEY = key
       if (provider === 'vercel') process.env.VERCEL_AI_GATEWAY_API_KEY = key
+      if (provider === 'opencode') process.env.OPENCODE_ZEN_API_KEY = key
       reloadSavedApiKeyInRuntime(provider)
       if (warnings.length > 0) {
         setState({

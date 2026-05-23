@@ -135,6 +135,8 @@ function _ensureLanesInitialized(): void {
       vercelBaseUrl: getProviderBaseUrl('vercel'),
       requestyApiKey: getProviderApiKey('requesty') ?? undefined,
       requestyBaseUrl: getProviderBaseUrl('requesty'),
+      opencodeApiKey: getProviderApiKey('opencode') ?? undefined,
+      opencodeBaseUrl: getProviderBaseUrl('opencode'),
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
       iflowApiKey: iflowChatKey,
       kilocodeApiKey: kilocodeToken,
@@ -180,6 +182,7 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'modelrouter':
     case 'vercel':
     case 'requesty':
+    case 'opencode':
       return 'openai-compat'
     case 'cline':
       return 'cline'
@@ -309,6 +312,7 @@ function createProvider(provider: APIProvider): BaseProvider {
     case 'modelrouter':
     case 'vercel':
     case 'requesty':
+    case 'opencode':
       return new OpenAIProvider({ apiKey, baseUrl })
     case 'groq':
       return new GroqProvider({ apiKey })
@@ -731,6 +735,7 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     case 'modelrouter':
     case 'vercel':
     case 'requesty':
+    case 'opencode':
     case 'groq':
     case 'ollama':
     case 'lmstudio':

@@ -1753,6 +1753,7 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   modelrouter: ['api_key'],
   vercel:      ['api_key'],
   requesty:    ['api_key'],
+  opencode:    ['api_key'],
   groq:        ['api_key'],
   mistral:     ['api_key'],
   nim:         ['api_key'],
@@ -1828,6 +1829,7 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'modelrouter': return process.env.MODEL_ROUTER_API_KEY ?? process.env.MODELROUTER_API_KEY ?? process.env.LXG2IT_API_KEY ?? _loadStoredKey('modelrouter')
     case 'vercel':      return process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_AI_GATEWAY_API_KEY ?? process.env.VERCEL_OIDC_TOKEN ?? _loadStoredKey('vercel')
     case 'requesty':    return process.env.REQUESTY_API_KEY ?? _loadStoredKey('requesty')
+    case 'opencode':    return process.env.OPENCODE_API_KEY ?? process.env.OPENCODE_ZEN_API_KEY ?? _loadStoredKey('opencode')
     case 'groq':        return process.env.GROQ_API_KEY ?? _loadStoredKey('groq')
     case 'mistral':     return process.env.MISTRAL_API_KEY ?? _loadStoredKey('mistral')
     case 'nim':         return process.env.NIM_API_KEY ?? _loadStoredKey('nim')
@@ -1948,6 +1950,7 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'modelrouter': return process.env.MODELROUTER_BASE_URL ?? process.env.MODEL_ROUTER_BASE_URL ?? process.env.LXG2IT_BASE_URL ?? 'https://api.lxg2it.com/v1'
     case 'vercel':      return process.env.VERCEL_AI_GATEWAY_BASE_URL ?? process.env.AI_GATEWAY_BASE_URL ?? 'https://ai-gateway.vercel.sh/v1'
     case 'requesty':    return process.env.REQUESTY_BASE_URL ?? 'https://router.requesty.ai/v1'
+    case 'opencode':    return process.env.OPENCODE_BASE_URL ?? process.env.OPENCODE_ZEN_BASE_URL ?? 'https://opencode.ai/zen/v1'
     case 'groq':        return 'https://api.groq.com/openai/v1'
     case 'mistral':     return process.env.MISTRAL_BASE_URL ?? process.env.MISTRAL_API_BASE_URL ?? 'https://api.mistral.ai/v1'
     case 'nim':         return process.env.NIM_BASE_URL ?? 'https://integrate.api.nvidia.com/v1'
@@ -1984,6 +1987,8 @@ export function isUsingThirdPartyLLM(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL_AI_GATEWAY) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_REQUESTY) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE_ZEN) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GROQ) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_MISTRAL) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_NIM) ||

@@ -18,7 +18,7 @@
 
 Tau is the true free Claude Code agent. It gives you a full agentic Claude Code environment - tools, MCP servers, hooks, skills, file editing, shell execution, and session control - without locking you into one paid route.
 
-It is not a proxy and not a wrapper around someone else's wrapper. Tau has native adapters for 22 providers, built to make them work directly inside your agentic Claude Code environment. When you use Gemini, Tau speaks Gemini's API directly. Same for OpenAI, GLM, DeepSeek, Mistral, OpenRouter, AgentRouter, Vercel AI Gateway, Requesty, MiniMax, and the rest.
+It is not a proxy and not a wrapper around someone else's wrapper. Tau has native adapters for 23 providers, built to make them work directly inside your agentic Claude Code environment. When you use Gemini, Tau speaks Gemini's API directly. Same for OpenAI, GLM, DeepSeek, Mistral, OpenRouter, AgentRouter, Vercel AI Gateway, Requesty, MiniMax, OpenCode Zen, and the rest.
 
 You install it once. You type `/login`. You pick a provider. You work.
 
@@ -204,13 +204,14 @@ Save a sentence (or two) and Tau quietly appends it to the end of every message 
 | KiloCode | Lots of free models and decent to try for low-cost side tasks |
 | Kiro | Best performance/cost provider with large free credit |
 | AgentRouter | Includes free $125 usage. Latency is server-side, and the API still has issues. claude_haiku is currently the only model I made work well. For AgentRouter only, Windows is currently supported; Linux and macOS support is being worked on |
+| OpenCode Zen | Multi-format gateway hosted by the OpenCode team. Claude, Gemini, GPT-5.x, DeepSeek, GLM, Kimi, Qwen, MiniMax, Grok and Nemotron all routed through their native shapes internally. Several free-tier rows (deepseek-v4-flash-free, big-pickle, nemotron-3-super-free) are usable with any signed-in key |
 
 ---
 
 ## Features
 
 **Multi-provider, natively**
-22 providers with native adapters. Not a routing layer, not a translation proxy — each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool schema sanitization per provider.
+23 providers with native adapters. Not a routing layer, not a translation proxy — each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool schema sanitization per provider.
 
 **The full agent loop**
 File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management — all present, all working across every provider.

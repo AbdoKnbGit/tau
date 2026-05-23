@@ -120,7 +120,9 @@ function isThirdPartyRetryableError(error: unknown): boolean {
   const msg = error.message
   // Quota exhaustion is NOT retryable — the limit won't reset for hours/days.
   // Retrying just wastes requests. Fail immediately with a clear message.
-  if (/quota exhausted|exhausted your capacity|quota will reset after \d+h/i.test(msg)) return false
+  // FreeUsageLimitError = OpenCode Zen's daily per-IP cap on free models;
+  // the limit only resets at midnight UTC so retries are pure waste.
+  if (/quota exhausted|exhausted your capacity|quota will reset after \d+h|FreeUsageLimitError/i.test(msg)) return false
   // Match patterns like "openai API error 429: ..." or "Gemini API error 503: ..."
   const statusMatch = msg.match(/API error (\d{3})/)
   if (!statusMatch) return false

@@ -108,6 +108,7 @@ const MANAGEABLE_PROVIDERS = [
   'agentrouter',
   'vercel',
   'requesty',
+  'opencode',
   'mistral',
   'nim',
   'deepseek',
@@ -357,7 +358,8 @@ function usesEmbeddedProviderLogin(provider: ManageableProvider): provider is Ke
   return (
     provider === 'modelrouter' ||
     provider === 'vercel' ||
-    provider === 'requesty'
+    provider === 'requesty' ||
+    provider === 'opencode'
   )
 }
 

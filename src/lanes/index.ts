@@ -101,6 +101,9 @@ export function initLanes(opts?: {
   // Requesty router
   requestyApiKey?: string
   requestyBaseUrl?: string
+  // OpenCode Zen gateway
+  opencodeApiKey?: string
+  opencodeBaseUrl?: string
   // Qwen (DashScope)
   qwenApiKey?: string
   // OAuth-backed providers on the shared compat transport. iFlow uses a
@@ -206,6 +209,7 @@ export function initLanes(opts?: {
     modelrouter: opts?.modelrouterApiKey ? { apiKey: opts.modelrouterApiKey, baseUrl: opts.modelrouterBaseUrl } : undefined,
     vercel: opts?.vercelApiKey ? { apiKey: opts.vercelApiKey, baseUrl: opts.vercelBaseUrl } : undefined,
     requesty: opts?.requestyApiKey ? { apiKey: opts.requestyApiKey, baseUrl: opts.requestyBaseUrl } : undefined,
+    opencode: opts?.opencodeApiKey ? { apiKey: opts.opencodeApiKey, baseUrl: opts.opencodeBaseUrl } : undefined,
     iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,
     kilocode: opts?.kilocodeApiKey ? { apiKey: opts.kilocodeApiKey } : undefined,
     copilot: opts?.copilotApiKey ? { apiKey: opts.copilotApiKey } : undefined,

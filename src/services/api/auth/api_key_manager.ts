@@ -153,6 +153,7 @@ function detectKeyFormat(provider: string, key: string): string {
     modelrouter: '',
     vercel: '',
     requesty: '',
+    opencode: '',
     groq: 'gsk_',
     mistral: '',
     nim: 'nvapi-',
@@ -182,6 +183,7 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   modelrouter: { prefix: '', minLength: 10, displayName: 'Model Router' },
   vercel: { prefix: '', minLength: 10, displayName: 'Vercel AI Gateway' },
   requesty: { prefix: '', minLength: 10, displayName: 'Requesty' },
+  opencode: { prefix: '', minLength: 10, displayName: 'OpenCode Zen' },
   groq: { prefix: 'gsk_', minLength: 20, displayName: 'Groq' },
   mistral: { prefix: '', minLength: 20, displayName: 'Mistral' },
   nim: { prefix: 'nvapi-', minLength: 20, displayName: 'NVIDIA NIM' },
@@ -317,11 +319,12 @@ export function deleteAllProviderCredentials(provider: string): void {
     provider === 'modelrouter' ||
     provider === 'vercel' ||
     provider === 'requesty' ||
+    provider === 'opencode' ||
     provider === 'groq'
   ) {
     void import('../providers/providerShim.js')
       .then(({ reloadOpenAICompatProviderAuth }) =>
-        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'groq'),
+        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'groq'),
       )
       .catch(() => {})
   }

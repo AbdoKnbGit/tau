@@ -98,6 +98,7 @@ function _autoCorrectProvider(
     || current === 'modelrouter'
     || current === 'vercel'
     || current === 'requesty'
+    || current === 'opencode'
     || current === 'groq'
     || current === 'nim'
     || current === 'glm'

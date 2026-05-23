@@ -31,6 +31,7 @@ export type ProviderId =
   | 'modelrouter'
   | 'vercel'
   | 'requesty'
+  | 'opencode'
   | 'cline'
   | 'iflow'
   | 'kilocode'

@@ -66,6 +66,7 @@ type ProviderType =
   | 'modelrouter'
   | 'vercel'
   | 'requesty'
+  | 'opencode'
   | 'cline'
   | 'iflow'
   | 'kilocode'
@@ -88,6 +89,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('lxg2it') || b.includes('modelrouter')) return 'modelrouter'
   if (b.includes('ai-gateway.vercel') || b.includes('vercel')) return 'vercel'
   if (b.includes('requesty')) return 'requesty'
+  if (b.includes('opencode.ai/zen') || b.includes('opencode.ai')) return 'opencode'
   if (b.includes('openrouter')) return 'openrouter'
   if (b.includes('cline.bot')) return 'cline'
   if (b.includes('iflow.cn') || b.includes('apis.iflow')) return 'iflow'
@@ -338,7 +340,7 @@ export class OpenAICompatLane implements Lane {
     const provider = cfg.provider
     const isLocal = isLocalBaseUrl(cfg.baseUrl)
     const cacheSessionId =
-      provider === 'copilot' || provider === 'openrouter' || provider === 'agentrouter' || provider === 'moonshot' || provider === 'mistral'
+      provider === 'copilot' || provider === 'openrouter' || provider === 'agentrouter' || provider === 'opencode' || provider === 'moonshot' || provider === 'mistral'
         ? sessionId
         : undefined
 
@@ -380,12 +382,12 @@ export class OpenAICompatLane implements Lane {
         messages: chatMessages,
         stream: true,
         stream_options: { include_usage: true },
-        // OpenRouter / AgentRouter: surface detailed usage including
-        // cache_discount. Mirrors the Kilo lane's body. Without this flag
-        // the cache_read / cache_write fields aren't populated on those
-        // gateways, which is what made every call look like a cold miss
-        // even when the upstream actually had a cache hit.
-        ...((provider === 'openrouter' || provider === 'agentrouter') && { usage: { include: true } }),
+        // OpenRouter / AgentRouter / OpenCode Zen: surface detailed usage
+        // including cache_discount. Mirrors the Kilo lane's body. Without
+        // this flag the cache_read / cache_write fields aren't populated
+        // on those gateways, which is what made every call look like a
+        // cold miss even when the upstream actually had a cache hit.
+        ...((provider === 'openrouter' || provider === 'agentrouter' || provider === 'opencode') && { usage: { include: true } }),
         // Ollama and LM Studio expose local OpenAI-compatible tool calling.
         // Keep generic localhost endpoints on the old gate unless they are
         // explicitly selected as one of these local providers.
@@ -587,7 +589,7 @@ export class OpenAICompatLane implements Lane {
               ?? chunk.usage.prompt_cache_hit_tokens
               ?? reportedCachedInputTokens
             cacheWriteTokens =
-              provider === 'copilot' || provider === 'openrouter' || provider === 'agentrouter' || provider === 'modelrouter'
+              provider === 'copilot' || provider === 'openrouter' || provider === 'agentrouter' || provider === 'modelrouter' || provider === 'opencode'
                 ? (
                     chunk.usage.prompt_tokens_details?.cache_write_tokens
                     ?? chunk.usage.cache_write_tokens
@@ -607,7 +609,11 @@ export class OpenAICompatLane implements Lane {
             // the cache hard — the smoking gun is the latency drop
             // without the percentage moving. Pure response read; does
             // not touch the outbound request shape.
-            if (provider === 'agentrouter' || provider === 'modelrouter') {
+            //
+            // OpenCode Zen also routes Claude rows through Anthropic's
+            // native /v1/messages internally, so its usage block on
+            // Claude turns matches this same shape — fold it in.
+            if (provider === 'agentrouter' || provider === 'modelrouter' || provider === 'opencode') {
               const arRead = typeof chunk.usage.cache_read_input_tokens === 'number'
                 ? chunk.usage.cache_read_input_tokens
                 : undefined
@@ -1141,6 +1147,21 @@ function formatProviderHttpError(
 ): string {
   if (provider === 'glm') {
     return formatGlmHttpError(status, errText, isPromptTooLong)
+  }
+  if (provider === 'opencode' && status === 429 && errText.includes('FreeUsageLimitError')) {
+    // FreeUsageLimitError fires only from the gateway's IP-based rate
+    // limiter, which is used exclusively for models with allowAnonymous=true
+    // (big-pickle, *-free rows, gpt-5-nano). The per-IP daily cap on those
+    // is intentionally tiny (1–2/day) — independent of the user's API key
+    // or session id. Surface the real cause instead of the generic 429
+    // so the user knows the fix is "switch to a paid model" rather than
+    // "wait and retry".
+    return [
+      'opencode API error 429: This is a per-IP daily limit on OpenCode Zen free models',
+      '(big-pickle, *-free rows, gpt-5-nano). Switch to a paid model in /models opencode',
+      '(e.g. claude-opus-4-7, claude-sonnet-4-6, gpt-5.4, gemini-3.1-pro, glm-5.1, kimi-k2.5)',
+      `to use your API-key quota instead. Raw: ${errText.slice(0, 200)}`,
+    ].join(' ')
   }
   const headline = isPromptTooLong
     ? `Prompt is too long (${provider} ${status})`

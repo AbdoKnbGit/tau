@@ -59,6 +59,10 @@ const VERCEL_AI_GATEWAY_BASE_URL = process.env.VERCEL_AI_GATEWAY_BASE_URL
 const REQUESTY_BASE_URL = process.env.REQUESTY_BASE_URL
   ?? 'https://router.requesty.ai/v1'
 
+const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL
+  ?? process.env.OPENCODE_ZEN_BASE_URL
+  ?? 'https://opencode.ai/zen/v1'
+
 const MODELROUTER_DEFAULT_OPUS = 'claude-opus-4-7'
 const MODELROUTER_DEFAULT_SONNET = 'claude-sonnet-4-6'
 const MODELROUTER_DEFAULT_HAIKU = 'claude-haiku-4-5'
@@ -410,6 +414,33 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.VERCEL_MODEL_OPUS   ?? process.env.AI_GATEWAY_MODEL_OPUS   ?? 'anthropic/claude-opus-4-7',
         sonnet: process.env.VERCEL_MODEL_SONNET ?? process.env.AI_GATEWAY_MODEL_SONNET ?? 'anthropic/claude-sonnet-4-6',
         haiku:  process.env.VERCEL_MODEL_HAIKU  ?? process.env.AI_GATEWAY_MODEL_HAIKU  ?? 'anthropic/claude-haiku-4-5',
+      },
+    },
+  },
+
+  opencode: {
+    displayName: 'OpenCode Zen',
+    baseUrl: OPENCODE_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'OPENCODE_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.OPENCODE_MODEL_OPUS_FREE   ?? 'big-pickle',
+        sonnet: process.env.OPENCODE_MODEL_SONNET_FREE ?? 'deepseek-v4-flash-free',
+        haiku:  process.env.OPENCODE_MODEL_HAIKU_FREE  ?? 'nemotron-3-super-free',
+      },
+      pro: {
+        opus:   process.env.OPENCODE_MODEL_OPUS   ?? 'claude-opus-4-7',
+        sonnet: process.env.OPENCODE_MODEL_SONNET ?? 'claude-sonnet-4-6',
+        haiku:  process.env.OPENCODE_MODEL_HAIKU  ?? 'claude-haiku-4-5',
+      },
+      plus: {
+        opus:   process.env.OPENCODE_MODEL_OPUS   ?? 'claude-opus-4-7',
+        sonnet: process.env.OPENCODE_MODEL_SONNET ?? 'claude-sonnet-4-6',
+        haiku:  process.env.OPENCODE_MODEL_HAIKU  ?? 'claude-haiku-4-5',
       },
     },
   },

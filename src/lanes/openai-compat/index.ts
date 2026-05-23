@@ -34,6 +34,7 @@ export function initOpenAICompatLane(providers?: {
   modelrouter?: { apiKey: string; baseUrl?: string }
   vercel?: { apiKey: string; baseUrl?: string }
   requesty?: { apiKey: string; baseUrl?: string }
+  opencode?: { apiKey: string; baseUrl?: string }
   cline?: { apiKey: string; baseUrl?: string }
   iflow?: { apiKey: string; baseUrl?: string }
   kilocode?: { apiKey: string; baseUrl?: string }
@@ -188,6 +189,19 @@ export function initOpenAICompatLane(providers?: {
       p.requesty?.baseUrl
         ?? process.env.REQUESTY_BASE_URL
         ?? 'https://router.requesty.ai/v1',
+    )
+  }
+
+  const opencodeKey = p.opencode?.apiKey
+    ?? process.env.OPENCODE_API_KEY
+    ?? process.env.OPENCODE_ZEN_API_KEY
+  if (opencodeKey) {
+    openaiCompatLane.registerProvider(
+      'opencode', opencodeKey,
+      p.opencode?.baseUrl
+        ?? process.env.OPENCODE_BASE_URL
+        ?? process.env.OPENCODE_ZEN_BASE_URL
+        ?? 'https://opencode.ai/zen/v1',
     )
   }
 

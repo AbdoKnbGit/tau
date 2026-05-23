@@ -97,6 +97,10 @@ function normalizeProviderQueryToken(
     'ai-gateway': 'vercel',
     requestyai: 'requesty',
     'requesty-ai': 'requesty',
+    opencodezen: 'opencode',
+    'opencode-zen': 'opencode',
+    opencode_zen: 'opencode',
+    zen: 'opencode',
   }
   if (alias[normalized]) {
     return alias[normalized]
@@ -185,7 +189,7 @@ export async function loadProviderModels(
     // provider-owned orders.
     return models
   }
-  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty') {
+  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty' || provider === 'opencode') {
     return sortProviderModels(
       models.map(model => enrichUpstreamProviderModel(provider, model)),
     )
@@ -382,7 +386,7 @@ export async function loadProviderModelSections(
 
   const models = await loadProviderModels(provider)
 
-  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty') {
+  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty' || provider === 'opencode') {
     return buildUpstreamProviderSections(provider, models)
   }
 
