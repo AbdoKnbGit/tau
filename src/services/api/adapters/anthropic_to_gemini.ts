@@ -355,6 +355,10 @@ export function sanitizeSchemaForGemini(schema: Record<string, unknown>): Record
   for (const [key, value] of Object.entries(flattened)) {
     // Strip unsupported fields and undefined values
     if (UNSUPPORTED_GEMINI_SCHEMA_FIELDS.has(key)) continue
+    // OpenAPI 3.0 vendor extensions (x-google-enum-descriptions, x-google-quota,
+    // x-stripe-*, …) leak in from MCP tool schemas. Gemini's validator 400s on
+    // unknown fields, so strip the whole x-* family.
+    if (key.startsWith('x-')) continue
     if (value === undefined) continue
 
     if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {

@@ -2025,6 +2025,11 @@ function sanitizeToolSchema(schema: Record<string, unknown>, provider: ProviderT
       const out: Record<string, unknown> = {}
       for (const [k, value] of Object.entries(v as Record<string, unknown>)) {
         if (drop.has(k)) continue
+        // OpenAPI 3.0 vendor extensions (x-google-enum-descriptions, x-stripe-*,
+        // …) leak in from MCP tool schemas. OpenAI-strict, Mistral, Groq, and
+        // other validators 400 on unknown fields, so strip the whole x-* family
+        // for every transformer.
+        if (k.startsWith('x-')) continue
         out[k] = walk(value)
       }
       return out

@@ -136,6 +136,11 @@ export function sanitizeSchemaForLane(
       const out: Record<string, unknown> = {}
       for (const [k, value] of Object.entries(v as Record<string, unknown>)) {
         if (drop.has(k)) continue
+        // OpenAPI 3.0 vendor extensions (x-google-enum-descriptions, x-stripe-*,
+        // x-aws-*, …) leak in from MCP tool schemas. Strict validators on
+        // Gemini/Mistral/OpenAI-strict 400 on unknown fields, so strip the
+        // whole x-* family for every non-gemini profile too.
+        if (k.startsWith('x-')) continue
         if (
           dropEmptyRequired &&
           k === 'required' &&
@@ -455,6 +460,10 @@ function sanitizeSchemaForGeminiDeep(schema: unknown): Record<string, unknown> {
 
   for (const [key, value] of Object.entries(flattened)) {
     if (drop.has(key)) continue
+    // OpenAPI 3.0 vendor extensions (x-google-enum-descriptions, x-google-quota,
+    // x-stripe-*, …) leak in from MCP tool schemas. Gemini's validator 400s on
+    // unknown fields, so strip the whole x-* family.
+    if (key.startsWith('x-')) continue
     if (value === undefined) continue
 
     if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
