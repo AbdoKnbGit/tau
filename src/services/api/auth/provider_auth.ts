@@ -35,6 +35,7 @@ import type { APIProvider } from '../../../utils/model/providers.js'
 import {
   getProviderAuthMethod,
   getProviderApiKey,
+  getProviderRuntimeApiKey,
   getProviderOAuthToken,
   PROVIDER_AUTH_SUPPORT,
   type ProviderAuthMethod,
@@ -72,7 +73,9 @@ export async function resolveProviderAuth(provider: APIProvider): Promise<{
   method: ProviderAuthMethod
 }> {
   // Try API key first (always preferred — no refresh needed)
-  const apiKey = getProviderApiKey(provider)
+  const apiKey = provider === 'opencode'
+    ? getProviderRuntimeApiKey(provider)
+    : getProviderApiKey(provider)
   if (apiKey) {
     return { token: apiKey, method: 'api_key' }
   }

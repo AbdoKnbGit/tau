@@ -1,4 +1,5 @@
 import { getMainLoopModelOverride } from '../../bootstrap/state.js'
+import { loadOpenCodeApiKeyFromAuthFile } from '../opencodeAuth.js'
 import type { ModelName } from './model.js'
 import type { APIProvider } from './providers.js'
 
@@ -162,6 +163,10 @@ export function getProviderTier(provider: string): ProviderTier {
     }
   }
 
+  if (provider === 'opencode' && !hasOpencodeAccountKey()) {
+    return 'free'
+  }
+
   // Auto-detect from provider config default
   return PROVIDER_CONFIGS[provider]?.defaultTier ?? 'pro'
 }
@@ -172,6 +177,22 @@ function isValidTier(t: string): t is ProviderTier {
 
 function looksLikeFreeOpenRouterId(value: unknown): boolean {
   return typeof value === 'string' && value.toLowerCase().endsWith(':free')
+}
+
+function hasOpencodeAccountKey(): boolean {
+  if (process.env.OPENCODE_API_KEY || process.env.OPENCODE_ZEN_API_KEY) {
+    return true
+  }
+  if (loadOpenCodeApiKeyFromAuthFile()) return true
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const keyManager = require('../../services/api/auth/api_key_manager.js') as {
+      loadProviderKey?: (provider: string) => string | null
+    }
+    return !!keyManager.loadProviderKey?.('opencode')
+  } catch {
+    return false
+  }
 }
 
 // ─── Provider Configurations (Updated April 2026) ──────────────────

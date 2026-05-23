@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { HeaderContext, Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
+import { sanitizeDeepSeekToolCallAdjacency } from './deepseek.js'
 import {
   getOpencodeEffort,
   isOpencodeThinkingModel,
@@ -317,6 +318,8 @@ export const opencodeTransformer: Transformer = {
         }
       }
     }
+
+    body.messages = sanitizeDeepSeekToolCallAdjacency(body.messages)
     return body
   },
 

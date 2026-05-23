@@ -195,15 +195,14 @@ export function initOpenAICompatLane(providers?: {
   const opencodeKey = p.opencode?.apiKey
     ?? process.env.OPENCODE_API_KEY
     ?? process.env.OPENCODE_ZEN_API_KEY
-  if (opencodeKey) {
-    openaiCompatLane.registerProvider(
-      'opencode', opencodeKey,
-      p.opencode?.baseUrl
-        ?? process.env.OPENCODE_BASE_URL
-        ?? process.env.OPENCODE_ZEN_BASE_URL
-        ?? 'https://opencode.ai/zen/v1',
-    )
-  }
+    ?? 'public'
+  openaiCompatLane.registerProvider(
+    'opencode', opencodeKey,
+    p.opencode?.baseUrl
+      ?? process.env.OPENCODE_BASE_URL
+      ?? process.env.OPENCODE_ZEN_BASE_URL
+      ?? 'https://opencode.ai/zen/v1',
+  )
 
   // Phase 4 OAuth-backed compat providers. Caller (providerShim) passes
   // the OAuth access token as `apiKey`; the transformer turns that into

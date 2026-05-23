@@ -59,6 +59,7 @@ import { execSyncWithDefaults_DEPRECATED } from './execFileNoThrow.js'
 import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
 import { memoizeWithTTLAsync } from './memoize.js'
+import { loadOpenCodeApiKeyFromAuthFile } from './opencodeAuth.js'
 import { getSecureStorage } from './secureStorage/index.js'
 import {
   clearLegacyApiKeyPrefetch,
@@ -1820,6 +1821,15 @@ export function getProviderApiKey(provider: APIProvider): string | null {
   return _getApiKeyDirect(provider)
 }
 
+/**
+ * Returns the key used at request time. OpenCode Zen accepts `Bearer public`
+ * for anonymous allow-listed models; paid rows still require a real account key.
+ */
+export function getProviderRuntimeApiKey(provider: APIProvider): string | null {
+  if (provider === 'opencode') return _getApiKeyDirect(provider) ?? 'public'
+  return _getApiKeyDirect(provider)
+}
+
 /** Direct API key lookup — env var → stored key. No OAuth fallback. */
 function _getApiKeyDirect(provider: APIProvider): string | null {
   switch (provider) {
@@ -1829,7 +1839,7 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'modelrouter': return process.env.MODEL_ROUTER_API_KEY ?? process.env.MODELROUTER_API_KEY ?? process.env.LXG2IT_API_KEY ?? _loadStoredKey('modelrouter')
     case 'vercel':      return process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_AI_GATEWAY_API_KEY ?? process.env.VERCEL_OIDC_TOKEN ?? _loadStoredKey('vercel')
     case 'requesty':    return process.env.REQUESTY_API_KEY ?? _loadStoredKey('requesty')
-    case 'opencode':    return process.env.OPENCODE_API_KEY ?? process.env.OPENCODE_ZEN_API_KEY ?? _loadStoredKey('opencode')
+    case 'opencode':    return process.env.OPENCODE_API_KEY ?? process.env.OPENCODE_ZEN_API_KEY ?? _loadStoredKey('opencode') ?? loadOpenCodeApiKeyFromAuthFile()
     case 'groq':        return process.env.GROQ_API_KEY ?? _loadStoredKey('groq')
     case 'mistral':     return process.env.MISTRAL_API_KEY ?? _loadStoredKey('mistral')
     case 'nim':         return process.env.NIM_API_KEY ?? _loadStoredKey('nim')
@@ -2013,6 +2023,10 @@ function normalizeLmStudioBaseUrl(raw: string): string {
  */
 export function validateProviderAuth(provider: APIProvider): { valid: boolean; method?: ProviderAuthMethod; reason?: string } {
   const authMethod = getProviderAuthMethod(provider)
+
+  if (provider === 'opencode' && getProviderRuntimeApiKey(provider)) {
+    return { valid: true, method: 'api_key' }
+  }
 
   if (authMethod === 'api_key') {
     const key = getProviderApiKey(provider)!

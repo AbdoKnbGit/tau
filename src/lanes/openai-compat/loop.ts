@@ -977,8 +977,11 @@ export class OpenAICompatLane implements Lane {
             .filter((model): model is ModelInfo => model !== null)
           // Per-provider catalog filter: e.g. Groq hides whisper/preview
           // models so `/models` only shows chat-capable production IDs.
-          const filtered = transformer.filterModelCatalog?.(raw) ?? raw
-          if (filtered.length > 0) return filtered
+          const filtered = (transformer.filterModelCatalog?.(raw) ?? raw) as ModelInfo[]
+          const visible = providerName === 'opencode' && cfg.apiKey === 'public'
+            ? filtered.filter(isOpencodeAnonymousCatalogModel)
+            : filtered
+          if (visible.length > 0) return visible
         }
       } catch {
         // Fall back to the curated list below.
@@ -1025,6 +1028,19 @@ export class OpenAICompatLane implements Lane {
   dispose(): void {}
 }
 
+function isOpencodeAnonymousCatalogModel(model: ModelInfo): boolean {
+  return isOpencodeAnonymousModelId(model.id)
+    || model.tags?.some(tag => tag.toLowerCase() === 'free') === true
+}
+
+function isOpencodeAnonymousModelId(id: string): boolean {
+  const normalized = id.toLowerCase()
+  return normalized.endsWith('-free')
+    || normalized === 'big-pickle'
+    || normalized === 'gpt-5-nano'
+    || normalized === 'gpt-5.4-nano'
+}
+
 function toCompatCatalogModel(
   providerName: string,
   model: CompatCatalogModel,
@@ -1050,6 +1066,9 @@ function toCompatCatalogModel(
   }
 
   const tags = normalizeCompatCatalogTags(model)
+  if (providerName === 'opencode' && isOpencodeAnonymousModelId(model.id) && !tags.includes('free')) {
+    tags.push('free')
+  }
   const provider =
     typeof model.owned_by === 'string'
     && model.owned_by.length > 0
@@ -1153,16 +1172,13 @@ function formatProviderHttpError(
     return formatGlmHttpError(status, errText, isPromptTooLong)
   }
   if (provider === 'opencode' && status === 429 && errText.includes('FreeUsageLimitError')) {
-    // FreeUsageLimitError fires only from the gateway's IP-based rate
-    // limiter, which is used exclusively for models with allowAnonymous=true
-    // (big-pickle, *-free rows, gpt-5-nano). The per-IP daily cap on those
-    // is intentionally tiny (1–2/day) — independent of the user's API key
-    // or session id. Surface the real cause instead of the generic 429
-    // so the user knows the fix is "switch to a paid model" rather than
-    // "wait and retry".
+    // FreeUsageLimitError comes from the gateway's IP-based anonymous
+    // limiter for allowAnonymous=true models (big-pickle, *-free rows,
+    // gpt-5-nano). A real API key only changes quota when the user also
+    // switches to a non-anonymous paid model.
     return [
-      'opencode API error 429: This is a per-IP daily limit on OpenCode Zen free models',
-      '(big-pickle, *-free rows, gpt-5-nano). Switch to a paid model in /models opencode',
+      'opencode API error 429: This is the IP-based daily limit for OpenCode Zen anonymous/free models',
+      '(big-pickle, *-free rows, gpt-5-nano). Use a real OPENCODE_API_KEY and switch to a paid model in /models opencode',
       '(e.g. claude-opus-4-7, claude-sonnet-4-6, gpt-5.4, gemini-3.1-pro, glm-5.1, kimi-k2.5)',
       `to use your API-key quota instead. Raw: ${errText.slice(0, 200)}`,
     ].join(' ')

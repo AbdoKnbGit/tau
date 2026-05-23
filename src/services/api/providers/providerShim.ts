@@ -23,6 +23,7 @@
 import type { APIProvider } from '../../../utils/model/providers.js'
 import {
   getProviderApiKey,
+  getProviderRuntimeApiKey,
   getProviderBaseUrl,
   getProviderAuthMethod,
   getProviderOAuthToken,
@@ -135,7 +136,7 @@ function _ensureLanesInitialized(): void {
       vercelBaseUrl: getProviderBaseUrl('vercel'),
       requestyApiKey: getProviderApiKey('requesty') ?? undefined,
       requestyBaseUrl: getProviderBaseUrl('requesty'),
-      opencodeApiKey: getProviderApiKey('opencode') ?? undefined,
+      opencodeApiKey: getProviderRuntimeApiKey('opencode') ?? undefined,
       opencodeBaseUrl: getProviderBaseUrl('opencode'),
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
       iflowApiKey: iflowChatKey,
@@ -261,7 +262,9 @@ function createProvider(provider: APIProvider): BaseProvider {
   }
 
   const authMethod = getProviderAuthMethod(provider)
-  const apiKey = getProviderApiKey(provider) ?? ''
+  const apiKey = provider === 'opencode'
+    ? getProviderRuntimeApiKey(provider) ?? ''
+    : getProviderApiKey(provider) ?? ''
   const baseUrl = getProviderBaseUrl(provider)
 
   switch (provider) {
@@ -765,7 +768,9 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     return
   }
 
-  const apiKey = getProviderApiKey(provider)
+  const apiKey = provider === 'opencode'
+    ? getProviderRuntimeApiKey(provider)
+    : getProviderApiKey(provider)
   if (!apiKey) {
     openaiCompatLane.unregisterProvider(provider)
     return

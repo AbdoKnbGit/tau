@@ -139,7 +139,7 @@ function dedupeToolCalls(message: OpenAIChatMessage): OpenAIChatMessage {
   return next
 }
 
-function sanitizeDeepSeekToolCallAdjacency(messages: OpenAIChatMessage[]): OpenAIChatMessage[] {
+export function sanitizeDeepSeekToolCallAdjacency(messages: OpenAIChatMessage[]): OpenAIChatMessage[] {
   const out: OpenAIChatMessage[] = []
   let pending: PendingToolCalls | null = null
 
