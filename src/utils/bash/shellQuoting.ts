@@ -1,5 +1,3 @@
-import { quote } from './shellQuote.js'
-
 /**
  * Detects if a command contains a heredoc pattern
  * Matches patterns like: <<EOF, <<'EOF', <<"EOF", <<-EOF, <<-'EOF', <<\EOF, etc.
@@ -22,22 +20,6 @@ function containsHeredoc(command: string): boolean {
 }
 
 /**
- * Detects if a command contains multiline strings in quotes
- */
-function containsMultilineString(command: string): boolean {
-  // Check for strings with actual newlines in them
-  // Handle escaped quotes by using a more sophisticated pattern
-  // Match single quotes: '...\n...' where content can include escaped quotes \'
-  // Match double quotes: "...\n..." where content can include escaped quotes \"
-  const singleQuoteMultiline = /'(?:[^'\\]|\\.)*\n(?:[^'\\]|\\.)*'/
-  const doubleQuoteMultiline = /"(?:[^"\\]|\\.)*\n(?:[^"\\]|\\.)*"/
-
-  return (
-    singleQuoteMultiline.test(command) || doubleQuoteMultiline.test(command)
-  )
-}
-
-/**
  * Quotes a shell command appropriately, preserving heredocs and multiline strings
  * @param command The command to quote
  * @param addStdinRedirect Whether to add < /dev/null
@@ -47,30 +29,21 @@ export function quoteShellCommand(
   command: string,
   addStdinRedirect: boolean = true,
 ): string {
-  // If command contains heredoc or multiline strings, handle specially
-  // The shell-quote library incorrectly escapes ! to \! in these cases
-  if (containsHeredoc(command) || containsMultilineString(command)) {
-    // For heredocs and multiline strings, we need to quote for eval
-    // but avoid shell-quote's aggressive escaping
-    // We'll use single quotes and escape only single quotes in the command
-    const escaped = command.replace(/'/g, "'\"'\"'")
-    const quoted = `'${escaped}'`
-
-    // Don't add stdin redirect for heredocs as they provide their own input
-    if (containsHeredoc(command)) {
-      return quoted
-    }
-
-    // For multiline strings without heredocs, add stdin redirect if needed
-    return addStdinRedirect ? `${quoted} < /dev/null` : quoted
+  const quoted = singleQuoteForEval(command)
+  if (!addStdinRedirect || containsHeredoc(command)) {
+    return quoted
   }
+  return `${quoted} < /dev/null`
+}
 
-  // For regular commands, use shell-quote
-  if (addStdinRedirect) {
-    return quote([command, '<', '/dev/null'])
-  }
-
-  return quote([command])
+/**
+ * Single-quote a command for use as one eval argument.
+ *
+ * Do not use shell-quote here: it can reinterpret valid bash while quoting the
+ * whole command, for example turning `!=` inside jq filters into `\!=`.
+ */
+function singleQuoteForEval(command: string): string {
+  return "'" + command.replace(/'/g, `'"'"'`) + "'"
 }
 
 /**

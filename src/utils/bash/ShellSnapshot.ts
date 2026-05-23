@@ -455,7 +455,7 @@ export const createAndSaveSnapshot = async (
       logForDebugging(`Execution timeout: ${SNAPSHOT_CREATION_TIMEOUT}ms`)
       execFile(
         binShell,
-        ['-c', '-l', snapshotScript],
+        ['-l', '-c', snapshotScript],
         {
           env: {
             ...((process.env.CLAUDE_CODE_DONT_INHERIT_ENV

@@ -210,6 +210,12 @@ export type ExecOptions = {
   shouldAutoBackground?: boolean
   /** When provided, stdout is piped (not sent to file) and this callback fires on each data chunk. */
   onStdout?: (data: string) => void
+  /**
+   * Optional working directory for this single invocation. Absolute or
+   * relative to the session cwd. Does not update the session cwd — this
+   * lets the model run a command elsewhere without persisting a `cd`.
+   */
+  workdir?: string
 }
 
 /**
@@ -225,12 +231,18 @@ export async function exec(
   const {
     timeout,
     onProgress,
-    preventCwdChanges,
+    preventCwdChanges: optPreventCwdChanges,
     shouldUseSandbox,
     shouldAutoBackground,
     onStdout,
+    workdir,
   } = options ?? {}
   const commandTimeout = timeout || DEFAULT_TIMEOUT
+  // When workdir is set, never update the session cwd: the override is
+  // per-invocation, so the trailing `pwd -P` reflects the override, not the
+  // user's working directory. Treating workdir as preventCwdChanges keeps
+  // sequential calls deterministic.
+  const preventCwdChanges = workdir ? true : optPreventCwdChanges
 
   const provider = await resolveProvider[shellType]()
 
@@ -271,6 +283,21 @@ export async function exec(
     } catch {
       return createFailedCommand(
         `Working directory "${cwd}" no longer exists. Please restart Claude from an existing directory.`,
+      )
+    }
+  }
+
+  // Resolve optional per-invocation workdir override. Relative paths resolve
+  // against the session cwd (already validated above). realpath canonicalizes
+  // symlinks so spawn's cwd matches what `pwd -P` would emit, and surfaces a
+  // clear error if the model passed a missing directory.
+  if (workdir) {
+    const resolvedWorkdir = isAbsolute(workdir) ? workdir : resolve(cwd, workdir)
+    try {
+      cwd = await realpath(resolvedWorkdir)
+    } catch {
+      return createFailedCommand(
+        `workdir "${workdir}" does not exist (resolved to "${resolvedWorkdir}").`,
       )
     }
   }

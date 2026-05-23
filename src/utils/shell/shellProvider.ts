@@ -21,7 +21,7 @@ export type ShellProvider = {
   ): Promise<{ commandString: string; cwdFilePath: string }>
 
   /**
-   * Shell args for spawn (e.g., ['-c', '-l', cmd] for bash).
+   * Shell args for spawn (e.g., ['-l', '-c', cmd] for bash).
    */
   getSpawnArgs(commandString: string): string[]
 

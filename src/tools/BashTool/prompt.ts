@@ -5,6 +5,7 @@ import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
 import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
+import { getPlatform } from '../../utils/platform.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
@@ -327,15 +328,28 @@ export function getSimplePrompt(): string {
         ]),
   ]
   const backgroundNote = getBackgroundUsageNote()
+  const isWindows = getPlatform() === 'windows'
+
+  const windowsSubitems = isWindows
+    ? [
+        'On Windows, this tool runs in Git Bash. Use POSIX paths (`/c/Users/ok/...`) NOT Windows paths (`C:\\Users\\ok\\...`) — backslashes are escape characters in bash and `\\U`, `\\n`, `\\t` are interpreted, not passed literally.',
+        'Use POSIX redirects: `2>/dev/null` NOT `2>nul`. Writing to `nul` creates a literal file named `nul` (a Windows reserved name) that breaks git and other tools.',
+        'Prefer forward slashes in arguments to native Windows binaries — they accept `/`, and avoid all escape ambiguity.',
+        'Quote any path containing spaces with double quotes, AND prefer the `workdir` parameter for the working directory rather than `cd "/c/Path With Spaces" && cmd`.',
+      ]
+    : []
 
   const instructionItems: Array<string | string[]> = [
     'If your command will create new directories or files, first use this tool to run `ls` to verify the parent directory exists and is the correct location.',
     'Always quote file paths that contain spaces with double quotes in your command (e.g., cd "path with spaces/file.txt")',
-    'Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it.',
+    'To run a command in a different directory, pass the `workdir` parameter — DO NOT use `cd <dir> && <command>`. `workdir` avoids path-quoting bugs (especially backslash handling on Windows) and never mutates the session cwd. Reserve `cd` for cases where the user explicitly asks.',
     `You may specify an optional timeout in milliseconds (up to ${getMaxTimeoutMs()}ms / ${getMaxTimeoutMs() / 60000} minutes). By default, your command will timeout after ${getDefaultTimeoutMs()}ms (${getDefaultTimeoutMs() / 60000} minutes).`,
     ...(backgroundNote !== null ? [backgroundNote] : []),
     'When issuing multiple commands:',
     multipleCommandsSubitems,
+    ...(isWindows
+      ? ['Windows / Git Bash specifics:', windowsSubitems]
+      : []),
     'For git commands:',
     gitSubitems,
     'Avoid unnecessary `sleep` commands:',

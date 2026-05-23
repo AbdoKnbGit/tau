@@ -34,6 +34,12 @@ import {
   toggleGlmThinking,
 } from '../utils/model/glmThinking.js'
 import {
+  cycleOpencodeEffort,
+  getOpencodeEffort,
+  getOpencodeEffortLabel,
+  isOpencodeThinkingModel,
+} from '../utils/model/opencodeThinking.js'
+import {
   getVoiceConversationStatus,
   hasVoiceConversationApiKey,
 } from '../voice/voiceConversation.js'
@@ -228,6 +234,10 @@ export function ProviderModelPicker({
   const [reasoningLevel, setReasoningLevel] = useState(getOpenAIReasoningLevel)
   const [deepseekV4Thinking, setDeepseekV4Thinking] = useState(getDeepSeekV4Thinking)
   const [glmThinking, setGlmThinking] = useState(getGlmThinking)
+  // Bumped to force a re-render after toggling per-model opencode effort.
+  // The actual effort state lives in opencodeThinking.ts (persisted to disk),
+  // we only need a render trigger here.
+  const [, setOpencodeEffortTick] = useState(0)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
 
   const selectedProvider =
@@ -438,6 +448,17 @@ export function ProviderModelPicker({
         && isGlmThinkingModel(row.model.id)
       ) {
         setGlmThinking(toggleGlmThinking())
+        return
+      }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'opencode'
+        && isOpencodeThinkingModel(row.model.id)
+      ) {
+        cycleOpencodeEffort(row.model.id, key.leftArrow ? 'left' : 'right')
+        setOpencodeEffortTick(tick => tick + 1)
+        return
       }
       return
     }
@@ -574,6 +595,8 @@ export function ProviderModelPicker({
               const isReasoning = selectedProvider === 'openai' && modelSupportsReasoning(model.id)
               const isDeepseekV4 = selectedProvider === 'deepseek' && isDeepSeekV4ThinkingModel(model.id)
               const isGlmThinking = selectedProvider === 'glm' && isGlmThinkingModel(model.id)
+              const isOpencodeThinking = selectedProvider === 'opencode' && isOpencodeThinkingModel(model.id)
+              const opencodeEffort = isOpencodeThinking ? getOpencodeEffort(model.id) : undefined
               const selectedVariant = getSelectedVariant(
                 selectedProvider,
                 model,
@@ -611,6 +634,11 @@ export function ProviderModelPicker({
                   {isGlmThinking && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ Thinking {glmThinking ? 'ON' : 'OFF'} ▶
+                    </Text>
+                  )}
+                  {isOpencodeThinking && opencodeEffort && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ Thinking {getOpencodeEffortLabel(opencodeEffort)} ▶
                     </Text>
                   )}
                   {showVariant && selectedVariant && (

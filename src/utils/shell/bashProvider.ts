@@ -3,7 +3,6 @@ import { access } from 'fs/promises'
 import { tmpdir as osTmpdir } from 'os'
 import { join as nativeJoin } from 'path'
 import { join as posixJoin } from 'path/posix'
-import { rearrangePipeCommand } from '../bash/bashPipeCommand.js'
 import { createAndSaveSnapshot } from '../bash/ShellSnapshot.js'
 import { formatShellPrefixCommand } from '../bash/shellPrefix.js'
 import { quote } from '../bash/shellQuote.js'
@@ -142,17 +141,6 @@ export async function createBashShellProvider(
         )
       }
 
-      // Special handling for pipes: move stdin redirect after first command
-      // This ensures the redirect applies to the first command, not to eval itself.
-      // Without this, `eval 'rg foo | wc -l' \< /dev/null` becomes
-      // `rg foo | wc -l < /dev/null` — wc reads /dev/null and outputs 0, and
-      // rg (with no path arg) waits on the open spawn stdin pipe forever.
-      // Applies to sandbox mode too: sandbox wraps the assembled commandString,
-      // not the raw command (since PR #9189).
-      if (normalizedCommand.includes('|') && addStdinRedirect) {
-        quotedCommand = rearrangePipeCommand(normalizedCommand)
-      }
-
       const commandParts: string[] = []
 
       // Source the snapshot file. The `|| true` guards the race between the
@@ -202,7 +190,7 @@ export async function createBashShellProvider(
       if (skipLoginShell) {
         logForDebugging('Spawning shell without login (-l flag skipped)')
       }
-      return ['-c', ...(skipLoginShell ? [] : ['-l']), commandString]
+      return [...(skipLoginShell ? [] : ['-l']), '-c', commandString]
     },
 
     async getEnvironmentOverrides(

@@ -47,6 +47,10 @@ import {
   type OpenRouterCatalogModel,
 } from '../../utils/model/openrouterCatalog.js'
 import { isMoonshotThinkingModel } from '../../utils/model/moonshotCatalog.js'
+import {
+  getOpencodeEffort,
+  isOpencodeThinkingModel,
+} from '../../utils/model/opencodeThinking.js'
 import { recordProviderModelContextWindows } from '../../utils/model/contextWindows.js'
 
 // ─── Provider Detection ──────────────────────────────────────────
@@ -2074,7 +2078,23 @@ function convertHistoryToOpenAI(
   if (provider === 'moonshot' && isMoonshotThinkingModel(model)) {
     return convertHistoryToOpenAIForDeepSeek(messages, systemText)
   }
+  // OpenCode Zen with per-model thinking enabled: the gateway forwards
+  // `reasoning_content` from streamed deltas, and the downstream upstream
+  // (DeepSeek, Qwen-DashScope, Kimi-thinking, etc.) expects that field
+  // echoed back on any replayed assistant tool-call message. Without it
+  // the next tool turn 400s with "reasoning_content in thinking mode must
+  // be passed back to the API". The DeepSeek-style conversion already
+  // does exactly this carry-back, so reuse it for every reasoning-on
+  // opencode row.
+  if (provider === 'opencode' && opencodeThinkingActive(model)) {
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText)
+  }
   return convertHistoryToOpenAIDefault(messages, systemText)
+}
+
+function opencodeThinkingActive(model: string): boolean {
+  if (!isOpencodeThinkingModel(model)) return false
+  return getOpencodeEffort(model) !== 'default'
 }
 
 function convertHistoryToOpenAIDefault(

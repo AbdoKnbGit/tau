@@ -136,7 +136,7 @@ ${backgroundNote ? backgroundNote + '\n' : ''}\
     - If the commands depend on each other and must run sequentially, chain them in a single ${POWERSHELL_TOOL_NAME} call (see edition-specific chaining syntax above).
     - Use \`;\` only when you need to run commands sequentially but don't care if earlier commands fail.
     - DO NOT use newlines to separate commands (newlines are ok in quoted strings and here-strings)
-  - Do NOT prefix commands with \`cd\` or \`Set-Location\` -- the working directory is already set to the correct project directory automatically.
+  - To run a command in a different directory, pass the \`workdir\` parameter. Do NOT prefix commands with \`cd\` or \`Set-Location\` — \`workdir\` avoids quoting issues and never mutates the session cwd.
 ${sleepGuidance ? sleepGuidance + '\n' : ''}\
   - For git commands:
     - Prefer to create a new commit rather than amending an existing commit.

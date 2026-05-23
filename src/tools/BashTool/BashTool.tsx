@@ -244,6 +244,7 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 - curl -s url | jq '.data[]' → "Fetch JSON from URL and extract data array elements"`),
   run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run this command in the background. Use Read to read the output later.`),
   dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.'),
+  workdir: z.string().optional().describe('Optional working directory to run this command in. Absolute, or relative to the current session cwd. Use this INSTEAD of `cd path && command` — it avoids path-quoting issues (especially on Windows where backslashes are escapes) and never changes the session cwd. Only affects this single invocation.'),
   _simulatedSedEdit: z.object({
     filePath: z.string(),
     newContent: z.string()
@@ -878,7 +879,8 @@ async function* runShellCommand({
     command,
     description,
     timeout,
-    run_in_background
+    run_in_background,
+    workdir
   } = input;
   const timeoutMs = timeout || getDefaultTimeoutMs();
   let fullOutput = '';
@@ -917,7 +919,8 @@ async function* runShellCommand({
     },
     preventCwdChanges,
     shouldUseSandbox: shouldUseSandbox(input),
-    shouldAutoBackground
+    shouldAutoBackground,
+    workdir
   });
 
   // Start the command execution

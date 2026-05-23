@@ -230,7 +230,8 @@ const fullInputSchema = lazySchema(() => z.strictObject({
   timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),
   description: z.string().optional().describe('Clear, concise description of what this command does in active voice.'),
   run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run this command in the background. Use Read to read the output later.`),
-  dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.')
+  dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.'),
+  workdir: z.string().optional().describe('Optional working directory to run this command in. Absolute, or relative to the current session cwd. Use this INSTEAD of `Set-Location` / `cd` prefixes — it avoids quoting issues with paths that contain spaces and never changes the session cwd. Only affects this single invocation.')
 }));
 
 // Conditionally remove run_in_background from schema when background tasks are disabled
@@ -693,7 +694,8 @@ async function* runPowerShellCommand({
     description,
     timeout,
     run_in_background,
-    dangerouslyDisableSandbox
+    dangerouslyDisableSandbox,
+    workdir
   } = input;
   const timeoutMs = Math.min(timeout || getDefaultTimeoutMs(), getMaxTimeoutMs());
   let fullOutput = '';
@@ -747,7 +749,8 @@ async function* runPowerShellCommand({
         command,
         dangerouslyDisableSandbox
       }),
-      shouldAutoBackground
+      shouldAutoBackground,
+      workdir
     });
   } catch (e) {
     logError(e);
