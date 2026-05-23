@@ -71,7 +71,7 @@ tau update
   <img src="tau_docs.PNG" alt="Tau docs" width="720">
 </p>
 <video src="https://github.com/user-attachments/assets/07862fa1-5f0f-4027-97e7-9e147d74f999" controls width="100%"></video>
----
+
 ## The Commands You Need to Know
 
 ### Auth
