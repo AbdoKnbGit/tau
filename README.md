@@ -183,7 +183,7 @@ Save a sentence (or two) and Tau quietly appends it to the end of every message 
 | Provider | Notes |
 |---|---|
 | Anthropic | No comment |
-| OpenAI | Best in class, but GPT-5.5 is paywalled behind Plus/Pro |
+| OpenAI | Best in class |
 | Google Gemini | Use your own account — some server configs block certain regions-currently gemini servers are not working and giving some error 429 u can check here https://github.com/google-gemini/gemini-cli/issues |
 | Antigravity | Saving lives from agent server overload errors |
 | OpenRouter | Would use this full-time if the bills didn't care |
@@ -203,8 +203,7 @@ Save a sentence (or two) and Tau quietly appends it to the end of every message 
 | Cursor | Peak performance on Plan mode |
 | KiloCode | Lots of free models and decent to try for low-cost side tasks |
 | Kiro | Best performance/cost provider with large free credit |
-| AgentRouter | Includes free $125 usage. Latency is server-side, and the API still has issues. claude_haiku is currently the only model I made work well. For AgentRouter only, Windows is currently supported; Linux and macOS support is being worked on |
-| OpenCode Zen | Multi-format gateway hosted by the OpenCode team. Claude, Gemini, GPT-5.x, DeepSeek, GLM, Kimi, Qwen, MiniMax, Grok and Nemotron all routed through their native shapes internally. Several free-tier rows (deepseek-v4-flash-free, big-pickle, nemotron-3-super-free) are usable with any signed-in key |
+| OpenCode Zen | deepseek-v4-flash unlimited usage |
 
 ---
 
