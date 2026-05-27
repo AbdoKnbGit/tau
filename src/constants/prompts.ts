@@ -320,7 +320,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
         ]),
     ...(hasAftTools
       ? [
-          `For codebase structure, symbol lookup, AST search, call graph analysis, or diagnostics, prefer the read-only AFT tools (${aftToolNames.join(', ')}) before reading whole files. Use AFTOutline first for orientation, AFTZoom for known symbols, and fall back to Read, Grep, Glob, or Bash when AFT is unavailable or insufficient.`,
+          `For code-awareness tasks, use the read-only AFT tools (${aftToolNames.join(', ')}) as the first pass instead of reading whole files or running broad text searches. This applies to repository or directory exploration, architecture questions, locating implementations, symbol-level inspection, syntax-aware/refactor searches, call graph or impact analysis, and language-server diagnostics. Use AFTOutline first for orientation, AFTZoom for known symbols, AFTAstSearch for syntax-shaped patterns, AFTNavigate for callers/impact/traces after the symbol is known, and AFTDiagnostics for static diagnostics. Do not use AFT as a blocker when the user names an exact file and asks to read/edit it, when a simple literal text search is enough, when the target is not code, or when AFT is unavailable or insufficient; in those cases use Read, Grep, Glob, Edit, or Bash normally.`,
         ]
       : []),
     `Reserve using the ${BASH_TOOL_NAME} exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the ${BASH_TOOL_NAME} tool for these if it is absolutely necessary.`,
