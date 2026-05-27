@@ -42,6 +42,8 @@ import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js'
 import { trackGitOperations } from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
 import { appendBashFailureGuidance } from './bashFailureGuidance.js';
+import { validateBashExecutionPreflight } from './bashPreflightValidation.js';
+import { maybeAppendCommandHelp } from './commandHelp.js';
 import { checkBashRetryGuard, recordBashFailure, recordBashSuccess } from './bashRetryGuard.js';
 import { validateBashSyntax } from './bashSyntaxValidation.js';
 import { getPlatform } from '../../utils/platform.js';
@@ -559,6 +561,14 @@ export const BashTool = buildTool({
         };
       }
     }
+    const preflightValidation = await validateBashExecutionPreflight(input);
+    if (!preflightValidation.ok) {
+      return {
+        result: false,
+        message: preflightValidation.message,
+        errorCode: 13
+      };
+    }
     const syntaxValidation = await validateBashSyntax(input.command);
     if (!syntaxValidation.ok) {
       return {
@@ -751,9 +761,14 @@ export const BashTool = buildTool({
         // already has the full output. Pass '' for stdout to avoid
         // duplication in getErrorParts() and processBashCommand.
         const outputWithFailureGuidance = appendBashFailureGuidance(input.command, result.code, outputWithSbFailures);
+        // On usage/invalid-option failures, append the binary's own
+        // --help (authoritative, version-exact). Reactive: only spawns
+        // when failure output matches a usage pattern. 3s timeout per
+        // lookup; session-lifetime cache so each command is fetched once.
+        const outputWithVerifiedSyntax = await maybeAppendCommandHelp(input.command, outputWithFailureGuidance);
         // Record failure for retry guard before throwing
         recordBashFailure(input.command, result.code, outputWithSbFailures);
-        throw new ShellError('', outputWithFailureGuidance, result.code, result.interrupted);
+        throw new ShellError('', outputWithVerifiedSyntax, result.code, result.interrupted);
       }
       wasInterrupted = result.interrupted;
     } finally {

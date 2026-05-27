@@ -761,10 +761,12 @@ export function areFileEditsInputsEquivalent(
   }
 
   // Semantic comparison (requires file read). If the file doesn't exist,
-  // compare against empty content (no TOCTOU pre-check).
+  // compare against empty content (no TOCTOU pre-check). expandPath
+  // normalizes Git Bash POSIX paths (/c/Users/...) to native on Windows;
+  // without it readFileSyncCached's fs.statSync throws ENOENT on valid files.
   let fileContent = ''
   try {
-    fileContent = readFileSyncCached(input1.file_path)
+    fileContent = readFileSyncCached(expandPath(input1.file_path))
   } catch (error) {
     if (!isENOENT(error)) {
       throw error

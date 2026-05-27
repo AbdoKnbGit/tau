@@ -19,6 +19,14 @@ const MAX_TRACKED_FAILURES = 20
 const FAILURE_TTL_MS = 5 * 60_000 // 5 minutes
 const MAX_RETRIES_BEFORE_BLOCK = 2 // Allow 1 retry, block on 2nd
 
+// Secondary "intent thrashing" detector: when the same set of executables
+// fails N times in a short window with DIFFERENT exact commands, the model
+// is varying cosmetic details (paths, flags, ports) instead of diagnosing.
+// The per-signature counter above doesn't catch this — each variant is a
+// new signature. These thresholds catch the broader pattern.
+const MAX_INTENT_FAILURES = 3
+const INTENT_TTL_MS = 60_000 // 1 minute
+
 interface FailureEntry {
   /** Normalized command signature for matching */
   signature: string
@@ -72,6 +80,21 @@ const DIAGNOSTIC_SUBCOMMANDS: Record<string, Set<string>> = {
 
 const _failures = new Map<string, FailureEntry>()
 
+interface IntentEntry {
+  /** Sorted, deduped, joined list of executables in the command chain */
+  key: string
+  /** Distinct exact commands that have failed under this intent */
+  commands: string[]
+  /** First failure timestamp (for TTL) */
+  firstAttempt: number
+  /** Last failure timestamp */
+  lastAttempt: number
+  /** Last exit code (for the block message) */
+  lastExitCode: number
+}
+
+const _intentFailures = new Map<string, IntentEntry>()
+
 /**
  * Extract a normalized "signature" from a command for fuzzy matching.
  * Strips whitespace variations, trailing flags, and normalizes paths.
@@ -98,6 +121,77 @@ function baseCommand(command: string): string {
     }
   }
   return parts[0]?.toLowerCase() ?? ''
+}
+
+/**
+ * Extract the set of executables invoked in a command chain. For
+ * `source X && uvicorn Y`, returns `['source', 'uvicorn']`. Strips path
+ * prefixes and .exe so `/usr/bin/git` and `git.exe` collapse to `git`.
+ * Sorted + deduped so order doesn't matter for the intent key.
+ */
+export function extractExecutableSet(command: string): string[] {
+  const trimmed = command.trim()
+  if (!trimmed) return []
+
+  // Split on shell metacharacters that separate commands.
+  const clauses = trimmed.split(/[;|&]{1,2}|\n/)
+  const exes = new Set<string>()
+
+  for (const clause of clauses) {
+    const parts = clause.trim().split(/\s+/)
+    let i = 0
+    // Skip leading env-var assignments
+    while (i < parts.length && /^[A-Z_][A-Z0-9_]*=/.test(parts[i] ?? '')) i++
+    const tok = parts[i]
+    if (!tok) continue
+    // Strip path + .exe
+    const exe = tok.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase()
+    // Skip empty / non-executable tokens
+    if (!exe || /^[(){}<>"'`]/.test(exe)) continue
+    exes.add(exe)
+  }
+
+  return [...exes].sort()
+}
+
+function intentKey(command: string): string {
+  return extractExecutableSet(command).join('+')
+}
+
+function purgeStaleIntent(): void {
+  const now = Date.now()
+  for (const [key, entry] of _intentFailures) {
+    if (now - entry.firstAttempt > INTENT_TTL_MS) {
+      _intentFailures.delete(key)
+    }
+  }
+}
+
+function unquoteShellToken(token: string): string {
+  const trimmed = token.trim()
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+function extractCdTarget(command: string): string | undefined {
+  const match = /(?:^|[;&|]\s*)cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)/i.exec(
+    command,
+  )
+  return match?.[1] ? unquoteShellToken(match[1]) : undefined
+}
+
+function shellQuoteForHint(value: string): string {
+  if (/^[A-Za-z0-9_./:\\-]+$/.test(value)) return value
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+function hasPackageManagerCommand(command: string): boolean {
+  return /\b(npm|yarn|pnpm|bun|npx)\b/i.test(command)
 }
 
 /**
@@ -151,7 +245,9 @@ function purgeStale(): void {
 }
 
 /**
- * Record a command failure. Called after a Bash command fails.
+ * Record a command failure. Called after a Bash command fails. Updates
+ * both the per-signature tracker (exact-command retries) and the per-
+ * intent tracker (same executable-set with cosmetic variations).
  */
 export function recordBashFailure(command: string, exitCode: number, output: string): void {
   purgeStale()
@@ -172,6 +268,30 @@ export function recordBashFailure(command: string, exitCode: number, output: str
       lastOutput: output.slice(0, 300),
     })
   }
+
+  // Intent tracking — sibling channel that catches cosmetic-variant thrashing.
+  purgeStaleIntent()
+  const ikey = intentKey(command)
+  if (!ikey) return // empty / unparseable command
+  const now = Date.now()
+  const intent = _intentFailures.get(ikey)
+  if (intent) {
+    // Only count distinct commands toward the threshold so legitimate
+    // exact-retries don't double-count against per-signature tracking.
+    if (!intent.commands.includes(command)) {
+      intent.commands.push(command)
+    }
+    intent.lastAttempt = now
+    intent.lastExitCode = exitCode
+  } else {
+    _intentFailures.set(ikey, {
+      key: ikey,
+      commands: [command],
+      firstAttempt: now,
+      lastAttempt: now,
+      lastExitCode: exitCode,
+    })
+  }
 }
 
 /**
@@ -183,11 +303,26 @@ export function recordBashSuccess(command: string): void {
   const sig = commandSignature(command)
   _failures.delete(sig)
 
+  // Intent tracker: if any executable in this command overlaps a tracked
+  // intent set, drop that entry — a success on the same tool family is
+  // strong evidence the model has converged on a working approach.
+  const exes = new Set(extractExecutableSet(command))
+  for (const [ikey, entry] of _intentFailures) {
+    if (entry.key.split('+').some(e => exes.has(e))) {
+      _intentFailures.delete(ikey)
+    }
+  }
+
   if (isDiagnosticCommand(command)) {
     // Diagnostic command ran — model is investigating. Clear all failures
     // so it can retry the original command with new knowledge.
     _failures.clear()
+    _intentFailures.clear()
   }
+}
+
+function truncateForList(s: string, max = 120): string {
+  return s.length > max ? `${s.slice(0, max).trimEnd()}…` : s
 }
 
 /**
@@ -196,23 +331,44 @@ export function recordBashSuccess(command: string): void {
  */
 export function checkBashRetryGuard(command: string): string | null {
   purgeStale()
+  purgeStaleIntent()
+
+  // 1) Per-signature check (exact-command retries)
   const sig = commandSignature(command)
   const entry = _failures.get(sig)
-
-  if (!entry || entry.attempts < MAX_RETRIES_BEFORE_BLOCK) {
-    return null
+  if (entry && entry.attempts >= MAX_RETRIES_BEFORE_BLOCK) {
+    const diagnosticSuggestions = buildDiagnosticSuggestions(command)
+    return [
+      `Blocked: This command has failed ${entry.attempts} time(s) with exit code ${entry.exitCode}.`,
+      `Do NOT retry the same command. Instead, diagnose the root cause first:`,
+      ...diagnosticSuggestions,
+      ``,
+      `After running a diagnostic command, you may retry the original command.`,
+    ].join('\n')
   }
 
-  // Build a helpful message that forces diagnostic behavior
-  const diagnosticSuggestions = buildDiagnosticSuggestions(command)
+  // 2) Per-intent check (cosmetic-variant thrashing)
+  const ikey = intentKey(command)
+  const intent = ikey ? _intentFailures.get(ikey) : undefined
+  if (intent && intent.commands.length >= MAX_INTENT_FAILURES) {
+    const diagnosticSuggestions = buildDiagnosticSuggestions(command)
+    const recentVariants = intent.commands
+      .slice(-Math.min(5, intent.commands.length))
+      .map(c => `   • ${truncateForList(c)}`)
+    return [
+      `Blocked: ${intent.commands.length} distinct variations of this command intent have failed in the last ${Math.round(INTENT_TTL_MS / 1000)}s.`,
+      `Shared executables: ${intent.key.replace(/\+/g, ', ')}`,
+      `Recent variants:`,
+      ...recentVariants,
+      ``,
+      `You are thrashing — varying paths/flags/ports instead of diagnosing why the underlying tool keeps failing. Stop and investigate:`,
+      ...diagnosticSuggestions,
+      ``,
+      `After running a diagnostic that asks the system for actual state (not another variant of the same command), you may retry.`,
+    ].join('\n')
+  }
 
-  return [
-    `Blocked: This command has failed ${entry.attempts} time(s) with exit code ${entry.exitCode}.`,
-    `Do NOT retry the same command. Instead, diagnose the root cause first:`,
-    ...diagnosticSuggestions,
-    ``,
-    `After running a diagnostic command, you may retry the original command.`,
-  ].join('\n')
+  return null
 }
 
 /**
@@ -221,10 +377,26 @@ export function checkBashRetryGuard(command: string): string | null {
 function buildDiagnosticSuggestions(command: string): string[] {
   const base = baseCommand(command)
   const suggestions: string[] = []
+  const cdTarget = extractCdTarget(command)
+
+  if (cdTarget) {
+    const quotedTarget = shellQuoteForHint(cdTarget)
+    suggestions.push(
+      '- Verify the current directory and cd target first: pwd && ls -la && test -d ' +
+        quotedTarget +
+        ' && ls -la ' +
+        quotedTarget,
+    )
+  }
 
   // Package manager commands
-  if (['npm', 'yarn', 'pnpm', 'bun', 'npx'].includes(base)) {
+  if (
+    ['npm', 'yarn', 'pnpm', 'bun', 'npx'].includes(base) ||
+    hasPackageManagerCommand(command)
+  ) {
     suggestions.push(
+      '- Check active directory: pwd && ls -la',
+      '- Locate the real project manifest: find .. -maxdepth 4 -name package.json -not -path "*/node_modules/*"',
       '- Check if package.json exists: cat package.json',
       '- Check installed packages: npm list --depth=0',
       '- Check if the script exists: npm run --list',
