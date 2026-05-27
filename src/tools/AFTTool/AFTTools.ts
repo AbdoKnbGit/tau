@@ -55,7 +55,7 @@ const outlineInputSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe(
-        'For directory targets, return an indexed file tree instead of symbol outlines.',
+        'Optional file-tree mode for directory targets. Leave unset for code understanding and symbol outlines; use true only when you specifically need a file listing instead of symbols.',
       ),
   }),
 )
@@ -296,8 +296,41 @@ async function runAftText(
   }
 }
 
+function isEmptyOutlineResponse(response: Record<string, unknown>): boolean {
+  const text =
+    typeof response.text === 'string' ? response.text.trim() : undefined
+  const hasFiles = Array.isArray(response.files) && response.files.length > 0
+  return text === '' && !hasFiles
+}
+
+async function runAftOutline(
+  params: Record<string, unknown>,
+  fallbackParams?: Record<string, unknown>,
+): Promise<{ data: AftOutput }> {
+  try {
+    const response = await callAftCommand('outline', params)
+    if (response.success === false) {
+      return makeOutput('outline', formatAftError('outline', response))
+    }
+
+    if (fallbackParams && isEmptyOutlineResponse(response)) {
+      const fallbackResponse = await callAftCommand('outline', fallbackParams)
+      if (
+        fallbackResponse.success !== false &&
+        !isEmptyOutlineResponse(fallbackResponse)
+      ) {
+        return makeOutput('outline', formatOutlineResponse(fallbackResponse))
+      }
+    }
+
+    return makeOutput('outline', formatOutlineResponse(response))
+  } catch (error) {
+    return makeOutput('outline', formatAftUnavailable(error))
+  }
+}
+
 const OUTLINE_DESCRIPTION =
-  'Read-only AFT code outline. Use this first when exploring a repository, package, directory, or file: it returns file trees, symbols, headings, and line ranges without reading full bodies. Prefer this before Read/Grep for architecture questions, locating likely files, or deciding which symbol to inspect next.'
+  'Read-only AFT code outline. Use this first when exploring a repository, package, directory, or file: it returns symbols, headings, file trees, and line ranges without reading full bodies. Prefer this before Read/Grep for architecture questions, locating likely files, or deciding which symbol to inspect next. Leave the files option unset unless you specifically need a file listing.'
 
 export const AFTOutlineTool = buildTool({
   name: AFT_OUTLINE_TOOL_NAME,
@@ -350,22 +383,25 @@ export const AFTOutlineTool = buildTool({
   async call(input) {
     const target = input.target
     const params: Record<string, unknown> = {}
+    let fallbackParams: Record<string, unknown> | undefined
     if (Array.isArray(target)) {
       if (input.files === true) {
         params.directories = target
         params.files = true
+        fallbackParams = { files: target }
       } else {
         params.files = target
       }
     } else if (input.files === true) {
       params.directory = target
       params.files = true
+      if (await pathIsDirectory(target)) fallbackParams = { directory: target }
     } else if (await pathIsDirectory(target)) {
       params.directory = target
     } else {
       params.file = target
     }
-    return runAftText('outline', params, formatOutlineResponse)
+    return runAftOutline(params, fallbackParams)
   },
   mapToolResultToToolResultBlockParam: mapOutput,
 } satisfies ToolDef<OutlineInputSchema, AftOutput>)
