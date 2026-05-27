@@ -631,6 +631,20 @@ export type GlobalConfig = {
     model: string
     effort?: string | number
   }>
+
+  // Whether /team-mode auto-orchestration is on. When true, each user prompt
+  // is run through the orchestrator with the configured per-role roster.
+  teamModeEnabled?: boolean
+
+  // Configured roster for /team-mode. Each fixed role can be bound to a
+  // provider+model pair; inactive roles are skipped by the orchestrator.
+  teamModeRoles?: Array<{
+    role: string
+    provider: string
+    model: string
+    effort?: string | number
+    active?: boolean
+  }>
 }
 
 /**
@@ -723,6 +737,8 @@ export const GLOBAL_CONFIG_KEYS = [
   'surfPhaseTargets',
   'fallbackEnabled',
   'fallbackTargets',
+  'teamModeEnabled',
+  'teamModeRoles',
 ] as const
 
 export type GlobalConfigKey = (typeof GLOBAL_CONFIG_KEYS)[number]

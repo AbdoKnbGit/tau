@@ -1,0 +1,256 @@
+import chalk from 'chalk'
+import * as React from 'react'
+import type { CommandResultDisplay } from '../../commands.js'
+import type { LocalJSXCommandCall } from '../../types/command.js'
+import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
+import { validateProviderAuth } from '../../utils/auth.js'
+import { saveGlobalConfig } from '../../utils/config.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
+import {
+  formatTeamModeRole,
+  getActiveTeamModeRoles,
+  getTeamModeRoleSlots,
+  hasConfiguredTeamModeRoster,
+  isTeamModeEnabled,
+  TEAM_MODE_ROLE_META,
+} from '../../utils/teamMode/state.js'
+import { TeamModeWizard } from './TeamModeWizard.js'
+
+type OnDone = (
+  result?: string,
+  options?: { display?: CommandResultDisplay },
+) => void
+
+function showHelp(onDone: OnDone) {
+  const lines = [
+    `${chalk.bold('/team-mode')} - multi-provider team auto-orchestration`,
+    '',
+    chalk.bold('Usage:'),
+    `  ${chalk.cyan('/team-mode')}          Open the wizard on first run, otherwise show status`,
+    `  ${chalk.cyan('/team-mode on')}       Turn auto-orchestration on (every prompt routes through the team)`,
+    `  ${chalk.cyan('/team-mode off')}      Turn auto-orchestration off but keep the configured roster`,
+    `  ${chalk.cyan('/team-mode config')}   Re-bind providers and models for each role`,
+    `  ${chalk.cyan('/team-mode status')}   Show toggle state and the role-by-role binding`,
+    `  ${chalk.cyan('/team-mode reset')}    Clear the team roster`,
+    `  ${chalk.cyan('/team-mode test')}     Validate that every active role's provider is authenticated`,
+    '',
+    chalk.bold('Roles:'),
+    ...Object.values(TEAM_MODE_ROLE_META).map(
+      meta => `  ${chalk.cyan(meta.label.padEnd(20))} ${chalk.dim(meta.description)}`,
+    ),
+    '',
+    chalk.dim('Each role can be bound to a different provider+model. The'),
+    chalk.dim('orchestrator runs in the main session and dispatches the others.'),
+  ]
+  onDone(lines.join('\n'), { display: 'system' })
+}
+
+function showStatus(onDone: OnDone) {
+  const slots = getTeamModeRoleSlots()
+  const enabled = isTeamModeEnabled()
+  const lines: string[] = [`${chalk.bold('/team-mode status')}`]
+
+  lines.push(
+    '',
+    `${chalk.bold('Mode:')} ${enabled ? chalk.green('on') : chalk.dim('off')}`,
+  )
+
+  const configured = slots.filter(s => s.binding !== null)
+  if (configured.length === 0) {
+    lines.push('', 'No team roster configured.')
+    lines.push(
+      chalk.dim('Run /team-mode config to bind providers and models to each role.'),
+    )
+    onDone(lines.join('\n'), { display: 'system' })
+    return
+  }
+
+  lines.push('', chalk.bold('Roster:'))
+  for (const { meta, binding } of slots) {
+    const label = meta.label.padEnd(20)
+    if (binding === null) {
+      lines.push(`  ${chalk.dim(label)} ${chalk.dim('(not configured)')}`)
+      continue
+    }
+    const stateTag = binding.active
+      ? chalk.green('[active]')
+      : chalk.dim('[skipped]')
+    lines.push(
+      `  ${chalk.cyan(label)} ${stateTag} ${chalk.dim(formatTeamModeRole(binding))}`,
+    )
+  }
+
+  if (!enabled) {
+    lines.push(
+      '',
+      chalk.dim('Run /team-mode on to start routing prompts through the team.'),
+    )
+  }
+
+  onDone(lines.join('\n'), { display: 'system' })
+}
+
+function resetTeamMode(onDone: OnDone) {
+  saveGlobalConfig(current => ({
+    ...current,
+    teamModeEnabled: undefined,
+    teamModeRoles: undefined,
+  }))
+  // Drop the cached orchestrator addendum so the next turn rebuilds the
+  // system prompt without it. Without this, the addendum keeps firing for
+  // the rest of the session even though the user reset.
+  clearSystemPromptSections()
+  onDone(`${chalk.bold('Team mode reset.')} Roster cleared.`, {
+    display: 'system',
+  })
+}
+
+function turnTeamModeOff(onDone: OnDone) {
+  saveGlobalConfig(current => ({
+    ...current,
+    teamModeEnabled: false,
+  }))
+  clearSystemPromptSections()
+  onDone(
+    `${chalk.bold('Team mode off.')} Configured roster was kept.`,
+    { display: 'system' },
+  )
+}
+
+function runTeamModeTest(onDone: OnDone) {
+  const roles = getActiveTeamModeRoles()
+  if (roles.length === 0) {
+    onDone(
+      [
+        chalk.bold('/team-mode test'),
+        '',
+        'No active roles configured. Run /team-mode config to bind providers and models to each role.',
+      ].join('\n'),
+      { display: 'system' },
+    )
+    return
+  }
+
+  // Auth validation only — checks that each role's provider has stored
+  // credentials and they pass format checks. This catches the common "forgot
+  // to /login kiro" failure before a real task tries to spawn a worker on
+  // that provider. We deliberately don't make a network call: tokens that
+  // were valid at /login time are usually still valid; refresh happens
+  // lazily on first real request. Saving a probe avoids burning tokens.
+  const lines = [chalk.bold('/team-mode test'), '']
+  let allPass = true
+  for (const role of roles) {
+    const meta = TEAM_MODE_ROLE_META[role.role]
+    const label = meta.label.padEnd(20)
+    const check = validateProviderAuth(role.provider)
+    if (check.valid) {
+      const methodTag = check.method ? ` (${check.method})` : ''
+      lines.push(
+        `  ${chalk.cyan(label)} ${chalk.green('PASS')} ${chalk.dim(formatTeamModeRole(role))}${chalk.dim(methodTag)}`,
+      )
+    } else {
+      allPass = false
+      const reason = check.reason ?? 'credentials missing or invalid'
+      lines.push(
+        `  ${chalk.cyan(label)} ${chalk.red('FAIL')} ${chalk.dim(formatTeamModeRole(role))}`,
+      )
+      lines.push(`      ${chalk.red('→')} ${reason}`)
+    }
+  }
+  lines.push('')
+  if (allPass) {
+    lines.push(
+      chalk.green('All active roles authenticated.'),
+      chalk.dim('Note: this checks stored credentials only — it does not make a network call. Run a real task to verify the providers respond.'),
+    )
+  } else {
+    lines.push(
+      chalk.yellow('Some roles failed auth. Run /login <provider> for each failing role.'),
+    )
+  }
+
+  onDone(lines.join('\n'), { display: 'system' })
+}
+
+function turnTeamModeOn(onDone: OnDone) {
+  saveGlobalConfig(current => ({
+    ...current,
+    teamModeEnabled: true,
+  }))
+  // Cache flush so the next turn picks up the orchestrator addendum. Toggling
+  // mid-session costs one prompt-cache miss; toggling off-on stays warm.
+  clearSystemPromptSections()
+  onDone(
+    `${chalk.bold('Team mode on.')} Prompts will be routed through the configured team.`,
+    { display: 'system' },
+  )
+}
+
+export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
+  const subcommand = (args?.trim() || '').toLowerCase()
+
+  switch (subcommand) {
+    case 'help':
+    case '-h':
+    case '--help':
+    case '?':
+      showHelp(onDone)
+      return
+
+    case 'status':
+      showStatus(onDone)
+      return
+
+    case 'config':
+    case 'setup':
+      return (
+        <TeamModeWizard
+          onDone={onDone}
+          initialProvider={getAPIProvider()}
+        />
+      )
+
+    case 'on': {
+      if (!hasConfiguredTeamModeRoster()) {
+        return (
+          <TeamModeWizard
+            onDone={onDone}
+            initialProvider={getAPIProvider()}
+            enableOnFinish
+          />
+        )
+      }
+      turnTeamModeOn(onDone)
+      return
+    }
+
+    case 'off':
+      turnTeamModeOff(onDone)
+      return
+
+    case 'reset':
+      resetTeamMode(onDone)
+      return
+
+    case 'test':
+      runTeamModeTest(onDone)
+      return
+
+    case '': {
+      if (!hasConfiguredTeamModeRoster()) {
+        return (
+          <TeamModeWizard
+            onDone={onDone}
+            initialProvider={getAPIProvider()}
+          />
+        )
+      }
+      showStatus(onDone)
+      return
+    }
+
+    default:
+      showHelp(onDone)
+      return
+  }
+}

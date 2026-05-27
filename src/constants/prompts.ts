@@ -71,6 +71,7 @@ import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
+import { getTeamModeOrchestratorAddendum } from '../utils/teamMode/orchestratorPrompt.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -547,6 +548,14 @@ ${CYBER_RISK_INSTRUCTION}`,
       'MCP servers connect/disconnect between turns',
     ),
     systemPromptSection('scratchpad', () => getScratchpadInstructions()),
+    // Team mode orchestrator instructions — returns null (no-op) when
+    // /team-mode is off OR has no active roster. Memoized via the section
+    // cache; the /team-mode command clears the cache when toggling so the
+    // change takes effect on the next turn. Cache contract preserved for
+    // normal sessions: null sections drop out of the joined prompt entirely.
+    systemPromptSection('team_mode_orchestrator', () =>
+      getTeamModeOrchestratorAddendum(),
+    ),
     systemPromptSection('frc', () => getFunctionResultClearingSection(model)),
     systemPromptSection(
       'summarize_tool_results',

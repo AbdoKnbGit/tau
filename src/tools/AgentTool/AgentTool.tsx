@@ -53,6 +53,10 @@ import type { AgentDefinition } from './loadAgentsDir.js';
 import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
 import { getPrompt } from './prompt.js';
 import { runAgent } from './runAgent.js';
+import { runWithForcedProvider } from '../../utils/forcedProvider.js';
+import { isAPIProvider } from '../../utils/model/providers.js';
+import type { ModelAlias } from '../../utils/model/aliases.js';
+import { isTeamModeEnabled } from '../../utils/teamMode/state.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -84,6 +88,8 @@ const baseInputSchema = lazySchema(() => z.object({
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
   model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe("Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent."),
+  model_id: z.string().optional().describe('Optional fully-qualified model id (e.g. "gemini-3-flash", "kimi-k2.6", "deepseek-v3.1"). Used when the model is not Anthropic Sonnet/Opus/Haiku. Takes priority over the `model` enum when both are set. Pair with `provider` to pin the lane.'),
+  provider: z.string().optional().describe('Optional APIProvider name (e.g. "kiro", "antigravity", "moonshot") that this agent must route through, regardless of the session-global provider. Use this when /team-mode needs to pin one role to a specific provider while other agents run elsewhere.'),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
 }));
 
@@ -240,7 +246,9 @@ export const AgentTool = buildTool({
     prompt,
     subagent_type,
     description,
-    model: modelParam,
+    model: modelEnumParam,
+    model_id: rawModelIdParam,
+    provider: rawProviderParam,
     run_in_background,
     name,
     team_name,
@@ -248,7 +256,37 @@ export const AgentTool = buildTool({
     isolation,
     cwd
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
+    // Team-mode off-switch guard. When /team-mode is OFF, silently treat the
+    // team-mode-only fields as if they were never provided. This means:
+    //   - LLM passes provider/model_id by mistake → ignored, no error
+    //   - Runtime path is byte-identical to pre-team-mode behavior
+    //   - The schema is wider (LLM sees the fields) but the runtime is locked
+    //
+    // Without this guard, an LLM that decides to use provider/model_id in
+    // normal mode would either route to the wrong lane or error out with
+    // "model not found" — neither of which the user is responsible for.
+    const teamModeOn = isTeamModeEnabled();
+    const providerParam = teamModeOn ? rawProviderParam : undefined;
+    const modelIdParam = teamModeOn ? rawModelIdParam : undefined;
+
+    // Provider override — pin every getAPIProvider() call inside this agent's
+    // lifecycle to the requested provider. /team-mode uses this to route each
+    // role through its bound provider (e.g. Sonnet via Kiro for "implementer",
+    // Gemini 3 Flash via Antigravity for "explorer") within a session whose
+    // /provider is set to something else entirely.
+    //
+    // The async-local storage propagates across awaits and async iterator
+    // yields, so model calls deep inside runAgent() see the override too.
+    // We wrap the body in a local closure so the structure of the buildTool
+    // literal stays intact — extracting it as a sibling function would have
+    // broken the object literal's method ordering.
+    const _runBody = async () => {
     const startTime = Date.now();
+    // model_id takes priority over the sonnet/opus/haiku enum so the /team-mode
+    // orchestrator can pin a worker to e.g. gemini-3-flash or kimi-k2.6 — the
+    // downstream getAgentModel() accepts any model alias and falls back to
+    // parseUserSpecifiedModel() when the value isn't a known tier alias.
+    const modelParam = modelIdParam ?? modelEnumParam;
     const model = isCoordinatorMode() ? undefined : modelParam;
 
     // Get app state for permission mode and agent filtering
@@ -415,7 +453,10 @@ export const AgentTool = buildTool({
     }
 
     // Resolve agent params for logging (these are already resolved in runAgent)
-    const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode);
+    // model is widened to `string | undefined` to support model_id; cast to
+    // ModelAlias is safe — getAgentModel runs through parseUserSpecifiedModel
+    // which accepts arbitrary canonical model strings.
+    const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, (isForkPath ? undefined : model) as ModelAlias | undefined, permissionMode);
     logEvent('tengu_agent_tool_selected', {
       agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       model: resolvedAgentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -607,7 +648,10 @@ export const AgentTool = buildTool({
       canUseTool,
       isAsync: shouldRunAsync,
       querySource: toolUseContext.options.querySource ?? getQuerySourceForAgent(selectedAgent.agentType, isBuiltInAgent(selectedAgent)),
-      model: isForkPath ? undefined : model,
+      // model is widened to string|undefined for model_id support; cast back
+      // to ModelAlias is safe — runAgent forwards into getAgentModel which
+      // resolves arbitrary model strings via parseUserSpecifiedModel.
+      model: (isForkPath ? undefined : model) as ModelAlias | undefined,
       // Fork path: pass parent's system prompt AND parent's exact tool
       // array (cache-identical prefix). workerTools is rebuilt under
       // permissionMode 'bubble' which differs from the parent's mode, so
@@ -1260,6 +1304,14 @@ export const AgentTool = buildTool({
         };
       }));
     }
+    };  // close _runBody arrow function
+    if (providerParam !== undefined) {
+      if (!isAPIProvider(providerParam)) {
+        throw new Error(`Unknown provider "${providerParam}". Pick one of the supported APIProvider names (e.g. "firstParty", "kiro", "antigravity", "moonshot", "openrouter").`);
+      }
+      return runWithForcedProvider({ provider: providerParam }, _runBody);
+    }
+    return _runBody();
   },
   isReadOnly() {
     return true; // delegates permission checks to its underlying tools

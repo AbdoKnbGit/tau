@@ -1,6 +1,7 @@
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
+import { getForcedProvider } from '../forcedProvider.js'
 
 export type APIProvider =
   | 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
@@ -83,6 +84,12 @@ function _resolveAPIProvider(): APIProvider {
 }
 
 export function getAPIProvider(): APIProvider {
+  // /team-mode pins a per-agent provider via AsyncLocalStorage. It takes
+  // precedence over the session snapshot AND the test bypass so an agent
+  // spawned with provider='kiro' routes through Kiro regardless of what the
+  // user has globally selected via /provider.
+  const forced = getForcedProvider()
+  if (forced !== undefined) return forced
   if (process.env.NODE_ENV === 'test') return _resolveAPIProvider()
   if (_sessionActiveProvider !== null) return _sessionActiveProvider
   _sessionActiveProvider = _resolveAPIProvider()

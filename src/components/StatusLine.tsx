@@ -27,6 +27,7 @@ import { getCurrentSessionTitle } from '../utils/sessionStorage.js';
 import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from '../utils/tokens.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
 import { getAPIProvider, PROVIDER_DISPLAY_NAMES, isThirdPartyProvider } from '../utils/model/providers.js';
+import { getActiveTeamModeRoles, getTeamModeRoles, isTeamModeEnabled } from '../utils/teamMode/state.js';
 import { isVimModeEnabled } from './PromptInput/utils.js';
 
 /** Returns a short provider label for the status line, or empty string for Anthropic. */
@@ -320,10 +321,21 @@ function StatusLineInner({
   // flexShrink:0 so a 0→1 row change when the command finishes steals
   // a row from ScrollBox and shifts content. Reserve the row while loading
   // (same trick as PromptInputFooterLeftSide).
+  // Tiny team-mode badge — only renders when /team-mode is ON. Reads sync
+  // from the global config cache (same source the /team-mode command writes
+  // to) so it reflects toggles within ~1s of the disk watcher refresh, plus
+  // immediately within this process after the command runs.
+  const teamModeBadge = isTeamModeEnabled()
+    ? `team: ${getActiveTeamModeRoles().length}/${getTeamModeRoles().length}`
+    : null;
+
   return <Box paddingX={paddingX} gap={2}>
       {statusLineText ? <Text dimColor wrap="truncate">
           <Ansi>{statusLineText}</Ansi>
         </Text> : isFullscreenEnvEnabled() ? <Text> </Text> : null}
+      {teamModeBadge !== null ? <Text color="cyan" dimColor>
+          {teamModeBadge}
+        </Text> : null}
     </Box>;
 }
 

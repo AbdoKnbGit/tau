@@ -189,6 +189,7 @@ import fallback from './commands/fallback/index.js'
 import model from './commands/model/index.js'
 import models from './commands/models/index.js'
 import surf from './commands/surf/index.js'
+import teamMode from './commands/team-mode/index.js'
 import tag from './commands/tag/index.js'
 import outputStyle from './commands/output-style/index.js'
 import remoteEnv from './commands/remote-env/index.js'
@@ -313,6 +314,7 @@ const COMMANDS = memoize((): Command[] => [
   model,
   models,
   fallback,
+  teamMode,
   surf,
   outputStyle,
   remoteEnv,
