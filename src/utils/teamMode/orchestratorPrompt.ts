@@ -17,8 +17,11 @@
 import { isAgentSwarmsEnabled } from '../agentSwarmsEnabled.js'
 import { PROVIDER_DISPLAY_NAMES } from '../model/providers.js'
 import {
+  formatTeamModeFallback,
   getActiveTeamModeRoles,
+  getTeamModeFallbackWorker,
   isTeamModeEnabled,
+  isTeamModeFallbackEnabled,
   TEAM_MODE_ROLE_META,
 } from './state.js'
 
@@ -90,9 +93,39 @@ export function getTeamModeOrchestratorAddendum(): string | null {
     '',
     'After workers complete, summarize their outputs into a single coherent response for the user. Quote relevant file paths and decisions; do not paste large blobs of worker output verbatim.',
     '',
-    '## Falling back',
+    '## Missing roles',
     '',
-    'If a worker errors out (auth missing, provider down, model rejected the request), report the failure clearly and either retry on a different role from the roster or finish the task yourself in the main session.',
+    'The roster above lists only the roles the user has configured. If your task needs a role that is NOT in the roster (e.g. you need a Verifier but no Verifier is bound), pick the closest configured role with a compatible model OR finish that part of the task yourself in the main session. Do not invent a roster entry.',
+    '',
+    '## Worker failure recovery',
+    '',
+    ...buildFailureRecoverySection(),
     ...swarmSection,
   ].join('\n')
+}
+
+function buildFailureRecoverySection(): string[] {
+  const fb = getTeamModeFallbackWorker()
+  const fbOn = isTeamModeFallbackEnabled()
+  if (!fb || !fbOn) {
+    return [
+      'If a worker errors out (auth missing, provider down, model rejected the request, "Improperly formed request", "rate limit", quota exhausted), report the failure clearly and either retry on a different role from the roster or finish the task yourself in the main session. Do not silently give up — the user wants to know which worker failed and why.',
+      '',
+      '*(Tip: configure a shared worker fallback with `/team-mode fallback config` so the orchestrator can auto-retry failed workers on a backup provider.)*',
+    ]
+  }
+  return [
+    `A shared worker fallback is configured: **${formatTeamModeFallback(fb)}**.`,
+    '',
+    'When ANY worker spawn returns an error (look for patterns like "API error", "rate limit", "quota", "Improperly formed", "auth", "401", "403", "429", "5xx"), retry the SAME prompt ONCE on the fallback by re-issuing the Agent call with:',
+    '',
+    '```',
+    `  provider: "${fb.provider}",`,
+    `  model_id: "${fb.model}"`,
+    '```',
+    '',
+    'Always announce the retry to the user in plain text: e.g. *"Worker `architect` (Kiro / claude-haiku-4.5) failed with `Improperly formed request`. Retrying on fallback (Anthropic / Sonnet)..."*. This mirrors the `/fallback` UX so the user knows which provider failed and which one took over.',
+    '',
+    'If the fallback ALSO fails, stop retrying. Surface both errors clearly and either complete the work yourself in the main session or ask the user how to proceed.',
+  ]
 }

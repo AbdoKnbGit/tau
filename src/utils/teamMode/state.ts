@@ -160,3 +160,51 @@ export function formatTeamModeRole(role: TeamModeRole): string {
     role.effort !== undefined ? `, effort=${String(role.effort)}` : ''
   return `${provider} / ${model}${effort}`
 }
+
+// ─── Fallback worker ─────────────────────────────────────────────
+//
+// When a worker spawn fails with an eligible error and the fallback is
+// configured + enabled, AgentTool retries once on this provider+model.
+// The shape mirrors a TeamModeRole minus the role/active bookkeeping —
+// the fallback isn't a named role, it's a catch-all for any failing role.
+
+export type TeamModeFallbackWorker = {
+  provider: APIProvider
+  model: string
+  effort?: string | number
+}
+
+export function getTeamModeFallbackWorker(): TeamModeFallbackWorker | null {
+  const raw = getGlobalConfig().teamModeFallbackWorker
+  if (
+    !raw ||
+    typeof raw.provider !== 'string' ||
+    !isAPIProvider(raw.provider) ||
+    typeof raw.model !== 'string' ||
+    !raw.model.trim()
+  ) {
+    return null
+  }
+  return {
+    provider: raw.provider,
+    model: raw.model.trim(),
+    effort: raw.effort,
+  }
+}
+
+export function hasConfiguredTeamModeFallback(): boolean {
+  return getTeamModeFallbackWorker() !== null
+}
+
+export function isTeamModeFallbackEnabled(): boolean {
+  return getGlobalConfig().teamModeFallbackEnabled === true
+}
+
+export function formatTeamModeFallback(fb: TeamModeFallbackWorker): string {
+  const provider = PROVIDER_DISPLAY_NAMES[fb.provider]
+  const model =
+    getProviderModelDisplayName(fb.provider, fb.model) ?? fb.model
+  const effort =
+    fb.effort !== undefined ? `, effort=${String(fb.effort)}` : ''
+  return `${provider} / ${model}${effort}`
+}

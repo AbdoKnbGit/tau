@@ -15,7 +15,7 @@ export default {
       ? 'Team mode auto-orchestration is on'
       : 'Team mode auto-orchestration is off'
   },
-  argumentHint: '[on|off|status|config|test|reset|help]',
+  argumentHint: '[on|off|status|config|test|reset|fallback|help]',
   isEnabled: () => true,
   load: () => import('./team-mode.js'),
 } satisfies Command

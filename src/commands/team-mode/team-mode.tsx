@@ -2,16 +2,26 @@ import chalk from 'chalk'
 import * as React from 'react'
 import type { CommandResultDisplay } from '../../commands.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
+import { ProviderModelPicker } from '../../components/ProviderModelPicker.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { validateProviderAuth } from '../../utils/auth.js'
 import { saveGlobalConfig } from '../../utils/config.js'
-import { getAPIProvider } from '../../utils/model/providers.js'
+import { isAPIProvider, getAPIProvider } from '../../utils/model/providers.js'
 import {
+  isVoiceConversationProvider,
+  resolveProviderModelSelection,
+  type BrowsableModelProvider,
+} from '../../utils/model/providerCatalog.js'
+import {
+  formatTeamModeFallback,
   formatTeamModeRole,
   getActiveTeamModeRoles,
+  getTeamModeFallbackWorker,
   getTeamModeRoleSlots,
+  hasConfiguredTeamModeFallback,
   hasConfiguredTeamModeRoster,
   isTeamModeEnabled,
+  isTeamModeFallbackEnabled,
   TEAM_MODE_ROLE_META,
 } from '../../utils/teamMode/state.js'
 import { TeamModeWizard } from './TeamModeWizard.js'
@@ -33,6 +43,7 @@ function showHelp(onDone: OnDone) {
     `  ${chalk.cyan('/team-mode status')}   Show toggle state and the role-by-role binding`,
     `  ${chalk.cyan('/team-mode reset')}    Clear the team roster`,
     `  ${chalk.cyan('/team-mode test')}     Validate that every active role's provider is authenticated`,
+    `  ${chalk.cyan('/team-mode fallback')} Configure the shared worker fallback (subcommands: config|on|off|status|reset)`,
     '',
     chalk.bold('Roles:'),
     ...Object.values(TEAM_MODE_ROLE_META).map(
@@ -84,6 +95,18 @@ function showStatus(onDone: OnDone) {
     lines.push(
       '',
       chalk.dim('Run /team-mode on to start routing prompts through the team.'),
+    )
+  }
+
+  // Fallback summary at the bottom so the user sees it next to the roster.
+  const fb = getTeamModeFallbackWorker()
+  if (fb) {
+    const fbState = isTeamModeFallbackEnabled()
+      ? chalk.green('[on]')
+      : chalk.dim('[off]')
+    lines.push(
+      '',
+      `${chalk.bold('Worker fallback:')} ${fbState} ${chalk.dim(formatTeamModeFallback(fb))}`,
     )
   }
 
@@ -172,6 +195,115 @@ function runTeamModeTest(onDone: OnDone) {
   onDone(lines.join('\n'), { display: 'system' })
 }
 
+function showFallbackStatus(onDone: OnDone) {
+  const fb = getTeamModeFallbackWorker()
+  const enabled = isTeamModeFallbackEnabled()
+  const lines = [chalk.bold('/team-mode fallback status'), '']
+  lines.push(
+    `${chalk.bold('Mode:')} ${enabled ? chalk.green('on') : chalk.dim('off')}`,
+  )
+  if (!fb) {
+    lines.push('', 'No fallback worker configured.')
+    lines.push(
+      chalk.dim('Run /team-mode fallback config to bind a shared backup provider+model.'),
+    )
+  } else {
+    lines.push('', `${chalk.bold('Fallback worker:')} ${chalk.cyan(formatTeamModeFallback(fb))}`)
+    if (!enabled) {
+      lines.push(
+        '',
+        chalk.dim('Run /team-mode fallback on to start retrying failed workers on this backup.'),
+      )
+    }
+  }
+  onDone(lines.join('\n'), { display: 'system' })
+}
+
+function turnFallbackOff(onDone: OnDone) {
+  saveGlobalConfig(current => ({
+    ...current,
+    teamModeFallbackEnabled: false,
+  }))
+  clearSystemPromptSections()
+  onDone(
+    `${chalk.bold('Team-mode fallback off.')} Configured fallback was kept.`,
+    { display: 'system' },
+  )
+}
+
+function turnFallbackOn(onDone: OnDone) {
+  saveGlobalConfig(current => ({
+    ...current,
+    teamModeFallbackEnabled: true,
+  }))
+  clearSystemPromptSections()
+  onDone(
+    `${chalk.bold('Team-mode fallback on.')} Worker failures will retry once on the configured fallback.`,
+    { display: 'system' },
+  )
+}
+
+function resetFallback(onDone: OnDone) {
+  saveGlobalConfig(current => ({
+    ...current,
+    teamModeFallbackEnabled: undefined,
+    teamModeFallbackWorker: undefined,
+  }))
+  clearSystemPromptSections()
+  onDone(`${chalk.bold('Team-mode fallback reset.')} Configuration cleared.`, {
+    display: 'system',
+  })
+}
+
+// One-shot picker for the shared worker fallback. Reuses ProviderModelPicker
+// — single (provider, model) selection, not a multi-step roster wizard.
+function FallbackPicker({ onDone }: { onDone: OnDone }) {
+  function handleSelect(
+    provider: BrowsableModelProvider,
+    modelId: string,
+  ) {
+    if (isVoiceConversationProvider(provider) || !isAPIProvider(provider)) {
+      onDone('Fallback configuration cancelled (voice conversation is not a worker provider).', {
+        display: 'system',
+      })
+      return
+    }
+    const selection = resolveProviderModelSelection(provider, modelId)
+    saveGlobalConfig(current => ({
+      ...current,
+      teamModeFallbackWorker: {
+        provider,
+        model: selection.modelId,
+        effort: selection.effort,
+      },
+      teamModeFallbackEnabled: true,
+    }))
+    clearSystemPromptSections()
+    const fb = { provider, model: selection.modelId, effort: selection.effort }
+    onDone(
+      [
+        chalk.bold('Team-mode fallback saved and turned on.'),
+        '',
+        `Worker fallback: ${chalk.cyan(formatTeamModeFallback(fb))}`,
+        '',
+        chalk.dim('When a worker fails on its primary provider, the orchestrator will retry once on this fallback.'),
+        chalk.dim('Use /team-mode fallback off to disable, /team-mode fallback status to inspect.'),
+      ].join('\n'),
+      { display: 'system' },
+    )
+  }
+  function handleCancel() {
+    onDone('Fallback configuration cancelled.', { display: 'system' })
+  }
+  return (
+    <ProviderModelPicker
+      initialProvider={getAPIProvider()}
+      onSelect={handleSelect}
+      onCancel={handleCancel}
+    />
+  )
+}
+
 function turnTeamModeOn(onDone: OnDone) {
   saveGlobalConfig(current => ({
     ...current,
@@ -188,6 +320,50 @@ function turnTeamModeOn(onDone: OnDone) {
 
 export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
   const subcommand = (args?.trim() || '').toLowerCase()
+
+  // Two-word subcommands: "/team-mode fallback ..." routes to a separate
+  // dispatcher so the existing single-word switch stays clean.
+  if (subcommand.startsWith('fallback')) {
+    const fbSub = subcommand.slice('fallback'.length).trim()
+    switch (fbSub) {
+      case '':
+      case 'status':
+        showFallbackStatus(onDone)
+        return
+      case 'config':
+      case 'setup':
+        return <FallbackPicker onDone={onDone} />
+      case 'on': {
+        if (!hasConfiguredTeamModeFallback()) {
+          return <FallbackPicker onDone={onDone} />
+        }
+        turnFallbackOn(onDone)
+        return
+      }
+      case 'off':
+        turnFallbackOff(onDone)
+        return
+      case 'reset':
+        resetFallback(onDone)
+        return
+      default:
+        onDone(
+          [
+            chalk.bold('/team-mode fallback'),
+            '',
+            chalk.bold('Usage:'),
+            `  ${chalk.cyan('/team-mode fallback')}          Show status / open wizard if unconfigured`,
+            `  ${chalk.cyan('/team-mode fallback config')}   Pick the shared worker fallback provider+model`,
+            `  ${chalk.cyan('/team-mode fallback on')}       Turn fallback on`,
+            `  ${chalk.cyan('/team-mode fallback off')}      Turn fallback off but keep the config`,
+            `  ${chalk.cyan('/team-mode fallback status')}   Show fallback state`,
+            `  ${chalk.cyan('/team-mode fallback reset')}    Clear the fallback config`,
+          ].join('\n'),
+          { display: 'system' },
+        )
+        return
+    }
+  }
 
   switch (subcommand) {
     case 'help':
