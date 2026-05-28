@@ -30,52 +30,64 @@ export type TeamModeRoleMeta = {
 
 // Human-readable metadata. The orchestrator role is the planner that lives in
 // the main session; the others are the workers it can spawn.
+//
+// Descriptions are prescriptive (when to use, what to deliver) rather than
+// summary, because they're embedded verbatim into the orchestrator system
+// prompt — the LLM treats them as the role's job description.
 export const TEAM_MODE_ROLE_META: Record<TeamModeRoleId, TeamModeRoleMeta> = {
   orchestrator: {
     id: 'orchestrator',
     label: 'Orchestrator',
     description:
-      'Plans the task, picks roles, dispatches workers, synthesizes results',
+      'Plans the task end-to-end, decides which workers to spawn and in what order, and synthesizes their outputs into a single user-facing response. Does NOT write code or run shell commands itself — delegates ALL non-trivial work to the appropriate worker. Lives in the main session.',
   },
   architect: {
     id: 'architect',
     label: 'Architect',
-    description: 'Solution design, system trade-offs, research',
+    description:
+      'Designs the solution BEFORE any code is written. Required for any task touching more than one file, introducing new modules, changing an API, or making non-obvious trade-offs. Deliverable: a written plan listing exact files to change, the change in each, dependencies, and acceptance criteria. Implementer reads this plan; do not skip it on multi-file work.',
   },
   implementer: {
     id: 'implementer',
     label: 'Implementer',
-    description: 'Writes and edits the code',
+    description:
+      'Writes and edits code. Must receive the Architect plan (when one was produced) as part of its prompt. Owns ALL file edits — the Orchestrator never edits files directly. Deliverable: the actual diff plus a one-paragraph summary of what changed and why.',
   },
   reviewer: {
     id: 'reviewer',
     label: 'Reviewer',
-    description: 'Reads the diff for correctness, security, simplification',
+    description:
+      'Reads the diff produced by the Implementer for correctness bugs, security issues, dead code, and over-engineering. Required on every multi-file change before the work is reported as done. Deliverable: bullet list of findings — each one actionable, with file:line references. No diff = nothing to review; spawn after Implementer reports completion.',
   },
   verifier: {
     id: 'verifier',
     label: 'Verifier',
-    description: 'Tests, validates, checks the implementation actually works',
+    description:
+      'Confirms the change actually works by running tests, type-checks, lints, builds, or driving the app. Required whenever code execution behavior changes (logic, build, dependencies). Deliverable: exact commands run, their exit codes, and a verdict: passes / fails with output. Spawn after Implementer; runs in parallel with Reviewer.',
   },
   devops: {
     id: 'devops',
     label: 'DevOps',
-    description: 'Infra, CI, deploy, configuration',
+    description:
+      'Owns CI/CD, deploy configs, containerization, infra-as-code, secrets/env, and pipeline scripts. Spawn ONLY when the task changes one of those surfaces — skip for app-code-only changes. Deliverable: the edited config plus an explanation of pipeline impact.',
   },
   docs: {
     id: 'docs',
     label: 'Docs',
-    description: 'Documentation, README, comments, change notes',
+    description:
+      'Updates README, CHANGELOG, code comments that document non-obvious WHY, and migration notes. Spawn when public API changes, behavior visibly changes, or the user explicitly asks for docs. Skip for internal-only refactors. Deliverable: edited docs file(s).',
   },
   'dependency-manager': {
     id: 'dependency-manager',
     label: 'Dependency Manager',
-    description: 'Package upgrades, dependency audits, lockfile updates',
+    description:
+      'Adds, upgrades, removes, or audits npm/pip/cargo/etc. dependencies. Owns lockfile updates and license checks. Spawn ONLY when the task explicitly involves dependency changes; do NOT spawn for unrelated work that happens to touch a lockfile. Deliverable: edited manifest + lockfile + rationale per change.',
   },
   explorer: {
     id: 'explorer',
     label: 'Explorer',
-    description: 'Read-only codebase exploration and analysis',
+    description:
+      'Read-only codebase exploration: locates files, traces call graphs, summarizes how a subsystem works. Spawn at the very start of an unfamiliar task to gather context BEFORE Architect plans. Returns: findings as a structured report — do not have it edit files (it must be a read-only worker).',
   },
 }
 
@@ -150,6 +162,25 @@ export function isTeamModeEnabled(): boolean {
 // Active = configured AND not skipped. The orchestrator only spawns these.
 export function getActiveTeamModeRoles(): TeamModeRole[] {
   return getTeamModeRoles().filter(role => role.active)
+}
+
+// Returns the orchestrator role's binding when team-mode is ON, the role is
+// configured, AND active. This is what the main session should run as — not
+// the user's globally-selected /provider+/model. When null, callers fall
+// through to their existing resolution (saved config, env vars, defaults).
+//
+// Why this exists: the orchestrator role in the roster is the *main session*
+// model+provider. Before this helper, /team-mode on only set the addendum
+// flag — the main session kept running on whatever /provider and /model the
+// user had selected before turning team-mode on. Users configured Orchestrator
+// as e.g. "Anthropic / Sonnet 4.6" and were surprised when the orchestrator
+// kept running on their previous "OpenRouter / tencent/hy3-preview".
+export function getTeamModeOrchestratorBinding(): TeamModeRole | null {
+  if (!isTeamModeEnabled()) return null
+  const orchestrator = getActiveTeamModeRoles().find(
+    r => r.role === 'orchestrator',
+  )
+  return orchestrator ?? null
 }
 
 export function formatTeamModeRole(role: TeamModeRole): string {

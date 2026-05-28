@@ -6,7 +6,8 @@ import { ProviderModelPicker } from '../../components/ProviderModelPicker.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { validateProviderAuth } from '../../utils/auth.js'
 import { saveGlobalConfig } from '../../utils/config.js'
-import { isAPIProvider, getAPIProvider } from '../../utils/model/providers.js'
+import { isAPIProvider, getAPIProvider, setActiveProvider, PROVIDER_DISPLAY_NAMES } from '../../utils/model/providers.js'
+import { setMainLoopModelOverride } from '../../bootstrap/state.js'
 import {
   isVoiceConversationProvider,
   resolveProviderModelSelection,
@@ -312,8 +313,25 @@ function turnTeamModeOn(onDone: OnDone) {
   // Cache flush so the next turn picks up the orchestrator addendum. Toggling
   // mid-session costs one prompt-cache miss; toggling off-on stays warm.
   clearSystemPromptSections()
+
+  // Apply the orchestrator role's binding eagerly so the UI (status line,
+  // /model display, /provider display) reflects the orchestrator's pinned
+  // provider+model immediately. Without this, getAPIProvider()/getMainLoopModel()
+  // still return the correct values via their lazy-resolved team-mode checks,
+  // but the status surface lags until the next config-refresh tick. Eager
+  // apply also persists the choice so the next session boots into the
+  // orchestrator's binding without depending on the lazy resolution path.
+  const orchestrator = getActiveTeamModeRoles().find(r => r.role === 'orchestrator')
+  let appliedLine = ''
+  if (orchestrator) {
+    setActiveProvider(orchestrator.provider)
+    setMainLoopModelOverride(orchestrator.model)
+    const provider = PROVIDER_DISPLAY_NAMES[orchestrator.provider]
+    appliedLine = `\nOrchestrator: ${chalk.cyan(`${provider} / ${orchestrator.model}`)}`
+  }
+
   onDone(
-    `${chalk.bold('Team mode on.')} Prompts will be routed through the configured team.`,
+    `${chalk.bold('Team mode on.')} Prompts will be routed through the configured team.${appliedLine}`,
     { display: 'system' },
   )
 }

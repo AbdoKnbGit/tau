@@ -100,6 +100,23 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
  * @returns The resolved model name to use
  */
 export function getMainLoopModel(): ModelName {
+  // /team-mode orchestrator binding. When team mode is ON and an orchestrator
+  // role is configured, the main session model IS the orchestrator's pinned
+  // model — overriding the user's session /model selection. This is the
+  // same contract as getAPIProvider: configuring `Orchestrator → Anthropic /
+  // Sonnet 4.6` should make the orchestrator actually run on Sonnet 4.6.
+  // Subagents pass model via the runAgent call chain (NOT via getMainLoopModel)
+  // and pin their own provider via runWithForcedProvider, so they bypass this.
+  if (getForcedProvider() === undefined) {
+    // Lazy require to break circular dep (state.ts → providers.ts → model.ts).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const teamMode = require('../teamMode/state.js') as typeof import('../teamMode/state.js')
+    const orchestratorBinding = teamMode.getTeamModeOrchestratorBinding()
+    if (orchestratorBinding) {
+      return parseUserSpecifiedModel(orchestratorBinding.model)
+    }
+  }
+
   const model = getUserSpecifiedModelSetting()
   if (model !== undefined && model !== null) {
     const resolved = parseUserSpecifiedModel(model)
