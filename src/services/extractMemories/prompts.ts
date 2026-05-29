@@ -38,7 +38,9 @@ function opener(newMessageCount: number, existingMemories: string): string {
     '',
     `You have a limited turn budget. ${FILE_EDIT_TOOL_NAME} requires a prior ${FILE_READ_TOOL_NAME} of the same file, so the efficient strategy is: turn 1 — issue all ${FILE_READ_TOOL_NAME} calls in parallel for every file you might update; turn 2 — issue all ${FILE_WRITE_TOOL_NAME}/${FILE_EDIT_TOOL_NAME} calls in parallel. Do not interleave reads and writes across multiple turns.`,
     '',
-    `You MUST only use content from the last ~${newMessageCount} messages to update your persistent memories. Do not waste any turns attempting to investigate or verify that content further — no grepping source files, no reading code to confirm a pattern exists, no git commands.` +
+    `You MUST only use content from the last ~${newMessageCount} messages to update your persistent memories. Do not waste any turns attempting to investigate or verify that content further — no grepping source files, no reading code to confirm a pattern exists, no git commands.`,
+    '',
+    'Capture ONLY critical, GENERAL lessons — reusable principles that will help in future, unrelated sessions: how to avoid a whole class of bug, a non-obvious approach that worked, a hard-won architectural constraint or gotcha, a durable user preference. State each one generally and concisely, as a short takeaway — NOT as specific code, file paths, line numbers, routine implementation, or one-off fixes. Skip anything ordinary, transient, obvious, or derivable from the code. Most work yields no such lesson: if this session produced nothing critical and general, save NOTHING. A few sharp, general takeaways are worth far more than a complete log.' +
       manifest,
   ].join('\n')
 }
@@ -52,34 +54,34 @@ export function buildExtractAutoOnlyPrompt(
   existingMemories: string,
   skipIndex = false,
 ): string {
-  const howToSave = skipIndex
-    ? [
-        '## How to save memories',
-        '',
-        'Write each memory to its own file (e.g., `user_role.md`, `feedback_testing.md`) using this frontmatter format:',
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
-    : [
-        '## How to save memories',
-        '',
-        'Saving a memory is a two-step process:',
-        '',
-        '**Step 1** — write the memory to its own file (e.g., `user_role.md`, `feedback_testing.md`) using this frontmatter format:',
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        '**Step 2** — add a pointer to that file in `MEMORY.md`. `MEMORY.md` is an index, not a memory — each entry should be one line, under ~150 characters: `- [Title](file.md) — one-line hook`. It has no frontmatter. Never write memory content directly into `MEMORY.md`.',
-        '',
-        '- `MEMORY.md` is always loaded into your system prompt — lines after 200 will be truncated, so keep the index concise',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
+  // Self-learning runs in REVIEW-BEFORE-USE mode: captured memories are
+  // PROPOSALS staged in the `learned/` subdir and are NOT used until the user
+  // approves them via /learned. The agent may only write inside `learned/`.
+  void skipIndex // index step does not apply in staging mode
+  const howToSave = [
+    '## How to save proposals',
+    '',
+    'What you save here are PROPOSALS for the user to review — they are staged and will NOT affect Tau until the user approves them. Write each proposed memory to its own file inside the `learned/` subdirectory of the memory directory (e.g., `learned/user_prefers_terse.md`). You may ONLY write inside `learned/`.',
+    '',
+    'Use this frontmatter format:',
+    '',
+    '```markdown',
+    '---',
+    'name: {{short-name}}',
+    'description: {{one-line description — used later to judge relevance}}',
+    'type: {{user, feedback, project, reference}}',
+    'origin: learned',
+    "learnedAt: {{today's date, YYYY-MM-DD}}",
+    '---',
+    '',
+    '{{the lesson — for feedback/project types, add **Why:** and **How to apply:** lines}}',
+    '```',
+    '',
+    '- The `origin: learned` marker is REQUIRED on every file you write — it keeps the proposal auditable and the user’s own memories protected.',
+    '- Do NOT create or edit `MEMORY.md`, and do NOT write anywhere outside `learned/`. A separate human-review step (the /learned command) promotes approved proposals into active memory.',
+    '- One file per distinct lesson; organize by topic, not chronologically.',
+    '- The existing-memories list above already includes pending proposals — do not propose anything already captured there.',
+  ]
 
   return [
     opener(newMessageCount, existingMemories),

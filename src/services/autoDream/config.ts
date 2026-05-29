@@ -11,8 +11,11 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
  * when explicitly set; otherwise falls through to tengu_onyx_plover.
  */
 export function isAutoDreamEnabled(): boolean {
-  const setting = getInitialSettings().autoDreamEnabled
-  if (setting !== undefined) return setting
+  const settings = getInitialSettings()
+  // Explicit autoDreamEnabled always wins. Note: self-learning's switch does
+  // NOT auto-enable the background dream — self-learning is interactive (no
+  // silent memory writes); enable autoDream separately if you want it.
+  if (settings.autoDreamEnabled !== undefined) return settings.autoDreamEnabled
   const gb = getFeatureValue_CACHED_MAY_BE_STALE<{ enabled?: unknown } | null>(
     'tengu_onyx_plover',
     null,

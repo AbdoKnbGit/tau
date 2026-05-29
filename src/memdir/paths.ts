@@ -55,6 +55,19 @@ export function isAutoMemoryEnabled(): boolean {
 }
 
 /**
+ * Master switch for the self-learning loop: turn-end memory capture
+ * (extractMemories) + background consolidation (autoDream). Off by default,
+ * and requires auto-memory to be enabled. Read by isExtractModeActive()
+ * (capture side) and by autoDream's config.ts (consolidation side).
+ */
+export function isSelfLearningEnabled(): boolean {
+  if (!isAutoMemoryEnabled()) {
+    return false
+  }
+  return getInitialSettings().selfLearningEnabled === true
+}
+
+/**
  * Whether the extract-memories background agent will run this session.
  *
  * The main agent's prompt always has full save instructions regardless of
@@ -67,7 +80,7 @@ export function isAutoMemoryEnabled(): boolean {
  * directly in an `if` condition.
  */
 export function isExtractModeActive(): boolean {
-  if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_passport_quail', false)) {
+  if (!isSelfLearningEnabled()) {
     return false
   }
   return (
@@ -91,6 +104,14 @@ export function getMemoryBaseDir(): string {
 
 const AUTO_MEM_DIRNAME = 'memory'
 const AUTO_MEM_ENTRYPOINT_NAME = 'MEMORY.md'
+
+/**
+ * Subdirectory under the auto-memory dir where the self-learning loop stages
+ * proposed memories for human review. Excluded from recall (scanMemoryFiles)
+ * so staged proposals are NEVER used until the user approves them via the
+ * /learned command. Approval moves the file up to the top level.
+ */
+export const LEARNED_SUBDIR = 'learned'
 
 /**
  * Normalize and validate a candidate auto-memory directory path.
@@ -256,6 +277,14 @@ export function getAutoMemDailyLogPath(date: Date = new Date()): string {
  */
 export function getAutoMemEntrypoint(): string {
   return join(getAutoMemPath(), AUTO_MEM_ENTRYPOINT_NAME)
+}
+
+/**
+ * Returns the self-learning staging directory (<autoMemPath>/learned/).
+ * Proposed memories live here until the user promotes them via /learned.
+ */
+export function getAutoMemLearnedPath(): string {
+  return join(getAutoMemPath(), LEARNED_SUBDIR)
 }
 
 /**

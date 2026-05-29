@@ -9,6 +9,7 @@ import { basename, join } from 'path'
 import { parseFrontmatter } from '../utils/frontmatterParser.js'
 import { readFileInRange } from '../utils/readFileInRange.js'
 import { type MemoryType, parseMemoryType } from './memoryTypes.js'
+import { LEARNED_SUBDIR } from './paths.js'
 
 export type MemoryHeader = {
   filename: string
@@ -35,12 +36,19 @@ const FRONTMATTER_MAX_LINES = 30
 export async function scanMemoryFiles(
   memoryDir: string,
   signal: AbortSignal,
+  includeStaging = false,
 ): Promise<MemoryHeader[]> {
   try {
     const entries = await readdir(memoryDir, { recursive: true })
-    const mdFiles = entries.filter(
-      f => f.endsWith('.md') && basename(f) !== 'MEMORY.md',
-    )
+    const mdFiles = entries.filter(f => {
+      if (!f.endsWith('.md') || basename(f) === 'MEMORY.md') return false
+      // Exclude the self-learning staging subdir from recall so proposed
+      // memories are never surfaced/used until the user approves them.
+      // The extraction agent opts in (includeStaging) so it can dedupe
+      // against pending proposals.
+      if (!includeStaging && f.split(/[/\\]/)[0] === LEARNED_SUBDIR) return false
+      return true
+    })
 
     const headerResults = await Promise.allSettled(
       mdFiles.map(async (relativePath): Promise<MemoryHeader> => {

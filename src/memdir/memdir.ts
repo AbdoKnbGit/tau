@@ -1,7 +1,11 @@
 import { feature } from 'bun:bundle'
 import { join } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from './paths.js'
+import {
+  getAutoMemPath,
+  isAutoMemoryEnabled,
+  isSelfLearningEnabled,
+} from './paths.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -117,6 +121,20 @@ export const DIR_EXISTS_GUIDANCE =
   'This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).'
 export const DIRS_EXIST_GUIDANCE =
   'Both directories already exist — write to them directly with the Write tool (do not run mkdir or check for their existence).'
+
+/**
+ * Self-learning end-of-task offer. Injected into the memory section (which
+ * lives AFTER the system-prompt cache boundary, so this is cache-safe) only
+ * when selfLearningEnabled. Drives the interactive "offer a lesson" behavior:
+ * the agent asks at a natural stopping point, never mid-task, and only for a
+ * critical/general lesson.
+ */
+export const SELF_LEARNING_OFFER_GUIDANCE = [
+  '## Offering to save a lesson (self-learning)',
+  'When you finish a SUBSTANTIAL, multi-step task (many steps/tool calls, not routine Q&A or a small edit) and reach a natural stopping point, judge whether it produced ONE lesson worth carrying into the NEXT project — same stack/template or a different one. A lesson is critical, general, and reusable: framework/library judgement (e.g. when to use plain HTML vs a React component, a hook/rendering pitfall, an idiom that should be the default), a whole CLASS of bug and how to avoid it, a hard-won constraint or gotcha of a tool/API/runtime, a workflow principle that clearly paid off, or a USER PREFERENCE for how they like things done.',
+  'Only if such a lesson clearly exists, use the AskUserQuestion tool (options: Approve / Edit wording / Skip — never more than 4) to ask whether to save it. Present it as a single concentrated, PORTABLE bullet — a general principle, never specific code, file paths, symbol names, or line numbers. On approve, save it to the active memory directory as a topic file with `origin: learned` and today’s `learnedAt`, and add a one-line `MEMORY.md` pointer — it becomes active from the next session (no separate promote step); on edit, save their reworded version.',
+  'Rules: never interrupt mid-task — only offer once the work is done; at most once per substantial task; if the work was routine, project-specific, or there is no general lesson, say nothing (a junk lesson is worse than none). The user can review, edit, delete, or toggle saved lessons anytime with the /learned command.',
+].join('\n')
 
 /**
  * Ensure a memory directory exists. Idempotent — called from loadMemoryPrompt
@@ -440,10 +458,17 @@ export async function loadMemoryPrompt(): Promise<string | null> {
   // Cowork injects memory-policy text via env var; thread into all builders.
   const coworkExtraGuidelines =
     process.env.CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES
-  const extraGuidelines =
-    coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
-      ? [coworkExtraGuidelines]
-      : undefined
+  const extraList: string[] = []
+  if (coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0) {
+    extraList.push(coworkExtraGuidelines)
+  }
+  // Self-learning: when enabled, add the end-of-task offer behavior. This text
+  // lives in the memory section, which is AFTER the prompt cache boundary, so
+  // it never affects the cached prefix.
+  if (isSelfLearningEnabled()) {
+    extraList.push(SELF_LEARNING_OFFER_GUIDANCE)
+  }
+  const extraGuidelines = extraList.length > 0 ? extraList : undefined
 
   if (feature('TEAMMEM')) {
     if (teamMemPaths!.isTeamMemoryEnabled()) {

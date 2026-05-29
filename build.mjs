@@ -139,8 +139,10 @@ export default proxy;
 const tauPlugin = {
   name: 'tau-build',
   setup(build) {
-    // Shim bun:bundle — feature() returns false for all features in
-    // external builds (removes ant-internal code paths).
+    // Shim bun:bundle — feature() returns false for all features in external
+    // builds (removes ant-internal code paths). Self-learning is interactive
+    // (the /learned command + an end-of-task offer baked into the memory
+    // guidance), so it does NOT use the EXTRACT_MEMORIES background fork.
     build.onResolve({ filter: /^bun:bundle$/ }, () => ({
       path: 'bun:bundle',
       namespace: 'bun-bundle-shim',

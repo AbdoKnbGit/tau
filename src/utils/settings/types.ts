@@ -986,6 +986,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Enable background memory consolidation (auto-dream). When set, overrides the server-side default.',
         ),
+      selfLearningEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Master switch for the self-learning loop. When true, after sessions Tau captures durable, high-signal lessons to auto-memory and periodically consolidates and prunes them (auto-dream). Off by default; requires auto-memory. Implies auto-dream unless autoDreamEnabled is explicitly set.',
+        ),
       showThinkingSummaries: z
         .boolean()
         .optional()

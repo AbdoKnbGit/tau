@@ -14,7 +14,7 @@
  */
 
 import { feature } from 'bun:bundle'
-import { basename } from 'path'
+import { basename, join, normalize, sep } from 'path'
 import { getIsRemoteMode } from '../../bootstrap/state.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { ENTRYPOINT_NAME } from '../../memdir/memdir.js'
@@ -26,6 +26,8 @@ import {
   getAutoMemPath,
   isAutoMemoryEnabled,
   isAutoMemPath,
+  isSelfLearningEnabled,
+  LEARNED_SUBDIR,
 } from '../../memdir/paths.js'
 import type { Tool } from '../../Tool.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
@@ -67,6 +69,15 @@ const teamMemPaths = feature('TEAMMEM')
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
+/**
+ * Fire B (end-of-big-task) threshold: the turn-end capture only fires once
+ * this many tool uses have accumulated since the last capture. Substantial
+ * work triggers a judged capture (the prompt stages only critical, general
+ * lessons — often nothing); light conversational turns never trigger it.
+ * Manual capture via the /learned command is unthrottled and independent.
+ */
+const SELF_LEARNING_BIG_TASK_TOOL_THRESHOLD = 20
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -105,6 +116,46 @@ function countModelVisibleMessagesSince(
   // which would permanently disable extraction for the rest of the session.
   if (!foundStart) {
     return count(messages, isModelVisibleMessage)
+  }
+  return n
+}
+
+/**
+ * Count tool_use blocks in assistant messages after the cursor — a proxy for
+ * "how much work happened." Gates the end-of-big-task capture so it fires
+ * after substantial activity rather than on a turn timer. Falls back to
+ * counting across all messages if the cursor was lost (e.g., compaction).
+ */
+function countToolUsesSince(
+  messages: Message[],
+  sinceUuid: string | undefined,
+): number {
+  let started = sinceUuid === undefined
+  let everFound = started
+  let n = 0
+  for (const message of messages) {
+    if (!started) {
+      if (message.uuid === sinceUuid) {
+        started = true
+        everFound = true
+      }
+      continue
+    }
+    if (message.type !== 'assistant') {
+      continue
+    }
+    const content = (message as AssistantMessage).message.content
+    if (!Array.isArray(content)) {
+      continue
+    }
+    for (const block of content) {
+      if ((block as { type?: string }).type === 'tool_use') {
+        n++
+      }
+    }
+  }
+  if (!everFound) {
+    return countToolUsesSince(messages, undefined)
   }
   return n
 }
@@ -168,7 +219,17 @@ function denyAutoMemTool(tool: Tool, reason: string) {
  * read-only Bash commands, and Edit/Write only for paths within the
  * auto-memory directory. Shared by extractMemories and autoDream.
  */
-export function createAutoMemCanUseTool(memoryDir: string): CanUseToolFn {
+export function createAutoMemCanUseTool(
+  memoryDir: string,
+  confineToSubdir?: string,
+): CanUseToolFn {
+  // When confineToSubdir is set, Edit/Write are restricted to that subdir of
+  // the memory directory. The self-learning capture fork uses this to GUARANTEE
+  // proposals can only land in `learned/` staging — a hard invariant that does
+  // not depend on the agent following the prompt.
+  const writeRoot = confineToSubdir
+    ? normalize(join(memoryDir, confineToSubdir)) + sep
+    : null
   return async (tool: Tool, input: Record<string, unknown>) => {
     // Allow REPL — when REPL mode is enabled (ant-default), primitive tools
     // are hidden from the tool list so the forked agent calls REPL instead.
@@ -209,14 +270,18 @@ export function createAutoMemCanUseTool(memoryDir: string): CanUseToolFn {
       'file_path' in input
     ) {
       const filePath = input.file_path
-      if (typeof filePath === 'string' && isAutoMemPath(filePath)) {
+      if (
+        typeof filePath === 'string' &&
+        isAutoMemPath(filePath) &&
+        (writeRoot === null || normalize(filePath).startsWith(writeRoot))
+      ) {
         return { behavior: 'allow' as const, updatedInput: input }
       }
     }
 
     return denyAutoMemTool(
       tool,
-      `only ${FILE_READ_TOOL_NAME}, ${GREP_TOOL_NAME}, ${GLOB_TOOL_NAME}, read-only ${BASH_TOOL_NAME}, and ${FILE_EDIT_TOOL_NAME}/${FILE_WRITE_TOOL_NAME} within ${memoryDir} are allowed`,
+      `only ${FILE_READ_TOOL_NAME}, ${GREP_TOOL_NAME}, ${GLOB_TOOL_NAME}, read-only ${BASH_TOOL_NAME}, and ${FILE_EDIT_TOOL_NAME}/${FILE_WRITE_TOOL_NAME} within ${writeRoot ?? memoryDir} are allowed`,
     )
   }
 }
@@ -306,14 +371,8 @@ export function initExtractMemories(): void {
    *  considers messages added since the previous extraction. */
   let lastMemoryMessageUuid: string | undefined
 
-  /** One-shot flag: once we log that the gate is disabled, don't repeat. */
-  let hasLoggedGateFailure = false
-
   /** True while runExtraction is executing — prevents overlapping runs. */
   let inProgress = false
-
-  /** Counts eligible turns since the last extraction run. Resets to 0 after each run. */
-  let turnsSinceLastExtraction = 0
 
   /** When a call arrives during an in-progress run, we stash the context here
    *  and run one trailing extraction after the current one finishes. */
@@ -368,22 +427,21 @@ export function initExtractMemories(): void {
       false,
     )
 
-    const canUseTool = createAutoMemCanUseTool(memoryDir)
+    const canUseTool = createAutoMemCanUseTool(memoryDir, LEARNED_SUBDIR)
     const cacheSafeParams = createCacheSafeParams(context)
 
-    // Only run extraction every N eligible turns (tengu_bramble_lintel, default 1).
-    // Trailing extractions (from stashed contexts) skip this check since they
-    // process already-committed work that should not be throttled.
-    if (!isTrailingRun) {
-      turnsSinceLastExtraction++
-      if (
-        turnsSinceLastExtraction <
-        (getFeatureValue_CACHED_MAY_BE_STALE('tengu_bramble_lintel', null) ?? 1)
-      ) {
-        return
-      }
+    // Fire B (end-of-big-task): only run after substantial work has
+    // accumulated since the last capture, measured by tool-use volume rather
+    // than a turn timer. Light Q&A never triggers it; a big task does. The
+    // prompt then stages only critical, general lessons (often nothing).
+    // Trailing runs skip the gate — they finish already-committed work.
+    const toolUsesSinceLast = countToolUsesSince(messages, lastMemoryMessageUuid)
+    if (
+      !isTrailingRun &&
+      toolUsesSinceLast < SELF_LEARNING_BIG_TASK_TOOL_THRESHOLD
+    ) {
+      return
     }
-    turnsSinceLastExtraction = 0
 
     inProgress = true
     const startTime = Date.now()
@@ -395,8 +453,10 @@ export function initExtractMemories(): void {
       // Pre-inject the memory directory manifest so the agent doesn't spend
       // a turn on `ls`. Reuses findRelevantMemories' frontmatter scan.
       // Placed after the throttle gate so skipped turns don't pay the scan cost.
+      // includeStaging: true so the agent sees already-pending proposals and
+      // does not re-propose duplicates.
       const existingMemories = formatMemoryManifest(
-        await scanMemoryFiles(memoryDir, createAbortController().signal),
+        await scanMemoryFiles(memoryDir, createAbortController().signal, true),
       )
 
       const userPrompt =
@@ -492,7 +552,10 @@ export function initExtractMemories(): void {
         if (feature('TEAMMEM')) {
           msg.teamCount = teamCount
         }
-        appendSystemMessage?.(msg)
+        // Self-learning saves are PROPOSALS staged for /learned review, not
+        // active memory — surface them with a distinct verb so the digest
+        // reads "Proposed N memories" rather than implying they're live.
+        appendSystemMessage?.({ ...msg, verb: 'Proposed' })
       }
     } catch (error) {
       // Extraction is best-effort — log but don't notify on error
@@ -533,11 +596,7 @@ export function initExtractMemories(): void {
       return
     }
 
-    if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_passport_quail', false)) {
-      if (process.env.USER_TYPE === 'ant' && !hasLoggedGateFailure) {
-        hasLoggedGateFailure = true
-        logEvent('tengu_extract_memories_gate_disabled', {})
-      }
+    if (!isSelfLearningEnabled()) {
       return
     }
 

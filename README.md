@@ -122,6 +122,9 @@ Tree navigation, cloning, branching, and resume commands make long sessions easi
 **High-visibility monitoring and reporting**
 Tau separates live usage, session statistics, and final reports, so you can monitor consumption while still producing readable end-of-session summaries.
 
+**Self-learning & self-improvement**
+Tau gets better the more you use it. After a substantial task — or on demand via `/learned` — it proposes one critical, general, reusable lesson (a framework gotcha, a whole class of bug to avoid, a hard-won constraint, or your own preference) for you to Approve / Edit / Skip. Approved lessons are saved to memory and carried from this session into future ones and other projects, so the work keeps compounding instead of starting cold. Review, edit, delete, or toggle everything it learns with `/learned`.
+
 ---
 
 ## License

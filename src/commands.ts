@@ -29,6 +29,8 @@ import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import keybindings from './commands/keybindings/index.js'
 import lane from './commands/lane/index.js'
+import learned from './commands/learned/index.js'
+import learnedRun from './commands/learned/learned-run.js'
 import login from './commands/login/index.js'
 import logout from './commands/logout/index.js'
 import provider from './commands/provider/index.js'
@@ -306,6 +308,8 @@ const COMMANDS = memoize((): Command[] => [
   ide,
   init,
   keybindings,
+  learned,
+  learnedRun,
   installGitHubApp,
   installSlackApp,
   mcp,

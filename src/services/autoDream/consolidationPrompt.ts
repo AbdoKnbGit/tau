@@ -21,6 +21,11 @@ ${DIR_EXISTS_GUIDANCE}
 
 Session transcripts: \`${transcriptDir}\` (large JSONL files — grep narrowly, don't read whole files)
 
+**Boundaries (critical — the user is the human in the loop):**
+- Only ever modify, merge, or delete memory files that carry \`origin: learned\` in their frontmatter. Files WITHOUT that marker are the user's own curated memories — never edit, prune, reword, or reindex them.
+- When updating \`MEMORY.md\`, only touch index lines that point to \`origin: learned\` files. Leave the user's own index entries exactly as they are.
+- Ignore the \`learned/\` subdirectory entirely — those are proposals pending the user's review (via /learned), not active memory. Do not read from, write to, or promote them.
+
 ---
 
 ## Phase 1 — Orient
@@ -55,6 +60,7 @@ Focus on:
 Update \`${ENTRYPOINT_NAME}\` so it stays under ${MAX_ENTRYPOINT_LINES} lines AND under ~25KB. It's an **index**, not a dump — each entry should be one line under ~150 characters: \`- [Title](file.md) — one-line hook\`. Never write memory content directly into it.
 
 - Remove pointers to memories that are now stale, wrong, or superseded
+- Prune low-signal **\`origin: learned\`** memories: if such an entry is vague, redundant, rarely relevant, or hasn't earned its place across multiple sessions, delete it — a small, high-signal set beats a comprehensive one (never prune the user's own unmarked memories)
 - Demote verbose entries: if an index line is over ~200 chars, it's carrying content that belongs in the topic file — shorten the line, move the detail
 - Add pointers to newly important memories
 - Resolve contradictions — if two files disagree, fix the wrong one

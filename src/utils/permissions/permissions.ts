@@ -6,8 +6,10 @@ import {
   mcpInfoFromString,
 } from '../../services/mcp/mcpStringUtils.js'
 import { isWhatsAppDrivenTurn } from '../../services/whatsapp/turnState.js'
+import { isSelfLearningEnabled } from '../../memdir/paths.js'
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../../tools/AskUserQuestionTool/prompt.js'
 import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
@@ -1260,10 +1262,21 @@ async function hasPermissionsToUseToolInner(
   }
 
   // 1e. Tool requires user interaction unless dangerous bypass is active.
+  // Exception: with self-learning on, AskUserQuestion must STILL prompt even
+  // under dangerously-skip-permissions. Its entire purpose is to capture the
+  // user's answer; auto-allowing it (step 2a) runs the tool with an empty
+  // answer, which silently breaks the /learned "learn" approval flow. Scope is
+  // deliberately narrow — only this one tool, only while self-learning is
+  // enabled — so dangerously-skip-permissions is otherwise unchanged.
+  const askUserQuestionDespiteBypass =
+    tool.name === ASK_USER_QUESTION_TOOL_NAME && isSelfLearningEnabled()
   if (
     tool.requiresUserInteraction?.() &&
     toolPermissionResult?.behavior === 'ask' &&
-    !shouldBypassPermissionPrompts(context.getAppState().toolPermissionContext)
+    (!shouldBypassPermissionPrompts(
+      context.getAppState().toolPermissionContext,
+    ) ||
+      askUserQuestionDespiteBypass)
   ) {
     return toolPermissionResult
   }
