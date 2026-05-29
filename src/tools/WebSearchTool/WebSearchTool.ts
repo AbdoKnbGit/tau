@@ -1,6 +1,6 @@
 import type {
   BetaContentBlock,
-  BetaToolUnion,
+  BetaWebSearchTool20250305,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { getAPIProvider } from 'src/utils/model/providers.js'
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js'
@@ -120,8 +120,6 @@ export type { WebSearchProgress } from '../../types/tools.js'
 
 import type { WebSearchProgress } from '../../types/tools.js'
 
-const ANTHROPIC_WEB_SEARCH_TOOL_TYPE = 'web_search_20260209'
-
 function supportsAnthropicServerWebSearch(): boolean {
   const provider = getAPIProvider()
   const model = getMainLoopModel()
@@ -141,14 +139,20 @@ function supportsAnthropicServerWebSearch(): boolean {
   return provider === 'foundry'
 }
 
-function makeToolSchema(input: Input): BetaToolUnion {
+function makeToolSchema(input: Input): BetaWebSearchTool20250305 {
+  // web_search_20250305 is the standalone server-tool version, paired with the
+  // web-search-2025-03-05 beta. (web_search_20260209 — a prior value here — is
+  // the code-execution-only variant: the API rejects it as a top-level tool
+  // with "tool_choice.name 'web_search' cannot be used ... restricted to
+  // code_execution", and the model silently declines to search, so it must NOT
+  // be used on this autonomous path.)
   return {
-    type: ANTHROPIC_WEB_SEARCH_TOOL_TYPE,
+    type: 'web_search_20250305',
     name: 'web_search',
     allowed_domains: input.allowed_domains,
     blocked_domains: input.blocked_domains,
     max_uses: 8, // Hardcoded to 8 searches maximum
-  } as unknown as BetaToolUnion
+  }
 }
 
 function makeOutputFromFirecrawlResponse(
