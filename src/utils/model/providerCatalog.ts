@@ -265,12 +265,24 @@ const ANTHROPIC_OPUS_EFFORTS = [
   'max',
 ] as const satisfies readonly EffortLevel[]
 
+// Opus 4.8 adds the 'ultracode' top tier (native Anthropic path only — selecting
+// an Anthropic model here switches the active provider to firstParty, where
+// modelSupportsUltracodeEffort() is satisfied and it maps to 'max' on the wire).
+const ANTHROPIC_OPUS_48_EFFORTS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultracode',
+] as const satisfies readonly EffortLevel[]
+
 const ANTHROPIC_MODELS: readonly AnthropicModelInfo[] = [
   {
-    id: 'claude-opus-4-7',
-    name: 'Claude Opus 4.7',
+    id: 'claude-opus-4-8',
+    name: 'Claude Opus 4.8',
     tags: ['recommended', 'reasoning'],
-    effortLevels: ANTHROPIC_OPUS_EFFORTS,
+    effortLevels: ANTHROPIC_OPUS_48_EFFORTS,
     defaultEffort: 'medium',
     contextWindow: 1_000_000,
   },
@@ -301,7 +313,7 @@ function encodeAnthropicEffortVariant(
 }
 
 function isAnthropicEffortLevel(value: string): value is EffortLevel {
-  return (ANTHROPIC_OPUS_EFFORTS as readonly string[]).includes(value)
+  return (ANTHROPIC_OPUS_48_EFFORTS as readonly string[]).includes(value)
 }
 
 export function resolveProviderModelSelection(

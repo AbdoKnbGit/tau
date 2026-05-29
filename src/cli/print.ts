@@ -275,6 +275,7 @@ import {
   modelSupportsEffort,
   modelSupportsMaxEffort,
   modelSupportsXHighEffort,
+  modelSupportsUltracodeEffort,
   EFFORT_LEVELS,
   resolveAppliedEffort,
 } from 'src/utils/effort.js'
@@ -1212,7 +1213,8 @@ function runHeadlessStreaming(
         supportedEffortLevels: EFFORT_LEVELS.filter(
           l =>
             (l !== 'xhigh' || modelSupportsXHighEffort(resolvedModel)) &&
-            (l !== 'max' || modelSupportsMaxEffort(resolvedModel)),
+            (l !== 'max' || modelSupportsMaxEffort(resolvedModel)) &&
+            (l !== 'ultracode' || modelSupportsUltracodeEffort(resolvedModel)),
         ),
       }),
       ...(hasAdaptiveThinking && { supportsAdaptiveThinking: true }),

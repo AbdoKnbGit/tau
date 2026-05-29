@@ -220,7 +220,11 @@ export function shouldShowEffortCallout(model: string): boolean {
   // Only show for current Opus for now
   const parsed = parseUserSpecifiedModel(model);
   const normalized = parsed.toLowerCase();
-  if (!normalized.includes('opus-4-7') && !normalized.includes('opus-4-6')) {
+  if (
+    !normalized.includes('opus-4-8') &&
+    !normalized.includes('opus-4-7') &&
+    !normalized.includes('opus-4-6')
+  ) {
     return false;
   }
   const config = getGlobalConfig();

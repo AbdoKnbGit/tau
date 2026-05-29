@@ -118,6 +118,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   const canonical = getCanonicalName(model)
   // Supported by a subset of Claude 4 models
   if (
+    canonical.includes('opus-4-8') ||
     canonical.includes('opus-4-7') ||
     canonical.includes('opus-4-6') ||
     canonical.includes('sonnet-4-6')

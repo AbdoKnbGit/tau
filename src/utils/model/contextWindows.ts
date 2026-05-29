@@ -11,6 +11,7 @@ const providerContextWindows = new Map<APIProvider, Map<string, number>>()
 
 const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindowMap>> = {
   firstParty: {
+    'claude-opus-4-8': 1_000_000,
     'claude-opus-4-7': 1_000_000,
   },
   kiro: {

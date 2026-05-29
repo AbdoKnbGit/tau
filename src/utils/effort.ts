@@ -17,6 +17,10 @@ export const EFFORT_LEVELS = [
   'high',
   'xhigh',
   'max',
+  // tau-local top tier, first-party Anthropic Claude Opus 4.8 only. Maps to the
+  // strongest real Anthropic effort on the wire (see configureEffortParams in
+  // services/api/claude.ts); resolveAppliedEffort() clamps it away everywhere else.
+  'ultracode',
 ] as const satisfies readonly EffortLevel[]
 
 export type EffortValue = EffortLevel | number
@@ -33,7 +37,8 @@ export function modelSupportsEffort(model: string): boolean {
   }
   // Supported by the current Claude 4 model picker surface.
   if (
-    m.includes('opus-4-7')
+    m.includes('opus-4-8')
+    || m.includes('opus-4-7')
     || m.includes('opus-4-6')
     || m.includes('sonnet-4-6')
   ) {
@@ -62,7 +67,8 @@ export function modelSupportsMaxEffort(model: string): boolean {
   }
   const normalized = model.toLowerCase()
   if (
-    normalized.includes('opus-4-7')
+    normalized.includes('opus-4-8')
+    || normalized.includes('opus-4-7')
     || normalized.includes('opus-4-6')
     || normalized.includes('sonnet-4-6')
   ) {
@@ -77,13 +83,28 @@ export function modelSupportsMaxEffort(model: string): boolean {
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'xhigh' effort.
 export function modelSupportsXHighEffort(model: string): boolean {
   const normalized = model.toLowerCase()
-  if (normalized.includes('opus-4-7')) {
+  if (normalized.includes('opus-4-8') || normalized.includes('opus-4-7')) {
     return true
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
     return true
   }
   return false
+}
+
+// 'ultracode' is a tau-local top effort tier, exposed ONLY on Claude Opus 4.8
+// reached over the native Anthropic Messages API (firstParty + Bedrock/Vertex/
+// Foundry — all of which flow through services/api/claude.ts, where
+// configureEffortParams() maps 'ultracode' to the strongest real effort on the
+// wire). Third-party providers (Copilot, Cursor, OpenRouter, ModelRouter, …)
+// reach Claude through their own effort/reasoning systems and must never see
+// this tier, so we exclude them explicitly. The Anthropic API has no
+// 'ultracode' effort of its own.
+export function modelSupportsUltracodeEffort(model: string): boolean {
+  if (isThirdPartyProvider(getAPIProvider())) {
+    return false
+  }
+  return model.toLowerCase().includes('opus-4-8')
 }
 
 export function isEffortLevel(value: string): value is EffortLevel {
@@ -121,7 +142,7 @@ export function toPersistableEffort(
     return value
   }
   if (
-    (value === 'xhigh' || value === 'max') &&
+    (value === 'xhigh' || value === 'max' || value === 'ultracode') &&
     process.env.USER_TYPE === 'ant'
   ) {
     return value
@@ -187,6 +208,16 @@ export function resolveAppliedEffort(
   }
   const resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+  // 'ultracode' only takes effect on first-party Opus 4.8. On every other model
+  // it degrades to the strongest effort that model does support, so a sticky
+  // 'ultracode' selection never leaks an invalid value onto another model/provider.
+  if (resolved === 'ultracode' && !modelSupportsUltracodeEffort(model)) {
+    return modelSupportsMaxEffort(model)
+      ? 'max'
+      : modelSupportsXHighEffort(model)
+        ? 'xhigh'
+        : 'high'
+  }
   if (resolved === 'xhigh' && !modelSupportsXHighEffort(model)) {
     return modelSupportsMaxEffort(model) ? 'max' : 'high'
   }
@@ -286,9 +317,11 @@ export function getEffortLevelDescription(level: EffortLevel): string {
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
     case 'xhigh':
-      return 'Extra high reasoning for complex Opus 4.7 work'
+      return 'Extra high reasoning for complex Opus work'
     case 'max':
       return 'Maximum capability with deepest reasoning'
+    case 'ultracode':
+      return 'Ultracode — maximum reasoning, Claude Opus 4.8 only'
   }
 }
 
@@ -365,7 +398,8 @@ export function getDefaultEffortForModel(
   // Default effort on current Opus models to medium for Pro.
   // Max/Team also get medium when the tengu_grey_step2 config is enabled.
   if (
-    model.toLowerCase().includes('opus-4-7')
+    model.toLowerCase().includes('opus-4-8')
+    || model.toLowerCase().includes('opus-4-7')
     || model.toLowerCase().includes('opus-4-6')
   ) {
     if (isProSubscriber()) {

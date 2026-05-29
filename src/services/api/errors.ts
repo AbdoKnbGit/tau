@@ -943,6 +943,9 @@ function get3PModelFallbackSuggestion(model: string): string | undefined {
   }
   // @[MODEL LAUNCH]: Add a fallback suggestion chain for the new model → previous version for 3P
   const m = model.toLowerCase()
+  if (m.includes('opus-4-8') || m.includes('opus_4_8')) {
+    return getModelStrings().opus47
+  }
   if (m.includes('opus-4-7') || m.includes('opus_4_7')) {
     return getModelStrings().opus46
   }

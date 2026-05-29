@@ -94,7 +94,7 @@ function getCustomSonnetOption(): ModelOption | undefined {
 // @[MODEL LAUNCH]: Update or add model option functions (getSonnetXXOption, getOpusXXOption, etc.)
 // with the new model's label and description. These appear in the /model picker.
 function getOpusMarketingName(): string {
-  return getAPIProvider() === 'firstParty' ? 'Opus 4.7' : 'Opus 4.6'
+  return getAPIProvider() === 'firstParty' ? 'Opus 4.8' : 'Opus 4.6'
 }
 
 function getSonnet46Option(): ModelOption {
@@ -161,7 +161,7 @@ export function getOpus46_1MOption(fastMode = false): ModelOption {
   const opusName = getOpusMarketingName()
   return {
     value: is3P ? getModelStrings().opus46 + '[1m]' : 'opus[1m]',
-    label: is3P ? 'Opus (1M context)' : 'Opus 4.7 (1M context)',
+    label: is3P ? 'Opus (1M context)' : 'Opus 4.8 (1M context)',
     description: `${opusName} for long sessions${getOpus46PricingSuffix(fastMode)}`,
     descriptionForModel:
       `${opusName} with 1M context window - for long sessions with large codebases`,
@@ -239,7 +239,7 @@ export function getMaxOpus46_1MOption(fastMode = false): ModelOption {
   return {
     value: 'opus[1m]',
     label: getAPIProvider() === 'firstParty'
-      ? 'Opus 4.7 (1M context)'
+      ? 'Opus 4.8 (1M context)'
       : 'Opus (1M context)',
     description: `${opusName} with 1M context${billingInfo}${getOpus46PricingSuffix(fastMode)}`,
   }
@@ -250,7 +250,7 @@ function getMergedOpus1MOption(fastMode = false): ModelOption {
   const opusName = getOpusMarketingName()
   return {
     value: is3P ? getModelStrings().opus46 + '[1m]' : 'opus[1m]',
-    label: is3P ? 'Opus (1M context)' : 'Opus 4.7 (1M context)',
+    label: is3P ? 'Opus (1M context)' : 'Opus 4.8 (1M context)',
     description: `${opusName} with 1M context · Most capable for complex work${!is3P && fastMode ? getOpus46PricingSuffix(fastMode) : ''}`,
     descriptionForModel:
       `${opusName} with 1M context - most capable for complex work`,

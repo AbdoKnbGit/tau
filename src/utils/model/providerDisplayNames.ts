@@ -21,6 +21,8 @@ export function getProviderModelDisplayName(
 function getAnthropicModelDisplayName(modelId: string): string | null {
   const baseModelId = modelId.split('::effort=')[0]?.toLowerCase()
   switch (baseModelId) {
+    case 'claude-opus-4-8':
+      return 'Claude Opus 4.8'
     case 'claude-opus-4-7':
       return 'Claude Opus 4.7'
     case 'claude-opus-4-6':

@@ -97,7 +97,7 @@ function sampleSupportedModels(lane: Lane): string {
   // The Lane interface has supportsModel(id) — we don't enumerate, so
   // sample a few canonical ids per lane for the status table.
   const CANDIDATES: Record<string, string[]> = {
-    claude: ['claude-sonnet-4-6', 'claude-opus-4-7', 'claude-haiku-4-5'],
+    claude: ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5'],
     gemini: ['gemini-3.1-pro-high', 'gemini-2.5-flash', 'gemma-2-9b'],
     codex: ['gpt-5-codex', 'o3-mini', 'codex-turbo'],
     qwen: ['qwen3-coder-plus', 'qwen-max', 'coder-model'],

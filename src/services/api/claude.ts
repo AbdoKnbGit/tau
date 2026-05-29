@@ -555,8 +555,11 @@ function configureEffortParams(
   if (effortValue === undefined) {
     betas.push(EFFORT_BETA_HEADER)
   } else if (typeof effortValue === 'string') {
-    // Send string effort level as is
-    outputConfig.effort = effortValue
+    // 'ultracode' is a tau-local label (Opus 4.8 only) with no Anthropic API
+    // equivalent — send 'max' on the wire while the UI keeps showing
+    // 'ultracode'. resolveAppliedEffort() has already clamped it away for any
+    // model that does not support it, so this only fires on Opus 4.8.
+    outputConfig.effort = effortValue === 'ultracode' ? 'max' : effortValue
     betas.push(EFFORT_BETA_HEADER)
   } else if (process.env.USER_TYPE === 'ant') {
     // Numeric effort override - ant-only (uses anthropic_internal)
