@@ -41,6 +41,8 @@ import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, get
 import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js';
 import { trackGitOperations } from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
+import { validateBashCommandPartsMatch } from './bashCommandParts.js';
+import { renderBashAutoPlanMessage, renderBashCommandPlan } from './bashCommandPlanner.js';
 import { appendBashFailureGuidance } from './bashFailureGuidance.js';
 import { validateBashExecutionPreflight } from './bashPreflightValidation.js';
 import { maybeAppendCommandHelp } from './commandHelp.js';
@@ -231,6 +233,35 @@ const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['sleep' // Sleep should run in fore
 const isBackgroundTasksDisabled =
 // eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
 isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS);
+const bashCommandFlagScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
+const bashCommandFlagValueSchema = z.union([bashCommandFlagScalarSchema, z.array(bashCommandFlagScalarSchema)]);
+const bashCommandTokenSchema = z.union([
+  z.strictObject({
+    kind: z.literal('arg'),
+    value: z.string().describe('Raw argument token rendered with safe Bash quoting')
+  }),
+  z.strictObject({
+    kind: z.literal('flag'),
+    name: z.string().describe('Flag name with or without leading dashes'),
+    value: bashCommandFlagValueSchema.optional().describe('Flag value. true emits the flag, false omits it, arrays repeat the same flag.'),
+    style: z.enum(['space', 'equals', 'boolean']).optional().describe('How to render the flag value. Default is space: --flag value.')
+  }),
+  z.strictObject({
+    kind: z.literal('separator').describe('Render a -- separator before trailing positional arguments')
+  })
+]);
+const bashCommandPartsSchema = z.strictObject({
+  executable: z.string().describe('Base executable, for example docker, git, python, pytest, npm, or an executable path'),
+  tokens: z.array(bashCommandTokenSchema).optional().describe('Fully ordered argument tokens after the executable. Use this when flags must appear between subcommands, for example docker compose --file file up --detach service. When tokens is provided, grouped subcommands/flags/positionals are ignored.'),
+  subcommands: z.array(z.string()).optional().describe('Ordered CLI subcommands that come immediately after the executable'),
+  flags: z.array(z.strictObject({
+    name: z.string().describe('Flag name with or without leading dashes, for example f, file, --file, detach, or -k'),
+    value: bashCommandFlagValueSchema.optional().describe('Flag value. true emits the flag, false omits it, arrays repeat the same flag.'),
+    style: z.enum(['space', 'equals', 'boolean']).optional().describe('How to render the flag value. Default is space: --flag value.')
+  })).optional().describe('Ordered flags to render with safe Bash quoting'),
+  positionals: z.array(z.string()).optional().describe('Ordered positional arguments rendered after flags'),
+  trailing_args: z.array(z.string()).optional().describe('Arguments rendered after a -- separator')
+});
 const fullInputSchema = lazySchema(() => z.strictObject({
   command: z.string().describe('The command to execute'),
   timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),
@@ -246,6 +277,9 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 - git reset --hard origin/main → "Discard all local changes and match remote main"
 - curl -s url | jq '.data[]' → "Fetch JSON from URL and extract data array elements"`),
   run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run this command in the background. Use Read to read the output later.`),
+  plan_only: semanticBoolean(z.boolean().optional()).describe('Set to true to analyze a complex or unfamiliar Bash command without executing it. Use this before running CLI syntax you are not certain about.'),
+  syntax_confirmed: semanticBoolean(z.boolean().optional()).describe('Set to true only after checking a plan_only report, running a discovery command such as --help, or compiling the command from command_parts. This only bypasses proactive syntax planning; it does not bypass validation, permissions, sandboxing, or retry guard.'),
+  command_parts: bashCommandPartsSchema.optional().describe('Optional structured Bash command form. Tau compiles these parts into a safely quoted Bash command and blocks execution if command does not match the compiled result. Use this for complex external CLI syntax instead of hand-quoting raw Bash.'),
   dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.'),
   workdir: z.string().optional().describe('Optional working directory to run this command in. Absolute, or relative to the current session cwd. Use this INSTEAD of `cd path && command` — it avoids path-quoting issues (especially on Windows where backslashes are escapes) and never changes the session cwd. Only affects this single invocation.'),
   _simulatedSedEdit: z.object({
@@ -296,6 +330,7 @@ const outputSchema = lazySchema(() => z.object({
   dangerouslyDisableSandbox: z.boolean().optional().describe('Flag to indicate if sandbox mode was overridden'),
   returnCodeInterpretation: z.string().optional().describe('Semantic interpretation for non-error exit codes with special meaning'),
   noOutputExpected: z.boolean().optional().describe('Whether the command is expected to produce no output on success'),
+  commandPlan: z.string().optional().describe('Dry-run command plan when plan_only is true'),
   structuredContent: z.array(z.any()).optional().describe('Structured content blocks'),
   persistedOutputPath: z.string().optional().describe('Path to the persisted full output in tool-results dir (set when output is too large for inline)'),
   persistedOutputSize: z.number().optional().describe('Total size of the output in bytes (set when output is too large for inline)')
@@ -453,6 +488,9 @@ export const BashTool = buildTool({
     return this.isReadOnly?.(input) ?? false;
   },
   isReadOnly(input) {
+    if (input.plan_only) {
+      return true;
+    }
     const compoundCommandHasCd = commandHasAnyCd(input.command);
     const result = checkReadOnlyConstraints(input, compoundCommandHasCd);
     return result.behavior === 'allow';
@@ -505,6 +543,9 @@ export const BashTool = buildTool({
     }
     // Render sed in-place edits as file edits
     if (input.command) {
+      if (input.plan_only) {
+        return 'BashPlan';
+      }
       const sedInfo = parseSedEditCommand(input.command);
       if (sedInfo) {
         return fileEditUserFacingName({
@@ -528,18 +569,42 @@ export const BashTool = buildTool({
       description
     } = input;
     if (description) {
-      return description;
+      return input.plan_only ? `Plan: ${description}` : description;
     }
-    return truncate(command, TOOL_SUMMARY_MAX_LENGTH);
+    return input.plan_only ? `Plan: ${truncate(command, TOOL_SUMMARY_MAX_LENGTH)}` : truncate(command, TOOL_SUMMARY_MAX_LENGTH);
   },
   getActivityDescription(input) {
     if (!input?.command) {
       return 'Running command';
     }
+    if (input.plan_only) {
+      return `Planning ${input.description ?? truncate(input.command, TOOL_SUMMARY_MAX_LENGTH)}`;
+    }
     const desc = input.description ?? truncate(input.command, TOOL_SUMMARY_MAX_LENGTH);
     return `Running ${desc}`;
   },
   async validateInput(input: BashToolInput): Promise<ValidationResult> {
+    if (input.plan_only) {
+      return {
+        result: true
+      };
+    }
+    try {
+      const commandPartsMatch = validateBashCommandPartsMatch(input.command, input.command_parts);
+      if (commandPartsMatch && !commandPartsMatch.ok) {
+        return {
+          result: false,
+          message: commandPartsMatch.message ?? 'Blocked: command_parts did not match command.',
+          errorCode: 14
+        };
+      }
+    } catch (error) {
+      return {
+        result: false,
+        message: error instanceof Error ? error.message : String(error),
+        errorCode: 14
+      };
+    }
     // Retry guard: block repeated identical failing commands to prevent
     // infinite loops. Non-frontier models retry the same broken command
     // 30+ times without diagnosing. This forces diagnostic-first behavior.
@@ -577,11 +642,29 @@ export const BashTool = buildTool({
         errorCode: 11
       };
     }
+    const autoPlanMessage = await renderBashAutoPlanMessage(input);
+    if (autoPlanMessage !== null) {
+      return {
+        result: false,
+        message: autoPlanMessage,
+        errorCode: 15
+      };
+    }
     return {
       result: true
     };
   },
   async checkPermissions(input, context): Promise<PermissionResult> {
+    if (input.plan_only) {
+      return {
+        behavior: 'allow',
+        updatedInput: input,
+        decisionReason: {
+          type: 'other',
+          reason: 'Bash command planning does not execute the command'
+        }
+      };
+    }
     return bashToolHasPermission(input, context);
   },
   renderToolUseMessage,
@@ -667,6 +750,19 @@ export const BashTool = buildTool({
     };
   },
   async call(input: BashToolInput, toolUseContext, _canUseTool?: CanUseToolFn, parentMessage?: AssistantMessage, onProgress?: ToolCallProgress<BashProgress>) {
+    if (input.plan_only) {
+      const plan = await renderBashCommandPlan(input);
+      return {
+        data: {
+          stdout: plan,
+          stderr: '',
+          interrupted: false,
+          commandPlan: plan,
+          noOutputExpected: false,
+          dangerouslyDisableSandbox: 'dangerouslyDisableSandbox' in input ? input.dangerouslyDisableSandbox as boolean | undefined : undefined
+        }
+      };
+    }
     // Handle simulated sed edit - apply directly instead of running sed
     // This ensures what the user previewed is exactly what gets written
     if (input._simulatedSedEdit) {

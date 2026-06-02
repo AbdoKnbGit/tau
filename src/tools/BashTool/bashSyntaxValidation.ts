@@ -4,6 +4,7 @@ import { errorMessage } from '../../utils/errors.js'
 import { getPlatform } from '../../utils/platform.js'
 import { which } from '../../utils/which.js'
 import { findGitBashPath } from '../../utils/windowsPaths.js'
+import { analyzeNativeShellCommand, type NativeShellAnalysis } from './nativeShellParser.js'
 
 const SYNTAX_CHECK_TIMEOUT_MS = 2_000
 const MAX_DIAGNOSTIC_LENGTH = 2_000
@@ -36,6 +37,20 @@ function cleanDiagnostic(stdout: string, stderr: string): string {
   if (!diagnostic) return 'The shell parser rejected the command.'
   if (diagnostic.length <= MAX_DIAGNOSTIC_LENGTH) return diagnostic
   return `${diagnostic.slice(0, MAX_DIAGNOSTIC_LENGTH).trimEnd()}\n...`
+}
+
+function formatNativeDiagnostic(analysis: NativeShellAnalysis | null): string | null {
+  if (!analysis || analysis.ok) return null
+  const diagnostics = analysis.diagnostics ?? []
+  if (diagnostics.length === 0) return `${analysis.parser} rejected the command.`
+  return diagnostics
+    .map(item => {
+      const location = item.line || item.column
+        ? ` at ${item.line ?? '?'}:${item.column ?? '?'}`
+        : ''
+      return `${analysis.parser}${location}: ${item.message}`
+    })
+    .join('\n')
 }
 
 function isSupportedShellPath(shellPath: string | undefined): shellPath is string {
@@ -210,14 +225,33 @@ export async function validateBashSyntax(
 ): Promise<BashSyntaxValidationResult> {
   if (command.trim() === '') return { ok: true }
 
+  const nativeAnalysis = await analyzeNativeShellCommand(command)
+  const nativeDiagnostic = formatNativeDiagnostic(nativeAnalysis)
+
   let shellPath: string
   try {
     const syntaxShellPath = await findSyntaxCheckShell()
-    if (!syntaxShellPath) return { ok: true }
+    if (!syntaxShellPath) {
+      if (nativeDiagnostic) {
+        return {
+          ok: false,
+          diagnostic: nativeDiagnostic,
+          message: formatBashSyntaxValidationError(command, nativeDiagnostic),
+        }
+      }
+      return { ok: true }
+    }
     shellPath = syntaxShellPath
   } catch {
     // If shell discovery itself fails, let the normal execution path report
     // the environment problem rather than blocking at syntax validation.
+    if (nativeDiagnostic) {
+      return {
+        ok: false,
+        diagnostic: nativeDiagnostic,
+        message: formatBashSyntaxValidationError(command, nativeDiagnostic),
+      }
+    }
     return { ok: true }
   }
 
@@ -234,7 +268,10 @@ export async function validateBashSyntax(
 
   if (result.code === 0) return { ok: true }
 
-  const diagnostic = cleanDiagnostic(result.stdout, result.stderr)
+  const shellDiagnostic = cleanDiagnostic(result.stdout, result.stderr)
+  const diagnostic = nativeDiagnostic
+    ? `${shellDiagnostic}\n\nNative parser:\n${nativeDiagnostic}`
+    : shellDiagnostic
   return {
     ok: false,
     diagnostic,

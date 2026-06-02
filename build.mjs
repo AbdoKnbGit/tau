@@ -9,6 +9,7 @@
  */
 
 import { build } from 'esbuild'
+import { spawnSync } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { isAbsolute, join, resolve } from 'path'
 
@@ -392,3 +393,15 @@ if (!React.useEffectEvent) {
 // Report size
 const outStat = readFileSync(outPath)
 console.log(`✓ Built dist/cli.mjs (${(outStat.length / 1024 / 1024).toFixed(1)} MB)`)
+
+const nativeShellParserBuild = spawnSync(
+  process.execPath,
+  ['scripts/build-native-shell-parser.mjs'],
+  {
+    stdio: 'inherit',
+    windowsHide: true,
+  },
+)
+if (nativeShellParserBuild.status !== 0) {
+  process.exit(nativeShellParserBuild.status ?? 1)
+}

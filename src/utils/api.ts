@@ -602,6 +602,12 @@ export function normalizeToolInput<T extends Tool>(
       // Check for run_in_background (may not exist in schema if CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is set)
       const run_in_background =
         'run_in_background' in parsed ? parsed.run_in_background : undefined
+      const plan_only =
+        'plan_only' in parsed ? parsed.plan_only : undefined
+      const syntax_confirmed =
+        'syntax_confirmed' in parsed ? parsed.syntax_confirmed : undefined
+      const command_parts =
+        'command_parts' in parsed ? parsed.command_parts : undefined
 
       // SAFETY: Cast is safe because input was validated by .parse() above.
       // TypeScript can't narrow the generic T based on switch(tool.name), so it
@@ -613,6 +619,9 @@ export function normalizeToolInput<T extends Tool>(
         ...(timeout !== undefined && { timeout }),
         ...(description !== undefined && { description }),
         ...(run_in_background !== undefined && { run_in_background }),
+        ...(plan_only !== undefined && { plan_only }),
+        ...(syntax_confirmed !== undefined && { syntax_confirmed }),
+        ...(command_parts !== undefined && { command_parts }),
         ...('dangerouslyDisableSandbox' in parsed &&
           parsed.dangerouslyDisableSandbox !== undefined && {
             dangerouslyDisableSandbox: parsed.dangerouslyDisableSandbox,
