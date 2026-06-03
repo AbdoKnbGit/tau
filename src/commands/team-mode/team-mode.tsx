@@ -17,10 +17,21 @@ import {
 } from '../../utils/model/providerCatalog.js'
 import { applyTeamModeOrchestratorAppState } from '../../utils/teamMode/appState.js'
 import {
+  clearTeamModeRuntimeState,
+  setTeamModeRuntimeEnabled,
+  summarizeTeamModeRuntime,
+  syncTeamModeRuntimeConfig,
+} from '../../utils/teamMode/runtime.js'
+import {
+  summarizeNativeTeamModeStatus,
+  type TeamModeNativeTeamContext,
+} from '../../utils/teamMode/nativeStatus.js'
+import {
   formatTeamModeFallback,
   formatTeamModeRole,
   getActiveTeamModeRoles,
   getTeamModeFallbackWorker,
+  getTeamModeRoles,
   getTeamModeRoleSlots,
   hasConfiguredTeamModeFallback,
   hasConfiguredTeamModeRoster,
@@ -36,6 +47,113 @@ type OnDone = (
   result?: string,
   options?: { display?: CommandResultDisplay },
 ) => void
+
+function syncCurrentTeamModeRuntime(
+  event?: string,
+  enabled = isTeamModeEnabled(),
+) {
+  return syncTeamModeRuntimeConfig({
+    roles: getTeamModeRoles(),
+    fallback: getTeamModeFallbackWorker(),
+    fallbackEnabled: isTeamModeFallbackEnabled(),
+    enabled,
+    event,
+  })
+}
+
+function appendRuntimeStatus(lines: string[]): void {
+  const initialSummary = summarizeTeamModeRuntime()
+  const summary =
+    initialSummary.exists ||
+    hasConfiguredTeamModeRoster() ||
+    hasConfiguredTeamModeFallback()
+      ? summarizeTeamModeRuntime(syncCurrentTeamModeRuntime())
+      : initialSummary
+
+  lines.push('', chalk.bold('Runtime:'))
+  if (!summary.exists) {
+    lines.push(`  ${chalk.dim('No runtime record yet.')}`)
+    return
+  }
+
+  const runtimeState = summary.enabled ? chalk.green('[active]') : chalk.dim('[inactive]')
+  lines.push(
+    `  ${runtimeState} ${chalk.dim(summary.runtimeId ?? 'runtime unavailable')}`,
+  )
+
+  const runOrder = [
+    'running',
+    'queued',
+    'completed',
+    'failed',
+    'cancelled',
+    'interrupted',
+  ] as const
+  const runParts = runOrder
+    .filter(status => summary.runCounts[status] > 0)
+    .map(status => `${status}=${summary.runCounts[status]}`)
+  lines.push(
+    `  ${chalk.cyan('Runs:')} ${
+      runParts.length > 0 ? runParts.join(', ') : chalk.dim('none')
+    }`,
+  )
+
+  if (summary.latestRun) {
+    const latest = summary.latestRun
+    lines.push(
+      `  ${chalk.cyan('Latest:')} ${formatRunStatus(latest.status)} ${latest.role} ${chalk.dim(latest.updatedAt)}`,
+    )
+    if (latest.error) {
+      lines.push(`    ${chalk.red(latest.error)}`)
+    }
+  } else if (summary.latestLog) {
+    lines.push(
+      `  ${chalk.cyan('Last event:')} ${summary.latestLog.event} ${chalk.dim(summary.latestLog.at)}`,
+    )
+  }
+}
+
+function formatRunStatus(status: string): string {
+  if (status === 'failed') return chalk.red(status)
+  if (status === 'running' || status === 'queued') return chalk.yellow(status)
+  if (status === 'completed') return chalk.green(status)
+  return chalk.dim(status)
+}
+
+function appendNativeTauStatus(
+  lines: string[],
+  teamContext?: TeamModeNativeTeamContext,
+): void {
+  const native = summarizeNativeTeamModeStatus({ teamContext })
+
+  lines.push('', chalk.bold('Native Tau:'))
+  if (!native.teamName) {
+    lines.push(
+      `  ${chalk.dim('No active native TeamCreate team. Plain Agent workers still work; TeamCreate enables mailbox/task-board coordination.')}`,
+    )
+    return
+  }
+
+  const fileState = native.teamFileExists
+    ? chalk.green('[persisted]')
+    : chalk.yellow('[missing team file]')
+  const contextState = native.hasActiveTeamContext
+    ? chalk.green('[active context]')
+    : chalk.dim('[disk only]')
+
+  lines.push(
+    `  ${contextState} ${fileState} ${chalk.cyan(native.teamName)}`,
+  )
+  lines.push(
+    `  ${chalk.cyan('Members:')} ${native.activeMemberCount}/${native.memberCount} active`,
+  )
+  lines.push(
+    `  ${chalk.cyan('Mailbox:')} ${native.inboxFileCount} inboxes, ${native.unreadMessageCount}/${native.messageCount} unread`,
+  )
+  lines.push(
+    `  ${chalk.cyan('Task board:')} pending=${native.taskCounts.pending}, in_progress=${native.taskCounts.in_progress}, completed=${native.taskCounts.completed}`,
+  )
+}
 
 function showHelp(onDone: OnDone) {
   const lines = [
@@ -62,10 +180,14 @@ function showHelp(onDone: OnDone) {
   onDone(lines.join('\n'), { display: 'system' })
 }
 
-function showStatus(onDone: OnDone) {
+function showStatus(
+  onDone: OnDone,
+  context?: LocalJSXCommandContext,
+) {
   const slots = getTeamModeRoleSlots()
   const enabled = isTeamModeEnabled()
   const lines: string[] = [`${chalk.bold('/team-mode status')}`]
+  const teamContext = context?.getAppState().teamContext
 
   lines.push(
     '',
@@ -78,6 +200,8 @@ function showStatus(onDone: OnDone) {
     lines.push(
       chalk.dim('Run /team-mode config to bind providers and models to each role.'),
     )
+    appendRuntimeStatus(lines)
+    appendNativeTauStatus(lines, teamContext)
     onDone(lines.join('\n'), { display: 'system' })
     return
   }
@@ -116,6 +240,9 @@ function showStatus(onDone: OnDone) {
     )
   }
 
+  appendRuntimeStatus(lines)
+  appendNativeTauStatus(lines, teamContext)
+
   onDone(lines.join('\n'), { display: 'system' })
 }
 
@@ -126,6 +253,7 @@ function resetTeamMode(onDone: OnDone) {
     teamModeEnabled: undefined,
     teamModeRoles: undefined,
   }))
+  clearTeamModeRuntimeState()
   // Drop the cached orchestrator addendum so the next turn rebuilds the
   // system prompt without it. Without this, the addendum keeps firing for
   // the rest of the session even though the user reset.
@@ -141,6 +269,13 @@ function turnTeamModeOff(onDone: OnDone) {
     ...current,
     teamModeEnabled: false,
   }))
+  setTeamModeRuntimeEnabled({
+    roles: getTeamModeRoles(),
+    fallback: getTeamModeFallbackWorker(),
+    fallbackEnabled: isTeamModeFallbackEnabled(),
+    enabled: false,
+    event: 'team-mode off',
+  })
   clearSystemPromptSections()
   onDone(
     `${chalk.bold('Team mode off.')} Configured roster was kept.`,
@@ -232,6 +367,7 @@ function turnFallbackOff(onDone: OnDone) {
     ...current,
     teamModeFallbackEnabled: false,
   }))
+  syncCurrentTeamModeRuntime('team-mode fallback off')
   clearSystemPromptSections()
   onDone(
     `${chalk.bold('Team-mode fallback off.')} Configured fallback was kept.`,
@@ -244,6 +380,7 @@ function turnFallbackOn(onDone: OnDone) {
     ...current,
     teamModeFallbackEnabled: true,
   }))
+  syncCurrentTeamModeRuntime('team-mode fallback on')
   clearSystemPromptSections()
   onDone(
     `${chalk.bold('Team-mode fallback on.')} Worker failures will retry once on the configured fallback.`,
@@ -257,6 +394,13 @@ function resetFallback(onDone: OnDone) {
     teamModeFallbackEnabled: undefined,
     teamModeFallbackWorker: undefined,
   }))
+  syncTeamModeRuntimeConfig({
+    roles: getTeamModeRoles(),
+    fallback: null,
+    fallbackEnabled: false,
+    enabled: isTeamModeEnabled(),
+    event: 'team-mode fallback reset',
+  })
   clearSystemPromptSections()
   onDone(`${chalk.bold('Team-mode fallback reset.')} Configuration cleared.`, {
     display: 'system',
@@ -288,6 +432,13 @@ function FallbackPicker({ onDone }: { onDone: OnDone }) {
     }))
     clearSystemPromptSections()
     const fb = { provider, model: selection.modelId, effort: selection.effort }
+    syncTeamModeRuntimeConfig({
+      roles: getTeamModeRoles(),
+      fallback: fb,
+      fallbackEnabled: true,
+      enabled: isTeamModeEnabled(),
+      event: 'team-mode fallback configured',
+    })
     onDone(
       [
         chalk.bold('Team-mode fallback saved and turned on.'),
@@ -368,6 +519,14 @@ function turnTeamModeOn(onDone: OnDone, context: LocalJSXCommandContext) {
     )
   }
 
+  setTeamModeRuntimeEnabled({
+    roles: getTeamModeRoles(),
+    fallback: getTeamModeFallbackWorker(),
+    fallbackEnabled: isTeamModeFallbackEnabled(),
+    enabled: true,
+    event: 'team-mode on',
+  })
+
   onDone(renderTeamModeOnMessage(orchestrator), { display: 'system' })
 }
 
@@ -427,7 +586,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       return
 
     case 'status':
-      showStatus(onDone)
+      showStatus(onDone, context)
       return
 
     case 'config':
@@ -487,7 +646,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
           />
         )
       }
-      showStatus(onDone)
+      showStatus(onDone, context)
       return
     }
 

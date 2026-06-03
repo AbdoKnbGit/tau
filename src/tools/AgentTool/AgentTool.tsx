@@ -57,6 +57,7 @@ import { runWithForcedProvider } from '../../utils/forcedProvider.js';
 import { isAPIProvider } from '../../utils/model/providers.js';
 import type { ModelAlias } from '../../utils/model/aliases.js';
 import { getActiveTeamModeRoles, getTeamModeFallbackWorker, isTeamModeEnabled, isTeamModeFallbackEnabled } from '../../utils/teamMode/state.js';
+import { completeTeamModeRun, failTeamModeRun, startTeamModeRun } from '../../utils/teamMode/runtime.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -199,6 +200,47 @@ import type { AgentToolProgress, ShellProgress } from '../../types/tools.js';
 // AgentTool forwards both its own progress events and shell progress
 // events from the sub-agent so the SDK receives tool_progress updates during bash/powershell runs.
 export type Progress = AgentToolProgress | ShellProgress;
+
+function summarizeTeamModeAgentResult(data: unknown): string | undefined {
+  if (data === null || data === undefined) {
+    return undefined;
+  }
+  if (typeof data !== 'object') {
+    return truncateTeamModePreview(String(data));
+  }
+  const record = data as Record<string, unknown>;
+  const fields = [
+    'status',
+    'name',
+    'agent_id',
+    'agentId',
+    'taskId',
+    'team_name',
+    'outputFile'
+  ];
+  const parts = fields.flatMap(field => {
+    const value = record[field];
+    if (typeof value !== 'string' || !value.trim()) {
+      return [];
+    }
+    return `${field}=${value}`;
+  });
+  const content = record.content;
+  if (Array.isArray(content)) {
+    parts.push(`content_items=${content.length}`);
+  }
+  return parts.length > 0
+    ? truncateTeamModePreview(parts.join(', '))
+    : undefined;
+}
+
+function truncateTeamModePreview(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length > 500
+    ? `${normalized.slice(0, 497)}...`
+    : normalized;
+}
+
 export const AgentTool = buildTool({
   async prompt({
     agents,
@@ -1387,13 +1429,51 @@ export const AgentTool = buildTool({
       }));
     }
     };  // close _runBody arrow function
+
+    const runBodyWithTeamModeRuntime = async () => {
+      const recordedProvider = providerParam;
+      const recordedModel = modelIdParam;
+      if (
+        !teamModeOn ||
+        recordedProvider === undefined ||
+        recordedModel === undefined
+      ) {
+        return _runBody();
+      }
+
+      const runtimeRun = startTeamModeRun({
+        role: name?.trim() || 'fallback',
+        provider: recordedProvider,
+        model: recordedModel,
+        teamName: team_name,
+        description,
+        prompt,
+        runInBackground: run_in_background === true
+      });
+
+      if (runtimeRun === null) {
+        return _runBody();
+      }
+
+      try {
+        const result = await _runBody();
+        completeTeamModeRun(runtimeRun.id, {
+          resultPreview: summarizeTeamModeAgentResult(result.data)
+        });
+        return result;
+      } catch (error) {
+        failTeamModeRun(runtimeRun.id, error);
+        throw error;
+      }
+    };
+
     if (providerParam !== undefined) {
       if (!isAPIProvider(providerParam)) {
         throw new Error(`Unknown provider "${providerParam}". Pick one of the supported APIProvider names (e.g. "firstParty", "kiro", "antigravity", "moonshot", "openrouter").`);
       }
-      return runWithForcedProvider({ provider: providerParam }, _runBody);
+      return runWithForcedProvider({ provider: providerParam }, runBodyWithTeamModeRuntime);
     }
-    return _runBody();
+    return runBodyWithTeamModeRuntime();
   },
   isReadOnly() {
     return true; // delegates permission checks to its underlying tools

@@ -16,12 +16,15 @@ import {
 } from '../../utils/model/providerCatalog.js'
 import {
   formatTeamModeRole,
+  getTeamModeFallbackWorker,
+  isTeamModeFallbackEnabled,
   setTeamModeEnabledForSession,
   TEAM_MODE_ROLE_IDS,
   TEAM_MODE_ROLE_META,
   type TeamModeRole,
   type TeamModeRoleId,
 } from '../../utils/teamMode/state.js'
+import { syncTeamModeRuntimeConfig } from '../../utils/teamMode/runtime.js'
 
 type OnDone = (
   result?: string,
@@ -35,7 +38,7 @@ const TOTAL_STEPS = TEAM_MODE_ROLE_IDS.length
 
 function commitRoster(
   roster: TeamModeRole[],
-  _enableOnFinish: boolean | undefined,
+  enableOnFinish: boolean | undefined,
 ) {
   saveGlobalConfig(current => ({
     ...current,
@@ -48,6 +51,15 @@ function commitRoster(
     })),
     teamModeEnabled: false,
   }))
+  syncTeamModeRuntimeConfig({
+    roles: roster,
+    fallback: getTeamModeFallbackWorker(),
+    fallbackEnabled: isTeamModeFallbackEnabled(),
+    enabled: enableOnFinish === true,
+    event: enableOnFinish
+      ? 'team roster saved and enabled'
+      : 'team roster saved',
+  })
   // Drop the section cache so the next turn's system prompt picks up the new
   // roster — otherwise the orchestrator keeps showing the old binding until
   // /clear or /compact.
