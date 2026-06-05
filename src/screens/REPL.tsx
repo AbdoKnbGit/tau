@@ -1511,7 +1511,14 @@ export function REPL({
   const [streamingSpeechText, setStreamingSpeechText] = useState<string | null>(null);
   const heyTtsStreamingEnabledRef = useRef(false);
   const reducedMotion = useAppState(s => s.settings.prefersReducedMotion) ?? false;
-  const showStreamingText = !reducedMotion && !hasCursorUpViewportYankBug();
+  const showStreamingTextChunks = useMemo(
+    () =>
+      isEnvTruthy(process.env.TAU_STREAM_TEXT_INLINE) ||
+      isEnvTruthy(process.env.CLAUDE_CODE_STREAM_TEXT_INLINE),
+    [],
+  );
+  const showStreamingText =
+    !reducedMotion && (showStreamingTextChunks || !hasCursorUpViewportYankBug());
   const onStreamingText = useCallback((f: (current: string | null) => string | null) => {
     if (heyTtsStreamingEnabledRef.current) setStreamingSpeechText(f);
     if (!showStreamingText) return;
@@ -1522,7 +1529,13 @@ export function REPL({
   // char-by-char. lastIndexOf returns -1 when no newline, giving '' → null.
   // Guard on showStreamingText so toggling reducedMotion mid-stream
   // immediately hides the streaming preview.
-  const visibleStreamingText = streamingText && showStreamingText ? streamingText.substring(0, streamingText.lastIndexOf('\n') + 1) || null : null;
+  const visibleStreamingText =
+    streamingText && showStreamingText
+      ? showStreamingTextChunks
+        ? streamingText
+        : streamingText.substring(0, streamingText.lastIndexOf('\n') + 1) ||
+          null
+      : null;
   const [lastQueryCompletionTime, setLastQueryCompletionTime] = useState(0);
   const [spinnerMessage, setSpinnerMessage] = useState<string | null>(null);
   const [spinnerColor, setSpinnerColor] = useState<keyof Theme | null>(null);
