@@ -1,6 +1,6 @@
 # Supported Providers
 
-Tau ships **23 native provider adapters**. Each speaks the provider's API directly — there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
+Tau ships **24 native provider adapters**. Each speaks the provider's API directly — there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
 
 | Provider | Notes |
 |---|---|
@@ -11,6 +11,7 @@ Tau ships **23 native provider adapters**. Each speaks the provider's API direct
 | OpenRouter | Would use this full-time if the bills didn't care |
 | Vercel AI Gateway | OpenAI-compatible AI Gateway with saved API-key login, live model browsing, automatic cache controls, and usage checks |
 | Requesty | OpenAI-compatible router with saved API-key login, live model browsing, automatic cache controls, and organization usage checks |
+| Command Code | 1 euro plan with a solid model pool for budget work, including Kimi 2.6, Qwen 3.7, and MiniMax 3 |
 | AgentRouter | Multi-provider router with native adapter and saved login |
 | Model Router | Hidden compatibility provider for lxg2it Model Router. Backend support remains wired, but it is not shown in the default provider/model pickers |
 | Mistral AI | Direct Mistral and Devstral models with a generous free-trial API that is great for testing agent work |

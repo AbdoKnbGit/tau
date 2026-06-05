@@ -102,6 +102,7 @@ const MANAGEABLE_PROVIDERS = [
   // prompt, so the credentials path stays Tau-compatible.
   'firstParty',
   'openai',
+  'commandcode',
   'gemini',
   'antigravity',
   'openrouter',
@@ -359,7 +360,8 @@ function usesEmbeddedProviderLogin(provider: ManageableProvider): provider is Ke
     provider === 'modelrouter' ||
     provider === 'vercel' ||
     provider === 'requesty' ||
-    provider === 'opencode'
+    provider === 'opencode' ||
+    provider === 'commandcode'
   )
 }
 

@@ -6,13 +6,13 @@ import { getForcedProvider } from '../forcedProvider.js'
 export type APIProvider =
   | 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
   | 'openai' | 'gemini' | 'antigravity'
-  | 'openrouter' | 'agentrouter' | 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'groq' | 'mistral' | 'nim' | 'deepseek' | 'glm' | 'moonshot' | 'minimax' | 'ollama' | 'lmstudio'
+  | 'openrouter' | 'agentrouter' | 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'commandcode' | 'groq' | 'mistral' | 'nim' | 'deepseek' | 'glm' | 'moonshot' | 'minimax' | 'ollama' | 'lmstudio'
   | 'cline' | 'copilot' | 'cursor' | 'iflow' | 'kilocode' | 'kiro'
 
 const VALID_PROVIDERS: readonly APIProvider[] = [
   'firstParty', 'bedrock', 'vertex', 'foundry',
   'openai', 'gemini', 'antigravity',
-  'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
+  'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'commandcode', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
   'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
 ]
 
@@ -56,6 +56,7 @@ function _resolveAPIProvider(): APIProvider {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL) || isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL_AI_GATEWAY)) return 'vercel'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_REQUESTY))    return 'requesty'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE) || isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE_ZEN)) return 'opencode'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_COMMANDCODE) || isEnvTruthy(process.env.CLAUDE_CODE_USE_COMMAND_CODE)) return 'commandcode'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_GROQ))       return 'groq'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_MISTRAL))    return 'mistral'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_NIM))        return 'nim'
@@ -153,6 +154,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   vercel: 'Vercel AI Gateway',
   requesty: 'Requesty',
   opencode: 'OpenCode Zen',
+  commandcode: 'Command Code',
   groq: 'Groq',
   mistral: 'Mistral',
   nim: 'NVIDIA NIM',
@@ -177,7 +179,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
 // APIProvider union, env detection, auth flow, transformer, and routing are
 // all kept intact for compatibility.
 export const SELECTABLE_PROVIDERS: readonly APIProvider[] = [
-  'firstParty', 'openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'vercel', 'requesty', 'opencode', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
+  'firstParty', 'openai', 'commandcode', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'vercel', 'requesty', 'opencode', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
   'cline', 'copilot', 'cursor', 'kilocode', 'kiro',
 ]
 
@@ -189,7 +191,7 @@ export function isOpenAICompatibleProvider(p: APIProvider): boolean {
 
 /** All non-Anthropic third-party LLM providers */
 export function isThirdPartyProvider(p: APIProvider): boolean {
-  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
+  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'commandcode', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
           'cline', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro'].includes(p)
 }
 

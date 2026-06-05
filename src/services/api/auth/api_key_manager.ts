@@ -154,6 +154,7 @@ function detectKeyFormat(provider: string, key: string): string {
     vercel: '',
     requesty: '',
     opencode: '',
+    commandcode: '',
     groq: 'gsk_',
     mistral: '',
     nim: 'nvapi-',
@@ -184,6 +185,7 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   vercel: { prefix: '', minLength: 10, displayName: 'Vercel AI Gateway' },
   requesty: { prefix: '', minLength: 10, displayName: 'Requesty' },
   opencode: { prefix: '', minLength: 10, displayName: 'OpenCode Zen' },
+  commandcode: { prefix: '', minLength: 10, displayName: 'Command Code' },
   groq: { prefix: 'gsk_', minLength: 20, displayName: 'Groq' },
   mistral: { prefix: '', minLength: 20, displayName: 'Mistral' },
   nim: { prefix: 'nvapi-', minLength: 20, displayName: 'NVIDIA NIM' },
@@ -251,6 +253,11 @@ export function deleteAllProviderCredentials(provider: string): void {
   }
   if (provider === 'antigravity') {
     deleteProviderKey('gemini_oauth_antigravity')
+  }
+  if (provider === 'commandcode') {
+    delete process.env.CMD_API_KEY
+    delete process.env.COMMANDCODE_API_KEY
+    delete process.env.COMMAND_CODE_API_KEY
   }
 
   // Keep lane-backed providers in sync with credential deletion so the
@@ -320,11 +327,12 @@ export function deleteAllProviderCredentials(provider: string): void {
     provider === 'vercel' ||
     provider === 'requesty' ||
     provider === 'opencode' ||
+    provider === 'commandcode' ||
     provider === 'groq'
   ) {
     void import('../providers/providerShim.js')
       .then(({ reloadOpenAICompatProviderAuth }) =>
-        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'groq'),
+        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'commandcode' | 'groq'),
       )
       .catch(() => {})
   }

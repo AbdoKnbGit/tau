@@ -46,6 +46,7 @@ import type {
   ProviderStreamResult,
 } from './base_provider.js'
 import { OpenAIProvider } from './openai_provider.js'
+import { CommandCodeProvider } from './commandcode_provider.js'
 import { GeminiProvider } from './gemini_provider.js'
 import { OpenRouterProvider } from './openrouter_provider.js'
 import { GroqProvider } from './groq_provider.js'
@@ -317,6 +318,8 @@ function createProvider(provider: APIProvider): BaseProvider {
     case 'requesty':
     case 'opencode':
       return new OpenAIProvider({ apiKey, baseUrl })
+    case 'commandcode':
+      return new CommandCodeProvider({ apiKey, baseUrl })
     case 'groq':
       return new GroqProvider({ apiKey })
     case 'mistral':

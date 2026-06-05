@@ -109,6 +109,7 @@ function _autoCorrectProvider(
     || current === 'vercel'
     || current === 'requesty'
     || current === 'opencode'
+    || current === 'commandcode'
     || current === 'groq'
     || current === 'mistral'
     || current === 'nim'

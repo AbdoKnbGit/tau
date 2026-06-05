@@ -306,6 +306,7 @@ function _envVarName(provider: APIProvider): string {
     vercel: 'AI_GATEWAY_API_KEY',
     requesty: 'REQUESTY_API_KEY',
     opencode: 'OPENCODE_API_KEY',
+    commandcode: 'CMD_API_KEY',
     groq: 'GROQ_API_KEY',
     mistral: 'MISTRAL_API_KEY',
     nim: 'NIM_API_KEY',

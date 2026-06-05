@@ -24,6 +24,7 @@ import {
 import { stripSignatureBlocks } from '../../utils/messages.js'
 import {
   getAPIProvider,
+  isAPIProvider,
   PROVIDER_DISPLAY_NAMES,
   SELECTABLE_PROVIDERS,
   setActiveProvider,
@@ -120,6 +121,26 @@ export async function call(
     return <FirecrawlLogin onDone={finish} />
   }
 
+  const requestedProvider = resolveLoginProviderArg(args)
+  if (requestedProvider) {
+    const handleDirectLoginDone = (success: boolean) => {
+      if (success) {
+        setActiveProvider(requestedProvider)
+      }
+      finish(success)
+    }
+
+    if (requestedProvider === 'firstParty') {
+      return <Login onDone={handleDirectLoginDone} />
+    }
+    return (
+      <ThirdPartyLogin
+        provider={requestedProvider}
+        onDone={handleDirectLoginDone}
+      />
+    )
+  }
+
   return (
     <ProviderPickerLogin
       initialProvider={currentProvider}
@@ -136,6 +157,34 @@ function matchesE2BSecurityArg(args: string): boolean {
 function matchesFirecrawlArg(args: string): boolean {
   const first = args.trim().toLowerCase().split(/\s+/)[0]
   return first === FIRECRAWL_PROVIDER_KEY || first === 'websearch'
+}
+
+function resolveLoginProviderArg(args: string): APIProvider | null {
+  const normalized = args.trim().toLowerCase()
+  if (!normalized) return null
+
+  const compact = normalized.replace(/[\s_-]+/g, '')
+  const first = normalized.split(/\s+/)[0]?.replace(/[-_]+/g, '') ?? ''
+  const aliases: Record<string, APIProvider> = {
+    anthropic: 'firstParty',
+    claude: 'firstParty',
+    firstparty: 'firstParty',
+    commandcode: 'commandcode',
+    cmd: 'commandcode',
+    cmdcode: 'commandcode',
+  }
+
+  const aliased = aliases[compact] ?? aliases[first]
+  if (aliased && SELECTABLE_PROVIDERS.includes(aliased)) return aliased
+
+  if (isAPIProvider(normalized) && SELECTABLE_PROVIDERS.includes(normalized)) {
+    return normalized
+  }
+  if (isAPIProvider(first) && SELECTABLE_PROVIDERS.includes(first)) {
+    return first
+  }
+
+  return null
 }
 
 const GEMINI_VOICE_LOGIN_TARGET = 'geminiVoice' as const

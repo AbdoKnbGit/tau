@@ -1755,6 +1755,7 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   vercel:      ['api_key'],
   requesty:    ['api_key'],
   opencode:    ['api_key'],
+  commandcode: ['api_key'],
   groq:        ['api_key'],
   mistral:     ['api_key'],
   nim:         ['api_key'],
@@ -1840,6 +1841,7 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'vercel':      return process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_AI_GATEWAY_API_KEY ?? process.env.VERCEL_OIDC_TOKEN ?? _loadStoredKey('vercel')
     case 'requesty':    return process.env.REQUESTY_API_KEY ?? _loadStoredKey('requesty')
     case 'opencode':    return process.env.OPENCODE_API_KEY ?? process.env.OPENCODE_ZEN_API_KEY ?? _loadStoredKey('opencode') ?? loadOpenCodeApiKeyFromAuthFile()
+    case 'commandcode': return process.env.CMD_API_KEY ?? process.env.COMMANDCODE_API_KEY ?? process.env.COMMAND_CODE_API_KEY ?? _loadStoredKey('commandcode') ?? loadCommandCodeApiKeyFromAuthFile()
     case 'groq':        return process.env.GROQ_API_KEY ?? _loadStoredKey('groq')
     case 'mistral':     return process.env.MISTRAL_API_KEY ?? _loadStoredKey('mistral')
     case 'nim':         return process.env.NIM_API_KEY ?? _loadStoredKey('nim')
@@ -1961,6 +1963,7 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'vercel':      return process.env.VERCEL_AI_GATEWAY_BASE_URL ?? process.env.AI_GATEWAY_BASE_URL ?? 'https://ai-gateway.vercel.sh/v1'
     case 'requesty':    return process.env.REQUESTY_BASE_URL ?? 'https://router.requesty.ai/v1'
     case 'opencode':    return process.env.OPENCODE_BASE_URL ?? process.env.OPENCODE_ZEN_BASE_URL ?? 'https://opencode.ai/zen/v1'
+    case 'commandcode': return normalizeCommandCodeBaseUrl(process.env.COMMANDCODE_BASE_URL ?? process.env.COMMAND_CODE_BASE_URL ?? process.env.CMD_BASE_URL ?? 'https://api.commandcode.ai/provider/v1')
     case 'groq':        return 'https://api.groq.com/openai/v1'
     case 'mistral':     return process.env.MISTRAL_BASE_URL ?? process.env.MISTRAL_API_BASE_URL ?? 'https://api.mistral.ai/v1'
     case 'nim':         return process.env.NIM_BASE_URL ?? 'https://integrate.api.nvidia.com/v1'
@@ -1999,6 +2002,8 @@ export function isUsingThirdPartyLLM(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_REQUESTY) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE_ZEN) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_COMMANDCODE) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_COMMAND_CODE) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GROQ) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_MISTRAL) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_NIM) ||
@@ -2013,6 +2018,11 @@ export function isUsingThirdPartyLLM(): boolean {
 function normalizeLmStudioBaseUrl(raw: string): string {
   const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`
   const trimmed = withScheme.replace(/\/+$/, '')
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`
+}
+
+function normalizeCommandCodeBaseUrl(raw: string): string {
+  const trimmed = raw.replace(/\/+$/, '')
   return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`
 }
 
@@ -2065,6 +2075,7 @@ function _getApiKeyEnvName(provider: APIProvider): string {
     case 'modelrouter': return 'MODEL_ROUTER_API_KEY or LXG2IT_API_KEY'
     case 'vercel':      return 'AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY'
     case 'requesty':    return 'REQUESTY_API_KEY'
+    case 'commandcode': return 'CMD_API_KEY'
     case 'groq':        return 'GROQ_API_KEY'
     case 'mistral':     return 'MISTRAL_API_KEY'
     case 'nim':         return 'NIM_API_KEY'
@@ -2095,6 +2106,7 @@ function _validateKeyFormat(provider: APIProvider, key: string): { valid: boolea
     modelrouter: { minLen: 10 },
     vercel:      { minLen: 10 },
     requesty:    { minLen: 10 },
+    commandcode: { minLen: 10 },
     groq:        { prefix: 'gsk_', minLen: 20 },
     mistral:     { minLen: 20 },
     nim:         { prefix: 'nvapi-', minLen: 20 },
@@ -2124,6 +2136,22 @@ function _loadStoredKey(provider: string): string | null {
     if (!existsSync(keysFile)) return null
     const data = JSON.parse(readFileSync(keysFile, 'utf-8'))
     return data?.keys?.[provider] ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Load a Command Code account key from ~/.commandcode/auth.json, if present. */
+function loadCommandCodeApiKeyFromAuthFile(): string | null {
+  try {
+    const { readFileSync, existsSync } = require('fs')
+    const { join } = require('path')
+    const { homedir } = require('os')
+    const authFile = join(homedir(), '.commandcode', 'auth.json')
+    if (!existsSync(authFile)) return null
+    const data = JSON.parse(readFileSync(authFile, 'utf-8'))
+    const key = data?.apiKey
+    return typeof key === 'string' && key.trim() ? key.trim() : null
   } catch {
     return null
   }

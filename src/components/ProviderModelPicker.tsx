@@ -46,6 +46,12 @@ import {
   isOpencodeThinkingModel,
 } from '../utils/model/opencodeThinking.js'
 import {
+  cycleCommandCodeEffort,
+  getCommandCodeEffort,
+  getCommandCodeEffortLabel,
+  supportsCommandCodeEffortSelection,
+} from '../utils/model/commandCodeThinking.js'
+import {
   getVoiceConversationStatus,
   hasVoiceConversationApiKey,
 } from '../voice/voiceConversation.js'
@@ -244,6 +250,7 @@ export function ProviderModelPicker({
   // The actual effort state lives in the provider utility modules.
   const [, setClineEffortTick] = useState(0)
   const [, setOpencodeEffortTick] = useState(0)
+  const [, setCommandCodeEffortTick] = useState(0)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
 
   const selectedProvider =
@@ -476,6 +483,16 @@ export function ProviderModelPicker({
         setOpencodeEffortTick(tick => tick + 1)
         return
       }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'commandcode'
+        && supportsCommandCodeEffortSelection(row.model.id, row.model.tags)
+      ) {
+        cycleCommandCodeEffort(row.model.id, key.leftArrow ? 'left' : 'right')
+        setCommandCodeEffortTick(tick => tick + 1)
+        return
+      }
       return
     }
 
@@ -615,6 +632,10 @@ export function ProviderModelPicker({
               const clineEffort = isClineThinking ? getClineEffort(model.id) : undefined
               const isOpencodeThinking = selectedProvider === 'opencode' && isOpencodeThinkingModel(model.id)
               const opencodeEffort = isOpencodeThinking ? getOpencodeEffort(model.id) : undefined
+              const isCommandCodeThinking =
+                selectedProvider === 'commandcode'
+                && supportsCommandCodeEffortSelection(model.id, model.tags)
+              const commandCodeEffort = isCommandCodeThinking ? getCommandCodeEffort(model.id) : undefined
               const selectedVariant = getSelectedVariant(
                 selectedProvider,
                 model,
@@ -662,6 +683,11 @@ export function ProviderModelPicker({
                   {isOpencodeThinking && opencodeEffort && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ Thinking {getOpencodeEffortLabel(opencodeEffort)} ▶
+                    </Text>
+                  )}
+                  {isCommandCodeThinking && commandCodeEffort && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ {getCommandCodeEffortLabel(commandCodeEffort)} ▶
                     </Text>
                   )}
                   {showVariant && selectedVariant && (

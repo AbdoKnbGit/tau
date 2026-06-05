@@ -6,6 +6,10 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/grow
 import { getAPIProvider, isThirdPartyProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getOpenAIReasoningLevel, modelSupportsReasoning } from './model/openaiReasoning.js'
+import {
+  getCommandCodeEffort,
+  supportsCommandCodeEffortSelection,
+} from './model/commandCodeThinking.js'
 import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
@@ -241,6 +245,10 @@ export function getDisplayedEffortLevel(
   appStateEffort: EffortValue | undefined,
 ): EffortLevel {
   const provider = getAPIProvider()
+  if (provider === 'commandcode' && supportsCommandCodeEffortSelection(model)) {
+    const effort = getCommandCodeEffort(model)
+    return effort === 'default' ? 'high' : effort
+  }
   // OpenAI reasoning models have their own effort system
   if (isThirdPartyProvider(provider) && modelSupportsReasoning(model)) {
     return getOpenAIReasoningLevel() as EffortLevel
@@ -268,6 +276,10 @@ export function getEffortSuffix(
   effortValue: EffortValue | undefined,
 ): string {
   const provider = getAPIProvider()
+  if (provider === 'commandcode' && supportsCommandCodeEffortSelection(model)) {
+    const effort = getCommandCodeEffort(model)
+    return effort === 'default' ? '' : ` with ${effort} effort`
+  }
   // OpenAI reasoning models use their own effort system
   if (isThirdPartyProvider(provider) && modelSupportsReasoning(model)) {
     const level = getOpenAIReasoningLevel()

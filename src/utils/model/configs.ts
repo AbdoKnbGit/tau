@@ -64,6 +64,13 @@ const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL
   ?? process.env.OPENCODE_ZEN_BASE_URL
   ?? 'https://opencode.ai/zen/v1'
 
+const COMMANDCODE_BASE_URL = normalizeCommandCodeBaseUrl(
+  process.env.COMMANDCODE_BASE_URL
+  ?? process.env.COMMAND_CODE_BASE_URL
+  ?? process.env.CMD_BASE_URL
+  ?? 'https://api.commandcode.ai/provider/v1',
+)
+
 const MODELROUTER_DEFAULT_OPUS = 'claude-opus-4-7'
 const MODELROUTER_DEFAULT_SONNET = 'claude-sonnet-4-6'
 const MODELROUTER_DEFAULT_HAIKU = 'claude-haiku-4-5'
@@ -227,6 +234,11 @@ function hasOpencodeAccountKey(): boolean {
 //   pro   → nvidia/llama-3.1-nemotron-ultra-253b-v1
 //   plus  → nvidia/llama-3.1-nemotron-ultra-253b-v1
 //   Haiku → nvidia/nemotron-3-nano-30b-a3b
+
+function normalizeCommandCodeBaseUrl(raw: string): string {
+  const trimmed = raw.replace(/\/+$/, '')
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`
+}
 
 export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
   openai: {
@@ -462,6 +474,33 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.OPENCODE_MODEL_OPUS   ?? 'claude-opus-4-7',
         sonnet: process.env.OPENCODE_MODEL_SONNET ?? 'claude-sonnet-4-6',
         haiku:  process.env.OPENCODE_MODEL_HAIKU  ?? 'claude-haiku-4-5',
+      },
+    },
+  },
+
+  commandcode: {
+    displayName: 'Command Code',
+    baseUrl: COMMANDCODE_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'CMD_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'free',
+    tiers: {
+      free: {
+        opus:   process.env.COMMANDCODE_MODEL_OPUS_FREE   ?? process.env.COMMAND_CODE_MODEL_OPUS_FREE   ?? 'MiniMaxAI/MiniMax-M3',
+        sonnet: process.env.COMMANDCODE_MODEL_SONNET_FREE ?? process.env.COMMAND_CODE_MODEL_SONNET_FREE ?? 'moonshotai/Kimi-K2.6',
+        haiku:  process.env.COMMANDCODE_MODEL_HAIKU_FREE  ?? process.env.COMMAND_CODE_MODEL_HAIKU_FREE  ?? 'Qwen/Qwen3.7-Plus',
+      },
+      pro: {
+        opus:   process.env.COMMANDCODE_MODEL_OPUS   ?? process.env.COMMAND_CODE_MODEL_OPUS   ?? 'MiniMaxAI/MiniMax-M3',
+        sonnet: process.env.COMMANDCODE_MODEL_SONNET ?? process.env.COMMAND_CODE_MODEL_SONNET ?? 'moonshotai/Kimi-K2.6',
+        haiku:  process.env.COMMANDCODE_MODEL_HAIKU  ?? process.env.COMMAND_CODE_MODEL_HAIKU  ?? 'Qwen/Qwen3.7-Plus',
+      },
+      plus: {
+        opus:   process.env.COMMANDCODE_MODEL_OPUS   ?? process.env.COMMAND_CODE_MODEL_OPUS   ?? 'MiniMaxAI/MiniMax-M3',
+        sonnet: process.env.COMMANDCODE_MODEL_SONNET ?? process.env.COMMAND_CODE_MODEL_SONNET ?? 'moonshotai/Kimi-K2.6',
+        haiku:  process.env.COMMANDCODE_MODEL_HAIKU  ?? process.env.COMMAND_CODE_MODEL_HAIKU  ?? 'Qwen/Qwen3.7-Plus',
       },
     },
   },

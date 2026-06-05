@@ -122,7 +122,7 @@ function hasFallbackEligibleProviderText(text: string): boolean {
 }
 
 function hasLaneProviderErrorPrefix(text: string): boolean {
-  return /^(?:openrouter|ollama|cline|kilo|kiro|iflow|kilocode|deepseek|glm|groq|mistral|nim|copilot|generic)\s+API\s+error\s+\d{3}\b/i.test(
+  return /^(?:openrouter|ollama|cline|kilo|kiro|iflow|kilocode|commandcode|deepseek|glm|groq|mistral|nim|copilot|generic)\s+API\s+error\s+\d{3}\b/i.test(
     text.trim(),
   )
 }
