@@ -72,6 +72,7 @@ const getSendMessageTool = () =>
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { AFT_READ_ONLY_TOOLS } from './tools/AFTTool/AFTTools.js'
+import { NATIVE_READ_ONLY_TOOLS } from './tools/NativeTools/NativeTools.js'
 import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { SnapshotTool } from './tools/SnapshotTool/SnapshotTool.js'
 import { PtyTool } from './tools/PtyTool/PtyTool.js'
@@ -233,6 +234,7 @@ export function getAllBaseTools(): Tools {
     // native module didn't install.
     ...(isEnvTruthy(process.env.TAU_PTY_ENABLE) ? [PtyTool] : []),
     ...AFT_READ_ONLY_TOOLS,
+    ...NATIVE_READ_ONLY_TOOLS,
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
     ...(ListPeersTool ? [ListPeersTool] : []),

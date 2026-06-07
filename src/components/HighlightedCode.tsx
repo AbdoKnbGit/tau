@@ -4,6 +4,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useSettings } from '../hooks/useSettings.js';
 import { Ansi, Box, type DOMElement, measureElement, NoSelect, Text, useTheme } from '../ink.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
+import { highlightCodeWithNative } from '../utils/nativeRendering.js';
 import sliceAnsi from '../utils/sliceAnsi.js';
 import { countCharInString } from '../utils/stringUtils.js';
 import { HighlightedCodeFallback } from './HighlightedCode/Fallback.js';
@@ -119,6 +120,11 @@ export const HighlightedCode = memo(function HighlightedCode(t0) {
     t6 = t7.length + 2;
   }
   const gutterWidth = t6;
+  const nativeHighlighted = syntaxHighlightingDisabled ? null : highlightCodeWithNative(code, filePath);
+  if (nativeHighlighted) {
+    const nativeLines = nativeHighlighted.replace(/\r?\n$/, "").split(/\r?\n/);
+    return <Box ref={ref}><Box flexDirection="column">{nativeLines.map((line, i) => <Text key={i}><Ansi>{line}</Ansi></Text>)}</Box></Box>;
+  }
   let t7;
   if ($[14] !== code || $[15] !== dim || $[16] !== filePath || $[17] !== gutterWidth || $[18] !== lines || $[19] !== syntaxHighlightingDisabled) {
     t7 = <Box ref={ref}>{lines ? <Box flexDirection="column">{lines.map((line, i) => gutterWidth > 0 ? <CodeLine key={i} line={line} gutterWidth={gutterWidth} /> : <Text key={i}><Ansi>{line}</Ansi></Text>)}</Box> : <HighlightedCodeFallback code={code} filePath={filePath} dim={dim} skipColoring={syntaxHighlightingDisabled} />}</Box>;

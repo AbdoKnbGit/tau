@@ -225,9 +225,31 @@ function primeOllamaCloudModels() {
   console.log(`[tau] Ollama pre-pull: ${ok} ok, ${fail} skipped/failed (first launch will retry).`);
 }
 
+function buildOptionalNativeTools() {
+  if (process.env.TAU_SKIP_NATIVE_TOOLS_POSTINSTALL === '1') return;
+
+  const script = join(packageRoot, 'scripts', 'build-native-tools.mjs');
+  if (!existsSync(script)) return;
+
+  const result = spawnSync(process.execPath, [script], {
+    cwd: packageRoot,
+    stdio: 'inherit',
+    windowsHide: true,
+    env: {
+      ...process.env,
+      TAU_REQUIRE_NATIVE_TOOLS: process.env.TAU_REQUIRE_NATIVE_TOOLS ?? '0',
+    },
+  });
+
+  if (result.status !== 0 && process.env.TAU_REQUIRE_NATIVE_TOOLS === '1') {
+    process.exit(result.status ?? 1);
+  }
+}
+
 main()
   .catch(() => { /* never propagate — ripgrep is optional */ })
   .finally(() => {
+    try { buildOptionalNativeTools(); } catch { /* swallow */ }
     try { primeOllamaCloudModels(); } catch { /* swallow */ }
     process.exit(0);
   });

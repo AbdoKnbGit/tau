@@ -168,6 +168,16 @@ async function main(): Promise<void> {
     assert(wrappedPro.model === 'gemini-pro-agent', `pro wire model=${wrappedPro.model}`)
   })
 
+  await test('preserves explicit Antigravity session id for cache stability', async () => {
+    const wrapped = wrapForCodeAssist('gemini-3.5-flash-low', 'project-id', {
+      sessionId: '-stable-real-history',
+      contents: [{ role: 'user', parts: [{ text: 'volatile injected environment context' }] }],
+    })
+
+    const request = wrapped.request as { sessionId?: string }
+    assert(request.sessionId === '-stable-real-history', `sessionId=${request.sessionId}`)
+  })
+
   await test('keeps Antigravity generation endpoint fallbacks scoped to Antigravity', async () => {
     const antigravityBases = codeAssistGenerationBases('antigravity')
     assert(antigravityBases.length === 3, `antigravity bases=${antigravityBases.length}`)

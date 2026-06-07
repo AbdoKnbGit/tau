@@ -1,7 +1,7 @@
 import { c as _c } from "react/compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import type { StructuredPatchHunk } from 'diff';
-import { isAbsolute, relative, resolve } from 'path';
+import { extname, isAbsolute, relative, resolve } from 'path';
 import * as React from 'react';
 import { Suspense, use, useState } from 'react';
 import { MessageResponse } from 'src/components/MessageResponse.js';
@@ -12,6 +12,7 @@ import { FileEditToolUpdatedMessage } from '../../components/FileEditToolUpdated
 import { FileEditToolUseRejectedMessage } from '../../components/FileEditToolUseRejectedMessage.js';
 import { FilePathLink } from '../../components/FilePathLink.js';
 import { HighlightedCode } from '../../components/HighlightedCode.js';
+import { Markdown } from '../../components/Markdown.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../ink.js';
 import type { ToolProgressData } from '../../Tool.js';
@@ -27,6 +28,7 @@ const MAX_LINES_TO_RENDER = 10;
 // Model output uses \n regardless of platform, so always split on \n.
 // os.EOL is \r\n on Windows, which would give numLines=1 for all files.
 const EOL = '\n';
+const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkdn']);
 
 /**
  * Count visible lines in file content. A trailing newline is treated as a
@@ -35,6 +37,9 @@ const EOL = '\n';
 export function countLines(content: string): number {
   const parts = content.split(EOL);
   return content.endsWith(EOL) ? parts.length - 1 : parts.length;
+}
+function isMarkdownPreviewPath(filePath: string): boolean {
+  return MARKDOWN_EXTENSIONS.has(extname(filePath).toLowerCase());
 }
 function FileWriteToolCreatedMessage(t0) {
   const $ = _c(25);
@@ -93,16 +98,7 @@ function FileWriteToolCreatedMessage(t0) {
     t5 = $[12];
   }
   const t6 = columns - 12;
-  let t7;
-  if ($[13] !== filePath || $[14] !== t5 || $[15] !== t6) {
-    t7 = <Box flexDirection="column"><HighlightedCode code={t5} filePath={filePath} width={t6} /></Box>;
-    $[13] = filePath;
-    $[14] = t5;
-    $[15] = t6;
-    $[16] = t7;
-  } else {
-    t7 = $[16];
-  }
+  const t7 = <Box flexDirection="column">{isMarkdownPreviewPath(filePath) ? <Markdown>{t5}</Markdown> : <HighlightedCode code={t5} filePath={filePath} width={t6} />}</Box>;
   let t8;
   if ($[17] !== numLines || $[18] !== plusLines || $[19] !== verbose) {
     t8 = !verbose && plusLines > 0 && <Text dimColor={true}>… +{plusLines} {plusLines === 1 ? "line" : "lines"}{" "}{numLines > 0 && <CtrlOToExpand />}</Text>;

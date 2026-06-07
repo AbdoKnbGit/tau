@@ -101,6 +101,7 @@ import {
   extractQuotaStatusFromHeaders,
 } from '../claudeAiLimits.js'
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
+import { resolveProviderRequestSessionId } from './cacheAffinity.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
@@ -2154,6 +2155,12 @@ async function* queryModel(
       : undefined
 
     lastRequestBetas = betasParams
+    const providerSessionId = resolveProviderRequestSessionId({
+      provider: getAPIProvider(),
+      rootSessionId: getSessionId(),
+      agentId: options.agentId,
+      querySource: options.querySource,
+    })
 
     return {
       model: normalizeModelStringForAPI(options.model),
@@ -2184,6 +2191,7 @@ async function* queryModel(
         output_config: outputConfig,
       }),
       ...(speed !== undefined && { speed }),
+      ...(providerSessionId && { sessionId: providerSessionId }),
     }
   }
 

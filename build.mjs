@@ -405,3 +405,15 @@ const nativeShellParserBuild = spawnSync(
 if (nativeShellParserBuild.status !== 0) {
   process.exit(nativeShellParserBuild.status ?? 1)
 }
+
+const nativeToolsBuild = spawnSync(
+  process.execPath,
+  ['scripts/build-native-tools.mjs'],
+  {
+    stdio: 'inherit',
+    windowsHide: true,
+  },
+)
+if (nativeToolsBuild.status !== 0) {
+  process.exit(nativeToolsBuild.status ?? 1)
+}

@@ -9,6 +9,7 @@ import type { CliHighlight } from './cliHighlight.js'
 import { logForDebugging } from './debug.js'
 import { createHyperlink } from './hyperlink.js'
 import { stripPromptXMLTags } from './messages.js'
+import { highlightCodeWithNative } from './nativeRendering.js'
 import type { ThemeName } from './theme.js'
 
 // Use \n unconditionally — os.EOL is \r\n on Windows, and the extra \r
@@ -70,6 +71,13 @@ export function formatToken(
         .join(EOL)
     }
     case 'code': {
+      const nativeHighlighted = highlightCodeWithNative(
+        token.text,
+        token.lang || 'plaintext',
+      )
+      if (nativeHighlighted) {
+        return nativeHighlighted + EOL
+      }
       if (!highlight) {
         return token.text + EOL
       }

@@ -247,6 +247,31 @@ async function main(): Promise<void> {
       `missing Moonshot sessionId: ${captured?.sessionId}`)
   })
 
+  await test('Antigravity bridge preserves explicit request session id', async () => {
+    let captured: LaneProviderCallParams | null = null
+    const lane: Lane = {
+      ...mockLane([]),
+      async *streamAsProvider(params: LaneProviderCallParams) {
+        captured = params
+        return {
+          input_tokens: 0, output_tokens: 0,
+          cache_read_tokens: 0, cache_write_tokens: 0, thinking_tokens: 0,
+        }
+      },
+    }
+    const prov = new LaneBackedProvider(lane, 'antigravity')
+    const stream = await prov.stream({
+      model: 'gemini-3.5-flash-low',
+      messages: [],
+      max_tokens: 100,
+      sessionId: 'tau-agent-explicit',
+    } as any)
+    for await (const _ of stream) {}
+    assert(captured?.providerHint === 'antigravity', `providerHint=${captured?.providerHint}`)
+    assert(captured?.sessionId === 'tau-agent-explicit',
+      `sessionId=${captured?.sessionId}`)
+  })
+
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed > 0) process.exit(1)
 }

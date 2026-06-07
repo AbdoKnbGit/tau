@@ -141,6 +141,9 @@ export interface ProviderRequestParams {
   temperature?: number
   stop_sequences?: string[]
   stream?: boolean
+  /** Provider-side cache/session affinity key. Used by native lanes that can
+   * route repeated requests to the same prompt-cache backend. */
+  sessionId?: string
   /**
    * Anthropic-format thinking param. Individual providers translate this
    * into their native reasoning/thinking flag (OpenAI `reasoning_effort`,

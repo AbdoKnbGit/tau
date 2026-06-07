@@ -18,6 +18,8 @@
   },
   "files": [
     "dist",
+    "docs",
+    "native",
     "scripts",
     "README.md",
     "BASH_SYNTAX_ROADMAP.md"
@@ -29,6 +31,7 @@
     "build": "node build.mjs",
     "build:bun": "bun run build.ts",
     "build:native-shell": "node scripts/build-native-shell-parser.mjs",
+    "build:native-tools": "node scripts/build-native-tools.mjs",
     "postinstall": "node scripts/postinstall.mjs",
     "prepublishOnly": "node build.mjs"
   },

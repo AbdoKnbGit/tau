@@ -41,7 +41,7 @@ import {
   buildGeminiFunctionDeclarations,
   GEMINI_TOOL_REGISTRY,
 } from './tools.js'
-import { geminiApi } from './api.js'
+import { geminiApi, TAU_STABLE_SESSION_ID_FIELD } from './api.js'
 import { getOrCreateCacheWithUsage, invalidateCache } from '../../services/api/providers/gemini_cache.js'
 import {
   ANTIGRAVITY_MODEL_IDS,
@@ -93,7 +93,7 @@ export class GeminiLane implements Lane {
   async *streamAsProvider(
     params: LaneProviderCallParams,
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
-    const { model, messages, system, tools, max_tokens, thinking, signal } = params
+    const { model, messages, system, tools, max_tokens, thinking, signal, sessionId } = params
 
     // Normalize system → plain string.
     const systemText =
@@ -185,6 +185,9 @@ export class GeminiLane implements Lane {
       thinkingBudget,
       cacheName,
     })
+    if (ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase())) {
+      request[TAU_STABLE_SESSION_ID_FIELD] = stableAntigravitySessionId(sessionId, messages)
+    }
 
     // Track usage across the stream.
     let promptTokens = 0
@@ -1024,6 +1027,37 @@ function convertHistoryToGemini(
   }
 
   return contents
+}
+
+function stableAntigravitySessionId(
+  sessionId: string | undefined,
+  messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
+): string {
+  const source = sessionId?.trim() || firstUserTextFromMessages(messages)
+  return stableNegativeHash(source || JSON.stringify(messages.map(msg => msg.role)))
+}
+
+function firstUserTextFromMessages(
+  messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
+): string {
+  for (const msg of messages) {
+    if (msg.role !== 'user') continue
+    if (typeof msg.content === 'string') return msg.content
+    const text = msg.content
+      .map(block => block.type === 'text' ? block.text ?? '' : '')
+      .filter(Boolean)
+      .join('\n')
+    if (text) return text
+  }
+  return ''
+}
+
+function stableNegativeHash(text: string): string {
+  let hash = 0
+  for (const ch of text) {
+    hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0
+  }
+  return `-${Math.abs(hash).toString()}`
 }
 
 /**

@@ -6,6 +6,7 @@ import { Ansi, Box, useTheme } from '../ink.js';
 import { type CliHighlight, getCliHighlightPromise } from '../utils/cliHighlight.js';
 import { hashContent } from '../utils/hash.js';
 import { configureMarked, formatToken } from '../utils/markdown.js';
+import { renderMarkdownWithNative } from '../utils/nativeRendering.js';
 import { stripPromptXMLTags } from '../utils/messages.js';
 import { MarkdownTable } from './MarkdownTable.js';
 type Props = {
@@ -29,6 +30,7 @@ const tokenCache = new Map<string, Token[]>();
 // Single regex: matches any MD marker or ordered-list start (N. at line start).
 // One pass instead of 10× includes scans.
 const MD_SYNTAX_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
+const ANSI_RE = /\x1B\[[0-?]*[ -/]*[@-~]/;
 function hasMarkdownSyntax(s: string): boolean {
   // Sample first 500 chars — if markdown exists it's usually early (headers,
   // code fence, list). Long tool outputs are mostly plain text tails.
@@ -131,7 +133,14 @@ function MarkdownBody(t0) {
   configureMarked();
   let elements;
   if ($[0] !== children || $[1] !== dimColor || $[2] !== highlight || $[3] !== theme) {
-    const tokens = cachedLexer(stripPromptXMLTags(children));
+    const strippedContent = stripPromptXMLTags(children);
+    const nativeRendered = dimColor ? null : renderMarkdownWithNative(strippedContent, theme);
+    if (nativeRendered) {
+      elements = [<Ansi key={0}>{nativeRendered}</Ansi>];
+    } else if (ANSI_RE.test(strippedContent)) {
+      elements = [<Ansi key={0} dimColor={dimColor}>{strippedContent.trim()}</Ansi>];
+    } else {
+    const tokens = cachedLexer(strippedContent);
     elements = [];
     let nonTableContent = "";
     const flushNonTableContent = function flushNonTableContent() {
@@ -150,6 +159,7 @@ function MarkdownBody(t0) {
       }
     }
     flushNonTableContent();
+    }
     $[0] = children;
     $[1] = dimColor;
     $[2] = highlight;

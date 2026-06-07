@@ -797,9 +797,13 @@ export function wrapForCodeAssist(
     _applyClaudeContentFixes(request)
   }
 
-  // Generate stable session ID from first user message (matches CLIProxyAPI's
-  // generateStableSessionID).
-  request.sessionId = _stableSessionId(request)
+  // Generate a stable session ID for Antigravity dedup. Native lanes may
+  // provide one from the real message history; otherwise fall back to the
+  // CLIProxyAPI-style first-user-message hash.
+  const providedSessionId = typeof request.sessionId === 'string' && request.sessionId.length > 0
+    ? request.sessionId
+    : null
+  request.sessionId = providedSessionId ?? _stableSessionId(request)
 
   return {
     model: wireModel,

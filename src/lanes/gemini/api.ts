@@ -54,6 +54,21 @@ function antigravitySessionHeaders(wrappedBody: Record<string, unknown>): Record
     : {}
 }
 
+export const TAU_STABLE_SESSION_ID_FIELD = '__tauStableSessionId'
+
+function takeTauStableSessionId(body: Record<string, unknown>): string | undefined {
+  const value = body[TAU_STABLE_SESSION_ID_FIELD]
+  delete body[TAU_STABLE_SESSION_ID_FIELD]
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function withTauStableSessionId(
+  body: Record<string, unknown>,
+  sessionId: string | undefined,
+): Record<string, unknown> {
+  return sessionId ? { ...body, sessionId } : body
+}
+
 // ─── Types ───────────────────────────────────────────────────────
 
 export interface GeminiStreamChunk {
@@ -367,6 +382,7 @@ class GeminiApiClient {
     const model = (request as any).model ?? 'gemini-2.5-pro'
     const body = { ...request }
     delete body.model
+    const tauStableSessionId = takeTauStableSessionId(body)
 
     // OAuth path → Code Assist proxy (cloudcode-pa.googleapis.com). Uses the
     // same request envelopes and header sets that CLIProxyAPI emits so quota
@@ -398,7 +414,7 @@ class GeminiApiClient {
           const { token, executor, accountEmail } = routing
           const projectId = await ensureCodeAssistReady(token, executor)
           const wrappedBody = executor === 'antigravity'
-            ? wrapForCodeAssist(model, projectId, body)
+            ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId))
             : wrapForGeminiCLI(model, projectId, body)
           const headers = executor === 'antigravity'
             ? {
@@ -577,6 +593,7 @@ class GeminiApiClient {
     const model = (request as any).model ?? 'gemini-2.5-pro'
     const body = { ...request }
     delete body.model
+    const tauStableSessionId = takeTauStableSessionId(body)
 
     // OAuth → Code Assist (unwraps the `{ response: ... }` envelope).
     const oauthRouting = this._tokenForModel(model)
@@ -599,7 +616,7 @@ class GeminiApiClient {
           const { token, executor, accountEmail } = routing
           const projectId = await ensureCodeAssistReady(token, executor)
           const wrappedBody = executor === 'antigravity'
-            ? wrapForCodeAssist(model, projectId, body)
+            ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId))
             : wrapForGeminiCLI(model, projectId, body)
           const headers = executor === 'antigravity'
             ? {

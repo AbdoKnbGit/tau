@@ -113,130 +113,128 @@ function formatStatistics({
   ).length
 
   const lines = [
-    'SESSION STATISTICS',
-    '==================',
-    ...section('Overview'),
-    statRow('conversation messages', conversationMessages),
-    statRow('models used', modelStats.size),
-    statRow('context tokens', contextStats.currentTokens),
-    statRowSigned('context growth', contextStats.growthTokens),
-    ...section('Model Usage'),
-    modelUsageLine('total', totals),
+    chalk.bold('Session statistics'),
+    metricLine('Overview', [
+      metric('messages', conversationMessages),
+      metric('models', modelStats.size),
+      metric('context', contextStats.currentTokens),
+      signedMetric('growth', contextStats.growthTokens),
+    ]),
+    metricLine('Models', [modelUsageLine('total', totals)]),
   ]
 
   const modelEntries = [...modelStats.entries()].sort(([a], [b]) =>
     a.localeCompare(b),
   )
   if (modelEntries.length === 0) {
-    lines.push(emptyLine('no model usage yet'))
+    lines.push(detailLine('no model usage yet'))
   } else {
     for (const [model, usage] of modelEntries) {
-      lines.push(modelUsageLine(model, usage))
+      lines.push(detailLine(modelUsageLine(model, usage)))
     }
   }
-
-  lines.push(
-    ...section('Tool Calls'),
-    statRow('regular tool calls', toolStats.total),
-  )
 
   const toolEntries = [...toolStats.byName.entries()].sort(([a], [b]) =>
     a.localeCompare(b),
   )
+  lines.push(metricLine('Tools', [metric('regular', toolStats.total)]))
   if (toolEntries.length === 0) {
-    lines.push(emptyLine('no regular tool calls yet'))
+    lines.push(detailLine('no regular tool calls yet'))
   } else {
-    for (const [toolName, count] of toolEntries) {
-      lines.push(itemLine(toolName, `calls: ${formatInteger(count)}`))
-    }
+    lines.push(
+      detailLine(
+        summarizePairs(
+          toolEntries.map(([toolName, count]) => [
+            compactText(toolName, 24),
+            formatInteger(count),
+          ]),
+          8,
+        ),
+      ),
+    )
   }
 
   lines.push(
-    ...section('Subagents'),
-    statRow('agent launches', toolStats.subagentSpawnCalls),
-    statRow('agent runs completed', subagentStats.completed),
-    statRow('agent tokens', subagentStats.totalTokens),
-    statRow('agent internal tool calls', subagentStats.toolCalls),
-    ...section('Files'),
-    statRow('files touched', changedFiles),
-    statRow('files added', addedFiles),
-    statRow('files modified', modifiedFiles),
-    statRow('files deleted', deletedFiles),
-    statRow('lines added', fileTotals.added),
-    statRow('lines updated', fileTotals.updated),
-    statRow('lines deleted', fileTotals.deleted),
+    metricLine('Subagents', [
+      metric('launches', toolStats.subagentSpawnCalls),
+      metric('completed', subagentStats.completed),
+      metric('tokens', subagentStats.totalTokens),
+      metric('tool calls', subagentStats.toolCalls),
+    ]),
+    metricLine('Files', [
+      metric('touched', changedFiles),
+      metric('added', addedFiles),
+      metric('modified', modifiedFiles),
+      metric('deleted', deletedFiles),
+      `lines +${formatInteger(fileTotals.added)} ~${formatInteger(fileTotals.updated)} -${formatInteger(fileTotals.deleted)}`,
+    ]),
   )
 
   if (fileStats.length > 0) {
-    lines.push(...section('Files Detail'))
-    for (const file of fileStats) {
+    for (const file of fileStats.slice(0, 8)) {
       lines.push(
-        itemLine(
-          file.path,
-          `status: ${file.status} | added: ${formatInteger(file.added)} | updated: ${formatInteger(file.updated)} | deleted: ${formatInteger(file.deleted)}`,
+        detailLine(
+          `${compactText(file.path, 48)}: ${file.status} | +${formatInteger(file.added)} ~${formatInteger(file.updated)} -${formatInteger(file.deleted)}`,
         ),
       )
+    }
+    if (fileStats.length > 8) {
+      lines.push(detailLine(`+${fileStats.length - 8} more files`))
     }
   }
 
   lines.push(
-    ...glowNote([
-      'antigravity/cursor/deepseek can show cache_hit: 0% because cache is handled automatically by the provider backend.',
-      'If cache numbers look unstable sometimes, do not worry. Every provider with cache support has been tested and tuned to maximize hits.',
-      'Cache-hit reporting is not always exact because models and providers expose usage differently.',
-      'Tau optimizes for the best cost/performance path available for the selected provider.',
+    metricLine('Cache', [
+      'provider cache_hit numbers can differ; Tau keeps provider cache optimization automatic',
     ]),
   )
 
   return lines.join('\n')
 }
 
-function section(title: string): string[] {
-  return ['', title, '-'.repeat(title.length)]
+function metricLine(title: string, parts: string[]): string {
+  return `${chalk.cyanBright(title)}: ${parts.join(' | ')}`
 }
 
-function glowNote(lines: string[]): string[] {
-  const title = 'Cache Note'
-  const width = Math.max(title.length, ...lines.map(line => line.length))
-  const border = `*${'='.repeat(width + 2)}*`
-  return [
-    '',
-    chalk.cyanBright(border),
-    chalk.cyanBright(`| ${title.padEnd(width)} |`),
-    chalk.cyanBright(border),
-    ...lines.map(line => chalk.cyanBright(`| ${line.padEnd(width)} |`)),
-    chalk.cyanBright(border),
-  ]
+function detailLine(text: string): string {
+  return `  ${text}`
 }
 
-function statRow(name: string, value: number | string): string {
-  return `${name.padEnd(27)}: ${formatMetricValue(value)}`
+function metric(name: string, value: number | string): string {
+  return `${name} ${formatMetricValue(value)}`
 }
 
-function statRowSigned(name: string, value: number): string {
+function signedMetric(name: string, value: number): string {
   const sign = value > 0 ? '+' : ''
-  return `${name.padEnd(27)}: ${sign}${formatInteger(value)}`
+  return `${name} ${sign}${formatInteger(value)}`
 }
 
-function itemLine(name: string, detail: string): string {
-  return `- ${name.padEnd(24)} ${detail}`
+function summarizePairs(items: [string, string][], limit: number): string {
+  const shown = items
+    .slice(0, limit)
+    .map(([name, value]) => `${name} ${value}`)
+    .join(' | ')
+  return `${shown}${items.length > limit ? ` | +${items.length - limit}` : ''}`
 }
 
-function emptyLine(text: string): string {
-  return `- ${text}`
+function compactText(value: string, maxLength: number): string {
+  return value.length <= maxLength
+    ? value
+    : `${value.slice(0, Math.max(0, maxLength - 3))}...`
 }
 
 function modelUsageLine(name: string, usage: ModelStats): string {
+  const label = compactText(name, 38)
   if (!shouldShowDetailedCacheUsage(name, usage)) {
-    return `${name.padEnd(24)} input: ${formatInteger(usage.inputTokens)} | output: ${formatInteger(usage.outputTokens)} | cache_hit: ${formatCacheHit(usage)}`
+    return `${label}: input ${formatInteger(usage.inputTokens)} | output ${formatInteger(usage.outputTokens)} | cache ${formatCacheHit(usage)}`
   }
 
   const totalInput = totalInputTokensProcessed(usage)
   const cacheWrite =
     usage.cacheCreationInputTokens > 0
-      ? ` | cache write: ${formatInteger(usage.cacheCreationInputTokens)}`
+      ? ` | write ${formatInteger(usage.cacheCreationInputTokens)}`
       : ''
-  return `${name.padEnd(24)} uncached input: ${formatInteger(usage.inputTokens)} | cache read: ${formatInteger(usage.cacheReadInputTokens)}${cacheWrite} | total input: ${formatInteger(totalInput)} | output: ${formatInteger(usage.outputTokens)} | cache_hit: ${formatCacheHit(usage)}`
+  return `${label}: uncached ${formatInteger(usage.inputTokens)} | read ${formatInteger(usage.cacheReadInputTokens)}${cacheWrite} | total ${formatInteger(totalInput)} | output ${formatInteger(usage.outputTokens)} | cache ${formatCacheHit(usage)}`
 }
 
 function formatCacheHit(usage: ModelStats): string {

@@ -60,6 +60,20 @@ export class LaneBackedProvider implements BaseProvider {
     const lane = this.lane
     const providerHint = this.providerHint
     const resolvedModel = lane.resolveModel(params.model)
+    const explicitSessionId =
+      typeof params.sessionId === 'string' && params.sessionId.trim().length > 0
+        ? params.sessionId
+        : undefined
+    const sessionId =
+      providerHint === 'copilot'
+      || providerHint === 'openrouter'
+      || providerHint === 'agentrouter'
+      || providerHint === 'opencode'
+      || providerHint === 'moonshot'
+      || providerHint === 'mistral'
+      || providerHint === 'antigravity'
+        ? explicitSessionId ?? getSessionId()
+        : undefined
 
     if (typeof lane.streamAsProvider !== 'function') {
       throw new Error(
@@ -83,16 +97,7 @@ export class LaneBackedProvider implements BaseProvider {
         stop_sequences: params.stop_sequences,
         thinking: params.thinking,
         signal: controller.signal,
-        ...(
-          providerHint === 'copilot'
-          || providerHint === 'openrouter'
-          || providerHint === 'agentrouter'
-          || providerHint === 'opencode'
-          || providerHint === 'moonshot'
-          || providerHint === 'mistral'
-            ? { sessionId: getSessionId() }
-            : {}
-        ),
+        ...(sessionId ? { sessionId } : {}),
         providerHint: providerHint,
       })
       for await (const ev of gen) {
