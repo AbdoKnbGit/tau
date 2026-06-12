@@ -46,14 +46,14 @@ async function main(): Promise<void> {
     )
   })
 
-  await test('exempts Claude models on Antigravity', () => {
+  await test('gates Claude models on Antigravity too (shared cache backend)', () => {
     assert(
-      !shouldSerializeAntigravityAgents('antigravity' as APIProvider, 'claude-sonnet-4-6'),
-      'claude-sonnet-4-6 must not serialize',
+      shouldSerializeAntigravityAgents('antigravity' as APIProvider, 'claude-sonnet-4-6'),
+      'claude-sonnet-4-6 should serialize',
     )
     assert(
-      !shouldSerializeAntigravityAgents('antigravity' as APIProvider, 'claude-opus-4-6-thinking'),
-      'claude-opus-4-6-thinking must not serialize',
+      shouldSerializeAntigravityAgents('antigravity' as APIProvider, 'claude-opus-4-6-thinking'),
+      'claude-opus-4-6-thinking should serialize',
     )
   })
 
@@ -63,6 +63,8 @@ async function main(): Promise<void> {
       'gemini provider must not serialize',
     )
     assert(
+      // A Claude id on the first-party Anthropic path must never serialize —
+      // only the antigravity provider shares the implicit-cache backend.
       !shouldSerializeAntigravityAgents('firstParty' as APIProvider, 'claude-opus-4-8'),
       'firstParty must not serialize',
     )

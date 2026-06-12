@@ -1,23 +1,23 @@
 import type { APIProvider } from '../../utils/model/providers.js'
 
 /**
- * Serialization gate for subagents on the Antigravity Gemini path.
+ * Serialization gate for subagents on the Antigravity path.
  *
- * Antigravity's implicit prompt cache for Gemini-family models holds
- * roughly one cached context per account, with a multi-second write
- * commit. Concurrent agent streams evict each other's entry on every
- * request: a parallel 3-agent batch measured 0/17 cache hits across
- * the agents and forced the parent thread into repeated full-context
- * re-ingests afterwards (~4x session cost). Per-agent session affinity
- * (cacheAffinity.ts) keys the requests correctly but cannot add
- * server-side capacity, so the fix is to stop interleaving: agents on
- * this path run their query loops one at a time. Each agent's stream
- * then extends its own prefix uninterrupted, and the parent pays a
- * single cold re-ingest per batch instead of one per turn.
+ * Antigravity's implicit prompt cache holds per-account context with a
+ * multi-second async write commit. Concurrent agent streams land inside
+ * each other's commit windows: a parallel 3-agent batch measured 0/17
+ * cache hits across the agents and forced the parent thread into
+ * repeated full-context re-ingests afterwards (~4x session cost).
+ * Per-agent session affinity (cacheAffinity.ts) keys the requests
+ * correctly but cannot add server-side capacity, so the fix is to stop
+ * interleaving: agents on this path run their query loops one at a time.
+ * Each agent's stream then extends its own prefix uninterrupted, and the
+ * parent pays a single cold re-ingest per batch instead of one per turn.
  *
- * Claude models resold through Antigravity are exempt — their cache is
- * content-addressed and multi-entry, so interleaving is harmless there.
- * Every other provider is untouched.
+ * Covers BOTH Gemini and Claude models on Antigravity — Claude is resold
+ * through the same cloudcode-pa Gemini wire protocol and shares the same
+ * per-account implicit cache, so it thrashes the same way under parallel
+ * spawns. Every other provider is untouched.
  *
  * Escape hatch: TAU_ANTIGRAVITY_PARALLEL_AGENTS=1 restores parallel
  * spawns for users who prefer wall-clock speed over token cost.
@@ -25,13 +25,12 @@ import type { APIProvider } from '../../utils/model/providers.js'
 
 export function shouldSerializeAntigravityAgents(
   provider: APIProvider,
-  model: string,
+  _model: string,
 ): boolean {
   if (process.env.TAU_ANTIGRAVITY_PARALLEL_AGENTS === '1') return false
-  if (provider !== 'antigravity') return false
-  // Gate everything on the Antigravity Gemini quota pool. Claude ids are
-  // the only family with interleaving-safe caching on this proxy.
-  return !model.toLowerCase().includes('claude')
+  // The whole Antigravity quota pool shares one async-commit cache
+  // backend per account, Gemini and Claude alike — serialize all of it.
+  return provider === 'antigravity'
 }
 
 // FIFO promise-chain mutex. `tail` resolves when every previously queued

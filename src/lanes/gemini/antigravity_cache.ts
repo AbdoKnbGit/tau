@@ -220,6 +220,29 @@ export function recordAntigravityCacheRead(
   cacheReadTokens: number,
   promptTokens: number,
 ): void {
+  if (process.env.TAU_CACHE_DEBUG && sessionId && promptTokens > 0) {
+    // Usage arrives on many SSE chunks per turn — only log when the
+    // (cacheRead, prompt) pair changes so the file has one line per turn.
+    const sig = `${sessionId}:${cacheReadTokens}:${promptTokens}`
+    if (sig !== _lastUsageSig) {
+      _lastUsageSig = sig
+      try {
+        appendFileSync(
+          join(tmpdir(), 'tau-cache-debug.jsonl'),
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            kind: 'usage',
+            sessionId,
+            cacheRead: cacheReadTokens,
+            prompt: promptTokens,
+            hitPct: Math.round((cacheReadTokens / promptTokens) * 100),
+          }) + '\n',
+        )
+      } catch {
+        // never break the request path
+      }
+    }
+  }
   if (!sessionId || cacheReadTokens <= 0 || promptTokens <= 0) return
   if (cacheReadTokens < promptTokens * 0.7) return
   const state = _agentPace.get(sessionId)
@@ -228,13 +251,61 @@ export function recordAntigravityCacheRead(
 
 // ─── Diagnostics ─────────────────────────────────────────────────
 
+interface DebugSnapshot {
+  system: string
+  tools: string
+  blocks: string[]
+}
+
+/**
+ * Compare a request's cache-relevant section hashes against the previous
+ * request on the SAME session and classify why the implicit prefix cache
+ * would (or wouldn't) hit. The implicit cache only serves when the prior
+ * committed request is an exact prefix of the new one — any change before
+ * the appended tail voids the whole entry (measured: no partial credit).
+ *
+ * Returns a short human-readable verdict:
+ *   - 'cold'                       first request on this session
+ *   - 'ok: clean prefix extension' history grew append-only — cache hits
+ *   - 'BREAK: systemInstruction'   the cached prefix changes at byte 0
+ *   - 'BREAK: tools'               tools block churned
+ *   - 'BREAK: history block i/N rewritten'  a non-tail content block
+ *                                  changed in place (context-management
+ *                                  rewrite, signature churn, injected
+ *                                  per-turn block, …) — this is the usual
+ *                                  cause of a 0% multi-turn session
+ */
+export function diagnoseAntigravityCacheBreak(
+  prev: DebugSnapshot | undefined,
+  cur: DebugSnapshot,
+): string {
+  if (!prev) return 'cold'
+  if (prev.system !== cur.system) return 'BREAK: systemInstruction'
+  if (prev.tools !== cur.tools) return 'BREAK: tools'
+  const shared = Math.min(prev.blocks.length, cur.blocks.length)
+  for (let i = 0; i < shared; i++) {
+    if (prev.blocks[i] !== cur.blocks[i]) {
+      return `BREAK: history block ${i}/${prev.blocks.length} rewritten`
+    }
+  }
+  // Every shared block matched. If the new request only added blocks at the
+  // end (or is identical), the previous committed prefix extends cleanly.
+  return cur.blocks.length >= prev.blocks.length
+    ? 'ok: clean prefix extension'
+    : 'BREAK: history truncated'
+}
+
+const _lastDebugSnapshot = new Map<string, DebugSnapshot>()
+let _lastUsageSig = ''
+
 /**
  * TAU_CACHE_DEBUG=1 diagnostic: append one JSON line per Antigravity
  * request to <tmpdir>/tau-cache-debug.jsonl with a hash of every
  * cache-relevant section (systemInstruction, tools, generationConfig,
- * each content block). Diffing consecutive lines of one stream shows
- * exactly which byte region breaks the implicit-cache prefix, or
- * proves the prefix is byte-stable and the misses are server-side.
+ * each content block) PLUS a `break` verdict comparing this request to
+ * the previous one on the same session — so a single multi-turn session
+ * names the exact section that breaks the implicit-cache prefix instead
+ * of leaving it to be diffed by hand.
  */
 export function writeAntigravityCacheDebugEntry(
   model: string,
@@ -250,15 +321,27 @@ export function writeAntigravityCacheDebugEntry(
     const contents = Array.isArray(request.contents)
       ? (request.contents as unknown[])
       : []
+    const snapshot: DebugSnapshot = {
+      system: h(request.systemInstruction),
+      tools: h(request.tools),
+      blocks: contents.map(h),
+    }
+    const key = sessionId ?? '<no-session>'
+    const verdict = diagnoseAntigravityCacheBreak(
+      _lastDebugSnapshot.get(key),
+      snapshot,
+    )
+    _lastDebugSnapshot.set(key, snapshot)
     const entry = {
       ts: new Date().toISOString(),
       model,
       sessionId,
-      system: h(request.systemInstruction),
-      tools: h(request.tools),
+      break: verdict,
+      system: snapshot.system,
+      tools: snapshot.tools,
       genCfg: h(request.generationConfig),
       nContents: contents.length,
-      blocks: contents.map(h),
+      blocks: snapshot.blocks,
       bytes: JSON.stringify(request).length,
     }
     appendFileSync(
@@ -274,6 +357,7 @@ export function writeAntigravityCacheDebugEntry(
 
 export function _resetAntigravityCacheStateForTest(): void {
   _agentPace.clear()
+  _lastDebugSnapshot.clear()
   _commitWindowMs = ANTIGRAVITY_COMMIT_WINDOW_MS
 }
 

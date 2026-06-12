@@ -5,6 +5,7 @@
 import {
   antigravityPrefixPad,
   applyAntigravityPrefixPad,
+  diagnoseAntigravityCacheBreak,
   paceAntigravityAgentRequest,
   recordAntigravityCacheRead,
   _getAntigravityPaceStateForTest,
@@ -189,6 +190,46 @@ async function main(): Promise<void> {
     } finally {
       delete process.env.TAU_ANTIGRAVITY_NO_PACING
     }
+  })
+
+  console.log('antigravity cache-break diagnosis:')
+
+  await test('first request on a session is cold', () => {
+    const v = diagnoseAntigravityCacheBreak(undefined, { system: 's', tools: 't', blocks: ['a'] })
+    assert(v === 'cold', v)
+  })
+
+  await test('append-only growth is a clean prefix extension', () => {
+    const prev = { system: 's', tools: 't', blocks: ['a', 'b'] }
+    const cur = { system: 's', tools: 't', blocks: ['a', 'b', 'c', 'd'] }
+    const v = diagnoseAntigravityCacheBreak(prev, cur)
+    assert(v === 'ok: clean prefix extension', v)
+  })
+
+  await test('changed systemInstruction is flagged first (byte-0 break)', () => {
+    const prev = { system: 's1', tools: 't', blocks: ['a'] }
+    const cur = { system: 's2', tools: 't', blocks: ['a', 'b'] }
+    assert(diagnoseAntigravityCacheBreak(prev, cur) === 'BREAK: systemInstruction', 'system')
+  })
+
+  await test('changed tools is flagged', () => {
+    const prev = { system: 's', tools: 't1', blocks: ['a'] }
+    const cur = { system: 's', tools: 't2', blocks: ['a', 'b'] }
+    assert(diagnoseAntigravityCacheBreak(prev, cur) === 'BREAK: tools', 'tools')
+  })
+
+  await test('a rewritten history block names its index (the 0% multi-turn cause)', () => {
+    // block 0 stable, block 1 rewritten in place, block 2 appended.
+    const prev = { system: 's', tools: 't', blocks: ['a', 'b', 'c'] }
+    const cur = { system: 's', tools: 't', blocks: ['a', 'B-rewritten', 'c', 'd'] }
+    const v = diagnoseAntigravityCacheBreak(prev, cur)
+    assert(v === 'BREAK: history block 1/3 rewritten', v)
+  })
+
+  await test('a changed leading content block is caught at index 0', () => {
+    const prev = { system: 's', tools: 't', blocks: ['vol-v1', 'task'] }
+    const cur = { system: 's', tools: 't', blocks: ['vol-v2', 'task', 'more'] }
+    assert(diagnoseAntigravityCacheBreak(prev, cur) === 'BREAK: history block 0/2 rewritten', 'leading')
   })
 
   _resetAntigravityCacheStateForTest()

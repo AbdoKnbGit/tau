@@ -142,19 +142,20 @@ export class GeminiLane implements Lane {
     // for anything we don't recognize (MCP tools, custom tools).
     const functionDeclarations = buildLaneFunctionDeclarations(tools)
 
-    // Antigravity Gemini prompts below the backend's ~16,384-token
-    // implicit-cache minimum can never produce a cache entry — pad the
-    // stable system slot over it so the second call is a cache hit.
-    // Sized from turn-stable inputs (system + tools) so the pad is
-    // byte-identical across a conversation's turns. Claude models on
-    // Antigravity use a separate multi-entry cache with a much lower
-    // minimum — padding them would only waste tokens. See
-    // antigravity_cache.ts for the measured cache semantics.
+    // Antigravity prompts below the backend's ~16,384-token implicit-cache
+    // minimum can never produce a cache entry — pad the stable system slot
+    // over it so the second call is a cache hit. Sized from turn-stable
+    // inputs (system + tools) so the pad is byte-identical across a
+    // conversation's turns.
+    //
+    // Applies to BOTH Gemini and Claude models on Antigravity: Claude is
+    // resold through the same cloudcode-pa Gemini wire protocol and shares
+    // the same per-account implicit cache, so it has the identical 16,384
+    // chunk minimum + async-commit instability. Google-path Gemini and
+    // every other provider are untouched. See antigravity_cache.ts for the
+    // measured cache semantics.
     const isAntigravityModel = ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase())
-    const isAntigravityGemini =
-      isAntigravityModel
-      && !resolveAntigravityWireModel(model).toLowerCase().includes('claude')
-    const stableText = isAntigravityGemini
+    const stableText = isAntigravityModel
       ? applyAntigravityPrefixPad(
         split.stableText,
         JSON.stringify(functionDeclarations).length,
@@ -216,12 +217,13 @@ export class GeminiLane implements Lane {
       if (process.env.TAU_CACHE_DEBUG) {
         writeAntigravityCacheDebugEntry(model, request, sessionId)
       }
-      if (isAntigravityGemini) {
-        // Hold an agent's second request until its first cache write
-        // has had time to commit (~8-22s async) — without this, fast
-        // tool loops re-pay the full prompt cold on every turn.
-        await paceAntigravityAgentRequest(sessionId, signal)
-      }
+      // Hold an agent's second request until its first cache write has had
+      // time to commit (~8-22s async) — without this, fast tool loops
+      // re-pay the full prompt cold on every turn. Agent sessions only
+      // (gated inside by the tau-agent- prefix); the main thread's human
+      // cadence already clears the commit window. Both Gemini and Claude
+      // on Antigravity hit the same async-commit backend.
+      await paceAntigravityAgentRequest(sessionId, signal)
     }
 
     // Track usage across the stream.
@@ -408,7 +410,7 @@ export class GeminiLane implements Lane {
           thinkingTokens = u.thoughtsTokenCount ?? thinkingTokens
           cacheReadTokens = u.cachedContentTokenCount ?? cacheReadTokens
           inputTokens = uncachedInputTokens(promptTokens, cacheReadTokens)
-          if (isAntigravityGemini) {
+          if (isAntigravityModel) {
             recordAntigravityCacheRead(sessionId, cacheReadTokens, promptTokens)
           }
         }
