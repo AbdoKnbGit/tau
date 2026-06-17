@@ -15,6 +15,7 @@ import {
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
+import { recordVisitedDir } from '../../bootstrap/state.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { countLinesChanged, getPatchForDisplay } from '../../utils/diff.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -228,6 +229,8 @@ export const FileWriteTool = buildTool({
   ) {
     const fullFilePath = expandPath(file_path)
     const dir = dirname(fullFilePath)
+    // Remember this dir so later commands can find files here from another cwd.
+    recordVisitedDir(dir)
 
     // Discover skills from this file's path (fire-and-forget, non-blocking)
     const cwd = getCwd()

@@ -192,12 +192,15 @@ async function pathExists(target: string): Promise<boolean> {
  */
 async function findFileCandidates(
   rootDir: string,
-  fileName: string,
+  fileName: string | string[],
   { maxDepth = 4, maxDirs = 500, maxMatches = 3 } = {},
 ): Promise<string[]> {
   const fsRoot = normalizeForFs(rootDir)
-  const wantLower = fileName.toLowerCase()
+  const wanted = Array.isArray(fileName) ? fileName : [fileName]
   const caseInsensitive = process.platform === 'win32'
+  const wantedLower = new Set(wanted.map(name => name.toLowerCase()))
+  const matchesName = (name: string): boolean =>
+    caseInsensitive ? wantedLower.has(name.toLowerCase()) : wanted.includes(name)
   const matches: string[] = []
   const queue: Array<{ dir: string; depth: number }> = [{ dir: fsRoot, depth: 0 }]
   let visited = 0
@@ -211,10 +214,7 @@ async function findFileCandidates(
       continue
     }
     for (const entry of entries) {
-      const matchesName = caseInsensitive
-        ? entry.name.toLowerCase() === wantLower
-        : entry.name === fileName
-      if (entry.isFile() && matchesName) {
+      if (entry.isFile() && matchesName(entry.name)) {
         matches.push(path.relative(fsRoot, path.join(dir, entry.name)))
         if (matches.length >= maxMatches) break
       } else if (
@@ -228,61 +228,6 @@ async function findFileCandidates(
     }
   }
   return matches
-}
-
-function formatCandidateLines(candidates: string[]): string[] {
-  return candidates.map(candidate => {
-    const dir = path.dirname(candidate)
-    const workdirHint = dir === '.' ? '' : ` → re-run with workdir: ${shellQuoteForHint(dir)}`
-    return `- ${candidate}${workdirHint}`
-  })
-}
-
-function formatMissingScriptTargetMessage(
-  target: string,
-  resolvedTarget: string,
-  baseDir: string,
-  candidates: string[],
-): string {
-  const fileName = path.basename(normalizeForFs(target))
-  const location =
-    candidates.length > 0
-      ? [`Found ${fileName} elsewhere under ${shellQuoteForHint(baseDir)}:`, ...formatCandidateLines(candidates)]
-      : [`Searched nearby subdirectories of ${shellQuoteForHint(baseDir)}: no file named ${shellQuoteForHint(fileName)} exists there either.`]
-  return [
-    'Shell preflight blocked this command before execution.',
-    '',
-    'Reason:',
-    `${shellQuoteForHint(target)} does not exist in ${shellQuoteForHint(baseDir)} (the directory this command would run in).`,
-    `Resolved target: ${shellQuoteForHint(resolvedTarget)}`,
-    '',
-    ...location,
-    '',
-    'Correction guidance:',
-    '- Re-run with the workdir parameter set to the directory that actually contains the file, or reference the file by the path listed above.',
-    '- If the file lives somewhere else entirely, locate it first (e.g. Glob pattern **/' + fileName + ') instead of guessing paths.',
-    '',
-    'The command was not executed.',
-  ].join('\n')
-}
-
-function formatMissingManifestMessage(
-  runner: string,
-  baseDir: string,
-  candidates: string[],
-): string {
-  return [
-    'Shell preflight blocked this command before execution.',
-    '',
-    'Reason:',
-    `There is no package.json in ${shellQuoteForHint(baseDir)} (the directory this ${runner} command would run in), but one exists nearby:`,
-    ...formatCandidateLines(candidates),
-    '',
-    'Correction guidance:',
-    '- Re-run with the workdir parameter set to the directory that contains the right package.json.',
-    '',
-    'The command was not executed.',
-  ].join('\n')
 }
 
 function extractManifestRunner(command: string): string | null {
@@ -308,51 +253,307 @@ function extractManifestRunner(command: string): string | null {
   return null
 }
 
+// --- Compose (implicit config-in-cwd) preflight -----------------------------
+// `docker compose up` / `docker-compose up` name no file in argv — they look
+// for a Compose file in the working directory (and walk up its parents). The
+// classic failure mirrors the script case: the model runs from the repo root
+// while the Compose file lives in a subdirectory, and the shell fails with
+// "no configuration file provided: not found". We catch that before execution
+// and hand back the exact workdir / -f to use.
+
+// Discovery order matches docker's: compose.yaml wins, docker-compose.yml last.
+const COMPOSE_FILE_NAMES = [
+  'compose.yaml',
+  'compose.yml',
+  'docker-compose.yaml',
+  'docker-compose.yml',
+]
+
+// Compose subcommands that operate on a project and therefore need a Compose
+// file. Deliberately excludes file-less subcommands (version, ls, help) so
+// those never get blocked.
+const COMPOSE_PROJECT_SUBCOMMANDS = new Set([
+  'up', 'down', 'build', 'start', 'stop', 'restart', 'ps', 'logs',
+  'pull', 'push', 'run', 'exec', 'config', 'create', 'rm', 'kill',
+  'pause', 'unpause', 'top', 'events', 'images', 'port', 'scale',
+  'watch', 'cp', 'wait', 'attach', 'stats',
+])
+
+// Global flags placed before the subcommand that consume the next token as a
+// value. Skipping their value keeps us from mistaking it for the subcommand.
+const COMPOSE_VALUE_FLAGS = new Set([
+  '-p', '--project-name', '--profile', '--env-file', '--ansi',
+  '--progress', '--parallel', '-c', '--context', '-H', '--host',
+  '--log-level',
+])
+
+// Flags that point Compose at an explicit file/dir, so the cwd-based preflight
+// must not second-guess the location (covers `--file=x` via split on `=`).
+const COMPOSE_EXPLICIT_LOCATION_FLAGS = new Set([
+  '-f', '--file', '--project-directory',
+])
+
 /**
- * Verify that the file/manifest a command targets actually exists in the
- * directory it will run in. Shared by BashTool and PowerShellTool so the
- * wrong-directory failure is caught before execution in both shells.
+ * Identify a `docker compose` / `docker-compose` (or podman) invocation that
+ * needs a Compose file discovered from the working directory. Returns null —
+ * meaning "don't preflight" — for explicit `-f`/`--project-directory`, a
+ * `COMPOSE_FILE=` env assignment, file-less subcommands, or anything we can't
+ * statically parse. Conservative by design: a miss is safe, a false block is not.
+ */
+export function extractComposeInvocation(
+  command: string,
+): { runner: string } | null {
+  const tokens = tokenizeSegment(firstCommandSegment(command))
+  let i = 0
+  // Leading VAR=value env assignments. An explicit COMPOSE_FILE already points
+  // Compose at a specific file — don't second-guess it.
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) {
+    if (/^COMPOSE_FILE=/.test(tokens[i]!)) return null
+    i++
+  }
+
+  const head = tokens[i]?.replace(/\.exe$/i, '').toLowerCase()
+  if (!head) return null
+
+  let runner: string
+  if (head === 'docker-compose' || head === 'podman-compose') {
+    runner = head
+    i++
+  } else if (head === 'docker' || head === 'podman') {
+    // Only the plain `docker compose` form is parsed; we don't try to step over
+    // docker's own global flags (`docker --context x compose`). Missing those
+    // rare forms just skips the preflight — it never produces a false block.
+    if (tokens[i + 1]?.toLowerCase() !== 'compose') return null
+    runner = `${head} compose`
+    i += 2
+  } else {
+    return null
+  }
+
+  let subcommand: string | undefined
+  for (; i < tokens.length; i++) {
+    const token = tokens[i]!
+    if (token.startsWith('-')) {
+      const flagName = token.split('=')[0]!
+      if (COMPOSE_EXPLICIT_LOCATION_FLAGS.has(flagName)) return null
+      // Space-separated value form (`-p name`): skip the value token too.
+      if (!token.includes('=') && COMPOSE_VALUE_FLAGS.has(token)) i++
+      continue
+    }
+    subcommand = token.toLowerCase()
+    break
+  }
+
+  if (!subcommand || !COMPOSE_PROJECT_SUBCOMMANDS.has(subcommand)) return null
+  return { runner }
+}
+
+async function composeFileExistsIn(dir: string): Promise<boolean> {
+  for (const name of COMPOSE_FILE_NAMES) {
+    if (await pathExists(resolveFrom(dir, name))) return true
+  }
+  return false
+}
+
+export type TargetWorkdirResolution =
+  | { kind: 'none' }
+  // Exactly one subdirectory holds the needed file — run there. `workdir` is the
+  // absolute directory, `relWorkdir` is relative to baseDir, and `label` names
+  // what was found (for the model-facing note).
+  | { kind: 'auto'; workdir: string; relWorkdir: string; label: string }
+  // The needed file lives in several different subdirectories — can't guess.
+  | { kind: 'ambiguous'; message: string }
+
+// Keep the cross-root file search cheap: cap how many roots we scan.
+const MAX_SEARCH_ROOTS = 16
+
+const caseFold = (p: string): string =>
+  process.platform === 'win32' ? p.toLowerCase() : p
+
+/** Dedup directories by resolved host-fs spelling, dropping empties. */
+function dedupRoots(roots: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const root of roots) {
+    if (!root) continue
+    const key = caseFold(normalizeForFs(root))
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(root)
+  }
+  return out
+}
+
+/**
+ * Search each root (downward, bounded) for any of fileNames and return the
+ * DIRECTORIES that contain a match, as absolute host-fs paths. This is what
+ * makes "run from any known directory" work: roots include the current dir, the
+ * workspace's added dirs, and dirs the model has used this session. Stops early
+ * once two distinct directories are found (enough to know it's ambiguous) and
+ * caps the number of roots so the scan stays fast.
+ */
+async function collectTargetDirs(
+  roots: string[],
+  fileNames: string | string[],
+  maxDepth: number,
+): Promise<string[]> {
+  const seen = new Set<string>()
+  const ordered: string[] = []
+  for (const root of roots.slice(0, MAX_SEARCH_ROOTS)) {
+    const fsRoot = normalizeForFs(root)
+    const candidates = await findFileCandidates(fsRoot, fileNames, {
+      maxDepth,
+      maxDirs: 250,
+    })
+    for (const candidate of candidates) {
+      const dir = path.resolve(fsRoot, path.dirname(candidate))
+      const key = caseFold(dir)
+      if (!seen.has(key)) {
+        seen.add(key)
+        ordered.push(dir)
+      }
+    }
+    if (ordered.length >= 2) break
+  }
+  return ordered
+}
+
+function displayWorkdir(baseDir: string, dir: string): string {
+  const rel = path.relative(normalizeForFs(baseDir), dir)
+  return rel && !rel.startsWith('..') ? rel : dir
+}
+
+function formatAmbiguousTargetMessage(
+  label: string,
+  baseDir: string,
+  dirs: string[],
+): string {
+  return [
+    'Shell preflight blocked this command before execution.',
+    '',
+    'Reason:',
+    `${label} is not in ${shellQuoteForHint(baseDir)} (the directory this command would run in) and exists in more than one known location:`,
+    ...dirs.map(dir => `- ${shellQuoteForHint(dir)}`),
+    '',
+    'Correction guidance:',
+    '- Re-run with the workdir parameter (or an explicit path) set to the one you mean.',
+    '',
+    'The command was not executed.',
+  ].join('\n')
+}
+
+/**
+ * Turn matched directories into a workdir decision:
+ *   - none: nothing nearby to redirect to.
+ *   - auto: exactly one directory holds the file → run there (absolute workdir).
+ *   - ambiguous: several different directories hold it → caller blocks.
+ */
+function pickWorkdir(
+  dirs: string[],
+  baseDir: string,
+  label: string,
+): TargetWorkdirResolution {
+  if (dirs.length === 0) return { kind: 'none' }
+  if (dirs.length === 1) {
+    const dir = dirs[0]!
+    return { kind: 'auto', workdir: dir, relWorkdir: displayWorkdir(baseDir, dir), label }
+  }
+  return { kind: 'ambiguous', message: formatAmbiguousTargetMessage(label, baseDir, dirs) }
+}
+
+/**
+ * Decide where a `docker compose` / `docker-compose` (or podman) command should
+ * run when the execution directory has no Compose file of its own. Searches the
+ * given roots (defaults to baseDir only).
+ *
+ * Compose v2 also discovers files by walking UP into parents, but we ignore
+ * ancestors on purpose: a stray compose file in a home / Desktop / checkout
+ * parent (very common) would otherwise hijack the run. A file in a known
+ * directory is almost always the intended one.
+ */
+export async function resolveComposeWorkdir(
+  command: string,
+  baseDir: string,
+  roots: string[] = [baseDir],
+): Promise<TargetWorkdirResolution> {
+  const compose = extractComposeInvocation(command)
+  if (!compose) return { kind: 'none' }
+  // A Compose file already resolves from here — nothing to redirect.
+  if (await composeFileExistsIn(baseDir)) return { kind: 'none' }
+  const dirs = await collectTargetDirs(roots, COMPOSE_FILE_NAMES, 4)
+  return pickWorkdir(dirs, baseDir, 'the Compose file')
+}
+
+async function resolveScriptWorkdir(
+  command: string,
+  baseDir: string,
+  roots: string[],
+): Promise<TargetWorkdirResolution | null> {
+  const scriptTarget = extractScriptFileTarget(command)
+  if (!scriptTarget) return null
+  // Already resolves from the run dir — nothing to redirect.
+  if (await pathExists(resolveFrom(baseDir, scriptTarget))) return { kind: 'none' }
+  // A path component (api/server.js) can't be satisfied by changing the workdir
+  // without corrupting the path — leave it for the shell to report.
+  if (/[\\/]/.test(scriptTarget)) return { kind: 'none' }
+  const fileName = path.basename(normalizeForFs(scriptTarget))
+  const dirs = await collectTargetDirs(roots, fileName, 4)
+  return pickWorkdir(dirs, baseDir, fileName)
+}
+
+async function resolveManifestWorkdir(
+  command: string,
+  baseDir: string,
+  roots: string[],
+): Promise<TargetWorkdirResolution | null> {
+  const manifestRunner = extractManifestRunner(command)
+  if (!manifestRunner) return null
+  if (await pathExists(resolveFrom(baseDir, 'package.json'))) return { kind: 'none' }
+  const dirs = await collectTargetDirs(roots, 'package.json', 3)
+  return pickWorkdir(dirs, baseDir, 'package.json')
+}
+
+/**
+ * Resolve where a command's target file lives when it is not in the execution
+ * directory. Handles, uniformly:
+ *   - script interpreters: `node server.js`, `python app.py`, `./run.sh`
+ *   - package-manifest runners: `npm run build`, `yarn test`, `pnpm i`
+ *   - Compose: `docker compose up`, `docker-compose up`, podman
+ * A single unambiguous subdirectory is returned as an `auto` workdir (applied at
+ * execution time by the shell tools, so the model never has to retry); several
+ * different subdirectories are `ambiguous`. Shared by BashTool and
+ * PowerShellTool so both shells behave identically.
+ */
+export async function resolveTargetWorkdir(
+  command: string,
+  baseDir: string,
+  searchRoots: string[] = [],
+): Promise<TargetWorkdirResolution> {
+  // Search the run dir plus every other directory we have reason to know about
+  // (workspace dirs + dirs used this session), so a target that lives in a
+  // different tree still resolves. baseDir stays first so it wins ties.
+  const roots = dedupRoots([baseDir, ...searchRoots])
+  return (
+    (await resolveScriptWorkdir(command, baseDir, roots)) ??
+    (await resolveManifestWorkdir(command, baseDir, roots)) ??
+    (await resolveComposeWorkdir(command, baseDir, roots))
+  )
+}
+
+/**
+ * Block decision shared by BashTool and PowerShellTool. The wrong-directory
+ * case is normally auto-corrected at execution time (resolveTargetWorkdir → the
+ * shell tools' call()), so this only blocks when the target genuinely lives in
+ * several different subdirectories and we cannot safely pick one.
  */
 export async function validateCommandTargetExists(
   command: string,
   baseDir: string,
 ): Promise<BashPreflightValidationResult> {
-  const scriptTarget = extractScriptFileTarget(command)
-  if (scriptTarget) {
-    const resolvedTarget = resolveFrom(baseDir, scriptTarget)
-    if (!(await pathExists(resolvedTarget))) {
-      const fileName = path.basename(normalizeForFs(scriptTarget))
-      const candidates = await findFileCandidates(baseDir, fileName)
-      return {
-        ok: false,
-        message: formatMissingScriptTargetMessage(
-          scriptTarget,
-          resolvedTarget,
-          baseDir,
-          candidates,
-        ),
-      }
-    }
+  const resolution = await resolveTargetWorkdir(command, baseDir)
+  if (resolution.kind === 'ambiguous') {
+    return { ok: false, message: resolution.message }
   }
-
-  const manifestRunner = extractManifestRunner(command)
-  if (manifestRunner) {
-    const manifestPath = resolveFrom(baseDir, 'package.json')
-    if (!(await pathExists(manifestPath))) {
-      const candidates = await findFileCandidates(baseDir, 'package.json', {
-        maxDepth: 3,
-      })
-      // Only block when we can point at the right directory — a missing
-      // manifest with nothing nearby may still be a legitimate invocation.
-      if (candidates.length > 0) {
-        return {
-          ok: false,
-          message: formatMissingManifestMessage(manifestRunner, baseDir, candidates),
-        }
-      }
-    }
-  }
-
   return { ok: true }
 }
 

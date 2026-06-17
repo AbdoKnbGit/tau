@@ -28,6 +28,7 @@ import {
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
+import { recordVisitedDir } from '../../bootstrap/state.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
 import { getErrnoCode, isENOENT } from '../../utils/errors.js'
 import {
@@ -441,6 +442,8 @@ export const FileReadTool = buildTool({
 
     // Path expansion + deny rule check (no I/O)
     const fullFilePath = expandPath(file_path)
+    // Remember this dir so later commands can find files here from another cwd.
+    recordVisitedDir(path.dirname(fullFilePath))
 
     const appState = toolUseContext.getAppState()
     const denyRule = matchingRuleForInput(

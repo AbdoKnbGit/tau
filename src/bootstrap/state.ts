@@ -58,6 +58,10 @@ type State = {
   // never updated by mid-session EnterWorktreeTool.
   // Use for project identity (history, skills, sessions) not file operations.
   projectRoot: string
+  // Directories the model has actually used this session (commands run there,
+  // files opened/edited there). Bounded LRU. Used to auto-resolve a target file
+  // that lives outside the current directory tree. Most-recent last.
+  visitedDirs: string[]
   totalCostUSD: number
   totalAPIDuration: number
   totalAPIDurationWithoutRetries: number
@@ -287,6 +291,7 @@ function getInitialState(): State {
   const state: State = {
     originalCwd: resolvedCwd,
     projectRoot: resolvedCwd,
+    visitedDirs: [],
     totalCostUSD: 0,
     totalAPIDuration: 0,
     totalAPIDurationWithoutRetries: 0,
@@ -540,6 +545,31 @@ export function getCwdState(): string {
 
 export function setCwdState(cwd: string): void {
   STATE.cwd = cwd.normalize('NFC')
+}
+
+// Cap so the cross-root file search stays cheap (bounded number of roots).
+const VISITED_DIRS_MAX = 48
+
+/**
+ * Record a directory the model actually used (ran a command in, or opened/edited
+ * a file in). Kept as a bounded most-recent-last LRU so resolveTargetWorkdir can
+ * find a target file that lives outside the current directory tree without
+ * scanning the whole disk.
+ */
+export function recordVisitedDir(dir: string): void {
+  if (!dir) return
+  const normalized = dir.normalize('NFC')
+  const existing = STATE.visitedDirs.indexOf(normalized)
+  if (existing !== -1) STATE.visitedDirs.splice(existing, 1)
+  STATE.visitedDirs.push(normalized)
+  if (STATE.visitedDirs.length > VISITED_DIRS_MAX) {
+    STATE.visitedDirs.splice(0, STATE.visitedDirs.length - VISITED_DIRS_MAX)
+  }
+}
+
+/** Session-visited directories, most-recent first. */
+export function getVisitedDirs(): string[] {
+  return [...STATE.visitedDirs].reverse()
 }
 
 export function getDirectConnectServerUrl(): string | undefined {

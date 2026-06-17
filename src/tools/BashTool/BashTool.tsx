@@ -5,7 +5,7 @@ import * as React from 'react';
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js';
 import type { AppState } from 'src/state/AppState.js';
 import { z } from 'zod/v4';
-import { getKairosActive, getOriginalCwd } from '../../bootstrap/state.js';
+import { getKairosActive, getOriginalCwd, getVisitedDirs, recordVisitedDir } from '../../bootstrap/state.js';
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js';
@@ -30,7 +30,7 @@ import type { PermissionResult } from '../../utils/permissions/PermissionResult.
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
 import { exec, setCwd } from '../../utils/Shell.js';
 import { getCwd } from '../../utils/cwd.js';
-import { pathInAllowedWorkingPath } from '../../utils/permissions/filesystem.js';
+import { allWorkingDirectories, pathInAllowedWorkingPath } from '../../utils/permissions/filesystem.js';
 import type { ExecResult } from '../../utils/ShellCommand.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
@@ -47,7 +47,7 @@ import { validateBashCommandPartsMatch } from './bashCommandParts.js';
 import { renderBashCommandPlan } from './bashCommandPlanner.js';
 import { detectDetachedBackgroundPattern } from './backgroundDetachValidation.js';
 import { appendBashFailureGuidance } from './bashFailureGuidance.js';
-import { validateBashExecutionPreflight } from './bashPreflightValidation.js';
+import { resolveTargetWorkdir, validateBashExecutionPreflight } from './bashPreflightValidation.js';
 import { validateBashSyntax } from './bashSyntaxValidation.js';
 import {
   isSameBashCwd,
@@ -806,7 +806,31 @@ export const BashTool = buildTool({
     // run (workdir override or session cwd). Used for cwd-transparency notes
     // and failure guidance so the model always knows where a command ran.
     const cwdBeforeExec = getCwd();
+    // File-location awareness: when a command targets a file (a script, a
+    // package.json runner, a Compose file) that isn't in the run directory but
+    // sits unambiguously in one subdirectory, run there automatically instead
+    // of failing — otherwise the model tends to loop on the identical command.
+    // Only when the model gave no workdir/cd of its own.
+    let autoWorkdir: string | undefined;
+    let autoWorkdirLabel: string | undefined;
+    if (!input.workdir) {
+      // Search the run dir + workspace dirs + dirs used this session, so a
+      // target file that lives in a different tree still resolves.
+      const searchRoots = [
+        ...allWorkingDirectories(getAppState().toolPermissionContext),
+        ...getVisitedDirs(),
+      ];
+      const targetRes = await resolveTargetWorkdir(input.command, cwdBeforeExec, searchRoots);
+      if (targetRes.kind === 'auto') {
+        input.workdir = targetRes.workdir;
+        autoWorkdir = targetRes.relWorkdir;
+        autoWorkdirLabel = targetRes.label;
+      }
+    }
     const executionDir = resolveEffectiveBashCwd(input, cwdBeforeExec);
+    // Remember where this command actually ran so later commands can find files
+    // that live here, even from a different cwd.
+    recordVisitedDir(executionDir);
     try {
       // Use the new async generator version of runShellCommand
       const commandGenerator = runShellCommand({
@@ -996,7 +1020,9 @@ export const BashTool = buildTool({
     let cwdNote: string | undefined;
     if (!stderrForShellReset) {
       const cwdAfter = getCwd();
-      if (!isSameBashCwd(executionDir, cwdAfter)) {
+      if (autoWorkdir) {
+        cwdNote = `Auto-ran in ${executionDir} (where ${autoWorkdirLabel} is); ${cwdBeforeExec} had none. Pass workdir: ${autoWorkdir} next time to be explicit.`;
+      } else if (!isSameBashCwd(executionDir, cwdAfter)) {
         cwdNote = `Ran in ${executionDir} (one-off workdir). The session cwd is still ${cwdAfter}; pass workdir again to run the next command there.`;
       } else if (!isSameBashCwd(cwdAfter, cwdBeforeExec)) {
         cwdNote = `Shell cwd is now ${cwdAfter}`;

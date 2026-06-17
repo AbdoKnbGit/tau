@@ -24,7 +24,8 @@ import { getPlatform } from '../../utils/platform.js';
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
 import { exec } from '../../utils/Shell.js';
 import { getCwd } from '../../utils/cwd.js';
-import { getOriginalCwd } from '../../bootstrap/state.js';
+import { getOriginalCwd, getVisitedDirs, recordVisitedDir } from '../../bootstrap/state.js';
+import { allWorkingDirectories } from '../../utils/permissions/filesystem.js';
 import type { ExecResult } from '../../utils/ShellCommand.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
@@ -35,7 +36,7 @@ import { getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { TaskOutput } from '../../utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from '../../utils/terminal.js';
 import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, getToolResultPath, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
-import { validateCommandTargetExists } from '../BashTool/bashPreflightValidation.js';
+import { resolveTargetWorkdir, validateCommandTargetExists } from '../BashTool/bashPreflightValidation.js';
 import { isSameBashCwd, resolveBashPathFrom } from '../BashTool/bashWorkdir.js';
 import { shouldUseSandbox } from '../BashTool/shouldUseSandbox.js';
 import { BackgroundHint } from '../BashTool/UI.js';
@@ -474,7 +475,28 @@ export const PowerShellTool = buildTool({
     // run (workdir override or session cwd). Used for the cwd-transparency
     // note so the model always knows where a command ran (matches BashTool).
     const cwdBeforeExec = getCwd();
+    // File-location awareness (matches BashTool): when a command targets a file
+    // (script, package.json runner, Compose file) that isn't in the run dir but
+    // sits unambiguously in one subdirectory, run there automatically instead
+    // of failing/looping — only when the model gave no workdir of its own.
+    let autoWorkdir: string | undefined;
+    let autoWorkdirLabel: string | undefined;
+    if (!input.workdir) {
+      // Search the run dir + workspace dirs + dirs used this session, so a
+      // target file that lives in a different tree still resolves.
+      const searchRoots = [
+        ...allWorkingDirectories(toolUseContext.getAppState().toolPermissionContext),
+        ...getVisitedDirs(),
+      ];
+      const targetRes = await resolveTargetWorkdir(input.command, cwdBeforeExec, searchRoots);
+      if (targetRes.kind === 'auto') {
+        input.workdir = targetRes.workdir;
+        autoWorkdir = targetRes.relWorkdir;
+        autoWorkdirLabel = targetRes.label;
+      }
+    }
     const executionDir = input.workdir ? resolveBashPathFrom(cwdBeforeExec, input.workdir) : cwdBeforeExec;
+    recordVisitedDir(executionDir);
     try {
       const commandGenerator = runPowerShellCommand({
         input,
@@ -663,7 +685,9 @@ export const PowerShellTool = buildTool({
       let cwdNote: string | undefined;
       if (!stderrForShellReset) {
         const cwdAfter = getCwd();
-        if (!isSameBashCwd(executionDir, cwdAfter)) {
+        if (autoWorkdir) {
+          cwdNote = `Auto-ran in ${executionDir} (where ${autoWorkdirLabel} is); ${cwdBeforeExec} had none. Pass workdir: ${autoWorkdir} next time to be explicit.`;
+        } else if (!isSameBashCwd(executionDir, cwdAfter)) {
           cwdNote = `Ran in ${executionDir} (one-off workdir). The session cwd is still ${cwdAfter}; pass workdir again to run the next command there.`;
         } else if (!isSameBashCwd(cwdAfter, cwdBeforeExec)) {
           cwdNote = `Shell cwd is now ${cwdAfter}`;
