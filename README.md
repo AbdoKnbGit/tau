@@ -14,7 +14,7 @@
 
 Tau has become the best free coding agent — a single tool that fuses the **Claude Code** and **OpenCode** ecosystems into one mixed agentic environment. You get the strongest parts of both agents, plus new features and optimizations layered on top.
 
-Native adapters for **24 providers**. Not a proxy, not a wrapper around someone else's wrapper. When you use Gemini, Tau speaks Gemini's API directly. Same for OpenAI, GLM, DeepSeek, Mistral, OpenRouter, AgentRouter, Vercel AI Gateway, Requesty, Command Code, MiniMax, OpenCode Zen, and the rest. Full list with per-provider notes in [PROVIDERS.md](PROVIDERS.md).
+Native adapters for **25 providers**. Not a proxy, not a wrapper around someone else's wrapper. When you use Gemini, Tau speaks Gemini's API directly. Same for OpenAI, GLM, DeepSeek, Mistral, OpenRouter, AgentRouter, Vercel AI Gateway, Requesty, Command Code, MiniMax, OpenCode Zen, OpenCode Go, Fireworks AI, and the rest. Full list with per-provider notes in [PROVIDERS.md](PROVIDERS.md).
 
 Install once. Type `/login`. Pick a provider. Work.
 
@@ -79,14 +79,14 @@ See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 
 ## Supported Providers
 
-24 providers with native adapters. See the full list and per-provider notes in **[PROVIDERS.md](PROVIDERS.md)**.
+25 providers with native adapters. See the full list and per-provider notes in **[PROVIDERS.md](PROVIDERS.md)**.
 
 ---
 
 ## Features
 
 **Multi-provider, natively**
-24 providers with native adapters. Not a routing layer, not a translation proxy — each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
+25 providers with native adapters. Not a routing layer, not a translation proxy — each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
 
 **The full agent loop**
 File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management — all present, all working across every provider.

@@ -1,6 +1,6 @@
 # Supported Providers
 
-Tau ships **24 native provider adapters**. Each speaks the provider's API directly — there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
+Tau ships **25 selectable native provider adapters**, plus hidden Model Router compatibility support. Each speaks the provider's API directly — there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
 
 | Provider | Notes |
 |---|---|
@@ -28,6 +28,8 @@ Tau ships **24 native provider adapters**. Each speaks the provider's API direct
 | KiloCode | Lots of free models and decent to try for low-cost side tasks |
 | Kiro | Best performance/cost provider with large free credit |
 | OpenCode Zen | deepseek-v4-flash unlimited usage |
+| OpenCode Go | Direct OpenCode Go access with per-model thinking-effort controls |
+| Fireworks AI | $10 in free credit |
 
 ## LM Studio note
 
