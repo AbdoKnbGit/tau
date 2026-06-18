@@ -1,0 +1,9 @@
+src/**
+.vscode/**
+test-smoke.ts
+_run-smoke.mjs
+dist/test-smoke.*
+dist/**/*.map
+esbuild.mjs
+tsconfig.json
+**/*.ts

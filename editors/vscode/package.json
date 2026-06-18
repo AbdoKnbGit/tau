@@ -1,0 +1,108 @@
+{
+  "name": "tau-vscode",
+  "displayName": "Tau",
+  "description": "Tau agent in a native chat panel — powered by ACP.",
+  "version": "0.1.0",
+  "publisher": "tau",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tau",
+          "title": "Tau",
+          "icon": "media/tau-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "tau": [
+        {
+          "type": "webview",
+          "id": "tau.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "tau.newChat",
+        "title": "Tau: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "tau.stop",
+        "title": "Tau: Stop",
+        "icon": "$(stop-circle)"
+      },
+      {
+        "command": "tau.restart",
+        "title": "Tau: Restart Agent",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "tau.newChat",
+          "when": "view == tau.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tau.restart",
+          "when": "view == tau.chatView",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tau",
+      "properties": {
+        "tau.command": {
+          "type": "string",
+          "default": "tau",
+          "markdownDescription": "Command that starts the Tau ACP agent. Defaults to the globally-linked `tau`. Set to `node` (with `tau.args` pointing at `dist/tau.mjs acp`) to run from a checkout."
+        },
+        "tau.args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["acp"],
+          "description": "Arguments passed to the Tau command to start the ACP server."
+        },
+        "tau.cwd": {
+          "type": "string",
+          "default": "",
+          "description": "Working directory for the agent. Empty = the first workspace folder."
+        },
+        "tau.showCacheBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the cache-hit / cost bar at the bottom of the chat."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^0.26.0"
+  }
+}
