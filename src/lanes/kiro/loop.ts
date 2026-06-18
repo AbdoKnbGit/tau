@@ -39,6 +39,7 @@ import { parseFrames, type KiroEvent } from './eventstream.js'
 import { buildKiroPayload } from './request.js'
 import { KIRO_MODELS, isKiroModel, normalizeKiroModelId } from './catalog.js'
 import {
+  buildKiroToolNameReverseMap,
   resolvePreferredKiroShellToolName,
   toClaudexToolName,
 } from './tool_names.js'
@@ -456,6 +457,11 @@ export class KiroLane implements Lane {
     const preferredShellToolName = resolvePreferredKiroShellToolName(
       tools.map(tool => tool.name),
     )
+    // Reverse map so tool calls Kiro returns map back to Tau names even when the
+    // outgoing name was sanitized to Kiro's allowed shape.
+    const toolNameReverseMap = buildKiroToolNameReverseMap(
+      tools.map(tool => tool.name),
+    )
 
     // Kiro often emits messageStopEvent before metrics/context bookkeeping.
     // Keep reading until the HTTP stream ends so final usage is not dropped.
@@ -493,13 +499,15 @@ export class KiroLane implements Lane {
       markSawToolUse: () => { sawToolUse = true },
       nextSyntheticToolUseId: () => `toolu_kiro_${++syntheticToolCounter}`,
       preferredShellToolName,
+      toolNameReverseMap,
     }
 
     let response: Response | null = null
     let responseStatus = 0
     let responseErrorText = ''
     try {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      let bearerRecovered = false
+      for (let attempt = 0; attempt < KIRO_MAX_REQUEST_ATTEMPTS; attempt++) {
         response = await fetch(KIRO_ENDPOINT, {
           method: 'POST',
           headers: {
@@ -520,11 +528,28 @@ export class KiroLane implements Lane {
 
         responseStatus = response.status
         responseErrorText = await response.text().catch(() => '')
+
+        // Invalid/expired bearer: re-auth once, then retry immediately.
         if (
-          attempt === 0
+          !bearerRecovered
           && _isInvalidBearerResponse(responseStatus, responseErrorText)
           && await this._recoverInvalidBearer()
         ) {
+          bearerRecovered = true
+          response = null
+          responseStatus = 0
+          responseErrorText = ''
+          continue
+        }
+
+        // Transient server-side errors: Kiro explicitly says "please try
+        // again", so retry with backoff before failing the lane — a momentary
+        // blip should not cost a fallback hop.
+        if (
+          attempt < KIRO_MAX_REQUEST_ATTEMPTS - 1
+          && _isTransientKiroStatus(responseStatus)
+        ) {
+          await _kiroBackoffDelay(attempt, signal)
           response = null
           responseStatus = 0
           responseErrorText = ''
@@ -562,13 +587,24 @@ export class KiroLane implements Lane {
       // structured reason. The most useful thing we can do is (a) dump the
       // payload so the user can inspect what Kiro rejected, and (b) hint at
       // the common causes so a fix is one step closer.
+      // Server-side 5xx ("please try again") was already retried with backoff
+      // above; if it still got here, capturing the body lets us confirm or rule
+      // out a payload-shape cause. Both this and the 400 case are gated behind
+      // CLAUDEX_KIRO_DEBUG_DUMP, so nothing is written for normal users.
+      const isServerError = responseStatus >= 500
       let extra = ''
-      if (isImproperlyFormed) {
-        const dumpPath = _dumpKiroRequestBody(body)
-        const hint =
-          'Common causes: an MCP tool name with characters Kiro disallows, ' +
-          'a tool input_schema field not handled by sanitizeSchemaForLane, ' +
-          'or a history shape that lost role alternation during fallback.'
+      if (isImproperlyFormed || isServerError) {
+        const dumpPath = _dumpKiroRequestBody(
+          body,
+          isImproperlyFormed ? 'improperly-formed' : 'server-error',
+        )
+        const hint = isImproperlyFormed
+          ? 'Common causes: an MCP tool name with characters Kiro disallows, '
+            + 'a tool input_schema field not handled by sanitizeSchemaForLane, '
+            + 'or a history shape that lost role alternation during fallback.'
+          : 'Kiro server-side error (already retried with backoff). If it '
+            + 'recurs, the dumped request body shows exactly what was sent so a '
+            + 'payload-shape cause can be confirmed or ruled out.'
         extra = dumpPath
           ? ` ${hint} Request body dumped to ${dumpPath}.`
           : ` ${hint} Set CLAUDEX_KIRO_DEBUG_DUMP=1 to capture the request body on the next failure.`
@@ -726,6 +762,7 @@ interface EventHandlerState {
   markSawToolUse: () => void
   nextSyntheticToolUseId: () => string
   preferredShellToolName: string | null
+  toolNameReverseMap: Map<string, string>
 }
 
 interface ToolBlockState {
@@ -967,7 +1004,7 @@ function _emitToolUse(
       content_block: {
         type: 'tool_use',
         id: toolUse.toolUseId,
-        name: toClaudexToolName(toolUse.name, state.preferredShellToolName),
+        name: toClaudexToolName(toolUse.name, state.preferredShellToolName, state.toolNameReverseMap),
         input: {},
       },
     })
@@ -1240,6 +1277,53 @@ function _isInvalidBearerResponse(status: number, errText: string): boolean {
   )
 }
 
+// Total Kiro request attempts (initial + retries) before failing the lane.
+const KIRO_MAX_REQUEST_ATTEMPTS = 3
+
+/**
+ * Transient server-side statuses where Kiro asks us to "try again". Retrying
+ * these before falling back avoids burning a fallback hop on a momentary blip
+ * (the 500 "Encountered an unexpected error … please try again" is the common
+ * one; 429/502/503/504 are the usual transient companions).
+ */
+export function _isTransientKiroStatus(status: number): boolean {
+  return (
+    status === 429
+    || status === 500
+    || status === 502
+    || status === 503
+    || status === 504
+  )
+}
+
+/**
+ * Exponential backoff (0.5s, 1s, 2s … capped at 4s) with jitter. Resolves early
+ * if the request is aborted so the next fetch surfaces the canonical AbortError
+ * instead of waiting out the delay.
+ */
+async function _kiroBackoffDelay(
+  attempt: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const base = Math.min(500 * 2 ** attempt, 4000)
+  const ms = base + Math.floor(Math.random() * 250)
+  await new Promise<void>(resolve => {
+    if (signal?.aborted) {
+      resolve()
+      return
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function* _emitErrorText(text: string): Generator<AnthropicStreamEvent> {
   yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
@@ -1253,7 +1337,7 @@ function* _emitErrorText(text: string): Generator<AnthropicStreamEvent> {
  * Best-effort: never throws — diagnostic logging must not double-fault a
  * request that already failed.
  */
-function _dumpKiroRequestBody(body: unknown): string | null {
+function _dumpKiroRequestBody(body: unknown, reason = 'improperly-formed'): string | null {
   if (process.env.CLAUDEX_KIRO_DEBUG_DUMP !== '1') return null
   try {
     /* eslint-disable @typescript-eslint/no-require-imports */
@@ -1263,7 +1347,7 @@ function _dumpKiroRequestBody(body: unknown): string | null {
     /* eslint-enable @typescript-eslint/no-require-imports */
     const dir = path.join(os.tmpdir(), 'tau-kiro-debug')
     fs.mkdirSync(dir, { recursive: true })
-    const fileName = `kiro-improperly-formed-${Date.now()}.json`
+    const fileName = `kiro-${reason}-${Date.now()}.json`
     const filePath = path.join(dir, fileName)
     fs.writeFileSync(filePath, JSON.stringify(body, null, 2), 'utf-8')
     return filePath

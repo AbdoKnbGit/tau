@@ -579,16 +579,34 @@ function _convertMessages(
     }
   }
 
-  // Merge consecutive user messages (Kiro requires alternating roles).
+  // Merge consecutive SAME-role messages. Kiro requires strictly alternating
+  // user/assistant roles and 400s ("Improperly formed request") otherwise.
+  // currentMessage promotion (popping a middle user) or a fallback-reshaped
+  // history can leave two user OR two assistant entries adjacent, so merge both
+  // — preserving tool results / tool calls from the entry that gets folded in.
   const merged: KiroHistoryEntry[] = []
   for (const entry of history) {
     const last = merged[merged.length - 1]
-    if (
+    if (last && 'userInputMessage' in last && 'userInputMessage' in entry) {
+      const a = last.userInputMessage
+      const b = entry.userInputMessage
+      a.content = [a.content, b.content].filter(Boolean).join('\n\n') || 'continue'
+      const foldedResults = b.userInputMessageContext?.toolResults
+      if (foldedResults && foldedResults.length > 0) {
+        const ctx = (a.userInputMessageContext ??= {})
+        ctx.toolResults = [...(ctx.toolResults ?? []), ...foldedResults]
+      }
+    } else if (
       last
-      && 'userInputMessage' in entry
-      && 'userInputMessage' in last
+      && 'assistantResponseMessage' in last
+      && 'assistantResponseMessage' in entry
     ) {
-      last.userInputMessage.content += `\n\n${entry.userInputMessage.content}`
+      const a = last.assistantResponseMessage
+      const b = entry.assistantResponseMessage
+      a.content = [a.content, b.content].filter(c => c && c !== '...').join('\n\n') || '...'
+      if (b.toolUses && b.toolUses.length > 0) {
+        a.toolUses = [...(a.toolUses ?? []), ...b.toolUses]
+      }
     } else {
       merged.push(entry)
     }

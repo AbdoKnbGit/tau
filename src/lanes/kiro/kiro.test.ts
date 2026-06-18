@@ -6,11 +6,18 @@ import {
   _closeOpenToolUseBlocks,
   _deriveKiroPromptUsage,
   _handleKiroEvent,
+  _isTransientKiroStatus,
   _parseDsmlFunctionCalls,
 } from './loop.js'
 import { checkKiroPayloadSize, trimKiroPayloadToLimit } from './payload_guards.js'
 import { buildKiroPayload } from './request.js'
-import { resolvePreferredKiroShellToolName } from './tool_names.js'
+import {
+  buildKiroToolNameReverseMap,
+  resolvePreferredKiroShellToolName,
+  sanitizeKiroToolName,
+  toClaudexToolName,
+  toKiroToolName,
+} from './tool_names.js'
 
 let passed = 0
 let failed = 0
@@ -56,6 +63,7 @@ function createHandlerState(
       markSawToolUse: () => { sawTool = true },
       nextSyntheticToolUseId: () => `toolu_test_${++toolCounter}`,
       preferredShellToolName,
+      toolNameReverseMap: new Map(),
     },
     sawToolUse: () => sawTool,
   }
@@ -659,6 +667,77 @@ function main(): void {
       else process.env.CLAUDEX_KIRO_TARGET_PAYLOAD_BYTES = previousTarget
       if (previousMax === undefined) delete process.env.CLAUDEX_KIRO_MAX_PAYLOAD_BYTES
       else process.env.CLAUDEX_KIRO_MAX_PAYLOAD_BYTES = previousMax
+    }
+  })
+
+  test('sanitizes Kiro tool names to the Bedrock-allowed shape', () => {
+    // Valid names (incl. hyphenated MCP names) pass through unchanged.
+    assert(
+      sanitizeKiroToolName('mcp__context7__resolve-library-id') === 'mcp__context7__resolve-library-id',
+      'valid hyphenated MCP name must be unchanged',
+    )
+    // Out-of-set characters (dots, slashes, spaces) become underscores.
+    assert(
+      sanitizeKiroToolName('weird.tool name/v2') === 'weird_tool_name_v2',
+      'invalid characters must collapse to underscore',
+    )
+    // Over-length names are capped to 64 and stay valid.
+    const long = `mcp__server__${'x'.repeat(200)}`
+    const capped = sanitizeKiroToolName(long)
+    assert(capped.length <= 64, `expected <=64 chars, got ${capped.length}`)
+    assert(/^[A-Za-z0-9_-]{1,64}$/.test(capped), 'capped name must still match the allowed pattern')
+  })
+
+  test('tool names round-trip through the Kiro reverse map', () => {
+    const names = ['Read', 'Bash', 'mcp__context7__resolve-library-id', 'odd.name has spaces']
+    const reverse = buildKiroToolNameReverseMap(names)
+    for (const name of names) {
+      const kiro = toKiroToolName(name)
+      assert(/^[A-Za-z0-9_-]{1,64}$/.test(kiro), `outgoing name invalid for ${name}: ${kiro}`)
+      assert(
+        toClaudexToolName(kiro, null, reverse) === name,
+        `expected round-trip ${name} -> ${kiro} -> ${name}`,
+      )
+    }
+  })
+
+  test('merges consecutive assistant turns so history alternates roles', () => {
+    // An assistant tool-call immediately followed by an assistant text turn
+    // would otherwise leave two adjacent assistant entries — Kiro 400s on that.
+    const payload = buildKiroPayload({
+      model: 'deepseek-3.2',
+      system: '',
+      tools: [],
+      messages: [
+        { role: 'user', content: 'start the app' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] },
+        { role: 'assistant', content: 'done' },
+      ],
+    })
+
+    const history = payload.conversationState.history
+    const roleOf = (entry: (typeof history)[number]): string =>
+      'userInputMessage' in entry ? 'user' : 'assistant'
+    for (let i = 1; i < history.length; i++) {
+      assert(
+        roleOf(history[i]!) !== roleOf(history[i - 1]!),
+        `history must strictly alternate roles (index ${i})`,
+      )
+    }
+    const assistant = history.find(entry => 'assistantResponseMessage' in entry)
+    assert(
+      !!assistant && 'assistantResponseMessage' in assistant
+        && (assistant.assistantResponseMessage.toolUses?.length ?? 0) === 1,
+      'merged assistant turn must keep its tool call',
+    )
+  })
+
+  test('classifies transient Kiro statuses for retry', () => {
+    for (const status of [429, 500, 502, 503, 504]) {
+      assert(_isTransientKiroStatus(status), `status ${status} should be retried`)
+    }
+    for (const status of [200, 400, 401, 403, 404, 422]) {
+      assert(!_isTransientKiroStatus(status), `status ${status} must not be retried`)
     }
   })
 

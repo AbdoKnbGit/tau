@@ -50,13 +50,59 @@ for (const [claudex, kiro] of Object.entries(CLAUDEX_TO_KIRO)) {
   }
 }
 
+const KIRO_TOOL_NAME_MAX_LENGTH = 64
+
+function djb2Hash(value: string): string {
+  let hash = 5381
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) + hash + value.charCodeAt(i)) >>> 0
+  }
+  return hash.toString(36)
+}
+
+/**
+ * Coerce a name into Kiro/CodeWhisperer's allowed tool-name shape. The Bedrock
+ * `toolSpecification.name` validator accepts `^[a-zA-Z0-9_-]{1,64}$` and 400s
+ * ("Improperly formed request") on anything else. MCP tool names
+ * (`mcp__server__tool`) can carry dots, slashes, spaces, or exceed 64 chars, so
+ * map any out-of-set character to `_` and cap the length with a stable hash
+ * suffix so distinct long names don't collide. No-op for the built-in mapped
+ * names (read, shell, …) and for already-valid names — so normal MCP tools like
+ * `mcp__context7__resolve-library-id` pass through unchanged.
+ */
+export function sanitizeKiroToolName(name: string): string {
+  let safe = name.replace(/[^A-Za-z0-9_-]/g, '_')
+  if (safe.length > KIRO_TOOL_NAME_MAX_LENGTH) {
+    const suffix = `_${djb2Hash(name)}`
+    safe = safe.slice(0, KIRO_TOOL_NAME_MAX_LENGTH - suffix.length) + suffix
+  }
+  return safe || 'tool'
+}
+
 /**
  * Map a Tau tool name to the Kiro-native name the model was trained
- * on. Returns the original name if no mapping exists (e.g. MCP tools,
- * Edit which has no Kiro equivalent).
+ * on, sanitized to Kiro's allowed shape. Returns the (sanitized) original
+ * name if no mapping exists (e.g. MCP tools, Edit which has no Kiro equivalent).
  */
 export function toKiroToolName(claudexName: string): string {
-  return CLAUDEX_TO_KIRO[claudexName] ?? claudexName
+  return sanitizeKiroToolName(CLAUDEX_TO_KIRO[claudexName] ?? claudexName)
+}
+
+/**
+ * Build a session reverse map (Kiro-sanitized name → Tau name) from the live
+ * tool list, so tool calls Kiro returns map back exactly even when the outgoing
+ * name was sanitized. First Tau name wins on collision (mirrors the spec-build
+ * dedup in request.ts).
+ */
+export function buildKiroToolNameReverseMap(
+  claudexToolNames: readonly string[],
+): Map<string, string> {
+  const reverse = new Map<string, string>()
+  for (const name of claudexToolNames) {
+    const kiroName = toKiroToolName(name)
+    if (!reverse.has(kiroName)) reverse.set(kiroName, name)
+  }
+  return reverse
 }
 
 /**
@@ -95,9 +141,10 @@ export function isKiroShellCandidate(claudexName: string): boolean {
 export function toClaudexToolName(
   kiroName: string,
   preferredShellToolName?: string | null,
+  reverseMap?: Map<string, string>,
 ): string {
   if (kiroName === 'shell' && preferredShellToolName) {
     return preferredShellToolName
   }
-  return KIRO_TO_CLAUDEX[kiroName] ?? kiroName
+  return reverseMap?.get(kiroName) ?? KIRO_TO_CLAUDEX[kiroName] ?? kiroName
 }
