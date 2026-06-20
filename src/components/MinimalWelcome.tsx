@@ -4,19 +4,11 @@ import { useMainLoopModel } from '../hooks/useMainLoopModel.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import { renderModelName } from '../utils/model/model.js'
 import { getLogoDisplayData } from '../utils/logoV2Utils.js'
-
-const TAU_LOGO: readonly string[] = [
-  '████████╗ █████╗ ██╗   ██╗',
-  '╚══██╔══╝██╔══██╗██║   ██║',
-  '   ██║   ███████║██║   ██║',
-  '   ██║   ██╔══██║██║   ██║',
-  '   ██║   ██║  ██║╚██████╔╝',
-  '   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ',
-]
+import { TauWordmark } from './tau-ui/TauWordmark.js'
 
 /**
- * Studio welcome header: clean centered layout — version on top, big
- * block-letter "TAU" logo in primary color, then "model · provider"
+ * Studio welcome header: clean centered layout — version on top, animated
+ * terminal wordmark, then "model · provider"
  * and the working directory. No outer frame, no email/organization line.
  *
  * Adapts to terminal size the opencode way: the design never changes — the
@@ -44,11 +36,7 @@ export function MinimalWelcome(): React.ReactNode {
         marginTop={1}
         flexShrink={0}
       >
-        {TAU_LOGO.map((line, i) => (
-          <Text key={i} color="primary" bold>
-            {line}
-          </Text>
-        ))}
+        <TauWordmark />
       </Box>
       <Box marginTop={1} flexDirection="column" alignItems="center">
         {modelLine ? (

@@ -51,7 +51,7 @@ export function FileEditToolUpdatedMessage(t0) {
   }
   let t4;
   if ($[5] !== t1 || $[6] !== t2 || $[7] !== t3) {
-    t4 = <Text>{t1}{t2}{t3}</Text>;
+    t4 = <Text color="brandBright">{t1}{t2}{t3}</Text>;
     $[5] = t1;
     $[6] = t2;
     $[7] = t3;
@@ -100,7 +100,7 @@ export function FileEditToolUpdatedMessage(t0) {
   }
   let t8;
   if ($[19] !== t5 || $[20] !== t7) {
-    t8 = <MessageResponse><Box flexDirection="column">{t5}{t7}</Box></MessageResponse>;
+    t8 = <MessageResponse><Box flexDirection="column">{t5}<Box borderColor="brandDim" borderStyle="round" borderTop={false} borderRight={false} borderBottom={false} paddingLeft={1}>{t7}</Box></Box></MessageResponse>;
     $[19] = t5;
     $[20] = t7;
     $[21] = t8;

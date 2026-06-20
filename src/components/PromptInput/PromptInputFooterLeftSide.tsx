@@ -407,12 +407,6 @@ function ModeIndicator({
   // reconciler throws on Box-in-Text. Computed here so the empty-checks
   // below still treat "pill present" as non-empty.
   const tasksPart = hasBackgroundTasks && !hasTeammatePills && !shouldHideTasksFooter(tasks, showSpinnerTree) ? <BackgroundTaskStatus tasksSelected={tasksSelected} isViewingTeammate={isViewingTeammate} teammateFooterIndex={teammateFooterIndex} isLeaderIdle={!isLoading} onOpenDialog={onOpenTasksDialog} /> : null;
-  if (parts.length === 0 && !tasksPart && !modePart && showHint) {
-    parts.push(<Text dimColor key="shortcuts-hint">
-        ? for shortcuts
-      </Text>);
-  }
-
   // Only replace the idle voice hint when there's something to say — otherwise
   // fall through instead of showing an empty Byline. "esc to clear" was removed
   // (looked like "esc to interrupt" when idle; esc-clears-selection is standard

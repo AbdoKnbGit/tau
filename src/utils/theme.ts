@@ -102,6 +102,11 @@ export type Theme = {
   backgroundPanel: string
   backgroundElement: string
   backgroundMenu: string
+  // Brand accent (UX/UI refresh — teal). Drives the signature surfaces:
+  // the wordmark, the prompt bar, and tool-block accent bars/headers.
+  brand: string
+  brandDim: string
+  brandBright: string
 }
 
 export const THEME_NAMES = [
@@ -217,6 +222,10 @@ const lightTheme: Theme = {
   backgroundPanel: 'rgb(240,242,238)', // userMessageBackground
   backgroundElement: 'rgb(228,236,232)', // messageActionsBackground
   backgroundMenu: 'rgb(245,248,245)', // bashMessageBackgroundColor
+  // Brand accent — teal (deeper for contrast on light backgrounds)
+  brand: 'rgb(13,148,148)',
+  brandDim: 'rgb(120,178,176)',
+  brandBright: 'rgb(8,170,168)',
 }
 
 /**
@@ -310,6 +319,10 @@ const lightAnsiTheme: Theme = {
   backgroundPanel: 'ansi:white',
   backgroundElement: 'ansi:white',
   backgroundMenu: 'ansi:whiteBright',
+  // Brand accent — teal (ANSI cyan fallback)
+  brand: 'ansi:cyan',
+  brandDim: 'ansi:cyan',
+  brandBright: 'ansi:cyanBright',
 }
 
 /**
@@ -403,6 +416,10 @@ const darkAnsiTheme: Theme = {
   backgroundPanel: 'ansi:blackBright',
   backgroundElement: 'ansi:blackBright',
   backgroundMenu: 'ansi:black',
+  // Brand accent — teal (ANSI cyan fallback)
+  brand: 'ansi:cyanBright',
+  brandDim: 'ansi:cyan',
+  brandBright: 'ansi:cyanBright',
 }
 
 /**
@@ -496,6 +513,10 @@ const lightDaltonizedTheme: Theme = {
   backgroundPanel: 'rgb(220,220,220)',
   backgroundElement: 'rgb(210,216,226)',
   backgroundMenu: 'rgb(250,245,250)',
+  // Brand accent — teal-leaning blue (color-blind-safe, light variant)
+  brand: 'rgb(0,140,160)',
+  brandDim: 'rgb(120,170,180)',
+  brandBright: 'rgb(0,165,185)',
 }
 
 /**
@@ -589,46 +610,51 @@ const darkTheme: Theme = {
   backgroundPanel: 'rgb(40,45,62)', // userMessageBackground
   backgroundElement: 'rgb(40,46,62)', // messageActionsBackground
   backgroundMenu: 'rgb(50,48,64)', // bashMessageBackgroundColor
+  // Brand accent — soft monochrome grey→off-white (inherited by tauDark + studio)
+  brand: 'rgb(156,156,163)',
+  brandDim: 'rgb(104,104,112)',
+  brandBright: 'rgb(204,204,209)',
 }
 
 /**
- * Tau dark theme: black base with ember red, smoked brown, and warm text.
- * This intentionally replaces the old RGB-heavy dark palette while keeping
- * the same theme setting name for existing users.
+ * Tau default dark theme: a calm monochrome palette — near-black background,
+ * zinc greys, soft-white text — where brightness (not hue) carries emphasis.
+ * Easy on the eyes for long sessions; the wordmark renders its own grey→white
+ * gradient. Same `dark` setting name for existing users.
  */
 const tauDarkTheme: Theme = {
   ...darkTheme,
-  autoAccept: 'rgb(224,56,48)',
-  bashBorder: 'rgb(120,50,35)',
-  claude: 'rgb(255,86,66)',
-  claudeShimmer: 'rgb(255,148,116)',
-  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(204,82,54)',
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(255,130,92)',
-  permission: 'rgb(176,70,48)',
-  permissionShimmer: 'rgb(235,108,76)',
-  planMode: 'rgb(155,74,50)',
-  ide: 'rgb(190,92,62)',
-  promptBorder: 'rgb(115,62,45)',
-  promptBorderShimmer: 'rgb(210,92,62)',
-  text: 'rgb(246,238,226)',
-  inverseText: 'rgb(10,6,5)',
-  inactive: 'rgb(150,112,94)',
-  inactiveShimmer: 'rgb(205,158,132)',
-  subtle: 'rgb(58,36,30)',
-  suggestion: 'rgb(225,116,72)',
-  remember: 'rgb(204,86,60)',
-  background: 'rgb(45,24,20)',
+  autoAccept: 'rgb(230,230,234)',
+  bashBorder: 'rgb(170,170,178)',
+  claude: 'rgb(196,196,201)',
+  claudeShimmer: 'rgb(214,214,218)',
+  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(158,158,166)',
+  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(196,196,202)',
+  permission: 'rgb(188,188,194)',
+  permissionShimmer: 'rgb(208,208,213)',
+  planMode: 'rgb(146,146,154)',
+  ide: 'rgb(180,180,186)',
+  promptBorder: 'rgb(78,80,88)',
+  promptBorderShimmer: 'rgb(116,118,126)',
+  text: 'rgb(206,206,210)',
+  inverseText: 'rgb(12,12,14)',
+  inactive: 'rgb(144,144,152)',
+  inactiveShimmer: 'rgb(176,176,184)',
+  subtle: 'rgb(48,48,54)',
+  suggestion: 'rgb(162,162,170)',
+  remember: 'rgb(180,180,186)',
+  background: 'rgb(22,22,25)',
   success: 'rgb(138,176,116)',
-  error: 'rgb(255,82,72)',
-  warning: 'rgb(232,158,82)',
-  merged: 'rgb(188,82,50)',
-  warningShimmer: 'rgb(255,196,118)',
-  diffAdded: 'rgb(36,68,48)',
-  diffRemoved: 'rgb(92,26,24)',
-  diffAddedDimmed: 'rgb(47,62,49)',
-  diffRemovedDimmed: 'rgb(67,38,34)',
-  diffAddedWord: 'rgb(125,172,102)',
-  diffRemovedWord: 'rgb(238,83,68)',
+  error: 'rgb(232,120,120)',
+  warning: 'rgb(224,180,120)',
+  merged: 'rgb(175,175,182)',
+  warningShimmer: 'rgb(240,205,150)',
+  diffAdded: 'rgb(30,46,38)',
+  diffRemoved: 'rgb(52,32,34)',
+  diffAddedDimmed: 'rgb(34,42,38)',
+  diffRemovedDimmed: 'rgb(46,36,38)',
+  diffAddedWord: 'rgb(120,190,130)',
+  diffRemovedWord: 'rgb(220,120,120)',
   red_FOR_SUBAGENTS_ONLY: 'rgb(244,72,62)',
   blue_FOR_SUBAGENTS_ONLY: 'rgb(166,103,92)',
   green_FOR_SUBAGENTS_ONLY: 'rgb(145,170,112)',
@@ -639,20 +665,20 @@ const tauDarkTheme: Theme = {
   cyan_FOR_SUBAGENTS_ONLY: 'rgb(155,132,110)',
   professionalBlue: 'rgb(148,116,108)',
   chromeYellow: 'rgb(232,174,82)',
-  clawd_body: 'rgb(255,86,66)',
-  clawd_background: 'rgb(10,6,5)',
-  userMessageBackground: 'rgb(31,20,17)',
-  userMessageBackgroundHover: 'rgb(44,27,23)',
-  messageActionsBackground: 'rgb(50,29,24)',
-  selectionBg: 'rgb(105,38,31)',
-  bashMessageBackgroundColor: 'rgb(24,17,15)',
-  memoryBackgroundColor: 'rgb(42,24,21)',
-  rate_limit_fill: 'rgb(220,92,58)',
-  rate_limit_empty: 'rgb(66,42,35)',
-  fastMode: 'rgb(255,102,76)',
-  fastModeShimmer: 'rgb(255,154,116)',
-  briefLabelYou: 'rgb(226,132,86)',
-  briefLabelClaude: 'rgb(255,86,66)',
+  clawd_body: 'rgb(210,210,216)',
+  clawd_background: 'rgb(20,20,24)',
+  userMessageBackground: 'rgb(28,28,32)',
+  userMessageBackgroundHover: 'rgb(38,38,43)',
+  messageActionsBackground: 'rgb(36,38,40)',
+  selectionBg: 'rgb(48,52,56)',
+  bashMessageBackgroundColor: 'rgb(26,28,30)',
+  memoryBackgroundColor: 'rgb(30,30,34)',
+  rate_limit_fill: 'rgb(200,200,206)',
+  rate_limit_empty: 'rgb(46,48,55)',
+  fastMode: 'rgb(210,210,216)',
+  fastModeShimmer: 'rgb(240,240,243)',
+  briefLabelYou: 'rgb(170,170,178)',
+  briefLabelClaude: 'rgb(220,220,225)',
   rainbow_red: 'rgb(255,72,62)',
   rainbow_orange: 'rgb(225,116,72)',
   rainbow_yellow: 'rgb(232,170,82)',
@@ -667,18 +693,18 @@ const tauDarkTheme: Theme = {
   rainbow_blue_shimmer: 'rgb(176,122,104)',
   rainbow_indigo_shimmer: 'rgb(214,118,112)',
   rainbow_violet_shimmer: 'rgb(244,132,140)',
-  // Studio palette slots (Tau ember palette)
-  primary: 'rgb(255,86,66)', // claude ember red
-  secondary: 'rgb(204,82,54)', // claudeBlue (warmed)
-  accent: 'rgb(224,56,48)', // autoAccept
-  info: 'rgb(190,92,62)', // ide
-  textMuted: 'rgb(150,112,94)', // inactive
-  border: 'rgb(115,62,45)', // promptBorder
-  borderActive: 'rgb(210,92,62)', // promptBorderShimmer
-  borderSubtle: 'rgb(58,36,30)', // subtle
-  backgroundPanel: 'rgb(31,20,17)', // userMessageBackground
-  backgroundElement: 'rgb(50,29,24)', // messageActionsBackground
-  backgroundMenu: 'rgb(24,17,15)', // bashMessageBackgroundColor
+  // Modern UI slots — soft monochrome zinc + off-white accent
+  primary: 'rgb(196,196,201)', // soft off-white
+  secondary: 'rgb(162,162,170)', // grey
+  accent: 'rgb(206,206,211)', // off-white
+  info: 'rgb(180,180,186)', // grey
+  textMuted: 'rgb(140,140,148)', // zinc-400
+  border: 'rgb(75,77,85)', // zinc
+  borderActive: 'rgb(112,115,124)', // zinc
+  borderSubtle: 'rgb(48,48,54)', // zinc-800
+  backgroundPanel: 'rgb(24,24,27)', // zinc-900
+  backgroundElement: 'rgb(32,32,36)', // zinc-850
+  backgroundMenu: 'rgb(28,28,32)', // zinc
 }
 
 /**
@@ -772,6 +798,10 @@ const darkDaltonizedTheme: Theme = {
   backgroundPanel: 'rgb(55,55,55)',
   backgroundElement: 'rgb(44,50,62)',
   backgroundMenu: 'rgb(65,60,65)',
+  // Brand accent — teal (color-blind-safe, dark variant)
+  brand: 'rgb(100,210,225)',
+  brandDim: 'rgb(70,140,150)',
+  brandBright: 'rgb(150,235,245)',
 }
 
 /**

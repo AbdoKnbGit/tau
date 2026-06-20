@@ -118,7 +118,6 @@ import type { SuggestionItem } from './PromptInputFooterSuggestions.js';
 import { PromptInputModeIndicator } from './PromptInputModeIndicator.js';
 import { PromptInputQueuedCommands } from './PromptInputQueuedCommands.js';
 import { PromptInputStashNotice } from './PromptInputStashNotice.js';
-import { PromptInputStatusBar } from './PromptInputStatusBar.js';
 import { useMaybeTruncateInput } from './useMaybeTruncateInput.js';
 import { usePromptInputPlaceholder } from './usePromptInputPlaceholder.js';
 import { useShowFastIconHint } from './useShowFastIconHint.js';
@@ -189,6 +188,7 @@ type Props = {
     start: number;
     end: number;
   } | null;
+  isCenteredPrompt?: boolean;
 };
 
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
@@ -236,7 +236,8 @@ function PromptInput({
   hasSuppressedDialogs,
   isLocalJSXCommandActive = false,
   insertTextRef,
-  voiceInterimRange
+  voiceInterimRange,
+  isCenteredPrompt = false
 }: Props): React.ReactNode {
   const mainLoopModel = useMainLoopModel();
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
@@ -2002,7 +2003,8 @@ function PromptInput({
     columns,
     rows
   } = useTerminalSize();
-  const textInputColumns = columns - 3 - companionReservedColumns(columns, companionSpeaking);
+  const promptFrameColumns = isCenteredPrompt && columns >= 80 ? Math.min(columns - 4, Math.max(72, Math.floor(columns * 0.78))) : columns;
+  const textInputColumns = promptFrameColumns - 3 - companionReservedColumns(promptFrameColumns, companionSpeaking);
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
@@ -2237,7 +2239,7 @@ function PromptInput({
 
     // In-process teammates run headless - don't apply teammate colors to leader UI
     if (isInProcessTeammate()) {
-      return 'primary';
+      return 'brand';
     }
 
     // Check for teammate color from environment
@@ -2245,7 +2247,7 @@ function PromptInput({
     if (teammateColorName && AGENT_COLORS.includes(teammateColorName as AgentColorName)) {
       return AGENT_COLOR_TO_THEME_COLOR[teammateColorName as AgentColorName];
     }
-    return 'primary';
+    return isCenteredPrompt ? 'brandBright' : 'brand';
   };
   if (isExternalEditorActive) {
     // Studio prompt frame: left bar + filled panel + ╵ foot.
@@ -2288,21 +2290,17 @@ function PromptInput({
           </Box>
           <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
         </> : <>
-          {/* Studio prompt frame: left bar + filled panel + ╵ foot. */}
-          <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" borderTop={false} borderRight={false} borderBottom={false} width="100%">
-            <Box flexDirection="row" flexGrow={1} flexShrink={1} paddingLeft={1} paddingY={1} backgroundColor="backgroundElement" onClick={handleInputClick}>
+          {/* Studio prompt frame: rounded card around a filled input panel. */}
+          <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" width="100%">
+            <Box flexDirection="row" flexGrow={1} flexShrink={1} paddingX={1} backgroundColor="backgroundElement" onClick={handleInputClick}>
               <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
               <Box flexGrow={1} flexShrink={1}>
                 {textInputElement}
               </Box>
             </Box>
           </Box>
-          <Box height={1} flexShrink={0}>
-            <Text color={getBorderColor()}>╵</Text>
-          </Box>
         </>}
       <PromptInputFooter apiKeyStatus={apiKeyStatus} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={input.length > 0} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} bridgeSelected={bridgeSelected} tmuxSelected={tmuxSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
-      <PromptInputStatusBar mcpClients={mcpClients} />
       {isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {isFullscreenEnvEnabled() ?
     // position=absolute takes zero layout height so the spinner

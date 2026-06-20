@@ -16,7 +16,7 @@ export function ToolUseLoader(t0) {
     shouldAnimate
   } = t0;
   const [ref, isBlinking] = useBlink(shouldAnimate);
-  const color = isUnresolved ? undefined : isError ? "error" : "success";
+  const color = isUnresolved ? "brandDim" : isError ? "error" : "brandBright";
   const t1 = !shouldAnimate || isBlinking || isError || !isUnresolved ? BLACK_CIRCLE : " ";
   let t2;
   if ($[0] !== color || $[1] !== isUnresolved || $[2] !== t1) {

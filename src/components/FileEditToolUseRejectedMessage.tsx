@@ -122,7 +122,7 @@ export function FileEditToolUseRejectedMessage(t0) {
     }
     let t10;
     if ($[23] !== t8 || $[24] !== t9 || $[25] !== text) {
-      t10 = <MessageResponse><Box flexDirection="column">{text}{t8}{t9}</Box></MessageResponse>;
+      t10 = <MessageResponse><Box flexDirection="column">{text}<Box borderColor="brandDim" borderStyle="round" borderTop={false} borderRight={false} borderBottom={false} paddingLeft={1}>{t8}</Box>{t9}</Box></MessageResponse>;
       $[23] = t8;
       $[24] = t9;
       $[25] = text;
@@ -158,7 +158,7 @@ export function FileEditToolUseRejectedMessage(t0) {
   }
   let t7;
   if ($[35] !== t6 || $[36] !== text) {
-    t7 = <MessageResponse><Box flexDirection="column">{text}{t6}</Box></MessageResponse>;
+    t7 = <MessageResponse><Box flexDirection="column">{text}<Box borderColor="brandDim" borderStyle="round" borderTop={false} borderRight={false} borderBottom={false} paddingLeft={1}>{t6}</Box></Box></MessageResponse>;
     $[35] = t6;
     $[36] = text;
     $[37] = t7;

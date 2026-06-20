@@ -7,7 +7,7 @@ import { PromptOverlayProvider, usePromptOverlay, usePromptOverlayDialog } from 
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import instances from '../ink/instances.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text, useAnimationFrame } from '../ink.js';
 import type { Message } from '../types/message.js';
 import { openBrowser, openPath } from '../utils/browser.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
@@ -64,6 +64,8 @@ type Props = {
   newMessageCount?: number;
   /** Called when the user clicks the "N new" pill. */
   onPillClick?: () => void;
+  /** Lift and center the bottom slot for the fresh-session prompt. */
+  centerBottom?: boolean;
 };
 
 /**
@@ -286,6 +288,7 @@ export function FullscreenLayout(t0) {
   const hidePill = t1 === undefined ? false : t1;
   const hideSticky = t2 === undefined ? false : t2;
   const newMessageCount = t3 === undefined ? 0 : t3;
+  const centerBottom = t0.centerBottom === undefined ? false : t0.centerBottom;
   const {
     rows: terminalRows,
     columns
@@ -409,14 +412,7 @@ export function FullscreenLayout(t0) {
       t15 = $[29];
       t16 = $[30];
     }
-    let t17;
-    if ($[31] !== bottom) {
-      t17 = <Box flexDirection="column" flexShrink={0} width="100%" maxHeight="50%">{t15}{t16}<Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden">{bottom}</Box></Box>;
-      $[31] = bottom;
-      $[32] = t17;
-    } else {
-      t17 = $[32];
-    }
+    const t17 = <BottomSlot bottom={bottom} centered={centerBottom} columns={columns} rows={terminalRows} suggestionsOverlay={t15} dialogOverlay={t16} />;
     let t18;
     if ($[33] !== columns || $[34] !== modal || $[35] !== modalScrollRef || $[36] !== terminalRows) {
       t18 = modal != null && <ModalContext value={{
@@ -465,6 +461,73 @@ export function FullscreenLayout(t0) {
 // (absoluteRectsPrev third-pass in render-node-to-output.ts, #23939). Shows
 // "Jump to bottom" when count is 0 (scrolled away but no new messages yet —
 // the dead zone where users previously thought chat stalled).
+const CENTERED_BOTTOM_WIDTH_RATIO = 0.78;
+const CENTERED_BOTTOM_MIN_WIDTH = 72;
+const CENTERED_BOTTOM_LIFT_RATIO = 0.4;
+const CENTERED_BOTTOM_FRAME_MS = 36;
+function getCenteredBottomWidth(columns: number): number {
+  if (columns < CENTERED_BOTTOM_MIN_WIDTH + 8) return columns;
+  return Math.min(columns - 4, Math.max(CENTERED_BOTTOM_MIN_WIDTH, Math.floor(columns * CENTERED_BOTTOM_WIDTH_RATIO)));
+}
+function getCenteredBottomLift(rows: number, centered: boolean): number {
+  if (!centered || rows < 16) return 0;
+  return Math.max(4, Math.min(Math.floor(rows * CENTERED_BOTTOM_LIFT_RATIO), rows - 12));
+}
+function BottomSlot(t0: {
+  bottom: ReactNode;
+  centered: boolean;
+  columns: number;
+  rows: number;
+  suggestionsOverlay: ReactNode;
+  dialogOverlay: ReactNode;
+}): React.ReactNode {
+  const {
+    bottom,
+    centered,
+    columns,
+    rows,
+    suggestionsOverlay,
+    dialogOverlay
+} = t0;
+  const targetLift = getCenteredBottomLift(rows, centered);
+  const targetWidth = centered ? getCenteredBottomWidth(columns) : columns;
+  const [lift, setLift] = useState(targetLift);
+  const [width, setWidth] = useState(targetWidth);
+  const [ref, time] = useAnimationFrame(lift !== targetLift || width !== targetWidth ? CENTERED_BOTTOM_FRAME_MS : null);
+  useEffect(() => {
+    if (lift === targetLift && width === targetWidth) return;
+
+    setLift(current => {
+      const delta = targetLift - current;
+      if (delta === 0) return current;
+
+      const step = Math.max(1, Math.ceil(Math.abs(delta) * 0.36));
+      const next = current + Math.sign(delta) * step;
+      return Math.sign(targetLift - next) !== Math.sign(delta) ? targetLift : next;
+    });
+    setWidth(current => {
+      const delta = targetWidth - current;
+      if (delta === 0) return current;
+
+      const step = Math.max(1, Math.ceil(Math.abs(delta) * 0.32));
+      const next = current + Math.sign(delta) * step;
+      return Math.sign(targetWidth - next) !== Math.sign(delta) ? targetWidth : next;
+    });
+  }, [lift, targetLift, targetWidth, width, time]);
+
+  return <Box ref={ref} flexDirection="column" flexShrink={0} width="100%">
+      <Box flexDirection="column" width="100%" maxHeight="50%">
+        {suggestionsOverlay}
+        {dialogOverlay}
+        <Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden" alignItems={width < columns ? "center" : undefined}>
+          <Box flexDirection="column" width={width}>
+            {bottom}
+          </Box>
+        </Box>
+      </Box>
+      {lift > 0 ? <Box height={lift} flexShrink={0} /> : null}
+    </Box>;
+}
 function _temp3() {
   if (!isFullscreenEnvEnabled()) {
     return;

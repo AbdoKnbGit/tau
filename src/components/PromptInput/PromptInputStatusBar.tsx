@@ -17,26 +17,14 @@ function shortenCwd(cwd: string): string {
   return cwd
 }
 
-export function PromptInputStatusBar({ mcpClients }: Props): React.ReactNode {
+export function PromptInputStatusBar(_props: Props): React.ReactNode {
   const cwd = shortenCwd(getCwd())
-  const list = mcpClients ?? []
-  const connected = list.filter(c => c.type === 'connected').length
-  const failed = list.filter(c => c.type === 'failed' || c.type === 'needs-auth').length
 
   return (
-    <Box flexDirection="row" justifyContent="space-between" paddingX={2} flexShrink={0}>
+    <Box flexDirection="row" paddingX={2} flexShrink={0}>
       <Text color="textMuted" wrap="truncate">
         {cwd}
       </Text>
-      <Box flexDirection="row" gap={2} flexShrink={0}>
-        {failed > 0 && (
-          <Text color="warning">△ {failed} MCP issue{failed === 1 ? '' : 's'}</Text>
-        )}
-        {connected > 0 && (
-          <Text color="textMuted">⊙ {connected} MCP</Text>
-        )}
-        <Text color="textMuted" dimColor>/status</Text>
-      </Box>
     </Box>
   )
 }

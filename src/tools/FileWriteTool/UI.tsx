@@ -98,7 +98,7 @@ function FileWriteToolCreatedMessage(t0) {
     t5 = $[12];
   }
   const t6 = columns - 12;
-  const t7 = <Box flexDirection="column">{isMarkdownPreviewPath(filePath) ? <Markdown>{t5}</Markdown> : <HighlightedCode code={t5} filePath={filePath} width={t6} />}</Box>;
+  const t7 = <Box borderColor="brandDim" borderStyle="round" borderTop={false} borderRight={false} borderBottom={false} flexDirection="column" paddingLeft={1}>{isMarkdownPreviewPath(filePath) ? <Markdown>{t5}</Markdown> : <HighlightedCode code={t5} filePath={filePath} width={t6} />}</Box>;
   let t8;
   if ($[17] !== numLines || $[18] !== plusLines || $[19] !== verbose) {
     t8 = !verbose && plusLines > 0 && <Text dimColor={true}>… +{plusLines} {plusLines === 1 ? "line" : "lines"}{" "}{numLines > 0 && <CtrlOToExpand />}</Text>;

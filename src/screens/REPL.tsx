@@ -4739,6 +4739,8 @@ export function REPL({
   // /config, /theme, /diff, ...) both go here now.
   const toolJsxCentered = isFullscreenEnvEnabled() && toolJSX?.isLocalJSXCommand === true;
   const centeredModal: React.ReactNode = toolJsxCentered ? toolJSX!.jsx : null;
+  const hasVisibleConversationStarted = messages.some(message => message.type === 'assistant' || message.type === 'user' && !message.isMeta && !message.isVisibleInTranscriptOnly) || displayedMessages.some(message => message.type === 'assistant' || message.type === 'user' && !message.isMeta && !message.isVisibleInTranscriptOnly);
+  const centerFreshPrompt = isFullscreenEnvEnabled() && !viewedAgentTask && submitCount === 0 && !hasVisibleConversationStarted && !toolJSX?.isLocalJSXCommand && !focusedInputDialog;
 
   // <AlternateScreen> at the root: everything below is inside its
   // <Box height={rows}>. Handlers/contexts are zero-height so ScrollBox's
@@ -4763,7 +4765,7 @@ export function REPL({
       {feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? <MessageActionsKeybindings handlers={messageActionHandlers} isActive={cursor !== null} /> : null}
       <CancelRequestHandler {...cancelRequestProps} />
       <MCPConnectionManager key={remountKey} dynamicMcpConfig={dynamicMcpConfig} isStrictMcpConfig={strictMcpConfig}>
-        <FullscreenLayout scrollRef={scrollRef} overlay={toolPermissionOverlay} bottomFloat={bottomFloat} modal={centeredModal} modalScrollRef={modalScrollRef} dividerYRef={dividerYRef} hidePill={!!viewedAgentTask} hideSticky={!!viewedTeammateTask} newMessageCount={unseenDivider?.count ?? 0} onPillClick={() => {
+        <FullscreenLayout scrollRef={scrollRef} overlay={toolPermissionOverlay} bottomFloat={bottomFloat} modal={centeredModal} modalScrollRef={modalScrollRef} dividerYRef={dividerYRef} hidePill={!!viewedAgentTask} hideSticky={!!viewedTeammateTask} centerBottom={centerFreshPrompt} newMessageCount={unseenDivider?.count ?? 0} onPillClick={() => {
         setCursor(null);
         jumpToNew(scrollRef.current);
       }} scrollable={<>
@@ -5105,7 +5107,7 @@ export function REPL({
                           <Box flexGrow={1} />
                           <HeyListeningIndicator state={hey.state} />
                         </Box> : null}
-                      <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={!!hasSuppressedDialogs} isLocalJSXCommandActive={isShowingLocalJSXCommand} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={
+                      <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={!!hasSuppressedDialogs} isLocalJSXCommandActive={isShowingLocalJSXCommand} isCenteredPrompt={centerFreshPrompt} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={
             // Works during isLoading — edit cancels first; uuid selection survives appends.
             feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? enterMessageActions : undefined} mcpClients={mcpClients} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onSubmit={onSubmit} onAgentSubmit={onAgentSubmit} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={isHelpOpen} setHelpOpen={setIsHelpOpen} insertTextRef={feature('VOICE_MODE') || heyModeAvailable ? insertTextRef : undefined} voiceInterimRange={voice.interimRange} />
                       <SessionBackgroundHint onBackgroundSession={handleBackgroundSession} isLoading={isLoading} />

@@ -15,6 +15,7 @@ import { getSurfBannerLabel } from '../../utils/surf/label.js';
 import { OffscreenFreeze } from '../OffscreenFreeze.js';
 import { AnimatedClawd } from './AnimatedClawd.js';
 import { Clawd } from './Clawd.js';
+import { TauWordmark } from '../tau-ui/TauWordmark.js';
 import { GuestPassesUpsell, incrementGuestPassesSeenCount, useShowGuestPassesUpsell } from './GuestPassesUpsell.js';
 import { incrementOverageCreditUpsellSeenCount, OverageCreditUpsell, useShowOverageCreditUpsell } from './OverageCreditUpsell.js';
 export function CondensedLogo() {
@@ -74,7 +75,7 @@ export function CondensedLogo() {
     t3 = $[6];
   }
   useEffect(t2, t3);
-  const textWidth = Math.max(columns - 15, 20);
+  const textWidth = Math.max(columns - 32, 20);
   const truncatedVersion = truncate(version, Math.max(textWidth - 13, 6));
   const effortSuffix = surfBanner ? '' : getEffortSuffix(model, effortValue);
   const {
@@ -86,7 +87,7 @@ export function CondensedLogo() {
   const truncatedCwd = truncatePath(cwd, Math.max(cwdAvailableWidth, 10));
   let t4;
   if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
-    t4 = isFullscreenEnvEnabled() ? <AnimatedClawd /> : <Clawd />;
+    t4 = <TauWordmark />;
     $[7] = t4;
   } else {
     t4 = $[7];
@@ -108,7 +109,7 @@ export function CondensedLogo() {
   }
   let t6;
   if ($[9] !== truncatedVersion) {
-    t6 = <Text>{t5}{" "}<Text dimColor={true}>v{truncatedVersion}</Text></Text>;
+    t6 = <Text dimColor={true}>v{truncatedVersion}</Text>;
     $[9] = truncatedVersion;
     $[10] = t6;
   } else {
@@ -153,7 +154,7 @@ export function CondensedLogo() {
   }
   let t12;
   if ($[23] !== t10 || $[24] !== t11 || $[25] !== t6 || $[26] !== t7 || $[27] !== t9) {
-    t12 = <OffscreenFreeze><Box flexDirection="row" gap={2} alignItems="center">{t4}<Box flexDirection="column">{t6}{t7}{t9}{t10}{t11}</Box></Box></OffscreenFreeze>;
+    t12 = <Box flexDirection="row" gap={2} alignItems="center">{t4}<OffscreenFreeze><Box flexDirection="column">{t6}{t7}{t9}{t10}{t11}</Box></OffscreenFreeze></Box>;
     $[23] = t10;
     $[24] = t11;
     $[25] = t6;

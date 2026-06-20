@@ -197,7 +197,7 @@ export function AssistantToolUseMessage(t0) {
   const t8 = userFacingToolNameBackgroundColor ? "inverseText" : undefined;
   let t9;
   if ($[38] !== t8 || $[39] !== userFacingToolName || $[40] !== userFacingToolNameBackgroundColor) {
-    t9 = <Box flexShrink={0}><Text bold={true} wrap="truncate-end" backgroundColor={userFacingToolNameBackgroundColor} color={t8}>{userFacingToolName}</Text></Box>;
+    t9 = <Box flexShrink={0}><Text bold={true} wrap="truncate-end" backgroundColor={userFacingToolNameBackgroundColor} color={userFacingToolNameBackgroundColor ? t8 : "brandBright"}>{userFacingToolName}</Text></Box>;
     $[38] = t8;
     $[39] = userFacingToolName;
     $[40] = userFacingToolNameBackgroundColor;
@@ -207,7 +207,7 @@ export function AssistantToolUseMessage(t0) {
   }
   let t10;
   if ($[42] !== renderedToolUseMessage) {
-    t10 = renderedToolUseMessage !== "" && <Box flexWrap="nowrap"><Text>({renderedToolUseMessage})</Text></Box>;
+    t10 = renderedToolUseMessage !== "" && <Box flexWrap="nowrap"><Text color="textMuted">(</Text><Text>{renderedToolUseMessage}</Text><Text color="textMuted">)</Text></Box>;
     $[42] = renderedToolUseMessage;
     $[43] = t10;
   } else {
