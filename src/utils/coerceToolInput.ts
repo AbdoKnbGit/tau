@@ -15,6 +15,11 @@
  *   - string → object:  JSON.parse if the string looks like "{...}"
  *   - string → number:  parseFloat if the string is numeric
  *   - string → boolean: "true"/"false" → true/false
+ *   - number/boolean → string: String(value) for string-typed params
+ *
+ * It also performs key recovery: an input key that isn't a schema property but
+ * normalizes (casing, `_`/`-`) to one that is — e.g. `filePath` → `file_path`,
+ * `oldString` → `old_string` — is renamed when the canonical key is absent.
  */
 
 import type { ZodTypeAny } from 'zod/v4'
@@ -73,10 +78,26 @@ function unwrapSchema(schema: ZodTypeAny): ZodTypeAny {
 }
 
 /**
+ * Normalize a key for fuzzy matching: lowercase and strip `_`/`-` separators,
+ * so `filePath` / `file-path` both match the schema's `file_path`.
+ */
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[_-]/g, '')
+}
+
+/**
  * Try to coerce a single value from string to the expected type.
  * Returns the coerced value, or the original if coercion isn't applicable.
  */
 function coerceValue(value: unknown, expectedType: string): unknown {
+  // number/boolean → string: models sometimes emit a bare numeric or boolean
+  // literal for a string-typed param (e.g. taskId: 3 instead of "3").
+  if (expectedType === 'string') {
+    return typeof value === 'number' || typeof value === 'boolean'
+      ? String(value)
+      : value
+  }
+
   if (typeof value !== 'string') return value
 
   switch (expectedType) {
@@ -114,6 +135,67 @@ function coerceValue(value: unknown, expectedType: string): unknown {
 }
 
 /**
+ * Escape literal control characters (newline, carriage-return, tab) that appear
+ * *inside* JSON string literals. Models occasionally emit a raw newline inside a
+ * large `content`/`new_string` value instead of `\n`, which breaks JSON.parse.
+ * This is lossless: valid JSON has no unescaped control chars inside strings, so
+ * the transform is a no-op on already-valid input.
+ */
+function escapeControlCharsInStrings(s: string): string {
+  let out = ''
+  let inStr = false
+  let esc = false
+  for (const ch of s) {
+    if (esc) {
+      out += ch
+      esc = false
+    } else if (ch === '\\') {
+      out += ch
+      esc = true
+    } else if (ch === '"') {
+      inStr = !inStr
+      out += ch
+    } else if (inStr && ch === '\n') {
+      out += '\\n'
+    } else if (inStr && ch === '\r') {
+      out += '\\r'
+    } else if (inStr && ch === '\t') {
+      out += '\\t'
+    } else {
+      out += ch
+    }
+  }
+  return out
+}
+
+/**
+ * Lanes set `{ _raw: <string> }` as a sentinel when tool-call arguments fail to
+ * JSON.parse. Try to recover the intended object with LOSSLESS repairs only:
+ * strip a markdown code fence, escape stray in-string control chars, and undo
+ * double-encoding. Returns null if none yield a plain object — notably it never
+ * force-closes truncated JSON, so a genuinely cut-off call still fails and the
+ * model resends rather than writing a partial file.
+ */
+function recoverRawToolArgs(raw: string): Record<string, unknown> | null {
+  let base = raw.trim()
+  const fence = base.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  if (fence?.[1] !== undefined) base = fence[1].trim()
+
+  for (const candidate of [base, escapeControlCharsInStrings(base)]) {
+    try {
+      let parsed: unknown = JSON.parse(candidate)
+      if (typeof parsed === 'string') parsed = JSON.parse(parsed) // double-encoded
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return null
+}
+
+/**
  * Coerce tool input values to match the expected schema types.
  *
  * This is a shallow pass — it coerces top-level properties of the input
@@ -130,12 +212,39 @@ export function coerceToolInput(
 ): Record<string, unknown> {
   if (!input || typeof input !== 'object') return input
 
+  // Recover from the `_raw` sentinel a lane sets when tool-call args failed to
+  // JSON.parse — otherwise every required field reads as "missing". Lossless
+  // repairs only (see recoverRawToolArgs); on failure we leave `_raw` so
+  // validation still rejects and the model resends.
+  if (typeof input._raw === 'string' && Object.keys(input).length === 1) {
+    const recovered = recoverRawToolArgs(input._raw)
+    if (recovered) input = recovered
+  }
+
   const unwrapped = unwrapSchema(schema)
   const properties = getObjectProperties(unwrapped)
   if (!properties || properties.size === 0) return input
 
   let mutated = false
   const result: Record<string, unknown> = { ...input }
+
+  // Key recovery: a model may emit a property under a near-miss spelling
+  // (camelCase vs snake_case / casing) — e.g. `filePath` for `file_path`. When
+  // an input key isn't a schema property but normalizes to one that is (and the
+  // canonical key is absent), rename it. Pure omissions still fail validation.
+  const canonicalByNorm = new Map<string, string>()
+  for (const key of properties.keys()) {
+    canonicalByNorm.set(normalizeKey(key), key)
+  }
+  for (const key of Object.keys(result)) {
+    if (properties.has(key)) continue
+    const canonical = canonicalByNorm.get(normalizeKey(key))
+    if (canonical && !(canonical in result)) {
+      result[canonical] = result[key]
+      delete result[key]
+      mutated = true
+    }
+  }
 
   for (const [key, propSchema] of properties) {
     if (!(key in result)) continue

@@ -4,7 +4,7 @@ export const FILE_WRITE_TOOL_NAME = 'Write'
 export const DESCRIPTION = 'Write a file to the local filesystem.'
 
 function getPreReadInstruction(): string {
-  return `\n- If this is an existing file, you MUST use the ${FILE_READ_TOOL_NAME} tool first to read the file's contents. This tool will fail if you did not read the file first.`
+  return `\n- ALWAYS read an existing file with the ${FILE_READ_TOOL_NAME} tool before overwriting it — read first, every time. \`Write\` replaces the ENTIRE file, so overwriting one you have not read risks destroying its contents, and this tool will refuse until you do. To change only part of a file, use the Edit tool instead (it reads + edits in place).`
 }
 
 export function getWriteToolDescription(): string {

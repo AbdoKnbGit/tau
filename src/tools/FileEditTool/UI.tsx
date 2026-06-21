@@ -13,6 +13,7 @@ import { Text } from '../../ink.js';
 import type { Tools } from '../../Tool.js';
 import type { Message, ProgressMessage } from '../../types/message.js';
 import { adjustHunkLineNumbers, CONTEXT_LINES } from '../../utils/diff.js';
+import { countDiffRows, MAX_DIFF_LINES_TO_RENDER } from '../../utils/diffTruncate.js';
 import { FILE_NOT_FOUND_CWD_NOTE, getDisplayPath } from '../../utils/file.js';
 import { logError } from '../../utils/log.js';
 import { getPlansDirectory } from '../../utils/plans.js';
@@ -88,6 +89,13 @@ export function renderToolResultMessage({
   // For plan files, show /plan hint above the diff
   const isPlanFile = filePath.startsWith(getPlansDirectory());
   return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={originalFile.split('\n')[0] ?? null} fileContent={originalFile} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} />;
+}
+/** The edit diff is capped to MAX_DIFF_LINES_TO_RENDER rows in the normal view;
+ *  report truncation (enabling the ctrl+o affordance) when it exceeds that. */
+export function isResultTruncated({
+  structuredPatch
+}: FileEditOutput): boolean {
+  return countDiffRows(structuredPatch) > MAX_DIFF_LINES_TO_RENDER;
 }
 export function renderToolUseRejectedMessage(input: {
   file_path: string;

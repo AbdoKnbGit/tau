@@ -9,6 +9,7 @@ import { extractTag } from 'src/utils/messages.js';
 import { CtrlOToExpand } from '../../components/CtrlOToExpand.js';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { FileEditToolUpdatedMessage } from '../../components/FileEditToolUpdatedMessage.js';
+import { countDiffRows, MAX_DIFF_LINES_TO_RENDER } from '../../utils/diffTruncate.js';
 import { FileEditToolUseRejectedMessage } from '../../components/FileEditToolUseRejectedMessage.js';
 import { FilePathLink } from '../../components/FilePathLink.js';
 import { HighlightedCode } from '../../components/HighlightedCode.js';
@@ -137,8 +138,14 @@ export function userFacingName(input: Partial<{
  *  (MAX+1)th line instead of splitting the whole (possibly huge) content. */
 export function isResultTruncated({
   type,
-  content
+  content,
+  structuredPatch
 }: Output): boolean {
+  // Write-driven overwrite: the diff preview is capped, so it's "truncated"
+  // (and gets the ctrl+o affordance) whenever it exceeds the cap.
+  if (type === 'update') {
+    return countDiffRows(structuredPatch) > MAX_DIFF_LINES_TO_RENDER;
+  }
   if (type !== 'create') return false;
   let pos = 0;
   for (let i = 0; i < MAX_LINES_TO_RENDER; i++) {
@@ -355,6 +362,7 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   }
   return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
 }
+
 export function renderToolResultMessage({
   filePath,
   content,

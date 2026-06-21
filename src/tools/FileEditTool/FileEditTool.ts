@@ -65,6 +65,7 @@ import {
 } from './types.js'
 import {
   getToolUseSummary,
+  isResultTruncated,
   renderToolResultMessage,
   renderToolUseErrorMessage,
   renderToolUseMessage,
@@ -136,6 +137,7 @@ export const FileEditTool = buildTool({
   renderToolResultMessage,
   renderToolUseRejectedMessage,
   renderToolUseErrorMessage,
+  isResultTruncated,
   async validateInput(input: FileEditInput, toolUseContext: ToolUseContext) {
     const { file_path, old_string, new_string, replace_all = false } = input
     // Use expandPath for consistent path normalization (especially on Windows
@@ -274,18 +276,22 @@ export const FileEditTool = buildTool({
       }
     }
 
-    const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
+    let readTimestamp = toolUseContext.readFileState.get(fullFilePath)
     if (!readTimestamp || readTimestamp.isPartialView) {
-      return {
-        result: false,
-        behavior: 'ask',
-        message:
-          'File has not been read yet. Read it first before writing to it.',
-        meta: {
-          isFilePathAbsolute: String(isAbsolute(file_path)),
-        },
-        errorCode: 6,
+      // Auto-read recovery: the model attempted an edit without a prior full
+      // read. Rather than hard-blocking (which only costs a round-trip — the
+      // model reads, then retries the identical edit), seed readFileState from
+      // the content we already loaded above and continue. Safety is preserved
+      // by the old_string match below: a wrong assumption fails with "String to
+      // replace not found", never a silent clobber.
+      const seeded = {
+        content: fileContent,
+        timestamp: getFileModificationTime(fullFilePath),
+        offset: undefined,
+        limit: undefined,
       }
+      toolUseContext.readFileState.set(fullFilePath, seeded)
+      readTimestamp = seeded
     }
 
     // Check if file exists and get its last modified time
