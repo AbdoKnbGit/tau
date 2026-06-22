@@ -25,7 +25,7 @@ import {
   wrapForGeminiCLI,
   geminiCLIApiHeaders,
   antigravityApiHeaders,
-  codeAssistGenerationBases,
+  codeAssistGenerationBasesForModel,
   clearCodeAssistCache,
   warmupCodeAssist,
 } from '../../services/api/providers/gemini_code_assist.js'
@@ -396,7 +396,8 @@ class GeminiApiClient {
       let reonboardsLeft = 1
       let sigStripsLeft = 1
       const urlsForExecutor = (executor: 'cli' | 'antigravity') =>
-        codeAssistGenerationBases(executor).map(base => `${base}:streamGenerateContent?alt=sse`)
+        codeAssistGenerationBasesForModel(executor, model).map(base => `${base}:streamGenerateContent?alt=sse`)
+      const _ttftStart = Date.now()
       const rotation = getAntigravityRotation()
 
       const response = await retryWithBackoff(
@@ -542,8 +543,26 @@ class GeminiApiClient {
       )
 
       // Code Assist SSE frames are wrapped as `{ response: <chunk> }`.
+      const _fetchMs = Date.now() - _ttftStart
+      let _firstChunk = true
+      let _thoughts = 0
+      let _output = 0
       for await (const chunk of parseCodeAssistSSE(response.body!)) {
+        if (_firstChunk) {
+          _firstChunk = false
+          if (process.env.TAU_CACHE_DEBUG) {
+            console.error(`[tau-timing] model=${model} fetchMs=${_fetchMs} ttftMs=${Date.now() - _ttftStart}`)
+          }
+        }
+        const u = (chunk as GeminiStreamChunk).usageMetadata
+        if (u) {
+          _thoughts = u.thoughtsTokenCount ?? _thoughts
+          _output = u.candidatesTokenCount ?? _output
+        }
         yield chunk as GeminiStreamChunk
+      }
+      if (process.env.TAU_CACHE_DEBUG) {
+        console.error(`[tau-timing] model=${model} totalMs=${Date.now() - _ttftStart} thoughtsTokens=${_thoughts} outputTokens=${_output}`)
       }
       return
     }
@@ -601,7 +620,7 @@ class GeminiApiClient {
       let reonboardsLeft = 1
       let sigStripsLeft = 1
       const urlsForExecutor = (executor: 'cli' | 'antigravity') =>
-        codeAssistGenerationBases(executor).map(base => `${base}:generateContent`)
+        codeAssistGenerationBasesForModel(executor, model).map(base => `${base}:generateContent`)
       const rotation = getAntigravityRotation()
 
       const data = await retryWithBackoff(

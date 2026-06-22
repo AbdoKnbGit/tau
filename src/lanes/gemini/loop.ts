@@ -51,6 +51,7 @@ import { geminiApi, TAU_STABLE_SESSION_ID_FIELD } from './api.js'
 import { getOrCreateCacheWithUsage, invalidateCache } from '../../services/api/providers/gemini_cache.js'
 import {
   ANTIGRAVITY_MODEL_IDS,
+  isAntigravityGeminiModel,
   resolveAntigravityWireModel,
 } from '../../services/api/providers/gemini_code_assist.js'
 import {
@@ -142,25 +143,29 @@ export class GeminiLane implements Lane {
     // for anything we don't recognize (MCP tools, custom tools).
     const functionDeclarations = buildLaneFunctionDeclarations(tools)
 
-    // Antigravity prompts below the backend's ~16,384-token implicit-cache
-    // minimum can never produce a cache entry — pad the stable system slot
-    // over it so the second call is a cache hit. Sized from turn-stable
-    // inputs (system + tools) so the pad is byte-identical across a
-    // conversation's turns.
-    //
-    // Applies to BOTH Gemini and Claude models on Antigravity: Claude is
-    // resold through the same cloudcode-pa Gemini wire protocol and shares
-    // the same per-account implicit cache, so it has the identical 16,384
-    // chunk minimum + async-commit instability. Google-path Gemini and
-    // every other provider are untouched. See antigravity_cache.ts for the
-    // measured cache semantics.
+    // Antigravity's implicit cache content-addresses the whole prompt prefix
+    // (systemInstruction → tools → contents), so a real session warms it
+    // NATURALLY once its growing conversation crosses the ~16,384-token
+    // minimum — no padding needed, and short prompts stay fast. The optional
+    // prefix pad below force-warms small prompts too, but at ~17.4k tokens
+    // every turn; it (and pacing) are OFF unless TAU_ANTIGRAVITY_MAX_CACHE=1.
+    // See antigravity_cache.ts for the measured cache semantics.
     const isAntigravityModel = ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase())
-    const stableText = isAntigravityModel
+    // The implicit-cache discipline (prefix pad + commit-window pacing)
+    // targets ONLY the single-slot Gemini cache. Claude resold through
+    // Antigravity uses a multi-entry, low-minimum cache where padding and
+    // pacing would only add latency and tokens — so it stays exempt.
+    const isAntigravityGemini = isAntigravityModel && isAntigravityGeminiModel(model)
+    const stableText = isAntigravityGemini
       ? applyAntigravityPrefixPad(
         split.stableText,
         JSON.stringify(functionDeclarations).length,
       )
       : split.stableText
+
+    if (process.env.TAU_CACHE_DEBUG && isAntigravityGemini) {
+      console.error(`[tau-prompt] systemChars=${split.stableText.length} volatileChars=${(split.volatileText ?? '').length} toolsChars=${JSON.stringify(functionDeclarations).length} nTools=${functionDeclarations.length}`)
+    }
 
     // Map thinkingBudget from Anthropic-format thinking param.
     const thinkingBudget = resolveThinkingBudget(thinking)
@@ -213,16 +218,21 @@ export class GeminiLane implements Lane {
       cacheName,
     })
     if (isAntigravityModel) {
+      // Session-id mimicry (→ X-Machine-Session-Id) and the cache-debug
+      // trace shape/observe the call without affecting latency, so they
+      // apply to every Antigravity request — Gemini and Claude alike.
       request[TAU_STABLE_SESSION_ID_FIELD] = stableAntigravitySessionId(sessionId, messages)
       if (process.env.TAU_CACHE_DEBUG) {
         writeAntigravityCacheDebugEntry(model, request, sessionId)
       }
+    }
+    if (isAntigravityGemini) {
       // Hold an agent's second request until its first cache write has had
-      // time to commit (~8-22s async) — without this, fast tool loops
-      // re-pay the full prompt cold on every turn. Agent sessions only
-      // (gated inside by the tau-agent- prefix); the main thread's human
-      // cadence already clears the commit window. Both Gemini and Claude
-      // on Antigravity hit the same async-commit backend.
+      // time to commit (async) — without this, fast tool loops re-pay the
+      // full prompt cold on every turn. Agent sessions only (gated inside by
+      // the tau-agent- prefix); the main thread's human cadence already
+      // clears the commit window. Gemini-only: the Claude-on-Antigravity
+      // cache has a much lower minimum and never needs pacing.
       await paceAntigravityAgentRequest(sessionId, signal)
     }
 
@@ -410,7 +420,7 @@ export class GeminiLane implements Lane {
           thinkingTokens = u.thoughtsTokenCount ?? thinkingTokens
           cacheReadTokens = u.cachedContentTokenCount ?? cacheReadTokens
           inputTokens = uncachedInputTokens(promptTokens, cacheReadTokens)
-          if (isAntigravityModel) {
+          if (isAntigravityGemini) {
             recordAntigravityCacheRead(sessionId, cacheReadTokens, promptTokens)
           }
         }
@@ -920,6 +930,21 @@ function resolveThinkingConfig(
   const levelMatch = lower.match(/^gemini-\d+(?:\.\d+)?-(?:pro|flash)-(high|medium|low)$/)
   if (levelMatch) level = levelMatch[1] as 'low' | 'medium' | 'high'
   else if (/^gemini-3(?:\.\d+)?-flash$/.test(lower)) level = 'low' // Antigravity flash defaults to "low"
+
+  // Speed lever, Antigravity Gemini only: TAU_GEMINI_THINKING={low|medium|high
+  // |off} forces the reasoning level without switching models, so a -high
+  // model can be made snappy on the fly. Scoped by isAntigravityGeminiModel —
+  // Claude-on-Antigravity uses the legacy budget branch below and is untouched,
+  // and CLI Gemini is left alone. ("off" maps to the level path's floor,
+  // "low" — Gemini-3 always reasons a little; there is no true zero here.)
+  if (level && isAntigravityGeminiModel(model)) {
+    const override = process.env.TAU_GEMINI_THINKING?.toLowerCase()
+    if (override === 'low' || override === 'medium' || override === 'high') {
+      level = override
+    } else if (override === 'off' || override === 'none' || override === 'minimal') {
+      level = 'low'
+    }
+  }
 
   if (level) {
     return {

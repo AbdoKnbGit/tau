@@ -60,6 +60,21 @@ import { appendFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
+// ─── Opt-in switch ───────────────────────────────────────────────
+//
+// The cache discipline (prefix pad + commit-window pacing + agent gate) is
+// OFF by default. It trades interactive latency for token savings and only
+// earns its keep on long, many-turn batch/agent runs. With it off, simple
+// prompts stay fast AND the implicit prefix cache still warms NATURALLY: the
+// backend content-addresses the whole prompt prefix (systemInstruction →
+// tools → contents), so once a session's growing conversation crosses the
+// 16,384-token minimum, every later turn hits its own committed prefix with
+// no padding at all. Flip TAU_ANTIGRAVITY_MAX_CACHE=1 to force-warm small
+// prompts too (at the cost of ~17.4k padding tokens on every turn).
+export function antigravityMaxCacheEnabled(): boolean {
+  return process.env.TAU_ANTIGRAVITY_MAX_CACHE === '1'
+}
+
 // ─── Prefix padding ──────────────────────────────────────────────
 
 // Target prompt size in estimated tokens. Comfortably above the
@@ -127,6 +142,10 @@ export function applyAntigravityPrefixPad(
   toolDeclarationChars: number,
 ): string {
   if (process.env.TAU_ANTIGRAVITY_NO_PREFIX_PAD === '1') return stableText
+  // Default OFF — padding a small prompt to ~17.4k tokens makes simple,
+  // interactive turns slow for a cache win that natural session growth
+  // already provides. Opt in for token-cost-sensitive batch/agent runs.
+  if (!antigravityMaxCacheEnabled()) return stableText
 
   const existingChars = stableText.length + toolDeclarationChars
   const estimatedTokens = Math.floor(existingChars / EXISTING_CHARS_PER_TOKEN)
@@ -142,12 +161,17 @@ export function applyAntigravityPrefixPad(
 //
 // Holding the agent's SECOND request until the first write has had
 // time to commit converts the rest of the run into prefix-cache hits.
-// If the second request still missed (commit can take up to ~22s), one
-// re-arm paces the third request from the second's start; after two
-// paced turns we give up so a shape the server refuses to cache can't
-// throttle a whole run. A qualifying cache hit latches pacing off.
+// If the second request still missed, one re-arm paces the third
+// request from the second's start; after two paced turns we give up so
+// a shape the server refuses to cache can't throttle a whole run. A
+// qualifying cache hit latches pacing off.
+//
+// The window is rebalanced from 15s → 6s: the implicit-cache write
+// usually commits in <5s, so the old 15s ceiling stalled agents far
+// longer than the backend actually needed. Override with
+// TAU_ANTIGRAVITY_PACING_MS (0 keeps state tracking but never waits).
 
-const ANTIGRAVITY_COMMIT_WINDOW_MS = 15_000
+const DEFAULT_COMMIT_WINDOW_MS = 6_000
 const MAX_PACED_TURNS = 2
 const AGENT_SESSION_PREFIX = 'tau-agent-'
 
@@ -158,8 +182,19 @@ interface PaceState {
   hitSeen: boolean
 }
 
-let _commitWindowMs = ANTIGRAVITY_COMMIT_WINDOW_MS
+// Test override beats env (TAU_ANTIGRAVITY_PACING_MS) beats default.
+let _commitWindowOverride: number | undefined
 const _agentPace = new Map<string, PaceState>()
+
+function commitWindowMs(): number {
+  if (_commitWindowOverride !== undefined) return _commitWindowOverride
+  const raw = process.env.TAU_ANTIGRAVITY_PACING_MS
+  if (raw) {
+    const n = Number.parseInt(raw, 10)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  return DEFAULT_COMMIT_WINDOW_MS
+}
 
 function _prunePaceMap(): void {
   if (_agentPace.size <= 64) return
@@ -176,6 +211,10 @@ export async function paceAntigravityAgentRequest(
   signal?: AbortSignal,
 ): Promise<void> {
   if (process.env.TAU_ANTIGRAVITY_NO_PACING === '1') return
+  // Default OFF — see antigravityMaxCacheEnabled(). Without padding, small
+  // agent prompts never reach the cache minimum anyway, so stalling them
+  // would buy nothing but latency.
+  if (!antigravityMaxCacheEnabled()) return
   if (!sessionId || !sessionId.startsWith(AGENT_SESSION_PREFIX)) return
 
   const now = Date.now()
@@ -187,7 +226,7 @@ export async function paceAntigravityAgentRequest(
   }
   if (state.hitSeen || state.pacedCount >= MAX_PACED_TURNS) return
 
-  const waitMs = state.armedAt + _commitWindowMs - now
+  const waitMs = state.armedAt + commitWindowMs() - now
   // Natural cadence already cleared the window — the prior write has
   // committed (or never will); don't burn a paced turn on it.
   if (waitMs <= 0) return
@@ -358,11 +397,11 @@ export function writeAntigravityCacheDebugEntry(
 export function _resetAntigravityCacheStateForTest(): void {
   _agentPace.clear()
   _lastDebugSnapshot.clear()
-  _commitWindowMs = ANTIGRAVITY_COMMIT_WINDOW_MS
+  _commitWindowOverride = undefined
 }
 
 export function _setAntigravityCommitWindowForTest(ms: number): void {
-  _commitWindowMs = ms
+  _commitWindowOverride = ms
 }
 
 export function _getAntigravityPaceStateForTest(

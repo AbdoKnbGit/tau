@@ -80,6 +80,49 @@ export function codeAssistGenerationBases(executor: GeminiExecutor): readonly st
     : [CODE_ASSIST_BASE]
 }
 
+// ── Gemini-Antigravity endpoint latency tuning ───────────────────
+//
+// The cache fix moved the Antigravity primary from the sandbox daily host
+// (low latency, flaky implicit cache) to the non-sandbox daily host
+// (reliable cache, higher latency) — which is what made Gemini-Antigravity
+// feel slow while Claude-on-Antigravity stayed fast on the same host (its
+// multi-entry cache hits regardless). Give Gemini its own order that prefers
+// the PRODUCTION host (cloudcode-pa) — the fastest reliable channel, which
+// still serves the implicit cache — with the daily host kept as the
+// known-good-cache fallback and sandbox last. Claude's order is untouched.
+//
+// Tunable per machine: TAU_ANTIGRAVITY_GEMINI_ENDPOINT=prod|daily|sandbox
+// picks the primary (e.g. set `daily` to restore the previous behavior).
+function antigravityGeminiGenerationBases(): readonly string[] {
+  const prod = CODE_ASSIST_BASE
+  const daily = ANTIGRAVITY_GENERATION_BASE
+  const sandbox = `${ANTIGRAVITY_ENDPOINT_DAILY_SANDBOX}/v1internal`
+  switch (process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT?.toLowerCase()) {
+    case 'daily':
+      return [daily, prod, sandbox]
+    case 'sandbox':
+      return [sandbox, prod, daily]
+    default:
+      return [prod, daily, sandbox] // prod-first: fast + reliable cache
+  }
+}
+
+/**
+ * Generation endpoint order for a specific model. Antigravity Gemini prefers
+ * the production host for latency (see antigravityGeminiGenerationBases);
+ * Claude-on-Antigravity and CLI Gemini keep the executor-default order so
+ * their already-fast paths are not disturbed.
+ */
+export function codeAssistGenerationBasesForModel(
+  executor: GeminiExecutor,
+  model: string,
+): readonly string[] {
+  if (executor === 'antigravity' && isAntigravityGeminiModel(model)) {
+    return antigravityGeminiGenerationBases()
+  }
+  return codeAssistGenerationBases(executor)
+}
+
 // Antigravity-specific models — everything else is Gemini CLI.
 // Includes Claude models that Antigravity re-sells through the same
 // Code Assist proxy (cloudcode-pa). They share the `userAgent: "antigravity"`
@@ -109,6 +152,24 @@ const ANTIGRAVITY_WIRE_MODEL_DISPLAY_NAMES = new Map<string, string>([
 export const ANTIGRAVITY_MODEL_IDS = new Set([
   ...ANTIGRAVITY_MODELS.map(model => model.id),
 ])
+
+/**
+ * Gemini-family models on the Antigravity path — everything in the
+ * Antigravity set EXCEPT the Claude models resold through the same proxy.
+ *
+ * The implicit-cache discipline (prefix pad, commit-window pacing, agent
+ * concurrency gate) targets ONLY the single-slot Gemini implicit cache.
+ * Claude on Antigravity uses a multi-entry, low-minimum content-addressed
+ * cache that those mechanisms would only slow down, so it is excluded.
+ *
+ * Callers must already know the request is on the Antigravity provider —
+ * this splits Gemini from Claude, it does not distinguish Antigravity Gemini
+ * from CLI Gemini.
+ */
+export function isAntigravityGeminiModel(model: string): boolean {
+  const normalized = model.toLowerCase().replace(/^models\//, '')
+  return ANTIGRAVITY_MODEL_IDS.has(normalized) && !normalized.includes('claude')
+}
 
 export function getAntigravityModelDisplayName(model: string): string | null {
   const normalized = model.toLowerCase().replace(/^models\//, '')

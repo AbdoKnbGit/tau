@@ -32,6 +32,10 @@ function assert(cond: unknown, hint: string): void {
 }
 
 async function main(): Promise<void> {
+  // Pad + pacing are opt-in (default off). Exercise the ENABLED behavior
+  // here; the default-off path is covered by dedicated tests that clear it.
+  process.env.TAU_ANTIGRAVITY_MAX_CACHE = '1'
+
   console.log('antigravity prefix pad:')
 
   await test('pad generation is deterministic and memoized', () => {
@@ -95,6 +99,19 @@ async function main(): Promise<void> {
       )
     } finally {
       delete process.env.TAU_ANTIGRAVITY_NO_PREFIX_PAD
+    }
+  })
+
+  await test('padding is OFF by default (no TAU_ANTIGRAVITY_MAX_CACHE)', () => {
+    delete process.env.TAU_ANTIGRAVITY_MAX_CACHE
+    try {
+      const stable = 'You are a focused search agent.'.repeat(50) // ~1.5k chars
+      assert(
+        applyAntigravityPrefixPad(stable, 10_000) === stable,
+        'a small prompt must NOT be padded when the discipline is off',
+      )
+    } finally {
+      process.env.TAU_ANTIGRAVITY_MAX_CACHE = '1'
     }
   })
 
@@ -189,6 +206,20 @@ async function main(): Promise<void> {
       assert(Date.now() - start < 25, 'env override must disable pacing')
     } finally {
       delete process.env.TAU_ANTIGRAVITY_NO_PACING
+    }
+  })
+
+  await test('pacing is OFF by default (no TAU_ANTIGRAVITY_MAX_CACHE)', async () => {
+    delete process.env.TAU_ANTIGRAVITY_MAX_CACHE
+    try {
+      _resetAntigravityCacheStateForTest()
+      _setAntigravityCommitWindowForTest(60)
+      await paceAntigravityAgentRequest('tau-agent-abc')
+      const start = Date.now()
+      await paceAntigravityAgentRequest('tau-agent-abc')
+      assert(Date.now() - start < 25, 'agents must not be paced when the discipline is off')
+    } finally {
+      process.env.TAU_ANTIGRAVITY_MAX_CACHE = '1'
     }
   })
 

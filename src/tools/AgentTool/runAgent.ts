@@ -826,7 +826,7 @@ export async function* runAgent({
   ) {
     if (antigravityAgentGateBusy()) {
       logForDebugging(
-        `[Agent: ${agentDefinition.agentType}] Queued behind another Antigravity agent (cache protection)`,
+        `[Agent: ${agentDefinition.agentType}] Antigravity agent gate busy — may wait for a slot (cache protection)`,
       )
     }
     releaseAntigravityAgentTurn = await acquireAntigravityAgentTurn(

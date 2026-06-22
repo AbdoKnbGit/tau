@@ -10,6 +10,7 @@ import {
   CODE_ASSIST_BASE,
   antigravityApiHeaders,
   codeAssistGenerationBase,
+  codeAssistGenerationBasesForModel,
 } from '../../services/api/providers/gemini_code_assist.js'
 import { buildApiHeaders } from '../shared/antigravity_auth.js'
 
@@ -60,6 +61,31 @@ function main(): void {
       codeAssistGenerationBase('cli') === CODE_ASSIST_BASE,
       'Gemini CLI generation base should stay on production Code Assist endpoint',
     )
+  })
+
+  test('Antigravity Gemini prefers the production host (latency), Claude keeps daily', () => {
+    const sandbox = 'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal'
+
+    // Gemini-Antigravity: prod first, daily second (known-good cache), sandbox last.
+    const gemini = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low')
+    assert(gemini[0] === CODE_ASSIST_BASE, `gemini primary should be prod, got ${gemini[0]}`)
+    assert(gemini[1] === ANTIGRAVITY_GENERATION_BASE, `gemini fallback should be daily, got ${gemini[1]}`)
+    assert(gemini[2] === sandbox, `gemini last should be sandbox, got ${gemini[2]}`)
+
+    // Claude-on-Antigravity: untouched — daily first, exactly as before.
+    const claude = codeAssistGenerationBasesForModel('antigravity', 'claude-sonnet-4-6')
+    assert(claude[0] === ANTIGRAVITY_GENERATION_BASE, `claude primary must stay daily, got ${claude[0]}`)
+    assert(claude[1] === CODE_ASSIST_BASE, `claude fallback should be prod, got ${claude[1]}`)
+  })
+
+  test('TAU_ANTIGRAVITY_GEMINI_ENDPOINT overrides the Gemini primary', () => {
+    process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT = 'daily'
+    try {
+      const bases = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low')
+      assert(bases[0] === ANTIGRAVITY_GENERATION_BASE, `=daily must put daily first, got ${bases[0]}`)
+    } finally {
+      delete process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT
+    }
   })
 
   test('legacy project-discovery headers use the same Antigravity API version', () => {
