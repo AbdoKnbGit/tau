@@ -3225,7 +3225,8 @@ Goal: Write your final plan to the plan file (the only file you can edit).
 - Ensure that the plan file is concise enough to scan quickly, but detailed enough to execute effectively
 - Include the paths of critical files to be modified
 - Reference existing functions and utilities you found that should be reused, with their file paths
-- Include a verification section describing how to test the changes end-to-end (run the code, use MCP tools, run tests)`
+- Add a brief **Out of scope** line naming adjacent files or behaviors that must NOT change, so implementation stays bounded and does not drift into unrelated refactors
+- Include a **Verification** section: list the concrete, checkable outcomes that confirm success — each a binary pass/fail (a command that exits clean, a test that passes, an observable behavior), not a vague description of how to test`
 
 const PLAN_PHASE4_TRIM = `### Phase 4: Final Plan
 Goal: Write your final plan to the plan file (the only file you can edit).
@@ -3914,9 +3915,21 @@ Treat this as a fresh planning session. Do not assume the existing plan is relev
       const planReference = attachment.planExists
         ? ` The plan file is located at ${attachment.planFilePath} if you need to reference it.`
         : ''
+      // Review→Codify gate: when a plan exists it carries a Verification
+      // section and an Out of scope boundary (see Phase 4). Nudge the model to
+      // close the loop against them before reporting done. Advisory only — a
+      // one-time attachment, never a hard block, so it cannot trap the agent.
+      const reviewGate = attachment.planExists
+        ? `
+
+Before reporting the work complete, close the loop against the plan:
+- Run the plan's **Verification** checks and confirm each one actually passes — do not claim success on unverified work. If a check fails, fix it or clearly state what is still incomplete rather than glossing over it.
+- Respect the plan's **Out of scope** boundary — do not change what it excluded without checking with the user first.
+- If a durable rule, constraint, or decision surfaced while implementing, capture it so future sessions inherit it.`
+        : ''
       const content = `## Exited Plan Mode
 
-You have exited plan mode. You can now make edits, run tools, and take actions.${planReference}`
+You have exited plan mode. You can now make edits, run tools, and take actions.${planReference}${reviewGate}`
 
       return wrapMessagesInSystemReminder([
         createUserMessage({ content, isMeta: true }),

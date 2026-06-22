@@ -123,12 +123,24 @@ const PERMISSION_RULE_SOURCES = [
 function shouldBypassPermissionPrompts(
   toolPermissionContext: ToolPermissionContext,
 ): boolean {
+  // Plan mode is read-only by definition and must keep that protection even
+  // when the session was launched with --dangerously-skip-permissions, when
+  // bypass was toggled on for the session, or when bypass is otherwise
+  // available. Returning false here routes plan-mode tool calls to the normal
+  // mode check, which denies writes, allows read-only tools without prompting,
+  // and keeps the ExitPlanMode approve/deny/edit dialog intact. Without this
+  // guard the session bypass flag short-circuits to 'allow', letting the agent
+  // edit during planning and auto-skipping plan approval — plan mode and
+  // bypass "overlap" and the plan flow desyncs (ExitPlanMode then errors with
+  // "not in plan mode"). Plan and bypass are mutually exclusive: bypass
+  // resumes automatically once plan mode is exited and the mode restores.
+  if (toolPermissionContext.mode === 'plan') {
+    return false
+  }
   return (
     isWhatsAppDrivenTurn() ||
     getSessionBypassPermissionsMode() ||
-    toolPermissionContext.mode === 'bypassPermissions' ||
-    (toolPermissionContext.mode === 'plan' &&
-      toolPermissionContext.isBypassPermissionsModeAvailable)
+    toolPermissionContext.mode === 'bypassPermissions'
   )
 }
 

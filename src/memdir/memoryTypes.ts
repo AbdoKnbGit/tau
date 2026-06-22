@@ -1,10 +1,17 @@
 /**
  * Memory type taxonomy.
  *
- * Memories are constrained to four types capturing context NOT derivable
+ * Memories are constrained to six types capturing context NOT derivable
  * from the current project state. Code patterns, architecture, git history,
  * and file structure are derivable (via grep/git/CLAUDE.md) and should NOT
  * be saved as memories.
+ *
+ * `feedback` and `invariant` form a soft/hard pair: feedback is advisory
+ * guidance (preferences, validated approaches) that tolerates exceptions,
+ * while an invariant is a non-negotiable rule that gates the work. `decision`
+ * records why a choice was made between alternatives and can be superseded by
+ * a later decision. New types are additive — parseMemoryType degrades unknown
+ * values to undefined, so older memory files keep working unchanged.
  *
  * The two TYPES_SECTION_* exports below are intentionally duplicated rather
  * than generated from a shared spec — keeping them flat makes per-mode edits
@@ -14,6 +21,8 @@
 export const MEMORY_TYPES = [
   'user',
   'feedback',
+  'invariant',
+  'decision',
   'project',
   'reference',
 ] as const
@@ -70,6 +79,36 @@ export const TYPES_SECTION_COMBINED: readonly string[] = [
   '',
   "    user: yeah the single bundled PR was the right call here, splitting this one would've just been churn",
   '    assistant: [saves private feedback memory: for refactors in this area, user prefers one bundled PR over many small ones. Confirmed after I chose this approach — a validated judgment call, not a correction]',
+  '    </examples>',
+  '</type>',
+  '<type>',
+  '    <name>invariant</name>',
+  '    <scope>default to team — an invariant is almost always a project-wide hard rule. Save as private only when it is a personal hard line that should not bind other contributors.</scope>',
+  '    <description>A non-negotiable rule that must never be violated. Where feedback is advisory — preferences and validated approaches that guide your work but tolerate exceptions — an invariant is absolute: a line that must not be crossed regardless of convenience. Keep this set small and sharp; promote guidance to an invariant only when the user frames it as inviolable. An invariant that is merely "usually true" is really a feedback memory.</description>',
+  '    <when_to_save>When the user states a rule in absolute terms ("never", "always", "under no circumstances", "must"), or when violating an earlier preference caused real damage and the user escalates it to a hard line. Capture the rule AND the reason it is non-negotiable.</when_to_save>',
+  '    <how_to_use>Treat it as a gate, not a suggestion. Before finalizing work, check the relevant invariants; if an action would violate one, stop and surface the conflict instead of proceeding. Never silently override an invariant — if the user wants to relax it, have them say so explicitly, then update the memory.</how_to_use>',
+  '    <body_structure>Lead with the rule as a one-line imperative, then a **Why:** line (the rationale or incident that made it non-negotiable) and a **How to apply:** line (which actions, files, or decisions it gates).</body_structure>',
+  '    <examples>',
+  '    user: we never store PII unencrypted — that is a compliance hard line, not a nice-to-have',
+  '    assistant: [saves team invariant memory: user PII must never be persisted unencrypted. Why: compliance hard line. How to apply: gate any code path that writes user data to disk or logs]',
+  '',
+  '    user: the public API under src/api/ must stay backward compatible — breaking it without a major version bump is never acceptable',
+  '    assistant: [saves team invariant memory: public API under src/api/ must remain backward compatible; breaking changes require a major version bump. How to apply: block edits that alter exported signatures there]',
+  '    </examples>',
+  '</type>',
+  '<type>',
+  '    <name>decision</name>',
+  '    <scope>usually team — a decision records a shared choice that others should not unknowingly relitigate.</scope>',
+  '    <description>A record of a significant choice made between alternatives: what was chosen, what was rejected, and why. Distinct from project (which tracks what work is happening and its motivation) and feedback (how the user likes to work) — a decision captures the reasoning behind a fork in the road so the question is not reopened later or unknowingly contradicted. Decisions are durable but supersedable: when a later choice overrides an earlier one, update the old memory to note it was superseded rather than deleting the history.</description>',
+  '    <when_to_save>When a non-obvious technical or product choice is made and the alternatives genuinely mattered — a library, an architecture, a data format, a tradeoff — especially when the reasoning would be expensive to reconstruct later, or when someone might later question why the rejected option was not used.</when_to_save>',
+  '    <how_to_use>Consult before proposing changes in the same area: a decision tells you which paths were already considered and rejected, and why, so you do not relitigate them. If new information genuinely invalidates a decision, surface that explicitly and record a superseding decision.</how_to_use>',
+  '    <body_structure>Lead with the decision (what was chosen), then a **Why:** line (the rationale and the main alternative(s) rejected) and a **How to apply:** line (what this constrains going forward). If it overrides an earlier decision, add a **Supersedes:** line naming it.</body_structure>',
+  '    <examples>',
+  '    user: we went with server-sent events instead of websockets for the feed — we only need one-way push and SSE goes through our proxies without extra config',
+  '    assistant: [saves team decision memory: chose SSE over WebSockets for the feed. Why: one-way push only; survives existing proxies without config. How to apply: do not propose WebSockets here without new justification]',
+  '',
+  '    user: standardize on Zod for runtime validation rather than io-ts — the team already knows it and the errors are clearer',
+  '    assistant: [saves team decision memory: chose Zod over io-ts for runtime validation. Why: existing team familiarity, clearer error messages. How to apply: use Zod for new validation code]',
   '    </examples>',
   '</type>',
   '<type>',
@@ -144,6 +183,34 @@ export const TYPES_SECTION_INDIVIDUAL: readonly string[] = [
   '',
   "    user: yeah the single bundled PR was the right call here, splitting this one would've just been churn",
   '    assistant: [saves feedback memory: for refactors in this area, user prefers one bundled PR over many small ones. Confirmed after I chose this approach — a validated judgment call, not a correction]',
+  '    </examples>',
+  '</type>',
+  '<type>',
+  '    <name>invariant</name>',
+  '    <description>A non-negotiable rule that must never be violated. Where feedback is advisory — preferences and validated approaches that guide your work but tolerate exceptions — an invariant is absolute: a line that must not be crossed regardless of convenience. Keep this set small and sharp; promote guidance to an invariant only when the user frames it as inviolable. An invariant that is merely "usually true" is really a feedback memory.</description>',
+  '    <when_to_save>When the user states a rule in absolute terms ("never", "always", "under no circumstances", "must"), or when violating an earlier preference caused real damage and the user escalates it to a hard line. Capture the rule AND the reason it is non-negotiable.</when_to_save>',
+  '    <how_to_use>Treat it as a gate, not a suggestion. Before finalizing work, check the relevant invariants; if an action would violate one, stop and surface the conflict instead of proceeding. Never silently override an invariant — if the user wants to relax it, have them say so explicitly, then update the memory.</how_to_use>',
+  '    <body_structure>Lead with the rule as a one-line imperative, then a **Why:** line (the rationale or incident that made it non-negotiable) and a **How to apply:** line (which actions, files, or decisions it gates).</body_structure>',
+  '    <examples>',
+  '    user: we never store PII unencrypted — that is a compliance hard line, not a nice-to-have',
+  '    assistant: [saves invariant memory: user PII must never be persisted unencrypted. Why: compliance hard line. How to apply: gate any code path that writes user data to disk or logs]',
+  '',
+  '    user: the public API under src/api/ must stay backward compatible — breaking it without a major version bump is never acceptable',
+  '    assistant: [saves invariant memory: public API under src/api/ must remain backward compatible; breaking changes require a major version bump. How to apply: block edits that alter exported signatures there]',
+  '    </examples>',
+  '</type>',
+  '<type>',
+  '    <name>decision</name>',
+  '    <description>A record of a significant choice made between alternatives: what was chosen, what was rejected, and why. Distinct from project (which tracks what work is happening and its motivation) and feedback (how the user likes to work) — a decision captures the reasoning behind a fork in the road so the question is not reopened later or unknowingly contradicted. Decisions are durable but supersedable: when a later choice overrides an earlier one, update the old memory to note it was superseded rather than deleting the history.</description>',
+  '    <when_to_save>When a non-obvious technical or product choice is made and the alternatives genuinely mattered — a library, an architecture, a data format, a tradeoff — especially when the reasoning would be expensive to reconstruct later, or when someone might later question why the rejected option was not used.</when_to_save>',
+  '    <how_to_use>Consult before proposing changes in the same area: a decision tells you which paths were already considered and rejected, and why, so you do not relitigate them. If new information genuinely invalidates a decision, surface that explicitly and record a superseding decision.</how_to_use>',
+  '    <body_structure>Lead with the decision (what was chosen), then a **Why:** line (the rationale and the main alternative(s) rejected) and a **How to apply:** line (what this constrains going forward). If it overrides an earlier decision, add a **Supersedes:** line naming it.</body_structure>',
+  '    <examples>',
+  '    user: we went with server-sent events instead of websockets for the feed — we only need one-way push and SSE goes through our proxies without extra config',
+  '    assistant: [saves decision memory: chose SSE over WebSockets for the feed. Why: one-way push only; survives existing proxies without config. How to apply: do not propose WebSockets here without new justification]',
+  '',
+  '    user: standardize on Zod for runtime validation rather than io-ts — the team already knows it and the errors are clearer',
+  '    assistant: [saves decision memory: chose Zod over io-ts for runtime validation. Why: existing team familiarity, clearer error messages. How to apply: use Zod for new validation code]',
   '    </examples>',
   '</type>',
   '<type>',
@@ -266,6 +333,6 @@ export const MEMORY_FRONTMATTER_EXAMPLE: readonly string[] = [
   `type: {{${MEMORY_TYPES.join(', ')}}}`,
   '---',
   '',
-  '{{memory content — for feedback/project types, structure as: rule/fact, then **Why:** and **How to apply:** lines}}',
+  '{{memory content — for feedback/invariant/decision/project types, structure as: rule/fact, then **Why:** and **How to apply:** lines}}',
   '```',
 ]

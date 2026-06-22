@@ -12,6 +12,7 @@
 import { feature } from 'bun:bundle'
 import {
   MEMORY_FRONTMATTER_EXAMPLE,
+  MEMORY_TYPES,
   TYPES_SECTION_COMBINED,
   TYPES_SECTION_INDIVIDUAL,
   WHAT_NOT_TO_SAVE_SECTION,
@@ -69,12 +70,12 @@ export function buildExtractAutoOnlyPrompt(
     '---',
     'name: {{short-name}}',
     'description: {{one-line description — used later to judge relevance}}',
-    'type: {{user, feedback, project, reference}}',
+    `type: {{${MEMORY_TYPES.join(', ')}}}`,
     'origin: learned',
     "learnedAt: {{today's date, YYYY-MM-DD}}",
     '---',
     '',
-    '{{the lesson — for feedback/project types, add **Why:** and **How to apply:** lines}}',
+    '{{the lesson — for feedback/invariant/decision/project types, add **Why:** and **How to apply:** lines}}',
     '```',
     '',
     '- The `origin: learned` marker is REQUIRED on every file you write — it keeps the proposal auditable and the user’s own memories protected.',
