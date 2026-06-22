@@ -45,6 +45,7 @@ import {
   AFT_OUTLINE_TOOL_NAME,
   AFT_ZOOM_TOOL_NAME,
 } from '../tools/AFTTool/constants.js'
+import { LSP_TOOL_NAME } from '../tools/LSPTool/prompt.js'
 import {
   EXPLORE_AGENT,
   EXPLORE_AGENT_MIN_QUERIES,
@@ -291,6 +292,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
     AFT_DIAGNOSTICS_TOOL_NAME,
   ]
   const hasAftTools = aftToolNames.some(name => enabledTools.has(name))
+  const hasLspTool = enabledTools.has(LSP_TOOL_NAME)
 
   // In REPL mode, Read/Write/Edit/Glob/Grep/Bash/Agent are hidden from direct
   // use (REPL_ONLY_TOOLS). The "prefer dedicated tools over Bash" guidance is
@@ -321,7 +323,12 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
         ]),
     ...(hasAftTools
       ? [
-          `For code-awareness tasks, use the read-only AFT tools (${aftToolNames.join(', ')}) as the first pass instead of reading whole files or running broad text searches. This applies to repository or directory exploration, architecture questions, locating implementations, symbol-level inspection, syntax-aware/refactor searches, call graph or impact analysis, and language-server diagnostics. Use AFTOutline first for orientation, AFTZoom for known symbols, AFTAstSearch for syntax-shaped patterns, AFTNavigate for callers/impact/traces after the symbol is known, and AFTDiagnostics for static diagnostics. Do not use AFT as a blocker when the user names an exact file and asks to read/edit it, when a simple literal text search is enough, when the target is not code, or when AFT is unavailable or insufficient; in those cases use Read, Grep, Glob, Edit, or Bash normally.`,
+          `For code-shape and exploration tasks, use the read-only AFT tools (${aftToolNames.join(', ')}) as the first pass instead of reading whole files or running broad text searches: repository or directory orientation and architecture questions (AFTOutline), reading a known function or class body (AFTZoom), and syntax-shaped or framework-pattern search such as every fetch(), route, or addEventListener (AFTAstSearch).${hasLspTool ? ` For exact symbol semantics — where something is defined, who references it, its inferred type, and call hierarchy — prefer the ${LSP_TOOL_NAME} tool instead; reach for AFTNavigate or AFTDiagnostics when no language server covers the file's language or as a quick structural cross-check. ${LSP_TOOL_NAME} has no diagnostics operation: type-checked diagnostics from the language server are delivered to you automatically after files open or change, and AFTDiagnostics is the tool to pull diagnostics on demand.` : ` Use AFTNavigate for callers, impact, and traces after a symbol is known, and AFTDiagnostics for static diagnostics.`} Do not use AFT when the user names an exact file to read or edit, when a simple literal text search is enough, when the target is not code, or when AFT is unavailable or insufficient; in those cases use Read, Grep, Glob, Edit, or Bash normally.`,
+        ]
+      : []),
+    ...(hasLspTool
+      ? [
+          `When the question is "where / who / what-type" about a specific code symbol — where is X defined, who calls or references X, what is X's type or signature, what implements X, what does X call — reach for the ${LSP_TOOL_NAME} tool FIRST, before ${GREP_TOOL_NAME} or reading files. Pass the symbol name and its file (for example symbol "LogoV2"); the tool locates the position itself, so do NOT read the file to compute line and character. ${LSP_TOOL_NAME} returns ground truth that text search cannot: real inferred types, and exact cross-file definitions and references — for example it can prove an import is unused because the reference count is 1. Type-checked diagnostics also come from the language server, but they arrive on their own after files open or change: ${LSP_TOOL_NAME} has no diagnostics operation, so never call it to fetch them (use AFTDiagnostics if you need to pull diagnostics on demand). Conversely, when a ${GREP_TOOL_NAME} search turns up a code symbol whose complete or accurate set of usages matters — before renaming it, deleting it, or deciding whether it is dead — confirm the real perimeter with ${LSP_TOOL_NAME} (findReferences or goToDefinition): it drops false positives in comments and strings and catches re-exports and aliases that text search misses. Use it for any language with a running server (TS/JS, Python, HTML, CSS, JSON, and more). Only when it reports no server for the file's language, or returns nothing useful, ${hasAftTools ? 'fall back to AFT, then ' : 'fall back to '}${GREP_TOOL_NAME}.`,
         ]
       : []),
     `Reserve using the ${BASH_TOOL_NAME} exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the ${BASH_TOOL_NAME} tool for these if it is absolutely necessary.`,

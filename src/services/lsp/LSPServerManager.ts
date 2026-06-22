@@ -1,4 +1,5 @@
 import * as path from 'path'
+import { readdir } from 'fs/promises'
 import { pathToFileURL } from 'url'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -8,6 +9,7 @@ import {
   createLSPServerInstance,
   type LSPServerInstance,
 } from './LSPServerInstance.js'
+import type { ServerCapabilities } from 'vscode-languageserver-protocol'
 import type { ScopedLspServerConfig } from './types.js'
 
 function getFileLookupKeys(filePath: string): string[] {
@@ -65,6 +67,27 @@ export type LSPServerManager = {
   closeFile(filePath: string): Promise<void>
   /** Check if a file is already open on a compatible LSP server */
   isFileOpen(filePath: string): boolean
+  /** Ensure the file's server is started and finished its initial project load. */
+  waitForFileServerReady(filePath: string, timeoutMs?: number): Promise<void>
+  /** Aggregate indexing status across servers, for the UI progress bar. */
+  getIndexingStatus(): {
+    indexing: boolean
+    percent: number
+    serverNames: string[]
+  }
+  /** Capabilities the file's server advertises (after ensuring it's started). */
+  getServerCapabilities(
+    filePath: string,
+  ): Promise<ServerCapabilities | undefined>
+  /**
+   * Find a source file under a directory that maps to a configured server.
+   * When `requiredCapability` is set (e.g. 'workspaceSymbolProvider'), the
+   * routed file's server must actually advertise that capability.
+   */
+  findRoutableFile(
+    dirPath: string,
+    requiredCapability?: string,
+  ): Promise<string | undefined>
 }
 
 /**
@@ -253,7 +276,10 @@ export function createLSPServerManager(): LSPServerManager {
     const server = getServerForFile(filePath)
     if (!server) return undefined
 
-    if (server.state === 'stopped' || server.state === 'error') {
+    // Await start() whenever the server isn't running yet — including the
+    // 'starting' state, where another caller's start is in-flight. start() is
+    // deduped, so this awaits the in-progress startup instead of racing it.
+    if (server.state !== 'running') {
       try {
         await server.start()
       } catch (error) {
@@ -300,6 +326,154 @@ export function createLSPServerManager(): LSPServerManager {
   // Return public interface
   function getAllServers(): Map<string, LSPServerInstance> {
     return servers
+  }
+
+  /**
+   * Ensure the server for a file is started AND has finished its initial
+   * project load before the caller queries it. Best-effort: never throws, so a
+   * server that can't start just means the subsequent request returns nothing.
+   */
+  async function waitForFileServerReady(
+    filePath: string,
+    timeoutMs?: number,
+  ): Promise<void> {
+    try {
+      const server = await ensureServerStarted(filePath)
+      if (server) await server.waitUntilReady(timeoutMs)
+    } catch {
+      // Ignore — the caller's actual request will surface any real failure.
+    }
+  }
+
+  /**
+   * Aggregate indexing status across running servers, for the UI progress bar.
+   * Uses the slowest (min) percent so the bar only completes when all do.
+   */
+  function getIndexingStatus(): {
+    indexing: boolean
+    percent: number
+    serverNames: string[]
+  } {
+    const warming: Array<{ name: string; percent: number }> = []
+    for (const [serverName, server] of servers) {
+      if (server.indexing) {
+        warming.push({ name: serverName, percent: server.indexingPercent })
+      }
+    }
+    if (warming.length === 0) {
+      return { indexing: false, percent: 100, serverNames: [] }
+    }
+    return {
+      indexing: true,
+      percent: Math.min(...warming.map(w => w.percent)),
+      serverNames: warming.map(w => w.name),
+    }
+  }
+
+  /**
+   * Capabilities the file's server advertises (LSP initialize result). Lets
+   * callers skip operations a server doesn't support (e.g. Pyright has no
+   * implementationProvider) instead of sending a request that fails.
+   */
+  async function getServerCapabilities(
+    filePath: string,
+  ): Promise<ServerCapabilities | undefined> {
+    try {
+      const server = await ensureServerStarted(filePath)
+      return server?.capabilities
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Find a source file under a directory whose extension maps to a configured
+   * server, so workspace-wide operations (workspaceSymbol) can accept a
+   * directory (e.g. the project root) by routing through a real file. Bounded so
+   * it never stalls on huge trees.
+   *
+   * When `requiredCapability` is given (e.g. 'workspaceSymbolProvider'), the
+   * routed file's language server must actually advertise that capability.
+   * Without it, a bare directory could resolve to a markup/data file
+   * (html/css/json) whose server has no workspace/symbol, producing a misleading
+   * "not supported". We collect one representative file per distinct server,
+   * check already-running servers first (instant) then start the rest, and fall
+   * back to the first routable file so the caller still surfaces a clean message
+   * if nothing in the tree supports it.
+   */
+  async function findRoutableFile(
+    dirPath: string,
+    requiredCapability?: string,
+  ): Promise<string | undefined> {
+    const skip = new Set([
+      'node_modules',
+      '.git',
+      'dist',
+      'build',
+      'out',
+      '.next',
+      'coverage',
+      'vendor',
+      '.cache',
+      'tmp',
+      '.venv',
+      'venv',
+      '__pycache__',
+    ])
+    const queue: string[] = [dirPath]
+    let visited = 0
+    let firstRoutable: string | undefined
+    const seenServers = new Set<LSPServerInstance>()
+    const candidates: Array<{ file: string; server: LSPServerInstance }> = []
+    while (queue.length > 0 && visited < 4000) {
+      const dir = queue.shift()
+      if (dir === undefined) break
+      let entries
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        if (++visited > 4000) break
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (!skip.has(entry.name) && !entry.name.startsWith('.')) {
+            queue.push(full)
+          }
+        } else if (entry.isFile()) {
+          const server = getServerForFile(full)
+          if (server === undefined) continue
+          if (firstRoutable === undefined) firstRoutable = full
+          // No capability requirement: the first routable file is enough.
+          if (!requiredCapability) return full
+          if (!seenServers.has(server)) {
+            seenServers.add(server)
+            candidates.push({ file: full, server })
+          }
+        }
+      }
+    }
+
+    if (!requiredCapability) return firstRoutable
+
+    // Prefer already-running servers (capabilities are available instantly),
+    // then start the rest until one advertises the capability.
+    candidates.sort(
+      (a, b) =>
+        (a.server.state === 'running' ? 0 : 1) -
+        (b.server.state === 'running' ? 0 : 1),
+    )
+    for (const { file } of candidates) {
+      try {
+        const server = await ensureServerStarted(file)
+        const caps = server?.capabilities as Record<string, unknown> | undefined
+        if (caps && caps[requiredCapability]) return file
+      } catch {
+        // Try the next candidate.
+      }
+    }
+    return firstRoutable
   }
 
   async function openFile(filePath: string, content: string): Promise<void> {
@@ -450,5 +624,9 @@ export function createLSPServerManager(): LSPServerManager {
     saveFile,
     closeFile,
     isFileOpen,
+    waitForFileServerReady,
+    getIndexingStatus,
+    getServerCapabilities,
+    findRoutableFile,
   }
 }

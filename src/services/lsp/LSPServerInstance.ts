@@ -2,7 +2,10 @@ import { existsSync } from 'fs'
 import { createRequire } from 'module'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
-import type { InitializeParams } from 'vscode-languageserver-protocol'
+import type {
+  InitializeParams,
+  ServerCapabilities,
+} from 'vscode-languageserver-protocol'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -30,6 +33,16 @@ const MAX_RETRIES_FOR_TRANSIENT_ERRORS = 3
  */
 const RETRY_BASE_DELAY_MS = 500
 
+/**
+ * Project-load (indexing) warmup tuning. vtsls (and most servers) emit
+ * workDoneProgress begin/end while building the project graph; we treat that as
+ * the readiness signal and estimate a percentage from elapsed time for the UI.
+ */
+const WARMUP_NO_PROGRESS_GRACE_MS = 2_500
+const WARMUP_SETTLE_MS = 600
+const WARMUP_MAX_MS = 60_000
+const WARMUP_EXPECTED_MS = 30_000
+
 const requireFromLspServerInstance = createRequire(import.meta.url)
 
 const NODE_PACKAGE_LSP_COMMANDS: Record<
@@ -47,6 +60,24 @@ const NODE_PACKAGE_LSP_COMMANDS: Record<
   'yaml-language-server': {
     packageName: 'yaml-language-server',
     relativeBinPath: path.join('bin', 'yaml-language-server'),
+  },
+  // HTML / CSS / JSON ship together in vscode-langservers-extracted.
+  'vscode-html-language-server': {
+    packageName: 'vscode-langservers-extracted',
+    relativeBinPath: path.join('bin', 'vscode-html-language-server'),
+  },
+  'vscode-css-language-server': {
+    packageName: 'vscode-langservers-extracted',
+    relativeBinPath: path.join('bin', 'vscode-css-language-server'),
+  },
+  'vscode-json-language-server': {
+    packageName: 'vscode-langservers-extracted',
+    relativeBinPath: path.join('bin', 'vscode-json-language-server'),
+  },
+  // Python.
+  'pyright-langserver': {
+    packageName: 'pyright',
+    relativeBinPath: 'langserver.index.js',
   },
 }
 
@@ -98,6 +129,14 @@ export type LSPServerInstance = {
   readonly lastError: Error | undefined
   /** Number of times restart() has been called */
   readonly restartCount: number
+  /** Whether the server is still loading/indexing the project (initial warmup). */
+  readonly indexing: boolean
+  /** Estimated indexing progress 0-100 (time-based; 100 once ready). */
+  readonly indexingPercent: number
+  /** Resolves when the initial project load finishes (or after timeoutMs). */
+  waitUntilReady(timeoutMs?: number): Promise<void>
+  /** Server-advertised capabilities (from initialize); undefined until running. */
+  readonly capabilities: ServerCapabilities | undefined
   /** Start the server and initialize it */
   start(): Promise<void>
   /** Stop the server gracefully */
@@ -179,6 +218,111 @@ export function createLSPServerInstance(
     crashRecoveryCount++
   })
 
+  // --- Indexing / warmup readiness (driven by LSP $/progress) ---
+  // The server emits workDoneProgress begin/end while loading the project graph.
+  // We use begin/end as the readiness signal (vtsls sends no percentage) and a
+  // time-based estimate for the progress bar. Set-based token tracking is
+  // idempotent, so re-registering handlers on restart is harmless.
+  const activeProgressTokens = new Set<unknown>()
+  let warmedUp = false
+  let sawAnyProgress = false
+  let warmupStartedAt: number | undefined
+  const readyWaiters: Array<() => void> = []
+  let graceTimer: ReturnType<typeof setTimeout> | undefined
+  let settleTimer: ReturnType<typeof setTimeout> | undefined
+  let maxTimer: ReturnType<typeof setTimeout> | undefined
+
+  function clearWarmupTimers(): void {
+    if (graceTimer) clearTimeout(graceTimer)
+    if (settleTimer) clearTimeout(settleTimer)
+    if (maxTimer) clearTimeout(maxTimer)
+    graceTimer = settleTimer = maxTimer = undefined
+  }
+
+  function markWarmedUp(): void {
+    if (warmedUp) return
+    warmedUp = true
+    clearWarmupTimers()
+    for (const resolve of readyWaiters.splice(0)) resolve()
+  }
+
+  function resetWarmup(): void {
+    clearWarmupTimers()
+    activeProgressTokens.clear()
+    warmedUp = false
+    sawAnyProgress = false
+    warmupStartedAt = undefined
+  }
+
+  // Start the grace + hard-cap timers once the server is initialized.
+  function startWarmupTimers(): void {
+    // No project-loading progress shortly after init => nothing to index
+    // (small project) => ready.
+    graceTimer = setTimeout(() => {
+      if (!sawAnyProgress) markWarmedUp()
+    }, WARMUP_NO_PROGRESS_GRACE_MS)
+    // Never wait forever.
+    maxTimer = setTimeout(markWarmedUp, WARMUP_MAX_MS)
+  }
+
+  function handleProgress(params: unknown): void {
+    const p = params as { token?: unknown; value?: { kind?: string } }
+    const kind = p?.value?.kind
+    if (kind === 'begin') {
+      sawAnyProgress = true
+      if (warmupStartedAt === undefined) warmupStartedAt = Date.now()
+      if (graceTimer) {
+        clearTimeout(graceTimer)
+        graceTimer = undefined
+      }
+      if (settleTimer) {
+        clearTimeout(settleTimer)
+        settleTimer = undefined
+      }
+      activeProgressTokens.add(p?.token)
+    } else if (kind === 'end') {
+      activeProgressTokens.delete(p?.token)
+      if (!warmedUp && activeProgressTokens.size === 0) {
+        // A brief quiet period after work ends means the initial load settled.
+        if (settleTimer) clearTimeout(settleTimer)
+        settleTimer = setTimeout(() => {
+          if (activeProgressTokens.size === 0) markWarmedUp()
+        }, WARMUP_SETTLE_MS)
+      }
+    }
+  }
+
+  function registerProgressHandlers(): void {
+    // Must ack progress-token creation now that we advertise workDoneProgress.
+    client.onRequest('window/workDoneProgress/create', () => null)
+    client.onNotification('$/progress', handleProgress)
+  }
+
+  function waitUntilReady(timeoutMs = 45_000): Promise<void> {
+    if (warmedUp || state !== 'running') return Promise.resolve()
+    return new Promise<void>(resolve => {
+      let settled = false
+      const finish = (): void => {
+        if (settled) return
+        settled = true
+        resolve()
+      }
+      readyWaiters.push(finish)
+      setTimeout(finish, timeoutMs)
+    })
+  }
+
+  function computeIndexingPercent(): number {
+    if (warmedUp) return 100
+    if (warmupStartedAt === undefined) return 0
+    const elapsed = Date.now() - warmupStartedAt
+    // Asymptotic approach toward 99: the bar keeps creeping (never hard-caps or
+    // stalls at a fixed number) and never claims done until the real 'end'
+    // signal sets warmedUp -> 100.
+    const pct = 99 * (1 - Math.exp(-elapsed / (WARMUP_EXPECTED_MS / 3)))
+    return Math.max(1, Math.round(pct))
+  }
+
   /**
    * Starts the LSP server and initializes it with workspace information.
    *
@@ -187,11 +331,24 @@ export function createLSPServerInstance(
    *
    * @throws {Error} If server fails to start or initialize
    */
-  async function start(): Promise<void> {
-    if (state === 'running' || state === 'starting') {
-      return
-    }
+  // Dedupe concurrent start() calls: callers during an in-progress start await
+  // the SAME promise instead of receiving a half-started ('starting') server.
+  // Without this, batched LSP operations would try to use a server that was
+  // still initializing and hit "server is starting" notification failures.
+  let startPromise: Promise<void> | undefined
+  function start(): Promise<void> {
+    if (state === 'running') return Promise.resolve()
+    if (startPromise) return startPromise
+    startPromise = doStart()
+    startPromise
+      .finally(() => {
+        startPromise = undefined
+      })
+      .catch(() => {})
+    return startPromise
+  }
 
+  async function doStart(): Promise<void> {
     // Cap crash-recovery attempts so a persistently crashing server doesn't
     // spawn unbounded child processes on every incoming request.
     const maxRestarts = config.maxRestarts ?? 3
@@ -218,6 +375,11 @@ export function createLSPServerInstance(
         env: config.env,
         cwd: config.workspaceFolder,
       })
+
+      // Register progress handlers + reset warmup BEFORE initialize, so we catch
+      // the project-load progress the server emits immediately after it.
+      registerProgressHandlers()
+      resetWarmup()
 
       // Initialize with workspace info
       const workspaceFolder = config.workspaceFolder || getCwd()
@@ -292,6 +454,11 @@ export function createLSPServerInstance(
           general: {
             positionEncodings: ['utf-16'],
           },
+          window: {
+            // Lets the server report project-loading progress via $/progress,
+            // which we use to know when indexing has finished.
+            workDoneProgress: true,
+          },
         },
       }
 
@@ -309,6 +476,9 @@ export function createLSPServerInstance(
       state = 'running'
       startTime = new Date()
       crashRecoveryCount = 0
+      // Now that the server is initialized and about to load the project, arm
+      // the grace/hard-cap timers that bound the warmup window.
+      startWarmupTimers()
       logForDebugging(`LSP server instance started: ${name}`)
     } catch (error) {
       // Clean up the spawned child process on timeout/error
@@ -339,6 +509,9 @@ export function createLSPServerInstance(
       state = 'stopping'
       await client.stop()
       state = 'stopped'
+      // Don't leave readiness waiters hanging once the server is down.
+      for (const resolve of readyWaiters.splice(0)) resolve()
+      resetWarmup()
       logForDebugging(`LSP server instance stopped: ${name}`)
     } catch (error) {
       state = 'error'
@@ -540,6 +713,16 @@ export function createLSPServerInstance(
     get restartCount() {
       return restartCount
     },
+    get indexing() {
+      return !warmedUp && sawAnyProgress
+    },
+    get indexingPercent() {
+      return computeIndexingPercent()
+    },
+    get capabilities() {
+      return client.capabilities
+    },
+    waitUntilReady,
     start,
     stop,
     restart,

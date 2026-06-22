@@ -1,4 +1,4 @@
-import { open } from 'fs/promises'
+import { open, readFile, stat } from 'fs/promises'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
 import type {
@@ -30,6 +30,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
 import { checkReadPermissionForTool } from '../../utils/permissions/filesystem.js'
+import { escapeRegExp } from '../../utils/stringUtils.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import {
   formatDocumentSymbolResult,
@@ -42,7 +43,26 @@ import {
   formatWorkspaceSymbolResult,
 } from './formatters.js'
 import { DESCRIPTION, LSP_TOOL_NAME } from './prompt.js'
-import { lspToolInputSchema } from './schemas.js'
+import { LSP_POSITION_OPERATIONS, lspToolInputSchema } from './schemas.js'
+
+/**
+ * Maps each operation to the ServerCapabilities key that must be advertised for
+ * it to work. The LSP spec says clients should check capabilities before
+ * sending a request; this lets us return a clean "not supported" instead of
+ * firing a request the server can't handle (e.g. Pyright has no
+ * implementationProvider).
+ */
+const OPERATION_CAPABILITY: Record<string, string> = {
+  goToDefinition: 'definitionProvider',
+  findReferences: 'referencesProvider',
+  hover: 'hoverProvider',
+  documentSymbol: 'documentSymbolProvider',
+  workspaceSymbol: 'workspaceSymbolProvider',
+  goToImplementation: 'implementationProvider',
+  prepareCallHierarchy: 'callHierarchyProvider',
+  incomingCalls: 'callHierarchyProvider',
+  outgoingCalls: 'callHierarchyProvider',
+}
 import {
   renderToolResultMessage,
   renderToolUseErrorMessage,
@@ -70,18 +90,32 @@ const inputSchema = lazySchema(() =>
         'incomingCalls',
         'outgoingCalls',
       ])
-      .describe('The LSP operation to perform'),
+      .describe(
+        'The LSP operation to perform. Must be exactly one of the 9 enum values. "diagnostics" is NOT a valid operation — errors/warnings are published automatically by the language server, not requested through this tool.',
+      ),
     filePath: z.string().describe('The absolute or relative path to the file'),
+    symbol: z
+      .string()
+      .optional()
+      .describe(
+        'PREFERRED. The identifier name to act on, e.g. "request" or "LogoV2". The tool finds its exact position for you, so pass this instead of computing line/character. For workspaceSymbol it is used as the search query. documentSymbol ignores it.',
+      ),
     line: z
       .number()
       .int()
       .positive()
-      .describe('The line number (1-based, as shown in editors)'),
+      .optional()
+      .describe(
+        'The line number (1-based). Optional — only when you already have an exact editor position; otherwise prefer "symbol".',
+      ),
     character: z
       .number()
       .int()
       .positive()
-      .describe('The character offset (1-based, as shown in editors)'),
+      .optional()
+      .describe(
+        'The character offset (1-based) on the FIRST letter of the identifier — never on keywords like function/const/export. Optional — prefer "symbol".',
+      ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -133,7 +167,12 @@ export const LSPTool = buildTool({
     return DESCRIPTION
   },
   userFacingName,
-  shouldDefer: true,
+  // NOT statically deferred. Static shouldDefer would hide LSP behind a
+  // ToolSearch round-trip permanently, so the model almost never reaches for it
+  // mid-task (it just uses Grep/Read instead). Startup safety is already handled
+  // dynamically by shouldDeferLspTool() (claude.ts), which defers LSP only while
+  // the language servers are still initializing. Once they're ready, LSP loads
+  // inline with its full schema like Read/Grep/AFT so the model uses it directly.
   isEnabled() {
     return isLspConnected()
   },
@@ -198,6 +237,13 @@ export const LSPTool = buildTool({
     }
 
     if (!stats.isFile()) {
+      // workspaceSymbol is workspace-wide and only needs a file to choose the
+      // language server, so a directory (e.g. the project root) is acceptable —
+      // call() resolves it to a representative source file. Other operations act
+      // on a specific file, so a directory stays invalid for them.
+      if (input.operation === 'workspaceSymbol' && stats.isDirectory()) {
+        return { result: true }
+      }
       return {
         result: false,
         message: `Path is not a file: ${input.filePath}`,
@@ -222,7 +268,7 @@ export const LSPTool = buildTool({
   renderToolUseErrorMessage,
   renderToolResultMessage,
   async call(input: Input, _context) {
-    const absolutePath = expandPath(input.filePath)
+    let absolutePath = expandPath(input.filePath)
     const cwd = getCwd()
 
     // Wait for initialization if it's still pending
@@ -251,8 +297,80 @@ export const LSPTool = buildTool({
       }
     }
 
+    // workspaceSymbol is workspace-wide; if a directory (e.g. the project root)
+    // was passed, resolve a representative source file so we can pick the right
+    // language server. Graceful — no hard "not a file" rejection.
+    if (input.operation === 'workspaceSymbol') {
+      const pathStat = await stat(absolutePath).catch(() => undefined)
+      if (pathStat?.isDirectory()) {
+        // Route to a file whose server actually supports workspace/symbol — not
+        // just the first file with any server (a directory often resolves to an
+        // html/css/json file whose server has no workspaceSymbol, which looked
+        // like "not supported").
+        const routable = await manager.findRoutableFile(
+          absolutePath,
+          'workspaceSymbolProvider',
+        )
+        if (!routable) {
+          const output: Output = {
+            operation: input.operation,
+            result: `No source file with a language server was found under ${input.filePath} to route the search. Pass a specific source file instead.`,
+            filePath: input.filePath,
+          }
+          return { data: output }
+        }
+        absolutePath = routable
+      }
+    }
+
+    // Resolve the target position for operations that need one. Accept a
+    // symbol name (preferred — we locate it so the model never computes
+    // coordinates) or explicit 1-based line/character.
+    let position1Based: { line: number; character: number } | undefined
+    if (LSP_POSITION_OPERATIONS.has(input.operation)) {
+      if (typeof input.line === 'number' && typeof input.character === 'number') {
+        position1Based = { line: input.line, character: input.character }
+      } else if (input.symbol) {
+        const resolved = await resolveSymbolPosition(absolutePath, input.symbol)
+        if (!resolved) {
+          const output: Output = {
+            operation: input.operation,
+            result: `Could not locate symbol "${input.symbol}" in ${input.filePath}. Check the name, or pass explicit line and character.`,
+            filePath: input.filePath,
+          }
+          return { data: output }
+        }
+        position1Based = resolved
+      } else {
+        const output: Output = {
+          operation: input.operation,
+          result: `Operation ${input.operation} needs a target: pass a "symbol" name (preferred) or line and character.`,
+          filePath: input.filePath,
+        }
+        return { data: output }
+      }
+    }
+
+    // workspaceSymbol needs a search term: an empty query returns nothing on
+    // some servers (Pyright) and everything on others (vtsls). Require one.
+    if (input.operation === 'workspaceSymbol' && !input.symbol?.trim()) {
+      const output: Output = {
+        operation: input.operation,
+        result:
+          'workspaceSymbol needs a search term: pass symbol: "<name>" (the name or partial name to find across the project).',
+        filePath: input.filePath,
+      }
+      return { data: output }
+    }
+
     // Map operation to LSP method and prepare params
-    const { method, params } = getMethodAndParams(input, absolutePath)
+    const methodAndParams = getMethodAndParams(
+      input,
+      absolutePath,
+      position1Based,
+    )
+    let method = methodAndParams.method
+    const { params } = methodAndParams
 
     try {
       // Ensure file is open in LSP server before making requests
@@ -274,6 +392,43 @@ export const LSPTool = buildTool({
           await manager.openFile(absolutePath, fileContent)
         } finally {
           await handle.close()
+        }
+      }
+
+      // Opening the file above triggers the server to load the containing
+      // project. Wait for that initial index to finish before querying, so
+      // cross-file results (references/definitions) are complete instead of
+      // racing the index on large repos — the cause of spurious "0 references".
+      await manager.waitForFileServerReady(absolutePath)
+
+      // Skip operations the server doesn't advertise (LSP spec: check
+      // ServerCapabilities before sending). Returns a clean message instead of
+      // firing a request the server can't handle — e.g. Pyright has no
+      // implementationProvider, so goToImplementation is reported unsupported.
+      const capabilityKey = OPERATION_CAPABILITY[input.operation]
+      if (capabilityKey) {
+        const capabilities = await manager.getServerCapabilities(absolutePath)
+        if (
+          capabilities &&
+          !(capabilities as Record<string, unknown>)[capabilityKey]
+        ) {
+          // goToImplementation -> goToDefinition fallback when the server has no
+          // implementationProvider (e.g. Pyright): for a concrete symbol the
+          // definition IS the implementation, so this still returns a useful
+          // result instead of reporting "unsupported".
+          if (
+            input.operation === 'goToImplementation' &&
+            (capabilities as Record<string, unknown>).definitionProvider
+          ) {
+            method = 'textDocument/definition'
+          } else {
+            const output: Output = {
+              operation: input.operation,
+              result: `The language server for this file does not support ${input.operation}. Use AFT or Grep for this instead.`,
+              filePath: input.filePath,
+            }
+            return { data: output }
+          }
         }
       }
 
@@ -402,9 +557,20 @@ export const LSPTool = buildTool({
         ),
       )
 
+      // Some servers don't implement every capability (e.g. the JSON server
+      // has no workspace/symbol). Surface that as a calm "not supported" hint
+      // instead of a scary error so the model cleanly falls back to AFT/Grep.
+      const unsupported =
+        /unhandled method|method not found|not supported|cannot read|unimplemented/i.test(
+          errorMessage,
+        )
+      const result = unsupported
+        ? `The language server for this file does not support ${input.operation}. Use a different LSP operation, or fall back to AFT or Grep.`
+        : `Error performing ${input.operation}: ${errorMessage}`
+
       const output: Output = {
         operation: input.operation,
-        result: `Error performing ${input.operation}: ${errorMessage}`,
+        result,
         filePath: input.filePath,
       }
       return {
@@ -424,16 +590,85 @@ export const LSPTool = buildTool({
 /**
  * Maps LSPTool operation to LSP method and params
  */
+/**
+ * Heuristic: is the match at `index` inside a line comment or string literal?
+ * No full parser — just enough to avoid resolving a symbol to a mention in a
+ * docstring/comment, which is the common cause of a correct name landing on a
+ * non-symbol position and returning 0 results.
+ */
+function isInCommentOrString(lineText: string, index: number): boolean {
+  const before = lineText.slice(0, index)
+  // A line-comment marker before the match (// but not '://', or #).
+  if (/(?:^|[^:])\/\//.test(before) || /(?:^|\s)#/.test(before)) return true
+  // Inside a string: an odd number of unescaped quotes precedes the match.
+  const quotes = before.match(/(?<!\\)["'`]/g)
+  if (quotes && quotes.length % 2 === 1) return true
+  return false
+}
+
+/**
+ * Locate a symbol by name and return a 1-based { line, character } on the best
+ * occurrence. Any real code occurrence works for definition/references/hover/
+ * implementation/call-hierarchy (the server resolves from any reference site),
+ * so the model passes just a name instead of computing coordinates — which is
+ * the #1 source of wrong "0 results" (a hand-computed column lands on a keyword
+ * like `export`/`def`, not the symbol). We skip comment/string mentions and
+ * prefer the definition line. Returns null if not found or unreadable.
+ */
+async function resolveSymbolPosition(
+  absolutePath: string,
+  symbol: string,
+): Promise<{ line: number; character: number } | null> {
+  try {
+    const content = await readFile(absolutePath, 'utf-8')
+    const lines = content.split('\n')
+    const re = new RegExp(`\\b${escapeRegExp(symbol)}\\b`, 'g')
+    const occurrences: Array<{ line: number; character: number; text: string }> =
+      []
+    for (let i = 0; i < lines.length; i++) {
+      const lineText = lines[i] ?? ''
+      re.lastIndex = 0
+      let match: RegExpExecArray | null
+      while ((match = re.exec(lineText)) !== null) {
+        occurrences.push({ line: i, character: match.index, text: lineText })
+      }
+    }
+    if (occurrences.length === 0) return null
+
+    // Prefer real-code occurrences over mentions in comments/strings.
+    const codeOccurrences = occurrences.filter(
+      o => !isInCommentOrString(o.text, o.character),
+    )
+    const pool = codeOccurrences.length > 0 ? codeOccurrences : occurrences
+
+    // Prefer the definition site: `def/class/function/const/... <symbol>` or
+    // `<symbol> =` / `<symbol>:` / `<symbol>(`.
+    const esc = escapeRegExp(symbol)
+    const defRe = new RegExp(
+      `\\b(?:def|class|function|const|let|var|interface|type|enum)\\b[^\\n]*\\b${esc}\\b|\\b${esc}\\b\\s*[=:(]`,
+    )
+    const chosen = pool.find(o => defRe.test(o.text)) ?? pool[0]
+    if (!chosen) return null
+    return { line: chosen.line + 1, character: chosen.character + 1 }
+  } catch {
+    return null
+  }
+}
+
 function getMethodAndParams(
   input: Input,
   absolutePath: string,
+  position1Based?: { line: number; character: number },
 ): { method: string; params: unknown } {
   const uri = pathToFileURL(absolutePath).href
-  // Convert from 1-based (user-friendly) to 0-based (LSP protocol)
-  const position = {
-    line: input.line - 1,
-    character: input.character - 1,
-  }
+  // Convert from 1-based (user-friendly) to 0-based (LSP protocol). Undefined
+  // for operations that don't use a position (document/workspace symbol).
+  const position = position1Based
+    ? {
+        line: position1Based.line - 1,
+        character: position1Based.character - 1,
+      }
+    : undefined
 
   switch (input.operation) {
     case 'goToDefinition':
@@ -471,8 +706,9 @@ function getMethodAndParams(
     case 'workspaceSymbol':
       return {
         method: 'workspace/symbol',
+        // Search for the given symbol; empty query returns all symbols.
         params: {
-          query: '', // Empty query returns all symbols
+          query: input.symbol ?? '',
         },
       }
     case 'goToImplementation':

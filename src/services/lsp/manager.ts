@@ -7,6 +7,7 @@ import {
   type LSPServerManager,
 } from './LSPServerManager.js'
 import { registerLSPNotificationHandlers } from './passiveFeedback.js'
+import { primeLspServers } from './prime.js'
 
 /**
  * Initialization state of the LSP server manager
@@ -66,6 +67,20 @@ export function getLspServerManager(): LSPServerManager | undefined {
     return undefined
   }
   return lspManagerInstance
+}
+
+/**
+ * Aggregate LSP indexing status for the UI progress bar. Safe to call any time —
+ * returns "not indexing" when no manager is up.
+ */
+export function getLspIndexingStatus(): {
+  indexing: boolean
+  percent: number
+  serverNames: string[]
+} {
+  const manager = getLspServerManager()
+  if (!manager) return { indexing: false, percent: 100, serverNames: [] }
+  return manager.getIndexingStatus()
 }
 
 /**
@@ -188,6 +203,9 @@ export function initializeLspServerManager(): void {
         // Register passive notification handlers for diagnostics
         if (lspManagerInstance) {
           registerLSPNotificationHandlers(lspManagerInstance)
+          // Warm the always-on servers now so the indexing bar appears at
+          // session start instead of waiting for the first LSP query.
+          void primeLspServers(lspManagerInstance)
         }
       }
     })

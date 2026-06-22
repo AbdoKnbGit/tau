@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto'
+import * as path from 'path'
+import { fileURLToPath } from 'url'
 import { LRUCache } from 'lru-cache'
 import { logForDebugging } from '../../utils/debug.js'
 import { toError } from '../../utils/errors.js'
@@ -55,6 +57,34 @@ const deliveredDiagnostics = new LRUCache<string, Set<string>>({
   max: MAX_DELIVERED_FILES,
 })
 
+// Files opened only to prime a server (startup indexing). Their diagnostics
+// must NOT reach the model — the user never asked about them. Keyed by
+// resolved+lowercased path so it matches whether the server reports a path or a
+// file:// uri.
+const suppressedFiles = new Set<string>()
+
+function normalizeForSuppress(uri: string): string {
+  let p = uri
+  if (p.startsWith('file://')) {
+    try {
+      p = fileURLToPath(p)
+    } catch {
+      /* fall through with original */
+    }
+  }
+  return path.resolve(p).toLowerCase()
+}
+
+/** Suppress delivery of diagnostics for a file (used while priming). */
+export function suppressLSPDiagnosticsForFile(filePath: string): void {
+  suppressedFiles.add(normalizeForSuppress(filePath))
+}
+
+/** Resume normal diagnostic delivery for a previously-suppressed file. */
+export function unsuppressLSPDiagnosticsForFile(filePath: string): void {
+  suppressedFiles.delete(normalizeForSuppress(filePath))
+}
+
 /**
  * Register LSP diagnostics received from a server.
  * These will be delivered as attachments in the next query.
@@ -69,6 +99,14 @@ export function registerPendingLSPDiagnostic({
   serverName: string
   files: DiagnosticFile[]
 }): void {
+  // Drop diagnostics for primer-opened files so startup indexing stays silent.
+  const visibleFiles =
+    suppressedFiles.size > 0
+      ? files.filter(f => !suppressedFiles.has(normalizeForSuppress(f.uri)))
+      : files
+  if (visibleFiles.length === 0) return
+  files = visibleFiles
+
   // Use UUID for guaranteed uniqueness (handles rapid registrations)
   const diagnosticId = randomUUID()
 

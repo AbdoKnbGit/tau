@@ -226,7 +226,8 @@ export function getAllBaseTools(): Tools {
     ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
     ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),
-    ...(isEnvTruthy(process.env.ENABLE_LSP_TOOL) ? [LSPTool] : []),
+    // LSPTool defaults ON. Opt out: TAU_LSP_DISABLE=1.
+    ...(isEnvTruthy(process.env.TAU_LSP_DISABLE) ? [] : [LSPTool]),
     // SnapshotTool defaults ON. Opt out: TAU_SNAPSHOT_DISABLE=1.
     ...(isEnvTruthy(process.env.TAU_SNAPSHOT_DISABLE) ? [] : [SnapshotTool]),
     FileDiffTool,

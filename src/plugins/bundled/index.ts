@@ -25,6 +25,16 @@ const GO_SUM_LANGUAGE_ID = 'gosum'
 const GO_WORK_LANGUAGE_ID = 'gowork'
 const SHELLSCRIPT_LANGUAGE_ID = 'shellscript'
 const YAML_LANGUAGE_ID = 'yaml'
+const HTML_LANGUAGE_ID = 'html'
+const CSS_LANGUAGE_ID = 'css'
+const SCSS_LANGUAGE_ID = 'scss'
+const LESS_LANGUAGE_ID = 'less'
+const JSON_LANGUAGE_ID = 'json'
+const JSONC_LANGUAGE_ID = 'jsonc'
+const PYTHON_LANGUAGE_ID = 'python'
+const RUST_LANGUAGE_ID = 'rust'
+const C_LANGUAGE_ID = 'c'
+const CPP_LANGUAGE_ID = 'cpp'
 
 /**
  * Initialize built-in plugins. Called during CLI startup.
@@ -94,6 +104,77 @@ export function initBuiltinPlugins(): void {
         startupTimeout: 10_000,
         maxRestarts: 5,
         alwaysOn: true,
+      },
+      // HTML / CSS / JSON ship together (vscode-langservers-extracted).
+      // Started on-demand (no alwaysOn) so they cost nothing until a
+      // matching file is touched.
+      html: {
+        command: 'vscode-html-language-server',
+        args: ['--stdio'],
+        extensionToLanguage: {
+          '.html': HTML_LANGUAGE_ID,
+          '.htm': HTML_LANGUAGE_ID,
+        },
+        startupTimeout: 10_000,
+        maxRestarts: 5,
+      },
+      css: {
+        command: 'vscode-css-language-server',
+        args: ['--stdio'],
+        extensionToLanguage: {
+          '.css': CSS_LANGUAGE_ID,
+          '.scss': SCSS_LANGUAGE_ID,
+          '.less': LESS_LANGUAGE_ID,
+        },
+        startupTimeout: 10_000,
+        maxRestarts: 5,
+      },
+      json: {
+        command: 'vscode-json-language-server',
+        args: ['--stdio'],
+        extensionToLanguage: {
+          '.json': JSON_LANGUAGE_ID,
+          '.jsonc': JSONC_LANGUAGE_ID,
+        },
+        startupTimeout: 10_000,
+        maxRestarts: 5,
+      },
+      // Python (pyright).
+      python: {
+        command: 'pyright-langserver',
+        args: ['--stdio'],
+        extensionToLanguage: {
+          '.py': PYTHON_LANGUAGE_ID,
+          '.pyi': PYTHON_LANGUAGE_ID,
+        },
+        startupTimeout: 20_000,
+        maxRestarts: 5,
+      },
+      // Compiled-language servers are not distributed on npm, so they can't
+      // be bundled. They're configured here so they work automatically when
+      // the binary is already on the user's PATH, and degrade gracefully
+      // (missing binary => server skipped, no crash) when it isn't.
+      'rust-analyzer': {
+        command: 'rust-analyzer',
+        extensionToLanguage: {
+          '.rs': RUST_LANGUAGE_ID,
+        },
+        startupTimeout: 30_000,
+        maxRestarts: 5,
+      },
+      clangd: {
+        command: 'clangd',
+        extensionToLanguage: {
+          '.c': C_LANGUAGE_ID,
+          '.h': C_LANGUAGE_ID,
+          '.cpp': CPP_LANGUAGE_ID,
+          '.cc': CPP_LANGUAGE_ID,
+          '.cxx': CPP_LANGUAGE_ID,
+          '.hpp': CPP_LANGUAGE_ID,
+          '.hh': CPP_LANGUAGE_ID,
+        },
+        startupTimeout: 30_000,
+        maxRestarts: 5,
       },
     },
   })
