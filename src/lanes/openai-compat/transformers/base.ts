@@ -34,6 +34,7 @@ export type ProviderId =
   | 'opencode'
   | 'opencodego'
   | 'fireworks'
+  | 'cloudflare'
   | 'cline'
   | 'iflow'
   | 'kilocode'

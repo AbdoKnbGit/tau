@@ -56,6 +56,7 @@ import {
   isOpencodeThinkingModel,
   supportsOpencodeThinkingSelection,
 } from '../../utils/model/opencodeThinking.js'
+import { cloudflareReasoningContentReplayRequired } from '../../utils/model/cloudflareThinking.js'
 import { recordProviderModelContextWindows } from '../../utils/model/contextWindows.js'
 import { providerUsesStableRequestSession } from '../../services/api/cacheAffinity.js'
 
@@ -79,6 +80,7 @@ type ProviderType =
   | 'opencode'
   | 'opencodego'
   | 'fireworks'
+  | 'cloudflare'
   | 'cline'
   | 'iflow'
   | 'kilocode'
@@ -102,6 +104,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('ai-gateway.vercel') || b.includes('vercel')) return 'vercel'
   if (b.includes('requesty')) return 'requesty'
   if (b.includes('fireworks.ai')) return 'fireworks'
+  if (b.includes('cloudflare.com/client/v4/accounts') || b.includes('cloudflare')) return 'cloudflare'
   // Go shares the opencode.ai host — match the `/zen/go` path first so it
   // doesn't fall through to the Zen branch below.
   if (b.includes('opencode.ai/zen/go')) return 'opencodego'
@@ -111,6 +114,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('iflow.cn') || b.includes('apis.iflow')) return 'iflow'
   if (b.includes('kilocode.ai') || b.includes('kilo.ai')) return 'kilocode'
   if (b.includes('githubcopilot.com')) return 'copilot'
+  if (m.startsWith('@cf/')) return 'cloudflare'
   if (m.includes('deepseek')) return 'deepseek'
   if (m.startsWith('glm-')) return 'glm'
   if (m.startsWith('kimi-') || m.includes('moonshot')) return 'moonshot'
@@ -160,8 +164,10 @@ interface OpenAIChatRequest {
   extra_body?: Record<string, unknown>
   // OpenRouter extensions:
   transforms?: string[]
+  plugins?: Array<{ id: string; enabled?: boolean; [key: string]: unknown }>
   models?: string[]
   route?: string
+  session_id?: string
   prompt_cache_key?: string
   prompt_cache_retention?: '24h'
   // Fireworks: include perf_metrics (incl. cached-prompt-tokens) in the body.
@@ -198,6 +204,7 @@ interface CompatCatalogModel extends OpenRouterCatalogModel {
   supports_reasoning?: boolean
   supports_tool_calling?: boolean
   supports_vision?: boolean
+  task?: string | { name?: string; type?: string; id?: string }
   capabilities?: {
     completion_chat?: boolean
     function_calling?: boolean
@@ -235,7 +242,7 @@ type LmStudioModelInfo = ModelInfo & {
 
 export class OpenAICompatLane implements Lane {
   readonly name = 'openai-compat'
-  readonly displayName = 'OpenAI-Compatible (DeepSeek, GLM, Moonshot, MiniMax, Groq, Mistral, NIM, Ollama, LM Studio, OpenRouter, ...)'
+  readonly displayName = 'OpenAI-Compatible (Cloudflare Workers AI, DeepSeek, GLM, Moonshot, MiniMax, Groq, Mistral, NIM, Ollama, LM Studio, OpenRouter, ...)'
 
   private configs = new Map<string, { apiKey: string; baseUrl: string }>()
   private _healthy = true
@@ -300,6 +307,10 @@ export class OpenAICompatLane implements Lane {
     if ((m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) && this.configs.has('mistral')) {
       const c = this.configs.get('mistral')!
       return { ...c, provider: 'mistral' }
+    }
+    if (m.startsWith('@cf/') && this.configs.has('cloudflare')) {
+      const c = this.configs.get('cloudflare')!
+      return { ...c, provider: 'cloudflare' }
     }
     // Qwen routing moved to the dedicated Qwen lane. Compat never sees qwen-*.
     // `openai/gpt-oss-*` is intentionally NOT pinned to Groq here —
@@ -651,51 +662,18 @@ export class OpenAICompatLane implements Lane {
           if (chunk.usage) {
             inputTokens = chunk.usage.prompt_tokens ?? inputTokens
             outputTokens = chunk.usage.completion_tokens ?? outputTokens
-            reportedCachedInputTokens =
-              chunk.usage.prompt_tokens_details?.cached_tokens
-              ?? (provider === 'moonshot' ? chunk.usage.cached_tokens : undefined)
-              ?? chunk.usage.prompt_cache_hit_tokens
-              ?? reportedCachedInputTokens
+            const cacheUsage = extractOpenAICompatCacheUsage(chunk.usage, provider)
             cacheWriteTokens =
-              provider === 'copilot' || provider === 'openrouter' || provider === 'agentrouter' || provider === 'modelrouter' || provider === 'opencode'
-                ? (
-                    chunk.usage.prompt_tokens_details?.cache_write_tokens
-                    ?? chunk.usage.cache_write_tokens
-                    ?? cacheWriteTokens
-                  )
+              providerReportsOpenAICompatCacheUsage(provider)
+                ? cacheUsage.write ?? cacheWriteTokens
                 : 0
+            if (cacheUsage.read !== undefined) {
+              reportedCachedInputTokens = cacheUsage.read + cacheWriteTokens
+            } else if (cacheUsage.cachedTotal !== undefined) {
+              reportedCachedInputTokens = cacheUsage.cachedTotal
+            }
             reasoningTokens = chunk.usage.completion_tokens_details?.reasoning_tokens ?? reasoningTokens
 
-            // Some routers forward Anthropic responses verbatim, so the
-            // usage block on Claude rows often arrives in Anthropic-native
-            // shape: `cache_read_input_tokens` and
-            // `cache_creation_input_tokens` are additive (separate from
-            // each other and from `prompt_tokens`'s OpenAI total), not
-            // the OpenAI subtractive `cached_tokens` (which already
-            // includes writes). Without this fold we read 0 for both
-            // and surface cache_hit=0% even when upstream is hitting
-            // the cache hard — the smoking gun is the latency drop
-            // without the percentage moving. Pure response read; does
-            // not touch the outbound request shape.
-            //
-            // OpenCode Zen also routes Claude rows through Anthropic's
-            // native /v1/messages internally, so its usage block on
-            // Claude turns matches this same shape — fold it in.
-            if (provider === 'agentrouter' || provider === 'modelrouter' || provider === 'opencode') {
-              const arRead = typeof chunk.usage.cache_read_input_tokens === 'number'
-                ? chunk.usage.cache_read_input_tokens
-                : undefined
-              const arWrite = typeof chunk.usage.cache_creation_input_tokens === 'number'
-                ? chunk.usage.cache_creation_input_tokens
-                : undefined
-              if (arRead !== undefined || arWrite !== undefined) {
-                // Re-encode into the OpenAI subtractive convention the rest
-                // of the lane assumes: cached_total = read + write, and
-                // cache_write is its own bucket.
-                cacheWriteTokens = arWrite ?? 0
-                reportedCachedInputTokens = (arRead ?? 0) + (arWrite ?? 0)
-              }
-            }
           }
 
           // Fireworks reports cached prompt tokens via perf_metrics
@@ -1049,8 +1027,8 @@ export class OpenAICompatLane implements Lane {
         }
         const resp = await fetch(url, { headers, method: 'GET' })
         if (resp.ok) {
-          const data = await resp.json() as { data?: CompatCatalogModel[] }
-          const raw = (data.data ?? [])
+          const data = await resp.json() as { data?: CompatCatalogModel[]; result?: CompatCatalogModel[] }
+          const raw = (data.data ?? data.result ?? [])
             .map(m => toCompatCatalogModel(providerName, m))
             .filter((model): model is ModelInfo => model !== null)
           // Per-provider catalog filter: e.g. Groq hides whisper/preview
@@ -1059,7 +1037,11 @@ export class OpenAICompatLane implements Lane {
           const visible = providerName === 'opencode' && cfg.apiKey === 'public'
             ? filtered.filter(isOpencodeAnonymousCatalogModel)
             : filtered
-          if (visible.length > 0) return visible
+          if (visible.length > 0) {
+            return providerName === 'cloudflare'
+              ? mergeCatalogModels(visible, fixed)
+              : visible
+          }
         }
       } catch {
         // Fall back to the curated list below.
@@ -1131,6 +1113,10 @@ function toCompatCatalogModel(
     return toMistralCatalogModel(model)
   }
 
+  if (providerName === 'cloudflare') {
+    return toCloudflareCatalogModel(model)
+  }
+
   if (typeof model.id !== 'string' || model.id.length === 0) {
     return null
   }
@@ -1176,6 +1162,89 @@ function isTextGenerationCatalogType(type: string | undefined): boolean {
   if (!type) return true
   const normalized = type.toLowerCase()
   return normalized === 'language' || normalized === 'text' || normalized === 'chat'
+}
+
+function mergeCatalogModels(
+  primary: readonly ModelInfo[],
+  fallback: readonly ModelInfo[],
+): ModelInfo[] {
+  const seen = new Set<string>()
+  const merged: ModelInfo[] = []
+  for (const model of [...primary, ...fallback]) {
+    const key = model.id.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(model)
+  }
+  return merged
+}
+
+function toCloudflareCatalogModel(model: CompatCatalogModel): ModelInfo | null {
+  if (typeof model.id !== 'string' || model.id.length === 0) {
+    return null
+  }
+
+  if (!isCloudflareTextGenerationModel(model)) {
+    return null
+  }
+
+  const tags = normalizeCompatCatalogTags(model)
+  const provider =
+    typeof model.owned_by === 'string'
+    && model.owned_by.length > 0
+    && model.owned_by.toLowerCase() !== 'system'
+      ? model.owned_by
+      : 'Cloudflare Workers AI'
+  const contextWindow =
+    model.context_length
+    ?? model.context_window
+    ?? model.max_context_length
+
+  return {
+    id: model.id,
+    name: typeof model.name === 'string' && model.name.length > 0
+      ? model.name
+      : model.id,
+    provider,
+    ...(contextWindow ? { contextWindow } : {}),
+    ...(tags.length > 0 ? { tags } : {}),
+    ...(model.supports_tool_calling === true || model.capabilities?.function_calling === true
+      ? { supportsToolCalling: true }
+      : {}),
+  }
+}
+
+function isCloudflareTextGenerationModel(model: CompatCatalogModel): boolean {
+  const id = model.id.toLowerCase()
+  const markers = [
+    'embedding', 'embed', 'bge-', 'reranker', 'whisper', 'flux', 'aura',
+    'melotts', 'transcribe', 'speech', 'tts', 'image', 'video', 'translation',
+    'classification', 'guard', 'detector',
+  ]
+  if (markers.some(marker => id.includes(marker))) return false
+
+  const rawTask = typeof model.task === 'string'
+    ? model.task
+    : model.task?.name ?? model.task?.type ?? model.task?.id
+  const task = rawTask?.toLowerCase()
+  if (task) {
+    return task.includes('text generation')
+      || task.includes('text-generation')
+      || task.includes('language')
+      || task.includes('chat')
+  }
+
+  const type = model.type?.toLowerCase()
+  if (type) {
+    return type === 'language'
+      || type === 'text'
+      || type === 'chat'
+      || type === 'text_generation'
+      || type === 'text-generation'
+      || type === 'text generation'
+  }
+
+  return id.startsWith('@cf/')
 }
 
 function normalizeCompatCatalogTags(model: CompatCatalogModel): string[] {
@@ -1658,6 +1727,84 @@ function roundUpToMultiple(value: number, multiple: number): number {
 
 function formatTokenCount(value: number): string {
   return Math.round(value).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
+function providerReportsOpenAICompatCacheUsage(provider: ProviderType): boolean {
+  return provider === 'copilot'
+    || provider === 'openrouter'
+    || provider === 'agentrouter'
+    || provider === 'modelrouter'
+    || provider === 'opencode'
+}
+
+function extractOpenAICompatCacheUsage(
+  usage: Record<string, unknown>,
+  provider: ProviderType,
+): {
+  read?: number
+  write?: number
+  cachedTotal?: number
+} {
+  const details = firstOpenAICompatRecord(
+    usage.prompt_tokens_details,
+    usage.promptTokensDetails,
+    usage.input_tokens_details,
+    usage.inputTokenDetails,
+  )
+  const read = firstOpenAICompatNumber(
+    details?.cache_read_input_tokens,
+    details?.cache_read_tokens,
+    details?.cache_hit_input_tokens,
+    details?.cache_hit_tokens,
+    details?.cached_input_tokens,
+    details?.cachedInputTokens,
+    usage.cache_read_input_tokens,
+    usage.cache_read_tokens,
+    usage.cache_hit_input_tokens,
+    usage.cache_hit_tokens,
+    usage.cached_input_tokens,
+    usage.cachedInputTokens,
+  )
+  const write = firstOpenAICompatNumber(
+    details?.cache_write_tokens,
+    details?.cache_write_input_tokens,
+    details?.cache_creation_tokens,
+    details?.cache_creation_input_tokens,
+    usage.cache_write_tokens,
+    usage.cache_write_input_tokens,
+    usage.cache_creation_tokens,
+    usage.cache_creation_input_tokens,
+  )
+  const cachedTotal = firstOpenAICompatNumber(
+    details?.cached_tokens,
+    details?.cachedTokens,
+    usage.prompt_cache_hit_tokens,
+    usage.promptCacheHitTokens,
+    provider === 'moonshot' ? usage.cached_tokens : undefined,
+  )
+  return { read, write, cachedTotal }
+}
+
+function firstOpenAICompatRecord(
+  ...values: unknown[]
+): Record<string, unknown> | undefined {
+  for (const value of values) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>
+    }
+  }
+  return undefined
+}
+
+function firstOpenAICompatNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  return undefined
 }
 
 async function fetchLmStudioNonStreamingCompletion(
@@ -2466,6 +2613,9 @@ function convertHistoryToOpenAI(
     (provider === 'opencode' || provider === 'opencodego')
     && opencodeThinkingActive(provider, model)
   ) {
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText)
+  }
+  if (provider === 'cloudflare' && cloudflareReasoningContentReplayRequired(model)) {
     return convertHistoryToOpenAIForDeepSeek(messages, systemText)
   }
   return convertHistoryToOpenAIDefault(messages, systemText)

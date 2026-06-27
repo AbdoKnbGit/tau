@@ -33,7 +33,7 @@
  */
 
 import type { ModelInfo } from '../../../services/api/providers/base_provider.js'
-import type { Transformer, TransformContext } from './base.js'
+import type { HeaderContext, Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 
 // Markers for non-chat rows we don't want surfaced if a live `/models`
@@ -116,6 +116,10 @@ export const fireworksTransformer: Transformer = {
   displayName: 'Fireworks AI',
   defaultBaseUrl: 'https://api.fireworks.ai/inference/v1',
 
+  buildHeaders(_apiKey: string, ctx?: HeaderContext): Record<string, string> {
+    return ctx?.sessionId ? { 'x-session-affinity': ctx.sessionId } : {}
+  },
+
   supportsStrictMode: () => false,
 
   clampMaxTokens(requested: number): number {
@@ -128,6 +132,7 @@ export const fireworksTransformer: Transformer = {
     // the `user` field for routing.
     if (ctx.sessionId) {
       body.prompt_cache_key = ctx.sessionId
+      body.user = ctx.sessionId
     }
     // Ask Fireworks to include perf_metrics in the streamed final chunk.
     // For streaming requests `cached-prompt-tokens` only ships in

@@ -39,6 +39,16 @@ export class OpenRouterProvider extends OpenAIProvider {
     this.preserveCacheControl = true
   }
 
+  protected override _headers(model?: string): Record<string, string> {
+    const headers = super._headers(model)
+    if (model) headers['x-session-id'] = this.cacheSessionKeyForModel(model)
+    return headers
+  }
+
+  protected override cacheSessionKeyForModel(model: string): string {
+    return normalizeOpenRouterSessionId(`${this.cacheSessionKey}:${model.toLowerCase()}`)
+  }
+
   /**
    * OpenRouter routes to frontier models (Claude, GPT-4, Gemini, etc.)
    * that fully support tool calling, agents, MCP servers, and plugins.
@@ -89,4 +99,19 @@ export class OpenRouterProvider extends OpenAIProvider {
       .map(toOpenRouterModelInfo)
       .filter((model): model is ModelInfo => model !== null)
   }
+}
+
+function normalizeOpenRouterSessionId(sessionId: string): string {
+  if (sessionId.length <= 256) return sessionId
+  const hash = shortStableHash(sessionId)
+  return `${sessionId.slice(0, 247)}:${hash}`
+}
+
+function shortStableHash(value: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
 }

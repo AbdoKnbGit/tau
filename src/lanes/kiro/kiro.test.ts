@@ -732,6 +732,73 @@ function main(): void {
     )
   })
 
+  test('repairs mismatched Kiro tool result id on the current turn', () => {
+    const payload = buildKiroPayload({
+      model: 'deepseek-3.2',
+      system: '',
+      tools: [],
+      messages: [
+        { role: 'user', content: 'inspect the repo' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'AFT', input: { pattern: 'main', lang: 'go' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tooluse_wrong', content: 'actual search result' }] },
+      ],
+    })
+
+    const results = payload.conversationState.currentMessage.userInputMessage.userInputMessageContext?.toolResults ?? []
+    assert(results.length === 1, `expected one repaired current tool result, got ${results.length}`)
+    assert(results[0]?.toolUseId === 'tooluse_expected', `expected repaired id, got ${results[0]?.toolUseId ?? 'missing'}`)
+    assert(results[0]?.content[0]?.text === 'actual search result', 'expected original tool result content to be preserved')
+    assert(!JSON.stringify(payload).includes('tooluse_wrong'), 'mismatched tool result id must not reach Kiro payload')
+  })
+
+  test('repairs mismatched Kiro tool result id in history before a later user turn', () => {
+    const payload = buildKiroPayload({
+      model: 'deepseek-3.2',
+      system: '',
+      tools: [],
+      messages: [
+        { role: 'user', content: 'inspect the repo' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'AFT', input: { pattern: 'main', lang: 'go' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tooluse_wrong', content: 'historical search result' }] },
+        { role: 'assistant', content: 'I found the file.' },
+        { role: 'user', content: 'continue' },
+      ],
+    })
+
+    const history = payload.conversationState.history
+    const assistantIndex = history.findIndex(entry =>
+      'assistantResponseMessage' in entry
+      && entry.assistantResponseMessage.toolUses?.some(toolUse => toolUse.toolUseId === 'tooluse_expected'))
+    assert(assistantIndex >= 0, 'expected assistant tool use in history')
+
+    const resultEntry = history[assistantIndex + 1]
+    assert(!!resultEntry && 'userInputMessage' in resultEntry, 'expected user tool result after assistant tool use')
+    const results = resultEntry.userInputMessage.userInputMessageContext?.toolResults ?? []
+    assert(results.length === 1, `expected one repaired historical tool result, got ${results.length}`)
+    assert(results[0]?.toolUseId === 'tooluse_expected', `expected repaired historical id, got ${results[0]?.toolUseId ?? 'missing'}`)
+    assert(results[0]?.content[0]?.text === 'historical search result', 'expected original historical result content')
+    assert(!JSON.stringify(payload).includes('tooluse_wrong'), 'mismatched historical result id must not reach Kiro payload')
+  })
+
+  test('synthesizes missing Kiro tool results so Bedrock receives paired ids', () => {
+    const payload = buildKiroPayload({
+      model: 'deepseek-3.2',
+      system: '',
+      tools: [],
+      messages: [
+        { role: 'user', content: 'inspect the repo' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'AFT', input: { pattern: 'main', lang: 'go' } }] },
+        { role: 'assistant', content: 'I will continue after the tool.' },
+        { role: 'user', content: 'continue' },
+      ],
+    })
+
+    const results = payload.conversationState.currentMessage.userInputMessage.userInputMessageContext?.toolResults ?? []
+    assert(results.length === 1, `expected one synthetic current tool result, got ${results.length}`)
+    assert(results[0]?.toolUseId === 'tooluse_expected', `expected synthetic result for tooluse_expected, got ${results[0]?.toolUseId ?? 'missing'}`)
+    assert(results[0]?.content[0]?.text.includes('provider fallback'), 'expected synthetic result to explain fallback repair')
+  })
+
   test('classifies transient Kiro statuses for retry', () => {
     for (const status of [429, 500, 502, 503, 504]) {
       assert(_isTransientKiroStatus(status), `status ${status} should be retried`)

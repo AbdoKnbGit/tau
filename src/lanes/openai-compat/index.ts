@@ -37,6 +37,7 @@ export function initOpenAICompatLane(providers?: {
   opencode?: { apiKey: string; baseUrl?: string }
   opencodego?: { apiKey: string; baseUrl?: string }
   fireworks?: { apiKey: string; baseUrl?: string }
+  cloudflare?: { apiKey: string; baseUrl?: string }
   cline?: { apiKey: string; baseUrl?: string }
   iflow?: { apiKey: string; baseUrl?: string }
   kilocode?: { apiKey: string; baseUrl?: string }
@@ -228,6 +229,25 @@ export function initOpenAICompatLane(providers?: {
       p.fireworks?.baseUrl
         ?? process.env.FIREWORKS_BASE_URL
         ?? 'https://api.fireworks.ai/inference/v1',
+    )
+  }
+
+  const cloudflareKey = p.cloudflare?.apiKey
+    ?? process.env.CLOUDFLARE_WORKERS_AI_TOKEN
+    ?? process.env.CLOUDFLARE_API_TOKEN
+    ?? process.env.CLOUDFLARE_API_KEY
+  const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID
+  const cloudflareBaseUrl = p.cloudflare?.baseUrl
+    ?? process.env.CLOUDFLARE_WORKERS_AI_BASE_URL
+    ?? process.env.CLOUDFLARE_BASE_URL
+    ?? (cloudflareAccountId
+      ? `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(cloudflareAccountId)}/ai/v1`
+      : undefined)
+  if (cloudflareKey && cloudflareBaseUrl && !cloudflareBaseUrl.includes('{account_id}')) {
+    openaiCompatLane.registerProvider(
+      'cloudflare',
+      cloudflareKey,
+      cloudflareBaseUrl,
     )
   }
 

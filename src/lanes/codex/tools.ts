@@ -35,19 +35,26 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
     implId: 'Bash',
     nativeDescription:
       'Execute a shell command. Use for running programs, installing ' +
-      'packages, running tests, git operations, and any system tasks.',
+      'packages, running tests, git operations, and any system tasks. ' +
+      'For long-running servers, watchers, port-forwards, tunnels, or foreground container runs, set run_in_background=true and do not put "&", "nohup", "disown", "echo $!", "docker compose up -d", or "docker run -d" in the command.',
     nativeSchema: {
       type: 'object',
       properties: {
         command: {
           type: 'string',
-          description: 'The shell command to execute.',
+          description: 'The shell command to execute. Do not include raw shell backgrounding with &, nohup, disown, echo $!, docker compose up -d, or docker run -d.',
+        },
+        run_in_background: {
+          type: 'boolean',
+          description: 'Set true for long-running servers/watchers, port-forwards, tunnels, and foreground container runs. Tau runs the whole command as a tracked background task; remove any shell-level detaching from command.',
         },
       },
       required: ['command'],
     },
     adaptInput(native) {
-      return applyShellWorkdir({ command: native.command }, native)
+      const input: Record<string, unknown> = { command: native.command }
+      if (native.run_in_background) input.run_in_background = native.run_in_background
+      return applyShellWorkdir(input, native)
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)

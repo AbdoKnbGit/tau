@@ -119,11 +119,15 @@ function main(): void {
     const reg = GEMINI_TOOL_REGISTRY.find(r => r.nativeName === 'run_shell_command')!
     assert(reg.implId === 'Bash', 'run_shell_command must be backed by Bash')
     assert(/Bash\/POSIX/i.test(reg.nativeDescription), 'description must tell Gemini to use Bash syntax')
+    assert(reg.nativeDescription.includes('is_background'), 'description must steer to tracked background execution')
+    assert(reg.nativeDescription.includes('echo $!'), 'description must warn against pid capture')
+    assert(reg.nativeDescription.includes('docker compose up -d'), 'description must warn against Docker detach')
     assert(!/powershell/i.test(reg.nativeDescription), 'description must not advertise PowerShell')
     const command = reg.nativeSchema.properties?.command
     assert(typeof command === 'object' && command !== null && !Array.isArray(command), 'command schema missing')
     const commandDescription = String((command as { description?: unknown }).description ?? '')
     assert(/Bash\/POSIX/i.test(commandDescription), 'command field must tell Gemini to use Bash syntax')
+    assert(commandDescription.includes('echo $!'), 'command field must warn against pid capture')
     assert(!/powershell/i.test(commandDescription), 'command field must not advertise PowerShell')
   })
 

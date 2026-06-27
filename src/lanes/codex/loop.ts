@@ -36,13 +36,11 @@ import type {
   NormalizedUsage,
 } from '../types.js'
 import {
-  buildCodexResponsesTools,
   getCodexRegistrationByNativeName,
   CODEX_TOOL_REGISTRY,
 } from './tools.js'
 import {
   appendStrictParamsHint,
-  sanitizeSchemaForLane,
   CODEX_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
 import {
@@ -52,11 +50,18 @@ import {
   type CodexStreamEvent,
   type CodexReasoningConfig,
   type CodexResponsesRequest,
+  type CodexUsage,
 } from './api.js'
 import {
   getOpenAIReasoningLevel,
   isReasoningLevelExplicit,
 } from '../../utils/model/openaiReasoning.js'
+import {
+  AFT_AST_SEARCH_TOOL_NAME,
+  AFT_DIAGNOSTICS_TOOL_NAME,
+  AFT_OUTLINE_TOOL_NAME,
+  AFT_ZOOM_TOOL_NAME,
+} from '../../tools/AFTTool/constants.js'
 
 // ─── Lane Implementation ─────────────────────────────────────────
 
@@ -90,7 +95,9 @@ export class CodexLane implements Lane {
   async *streamAsProvider(
     params: LaneProviderCallParams,
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
-    const { model, messages, system, tools, max_tokens, thinking, signal } = params
+    const { model, messages, system, tools, max_tokens, thinking, signal, sessionId } = params
+
+    codexApi.setSessionCacheKey(sessionId)
 
     // Assemble the full system text the upstream sent us, then split it
     // into a stable (cache-eligible) prefix and a volatile (per-turn) tail
@@ -151,14 +158,13 @@ export class CodexLane implements Lane {
     // Map caller-provided tools → Codex Responses format. We honor the
     // native tool registry for tools we recognize (including apply_patch
     // as a freeform custom tool) and pass through MCP / custom tools as
-    // function-schema tools with sanitized parameters. Each function
-    // tool gets `strict: true` (server-side schema enforcement, OpenAI's
-    // equivalent of Gemini's VALIDATED mode) + the STRICT PARAMETERS
-    // description hint.
+    // function-schema tools with sanitized parameters. Function tools get
+    // OpenAI strict schemas with optional fields encoded as nullable,
+    // plus the STRICT PARAMETERS description hint.
     const codexTools = buildCodexToolsFromRequest(tools)
 
     // Prepend CODEX_TOOL_USAGE_RULES to instructions when tools are
-    // present — belt-and-suspenders with `strict: true` so the model
+    // present — belt-and-suspenders with strict schemas where available so the model
     // treats the schema as authoritative and doesn't emit empty-args
     // function calls. The preamble is tuned to match Codex's concise
     // native prompt tone.
@@ -216,6 +222,7 @@ export class CodexLane implements Lane {
     let outputTokens = 0
     let reasoningTokens = 0
     let cachedInputTokens = 0
+    let cacheWriteTokens = 0
     let messageStartEmitted = false
 
     const messageId = `codex-${Date.now()}`
@@ -238,7 +245,9 @@ export class CodexLane implements Lane {
             output_tokens: 0,
             ...(cachedInputTokens > 0 && {
               cache_read_input_tokens: cachedInputTokens,
-              cache_creation_input_tokens: 0,
+            }),
+            ...(cacheWriteTokens > 0 && {
+              cache_creation_input_tokens: cacheWriteTokens,
             }),
           },
         },
@@ -391,7 +400,7 @@ export class CodexLane implements Lane {
               : { input: buf.args }
           } else {
             try {
-              input = buf.args ? JSON.parse(buf.args) : {}
+              input = stripNullToolArguments(buf.args ? JSON.parse(buf.args) : {})
             } catch {
               input = { _raw: buf.args }
             }
@@ -399,7 +408,10 @@ export class CodexLane implements Lane {
 
           // Pass through the lane's adaptInput — apply_patch validates
           // the patch; others may rename fields.
-          const adaptedInput = reg ? reg.adaptInput(input) : input
+          const repairedToolCall = repairCodexToolCall(
+            implId,
+            reg ? reg.adaptInput(input) : input,
+          )
 
           const anthropicToolUseId = buf.callId.startsWith('toolu_')
             ? buf.callId
@@ -416,7 +428,7 @@ export class CodexLane implements Lane {
             content_block: {
               type: 'tool_use',
               id: anthropicToolUseId,
-              name: implId,
+              name: repairedToolCall.toolName,
               input: {},
             },
           }
@@ -425,7 +437,7 @@ export class CodexLane implements Lane {
             index: buf.anthropicIndex,
             delta: {
               type: 'input_json_delta',
-              partial_json: JSON.stringify(adaptedInput ?? {}),
+              partial_json: JSON.stringify(repairedToolCall.input ?? {}),
             },
           }
           yield { type: 'content_block_stop', index: buf.anthropicIndex }
@@ -436,10 +448,12 @@ export class CodexLane implements Lane {
         if (ev.type === 'response.completed') {
           const usage = (ev as any).response?.usage
           if (usage) {
-            inputTokens = usage.input_tokens ?? inputTokens
-            outputTokens = usage.output_tokens ?? outputTokens
-            cachedInputTokens = usage.input_tokens_details?.cached_tokens ?? cachedInputTokens
-            reasoningTokens = usage.output_tokens_details?.reasoning_tokens ?? reasoningTokens
+            const metrics = extractCodexUsageMetrics(usage)
+            inputTokens = metrics.inputTokens ?? inputTokens
+            outputTokens = metrics.outputTokens ?? outputTokens
+            cachedInputTokens = metrics.cacheReadTokens || cachedInputTokens
+            cacheWriteTokens = metrics.cacheWriteTokens || cacheWriteTokens
+            reasoningTokens = metrics.reasoningTokens || reasoningTokens
           }
           break
         }
@@ -483,19 +497,19 @@ export class CodexLane implements Lane {
             // OpenAI's input_tokens is total (fresh + cached). Anthropic
             // semantic expects fresh-only here; cached lives on its own
             // field. Subtract so cost / context-meter don't double-count.
-            input_tokens: Math.max(0, inputTokens - cachedInputTokens),
+            input_tokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens),
             ...(cachedInputTokens > 0 && {
               cache_read_input_tokens: cachedInputTokens,
-              cache_creation_input_tokens: 0,
             }),
+            ...(cacheWriteTokens > 0 && { cache_creation_input_tokens: cacheWriteTokens }),
           },
         }
         yield { type: 'message_stop' }
         return {
-          input_tokens: Math.max(0, inputTokens - cachedInputTokens),
+          input_tokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens),
           output_tokens: outputTokens,
           cache_read_tokens: cachedInputTokens,
-          cache_write_tokens: 0,
+          cache_write_tokens: cacheWriteTokens,
           thinking_tokens: reasoningTokens,
         }
       }
@@ -529,19 +543,19 @@ export class CodexLane implements Lane {
           // OpenAI's input_tokens is total (fresh + cached). Anthropic
           // semantic expects fresh-only here; cached lives on its own
           // field. Subtract so cost / context-meter don't double-count.
-          input_tokens: Math.max(0, inputTokens - cachedInputTokens),
+          input_tokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens),
           ...(cachedInputTokens > 0 && {
             cache_read_input_tokens: cachedInputTokens,
-            cache_creation_input_tokens: 0,
           }),
+          ...(cacheWriteTokens > 0 && { cache_creation_input_tokens: cacheWriteTokens }),
         },
       }
       yield { type: 'message_stop' }
       return {
-        input_tokens: Math.max(0, inputTokens - cachedInputTokens),
+        input_tokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens),
         output_tokens: outputTokens,
         cache_read_tokens: cachedInputTokens,
-        cache_write_tokens: 0,
+        cache_write_tokens: cacheWriteTokens,
         thinking_tokens: reasoningTokens,
       }
     }
@@ -569,20 +583,20 @@ export class CodexLane implements Lane {
         // OpenAI's input_tokens is total (fresh + cached). Anthropic
         // semantic expects fresh-only here; cached lives on its own
         // field. Subtract so cost / context-meter don't double-count.
-        input_tokens: Math.max(0, inputTokens - cachedInputTokens),
+        input_tokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens),
         ...(cachedInputTokens > 0 && {
           cache_read_input_tokens: cachedInputTokens,
-          cache_creation_input_tokens: 0,
         }),
+        ...(cacheWriteTokens > 0 && { cache_creation_input_tokens: cacheWriteTokens }),
       },
     }
     yield { type: 'message_stop' }
 
     return {
-      input_tokens: Math.max(0, inputTokens - cachedInputTokens),
+      input_tokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens),
       output_tokens: outputTokens,
       cache_read_tokens: cachedInputTokens,
-      cache_write_tokens: 0,
+      cache_write_tokens: cacheWriteTokens,
       thinking_tokens: reasoningTokens,
     }
   }
@@ -600,12 +614,6 @@ export class CodexLane implements Lane {
       { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 272000, supportsToolCalling: true, tags: ['recommended', 'reasoning'] },
       { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 1050000, supportsToolCalling: true, tags: ['reasoning'] },
       { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 272000, supportsToolCalling: true, tags: ['fast', 'reasoning'] },
-      { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', contextWindow: 272000, supportsToolCalling: true, tags: ['reasoning'] },
-      { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 272000, supportsToolCalling: true, tags: ['reasoning'] },
-      { id: 'gpt-5', name: 'GPT-5', contextWindow: 200000, supportsToolCalling: true, tags: ['reasoning'] },
-      { id: 'gpt-5-codex', name: 'GPT-5 Codex', contextWindow: 200000, supportsToolCalling: true, tags: ['reasoning'] },
-      { id: 'o3', name: 'o3', contextWindow: 200000, supportsToolCalling: true },
-      { id: 'o4-mini', name: 'o4-mini', contextWindow: 200000, supportsToolCalling: true },
     ]
   }
 
@@ -632,6 +640,76 @@ export class CodexLane implements Lane {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
+
+export interface CodexUsageMetrics {
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  reasoningTokens: number
+}
+
+export function extractCodexUsageMetrics(usage: unknown): CodexUsageMetrics {
+  const u = isRecord(usage) ? usage as CodexUsage & Record<string, unknown> : {}
+  const inputDetails = isRecord(u.input_tokens_details) ? u.input_tokens_details : {}
+  const promptDetails = isRecord(u.prompt_tokens_details) ? u.prompt_tokens_details : {}
+  const outputDetails = isRecord(u.output_tokens_details) ? u.output_tokens_details : {}
+  const completionDetails = isRecord(u.completion_tokens_details) ? u.completion_tokens_details : {}
+
+  const inputTokens = firstFiniteNumber(u.input_tokens, u.prompt_tokens)
+  const outputTokens = firstFiniteNumber(u.output_tokens, u.completion_tokens)
+
+  const explicitRead = firstFiniteNumber(
+    u.cache_read_input_tokens,
+    u.cache_read_tokens,
+    u.cache_hit_tokens,
+  )
+  const explicitWrite = firstFiniteNumber(
+    u.cache_creation_input_tokens,
+    u.cache_write_input_tokens,
+    u.cache_write_tokens,
+    inputDetails.cache_write_tokens,
+    promptDetails.cache_write_tokens,
+  )
+  const cachedTotal = firstFiniteNumber(
+    inputDetails.cached_tokens,
+    promptDetails.cached_tokens,
+    u.cached_tokens,
+    u.cached_input_tokens,
+    u.prompt_cache_hit_tokens,
+  )
+
+  const cacheWriteTokens = Math.max(0, explicitWrite ?? 0)
+  const cacheReadTokens = Math.max(
+    0,
+    explicitRead ?? (cachedTotal !== undefined
+      ? cachedTotal - cacheWriteTokens
+      : 0),
+  )
+
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    reasoningTokens: firstFiniteNumber(
+      outputDetails.reasoning_tokens,
+      completionDetails.reasoning_tokens,
+      u.reasoning_tokens,
+    ) ?? 0,
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function firstFiniteNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return undefined
+}
 
 export function resolveReasoning(
   thinking: LaneProviderCallParams['thinking'] | undefined,
@@ -682,7 +760,7 @@ function buildToolUseIdToCallIdMap(
   return map
 }
 
-function convertHistoryToCodex(
+export function convertHistoryToCodex(
   messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
   toolUseIdToCallId: Map<string, string>,
 ): CodexInputItem[] {
@@ -756,15 +834,9 @@ function convertHistoryToCodex(
           break
         }
         case 'thinking':
-          // Preserve prior reasoning so the model sees its own thinking in
-          // the conversation history. Codex's Responses API accepts this as
-          // a `reasoning` input item.
-          if (block.thinking) {
-            tailItems.push({
-              type: 'reasoning',
-              summary: [{ type: 'summary_text', text: block.thinking }],
-            })
-          }
+          // Reasoning is model-internal. Replaying visible summaries bloats
+          // the next prompt and shifts the cached prefix; native Responses
+          // clients only round-trip encrypted reasoning items.
           break
       }
     }
@@ -809,11 +881,299 @@ function inverseAdapt(nativeName: string, input: Record<string, unknown>): Recor
   }
 }
 
+export function toOpenAIStrictToolParameters(
+  schema: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const cloned = cloneStrictCompatibleSchema(schema)
+  return cloned && isRecord(cloned) && !Array.isArray(cloned)
+    ? cloned
+    : null
+}
+
+function cloneStrictCompatibleSchema(value: unknown): unknown | null {
+  if (Array.isArray(value)) {
+    const items: unknown[] = []
+    for (const item of value) {
+      const cloned = cloneStrictCompatibleSchema(item)
+      if (cloned === null) return null
+      items.push(cloned)
+    }
+    return items
+  }
+
+  if (!isRecord(value)) return value
+
+  const out: Record<string, unknown> = {}
+
+  const type = normalizeJsonSchemaType(value.type)
+  const properties = isRecord(value.properties) ? value.properties : undefined
+  const isObjectSchema = type === 'object' || properties !== undefined
+
+  if (isObjectSchema) {
+    const clonedProperties: Record<string, unknown> = {}
+    const propertyNames = Object.keys(properties ?? {})
+    const required = Array.isArray(value.required)
+      ? value.required.filter((item): item is string => typeof item === 'string')
+      : []
+
+    for (const [propertyName, child] of Object.entries(properties ?? {})) {
+      const cloned = cloneStrictCompatibleSchema(child)
+      if (cloned === null) return null
+      clonedProperties[propertyName] = required.includes(propertyName)
+        ? cloned
+        : makeSchemaNullable(cloned)
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'properties' || key === 'required' || key === 'additionalProperties') continue
+      const cloned = cloneStrictCompatibleSchema(child)
+      if (cloned === null) return null
+      out[key] = cloned
+    }
+
+    out.type = type ?? 'object'
+    out.properties = clonedProperties
+    out.required = propertyNames
+    out.additionalProperties = false
+    return out
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    const cloned = cloneStrictCompatibleSchema(child)
+    if (cloned === null) return null
+    out[key] = cloned
+  }
+
+  return out
+}
+
+function normalizeJsonSchemaType(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    const nonNull = value.filter((item): item is string =>
+      typeof item === 'string' && item !== 'null')
+    return nonNull[0]
+  }
+  return undefined
+}
+
+function makeSchemaNullable(schema: unknown): unknown {
+  if (!isRecord(schema) || Array.isArray(schema)) return schema
+
+  const out = { ...schema }
+  const type = out.type
+  if (typeof type === 'string') {
+    out.type = type === 'null' ? type : [type, 'null']
+    return out
+  }
+  if (Array.isArray(type)) {
+    out.type = type.includes('null') ? type : [...type, 'null']
+    return out
+  }
+  if (Array.isArray(out.anyOf)) {
+    const hasNull = out.anyOf.some(item => isRecord(item) && item.type === 'null')
+    out.anyOf = hasNull ? out.anyOf : [...out.anyOf, { type: 'null' }]
+  }
+  return out
+}
+
+export function stripNullToolArguments(input: unknown): Record<string, unknown> {
+  const stripped = stripNullToolArgumentValue(input)
+  return isRecord(stripped) && !Array.isArray(stripped) ? stripped : {}
+}
+
+function stripNullToolArgumentValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .map(item => stripNullToolArgumentValue(item))
+      .filter(item => item !== undefined)
+  }
+  if (!isRecord(value)) return value === null ? undefined : value
+
+  const out: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(value)) {
+    const stripped = stripNullToolArgumentValue(child)
+    if (stripped !== undefined) out[key] = stripped
+  }
+  return out
+}
+
+export function repairCodexToolInput(
+  toolName: string,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  return repairCodexToolCall(toolName, input).input
+}
+
+export interface RepairedCodexToolCall {
+  toolName: string
+  input: Record<string, unknown>
+}
+
+export function repairCodexToolCall(
+  toolName: string,
+  input: Record<string, unknown>,
+): RepairedCodexToolCall {
+  if (toolName === AFT_AST_SEARCH_TOOL_NAME) {
+    return repairAftAstSearchCall(input)
+  }
+  if (toolName === AFT_ZOOM_TOOL_NAME) {
+    return { toolName, input: repairAftZoomInput(input) }
+  }
+  if (toolName === AFT_DIAGNOSTICS_TOOL_NAME) {
+    return { toolName, input: repairAftDiagnosticsInput(input) }
+  }
+  return { toolName, input }
+}
+
+function repairAftAstSearchCall(input: Record<string, unknown>): RepairedCodexToolCall {
+  if (hasMeaningfulValue(input.pattern)) {
+    return { toolName: AFT_AST_SEARCH_TOOL_NAME, input }
+  }
+
+  const paths = Array.isArray(input.paths)
+    ? input.paths.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+    : []
+  const target = paths.length === 0
+    ? '.'
+    : paths.length === 1
+      ? paths[0]
+      : paths
+
+  return {
+    toolName: AFT_OUTLINE_TOOL_NAME,
+    input: { target },
+  }
+}
+
+function repairAftZoomInput(input: Record<string, unknown>): Record<string, unknown> {
+  if (!hasMeaningfulValue(input.targets)) return input
+  if (!hasMeaningfulValue(input.filePath) && !hasMeaningfulValue(input.symbols)) return input
+
+  const out = { ...input }
+  if (targetsContainFilePath(input.targets)) {
+    delete out.filePath
+    delete out.symbols
+  } else {
+    delete out.targets
+  }
+  return out
+}
+
+function repairAftDiagnosticsInput(input: Record<string, unknown>): Record<string, unknown> {
+  if (!hasMeaningfulValue(input.filePath) || !hasMeaningfulValue(input.directory)) return input
+  const out = { ...input }
+  delete out.directory
+  return out
+}
+
+function hasMeaningfulValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  if (Array.isArray(value)) return value.length > 0
+  return true
+}
+
+function targetsContainFilePath(value: unknown): boolean {
+  const targets = Array.isArray(value) ? value : [value]
+  return targets.some(target => isRecord(target) && hasMeaningfulValue(target.filePath))
+}
+
+const UNSUPPORTED_CODEX_RESPONSES_SCHEMA_FIELDS = new Set([
+  '$schema',
+  '$id',
+  '$ref',
+  '$comment',
+  '$defs',
+  'definitions',
+  'strict',
+  'format',
+  'pattern',
+  'default',
+  'examples',
+  'const',
+  'title',
+  'deprecated',
+  'readOnly',
+  'writeOnly',
+  'contentMediaType',
+  'contentEncoding',
+  'patternProperties',
+  'propertyNames',
+  'unevaluatedProperties',
+  'dependentRequired',
+  'dependentSchemas',
+  'unevaluatedItems',
+  'prefixItems',
+  'contains',
+  'minContains',
+  'maxContains',
+])
+
+export function sanitizeCodexToolParametersForOpenAI(schema: unknown): Record<string, unknown> {
+  const sanitized = sanitizeCodexToolSchemaValue(schema)
+  return isRecord(sanitized) && !Array.isArray(sanitized)
+    ? sanitized
+    : { type: 'object', properties: {} }
+}
+
+function sanitizeCodexToolSchemaValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(item => sanitizeCodexToolSchemaValue(item))
+  }
+
+  if (!isRecord(value)) return value
+
+  const out: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(value)) {
+    if (UNSUPPORTED_CODEX_RESPONSES_SCHEMA_FIELDS.has(key)) continue
+    if (key.startsWith('x-')) continue
+    if (child === undefined) continue
+    if (key === 'properties' && isRecord(child)) {
+      out.properties = Object.fromEntries(
+        Object.entries(child).map(([propertyName, propertySchema]) => [
+          propertyName,
+          sanitizeCodexToolSchemaValue(propertySchema),
+        ]),
+      )
+      continue
+    }
+    if (key === 'type') {
+      const normalizedType = sanitizeSchemaTypeKeyword(child)
+      if (normalizedType !== undefined) out.type = normalizedType
+      continue
+    }
+    out[key] = sanitizeCodexToolSchemaValue(child)
+  }
+  return out
+}
+
+function sanitizeSchemaTypeKeyword(value: unknown): string | string[] | undefined {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return undefined
+
+  const types: string[] = []
+  for (const item of value) {
+    if (typeof item === 'string') {
+      types.push(item)
+      continue
+    }
+    if (isRecord(item)) {
+      const nested = sanitizeSchemaTypeKeyword(item.type)
+      if (Array.isArray(nested)) types.push(...nested)
+      else if (nested) types.push(nested)
+    }
+  }
+
+  const unique = [...new Set(types)]
+  if (unique.length === 0) return undefined
+  return unique.length === 1 ? unique[0] : unique
+}
+
 // Build Responses API tools from the caller-provided Anthropic-format
 // tool list. Tools that match the native registry get the native schema;
 // unknown tools (MCP, custom) pass through as function tools with the
 // caller's schema.
-function buildCodexToolsFromRequest(
+export function buildCodexToolsFromRequest(
   tools: import('../../services/api/providers/base_provider.js').ProviderTool[],
 ): CodexResponsesRequest['tools'] {
   const out: NonNullable<CodexResponsesRequest['tools']> = []
@@ -822,7 +1182,7 @@ function buildCodexToolsFromRequest(
       ?? getCodexRegistrationByNativeName(tool.name)
     if (reg) {
       if (reg.nativeName === 'apply_patch') {
-        // Freeform tools can't take `strict: true` — they aren't JSON.
+        // Freeform tools can't take `strict: true`; they aren't JSON.
         // apply_patch's Lark grammar is the enforcement mechanism.
         out.push({
           type: 'custom',
@@ -831,32 +1191,35 @@ function buildCodexToolsFromRequest(
           format: { type: 'text' },
         })
       } else {
-        // strict: true tells the Responses API to server-side-enforce
-        // the JSON Schema (required fields + types) against the model's
-        // function call — the OpenAI equivalent of Gemini VALIDATED
-        // mode. Empty-args calls get rejected before they stream back.
+        // Optional fields are valid locally, but OpenAI strict mode
+        // requires every property to be listed in `required`; encode
+        // optionals as nullable on the wire.
+        const wireParameters = sanitizeCodexToolParametersForOpenAI(reg.nativeSchema)
+        const strictParameters = toOpenAIStrictToolParameters(wireParameters)
+        const parameters = strictParameters ?? wireParameters
         out.push({
           type: 'function',
           name: reg.nativeName,
-          description: appendStrictParamsHint(reg.nativeDescription, reg.nativeSchema),
-          parameters: reg.nativeSchema,
-          strict: true,
+          description: appendStrictParamsHint(reg.nativeDescription, wireParameters),
+          parameters,
+          ...(strictParameters && { strict: true }),
         })
       }
     } else {
-      // Unknown tool (MCP / custom) — sanitize through the shared bridge
-      // with the Codex profile + append the STRICT PARAMETERS hint so
-      // the model sees the required-field summary in plain text.
-      const parameters = sanitizeSchemaForLane(
+      // Unknown tool (MCP / custom) - sanitize for OpenAI Responses'
+      // schema validator, then append the STRICT PARAMETERS hint so the
+      // model sees the required-field summary in plain text.
+      const wireParameters = sanitizeCodexToolParametersForOpenAI(
         tool.input_schema ?? { type: 'object', properties: {} },
-        'codex',
       )
+      const strictParameters = toOpenAIStrictToolParameters(wireParameters)
+      const finalParameters = strictParameters ?? wireParameters
       out.push({
         type: 'function',
         name: tool.name,
-        description: appendStrictParamsHint(tool.description ?? '', parameters),
-        parameters,
-        strict: true,
+        description: appendStrictParamsHint(tool.description ?? '', wireParameters),
+        parameters: finalParameters,
+        ...(strictParameters && { strict: true }),
       })
     }
   }

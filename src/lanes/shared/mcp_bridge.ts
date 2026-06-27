@@ -267,15 +267,13 @@ function flattenComposition(schema: Record<string, unknown>): Record<string, unk
  * Keep each preamble SHORT — every byte lands on every turn.
  */
 export const GEMINI_TOOL_USAGE_RULES = `<TOOL_USAGE_RULES>
-Tool schemas in this environment OVERRIDE your training-data memory of tool names.
-Treat each tool's "parameters" field as authoritative:
+Tool schemas OVERRIDE training memory. Treat each tool's "parameters" as authoritative:
 - Use parameter NAMES exactly as listed in "properties" (case-sensitive).
-- Supply EVERY parameter listed in "required" — never omit one, never send empty objects.
-- Match parameter TYPES exactly (array means array, object means object, string means string).
-- Do not invent extra parameters that are not in "properties".
-The "STRICT PARAMETERS:" hint at the end of each tool description is your quick reference.
+- Supply EVERY parameter listed in "required"; never omit one, never send empty objects.
+- Match parameter TYPES exactly. Do not invent extra parameters.
 
-When a tool call fails, diagnose the cause — read the exit code/error text, verify what actually exists (binaries, paths, shell). Don't iterate cosmetic variants of the same call; blind retries waste input tokens. After two same-cause failures, stop and investigate. For unfamiliar CLIs, run \`--help\` once before invoking.
+When a tool call fails, diagnose: read exit code/error text, verify binaries/paths/shell, check --help/docs, then make one corrected retry. Keep balance: don't retry blindly, don't abandon a viable approach after one failure, and don't punt/paste commands to the user. If you start a background retry, monitor output; don't end with only "retry started".
+Bash autonomy: run them yourself. Skill tool: use relevant skills; Only use listed skills. Agent tool: use matching subagent_type. MCP: \`claude mcp add\`/list/remove are normal Bash commands; run them.
 </TOOL_USAGE_RULES>
 `
 

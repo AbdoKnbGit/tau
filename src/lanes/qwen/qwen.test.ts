@@ -63,7 +63,14 @@ function main(): void {
     const reg = getQwenRegistrationByNativeName('run_shell_command')!
     assert(reg.implId === 'Bash', 'run_shell_command must be backed by Bash')
     assert(/Bash\/POSIX/i.test(reg.nativeDescription), 'description must tell Qwen to use Bash syntax')
+    assert(reg.nativeDescription.includes('is_background=true'), 'description must steer to tracked background execution')
+    assert(reg.nativeDescription.includes('echo $!'), 'description must warn against pid capture')
+    assert(reg.nativeDescription.includes('docker compose up -d'), 'description must warn against Docker detach')
     assert(!/powershell/i.test(reg.nativeDescription), 'description must not advertise PowerShell')
+    const command = reg.nativeSchema.properties?.command
+    assert(typeof command === 'object' && command !== null && !Array.isArray(command), 'command schema missing')
+    assert(String((command as { description?: unknown }).description ?? '').includes('echo $!'),
+      'command field must warn against pid capture')
   })
   test('buildQwenTools shape is OpenAI function-calling', () => {
     const tools = buildQwenTools()

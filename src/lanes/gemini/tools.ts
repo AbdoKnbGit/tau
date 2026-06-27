@@ -261,13 +261,13 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'run_shell_command',
     implId: 'Bash',
     nativeDescription:
-      'This tool executes a given shell command using Bash/POSIX syntax. To run a command in the background, set the `is_background` parameter to true. Do NOT use `&` to background commands.\n\n      The following information is returned:\n\n      Output: Combined stdout/stderr. Can be `(empty)` or partial on error and for any unwaited background processes.\n      Exit Code: Only included if non-zero (command failed).\n      Error: Only included if a process-level error occurred (e.g., spawn failure).\n      Signal: Only included if process was terminated by a signal.\n      Background PIDs: Only included if background processes were started.',
+      'This tool executes a given shell command using Bash/POSIX syntax. To run long-running servers, watchers, port-forwards, tunnels, or foreground container runs in the background, set the `is_background` parameter to true. Do NOT use `&`, `nohup`, `disown`, `echo $!`, `docker compose up -d`, or `docker run -d` to background commands.\n\n      The following information is returned:\n\n      Output: Combined stdout/stderr. Can be `(empty)` or partial on error and for any unwaited background processes.\n      Exit Code: Only included if non-zero (command failed).\n      Error: Only included if a process-level error occurred (e.g., spawn failure).\n      Signal: Only included if process was terminated by a signal.\n      Background PIDs: Only included if background processes were started.',
     nativeSchema: {
       type: 'object',
       properties: {
         command: {
           type: 'string',
-          description: 'Exact Bash/POSIX command to execute.',
+          description: 'Exact Bash/POSIX command to execute. Do not include raw shell backgrounding with &, nohup, disown, echo $!, docker compose up -d, or docker run -d.',
         },
         description: {
           type: 'string',
@@ -275,7 +275,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
         },
         is_background: {
           type: 'boolean',
-          description: 'Set to true if this command should be run in the background (e.g. for long-running servers or watchers). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background.',
+          description: 'Set true for long-running servers/watchers, port-forwards, tunnels, and foreground container runs. Tau tracks and can stop the background task; remove shell-level detaching from command.',
         },
       },
       required: ['command'],

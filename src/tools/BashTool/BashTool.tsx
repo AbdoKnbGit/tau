@@ -46,7 +46,7 @@ import { trackGitOperations } from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
 import { validateBashCommandPartsMatch } from './bashCommandParts.js';
 import { renderBashCommandPlan } from './bashCommandPlanner.js';
-import { allowsAutomaticBackgrounding, detectDetachedBackgroundPattern } from './backgroundDetachValidation.js';
+import { allowsAutomaticBackgrounding, buildDetachedBackgroundValidationMessage, repairDetachedBackgroundCommand } from './backgroundDetachValidation.js';
 import { appendBashFailureGuidance } from './bashFailureGuidance.js';
 import { anchorCommandToDir, resolveTargetWorkdir, validateBashExecutionPreflight } from './bashPreflightValidation.js';
 import { validateBashSyntax } from './bashSyntaxValidation.js';
@@ -282,7 +282,7 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 - find . -name "*.tmp" -exec rm {} \\; → "Find and delete all .tmp files recursively"
 - git reset --hard origin/main → "Discard all local changes and match remote main"
 - curl -s url | jq '.data[]' → "Fetch JSON from URL and extract data array elements"`),
-  run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run this command in the background. Use Read to read the output later.`),
+  run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run the whole command as a tracked background task. Use this for long-running servers, watchers, port-forwards, SSH tunnels, and foreground container runs. Do not put '&', 'nohup', 'disown', 'echo $!', 'docker compose up -d', or 'docker run -d' in the command; remove shell-level detaching and set this field instead.`),
   plan_only: semanticBoolean(z.boolean().optional()).describe('Set to true only when the user explicitly asks for a dry-run command plan. Normal commands execute directly.'),
   syntax_confirmed: semanticBoolean(z.boolean().optional()).describe('Deprecated compatibility flag. It has no effect; normal commands execute directly after safety and permission checks.'),
   command_parts: bashCommandPartsSchema.optional().describe('Optional structured Bash command form. Tau compiles these parts into a safely quoted Bash command and blocks execution if command does not match the compiled result. Use this for complex external CLI syntax instead of hand-quoting raw Bash.'),
@@ -625,12 +625,17 @@ export const BashTool = buildTool({
     // Failure history remains available for diagnostics, but never becomes a
     // user-visible execution block. Path/command correction happens through
     // normalization and target discovery; a repeat is allowed to execute.
-    if (!isBackgroundTasksDisabled && !input.run_in_background) {
-      const detachPattern = detectDetachedBackgroundPattern(input.command);
-      if (detachPattern !== null) {
+    if (!isBackgroundTasksDisabled) {
+      const repairedDetachedCommand = repairDetachedBackgroundCommand(input.command);
+      if (repairedDetachedCommand !== null) {
+        input.command = repairedDetachedCommand;
+        input.run_in_background = true;
+      }
+      const detachedBackgroundMessage = buildDetachedBackgroundValidationMessage(input.command, input.run_in_background === true);
+      if (detachedBackgroundMessage !== null) {
         return {
           result: false,
-          message: `Blocked: ${detachPattern}. Detached processes are untracked — they cannot be listed or stopped later, and they keep holding ports and file locks. Remove the \`&\` and set run_in_background: true instead: the process stays tracked, you are notified when it completes, and it can be stopped by task ID. For intentional in-command parallelism, end the command with \`wait\`. If the \`&\` is part of a URL or argument value, quote that argument — unquoted it backgrounds the command in bash.`,
+          message: detachedBackgroundMessage,
           errorCode: 10
         };
       }

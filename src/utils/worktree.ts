@@ -1,17 +1,23 @@
 import { feature } from 'bun:bundle'
 import chalk from 'chalk'
 import { spawnSync } from 'child_process'
+import { createHash } from 'crypto'
+import { createReadStream } from 'fs'
 import {
+  cp,
   copyFile,
+  lstat,
   mkdir,
   readdir,
   readFile,
+  readlink,
+  rm,
   stat,
   symlink,
   utimes,
 } from 'fs/promises'
 import ignore from 'ignore'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, relative, resolve } from 'path'
 import { saveCurrentProjectConfig } from './config.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
@@ -224,6 +230,149 @@ export function worktreeBranchName(slug: string): string {
 
 function worktreePathFor(repoRoot: string, slug: string): string {
   return join(worktreesDir(repoRoot), flattenSlug(slug))
+}
+
+const SNAPSHOT_DIGEST_PREFIX = 'snapshot:'
+
+const SNAPSHOT_DEFAULT_IGNORE_PATTERNS = [
+  '.git/',
+  '.hg/',
+  '.svn/',
+  '.claude/worktrees/',
+  'node_modules/',
+  'dist/',
+  'build/',
+  '.next/',
+  '.nuxt/',
+  '.turbo/',
+  '.cache/',
+  'coverage/',
+  'target/',
+  '.venv/',
+  'venv/',
+  '__pycache__/',
+]
+
+function toPosixPath(path: string): string {
+  return path.replaceAll('\\', '/')
+}
+
+function snapshotWorktreesDir(sourceRoot: string): string {
+  const resolvedRoot = resolve(sourceRoot)
+  const projectName = basename(resolvedRoot) || 'workspace'
+  const projectHash = createHash('sha1')
+    .update(resolvedRoot)
+    .digest('hex')
+    .slice(0, 8)
+  return join(dirname(resolvedRoot), `.${projectName}-claude-worktrees-${projectHash}`)
+}
+
+function snapshotPathFor(sourceRoot: string, slug: string): string {
+  return join(snapshotWorktreesDir(sourceRoot), flattenSlug(slug))
+}
+
+async function createSnapshotIgnore(sourceRoot: string): Promise<ReturnType<typeof ignore>> {
+  const matcher = ignore().add(SNAPSHOT_DEFAULT_IGNORE_PATTERNS)
+  try {
+    matcher.add(await readFile(join(sourceRoot, '.gitignore'), 'utf-8'))
+  } catch {
+    // Non-git folders often have no .gitignore. The defaults still prevent the
+    // common dependency/build directories from exploding snapshot size.
+  }
+  return matcher
+}
+
+function shouldCopySnapshotPath(
+  sourceRoot: string,
+  sourcePath: string,
+  matcher: ReturnType<typeof ignore>,
+): boolean {
+  const relPath = toPosixPath(relative(sourceRoot, sourcePath))
+  if (relPath === '') {
+    return true
+  }
+  if (relPath.startsWith('../') || relPath === '..') {
+    return false
+  }
+  return !matcher.ignores(relPath) && !matcher.ignores(`${relPath}/`)
+}
+
+async function hashFileInto(hash: ReturnType<typeof createHash>, filePath: string): Promise<void> {
+  await new Promise<void>((resolvePromise, reject) => {
+    const stream = createReadStream(filePath)
+    stream.on('data', chunk => hash.update(chunk))
+    stream.on('error', reject)
+    stream.on('end', resolvePromise)
+  })
+}
+
+async function hashSnapshotDirectory(root: string): Promise<string> {
+  const hash = createHash('sha256')
+  const resolvedRoot = resolve(root)
+
+  async function walk(dir: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true })
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+
+    for (const entry of entries) {
+      const entryPath = join(dir, entry.name)
+      const relPath = toPosixPath(relative(resolvedRoot, entryPath))
+      const entryStat = await lstat(entryPath)
+
+      if (entryStat.isSymbolicLink()) {
+        hash.update(`L\0${relPath}\0${await readlink(entryPath)}\0`)
+        continue
+      }
+
+      if (entryStat.isDirectory()) {
+        hash.update(`D\0${relPath}\0`)
+        await walk(entryPath)
+        continue
+      }
+
+      if (entryStat.isFile()) {
+        hash.update(`F\0${relPath}\0`)
+        await hashFileInto(hash, entryPath)
+      }
+    }
+  }
+
+  await walk(resolvedRoot)
+  return hash.digest('hex')
+}
+
+async function createSnapshotAgentWorktree(
+  sourceRoot: string,
+  slug: string,
+): Promise<{
+  worktreePath: string
+  headCommit: string
+  snapshotBased: true
+}> {
+  const resolvedRoot = resolve(sourceRoot)
+  const worktreePath = snapshotPathFor(resolvedRoot, slug)
+  const matcher = await createSnapshotIgnore(resolvedRoot)
+
+  await rm(worktreePath, { recursive: true, force: true })
+  await mkdir(dirname(worktreePath), { recursive: true })
+  await cp(resolvedRoot, worktreePath, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+    preserveTimestamps: true,
+    filter: sourcePath =>
+      shouldCopySnapshotPath(resolvedRoot, sourcePath, matcher),
+  })
+
+  const digest = await hashSnapshotDirectory(worktreePath)
+  logForDebugging(
+    `Created snapshot-based agent worktree at: ${worktreePath}`,
+  )
+  return {
+    worktreePath,
+    headCommit: `${SNAPSHOT_DIGEST_PREFIX}${digest}`,
+    snapshotBased: true,
+  }
 }
 
 /**
@@ -895,9 +1044,9 @@ export async function cleanupWorktree(): Promise<void> {
 
 /**
  * Create a lightweight worktree for a subagent.
- * Reuses getOrCreateWorktree/performPostCreationSetup but does NOT touch
- * global session state (currentWorktreeSession, process.chdir, project config).
- * Falls back to hook-based creation if not in a git repository.
+ * Uses hooks first, then git worktrees, then a best-effort snapshot copy for
+ * non-git or unusable-git folders. Does NOT touch global session state
+ * (currentWorktreeSession, process.chdir, project config).
  */
 export async function createAgentWorktree(slug: string): Promise<{
   worktreePath: string
@@ -905,17 +1054,27 @@ export async function createAgentWorktree(slug: string): Promise<{
   headCommit?: string
   gitRoot?: string
   hookBased?: boolean
+  snapshotBased?: boolean
 }> {
   validateWorktreeSlug(slug)
 
+  const cwd = getCwd()
+
   // Try hook-based worktree creation first (allows user-configured VCS)
   if (hasWorktreeCreateHook()) {
-    const hookResult = await executeWorktreeCreateHook(slug)
-    logForDebugging(
-      `Created hook-based agent worktree at: ${hookResult.worktreePath}`,
-    )
+    try {
+      const hookResult = await executeWorktreeCreateHook(slug)
+      logForDebugging(
+        `Created hook-based agent worktree at: ${hookResult.worktreePath}`,
+      )
 
-    return { worktreePath: hookResult.worktreePath, hookBased: true }
+      return { worktreePath: hookResult.worktreePath, hookBased: true }
+    } catch (error) {
+      logForDebugging(
+        `Hook-based agent worktree failed, falling back: ${errorMessage(error)}`,
+        { level: 'warn' },
+      )
+    }
   }
 
   // Fall back to git worktree
@@ -923,38 +1082,65 @@ export async function createAgentWorktree(slug: string): Promise<{
   // the main repo's .claude/worktrees/ even when spawned from inside a session
   // worktree — otherwise they nest at <worktree>/.claude/worktrees/ and the
   // periodic cleanup (which scans the canonical root) never finds them.
-  const gitRoot = findCanonicalGitRoot(getCwd())
-  if (!gitRoot) {
-    throw new Error(
-      'Cannot create agent worktree: not in a git repository and no WorktreeCreate hooks are configured. ' +
-        'Configure WorktreeCreate/WorktreeRemove hooks in settings.json to use worktree isolation with other VCS systems.',
-    )
+  const gitRoot = findCanonicalGitRoot(cwd)
+  if (gitRoot) {
+    try {
+      const { worktreePath, worktreeBranch, headCommit, existed } =
+        await getOrCreateWorktree(gitRoot, slug)
+
+      if (!existed) {
+        logForDebugging(
+          `Created agent worktree at: ${worktreePath} on branch: ${worktreeBranch}`,
+        )
+        await performPostCreationSetup(gitRoot, worktreePath)
+      } else {
+        // Bump mtime so the periodic stale-worktree cleanup doesn't consider this
+        // worktree stale — the fast-resume path is read-only and leaves the original
+        // creation-time mtime intact, which can be past the 30-day cutoff.
+        const now = new Date()
+        await utimes(worktreePath, now, now)
+        logForDebugging(`Resuming existing agent worktree at: ${worktreePath}`)
+      }
+
+      return { worktreePath, worktreeBranch, headCommit, gitRoot }
+    } catch (error) {
+      logForDebugging(
+        `Git agent worktree failed, falling back to snapshot copy: ${errorMessage(error)}`,
+        { level: 'warn' },
+      )
+    }
   }
 
-  const { worktreePath, worktreeBranch, headCommit, existed } =
-    await getOrCreateWorktree(gitRoot, slug)
+  const snapshot = await createSnapshotAgentWorktree(gitRoot ?? cwd, slug)
+  return {
+    worktreePath: snapshot.worktreePath,
+    headCommit: snapshot.headCommit,
+    snapshotBased: true,
+  }
+}
 
-  if (!existed) {
+/**
+ * Remove a snapshot directory created by createAgentWorktree's non-git fallback.
+ */
+async function removeSnapshotAgentWorktree(worktreePath: string): Promise<boolean> {
+  try {
+    await rm(worktreePath, { recursive: true, force: true })
+    logForDebugging(`Removed snapshot-based agent worktree at: ${worktreePath}`)
+    return true
+  } catch (error) {
     logForDebugging(
-      `Created agent worktree at: ${worktreePath} on branch: ${worktreeBranch}`,
+      `Failed to remove snapshot-based agent worktree: ${errorMessage(error)}`,
+      { level: 'error' },
     )
-    await performPostCreationSetup(gitRoot, worktreePath)
-  } else {
-    // Bump mtime so the periodic stale-worktree cleanup doesn't consider this
-    // worktree stale — the fast-resume path is read-only and leaves the original
-    // creation-time mtime intact, which can be past the 30-day cutoff.
-    const now = new Date()
-    await utimes(worktreePath, now, now)
-    logForDebugging(`Resuming existing agent worktree at: ${worktreePath}`)
+    return false
   }
-
-  return { worktreePath, worktreeBranch, headCommit, gitRoot }
 }
 
 /**
  * Remove a worktree created by createAgentWorktree.
  * For git-based worktrees, removes the worktree directory and deletes the temporary branch.
  * For hook-based worktrees, delegates to the WorktreeRemove hook.
+ * For snapshot-based worktrees, removes the copied directory.
  * Must be called with the main repo's git root (for git worktrees), not the worktree path,
  * since the worktree directory is deleted during this operation.
  */
@@ -963,7 +1149,12 @@ export async function removeAgentWorktree(
   worktreeBranch?: string,
   gitRoot?: string,
   hookBased?: boolean,
+  snapshotBased?: boolean,
 ): Promise<boolean> {
+  if (snapshotBased) {
+    return removeSnapshotAgentWorktree(worktreePath)
+  }
+
   if (hookBased) {
     const hookRan = await executeWorktreeRemoveHook(worktreePath)
     if (hookRan) {
@@ -1145,6 +1336,15 @@ export async function hasWorktreeChanges(
   worktreePath: string,
   headCommit: string,
 ): Promise<boolean> {
+  if (headCommit.startsWith(SNAPSHOT_DIGEST_PREFIX)) {
+    try {
+      const originalDigest = headCommit.slice(SNAPSHOT_DIGEST_PREFIX.length)
+      return (await hashSnapshotDirectory(worktreePath)) !== originalDigest
+    } catch {
+      return true
+    }
+  }
+
   const { code: statusCode, stdout: statusOutput } =
     await execFileNoThrowWithCwd(gitExe(), ['status', '--porcelain'], {
       cwd: worktreePath,

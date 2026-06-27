@@ -206,5 +206,5 @@ export function buildWorktreeNotice(
   parentCwd: string,
   worktreeCwd: string,
 ): string {
-  return `You've inherited the conversation context above from a parent agent working in ${parentCwd}. You are operating in an isolated git worktree at ${worktreeCwd} — same repository, same relative file structure, separate working copy. Paths in the inherited context refer to the parent's working directory; translate them to your worktree root. Re-read files before editing if the parent may have modified them since they appear in the context. Your changes stay in this worktree and will not affect the parent's files.`
+  return `You've inherited the conversation context above from a parent agent working in ${parentCwd}. You are operating in an isolated workspace at ${worktreeCwd} with the same relative file structure where possible. Paths in the inherited context refer to the parent's working directory; translate them to your workspace root. Re-read files before editing if the parent may have modified them since they appear in the context. Your changes stay in this workspace and will not affect the parent's files.`
 }

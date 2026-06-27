@@ -57,7 +57,7 @@ export function getBashCommandBestPractices(): string[] {
     'Process substitution (`<(...)` and `>(...)`) requires Bash or Zsh. Never place it inside `sh -c` or a script with a plain `#!/bin/sh` shebang.',
     'When shell portability is uncertain, inspect the active shell and features first with `$SHELL`, `bash --version`, and the target command\'s `--help` or version output.',
     'Distinguish host paths from remote/container paths at every process boundary. Host paths should use the host platform spelling; paths interpreted inside a container, VM, WSL distribution, remote SSH host, Hadoop filesystem, or Kubernetes pod must reach that target unchanged.',
-    'Use `run_in_background: true` for long-running work. Do not use raw trailing `&`, `nohup`, or `disown`; Tau must keep the process tracked and stoppable.',
+    'Use `run_in_background: true` for long-running work such as app servers, watchers, port-forwards, SSH tunnels, and foreground container runs. Keep log redirection if needed, but do not use raw trailing `&`, `nohup`, `disown`, `echo $!`, `docker compose up -d`, or `docker run -d`; Tau must keep the process tracked and stoppable.',
     'Use `export NAME=value` when later commands in the same shell process need the variable. `NAME=value command` affects only that command.',
   ]
 }

@@ -6,6 +6,7 @@ import {
   antigravityPrefixPad,
   applyAntigravityPrefixPad,
   diagnoseAntigravityCacheBreak,
+  freezeAntigravityVolatilePrefix,
   paceAntigravityAgentRequest,
   recordAntigravityCacheRead,
   _getAntigravityPaceStateForTest,
@@ -113,6 +114,31 @@ async function main(): Promise<void> {
     } finally {
       process.env.TAU_ANTIGRAVITY_MAX_CACHE = '1'
     }
+  })
+
+  console.log('antigravity volatile prefix freeze:')
+
+  await test('volatile prefix freezes to the first value for a session', () => {
+    _resetAntigravityCacheStateForTest()
+    const first = freezeAntigravityVolatilePrefix('gemini:session-a', 'env v1')
+    const second = freezeAntigravityVolatilePrefix('gemini:session-a', 'env v2')
+    assert(first === 'env v1', 'first volatile prefix must pass through')
+    assert(second === 'env v1', 'later volatile prefix must replay first bytes')
+  })
+
+  await test('volatile prefix replay survives an empty later value', () => {
+    _resetAntigravityCacheStateForTest()
+    freezeAntigravityVolatilePrefix('gemini:session-a', 'env v1')
+    const second = freezeAntigravityVolatilePrefix('gemini:session-a', '')
+    assert(second === 'env v1', 'empty later value must not erase frozen prefix')
+  })
+
+  await test('volatile prefix freeze is scoped by cache key', () => {
+    _resetAntigravityCacheStateForTest()
+    const a = freezeAntigravityVolatilePrefix('gemini:session-a', 'env a')
+    const b = freezeAntigravityVolatilePrefix('gemini:session-b', 'env b')
+    assert(a === 'env a', 'session a mismatch')
+    assert(b === 'env b', 'session b mismatch')
   })
 
   console.log('antigravity commit-window pacing:')

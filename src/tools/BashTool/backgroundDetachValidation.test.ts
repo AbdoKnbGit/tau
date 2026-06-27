@@ -6,7 +6,9 @@
 
 import {
   allowsAutomaticBackgrounding,
+  buildDetachedBackgroundValidationMessage,
   detectDetachedBackgroundPattern,
+  repairDetachedBackgroundCommand,
 } from './backgroundDetachValidation.js'
 
 let passed = 0
@@ -43,6 +45,273 @@ function main(): void {
         'node server.js & sleep 2 && curl -s http://localhost:8080/api',
       ) !== null,
       'expected start-then-poll pattern to be flagged',
+    )
+  })
+
+  test('flags common server PID-capture pattern', () => {
+    assert(
+      detectDetachedBackgroundPattern(
+        'npm run dev -- --host 127.0.0.1 > "$TMPDIR/todo-frontend.log" 2>&1 & echo $!',
+      ) !== null,
+      'expected log-and-pid detached process to be flagged',
+    )
+  })
+
+  test('run_in_background does not allow raw shell backgrounding', () => {
+    const message = buildDetachedBackgroundValidationMessage(
+      'npm run dev > "$TMPDIR/app.log" 2>&1 & echo $!',
+      true,
+    )
+    assert(message !== null, 'expected run_in_background + raw & to be blocked')
+    assert(
+      message.includes('already starts the whole command'),
+      'expected guidance to remove redundant shell backgrounding',
+    )
+  })
+
+  test('plain detached commands get retry guidance to set run_in_background', () => {
+    const message = buildDetachedBackgroundValidationMessage('npm run dev &', false)
+    assert(message !== null, 'expected detached command to be blocked')
+    assert(
+      message.includes('setting run_in_background: true'),
+      'expected guidance to set run_in_background',
+    )
+  })
+
+  test('repairs trailing PID-capture detach to a foreground command body', () => {
+    const repaired = repairDetachedBackgroundCommand(
+      'npm run dev -- --host 127.0.0.1 > "$TMPDIR/todo-frontend.log" 2>&1 & echo $!',
+    )
+    assert(
+      repaired === 'npm run dev -- --host 127.0.0.1 > "$TMPDIR/todo-frontend.log" 2>&1',
+      `unexpected repair: ${repaired}`,
+    )
+  })
+
+  test('repairs Windows port cleanup plus backend server detach', () => {
+    const command =
+      'cd todo-app/backend && (for p in $(powershell.exe -NoProfile -Command "Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"); do taskkill //PID "$p" //F; done) && npm run start > "$TMPDIR/todo-backend.log" 2>&1 & echo $!'
+    const repaired = repairDetachedBackgroundCommand(command)
+    assert(repaired !== null, 'expected command to be repaired')
+    assert(!repaired.includes('& echo $!'), 'pid capture suffix should be removed')
+    assert(
+      repaired.endsWith('npm run start > "$TMPDIR/todo-backend.log" 2>&1'),
+      `server command should remain foreground inside tracked task: ${repaired}`,
+    )
+  })
+
+  test('repairs relative cd backend dev-server detach', () => {
+    const repaired = repairDetachedBackgroundCommand(
+      'cd todo-app/backend && npm run dev > ../../todo-backend.log 2>&1 & echo $!',
+    )
+    assert(
+      repaired === 'cd todo-app/backend && npm run dev > ../../todo-backend.log 2>&1',
+      `unexpected repair: ${repaired}`,
+    )
+  })
+
+  test('repairs detached server followed by static status echo', () => {
+    const repaired = repairDetachedBackgroundCommand(
+      'cd jurk && node server.js > /tmp/jurk-server.log 2>&1 & echo "Server starting on port from server.js"',
+    )
+    assert(
+      repaired === 'cd jurk && node server.js > /tmp/jurk-server.log 2>&1',
+      `unexpected repair: ${repaired}`,
+    )
+  })
+
+  test('repairs no-space trailing detach', () => {
+    assert(
+      repairDetachedBackgroundCommand('npm start&') === 'npm start',
+      'expected no-space trailing detach to be repaired',
+    )
+  })
+
+  test('repairs common cross-platform detach idioms', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'python -m http.server 8000 > /tmp/http.log 2>&1 &',
+        'python -m http.server 8000 > /tmp/http.log 2>&1',
+      ],
+      [
+        'nohup npm run dev > "$TMPDIR/app.log" 2>&1 &',
+        'npm run dev > "$TMPDIR/app.log" 2>&1',
+      ],
+      [
+        'PORT=3000 nohup npm run dev > "$TMPDIR/app.log" 2>&1 & disown',
+        'PORT=3000 npm run dev > "$TMPDIR/app.log" 2>&1',
+      ],
+      [
+        'bun run dev& echo $! > "$TMPDIR/app.pid"',
+        'bun run dev',
+      ],
+      [
+        'pnpm dev & printf "%s\\n" "$!"',
+        'pnpm dev',
+      ],
+      [
+        'cd api && nohup uvicorn app:app --host 0.0.0.0 > /tmp/api.log 2>&1 & echo $!',
+        'cd api && uvicorn app:app --host 0.0.0.0 > /tmp/api.log 2>&1',
+      ],
+    ]
+
+    for (const [command, expected] of cases) {
+      assert(
+        repairDetachedBackgroundCommand(command) === expected,
+        `unexpected repair for ${command}`,
+      )
+    }
+  })
+
+  test('repairs non-npm long-running raw background tasks', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'uvicorn app:app --host 0.0.0.0 > /tmp/uvicorn.log 2>&1 & echo $! && echo "API started"',
+        'uvicorn app:app --host 0.0.0.0 > /tmp/uvicorn.log 2>&1',
+      ],
+      [
+        'python manage.py runserver 0.0.0.0:8000 & echo "Django started"',
+        'python manage.py runserver 0.0.0.0:8000',
+      ],
+      [
+        'flask --app app run --host 0.0.0.0 &',
+        'flask --app app run --host 0.0.0.0',
+      ],
+      [
+        'rails server -b 0.0.0.0 > /tmp/rails.log 2>&1 &',
+        'rails server -b 0.0.0.0 > /tmp/rails.log 2>&1',
+      ],
+      [
+        'go run ./cmd/api > /tmp/api.log 2>&1 & echo $!',
+        'go run ./cmd/api > /tmp/api.log 2>&1',
+      ],
+      [
+        'cargo run --bin api & echo $!',
+        'cargo run --bin api',
+      ],
+      [
+        'java -jar target/app.jar > app.log 2>&1 & echo $!',
+        'java -jar target/app.jar > app.log 2>&1',
+      ],
+      [
+        'mvn spring-boot:run & echo $!',
+        'mvn spring-boot:run',
+      ],
+      [
+        'kubectl port-forward svc/api 8080:80 > /tmp/pf.log 2>&1 & echo $!',
+        'kubectl port-forward svc/api 8080:80 > /tmp/pf.log 2>&1',
+      ],
+      [
+        'ssh -N -L 8080:localhost:80 example.com > /tmp/tunnel.log 2>&1 & echo $!',
+        'ssh -N -L 8080:localhost:80 example.com > /tmp/tunnel.log 2>&1',
+      ],
+    ]
+
+    for (const [command, expected] of cases) {
+      assert(
+        repairDetachedBackgroundCommand(command) === expected,
+        `unexpected repair for ${command}`,
+      )
+    }
+  })
+
+  test('repairs common Docker CLI detach flags to foreground tracked commands', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'docker compose up -d',
+        'docker compose up',
+      ],
+      [
+        'docker compose -f docker-compose.dev.yml up --detach api',
+        'docker compose -f docker-compose.dev.yml up api',
+      ],
+      [
+        'cd infra && docker-compose up --detach=true api',
+        'cd infra && docker-compose up api',
+      ],
+      [
+        'docker compose up -d > /tmp/compose.log 2>&1',
+        'docker compose up > /tmp/compose.log 2>&1',
+      ],
+      [
+        'docker run --rm -d -p 8080:80 nginx',
+        'docker run --rm -p 8080:80 nginx',
+      ],
+      [
+        'docker run --name web --detach nginx',
+        'docker run --name web nginx',
+      ],
+    ]
+
+    for (const [command, expected] of cases) {
+      assert(
+        repairDetachedBackgroundCommand(command) === expected,
+        `unexpected repair for ${command}`,
+      )
+    }
+  })
+
+  test('does not repair start-then-poll or multi-background shapes', () => {
+    assert(
+      repairDetachedBackgroundCommand(
+        'node server.js & sleep 2 && curl -s http://localhost:8080/api',
+      ) === null,
+      'start-then-poll needs a second tool call, not repair',
+    )
+    assert(
+      repairDetachedBackgroundCommand('lint & typecheck & echo $!') === null,
+      'multiple background jobs must not be rewritten',
+    )
+    assert(
+      repairDetachedBackgroundCommand('node server.js & echo started > status.txt') === null,
+      'status commands with redirects have side effects and must not be dropped',
+    )
+    assert(
+      repairDetachedBackgroundCommand('node server.js & echo $(touch status.txt)') === null,
+      'status commands with command substitution have side effects and must not be dropped',
+    )
+    assert(
+      repairDetachedBackgroundCommand('docker compose up -d && docker compose logs -f') === null,
+      'docker detach followed by a second real command must not be rewritten',
+    )
+    assert(
+      repairDetachedBackgroundCommand('docker run -d nginx && curl -s http://localhost:8080') === null,
+      'docker detach followed by probing must not be rewritten',
+    )
+    assert(
+      repairDetachedBackgroundCommand('docker compose up --detach=false') === null,
+      'explicit non-detach flags must not be rewritten',
+    )
+    assert(
+      repairDetachedBackgroundCommand('docker build -d .') === null,
+      'unrelated docker subcommands must not be rewritten',
+    )
+  })
+
+  test('blocks unsafe Docker CLI detach compounds instead of silently detaching', () => {
+    const composeMessage = buildDetachedBackgroundValidationMessage(
+      'docker compose up -d && docker compose logs -f',
+      false,
+    )
+    assert(composeMessage !== null, 'expected docker compose detach to be blocked')
+    assert(
+      composeMessage.includes('Remove Docker detach flags'),
+      `unexpected docker compose message: ${composeMessage}`,
+    )
+
+    const runMessage = buildDetachedBackgroundValidationMessage(
+      'docker run -d nginx && curl -s http://localhost:8080',
+      true,
+    )
+    assert(runMessage !== null, 'expected docker run detach to be blocked')
+    assert(
+      runMessage.includes('run_in_background: true'),
+      `unexpected docker run message: ${runMessage}`,
+    )
+
+    assert(
+      buildDetachedBackgroundValidationMessage('docker compose up --detach=false', false) === null,
+      'non-detach Docker flags must not be blocked',
     )
   })
 

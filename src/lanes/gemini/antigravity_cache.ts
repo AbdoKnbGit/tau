@@ -51,6 +51,12 @@
  *   - writeAntigravityCacheDebugEntry(): TAU_CACHE_DEBUG=1 appends a
  *     JSONL line per request with a hash of every cache-relevant
  *     section, so prefix stability is verifiable instead of guessed.
+ *   - freezeAntigravityVolatilePrefix(): preserves the first volatile
+ *     environment/git block for a session. The normal Gemini cachedContents
+ *     path can place fresh volatile context before the conversation because
+ *     it is not part of that cache key. Antigravity's implicit cache hashes
+ *     contents too, so changing that leading block rewrites byte 0 of the
+ *     content prefix and drops the hit rate.
  *
  * Escape hatches: TAU_ANTIGRAVITY_NO_PREFIX_PAD=1, TAU_ANTIGRAVITY_NO_PACING=1.
  */
@@ -98,6 +104,7 @@ const PAD_CHARS_PER_TOKEN = 4.6
 const PAD_SIZE_STEP_TOKENS = 500
 
 const _padBySize = new Map<number, string>()
+const _volatilePrefixBySession = new Map<string, string>()
 
 /** Deterministic inert pad sized to `tokens` (estimated). */
 export function antigravityPrefixPad(tokens: number): string {
@@ -155,6 +162,31 @@ export function applyAntigravityPrefixPad(
   const padTokens =
     Math.ceil(missing / PAD_SIZE_STEP_TOKENS) * PAD_SIZE_STEP_TOKENS
   return `${antigravityPrefixPad(padTokens)}\n\n${stableText}`
+}
+
+/**
+ * Return a session-stable volatile prefix for Antigravity implicit cache.
+ *
+ * Antigravity hashes the leading contents as part of its implicit cache
+ * prefix. Replacing the environment/git block on each turn makes the previous
+ * prompt no longer a prefix of the next prompt. Freezing the first copy keeps
+ * the prefix append-only; current task/user/tool content still flows through
+ * the real conversation tail.
+ */
+export function freezeAntigravityVolatilePrefix(
+  cacheKey: string,
+  volatileText: string,
+): string {
+  const existing = _volatilePrefixBySession.get(cacheKey)
+  if (existing !== undefined) return existing
+  if (!volatileText) return ''
+
+  _volatilePrefixBySession.set(cacheKey, volatileText)
+  if (_volatilePrefixBySession.size > 128) {
+    const oldest = _volatilePrefixBySession.keys().next().value
+    if (oldest !== undefined) _volatilePrefixBySession.delete(oldest)
+  }
+  return volatileText
 }
 
 // ─── Commit-window pacing (agent sessions only) ──────────────────
@@ -397,6 +429,7 @@ export function writeAntigravityCacheDebugEntry(
 export function _resetAntigravityCacheStateForTest(): void {
   _agentPace.clear()
   _lastDebugSnapshot.clear()
+  _volatilePrefixBySession.clear()
   _commitWindowOverride = undefined
 }
 

@@ -113,7 +113,10 @@ function _ensureLanesInitialized(): void {
       geminiCliOAuthToken: cliOAuthToken,
       geminiAntigravityOAuthToken: antigravityOAuthToken,
       openaiApiKey: getProviderApiKey('openai') ?? undefined,
-      openaiBaseUrl: process.env.OPENAI_BASE_URL ?? getProviderBaseUrl('openai'),
+      openaiBaseUrl: process.env.OPENAI_BASE_URL,
+      openaiChatgptAccessToken: getOpenAISessionToken() ?? undefined,
+      openaiChatgptAccountId: process.env.OPENAI_CHATGPT_ACCOUNT_ID,
+      openaiChatgptIdToken: process.env.OPENAI_CHATGPT_ID_TOKEN,
       deepseekApiKey: getProviderApiKey('deepseek') ?? undefined,
       deepseekBaseUrl: getProviderBaseUrl('deepseek'),
       glmApiKey: getProviderApiKey('glm') ?? undefined,
@@ -144,6 +147,8 @@ function _ensureLanesInitialized(): void {
       opencodegoBaseUrl: getProviderBaseUrl('opencodego'),
       fireworksApiKey: getProviderApiKey('fireworks') ?? undefined,
       fireworksBaseUrl: getProviderBaseUrl('fireworks'),
+      cloudflareApiKey: getProviderApiKey('cloudflare') ?? undefined,
+      cloudflareBaseUrl: getProviderBaseUrl('cloudflare'),
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
       iflowApiKey: iflowChatKey,
       kilocodeApiKey: kilocodeToken,
@@ -192,6 +197,7 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'opencode':
     case 'opencodego':
     case 'fireworks':
+    case 'cloudflare':
       return 'openai-compat'
     case 'cline':
       return 'cline'
@@ -326,6 +332,7 @@ function createProvider(provider: APIProvider): BaseProvider {
     case 'opencode':
     case 'opencodego':
     case 'fireworks':
+    case 'cloudflare':
       return new OpenAIProvider({ apiKey, baseUrl })
     case 'commandcode':
       return new CommandCodeProvider({ apiKey, baseUrl })
@@ -708,6 +715,26 @@ export async function reloadCursorLaneAuth(): Promise<void> {
 }
 
 /**
+ * Reconfigure the Codex lane from current OpenAI credentials. Called after
+ * `/login openai` or saving an OpenAI API key so the running process stops
+ * falling back to the legacy OpenAI provider.
+ */
+export async function reloadOpenAILaneAuth(): Promise<void> {
+  const { codexLane } = await import('../../../lanes/codex/index.js')
+  const apiKey = getProviderApiKey('openai') ?? undefined
+  const chatgptAccessToken =
+    getOpenAISessionToken() ?? process.env.OPENAI_CHATGPT_ACCESS_TOKEN
+  codexLane.configure({
+    apiKey,
+    baseUrl: process.env.OPENAI_BASE_URL,
+    chatgptAccessToken: chatgptAccessToken ?? undefined,
+    chatgptAccountId: process.env.OPENAI_CHATGPT_ACCOUNT_ID,
+    chatgptIdToken: process.env.OPENAI_CHATGPT_ID_TOKEN,
+  })
+  codexLane.setHealthy(!!(apiKey || chatgptAccessToken))
+}
+
+/**
  * Refresh the Cline lane's in-memory auth hints and model cache from disk.
  * The lane also re-reads provider keys dynamically at request time, so this
  * is mainly about immediate health flips after login/logout.
@@ -753,6 +780,7 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     case 'opencode':
     case 'opencodego':
     case 'fireworks':
+    case 'cloudflare':
     case 'groq':
     case 'ollama':
     case 'lmstudio':

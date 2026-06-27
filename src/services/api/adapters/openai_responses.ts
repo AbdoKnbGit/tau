@@ -16,7 +16,10 @@ import type {
   ProviderTool,
   SystemBlock,
 } from '../providers/base_provider.js'
-import { sanitizeSchemaForOpenAI } from './anthropic_to_openai.js'
+import {
+  sanitizeResponsesToolParametersForOpenAI,
+  toOpenAIStrictToolParameters,
+} from './openai_responses_schema.js'
 import { coerceToolCallArgs, recordToolSchema } from './tool_schema_cache.js'
 
 // ─── Responses API types ───────────────────────────────────────────
@@ -222,14 +225,16 @@ export function anthropicToolsToResponsesTools(
   tools: ProviderTool[],
 ): ResponsesApiTool[] {
   return tools.map(t => {
-    const parameters = sanitizeSchemaForOpenAI(t.input_schema)
+    const wireParameters = sanitizeResponsesToolParametersForOpenAI(t.input_schema)
+    const strictParameters = toOpenAIStrictToolParameters(wireParameters)
+    const parameters = strictParameters ?? wireParameters
     recordToolSchema(t.name, parameters)
     return {
       type: 'function' as const,
       name: t.name,
       description: t.description,
       parameters,
-      strict: false,
+      strict: strictParameters !== null,
     }
   })
 }

@@ -20,6 +20,7 @@ import { requestyTransformer } from './requesty.js'
 import { opencodeTransformer } from './opencode.js'
 import { opencodeGoTransformer } from './opencode-go.js'
 import { fireworksTransformer } from './fireworks.js'
+import { cloudflareTransformer } from './cloudflare.js'
 import { clineTransformer } from './cline.js'
 import { iflowTransformer } from './iflow.js'
 import { kilocodeTransformer } from './kilocode.js'
@@ -45,6 +46,7 @@ export const TRANSFORMERS: Record<ProviderId, Transformer> = {
   opencode: opencodeTransformer,
   opencodego: opencodeGoTransformer,
   fireworks: fireworksTransformer,
+  cloudflare: cloudflareTransformer,
   cline: clineTransformer,
   iflow: iflowTransformer,
   kilocode: kilocodeTransformer,
@@ -58,7 +60,7 @@ export function getTransformer(provider: ProviderId): Transformer {
 
 export {
   deepseekTransformer, groqTransformer, mistralTransformer, nimTransformer,
-  glmTransformer, moonshotTransformer, minimaxTransformer, ollamaTransformer, lmStudioTransformer, openrouterTransformer, agentrouterTransformer, modelRouterTransformer, vercelTransformer, requestyTransformer, opencodeTransformer, opencodeGoTransformer, fireworksTransformer, genericTransformer,
+  glmTransformer, moonshotTransformer, minimaxTransformer, ollamaTransformer, lmStudioTransformer, openrouterTransformer, agentrouterTransformer, modelRouterTransformer, vercelTransformer, requestyTransformer, opencodeTransformer, opencodeGoTransformer, fireworksTransformer, cloudflareTransformer, genericTransformer,
   clineTransformer, iflowTransformer, kilocodeTransformer, copilotTransformer,
 }
 export type { Transformer, ProviderId, TransformContext } from './base.js'

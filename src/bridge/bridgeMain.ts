@@ -180,6 +180,7 @@ export async function runBridgeLoop(
       worktreeBranch?: string
       gitRoot?: string
       hookBased?: boolean
+      snapshotBased?: boolean
     }
   >()
   // Track sessions killed by the timeout watchdog so onSessionDone can
@@ -542,6 +543,7 @@ export async function runBridgeLoop(
             wt.worktreeBranch,
             wt.gitRoot,
             wt.hookBased,
+            wt.snapshotBased,
           ).catch((err: unknown) =>
             logger.logVerbose(
               `Failed to remove worktree ${wt.worktreePath}: ${errorMessage(err)}`,
@@ -960,7 +962,7 @@ export async function runBridgeLoop(
             sdkUrl = buildSdkUrl(config.sessionIngressUrl, sessionId)
           }
 
-          // In worktree mode, on-demand sessions get an isolated git worktree
+          // In worktree mode, on-demand sessions get an isolated workspace
           // so concurrent sessions don't interfere with each other's file
           // changes. The pre-created initial session (if any) runs in
           // config.dir so the user's first session lands in the directory they
@@ -989,6 +991,7 @@ export async function runBridgeLoop(
                 worktreeBranch: wt.worktreeBranch,
                 gitRoot: wt.gitRoot,
                 hookBased: wt.hookBased,
+                snapshotBased: wt.snapshotBased,
               })
               sessionDir = wt.worktreePath
               logForDebugging(
@@ -1073,6 +1076,7 @@ export async function runBridgeLoop(
                   wt.worktreeBranch,
                   wt.gitRoot,
                   wt.hookBased,
+                  wt.snapshotBased,
                 ).catch((err: unknown) =>
                   logger.logVerbose(
                     `Failed to remove worktree ${wt.worktreePath}: ${errorMessage(err)}`,
@@ -1486,6 +1490,7 @@ export async function runBridgeLoop(
             wt.worktreeBranch,
             wt.gitRoot,
             wt.hookBased,
+            wt.snapshotBased,
           ),
         ),
       )
@@ -1900,7 +1905,7 @@ async function printHelp(): Promise<void> {
   --[no-]create-session-in-dir     Pre-create a session in the current
                                    directory; in worktree mode this session
                                    stays in cwd while on-demand sessions get
-                                   isolated worktrees (default: on)
+                                   isolated workspaces (default: on)
 `
     : ''
   const serverDescription = showServer
@@ -1908,13 +1913,13 @@ async function printHelp(): Promise<void> {
   Remote Control runs as a persistent server that accepts multiple concurrent
   sessions in the current directory. One session is pre-created on start so
   you have somewhere to type immediately. Use --spawn=worktree to isolate
-  each on-demand session in its own git worktree, or --spawn=session for
+  each on-demand session in an isolated workspace, or --spawn=session for
   the classic single-session mode (exits when that session ends). Press 'w'
   during runtime to toggle between same-dir and worktree.
 `
     : ''
   const serverNote = showServer
-    ? `  - Worktree mode requires a git repository or WorktreeCreate/WorktreeRemove hooks
+    ? `  - Worktree mode uses Git or configured hooks when available, otherwise a filtered snapshot copy
 `
     : ''
   const help = `
@@ -2207,32 +2212,21 @@ export async function bridgeMain(args: string[]): Promise<void> {
     '../utils/git.js'
   )
 
-  // Precheck worktree availability for the first-run dialog and the `w`
-  // toggle. Unconditional so we know upfront whether worktree is an option.
+  // Precheck the backing implementation for diagnostics. Worktree mode itself
+  // is always available: createAgentWorktree falls back to a filtered snapshot
+  // copy when hooks/git cannot provide an isolated workspace.
   const { hasWorktreeCreateHook } = await import('../utils/hooks.js')
-  const worktreeAvailable = hasWorktreeCreateHook() || findGitRoot(dir) !== null
+  const hasGitOrHookWorktree =
+    hasWorktreeCreateHook() || findGitRoot(dir) !== null
+  const worktreeAvailable = true
 
   // Load saved per-project spawn-mode preference. Gated by multiSessionEnabled
   // so a GrowthBook rollback cleanly reverts users to single-session —
   // otherwise a saved pref would silently re-enable multi-session behavior
   // (worktree isolation, 32 max sessions, w toggle) despite the gate being off.
-  // Also guard against a stale worktree pref left over from when this dir WAS
-  // a git repo (or the user copied config) — clear it on disk so the warning
-  // doesn't repeat on every launch.
   let savedSpawnMode = multiSessionEnabled
     ? getCurrentProjectConfig().remoteControlSpawnMode
     : undefined
-  if (savedSpawnMode === 'worktree' && !worktreeAvailable) {
-    // biome-ignore lint/suspicious/noConsole: intentional warning output
-    console.error(
-      'Warning: Saved spawn mode is worktree but this directory is not a git repository. Falling back to same-dir.',
-    )
-    savedSpawnMode = undefined
-    saveCurrentProjectConfig(current => {
-      if (current.remoteControlSpawnMode === undefined) return current
-      return { ...current, remoteControlSpawnMode: undefined }
-    })
-  }
 
   // First-run spawn-mode choice: ask once per project when the choice is
   // meaningful (gate on, both modes available, no explicit override, not
@@ -2255,7 +2249,7 @@ export async function bridgeMain(args: string[]): Promise<void> {
       `\nTau Remote Control is launching in spawn mode which lets you create new sessions in this project from Tau on Web or your Mobile app. Learn more here: https://code.claude.com/docs/en/remote-control\n\n` +
         `Spawn mode for this project:\n` +
         `  [1] same-dir \u2014 sessions share the current directory (default)\n` +
-        `  [2] worktree \u2014 each session gets an isolated git worktree\n\n` +
+        `  [2] worktree \u2014 each session gets an isolated workspace\n\n` +
         `This can be changed later or explicitly set with --spawn=same-dir or --spawn=worktree.\n`,
     )
     const answer = await new Promise<string>(resolve => {
@@ -2323,18 +2317,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
   if (!resumeSessionId) {
     const { clearBridgePointer } = await import('./bridgePointer.js')
     await clearBridgePointer(dir)
-  }
-
-  // Worktree mode requires either git or WorktreeCreate/WorktreeRemove hooks.
-  // Only reachable via explicit --spawn=worktree (default is same-dir);
-  // saved worktree pref was already guarded above.
-  if (spawnMode === 'worktree' && !worktreeAvailable) {
-    // biome-ignore lint/suspicious/noConsole: intentional error output
-    console.error(
-      `Error: Worktree mode requires a git repository or WorktreeCreate hooks configured. Use --spawn=session for single-session mode.`,
-    )
-    // eslint-disable-next-line custom-rules/no-process-exit
-    process.exit(1)
   }
 
   const branch = await getBranch()
@@ -2562,6 +2544,9 @@ export async function bridgeMain(args: string[]): Promise<void> {
     multi_session_gate: multiSessionEnabled,
     pre_create_session: preCreateSession,
     worktree_available: worktreeAvailable,
+    worktree_backend: (hasGitOrHookWorktree
+      ? 'git_or_hook'
+      : 'snapshot') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
   logForDiagnosticsNoPII('info', 'bridge_started', {
     max_sessions: config.maxSessions,
@@ -2629,7 +2614,7 @@ export async function bridgeMain(args: string[]): Promise<void> {
       })
       logger.logStatus(
         newMode === 'worktree'
-          ? 'Spawn mode: worktree (new sessions get isolated git worktrees)'
+          ? 'Spawn mode: worktree (new sessions get isolated workspaces)'
           : 'Spawn mode: same-dir (new sessions share the current directory)',
       )
       logger.setSpawnModeDisplay(newMode)
@@ -2856,20 +2841,7 @@ export async function runBridgeHeadless(
       ? process.env.CLAUDE_BRIDGE_SESSION_INGRESS_URL
       : baseUrl
 
-  const { getBranch, getRemoteUrl, findGitRoot } = await import(
-    '../utils/git.js'
-  )
-  const { hasWorktreeCreateHook } = await import('../utils/hooks.js')
-
-  if (opts.spawnMode === 'worktree') {
-    const worktreeAvailable =
-      hasWorktreeCreateHook() || findGitRoot(dir) !== null
-    if (!worktreeAvailable) {
-      throw new BridgeHeadlessPermanentError(
-        `Worktree mode requires a git repository or WorktreeCreate hooks. Directory ${dir} has neither.`,
-      )
-    }
-  }
+  const { getBranch, getRemoteUrl } = await import('../utils/git.js')
 
   const branch = await getBranch()
   const gitRepoUrl = await getRemoteUrl()

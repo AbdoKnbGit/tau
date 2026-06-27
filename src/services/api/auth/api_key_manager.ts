@@ -157,6 +157,7 @@ function detectKeyFormat(provider: string, key: string): string {
     opencodego: '',
     commandcode: '',
     fireworks: '',
+    cloudflare: '',
     groq: 'gsk_',
     mistral: '',
     nim: 'nvapi-',
@@ -190,6 +191,7 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   opencodego: { prefix: '', minLength: 10, displayName: 'OpenCode Go' },
   commandcode: { prefix: '', minLength: 10, displayName: 'Command Code' },
   fireworks: { prefix: '', minLength: 10, displayName: 'Fireworks AI' },
+  cloudflare: { prefix: '', minLength: 10, displayName: 'Cloudflare Workers AI' },
   groq: { prefix: 'gsk_', minLength: 20, displayName: 'Groq' },
   mistral: { prefix: '', minLength: 20, displayName: 'Mistral' },
   nim: { prefix: 'nvapi-', minLength: 20, displayName: 'NVIDIA NIM' },
@@ -263,6 +265,13 @@ export function deleteAllProviderCredentials(provider: string): void {
     delete process.env.COMMANDCODE_API_KEY
     delete process.env.COMMAND_CODE_API_KEY
   }
+  if (provider === 'cloudflare') {
+    deleteProviderKey('cloudflare_account_id')
+    delete process.env.CLOUDFLARE_ACCOUNT_ID
+    delete process.env.CLOUDFLARE_API_TOKEN
+    delete process.env.CLOUDFLARE_API_KEY
+    delete process.env.CLOUDFLARE_WORKERS_AI_TOKEN
+  }
 
   // Keep lane-backed providers in sync with credential deletion so the
   // current session doesn't require a restart to forget stale auth.
@@ -334,11 +343,12 @@ export function deleteAllProviderCredentials(provider: string): void {
     provider === 'opencodego' ||
     provider === 'commandcode' ||
     provider === 'fireworks' ||
+    provider === 'cloudflare' ||
     provider === 'groq'
   ) {
     void import('../providers/providerShim.js')
       .then(({ reloadOpenAICompatProviderAuth }) =>
-        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'opencodego' | 'commandcode' | 'fireworks' | 'groq'),
+        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'opencodego' | 'commandcode' | 'fireworks' | 'cloudflare' | 'groq'),
       )
       .catch(() => {})
   }

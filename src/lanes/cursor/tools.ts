@@ -528,13 +528,13 @@ const CURSOR_EXTRA_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'run_terminal_cmd',
     implId: 'Bash',
     nativeDescription:
-      'Execute a shell command in the workspace. Use this for running commands, tests, git, and development workflows.',
+      'Execute a shell command in the workspace. Use this for running commands, tests, git, and development workflows. For long-running servers, watchers, port-forwards, tunnels, or foreground container runs, set is_background=true and do not put "&", "nohup", "disown", "echo $!", "docker compose up -d", or "docker run -d" in the command.',
     nativeSchema: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Shell command to execute.' },
+        command: { type: 'string', description: 'Shell command to execute. Do not include raw shell backgrounding with &, nohup, disown, echo $!, docker compose up -d, or docker run -d.' },
         description: { type: 'string', description: 'Brief description for the command.' },
-        is_background: { type: 'boolean', description: 'Whether the command should keep running in the background.' },
+        is_background: { type: 'boolean', description: 'Set true for long-running servers/watchers, port-forwards, tunnels, and foreground container runs. Tau tracks and can stop the background task; remove shell-level detaching from command.' },
       },
       required: ['command'],
     },

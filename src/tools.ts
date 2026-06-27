@@ -76,6 +76,18 @@ import { NATIVE_READ_ONLY_TOOLS } from './tools/NativeTools/NativeTools.js'
 import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { SnapshotTool } from './tools/SnapshotTool/SnapshotTool.js'
 import { FileDiffTool } from './tools/FileDiffTool/FileDiffTool.js'
+import { ToolGuideTool } from './tools/ToolGuideTool/ToolGuideTool.js'
+import { ProjectWorkflowTool } from './tools/ProjectWorkflowTool/ProjectWorkflowTool.js'
+import { TestSearchTool } from './tools/TestSearchTool/TestSearchTool.js'
+import { CodebaseRetrievalTool } from './tools/CodebaseRetrievalTool/CodebaseRetrievalTool.js'
+import { GitHistorySearchTool } from './tools/GitHistorySearchTool/GitHistorySearchTool.js'
+import { InspectSiteTool } from './tools/InspectSiteTool/InspectSiteTool.js'
+import { PackageManagerTool } from './tools/PackageManagerTool/PackageManagerTool.js'
+import { SpecQuestTool } from './tools/SpecQuestTool/SpecQuestTool.js'
+import { MermaidRenderTool } from './tools/MermaidRenderTool/MermaidRenderTool.js'
+import { IntegrationHubTool } from './tools/IntegrationHubTool/IntegrationHubTool.js'
+import { DeployPreviewTool } from './tools/DeployPreviewTool/DeployPreviewTool.js'
+import { VisualDesignAuditTool } from './tools/VisualDesignAuditTool/VisualDesignAuditTool.js'
 import { PtyTool } from './tools/PtyTool/PtyTool.js'
 import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
 import { ReadMcpResourceTool } from './tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
@@ -231,6 +243,18 @@ export function getAllBaseTools(): Tools {
     // SnapshotTool defaults ON. Opt out: TAU_SNAPSHOT_DISABLE=1.
     ...(isEnvTruthy(process.env.TAU_SNAPSHOT_DISABLE) ? [] : [SnapshotTool]),
     FileDiffTool,
+    ToolGuideTool,
+    ProjectWorkflowTool,
+    TestSearchTool,
+    CodebaseRetrievalTool,
+    GitHistorySearchTool,
+    InspectSiteTool,
+    PackageManagerTool,
+    SpecQuestTool,
+    MermaidRenderTool,
+    IntegrationHubTool,
+    DeployPreviewTool,
+    VisualDesignAuditTool,
     // PtyTool defaults OFF — interactive TTY rendering is still rough.
     // Opt in: TAU_PTY_ENABLE=1. The tool also self-checks node-pty
     // availability in isEnabled() so it stays hidden where the optional

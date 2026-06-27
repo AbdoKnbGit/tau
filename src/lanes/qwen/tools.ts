@@ -93,13 +93,19 @@ export const QWEN_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'run_shell_command',
     implId: 'Bash',
     nativeDescription:
-      'Run a Bash/POSIX shell command. Set is_background=true for long-running processes. Do NOT use "&" to background.',
+      'Run a Bash/POSIX shell command. Set is_background=true for long-running servers, watchers, port-forwards, tunnels, and foreground container runs. Do NOT use "&", "nohup", "disown", "echo $!", "docker compose up -d", or "docker run -d" to background.',
     nativeSchema: {
       type: 'object',
       properties: {
-        command: { type: 'string' },
+        command: {
+          type: 'string',
+          description: 'Exact Bash/POSIX command to execute. Do not include raw shell backgrounding with &, nohup, disown, echo $!, docker compose up -d, or docker run -d.',
+        },
         description: { type: 'string' },
-        is_background: { type: 'boolean' },
+        is_background: {
+          type: 'boolean',
+          description: 'Set true for long-running servers/watchers, port-forwards, tunnels, and foreground container runs. Tau tracks and can stop the background task; remove shell-level detaching from command.',
+        },
       },
       required: ['command'],
     },

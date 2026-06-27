@@ -64,6 +64,9 @@ export function initLanes(opts?: {
   // OpenAI / Codex
   openaiApiKey?: string
   openaiBaseUrl?: string
+  openaiChatgptAccessToken?: string
+  openaiChatgptAccountId?: string
+  openaiChatgptIdToken?: string
   // DeepSeek
   deepseekApiKey?: string
   deepseekBaseUrl?: string
@@ -111,6 +114,9 @@ export function initLanes(opts?: {
   // Fireworks AI
   fireworksApiKey?: string
   fireworksBaseUrl?: string
+  // Cloudflare Workers AI
+  cloudflareApiKey?: string
+  cloudflareBaseUrl?: string
   // Qwen (DashScope)
   qwenApiKey?: string
   // OAuth-backed providers on the shared compat transport. iFlow uses a
@@ -151,6 +157,9 @@ export function initLanes(opts?: {
   initCodexLane({
     apiKey: opts?.openaiApiKey,
     baseUrl: opts?.openaiBaseUrl,
+    chatgptAccessToken: opts?.openaiChatgptAccessToken,
+    chatgptAccountId: opts?.openaiChatgptAccountId,
+    chatgptIdToken: opts?.openaiChatgptIdToken,
   })
 
   // ── Qwen lane (native OAuth + DashScope) ──
@@ -219,6 +228,7 @@ export function initLanes(opts?: {
     opencode: opts?.opencodeApiKey ? { apiKey: opts.opencodeApiKey, baseUrl: opts.opencodeBaseUrl } : undefined,
     opencodego: opts?.opencodegoApiKey ? { apiKey: opts.opencodegoApiKey, baseUrl: opts.opencodegoBaseUrl } : undefined,
     fireworks: opts?.fireworksApiKey ? { apiKey: opts.fireworksApiKey, baseUrl: opts.fireworksBaseUrl } : undefined,
+    cloudflare: opts?.cloudflareApiKey ? { apiKey: opts.cloudflareApiKey, baseUrl: opts.cloudflareBaseUrl } : undefined,
     iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,
     kilocode: opts?.kilocodeApiKey ? { apiKey: opts.kilocodeApiKey } : undefined,
     copilot: opts?.copilotApiKey ? { apiKey: opts.copilotApiKey } : undefined,

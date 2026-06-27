@@ -52,6 +52,12 @@ import {
   supportsCommandCodeEffortSelection,
 } from '../utils/model/commandCodeThinking.js'
 import {
+  cycleCloudflareEffort,
+  getCloudflareEffort,
+  getCloudflareEffortLabel,
+  supportsCloudflareThinkingSelection,
+} from '../utils/model/cloudflareThinking.js'
+import {
   getVoiceConversationStatus,
   hasVoiceConversationApiKey,
 } from '../voice/voiceConversation.js'
@@ -251,6 +257,7 @@ export function ProviderModelPicker({
   const [, setClineEffortTick] = useState(0)
   const [, setOpencodeEffortTick] = useState(0)
   const [, setCommandCodeEffortTick] = useState(0)
+  const [, setCloudflareEffortTick] = useState(0)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
 
   const selectedProvider =
@@ -493,6 +500,16 @@ export function ProviderModelPicker({
         setCommandCodeEffortTick(tick => tick + 1)
         return
       }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'cloudflare'
+        && supportsCloudflareThinkingSelection(row.model.id, row.model.tags)
+      ) {
+        cycleCloudflareEffort(row.model.id, key.leftArrow ? 'left' : 'right')
+        setCloudflareEffortTick(tick => tick + 1)
+        return
+      }
       return
     }
 
@@ -638,6 +655,10 @@ export function ProviderModelPicker({
                 selectedProvider === 'commandcode'
                 && supportsCommandCodeEffortSelection(model.id, model.tags)
               const commandCodeEffort = isCommandCodeThinking ? getCommandCodeEffort(model.id) : undefined
+              const isCloudflareThinking =
+                selectedProvider === 'cloudflare'
+                && supportsCloudflareThinkingSelection(model.id, model.tags)
+              const cloudflareEffort = isCloudflareThinking ? getCloudflareEffort(model.id) : undefined
               const selectedVariant = getSelectedVariant(
                 selectedProvider,
                 model,
@@ -690,6 +711,11 @@ export function ProviderModelPicker({
                   {isCommandCodeThinking && commandCodeEffort && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ {getCommandCodeEffortLabel(commandCodeEffort)} ▶
+                    </Text>
+                  )}
+                  {isCloudflareThinking && cloudflareEffort && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ Thinking {getCloudflareEffortLabel(cloudflareEffort)} ▶
                     </Text>
                   )}
                   {showVariant && selectedVariant && (

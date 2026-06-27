@@ -28,7 +28,6 @@ import type {
 } from '../types.js'
 import {
   anthropicMessagesToOpenAI,
-  anthropicToolsToOpenAI,
   type OpenAIMessage,
   type OpenAITool,
 } from '../../services/api/adapters/anthropic_to_openai.js'
@@ -41,13 +40,13 @@ import { loadProviderKey } from '../../services/api/auth/api_key_manager.js'
 import { refreshClineOAuth } from '../../services/api/auth/oauth_services.js'
 import {
   OPENAI_COMPAT_TOOL_USAGE_RULES,
-  appendStrictParamsHint,
 } from '../shared/mcp_bridge.js'
 import {
   applyClineReasoningToRequest,
   getClineRequestEffort,
   isClineThinkingModel,
 } from '../../utils/model/clineThinking.js'
+import { buildClineToolsForRequest } from './tools.js'
 
 interface StoredClineOAuthBlob {
   accessToken?: string
@@ -451,16 +450,7 @@ export class ClineLane implements Lane {
   }
 
   private _buildTools(tools: LaneProviderCallParams['tools']): OpenAITool[] {
-    return anthropicToolsToOpenAI(tools).map((tool) => ({
-      ...tool,
-      function: {
-        ...tool.function,
-        description: appendStrictParamsHint(
-          tool.function.description ?? '',
-          tool.function.parameters,
-        ),
-      },
-    }))
+    return buildClineToolsForRequest(tools)
   }
 
   private _buildRequestBody(opts: {

@@ -18,6 +18,17 @@ export function useStalledAnimation(
   const stalledIntensityRef = useRef(0)
   const lastSmoothTime = useRef(time)
 
+  // A new turn resets the response-length counter. Treat that as a fresh
+  // pre-stream state so the spinner does not inherit stall-red from the
+  // previous response.
+  if (currentResponseLength < lastResponseLength.current) {
+    lastTokenTime.current = time
+    lastResponseLength.current = currentResponseLength
+    mountTime.current = time
+    stalledIntensityRef.current = 0
+    lastSmoothTime.current = time
+  }
+
   // Reset timer when new tokens arrive (check actual length change)
   if (currentResponseLength > lastResponseLength.current) {
     lastTokenTime.current = time
@@ -31,14 +42,18 @@ export function useStalledAnimation(
   if (hasActiveTools) {
     timeSinceLastToken = 0
     lastTokenTime.current = time
-  } else if (currentResponseLength > 0) {
+  } else if (lastResponseLength.current > 0) {
     timeSinceLastToken = time - lastTokenTime.current
   } else {
-    timeSinceLastToken = time - mountTime.current
+    // Waiting for the first token is normal model latency, not a stalled
+    // stream. Keep the status neutral until output has actually started.
+    timeSinceLastToken = 0
+    lastTokenTime.current = time
+    mountTime.current = time
   }
 
-  // Calculate stalled intensity based on time since last token
-  // Start showing red after 3 seconds of no new tokens (only when no tools are active)
+  // Calculate stalled intensity based on time since the last streamed token.
+  // Start showing red after 3 seconds only once output has begun.
   const isStalled = timeSinceLastToken > 3000 && !hasActiveTools
   const intensity = isStalled
     ? Math.min((timeSinceLastToken - 3000) / 2000, 1) // Fade over 2 seconds

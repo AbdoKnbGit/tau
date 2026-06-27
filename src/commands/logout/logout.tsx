@@ -152,6 +152,16 @@ export async function call(
  */
 function providerIsConfigured(p: APIProvider): boolean {
   if (p === 'firstParty') return true // Anthropic path always does something
+  if (p === 'cloudflare') {
+    return (
+      hasStoredKey('cloudflare') ||
+      hasStoredKey('cloudflare_account_id') ||
+      !!process.env.CLOUDFLARE_ACCOUNT_ID?.trim() ||
+      !!process.env.CLOUDFLARE_WORKERS_AI_TOKEN?.trim() ||
+      !!process.env.CLOUDFLARE_API_TOKEN?.trim() ||
+      !!process.env.CLOUDFLARE_API_KEY?.trim()
+    )
+  }
   if (hasStoredKey(p) || hasStoredKey(`${p}_oauth`)) return true
   // Gemini row = CLI-tier OAuth only (antigravity has its own row).
   if (p === 'gemini') {

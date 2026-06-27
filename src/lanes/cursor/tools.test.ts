@@ -125,6 +125,18 @@ test('Cursor run_shell_command input adapts to shared Bash schema', () => {
   assert(resolved.input.run_in_background === true, 'wrong background flag')
 })
 
+test('Cursor shell description forbids raw backgrounding', () => {
+  const defs = buildCursorToolDefinitions([
+    { name: 'Bash', input_schema: { type: 'object' } },
+  ])
+  const shell = defs.find(def => def.name === 'run_terminal_cmd')
+  assert(shell, 'missing run_terminal_cmd')
+  const text = JSON.stringify(shell)
+  assert(text.includes('is_background=true'), 'description should mention is_background')
+  assert(text.includes('echo $!'), 'description should warn against pid capture')
+  assert(text.includes('docker compose up -d'), 'description should warn against Docker detach')
+})
+
 test('Cursor list_dir emits Bash syntax for the Bash implementation', () => {
   const resolved = resolveCursorToolCall('list_dir', {
     dir_path: 'C:\\Projects\\example',

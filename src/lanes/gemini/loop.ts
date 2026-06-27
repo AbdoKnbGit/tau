@@ -43,6 +43,7 @@ import {
 } from './tools.js'
 import {
   applyAntigravityPrefixPad,
+  freezeAntigravityVolatilePrefix,
   paceAntigravityAgentRequest,
   recordAntigravityCacheRead,
   writeAntigravityCacheDebugEntry,
@@ -118,18 +119,25 @@ export class GeminiLane implements Lane {
     // across turns. If the caller passed flat text without the marker,
     // we fall back to treating the whole thing as stable (no regression).
     const split = splitSystemAtBoundary(systemText)
-    const volatileText = split.volatileText
+    const isAntigravityModel = ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase())
+    const isAntigravityGemini =
+      isAntigravityModel && isAntigravityGeminiModel(model)
+    const volatileText = isAntigravityGemini
+      ? freezeAntigravityVolatilePrefix(
+        antigravityCacheKey(model, sessionId, messages),
+        split.volatileText,
+      )
+      : split.volatileText
 
     // Build id→native-name map across the whole conversation so
     // tool_result blocks can find their original Gemini function name.
     const toolUseIdToNative = buildToolUseIdToNativeMap(messages)
 
     // Convert Anthropic-format messages → Gemini native contents.
-    // If we have volatile content, inject it as a leading user message
-    // (this is the correct slot per Google's `cachedContents` design:
-    // the cache key hashes only the stable systemInstruction+tools,
-    // and volatile bits ride the `contents[]` array which is not
-    // cache-keyed).
+    // If we have volatile content, inject it as a leading user message.
+    // API-key Gemini cachedContents can use fresh volatile context here because
+    // contents[] is not part of that cache key. Antigravity's implicit cache
+    // does hash contents[], so volatileText is frozen above before injection.
     const contents = convertHistoryToGemini(messages, toolUseIdToNative)
     if (volatileText) {
       contents.unshift({
@@ -150,12 +158,10 @@ export class GeminiLane implements Lane {
     // prefix pad below force-warms small prompts too, but at ~17.4k tokens
     // every turn; it (and pacing) are OFF unless TAU_ANTIGRAVITY_MAX_CACHE=1.
     // See antigravity_cache.ts for the measured cache semantics.
-    const isAntigravityModel = ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase())
     // The implicit-cache discipline (prefix pad + commit-window pacing)
     // targets ONLY the single-slot Gemini cache. Claude resold through
     // Antigravity uses a multi-entry, low-minimum cache where padding and
     // pacing would only add latency and tokens — so it stays exempt.
-    const isAntigravityGemini = isAntigravityModel && isAntigravityGeminiModel(model)
     const stableText = isAntigravityGemini
       ? applyAntigravityPrefixPad(
         split.stableText,
@@ -1100,6 +1106,16 @@ function stableAntigravitySessionId(
 ): string {
   const source = sessionId?.trim() || firstUserTextFromMessages(messages)
   return stableNegativeHash(source || JSON.stringify(messages.map(msg => msg.role)))
+}
+
+function antigravityCacheKey(
+  model: string,
+  sessionId: string | undefined,
+  messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
+): string {
+  const sessionKey =
+    sessionId?.trim() || stableAntigravitySessionId(undefined, messages)
+  return `${model.toLowerCase()}:${sessionKey}`
 }
 
 function firstUserTextFromMessages(

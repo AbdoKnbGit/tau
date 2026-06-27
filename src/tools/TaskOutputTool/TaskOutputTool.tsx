@@ -1,4 +1,5 @@
 import { c as _c } from "react/compiler-runtime";
+import { stat } from 'fs/promises';
 import React from 'react';
 import { z } from 'zod/v4';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
@@ -20,7 +21,7 @@ import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { sleep } from '../../utils/sleep.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { countCharInString } from '../../utils/stringUtils.js';
-import { getTaskOutput } from '../../utils/task/diskOutput.js';
+import { getTaskOutput, getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { updateTaskState } from '../../utils/task/framework.js';
 import { formatTaskOutput } from '../../utils/task/outputFormatting.js';
 import type { ThemeName } from '../../utils/theme.js';
@@ -52,6 +53,68 @@ type TaskOutputToolOutput = {
   retrieval_status: 'success' | 'timeout' | 'not_ready';
   task: TaskOutput | null;
 };
+
+// Only fall back to disk for generated task IDs; app-state lookup handles any other shape.
+const GENERATED_TASK_ID_PATTERN = /^[abrtwmd][0-9a-z]{8}$/;
+
+function inferTaskTypeFromId(taskId: string): TaskType | null {
+  if (!GENERATED_TASK_ID_PATTERN.test(taskId)) {
+    return null;
+  }
+  switch (taskId[0]) {
+    case 'a':
+      return 'local_agent';
+    case 'b':
+      return 'local_bash';
+    case 'd':
+      return 'dream';
+    case 'm':
+      return 'monitor_mcp';
+    case 'r':
+      return 'remote_agent';
+    case 't':
+      return 'in_process_teammate';
+    case 'w':
+      return 'local_workflow';
+    default:
+      return null;
+  }
+}
+
+async function getRecoverableTaskType(taskId: string): Promise<TaskType | null> {
+  const taskType = inferTaskTypeFromId(taskId);
+  if (!taskType) {
+    return null;
+  }
+  try {
+    await stat(getTaskOutputPath(taskId));
+  } catch {
+    return null;
+  }
+  return taskType;
+}
+
+async function getRecoveredTaskOutputData(taskId: string): Promise<TaskOutput | null> {
+  const taskType = await getRecoverableTaskType(taskId);
+  if (!taskType) {
+    return null;
+  }
+  const output = await getTaskOutput(taskId);
+  const recovered: TaskOutput = {
+    task_id: taskId,
+    task_type: taskType,
+    status: 'completed',
+    description: `Recovered output for evicted task ${taskId}`,
+    output
+  };
+  if (taskType === 'local_bash') {
+    return {
+      ...recovered,
+      exitCode: null
+    };
+  }
+  return recovered;
+}
 
 // Re-export Progress from centralized types to break import cycles
 export type { TaskOutputProgress as Progress } from '../../types/tools.js';
@@ -195,6 +258,11 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     const appState = getAppState();
     const task = appState.tasks?.[task_id] as TaskState | undefined;
     if (!task) {
+      if (await getRecoverableTaskType(task_id)) {
+        return {
+          result: true
+        };
+      }
       return {
         result: false,
         message: `No task found with ID: ${task_id}`,
@@ -214,6 +282,15 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     const appState = toolUseContext.getAppState();
     const task = appState.tasks?.[task_id] as TaskState | undefined;
     if (!task) {
+      const recoveredTask = await getRecoveredTaskOutputData(task_id);
+      if (recoveredTask) {
+        return {
+          data: {
+            retrieval_status: 'success' as const,
+            task: recoveredTask
+          }
+        };
+      }
       throw new Error(`No task found with ID: ${task_id}`);
     }
     if (!block) {
@@ -252,6 +329,15 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     }
     const completedTask = await waitForTaskCompletion(task_id, toolUseContext.getAppState, timeout, toolUseContext.abortController);
     if (!completedTask) {
+      const recoveredTask = await getRecoveredTaskOutputData(task_id);
+      if (recoveredTask) {
+        return {
+          data: {
+            retrieval_status: 'success' as const,
+            task: recoveredTask
+          }
+        };
+      }
       return {
         data: {
           retrieval_status: 'timeout' as const,

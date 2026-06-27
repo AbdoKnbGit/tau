@@ -7,13 +7,15 @@
  *   natively support it); stripped for everything else so OpenRouter
  *   doesn't surface it as an unknown-field warning.
  * - Accepts `reasoning: { effort }` for reasoning-capable upstreams.
- * - Sends OpenAI cache affinity fields when a stable session id is present.
+ * - Sends OpenRouter session affinity/cache fields when a stable session id is present.
+ * - Enables OpenRouter context-compression by default so over-context prompts
+ *   use the gateway's middle-out compressor instead of failing.
  * - Honors `function.strict: true` for the underlying model.
  * - `transforms`/`route`/`models` are OpenRouter-specific fields that
  *   pass through as-is.
  */
 
-import type { Transformer, TransformContext } from './base.js'
+import type { Transformer, TransformContext, HeaderContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 
 export const openrouterTransformer: Transformer = {
@@ -32,7 +34,7 @@ export const openrouterTransformer: Transformer = {
     return requested > 8192 ? 8192 : requested
   },
 
-  buildHeaders(_apiKey: string): Record<string, string> {
+  buildHeaders(_apiKey: string, ctx?: HeaderContext): Record<string, string> {
     const referer = process.env.OPENROUTER_REFERER ?? 'https://github.com/AbdoKnbGit/tau'
     const title = process.env.OPENROUTER_TITLE ?? 'Tau'
     const categories = process.env.OPENROUTER_CATEGORIES ?? 'cli-agent'
@@ -42,17 +44,22 @@ export const openrouterTransformer: Transformer = {
       'X-OpenRouter-Title': title,
       'X-OpenRouter-Categories': categories,
       'X-Title': title,
+      ...(ctx?.sessionId ? { 'x-session-id': openRouterSessionKey(ctx.sessionId, ctx.model) } : {}),
     }
   },
 
   transformRequest(body: OpenAIChatRequest, ctx: TransformContext): OpenAIChatRequest {
     if (ctx.sessionId) {
+      const sessionKey = openRouterSessionKey(ctx.sessionId, body.model)
+      body.session_id = sessionKey
       const retention = resolveOpenRouterCacheRetention()
       if (retention !== 'none') {
-        body.prompt_cache_key = ctx.sessionId
+        body.prompt_cache_key = sessionKey
         if (retention === 'long') body.prompt_cache_retention = '24h'
       }
     }
+
+    applyOpenRouterContextCompressionPlugin(body)
 
     // Only emit the reasoning knob for models that actually support it.
     // Llama-4 / prompt-guard / base-chat Llamas routed via Vertex return
@@ -125,10 +132,10 @@ export const openrouterTransformer: Transformer = {
 
   smallFastModel(model: string): string | null {
     const m = model.toLowerCase()
-    // Free-tier parent ⇒ free fast model. Otherwise the title /
-    // tool-use-summary side calls would silently leave the free credit
-    // pool, surprise-billing the user.
-    if (m.endsWith(':free')) return 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free'
+    // Free-tier parent: reuse the selected model. Routing side queries to a
+    // different free model splits cache/session accounting and shows up as a
+    // giant cold-context bucket on that helper model.
+    if (m.endsWith(':free')) return null
     if (m.startsWith('anthropic/')) return 'anthropic/claude-haiku-4-5'
     if (m.startsWith('openai/')) return 'openai/gpt-4o-mini'
     if (m.startsWith('google/')) return 'google/gemini-2.5-flash-lite'
@@ -148,6 +155,26 @@ export const openrouterTransformer: Transformer = {
 }
 
 type OpenRouterCacheRetention = 'none' | 'short' | 'long'
+type OpenRouterContextCompressionMode = 'enabled' | 'disabled'
+
+function openRouterSessionKey(sessionId: string, model: string): string {
+  return normalizeOpenRouterSessionId(`${sessionId}:${model.toLowerCase()}`)
+}
+
+function normalizeOpenRouterSessionId(sessionId: string): string {
+  if (sessionId.length <= 256) return sessionId
+  const hash = shortStableHash(sessionId)
+  return `${sessionId.slice(0, 247)}:${hash}`
+}
+
+function shortStableHash(value: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
+}
 
 function resolveOpenRouterCacheRetention(): OpenRouterCacheRetention {
   const raw = (
@@ -163,6 +190,35 @@ function resolveOpenRouterCacheRetention(): OpenRouterCacheRetention {
     return 'long'
   }
   return 'short'
+}
+
+function resolveOpenRouterContextCompressionMode(): OpenRouterContextCompressionMode {
+  const raw = (
+    process.env.CLAUDEX_OPENROUTER_CONTEXT_COMPRESSION
+    ?? process.env.OPENROUTER_CONTEXT_COMPRESSION
+    ?? ''
+  ).trim().toLowerCase()
+
+  if (raw === 'none' || raw === 'off' || raw === 'false' || raw === '0' || raw === 'disabled') {
+    return 'disabled'
+  }
+  return 'enabled'
+}
+
+function applyOpenRouterContextCompressionPlugin(body: OpenAIChatRequest): void {
+  const mode = resolveOpenRouterContextCompressionMode()
+  const existing = body.plugins?.find(plugin => plugin.id === 'context-compression')
+  if (existing) {
+    if (mode === 'disabled') existing.enabled = false
+    return
+  }
+
+  body.plugins = body.plugins ?? []
+  body.plugins.push(
+    mode === 'disabled'
+      ? { id: 'context-compression', enabled: false }
+      : { id: 'context-compression' },
+  )
 }
 
 function isGeminiOnOR(model: string): boolean {

@@ -88,21 +88,15 @@ const OPENAI_FALLBACK_MODELS: ModelInfo[] = [
     supportsToolCalling: true,
     tags: ['fast', 'reasoning'],
   },
-  {
-    id: 'gpt-5.3-codex',
-    name: 'GPT-5.3 Codex',
-    contextWindow: 272000,
-    supportsToolCalling: true,
-    tags: ['reasoning'],
-  },
-  {
-    id: 'gpt-5.2',
-    name: 'GPT-5.2',
-    contextWindow: 272000,
-    supportsToolCalling: true,
-    tags: ['reasoning'],
-  },
 ]
+
+const OPENAI_SELECTABLE_MODEL_IDS = new Set(
+  OPENAI_FALLBACK_MODELS.map(model => model.id),
+)
+
+function isSelectableOpenAIModel(modelId: string): boolean {
+  return OPENAI_SELECTABLE_MODEL_IDS.has(modelId.toLowerCase())
+}
 
 function mergeOpenAIModels(apiModels: readonly ModelInfo[]): ModelInfo[] {
   const merged = new Map<string, ModelInfo>()
@@ -110,7 +104,7 @@ function mergeOpenAIModels(apiModels: readonly ModelInfo[]): ModelInfo[] {
     merged.set(model.id, model)
   }
   for (const model of apiModels) {
-    if (!merged.has(model.id)) {
+    if (isSelectableOpenAIModel(model.id) && !merged.has(model.id)) {
       merged.set(model.id, model)
     }
   }
@@ -276,6 +270,7 @@ export class OpenAIProvider extends BaseProvider {
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
     const optimized = this.optimizeParams(params)
     const model = this.resolveModel(optimized.model)
+    this._adoptRequestSessionId(optimized.sessionId)
 
     // GPT-5 Codex models use the Responses API
     if (this._useResponsesAPI(model)) {
@@ -301,6 +296,10 @@ export class OpenAIProvider extends BaseProvider {
     // etc. risks a 400 on strict-JSON providers, so gate on this.name.
     if (this.name === 'openai') {
       body.prompt_cache_key = this.cacheSessionKey
+    } else if (this.name === 'openrouter') {
+      const sessionKey = this.cacheSessionKeyForModel(model)
+      body.session_id = sessionKey
+      body.prompt_cache_key = sessionKey
     }
     if (useNewTokenParam) {
       body.max_completion_tokens = optimized.max_tokens
@@ -321,7 +320,7 @@ export class OpenAIProvider extends BaseProvider {
     const ac = new AbortController()
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: this._headers(),
+      headers: this._headers(model),
       body: JSON.stringify(body),
       signal: ac.signal,
     })
@@ -346,6 +345,7 @@ export class OpenAIProvider extends BaseProvider {
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
     const optimized = this.optimizeParams(params)
     const model = this.resolveModel(optimized.model)
+    this._adoptRequestSessionId(optimized.sessionId)
 
     // GPT-5 Codex models use the Responses API
     if (this._useResponsesAPI(model)) {
@@ -365,6 +365,10 @@ export class OpenAIProvider extends BaseProvider {
     }
     if (this.name === 'openai') {
       body.prompt_cache_key = this.cacheSessionKey
+    } else if (this.name === 'openrouter') {
+      const sessionKey = this.cacheSessionKeyForModel(model)
+      body.session_id = sessionKey
+      body.prompt_cache_key = sessionKey
     }
     if (useNewTokenParam) {
       body.max_completion_tokens = optimized.max_tokens
@@ -384,7 +388,7 @@ export class OpenAIProvider extends BaseProvider {
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: this._headers(),
+      headers: this._headers(model),
       body: JSON.stringify(body),
     })
 
@@ -536,12 +540,18 @@ export class OpenAIProvider extends BaseProvider {
     if (tokReset) rl.tokensReset = tokReset
   }
 
-  protected _headers(): Record<string, string> {
+  protected _headers(_model?: string): Record<string, string> {
     return {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${this.apiKey}`,
       ...this.extraHeaders,
     }
+  }
+
+  private _adoptRequestSessionId(sessionId: string | undefined): void {
+    const trimmed = sessionId?.trim()
+    if ((this.name !== 'openai' && this.name !== 'openrouter') || !trimmed) return
+    this._cacheSessionId = trimmed
   }
 
   /**
@@ -579,6 +589,10 @@ export class OpenAIProvider extends BaseProvider {
         : `oai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
     }
     return this._cacheSessionId
+  }
+
+  protected cacheSessionKeyForModel(_model: string): string {
+    return this.cacheSessionKey
   }
 
   /** Force a new cache-session id — call on conversation reset / compact. */

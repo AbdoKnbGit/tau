@@ -111,6 +111,7 @@ const MANAGEABLE_PROVIDERS = [
   'opencode',
   'opencodego',
   'fireworks',
+  'cloudflare',
   'mistral',
   'nim',
   'deepseek',
@@ -363,7 +364,8 @@ function usesEmbeddedProviderLogin(provider: ManageableProvider): provider is Ke
     provider === 'opencode' ||
     provider === 'opencodego' ||
     provider === 'commandcode' ||
-    provider === 'fireworks'
+    provider === 'fireworks' ||
+    provider === 'cloudflare'
   )
 }
 

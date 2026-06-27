@@ -39,6 +39,12 @@ import {
   setClineEffort,
   supportsClineThinkingSelection,
 } from '../../utils/model/clineThinking.js'
+import {
+  _resetCloudflareThinkingForTests,
+  cloudflareEffortLevelsForModel,
+  setCloudflareEffort,
+  supportsCloudflareThinkingSelection,
+} from '../../utils/model/cloudflareThinking.js'
 
 let passed = 0
 let failed = 0
@@ -96,13 +102,28 @@ function withTempClineThinkingStore(fn: () => void): void {
   }
 }
 
+function withTempCloudflareThinkingStore(fn: () => void): void {
+  const dir = mkdtempSync(join(tmpdir(), 'tau-cloudflare-thinking-'))
+  const oldStore = process.env.TAU_CLOUDFLARE_THINKING_STORE
+  process.env.TAU_CLOUDFLARE_THINKING_STORE = join(dir, 'store.json')
+  _resetCloudflareThinkingForTests()
+  try {
+    fn()
+  } finally {
+    if (oldStore === undefined) delete process.env.TAU_CLOUDFLARE_THINKING_STORE
+    else process.env.TAU_CLOUDFLARE_THINKING_STORE = oldStore
+    _resetCloudflareThinkingForTests()
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 function main(): void {
   console.log('openai-compat transformers:')
 
   // ── Registry invariants ─────────────────────────────────────────
   const ids: Array<Transformer['id']> = [
     'deepseek', 'glm', 'groq', 'mistral', 'nim', 'ollama', 'openrouter',
-    'agentrouter', 'opencode', 'opencodego', 'generic',
+    'agentrouter', 'opencode', 'opencodego', 'cloudflare', 'generic',
   ]
   for (const id of ids) {
     test(`registry has ${id}`, () => {
@@ -113,6 +134,21 @@ function main(): void {
         `invalid defaultBaseUrl: ${t.defaultBaseUrl}`)
     })
   }
+
+  test('execute_command exposes tracked background execution', () => {
+    const command = OPENAI_COMPAT_TOOL_REGISTRY.find(r => r.nativeName === 'execute_command')
+    assert(command != null, 'execute_command missing from compat registry')
+    const props = (command!.nativeSchema.properties ?? {}) as Record<string, unknown>
+    assert('run_in_background' in props, 'execute_command schema must expose run_in_background')
+    assert(command!.nativeDescription.includes('run_in_background=true'), 'description must steer to run_in_background')
+    assert(command!.nativeDescription.includes('echo $!'), 'description must warn against pid capture')
+    assert(command!.nativeDescription.includes('docker compose up -d'), 'description must warn against Docker detach')
+    const input = command!.adaptInput({
+      command: 'npm run dev > "$TMPDIR/app.log" 2>&1',
+      run_in_background: true,
+    } as any) as any
+    assert(input.run_in_background === true, 'adaptInput must forward run_in_background')
+  })
 
   test('OpenCode Go does not expose thinking effort for GLM-5.2 or Qwen3.7 Max', () => {
     assert(
@@ -184,6 +220,112 @@ function main(): void {
   }
 
   // ── DeepSeek max_tokens clamp ───────────────────────────────────
+  test('cloudflare stamps session ID for cache affinity', () => {
+    const body = mkBody('@cf/openai/gpt-oss-20b')
+    TRANSFORMERS.cloudflare.transformRequest(body, {
+      ...mkCtx('@cf/openai/gpt-oss-20b'),
+      sessionId: 'session-fixed',
+    })
+    assert(body.prompt_cache_key === 'session-fixed',
+      `prompt_cache_key=${body.prompt_cache_key}`)
+    assert(body.user === 'session-fixed', `user=${body.user}`)
+    const headers = TRANSFORMERS.cloudflare.buildHeaders?.('test', {
+      model: '@cf/openai/gpt-oss-20b',
+      sessionId: 'session-fixed',
+    }) ?? {}
+    assert(headers['x-session-affinity'] === 'session-fixed',
+      `x-session-affinity=${headers['x-session-affinity']}`)
+  })
+
+  test('cloudflare prefers live model catalog with a fallback list', () => {
+    assert(TRANSFORMERS.cloudflare.preferLiveModelCatalog?.() === true,
+      'expected Cloudflare to prefer live /models')
+    const fallback = TRANSFORMERS.cloudflare.staticCatalog?.() ?? []
+    const ids = fallback.map(model => model.id)
+    assert(ids.includes('@cf/zai-org/glm-5.2'),
+      'expected glm-5.2 fallback')
+    assert(ids.includes('@cf/moonshotai/kimi-k2.7-code'),
+      'expected kimi-k2.7-code fallback')
+    assert(ids.includes('@cf/openai/gpt-oss-120b'),
+      'expected gpt-oss-120b fallback')
+    assert(ids.includes('@cf/openai/gpt-oss-20b'),
+      'expected gpt-oss-20b fallback')
+  })
+
+  test('cloudflare exposes thinking effort only for models with supported variants', () => {
+    assert(
+      supportsCloudflareThinkingSelection('@cf/zai-org/glm-5.2', ['reasoning']),
+      'GLM-5.2 should expose Cloudflare effort selection',
+    )
+    assert(
+      supportsCloudflareThinkingSelection('@cf/openai/gpt-oss-120b', ['reasoning']),
+      'GPT-OSS should expose Cloudflare effort selection',
+    )
+    assert(
+      !supportsCloudflareThinkingSelection('@cf/moonshotai/kimi-k2.7-code', ['reasoning']),
+      'Kimi K2.7 should not expose an unsupported effort selector',
+    )
+    assert(
+      !supportsCloudflareThinkingSelection('@cf/google/gemma-4-26b-a4b-it', ['reasoning']),
+      'Gemma 4 should not expose an unsupported effort selector',
+    )
+  })
+
+  test('cloudflare GLM-5.2 uses high/max effort levels only', () => {
+    const levels = cloudflareEffortLevelsForModel('@cf/zai-org/glm-5.2')
+    assert(levels.join(',') === 'default,high,max',
+      `unexpected GLM-5.2 levels: ${levels.join(',')}`)
+  })
+
+  test('cloudflare GLM-5.2 sends provider-specific high/max thinking payloads', () => {
+    withTempCloudflareThinkingStore(() => {
+      const model = '@cf/zai-org/glm-5.2'
+      setCloudflareEffort(model, 'high')
+      const high = mkBody(model)
+      TRANSFORMERS.cloudflare.transformRequest(high, mkCtx(model, true))
+      assert(high.reasoning_effort === 'high',
+        `high reasoning_effort=${high.reasoning_effort}`)
+      assert((high as any).chat_template_kwargs?.enable_thinking === true,
+        `high chat_template_kwargs=${JSON.stringify((high as any).chat_template_kwargs)}`)
+      assert((high as any).chat_template_kwargs?.reasoning_effort === 'high',
+        `high chat_template_kwargs=${JSON.stringify((high as any).chat_template_kwargs)}`)
+
+      setCloudflareEffort(model, 'max')
+      const max = mkBody(model)
+      TRANSFORMERS.cloudflare.transformRequest(max, mkCtx(model, true))
+      assert(max.reasoning_effort === undefined,
+        `max must not send invalid top-level reasoning_effort=${max.reasoning_effort}`)
+      assert((max as any).chat_template_kwargs?.reasoning_effort === 'max',
+        `max chat_template_kwargs=${JSON.stringify((max as any).chat_template_kwargs)}`)
+    })
+  })
+
+  test('cloudflare default effort does not inherit the global reasoning cycle', () => {
+    withTempCloudflareThinkingStore(() => {
+      const model = '@cf/zai-org/glm-5.2'
+      setCloudflareEffort(model, 'default')
+      const body = mkBody(model)
+      TRANSFORMERS.cloudflare.transformRequest(body, mkCtx(model, true))
+      assert(body.reasoning_effort === undefined,
+        `default reasoning_effort=${body.reasoning_effort}`)
+      assert((body as any).chat_template_kwargs === undefined,
+        `default chat_template_kwargs=${JSON.stringify((body as any).chat_template_kwargs)}`)
+    })
+  })
+
+  test('cloudflare GPT-OSS sends OpenAI-style effort payloads', () => {
+    withTempCloudflareThinkingStore(() => {
+      const model = '@cf/openai/gpt-oss-120b'
+      setCloudflareEffort(model, 'medium')
+      const body = mkBody(model)
+      TRANSFORMERS.cloudflare.transformRequest(body, mkCtx(model, false))
+      assert(body.reasoning_effort === 'medium',
+        `reasoning_effort=${body.reasoning_effort}`)
+      assert(body.reasoning?.effort === 'medium',
+        `reasoning=${JSON.stringify(body.reasoning)}`)
+    })
+  })
+
   test('glm disables thinking when picker toggle is OFF', () => {
     setGlmThinking(false)
     try {
@@ -722,6 +864,48 @@ function main(): void {
       TRANSFORMERS.openrouter.cacheControlMode('meta-llama/llama-3.3-70b-instruct') === 'none',
       'wanted none for Llama routing',
     )
+  })
+  test('openrouter stamps session id and enables context compression', () => {
+    const body = mkBody('anthropic/claude-sonnet-4-6')
+    TRANSFORMERS.openrouter.transformRequest(body, {
+      model: 'anthropic/claude-sonnet-4-6',
+      isReasoning: false,
+      reasoningEffort: null,
+      sessionId: 'session-fixed',
+    })
+    const sessionKey = 'session-fixed:anthropic/claude-sonnet-4-6'
+    assert(body.session_id === sessionKey, `session_id=${body.session_id}`)
+    assert(body.prompt_cache_key === sessionKey, `prompt_cache_key=${body.prompt_cache_key}`)
+    const headers = TRANSFORMERS.openrouter.buildHeaders?.('sk-or-v1-xxx', {
+      model: 'anthropic/claude-sonnet-4-6',
+      sessionId: 'session-fixed',
+    }) ?? {}
+    assert(headers['x-session-id'] === sessionKey, `x-session-id=${headers['x-session-id']}`)
+    assert(
+      body.plugins?.some(plugin => plugin.id === 'context-compression' && plugin.enabled !== false),
+      `plugins=${JSON.stringify(body.plugins)}`,
+    )
+  })
+  test('openrouter reuses free parent model for small-fast calls', () => {
+    assert(
+      TRANSFORMERS.openrouter.smallFastModel('nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free') === null,
+      'free OpenRouter models should not redirect side calls to Nemotron',
+    )
+  })
+  test('openrouter can disable context compression by env', () => {
+    const oldValue = process.env.CLAUDEX_OPENROUTER_CONTEXT_COMPRESSION
+    process.env.CLAUDEX_OPENROUTER_CONTEXT_COMPRESSION = 'false'
+    try {
+      const body = mkBody('anthropic/claude-sonnet-4-6')
+      TRANSFORMERS.openrouter.transformRequest(body, mkCtx('anthropic/claude-sonnet-4-6'))
+      assert(
+        body.plugins?.some(plugin => plugin.id === 'context-compression' && plugin.enabled === false),
+        `plugins=${JSON.stringify(body.plugins)}`,
+      )
+    } finally {
+      if (oldValue === undefined) delete process.env.CLAUDEX_OPENROUTER_CONTEXT_COMPRESSION
+      else process.env.CLAUDEX_OPENROUTER_CONTEXT_COMPRESSION = oldValue
+    }
   })
 
   // ── AgentRouter ─────────────────────────────────────────────────

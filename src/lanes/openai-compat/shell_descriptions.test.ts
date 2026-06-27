@@ -95,6 +95,15 @@ test('Bash description on Windows mentions Git Bash + POSIX paths', () => {
   assert(desc.includes('/c/Users'), 'should show POSIX path example')
 })
 
+test('Bash description steers dev servers to tracked background tasks', () => {
+  const ctx = { platform: 'linux' as NodeJS.Platform, psEdition: null }
+  const desc = getCompatShellDescription('Bash', ctx)!
+  assert(desc.includes('run_in_background: true'), 'should mention run_in_background')
+  assert(desc.includes('echo $!'), 'should warn against pid capture')
+  assert(desc.includes('docker compose up -d'), 'should warn against Docker detach')
+  assert(desc.includes('& echo $!'), 'should include the raw-background anti-pattern')
+})
+
 test('Bash description on Linux does NOT mention Git Bash', () => {
   const ctx = { platform: 'linux' as NodeJS.Platform, psEdition: null }
   const desc = getCompatShellDescription('Bash', ctx)!

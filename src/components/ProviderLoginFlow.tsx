@@ -104,6 +104,11 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     getKeyUrl: 'https://fireworks.ai/account/api-keys',
     supportsOAuth: false,
   },
+  cloudflare: {
+    envVar: 'CLOUDFLARE_API_TOKEN',
+    getKeyUrl: 'https://dash.cloudflare.com/profile/api-tokens',
+    supportsOAuth: false,
+  },
   mistral: {
     envVar: 'MISTRAL_API_KEY',
     getKeyUrl: 'https://console.mistral.ai/api-keys',
@@ -199,6 +204,7 @@ type AuthMethod =
 async function _testApiKey(
   provider: APIProvider,
   key: string,
+  options: { cloudflareAccountId?: string } = {},
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     let url: string
@@ -264,6 +270,15 @@ async function _testApiKey(
         url = 'https://api.fireworks.ai/inference/v1/models'
         headers = { Authorization: `Bearer ${key}` }
         break
+      case 'cloudflare': {
+        const accountId = options.cloudflareAccountId?.trim()
+        if (!accountId) {
+          return { ok: false, error: 'Cloudflare account ID is required.' }
+        }
+        url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1/models`
+        headers = { Authorization: `Bearer ${key}` }
+        break
+      }
       case 'commandcode':
         url = 'https://api.commandcode.ai/alpha/whoami'
         headers = {
@@ -285,6 +300,13 @@ async function _testApiKey(
 
     if (res.ok) return { ok: true }
 
+    if (provider === 'cloudflare' && [400, 401, 403, 404].includes(res.status)) {
+      return {
+        ok: false,
+        error: `Cloudflare validation failed (${res.status}). Check that the account ID is correct and the token has Workers AI access.`,
+      }
+    }
+
     if (res.status === 401 || res.status === 403) {
       return {
         ok: false,
@@ -301,6 +323,13 @@ async function _testApiKey(
 }
 
 function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
+  if (provider === 'openai') {
+    void import('../services/api/providers/providerShim.js')
+      .then(({ reloadOpenAILaneAuth }) => reloadOpenAILaneAuth())
+      .catch(() => {})
+    return
+  }
+
   if (provider === 'gemini') {
     void import('../services/api/providers/providerShim.js')
       .then(({ reloadGeminiLaneAuth }) => reloadGeminiLaneAuth())
@@ -323,6 +352,7 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
     provider === 'opencodego' ||
     provider === 'commandcode' ||
     provider === 'fireworks' ||
+    provider === 'cloudflare' ||
     provider === 'minimax' ||
     provider === 'ollama'
   ) {
@@ -367,6 +397,8 @@ type Props = {
 type FlowState =
   | { step: 'choose_method' }
   | { step: 'api_key_input'; error?: string }
+  | { step: 'cloudflare_account_id_input'; error?: string }
+  | { step: 'cloudflare_api_token_input'; accountId: string; error?: string }
   | { step: 'oauth_pending' }
   | { step: 'device_code'; userCode: string; verificationUri: string }
   | { step: 'kiro_social_callback'; providerLabel: string; authUrl: string }
@@ -409,8 +441,14 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
           : []
 
   const [state, setState] = useState<FlowState>(
-    methodOptions.length > 0 ? { step: 'choose_method' } : { step: 'api_key_input' },
+    provider === 'cloudflare'
+      ? { step: 'cloudflare_account_id_input' }
+      : methodOptions.length > 0
+        ? { step: 'choose_method' }
+        : { step: 'api_key_input' },
   )
+  const [cloudflareAccountInput, setCloudflareAccountInput] = useState('')
+  const [cloudflareAccountCursorOffset, setCloudflareAccountCursorOffset] = useState(0)
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [apiKeyCursorOffset, setApiKeyCursorOffset] = useState(0)
   const [callbackUrlInput, setCallbackUrlInput] = useState('')
@@ -534,6 +572,11 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       .then(async () => {
         // Activating OAuth deactivates API key for this provider.
         deleteProviderKey(provider)
+        if (provider === 'openai') {
+          await import('../services/api/providers/providerShim.js')
+            .then(({ reloadOpenAILaneAuth }) => reloadOpenAILaneAuth())
+            .catch(() => {})
+        }
         await reloadSavedGoogleOAuthInRuntime(provider, method)
         setState({ step: 'success' })
         setTimeout(() => onDone(true), 1000)
@@ -672,6 +715,74 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       .catch(() => persistAndFinish(warnings))
   }
 
+  function handleCloudflareAccountSubmit(value: string) {
+    const accountId = value.trim()
+    if (!accountId) {
+      setState({
+        step: 'cloudflare_account_id_input',
+        error: 'Cloudflare account ID cannot be empty.',
+      })
+      return
+    }
+    if (/\s/.test(accountId) || accountId.includes('/')) {
+      setState({
+        step: 'cloudflare_account_id_input',
+        error: 'Cloudflare account ID should not contain spaces or slashes.',
+      })
+      return
+    }
+    setState({ step: 'cloudflare_api_token_input', accountId })
+  }
+
+  function handleCloudflareTokenSubmit(value: string) {
+    const key = value.trim()
+    if (!key || state.step !== 'cloudflare_api_token_input') return
+
+    const accountId = state.accountId
+    setState({ step: 'validating' })
+
+    const persistAndFinish = (warnings: string[]) => {
+      saveProviderKey('cloudflare_account_id', accountId)
+      saveProviderKey('cloudflare', key)
+      deleteProviderKey('cloudflare_oauth')
+
+      process.env.CLOUDFLARE_ACCOUNT_ID = accountId
+      process.env.CLOUDFLARE_API_TOKEN = key
+      process.env.CLOUDFLARE_API_KEY = key
+      process.env.CLOUDFLARE_WORKERS_AI_TOKEN = key
+
+      reloadSavedApiKeyInRuntime('cloudflare')
+      if (warnings.length > 0) {
+        setState({
+          step: 'error',
+          message: `Cloudflare credentials saved. Warnings:\n  - ${warnings.join('\n  - ')}`,
+        })
+        setTimeout(() => onDone(true), 2000)
+      } else {
+        setState({ step: 'success' })
+        setTimeout(() => onDone(true), 800)
+      }
+    }
+
+    const warnings: string[] = []
+    const formatCheck = validateKeyFormat('cloudflare', key)
+    if (!formatCheck.valid && formatCheck.error) warnings.push(formatCheck.error)
+
+    _testApiKey(provider, key, { cloudflareAccountId: accountId })
+      .then((testResult) => {
+        if (!testResult.ok) {
+          setState({
+            step: 'cloudflare_api_token_input',
+            accountId,
+            error: testResult.error,
+          })
+          return
+        }
+        persistAndFinish(warnings)
+      })
+      .catch(() => persistAndFinish(warnings))
+  }
+
   // ─── Render ──────────────────────────────────────────────────────
 
   return (
@@ -732,6 +843,67 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
           </Box>
           <Box marginTop={1}>
             <Text dimColor>Enter to submit, Esc to cancel</Text>
+          </Box>
+        </Box>
+      )}
+
+      {state.step === 'cloudflare_account_id_input' && (
+        <Box flexDirection="column">
+          <Text dimColor>
+            Get your account ID from Cloudflare Account Home or the dashboard URL.
+          </Text>
+          {state.error && (
+            <Box marginTop={1}>
+              <Text color="error">{state.error}</Text>
+            </Box>
+          )}
+          <Box marginTop={1}>
+            <Text>Account ID: </Text>
+            <TextInput
+              value={cloudflareAccountInput}
+              onChange={setCloudflareAccountInput}
+              onSubmit={handleCloudflareAccountSubmit}
+              placeholder="Paste your Cloudflare account ID..."
+              focus={true}
+              showCursor={true}
+              columns={inputColumns}
+              cursorOffset={cloudflareAccountCursorOffset}
+              onChangeCursorOffset={setCloudflareAccountCursorOffset}
+            />
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>Enter to continue, Esc to cancel</Text>
+          </Box>
+        </Box>
+      )}
+
+      {state.step === 'cloudflare_api_token_input' && (
+        <Box flexDirection="column">
+          <Text dimColor>
+            Create an API token with Workers AI access at: <Text color="suggestion">https://dash.cloudflare.com/profile/api-tokens</Text>
+          </Text>
+          {state.error && (
+            <Box marginTop={1}>
+              <Text color="error">{state.error}</Text>
+            </Box>
+          )}
+          <Box marginTop={1}>
+            <Text>API Token: </Text>
+            <TextInput
+              value={apiKeyInput}
+              onChange={setApiKeyInput}
+              onSubmit={handleCloudflareTokenSubmit}
+              mask="*"
+              placeholder="Paste your Cloudflare API token..."
+              focus={true}
+              showCursor={true}
+              columns={inputColumns}
+              cursorOffset={apiKeyCursorOffset}
+              onChangeCursorOffset={setApiKeyCursorOffset}
+            />
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>Enter to validate, Esc to cancel</Text>
           </Box>
         </Box>
       )}

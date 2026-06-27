@@ -50,6 +50,8 @@ function main(): void {
       'Process substitution',
       'bash --version',
       'run_in_background: true',
+      'echo $!',
+      'docker compose up -d',
       'export NAME=value',
     ]) {
       assertIncludes(guidance, expected)

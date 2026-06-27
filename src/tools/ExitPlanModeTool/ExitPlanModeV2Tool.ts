@@ -3,6 +3,7 @@ import { writeFile } from 'fs/promises'
 import { z } from 'zod/v4'
 import {
   getAllowedChannels,
+  handlePlanModeTransition,
   hasExitedPlanModeInSession,
   setHasExitedPlanMode,
   setNeedsAutoModeExitAttachment,
@@ -200,9 +201,13 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     }
     // The deferred-tool list announces this tool regardless of mode, so the
     // model can call it after plan approval (fresh delta on compact/clear).
-    // Reject before checkPermissions to avoid showing the approval dialog.
+    // Reject before checkPermissions to avoid showing the approval dialog,
+    // except for bypass sessions that need to recover into plan approval.
     const mode = getAppState().toolPermissionContext.mode
     if (mode !== 'plan') {
+      if (mode === 'bypassPermissions') {
+        return { result: true }
+      }
       logEvent('tengu_exit_plan_mode_called_outside_plan', {
         model:
           options.mainLoopModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -228,6 +233,22 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
         behavior: 'allow' as const,
         updatedInput: input,
       }
+    }
+
+    const mode = context.getAppState().toolPermissionContext.mode
+    if (mode === 'bypassPermissions') {
+      handlePlanModeTransition(mode, 'plan')
+      context.setAppState(prev => {
+        if (prev.toolPermissionContext.mode !== 'bypassPermissions') return prev
+        return {
+          ...prev,
+          toolPermissionContext: {
+            ...prev.toolPermissionContext,
+            mode: 'plan',
+            prePlanMode: 'bypassPermissions',
+          },
+        }
+      })
     }
 
     // For non-teammates, require user confirmation to exit plan mode

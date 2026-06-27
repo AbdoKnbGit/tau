@@ -118,6 +118,8 @@ export interface BuildKiroPayloadParams {
 const KIRO_TOOL_DESCRIPTION_MAX_LENGTH = 10_000
 const KIRO_DEFAULT_MAX_PAYLOAD_BYTES = 600_000
 const KIRO_DEFAULT_TARGET_PAYLOAD_BYTES = 220_000
+const KIRO_SYNTHETIC_TOOL_RESULT =
+  '[Tool result unavailable after provider fallback; continue or retry the tool call if this result is still needed.]'
 
 export function buildKiroPayload(params: BuildKiroPayloadParams): KiroPayload {
   const {
@@ -172,7 +174,9 @@ export function buildKiroPayload(params: BuildKiroPayloadParams): KiroPayload {
     },
   }
 
+  _repairKiroToolResultPairing(payload.conversationState.history, payload.conversationState.currentMessage, resolvedModel)
   _optimizeKiroPayload(payload, systemWithRules)
+  _repairKiroToolResultPairing(payload.conversationState.history, payload.conversationState.currentMessage, resolvedModel)
 
   if (profileArn) payload.profileArn = profileArn
   if (maxTokens != null || temperature !== undefined || topP !== undefined) {
@@ -621,6 +625,159 @@ function _convertMessages(
   }
 
   return { history: merged, currentMessage }
+}
+
+type KiroLogicalEntry = {
+  entry: KiroHistoryEntry
+  current?: boolean
+}
+
+function _repairKiroToolResultPairing(
+  history: KiroHistoryEntry[],
+  currentMessage: KiroUserMessage,
+  model: string,
+): void {
+  const entries: KiroLogicalEntry[] = [
+    ...history.map(entry => ({ entry })),
+    { entry: currentMessage, current: true },
+  ]
+
+  for (let i = 0; i < entries.length; i++) {
+    const logical = entries[i]!
+    const entry = logical.entry
+
+    if ('assistantResponseMessage' in entry) {
+      const assistant = entry.assistantResponseMessage
+      const dedupedToolUses = _dedupeKiroToolUses(assistant.toolUses ?? [])
+      if (dedupedToolUses.length > 0) assistant.toolUses = dedupedToolUses
+      else delete assistant.toolUses
+
+      if (dedupedToolUses.length === 0) continue
+
+      const next = entries[i + 1]
+      if (!next || !('userInputMessage' in next.entry)) {
+        entries.splice(i + 1, 0, {
+          entry: _syntheticKiroUserToolResultMessage(dedupedToolUses, model),
+        })
+        i++
+        continue
+      }
+
+      _repairKiroUserToolResults(next.entry.userInputMessage, dedupedToolUses)
+      continue
+    }
+
+    const previous = i > 0 ? entries[i - 1]?.entry : undefined
+    if (
+      !previous ||
+      !('assistantResponseMessage' in previous) ||
+      !previous.assistantResponseMessage.toolUses ||
+      previous.assistantResponseMessage.toolUses.length === 0
+    ) {
+      _stripKiroUserToolResults(entry.userInputMessage)
+    }
+  }
+
+  const currentIndex = entries.findIndex(entry => entry.current)
+  history.splice(
+    0,
+    history.length,
+    ...entries.slice(0, Math.max(0, currentIndex)).map(entry => entry.entry),
+  )
+}
+
+function _dedupeKiroToolUses(toolUses: KiroToolUse[]): KiroToolUse[] {
+  const seen = new Set<string>()
+  const out: KiroToolUse[] = []
+  for (const toolUse of toolUses) {
+    if (!toolUse.toolUseId || seen.has(toolUse.toolUseId)) continue
+    seen.add(toolUse.toolUseId)
+    out.push(toolUse)
+  }
+  return out
+}
+
+function _repairKiroUserToolResults(
+  user: KiroUserMessage['userInputMessage'],
+  expectedToolUses: KiroToolUse[],
+): void {
+  const expectedIds = expectedToolUses.map(toolUse => toolUse.toolUseId).filter(Boolean)
+  const expected = new Set(expectedIds)
+  const context = user.userInputMessageContext ?? {}
+  const rawResults = context.toolResults ?? []
+  const seen = new Set<string>()
+  const kept: KiroToolResult[] = []
+  const orphaned: KiroToolResult[] = []
+
+  for (const result of rawResults) {
+    if (expected.has(result.toolUseId) && !seen.has(result.toolUseId)) {
+      seen.add(result.toolUseId)
+      kept.push(result)
+    } else {
+      orphaned.push(result)
+    }
+  }
+
+  const missingIds = expectedIds.filter(id => !seen.has(id))
+  const remapped: KiroToolResult[] = []
+  if (missingIds.length > 0 && orphaned.length === missingIds.length) {
+    for (let i = 0; i < missingIds.length; i++) {
+      const id = missingIds[i]!
+      remapped.push({ ...orphaned[i]!, toolUseId: id })
+      seen.add(id)
+    }
+  }
+
+  const stillMissing = expectedIds.filter(id => !seen.has(id))
+  const synthetic = stillMissing.map(id => _syntheticKiroToolResult(id))
+  const repairedById = new Map<string, KiroToolResult>()
+  for (const result of [...kept, ...remapped, ...synthetic]) {
+    repairedById.set(result.toolUseId, result)
+  }
+  const repaired = expectedIds
+    .map(id => repairedById.get(id))
+    .filter((result): result is KiroToolResult => !!result)
+
+  if (repaired.length > 0) {
+    user.userInputMessageContext = {
+      ...context,
+      toolResults: repaired,
+    }
+  } else {
+    _stripKiroUserToolResults(user)
+  }
+}
+
+function _stripKiroUserToolResults(user: KiroUserMessage['userInputMessage']): void {
+  const context = user.userInputMessageContext
+  if (!context?.toolResults) return
+  delete context.toolResults
+  if (Object.keys(context).length === 0) {
+    delete user.userInputMessageContext
+  }
+}
+
+function _syntheticKiroUserToolResultMessage(
+  toolUses: KiroToolUse[],
+  model: string,
+): KiroUserMessage {
+  return {
+    userInputMessage: {
+      content: 'continue',
+      modelId: model,
+      userInputMessageContext: {
+        toolResults: toolUses.map(toolUse => _syntheticKiroToolResult(toolUse.toolUseId)),
+      },
+    },
+  }
+}
+
+function _syntheticKiroToolResult(toolUseId: string): KiroToolResult {
+  return {
+    toolUseId,
+    status: 'success',
+    content: [{ text: KIRO_SYNTHETIC_TOOL_RESULT }],
+  }
 }
 
 function _extractUserBlocks(content: string | ProviderContentBlock[]): {

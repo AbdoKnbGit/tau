@@ -46,6 +46,19 @@ import {
   AFT_ZOOM_TOOL_NAME,
 } from '../tools/AFTTool/constants.js'
 import { LSP_TOOL_NAME } from '../tools/LSPTool/prompt.js'
+import { TOOL_GUIDE_TOOL_NAME } from '../tools/ToolGuideTool/constants.js'
+import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
+import { TEST_SEARCH_TOOL_NAME } from '../tools/TestSearchTool/constants.js'
+import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
+import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/constants.js'
+import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
+import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
+import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
+import { SPEC_QUEST_TOOL_NAME } from '../tools/SpecQuestTool/constants.js'
+import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
+import { INTEGRATION_HUB_TOOL_NAME } from '../tools/IntegrationHubTool/constants.js'
+import { DEPLOY_PREVIEW_TOOL_NAME } from '../tools/DeployPreviewTool/constants.js'
+import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
 import {
   EXPLORE_AGENT,
   EXPLORE_AGENT_MIN_QUERIES,
@@ -240,7 +253,7 @@ function getSimpleDoingTasksSection(): string {
           `If you notice the user's request is based on a misconception, or spot a bug adjacent to what they asked about, say so. You're a collaborator, not just an executor—users benefit from your judgment, not just your compliance.`,
         ]
       : []),
-    `In general, do not propose changes to code you haven't read. If a user asks about or wants you to modify a file, read it first. Understand existing code before suggesting modifications.`,
+    `Never propose or make changes to code you haven't read. Before writing, updating, rewriting, or otherwise modifying an existing file, read that exact file first in the current session; this is an absolute rule, regardless of search results or prior context. Treat the read as quiet tool use: do not narrate routine "let me read" messages unless the read changes the plan.`,
     `Do not create files unless they're absolutely necessary for achieving your goal. Generally prefer editing an existing file to creating a new one, as this prevents file bloat and builds on existing work more effectively.`,
     `Avoid giving time estimates or predictions for how long tasks will take, whether for your own work or for users planning projects. Focus on what needs to be done, not how long it might take.`,
     `If an approach fails, diagnose why before switching tactics—read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. Escalate to the user with ${ASK_USER_QUESTION_TOOL_NAME} only when you're genuinely stuck after investigation, not as a first response to friction.`,
@@ -293,6 +306,18 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   ]
   const hasAftTools = aftToolNames.some(name => enabledTools.has(name))
   const hasLspTool = enabledTools.has(LSP_TOOL_NAME)
+  const hasToolGuideTool = enabledTools.has(TOOL_GUIDE_TOOL_NAME)
+  const hasProjectWorkflowTool = enabledTools.has(PROJECT_WORKFLOW_TOOL_NAME)
+  const hasTestSearchTool = enabledTools.has(TEST_SEARCH_TOOL_NAME)
+  const hasCodebaseRetrievalTool = enabledTools.has(CODEBASE_RETRIEVAL_TOOL_NAME)
+  const hasGitHistorySearchTool = enabledTools.has(GIT_HISTORY_SEARCH_TOOL_NAME)
+  const hasInspectSiteTool = enabledTools.has(INSPECT_SITE_TOOL_NAME)
+  const hasPackageManagerTool = enabledTools.has(PACKAGE_MANAGER_TOOL_NAME)
+  const hasSpecQuestTool = enabledTools.has(SPEC_QUEST_TOOL_NAME)
+  const hasMermaidRenderTool = enabledTools.has(MERMAID_RENDER_TOOL_NAME)
+  const hasIntegrationHubTool = enabledTools.has(INTEGRATION_HUB_TOOL_NAME)
+  const hasDeployPreviewTool = enabledTools.has(DEPLOY_PREVIEW_TOOL_NAME)
+  const hasVisualDesignAuditTool = enabledTools.has(VISUAL_DESIGN_AUDIT_TOOL_NAME)
 
   // In REPL mode, Read/Write/Edit/Glob/Grep/Bash/Agent are hidden from direct
   // use (REPL_ONLY_TOOLS). The "prefer dedicated tools over Bash" guidance is
@@ -311,7 +336,52 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   // dedicated Glob/Grep tools, so skip guidance pointing at them.
   const embedded = hasEmbeddedSearchTools()
 
+  const workflowToolOrientationItems = [
+    hasToolGuideTool
+      ? `${TOOL_GUIDE_TOOL_NAME}: use first for ambiguous, multi-step, or cross-domain work to choose the workflow before acting.`
+      : null,
+    hasCodebaseRetrievalTool
+      ? `${CODEBASE_RETRIEVAL_TOOL_NAME}: use before broad ${GREP_TOOL_NAME}/${GLOB_TOOL_NAME}/${FILE_READ_TOOL_NAME} exploration when the question is about intent, behavior, architecture, or "where should I change this?".`
+      : null,
+    hasGitHistorySearchTool
+      ? `${GIT_HISTORY_SEARCH_TOOL_NAME}: use before editing when prior fixes, regressions, blame, or "how was this solved before?" could matter.`
+      : null,
+    hasProjectWorkflowTool
+      ? `${PROJECT_WORKFLOW_TOOL_NAME}: use before guessing build, lint, test, dev-server, package, preview, or deploy commands.`
+      : null,
+    hasTestSearchTool
+      ? `${TEST_SEARCH_TOOL_NAME}: use after choosing or editing a source/test file to find the verification counterpart.`
+      : null,
+    hasInspectSiteTool
+      ? `${INSPECT_SITE_TOOL_NAME}: use after a dev server or URL is available for HTTP/page checks before relying on code inspection alone.`
+      : null,
+    hasVisualDesignAuditTool
+      ? `${VISUAL_DESIGN_AUDIT_TOOL_NAME}: use for frontend/design tasks before finishing, paired with browser/app verification when possible.`
+      : null,
+    hasPackageManagerTool
+      ? `${PACKAGE_MANAGER_TOOL_NAME}: use before dependency or package-script work.`
+      : null,
+    hasIntegrationHubTool
+      ? `${INTEGRATION_HUB_TOOL_NAME}: use before database, auth, storage, payment, email, migration, or secret-related work.`
+      : null,
+    hasDeployPreviewTool
+      ? `${DEPLOY_PREVIEW_TOOL_NAME}: use before preview, expose, deploy, hosting, CI/CD, or port-publication work.`
+      : null,
+    hasSpecQuestTool
+      ? `${SPEC_QUEST_TOOL_NAME}: use for large features, explicit /spec or /quest requests, or persistent requirements/design/task artifacts.`
+      : null,
+    hasMermaidRenderTool
+      ? `${MERMAID_RENDER_TOOL_NAME}: use when a Mermaid diagram needs a visual browser-reviewable artifact, not just chat text.`
+      : null,
+  ].filter((item): item is string => item !== null)
+
   const providedToolSubitems = [
+    ...(workflowToolOrientationItems.length > 0
+      ? [
+          `Workflow-first orientation: when one of these triggers matches, load the named deferred tool with ${TOOL_SEARCH_TOOL_NAME} before defaulting to the generic ${FILE_READ_TOOL_NAME}/${GREP_TOOL_NAME}/${GLOB_TOOL_NAME}/${BASH_TOOL_NAME} path. These workflow tools are read-only or narrowly scoped unless their description says they write artifacts; use standard tools afterward for exact evidence, edits, and command execution. Skip this ladder only for trivial exact-file reads/edits, a simple literal search, or when the needed workflow tool is unavailable.`,
+          ...workflowToolOrientationItems,
+        ]
+      : []),
     `To read files use ${FILE_READ_TOOL_NAME} instead of cat, head, tail, or sed`,
     `To edit files use ${FILE_EDIT_TOOL_NAME} instead of sed or awk`,
     `To create files use ${FILE_WRITE_TOOL_NAME} instead of cat with heredoc or echo redirection`,
@@ -329,6 +399,66 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
     ...(hasLspTool
       ? [
           `When the question is "where / who / what-type" about a specific code symbol — where is X defined, who calls or references X, what is X's type or signature, what implements X, what does X call — reach for the ${LSP_TOOL_NAME} tool FIRST, before ${GREP_TOOL_NAME} or reading files. Pass the symbol name and its file (for example symbol "LogoV2"); the tool locates the position itself, so do NOT read the file to compute line and character. ${LSP_TOOL_NAME} returns ground truth that text search cannot: real inferred types, and exact cross-file definitions and references — for example it can prove an import is unused because the reference count is 1. Type-checked diagnostics also come from the language server, but they arrive on their own after files open or change: ${LSP_TOOL_NAME} has no diagnostics operation, so never call it to fetch them (use AFTDiagnostics if you need to pull diagnostics on demand). Conversely, when a ${GREP_TOOL_NAME} search turns up a code symbol whose complete or accurate set of usages matters — before renaming it, deleting it, or deciding whether it is dead — confirm the real perimeter with ${LSP_TOOL_NAME} (findReferences or goToDefinition): it drops false positives in comments and strings and catches re-exports and aliases that text search misses. Use it for any language with a running server (TS/JS, Python, HTML, CSS, JSON, and more). Only when it reports no server for the file's language, or returns nothing useful, ${hasAftTools ? 'fall back to AFT, then ' : 'fall back to '}${GREP_TOOL_NAME}.`,
+        ]
+      : []),
+    ...(hasToolGuideTool
+      ? [
+          `When a task could follow several workflows and you are unsure which tool sequence is best, load ${TOOL_GUIDE_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} and use it to choose Tau-native behavior before acting. It is read-only and should guide browser/app verification, codebase search, git-history investigation, planning, workflow detection, package work, database/integration work, deploy/expose work, design review, test selection, memory/skill work, and multi-agent delegation. Do not use Cursor-specific tools or behavior.`,
+        ]
+      : []),
+    ...(hasProjectWorkflowTool
+      ? [
+          `Before guessing build, lint, test, dev-server, package, or deploy commands in an unfamiliar project, load ${PROJECT_WORKFLOW_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME}. It reads local manifests and returns repo-native commands without running them.`,
+        ]
+      : []),
+    ...(hasTestSearchTool
+      ? [
+          `When changing a source file or triaging a failing test, load ${TEST_SEARCH_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to find likely source/test counterparts, then pair it with ${PROJECT_WORKFLOW_TOOL_NAME} or repo scripts for focused verification.`,
+        ]
+      : []),
+    ...(hasCodebaseRetrievalTool
+      ? [
+          `For broad "where is this behavior / what should I change / how does this feature work" repo questions, load ${CODEBASE_RETRIEVAL_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} for intent-ranked files and snippets, then use ${LSP_TOOL_NAME}, ${GREP_TOOL_NAME}, and ${FILE_READ_TOOL_NAME} for exact evidence before editing.`,
+        ]
+      : []),
+    ...(hasGitHistorySearchTool
+      ? [
+          `When the user asks how something was solved before, when a regression may have history, or when mature code has prior patterns, load ${GIT_HISTORY_SEARCH_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} before editing. It is read-only and uses git log/show without changing refs.`,
+        ]
+      : []),
+    ...(hasInspectSiteTool
+      ? [
+          `For local web-app verification, after starting a dev server, load ${INSPECT_SITE_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to verify HTTP reachability, expected text, forms, and same-origin assets. Use real browser/Chrome/Playwright MCP tools when screenshots, console errors, clicks, tabs, or authenticated state matter.`,
+        ]
+      : []),
+    ...(hasPackageManagerTool
+      ? [
+          `Before dependency changes or package scripts, load ${PACKAGE_MANAGER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to detect the package manager and produce safe commands. Ask before major upgrades, removals, or registry/auth changes.`,
+        ]
+      : []),
+    ...(hasSpecQuestTool
+      ? [
+          `For large features or explicit /spec or /quest requests, load ${SPEC_QUEST_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to create persistent repo-local requirements, design, and task files under .tau/specs/.`,
+        ]
+      : []),
+    ...(hasMermaidRenderTool
+      ? [
+          `When a diagram should be reviewed visually or attached to a spec/report, load ${MERMAID_RENDER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to write a Mermaid source file and browser-renderable HTML preview.`,
+        ]
+      : []),
+    ...(hasIntegrationHubTool
+      ? [
+          `For full-stack integrations, databases, migrations, secrets, auth, storage, payments, or email, load ${INTEGRATION_HUB_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to scan local signals and check whether required environment variables are present without revealing values. Ask before requesting secrets or mutating shared data.`,
+        ]
+      : []),
+    ...(hasDeployPreviewTool
+      ? [
+          `Before deploy, expose, preview URL, or hosting work, load ${DEPLOY_PREVIEW_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to inspect deploy configs, scripts, and likely ports. Ask before publishing, pushing, or exposing local services.`,
+        ]
+      : []),
+    ...(hasVisualDesignAuditTool
+      ? [
+          `For frontend/design changes, load ${VISUAL_DESIGN_AUDIT_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to scan styling, assets, responsive signals, and visual verification needs; pair it with ${INSPECT_SITE_TOOL_NAME} or browser tools when the app can run.`,
         ]
       : []),
     `Reserve using the ${BASH_TOOL_NAME} exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the ${BASH_TOOL_NAME} tool for these if it is absolutely necessary.`,
@@ -472,7 +602,7 @@ function getSimpleToneAndStyleSection(): string {
       : `Your responses should be short and concise.`,
     `When referencing specific functions or pieces of code include the pattern file_path:line_number to allow the user to easily navigate to the source code location.`,
     `When referencing GitHub issues or pull requests, use the owner/repo#123 format (e.g. anthropics/claude-code#100) so they render as clickable links.`,
-    `Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`,
+    `Do not narrate routine file reads before tool calls. If you need to read before editing, do it silently; reserve text for meaningful status or decisions. Also do not use a colon before tool calls.`,
   ].filter(item => item !== null)
 
   return [`# Tone and style`, ...prependBullets(items)].join(`\n`)
@@ -816,7 +946,8 @@ export async function enhanceSystemPromptWithEnvDetails(
 - Agent threads always have their cwd reset between bash calls, as a result please only use absolute file paths.
 - In your final response, share file paths (always absolute, never relative) that are relevant to the task. Include code snippets only when the exact text is load-bearing (e.g., a bug you found, a function signature the caller asked for) — do not recap code you merely read.
 - For clear communication with the user the assistant MUST avoid using emojis.
-- Do not use a colon before tool calls. Text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`
+- Before writing, updating, rewriting, or otherwise modifying an existing file, read that exact file first. Do this as quiet tool use instead of announcing routine "let me read" messages.
+- Do not use a colon before tool calls.`
   // Subagents get skill_discovery attachments (prefetch.ts runs in query(),
   // no agentId guard since #22830) but don't go through getSystemPrompt —
   // surface the same DiscoverSkills framing the main session gets. Gated on

@@ -172,6 +172,11 @@ function resolveLoginProviderArg(args: string): APIProvider | null {
     commandcode: 'commandcode',
     cmd: 'commandcode',
     cmdcode: 'commandcode',
+    cloudflare: 'cloudflare',
+    cloudflareworkersai: 'cloudflare',
+    workersai: 'cloudflare',
+    workers: 'cloudflare',
+    cf: 'cloudflare',
   }
 
   const aliased = aliases[compact] ?? aliases[first]
@@ -218,6 +223,7 @@ function getProviderAuthTypeLabel(provider: LoginTarget): string {
     return 'claude subscription / Console API / platform'
   }
   if (provider === 'antigravity') return 'Google login'
+  if (provider === 'cloudflare') return 'Account ID / API token'
 
   const supported = PROVIDER_AUTH_SUPPORT[provider] ?? ['api_key']
   const supportsOAuth = supported.includes('oauth')

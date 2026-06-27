@@ -7,6 +7,7 @@ const FORK_AGENT_QUERY_SOURCE = 'agent:builtin:fork'
 
 const STABLE_REQUEST_SESSION_PROVIDERS = new Set<string>([
   'antigravity',
+  'openai',
   'copilot',
   'openrouter',
   'agentrouter',
@@ -15,6 +16,7 @@ const STABLE_REQUEST_SESSION_PROVIDERS = new Set<string>([
   'moonshot',
   'mistral',
   'fireworks',
+  'cloudflare',
 ])
 
 /**

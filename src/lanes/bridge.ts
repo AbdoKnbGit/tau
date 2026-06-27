@@ -17,6 +17,7 @@ import type {
   ProviderMessage,
   ProviderTool,
 } from '../services/api/providers/base_provider.js'
+import { filterProviderToolsForLane, filterSharedToolsForLane } from './tool_filter.js'
 
 /**
  * Should this model run through a native lane?
@@ -48,12 +49,14 @@ export async function* runNativeLane(
   model: string,
   params: NativeLaneParams,
 ): AsyncGenerator<AnthropicStreamEvent> {
+  const route = resolveRoute(model)
+  const laneName = route.type === 'native' ? route.lane.name : ''
   const context: LaneRunContext = {
     model,
     messages: params.messages,
     systemParts: params.systemParts,
-    availableTools: params.availableTools,
-    mcpTools: params.mcpTools,
+    availableTools: filterSharedToolsForLane(laneName, params.availableTools),
+    mcpTools: filterProviderToolsForLane(laneName, params.mcpTools),
     executeTool: params.executeTool,
     maxTokens: params.maxTokens,
     signal: params.signal,

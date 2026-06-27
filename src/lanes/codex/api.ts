@@ -120,11 +120,25 @@ export type CodexOutputItem =
   | { type: 'custom_tool_call'; id: string; call_id: string; name: string; input: string }
 
 export interface CodexUsage {
-  input_tokens: number
-  input_tokens_details?: { cached_tokens?: number }
-  output_tokens: number
+  input_tokens?: number
+  input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number }
+  prompt_tokens?: number
+  prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number }
+  output_tokens?: number
   output_tokens_details?: { reasoning_tokens?: number }
-  total_tokens: number
+  completion_tokens?: number
+  completion_tokens_details?: { reasoning_tokens?: number }
+  total_tokens?: number
+  cached_tokens?: number
+  cached_input_tokens?: number
+  prompt_cache_hit_tokens?: number
+  cache_read_input_tokens?: number
+  cache_read_tokens?: number
+  cache_hit_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_write_input_tokens?: number
+  cache_write_tokens?: number
+  reasoning_tokens?: number
 }
 
 // ─── Client ──────────────────────────────────────────────────────
@@ -394,6 +408,19 @@ export class CodexApiClient {
    */
   clearChain(): void {
     this.cacheSessionId = null
+    this.frozenVolatileByModel.clear()
+  }
+
+  /**
+   * Adopt the outer Tau session/conversation id as Codex's cache affinity
+   * key. Native codex uses one conversation_id for `prompt_cache_key`,
+   * `session_id`, and `x-client-request-id`; using Tau's session id keeps
+   * those bytes stable across shim re-instantiation and resume paths.
+   */
+  setSessionCacheKey(sessionId: string | undefined): void {
+    const trimmed = sessionId?.trim()
+    if (!trimmed || this.cacheSessionId === trimmed) return
+    this.cacheSessionId = trimmed
     this.frozenVolatileByModel.clear()
   }
 

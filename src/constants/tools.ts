@@ -28,6 +28,18 @@ import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../tools/SyntheticOutputTool/Synthet
 import { ENTER_WORKTREE_TOOL_NAME } from '../tools/EnterWorktreeTool/constants.js'
 import { EXIT_WORKTREE_TOOL_NAME } from '../tools/ExitWorktreeTool/constants.js'
 import { WORKFLOW_TOOL_NAME } from '../tools/WorkflowTool/constants.js'
+import { TOOL_GUIDE_TOOL_NAME } from '../tools/ToolGuideTool/constants.js'
+import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
+import { TEST_SEARCH_TOOL_NAME } from '../tools/TestSearchTool/constants.js'
+import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/constants.js'
+import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
+import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
+import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
+import { SPEC_QUEST_TOOL_NAME } from '../tools/SpecQuestTool/constants.js'
+import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
+import { INTEGRATION_HUB_TOOL_NAME } from '../tools/IntegrationHubTool/constants.js'
+import { DEPLOY_PREVIEW_TOOL_NAME } from '../tools/DeployPreviewTool/constants.js'
+import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
 import {
   CRON_CREATE_TOOL_NAME,
   CRON_DELETE_TOOL_NAME,
@@ -68,6 +80,18 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   SKILL_TOOL_NAME,
   SYNTHETIC_OUTPUT_TOOL_NAME,
   TOOL_SEARCH_TOOL_NAME,
+  TOOL_GUIDE_TOOL_NAME,
+  PROJECT_WORKFLOW_TOOL_NAME,
+  TEST_SEARCH_TOOL_NAME,
+  CODEBASE_RETRIEVAL_TOOL_NAME,
+  GIT_HISTORY_SEARCH_TOOL_NAME,
+  INSPECT_SITE_TOOL_NAME,
+  PACKAGE_MANAGER_TOOL_NAME,
+  SPEC_QUEST_TOOL_NAME,
+  MERMAID_RENDER_TOOL_NAME,
+  INTEGRATION_HUB_TOOL_NAME,
+  DEPLOY_PREVIEW_TOOL_NAME,
+  VISUAL_DESIGN_AUDIT_TOOL_NAME,
   ENTER_WORKTREE_TOOL_NAME,
   EXIT_WORKTREE_TOOL_NAME,
   ...NATIVE_TOOL_NAMES,

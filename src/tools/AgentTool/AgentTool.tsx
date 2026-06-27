@@ -103,7 +103,7 @@ const fullInputSchema = lazySchema(() => {
     mode: permissionModeSchema().optional().describe('Permission mode for spawned teammate (e.g., "plan" to require plan approval).')
   });
   return baseInputSchema().merge(multiAgentInputSchema).extend({
-    isolation: ("external" === 'ant' ? z.enum(['worktree', 'remote']) : z.enum(['worktree'])).optional().describe("external" === 'ant' ? 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo. "remote" launches the agent in a remote CCR environment (always runs in background).' : 'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.'),
+    isolation: ("external" === 'ant' ? z.enum(['worktree', 'remote']) : z.enum(['worktree'])).optional().describe("external" === 'ant' ? 'Isolation mode. "worktree" creates an isolated workspace for the agent, using Git/hooks when available and a filtered snapshot copy otherwise. "remote" launches the agent in a remote CCR environment (always runs in background).' : 'Isolation mode. "worktree" creates an isolated workspace for the agent, using Git/hooks when available and a filtered snapshot copy otherwise.'),
     cwd: z.string().optional().describe('Absolute path to run the agent in. Overrides the working directory for all filesystem and shell operations within this agent. Mutually exclusive with isolation: "worktree".')
   });
 });
@@ -751,6 +751,7 @@ export const AgentTool = buildTool({
       headCommit?: string;
       gitRoot?: string;
       hookBased?: boolean;
+      snapshotBased?: boolean;
     } | null = null;
     if (effectiveIsolation === 'worktree') {
       const slug = `agent-${earlyAgentId.slice(0, 8)}`;
@@ -819,7 +820,8 @@ export const AgentTool = buildTool({
         worktreeBranch,
         headCommit,
         gitRoot,
-        hookBased
+        hookBased,
+        snapshotBased
       } = worktreeInfo;
       // Null out to make idempotent — guards against double-call if code
       // between cleanup and end of try throws into catch
@@ -834,7 +836,7 @@ export const AgentTool = buildTool({
       if (headCommit) {
         const changed = await hasWorktreeChanges(worktreePath, headCommit);
         if (!changed) {
-          await removeAgentWorktree(worktreePath, worktreeBranch, gitRoot);
+          await removeAgentWorktree(worktreePath, worktreeBranch, gitRoot, hookBased, snapshotBased);
           // Clear worktreePath from metadata so resume doesn't try to use
           // a deleted directory. Fire-and-forget to match runAgent's
           // writeAgentMetadata handling.

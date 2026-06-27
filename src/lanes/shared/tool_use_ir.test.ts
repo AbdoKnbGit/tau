@@ -247,7 +247,7 @@ async function main(): Promise<void> {
       `missing Moonshot sessionId: ${captured?.sessionId}`)
   })
 
-  for (const providerHint of ['fireworks', 'opencodego'] as const) {
+  for (const providerHint of ['fireworks', 'opencodego', 'openai'] as const) {
     await test(`${providerHint} bridge forwards session id for prompt cache affinity`, async () => {
       let captured: LaneProviderCallParams | null = null
       const lane: Lane = {

@@ -630,7 +630,7 @@ function appendToolInputValidationRecoveryHint(
     `${errorContent}\n\n` +
     `Bash retry guidance: ${sentNote}` +
     'Re-send the SAME call with a non-empty string `command` — that field holds the actual shell ' +
-    'command to run (for example {"command":"docker compose up -d"}). Never call Bash without `command`. ' +
+    'command to run (for example {"command":"docker compose up"}). Never call Bash without `command`. ' +
     'If the intended command uses PowerShell syntax (Get-ChildItem, Select-String, $env:...), use the ' +
     'PowerShell tool instead of Bash.'
   )

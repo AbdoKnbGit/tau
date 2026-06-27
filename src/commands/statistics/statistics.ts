@@ -278,9 +278,19 @@ function isGoogleGeminiUsageModel(model: string): boolean {
   return lower.startsWith('gemini-') || lower.startsWith('gemma-')
 }
 
+function isNativeOpenAIUsageModel(model: string): boolean {
+  if (getAPIProvider() !== 'openai') return false
+  const lower = model.toLowerCase()
+  return lower.startsWith('gpt-') || lower.startsWith('o') || lower.startsWith('codex-')
+}
+
 function shouldShowDetailedCacheUsage(model: string, usage: ModelStats): boolean {
   if (!hasCacheUsage(usage)) return false
-  return isOpenRouterUsageModel(model) || isGoogleGeminiUsageModel(model)
+  return (
+    isOpenRouterUsageModel(model) ||
+    isGoogleGeminiUsageModel(model) ||
+    isNativeOpenAIUsageModel(model)
+  )
 }
 
 function hasCacheUsage(usage: ModelStats): boolean {

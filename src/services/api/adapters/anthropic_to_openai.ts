@@ -41,6 +41,7 @@ export interface OpenAITool {
     name: string
     description?: string
     parameters: Record<string, unknown>
+    strict?: boolean
   }
 }
 

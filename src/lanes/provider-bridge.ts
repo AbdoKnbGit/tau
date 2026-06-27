@@ -32,6 +32,7 @@ import { buildProviderStreamResult } from '../services/api/providers/base_provid
 import { providerUsesStableRequestSession } from '../services/api/cacheAffinity.js'
 import type { Lane } from './types.js'
 import { getSessionId } from '../bootstrap/state.js'
+import { filterProviderToolsForLane } from './tool_filter.js'
 
 export class LaneBackedProvider implements BaseProvider {
   readonly name: string
@@ -81,11 +82,12 @@ export class LaneBackedProvider implements BaseProvider {
 
     // Async iterable that calls the lane and forwards events verbatim.
     const events = (async function* (): AsyncIterable<AnthropicStreamEvent> {
+      const tools = filterProviderToolsForLane(lane.name, params.tools ?? [])
       const gen = streamAsProvider({
         model: resolvedModel,
         messages: params.messages,
         system: params.system ?? '',
-        tools: params.tools ?? [],
+        tools,
         max_tokens: params.max_tokens,
         temperature: params.temperature,
         stop_sequences: params.stop_sequences,

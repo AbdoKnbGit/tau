@@ -27,7 +27,7 @@ function getBackgroundUsageNote(): string | null {
   if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
     return null
   }
-  return `  - You can use the \`run_in_background\` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes.`
+  return `  - Use the \`run_in_background\` parameter for long-running servers, watchers, port-forwards, tunnels, and foreground container runs. Do not detach them with \`Start-Process\`, \`Start-Job\`, or Docker \`-d\`; keep the command foreground and let Tau track/stop it. You do not need to check the output right away - you'll be notified when it finishes.`
 }
 
 function getSleepGuidance(): string | null {

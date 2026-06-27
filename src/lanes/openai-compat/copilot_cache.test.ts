@@ -317,7 +317,18 @@ async function captureFireworksRequest(
   }
 }
 
-async function captureOpenRouterRequestWithSessionId(cacheRetention?: string): Promise<{
+async function captureOpenRouterRequestWithSessionId(
+  cacheRetention?: string,
+  usage: Record<string, any> = {
+    prompt_tokens: 100,
+    completion_tokens: 7,
+    total_tokens: 107,
+    prompt_tokens_details: {
+      cached_tokens: 80,
+      cache_write_tokens: 30,
+    },
+  },
+): Promise<{
   request: CapturedRequest
   events: AnthropicStreamEvent[]
 }> {
@@ -355,15 +366,7 @@ async function captureOpenRouterRequestWithSessionId(cacheRetention?: string): P
         object: 'chat.completion.chunk',
         model: 'meta-llama/llama-3.3-70b-instruct',
         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-        usage: {
-          prompt_tokens: 100,
-          completion_tokens: 7,
-          total_tokens: 107,
-          prompt_tokens_details: {
-            cached_tokens: 80,
-            cache_write_tokens: 30,
-          },
-        },
+        usage,
       },
     ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n'
     return new Response(sse, {
@@ -693,9 +696,12 @@ async function main(): Promise<void> {
 
   await test('sends OpenRouter cache key without Copilot affinity headers', async () => {
     const { request } = await captureOpenRouterRequestWithSessionId()
-    assert(request.body.prompt_cache_key === 'session-fixed', `prompt_cache_key=${request.body.prompt_cache_key}`)
+    const sessionKey = 'session-fixed:meta-llama/llama-3.3-70b-instruct'
+    assert(request.body.session_id === sessionKey, `session_id=${request.body.session_id}`)
+    assert(request.body.prompt_cache_key === sessionKey, `prompt_cache_key=${request.body.prompt_cache_key}`)
     assert(request.body.prompt_cache_retention === undefined,
       `prompt_cache_retention=${request.body.prompt_cache_retention}`)
+    assert(request.headers['x-session-id'] === sessionKey, `x-session-id=${request.headers['x-session-id']}`)
     assert(request.headers.session_id === undefined, `session_id=${request.headers.session_id}`)
     assert(request.headers['x-client-request-id'] === undefined,
       `x-client-request-id=${request.headers['x-client-request-id']}`)
@@ -716,9 +722,30 @@ async function main(): Promise<void> {
       `cache_creation_input_tokens=${usageDelta.usage.cache_creation_input_tokens}`)
   })
 
+  await test('normalizes OpenRouter explicit cache_read_tokens usage', async () => {
+    const { events } = await captureOpenRouterRequestWithSessionId(undefined, {
+      prompt_tokens: 100,
+      completion_tokens: 7,
+      total_tokens: 107,
+      prompt_tokens_details: {
+        cache_read_tokens: 60,
+        cache_write_tokens: 10,
+      },
+    })
+    const usageDelta = events.find((ev: any) =>
+      ev.type === 'message_delta' && ev.usage?.output_tokens === 7
+    ) as any
+    assert(usageDelta !== undefined, `events=${JSON.stringify(events)}`)
+    assert(usageDelta.usage.input_tokens === 30, `input_tokens=${usageDelta.usage.input_tokens}`)
+    assert(usageDelta.usage.cache_read_input_tokens === 60,
+      `cache_read_input_tokens=${usageDelta.usage.cache_read_input_tokens}`)
+    assert(usageDelta.usage.cache_creation_input_tokens === 10,
+      `cache_creation_input_tokens=${usageDelta.usage.cache_creation_input_tokens}`)
+  })
+
   await test('can opt OpenRouter into long cache retention', async () => {
     const { request } = await captureOpenRouterRequestWithSessionId('long')
-    assert(request.body.prompt_cache_key === 'session-fixed', `prompt_cache_key=${request.body.prompt_cache_key}`)
+    assert(request.body.prompt_cache_key === 'session-fixed:meta-llama/llama-3.3-70b-instruct', `prompt_cache_key=${request.body.prompt_cache_key}`)
     assert(request.body.prompt_cache_retention === '24h',
       `prompt_cache_retention=${request.body.prompt_cache_retention}`)
   })

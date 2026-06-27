@@ -41,8 +41,10 @@ export interface OpenAIChatRequest {
   thinking?: { type: 'enabled' } | { type: 'disabled' }
   extra_body?: Record<string, unknown>
   transforms?: string[]
+  plugins?: Array<{ id: string; enabled?: boolean; [key: string]: unknown }>
   models?: string[]
   route?: string
+  session_id?: string
   prompt_cache_key?: string
   prompt_cache_retention?: '24h'
   /** End-user / session identifier. Used by Fireworks as a replica

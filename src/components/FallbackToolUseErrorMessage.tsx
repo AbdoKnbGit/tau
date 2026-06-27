@@ -1,11 +1,10 @@
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages/messages.mjs'
 import * as React from 'react'
 import { stripUnderlineAnsi } from 'src/components/shell/OutputLine.js'
-import { extractTag } from 'src/utils/messages.js'
-import { removeSandboxViolationTags } from 'src/utils/sandbox/sandbox-ui-utils.js'
 import { Box, Text } from '../ink.js'
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js'
 import { countCharInString } from '../utils/stringUtils.js'
+import { normalizeToolError } from './fallbackToolError.js'
 import { MessageResponse } from './MessageResponse.js'
 
 const MAX_RENDERED_LINES = 10
@@ -53,25 +52,4 @@ export function FallbackToolUseErrorMessage({
       </Box>
     </MessageResponse>
   )
-}
-
-function normalizeToolError(result: ToolResultBlockParam['content']): string {
-  if (typeof result !== 'string') {
-    return 'Tool execution failed'
-  }
-
-  const extractedError = extractTag(result, 'tool_use_error') ?? result
-  const withoutSandboxViolations = removeSandboxViolationTags(extractedError)
-  const withoutErrorTags = withoutSandboxViolations.replace(/<\/?error>/g, '')
-  const trimmed = withoutErrorTags.trim()
-
-  if (
-    trimmed.startsWith('Error: ') ||
-    trimmed.startsWith('Cancelled: ') ||
-    trimmed.startsWith('InputValidationError: ')
-  ) {
-    return trimmed
-  }
-
-  return `Error: ${trimmed}`
 }

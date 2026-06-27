@@ -37,6 +37,8 @@ import {
   getProviderApiKey,
   getProviderRuntimeApiKey,
   getProviderOAuthToken,
+  getCloudflareWorkersAIAccountId,
+  getCloudflareWorkersAIBaseUrlOverride,
   PROVIDER_AUTH_SUPPORT,
   type ProviderAuthMethod,
 } from '../../../utils/auth.js'
@@ -77,6 +79,15 @@ export async function resolveProviderAuth(provider: APIProvider): Promise<{
     ? getProviderRuntimeApiKey(provider)
     : getProviderApiKey(provider)
   if (apiKey) {
+    if (
+      provider === 'cloudflare'
+      && !getCloudflareWorkersAIAccountId()
+      && !getCloudflareWorkersAIBaseUrlOverride()
+    ) {
+      throw new Error(
+        'No Cloudflare account ID found. Set CLOUDFLARE_ACCOUNT_ID or run `/login cloudflare`.',
+      )
+    }
     return { token: apiKey, method: 'api_key' }
   }
 
@@ -306,7 +317,10 @@ function _envVarName(provider: APIProvider): string {
     vercel: 'AI_GATEWAY_API_KEY',
     requesty: 'REQUESTY_API_KEY',
     opencode: 'OPENCODE_API_KEY',
+    opencodego: 'OPENCODE_API_KEY',
     commandcode: 'CMD_API_KEY',
+    fireworks: 'FIREWORKS_API_KEY',
+    cloudflare: 'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID',
     groq: 'GROQ_API_KEY',
     mistral: 'MISTRAL_API_KEY',
     nim: 'NIM_API_KEY',

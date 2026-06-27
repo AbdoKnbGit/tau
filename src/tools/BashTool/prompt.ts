@@ -41,7 +41,7 @@ function getBackgroundUsageNote(): string | null {
   if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
     return null
   }
-  return "You can use the `run_in_background` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter."
+  return "Use `run_in_background: true` to run a long-running command as a tracked background task. This is required for servers, watchers, port-forwards, SSH tunnels, and foreground container runs you would otherwise detach. Do not put `&`, `nohup`, `disown`, `echo $!`, `docker compose up -d`, or `docker run -d` in the command; keep log redirection, remove shell-level detaching, and set `run_in_background: true` on the tool call instead. Examples: `uvicorn app:app --host 0.0.0.0 > \"$TMPDIR/app.log\" 2>&1`, `kubectl port-forward svc/api 8080:80`, or `docker compose up`, with `run_in_background: true`. You will be notified when it finishes and can stop it by task ID."
 }
 
 function getCommitAndPRInstructions(): string {

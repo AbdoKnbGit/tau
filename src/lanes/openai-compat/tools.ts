@@ -31,18 +31,24 @@ export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
     nativeName: 'execute_command',
     implId: 'Bash',
-    nativeDescription: 'Execute a shell command and return its output.',
+    nativeDescription:
+      'Execute a shell command and return its output. For long-running servers, watchers, port-forwards, tunnels, or foreground container runs, set run_in_background=true and do not put "&", "nohup", "disown", "echo $!", "docker compose up -d", or "docker run -d" in the command.',
     nativeSchema: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'The shell command to execute.' },
+        command: { type: 'string', description: 'The shell command to execute. Do not include raw shell backgrounding with &, nohup, disown, echo $!, docker compose up -d, or docker run -d.' },
         description: { type: 'string', description: 'Brief description of what the command does.' },
+        run_in_background: {
+          type: 'boolean',
+          description: 'Set true for long-running servers/watchers, port-forwards, tunnels, and foreground container runs. Tau runs the whole command as a tracked background task; remove any shell-level detaching from command.',
+        },
       },
       required: ['command'],
     },
     adaptInput(native) {
       const out: Record<string, unknown> = { command: native.command }
       if (native.description) out.description = native.description
+      if (native.run_in_background) out.run_in_background = native.run_in_background
       return applyShellWorkdir(out, native)
     },
     adaptOutput(output) { return typeof output === 'string' ? output : JSON.stringify(output) },

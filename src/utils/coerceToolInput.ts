@@ -77,6 +77,16 @@ function unwrapSchema(schema: ZodTypeAny): ZodTypeAny {
   }
 }
 
+function isOptionalLikeSchema(schema: ZodTypeAny): boolean {
+  try {
+    const def = (schema as any)?._zod?.def ?? (schema as any)?._def
+    const type = def?.type
+    return type === 'optional' || type === 'default'
+  } catch {
+    return false
+  }
+}
+
 /**
  * Normalize a key for fuzzy matching: lowercase and strip `_`/`-` separators,
  * so `filePath` / `file-path` both match the schema's `file_path`.
@@ -248,6 +258,12 @@ export function coerceToolInput(
 
   for (const [key, propSchema] of properties) {
     if (!(key in result)) continue
+
+    if (result[key] === null && isOptionalLikeSchema(propSchema)) {
+      delete result[key]
+      mutated = true
+      continue
+    }
 
     const innerSchema = unwrapSchema(propSchema)
     const expectedType = getZodType(innerSchema)

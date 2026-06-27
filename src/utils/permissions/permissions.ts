@@ -12,6 +12,7 @@ import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../tools/AskUserQuestionTool/prompt.js'
 import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
+import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../tools/ExitPlanModeTool/constants.js'
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
 import type { AssistantMessage } from '../../types/message.js'
@@ -1282,13 +1283,16 @@ async function hasPermissionsToUseToolInner(
   // enabled — so dangerously-skip-permissions is otherwise unchanged.
   const askUserQuestionDespiteBypass =
     tool.name === ASK_USER_QUESTION_TOOL_NAME && isSelfLearningEnabled()
+  // Plan review is explicit user interaction and should not be auto-approved.
+  const exitPlanModeDespiteBypass = tool.name === EXIT_PLAN_MODE_V2_TOOL_NAME
   if (
     tool.requiresUserInteraction?.() &&
     toolPermissionResult?.behavior === 'ask' &&
     (!shouldBypassPermissionPrompts(
       context.getAppState().toolPermissionContext,
     ) ||
-      askUserQuestionDespiteBypass)
+      askUserQuestionDespiteBypass ||
+      exitPlanModeDespiteBypass)
   ) {
     return toolPermissionResult
   }
