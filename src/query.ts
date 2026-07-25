@@ -57,6 +57,13 @@ import {
   stripSignatureBlocks,
 } from './utils/messages.js'
 import { getAPIProvider } from './utils/model/providers.js'
+import {
+  buildLoopBreakerGuidance,
+  collectToolCalls,
+  DEFAULT_SCAN_WINDOW,
+  detectToolLoop,
+} from './utils/toolLedger.js'
+import { sanitizeToolNameForAnalytics } from './services/analytics/metadata.js'
 import { generateToolUseSummary } from './services/toolUseSummary/toolUseSummaryGenerator.js'
 import { prependUserContext, appendSystemContext } from './utils/api.js'
 import {
@@ -282,6 +289,13 @@ async function* queryLoop(
     skipCacheWrite,
   } = params
   const deps = params.deps ?? productionDeps()
+
+  // Tool-thrash nudges already delivered in this loop, keyed by tool + input.
+  // Loop-scoped rather than global: the guidance is a fact about this
+  // conversation, and a global would leak across sessions and subagents. One
+  // nudge per distinct stuck call — if the model ignores it and keeps going,
+  // repeating ourselves burns tokens without adding information.
+  const loopBreakersSent = new Set<string>()
 
   // Mutable cross-iteration state. The loop body destructures this at the top
   // of each iteration so reads stay bare-name (`messages`, `toolUseContext`).
@@ -1933,6 +1947,41 @@ async function* queryLoop(
       queryChainId: queryChainIdForAnalytics,
       queryDepth: queryTracking.depth,
     })
+
+    // Tool thrash: the same tool, the same arguments, failing over and over.
+    // Detection is read-only over the history, and the nudge is appended after
+    // every tool result and attachment — never interleaved with them, which the
+    // API rejects, and never a rewrite, so the cached prefix is untouched.
+    {
+      const detection = detectToolLoop(
+        collectToolCalls(
+          [...messagesForQuery, ...assistantMessages, ...toolResults],
+          { scanLastMessages: DEFAULT_SCAN_WINDOW },
+        ),
+      )
+      const breakerKey = detection
+        ? `${detection.name} ${detection.inputKey}`
+        : null
+      if (detection && breakerKey && !loopBreakersSent.has(breakerKey)) {
+        loopBreakersSent.add(breakerKey)
+        logEvent('tengu_tool_loop_detected', {
+          toolName: sanitizeToolNameForAnalytics(detection.name),
+          repeatCount: detection.count,
+          queryChainId: queryChainIdForAnalytics,
+          queryDepth: queryTracking.depth,
+        })
+        // Pushed but never yielded, so it reaches the model and no user-facing
+        // surface at all: not the REPL list, not --print, not the SDK stream.
+        // Same treatment as the goal loop's continuation nudge below. isMeta is
+        // belt-and-braces in case a future path does yield it.
+        toolResults.push(
+          createUserMessage({
+            content: buildLoopBreakerGuidance(detection),
+            isMeta: true,
+          }),
+        )
+      }
+    }
 
     // Refresh tools between turns so newly-connected MCP servers become available
     if (updatedToolUseContext.options.refreshTools) {

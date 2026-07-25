@@ -4,9 +4,9 @@ const goal = {
   type: 'local-jsx',
   name: 'goal',
   description:
-    'Set an objective goal that auto-continues until a check command passes',
+    'Set a goal that auto-continues until a check command passes or a judge accepts it',
   argumentHint:
-    '<description> [--check <command>] | status | pause | resume | clear',
+    '<description> [--judge] [--check <command>] | status | pause | resume | clear',
   load: () => import('./goal.js'),
 } satisfies Command
 

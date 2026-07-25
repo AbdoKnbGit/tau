@@ -6,7 +6,14 @@ import {
   buildGoalContinuationInstruction,
   detectGoalSignal,
 } from './instructions.js'
-import { achieveGoal, nowIso, pauseGoal, recordFailedCheck } from './state.js'
+import { runGoalJudge } from './judge.js'
+import {
+  achieveGoal,
+  nowIso,
+  pauseGoal,
+  recordFailedCheck,
+  recordRejectedClaim,
+} from './state.js'
 import { getGoal, setGoal } from './store.js'
 import type { GoalState } from './types.js'
 
@@ -67,10 +74,45 @@ export async function evaluateGoalTurn(
   if (!goal.checkCommand) {
     const signal = detectGoalSignal(terminal.text)
     if (signal === 'complete') {
+      // The judge runs on the CLAIM, not on every turn: one fork per completion
+      // marker, which for a well-behaved loop is exactly one for the whole goal.
+      let unverified = false
+      if (goal.judge) {
+        const verdict = await runGoalJudge(goal, toolUseContext)
+
+        // The verdict is a model call — re-check abort, same as after the check
+        // command below.
+        if (toolUseContext.abortController.signal.aborted) {
+          return { kind: 'inactive' }
+        }
+
+        if (verdict && !verdict.passed) {
+          logForDebugging(
+            `Goal claim rejected by judge: ${verdict.feedback ?? '(no feedback)'}`,
+          )
+          const evaluated = recordRejectedClaim(
+            goal,
+            terminal.uuid,
+            verdict.feedback,
+          )
+          return continueOrPauseAtLimit(evaluated)
+        }
+        // Null verdict (unavailable, unparseable, aborted fork) falls through
+        // to the claim. Fail-open: a broken verifier degrades to plain
+        // self-report rather than trapping the loop — but say so, because a
+        // verification that silently did not happen is worse than one that
+        // visibly did not.
+        unverified = verdict === null
+      }
       const achieved = achieveGoal(goal, terminal.uuid)
       setGoal(achieved)
       logForDebugging(`Goal achieved (self-reported): ${goal.description}`)
-      return { kind: 'achieved', systemText: `Goal achieved: ${goal.description}` }
+      return {
+        kind: 'achieved',
+        systemText: unverified
+          ? `Goal achieved: ${goal.description} (self-reported; verifier unavailable, claim not checked)`
+          : `Goal achieved: ${goal.description}`,
+      }
     }
     if (signal === 'blocked') {
       const paused = pauseGoal(goal, 'the agent reported it is blocked and needs a decision.')

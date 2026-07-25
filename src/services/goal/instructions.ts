@@ -41,6 +41,15 @@ export function buildGoalStartInstruction(goal: GoalState): string {
         'There is no automatic check for this goal.',
         `When the goal is fully complete, end your message with a line containing exactly: ${GOAL_COMPLETE_MARKER}`,
         `If you are blocked and need a decision from the user, end with a line containing: ${GOAL_BLOCKED_MARKER}`,
+        ...(goal.judge
+          ? [
+              '',
+              'Your completion claim will be checked by a separate verifier that',
+              'reads this whole conversation and judges it against the goal.',
+              'Claiming completion early does not end the loop, it just costs a',
+              'turn: verify your own work before emitting the marker.',
+            ]
+          : []),
         '',
         'Work directly toward the goal. Use tools as needed. Only emit the',
         'completion marker once the goal is genuinely done, not before.',
@@ -63,6 +72,17 @@ export function buildGoalContinuationInstruction(goal: GoalState): string {
       lines.push('', 'Latest check output:', goal.lastCheckOutput, '')
     }
   } else {
+    if (goal.lastJudgeFeedback) {
+      // Lead with the rejection: it is the most actionable thing in the nudge,
+      // and it tells the model its own completion claim was overruled.
+      lines.push(
+        '',
+        'You reported completion and the verifier rejected it.',
+        `Verifier feedback: ${goal.lastJudgeFeedback}`,
+        '',
+        'Address that specific point before claiming completion again.',
+      )
+    }
     lines.push(
       `Emit ${GOAL_COMPLETE_MARKER} on its own line only when fully done,`,
       `or ${GOAL_BLOCKED_MARKER} if you need a user decision.`,

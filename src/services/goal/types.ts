@@ -14,6 +14,10 @@ export type GoalState = {
   // Optional: when absent, the goal runs in self-report mode where the model
   // signals completion with a marker line and the turn limit is the backstop.
   checkCommand?: string
+  // Self-report mode only: verify the model's completion claim with a forked
+  // judge before accepting it. Costs one fork per CLAIM (not per turn), and
+  // fails open — an unavailable or unparseable verdict honors the claim.
+  judge?: boolean
   status: GoalStatus
   // Number of completed continuation cycles. Bounded by maxTurns.
   turnCount: number
@@ -24,6 +28,10 @@ export type GoalState = {
   lastCheckedUuid?: string
   // Tail of the most recent failing check output (fed into the next nudge).
   lastCheckOutput?: string
+  // Why the judge rejected the most recent completion claim (fed into the next
+  // nudge, so the model gets the specific unmet requirement rather than a
+  // generic "keep going").
+  lastJudgeFeedback?: string
   achievedAt?: string
   pausedAt?: string
   pausedReason?: string

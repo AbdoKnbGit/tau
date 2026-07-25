@@ -22,15 +22,21 @@ const CLEAR_ALIASES = new Set([
   'cancel',
 ])
 
+/** One line describing how this goal decides it is done. */
+function completionLine(goal: GoalState): string {
+  if (goal.checkCommand) return `Check: ${goal.checkCommand}`
+  return goal.judge
+    ? 'Completion: self-reported, verified by a model judge'
+    : 'Completion: self-reported (marker or turn limit)'
+}
+
 function formatStatus(goal: GoalState | null): string {
   if (!goal) {
-    return 'No goal set. Usage: /goal <description> [--check <command>]'
+    return 'No goal set. Usage: /goal <description> [--judge] [--check <command>]'
   }
   const lines = [
     `Goal: ${goal.description}`,
-    goal.checkCommand
-      ? `Check: ${goal.checkCommand}`
-      : 'Completion: self-reported (marker or turn limit)',
+    completionLine(goal),
     `Status: ${goal.status}`,
     `Turns: ${goal.turnCount}/${goal.maxTurns}`,
   ]
@@ -91,12 +97,13 @@ export const call = async (
     return null
   }
 
-  const goal = createGoalState(parsed.description, parsed.checkCommand)
+  const goal = createGoalState(
+    parsed.description,
+    parsed.checkCommand,
+    parsed.judge,
+  )
   setGoal(goal)
-  const modeLine = goal.checkCommand
-    ? `Check: ${goal.checkCommand}`
-    : 'Completion: self-reported (marker or turn limit)'
-  onDone(`Goal set: ${goal.description}\n${modeLine}`, {
+  onDone(`Goal set: ${goal.description}\n${completionLine(goal)}`, {
     display: 'system',
     shouldQuery: true,
     metaMessages: [buildGoalStartInstruction(goal)],
