@@ -972,14 +972,25 @@ export const BashTool = buildTool({
       trackGitOperations(input.command, result.code, result.stdout);
       const isInterrupt = result.interrupted && abortController.signal.reason === 'interrupt';
 
-      // stderr is interleaved in stdout (merged fd) — result.stdout has both
-      stdoutAccumulator.append((result.stdout || '').trimEnd() + EOL);
+      // Normally stderr is interleaved into stdout by the merged output fd, so
+      // result.stderr is empty and this is a no-op. It is NOT empty on the
+      // paths that never reach a real shell: exec() returns
+      // createAbortedCommand({ code: 126, stderr: <spawn error> }) with an
+      // empty stdout when spawn() itself throws (shell binary unresolvable,
+      // cwd deleted, EACCES/EPERM). Reading stdout alone threw that diagnostic
+      // away and produced "nonzero exit code without diagnostic output".
+      // Same for Shell.ts pipe mode, where stderr lands in its own buffer.
+      // Merge instead of assuming — correct on every platform and mode.
+      const commandOutput = [result.stdout, result.stderr]
+        .filter(Boolean)
+        .join(EOL);
+      stdoutAccumulator.append(commandOutput.trimEnd() + EOL);
 
       // Interpret the command result using semantic rules
-      interpretationResult = interpretCommandResult(input.command, result.code, result.stdout || '', '');
+      interpretationResult = interpretCommandResult(input.command, result.code, commandOutput, '');
 
-      // Check for git index.lock error (stderr is in stdout now)
-      if (result.stdout && result.stdout.includes(".git/index.lock': File exists")) {
+      // Check for git index.lock error (stderr is in commandOutput now)
+      if (commandOutput.includes(".git/index.lock': File exists")) {
         logEvent('tengu_git_index_lock_error', {});
       }
       if (interpretationResult.isError && !isInterrupt) {
@@ -1010,8 +1021,11 @@ export const BashTool = buildTool({
         }
       }
 
-      // Annotate output with sandbox violations if any (stderr is in stdout)
-      const outputWithSbFailures = SandboxManager.annotateStderrWithSandboxFailures(input.command, result.stdout || '');
+      // Annotate output with sandbox violations if any (stderr is in commandOutput).
+      // Takes the output only — passing input.command here fed the command
+      // string in as the "stderr" and discarded the real output, which is what
+      // made every failure report "nonzero exit code without diagnostic output".
+      const outputWithSbFailures = SandboxManager.annotateStderrWithSandboxFailures(commandOutput);
       if (result.preSpawnError) {
         throw new Error(result.preSpawnError);
       }

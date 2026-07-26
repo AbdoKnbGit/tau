@@ -915,7 +915,13 @@ export interface ISandboxManager {
   ): Promise<string>
   cleanupAfterCommand(): void
   getSandboxViolationStore(): SandboxViolationStore
-  annotateStderrWithSandboxFailures(command: string, stderr: string): string
+  // Takes ONLY the command's output. The upstream implementation is
+  // `annotateStderrWithSandboxFailures(stderr)` — a single parameter. This
+  // interface previously declared a leading `command` param that does not
+  // exist, and TypeScript accepts a 1-param function assigned to a 2-param
+  // type, so the mismatch was invisible: the sole caller passed the command
+  // string into `stderr` and the real output was dropped as an extra arg.
+  annotateStderrWithSandboxFailures(stderr: string): string
   getLinuxGlobPatternWarnings(): string[]
   refreshConfig(): void
   reset(): Promise<void>
