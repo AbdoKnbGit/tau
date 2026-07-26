@@ -313,9 +313,17 @@ const ANTHROPIC_OPUS_48_EFFORTS = [
 
 const ANTHROPIC_MODELS: readonly AnthropicModelInfo[] = [
   {
+    id: 'claude-opus-5',
+    name: 'Claude Opus 5',
+    tags: ['recommended', 'reasoning'],
+    effortLevels: ANTHROPIC_EXTENDED_EFFORTS,
+    defaultEffort: 'high',
+    contextWindow: 1_000_000,
+  },
+  {
     id: 'claude-opus-4-8',
     name: 'Claude Opus 4.8',
-    tags: ['recommended', 'reasoning'],
+    tags: ['reasoning'],
     effortLevels: ANTHROPIC_OPUS_48_EFFORTS,
     defaultEffort: 'medium',
     contextWindow: 1_000_000,

@@ -72,7 +72,8 @@ export function modelSupportsMaxEffort(model: string): boolean {
   }
   const normalized = model.toLowerCase()
   if (
-    normalized.includes('opus-4-8')
+    normalized.includes('opus-5')
+    || normalized.includes('opus-4-8')
     || normalized.includes('opus-4-7')
     || normalized.includes('opus-4-6')
     || normalized.includes('sonnet-5')
@@ -90,7 +91,8 @@ export function modelSupportsMaxEffort(model: string): boolean {
 export function modelSupportsXHighEffort(model: string): boolean {
   const normalized = model.toLowerCase()
   if (
-    normalized.includes('opus-4-8')
+    normalized.includes('opus-5')
+    || normalized.includes('opus-4-8')
     || normalized.includes('opus-4-7')
     || normalized.includes('sonnet-5')
   ) {
