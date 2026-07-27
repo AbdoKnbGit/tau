@@ -33,6 +33,8 @@ import {
   buildQwenTools,
 } from './tools.js'
 import { qwenApi, type QwenChatMessage, type QwenStreamChunk, type QwenTool } from './api.js'
+import { isMediaBlock } from '../shared/media_blocks.js'
+import { renderMediaForTextLane } from '../shared/media_extract.js'
 import {
   sanitizeSchemaForLane,
   appendStrictParamsHint,
@@ -396,7 +398,7 @@ function buildToolUseIdToNativeMap(messages: ProviderMessage[]): Map<string, str
   return map
 }
 
-function convertHistoryToQwen(
+export function convertHistoryToQwen(
   messages: ProviderMessage[],
   toolUseIdToNative: Map<string, string>,
 ): QwenChatMessage[] {
@@ -420,6 +422,10 @@ function convertHistoryToQwen(
           continue
         }
         if (block.type === 'text' && block.text) textParts.push(block.text)
+        // Pasted screenshots arrive as image blocks on the user message.
+        // Qwen's chat shape here is text-only, so emit a marker rather than
+        // dropping them and leaving `[Image #N]` pointing at nothing.
+        else if (isMediaBlock(block)) textParts.push(renderMediaForTextLane(block))
       }
       if (textParts.length > 0) out.push({ role: 'user', content: textParts.join('\n') })
       continue
@@ -465,6 +471,10 @@ function stringifyToolResult(content: unknown): string {
     for (const b of content as any[]) {
       if (!b || typeof b !== 'object') continue
       if (typeof b.text === 'string') texts.push(b.text)
+      // An image block here (Read on a .png) would otherwise be
+      // JSON.stringify-ed, putting its whole base64 payload in the prompt
+      // as text. See shared/media_blocks.ts.
+      else if (isMediaBlock(b)) texts.push(renderMediaForTextLane(b))
       else texts.push(JSON.stringify(b))
     }
     return texts.join('\n')

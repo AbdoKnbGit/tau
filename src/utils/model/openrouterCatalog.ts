@@ -1,4 +1,5 @@
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
+import { recordModelVision } from '../../lanes/shared/vision_capability.js'
 
 /**
  * Curated allowlist of OpenRouter models to show in the picker.
@@ -134,6 +135,34 @@ export interface OpenRouterCatalogModel {
   name?: string
   context_length?: number
   pricing?: Record<string, string | number | undefined>
+  /**
+   * OpenRouter states input modalities per model, e.g.
+   * `{ input_modalities: ["text", "image"], modality: "text+image->text" }`.
+   * This is the authoritative answer to "can this model see?" for the whole
+   * OpenRouter catalog, so it is parsed rather than guessed at.
+   */
+  architecture?: {
+    input_modalities?: string[]
+    output_modalities?: string[]
+    modality?: string
+  }
+}
+
+/** True when OpenRouter says the model takes image input. */
+export function openRouterModelAcceptsImages(
+  model: OpenRouterCatalogModel,
+): boolean {
+  const modalities = model.architecture?.input_modalities
+  if (Array.isArray(modalities)) {
+    return modalities.some(m => typeof m === 'string' && m.toLowerCase() === 'image')
+  }
+  // Legacy field: "text+image->text".
+  const legacy = model.architecture?.modality
+  if (typeof legacy === 'string') {
+    const input = legacy.split('->')[0] ?? ''
+    return input.toLowerCase().includes('image')
+  }
+  return false
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -182,14 +211,21 @@ export function toOpenRouterModelInfo(model: OpenRouterCatalogModel): ModelInfo 
 
   const provider = inferOpenRouterProvider(model)
   const free = isFreeOpenRouterModel(model)
-  const tags = free ? ['free'] as const : undefined
+  const vision = openRouterModelAcceptsImages(model)
+  const tagList: string[] = []
+  if (free) tagList.push('free')
+  if (vision) tagList.push('vision')
+
+  // Remember what the catalog said so request-time conversion can send real
+  // images to models that accept them instead of transcribing everything.
+  recordModelVision('openrouter', model.id, vision)
 
   return {
     id: model.id,
     name: normalizeOpenRouterModelName(model.name ?? model.id, provider, free),
     provider,
     contextWindow: model.context_length,
-    ...(tags ? { tags } : {}),
+    ...(tagList.length > 0 ? { tags: tagList } : {}),
   }
 }
 

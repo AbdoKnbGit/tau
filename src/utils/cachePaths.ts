@@ -28,6 +28,13 @@ export const CACHE_PATHS = {
     join(paths.cache, getProjectDir(getFsImplementation().cwd()), 'errors'),
   messages: () =>
     join(paths.cache, getProjectDir(getFsImplementation().cwd()), 'messages'),
+  // Attachment OCR results, keyed by content hash. Deliberately NOT
+  // per-project: the same screenshot yields the same text everywhere, and
+  // re-paying per page for an identical file would be pure waste.
+  ocr: () => join(paths.cache, 'ocr'),
+  // What provider catalogs told us about per-model image support. Global for
+  // the same reason: a model's modality does not change per project.
+  visionCapability: () => join(paths.cache, 'vision-capability.json'),
   mcpLogs: (serverName: string) =>
     join(
       paths.cache,

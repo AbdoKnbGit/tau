@@ -43,6 +43,7 @@ import {
   appendStrictParamsHint,
   CODEX_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
+import { describeUnsendableMedia } from '../shared/media_blocks.js'
 import {
   codexApi,
   type CodexInputItem,
@@ -785,6 +786,10 @@ export function convertHistoryToCodex(
     // top-level input array, not nested inside a message item.
     const textParts: CodexContentPart[] = []
     const tailItems: CodexInputItem[] = []
+    // Images pulled out of tool results. `function_call_output.output` is a
+    // plain string, so the bytes ride along in a user message emitted right
+    // after the outputs (the Responses input array is an ordered item list).
+    const trailingImageParts: CodexContentPart[] = []
 
     for (const block of msg.content) {
       switch (block.type) {
@@ -828,7 +833,9 @@ export function convertHistoryToCodex(
           const id = block.tool_use_id ?? ''
           const callId = toolUseIdToCallId.get(id) ?? id
           const isCustom = callIdToName.get(callId) === 'apply_patch'
-          const output = stringifyToolResultContent(block.content)
+          const split = splitCodexToolResultContent(block.content)
+          const output = split.output
+          trailingImageParts.push(...split.images)
           tailItems.push(
             isCustom
               ? { type: 'custom_tool_call_output', call_id: callId, output }
@@ -841,6 +848,28 @@ export function convertHistoryToCodex(
           // the next prompt and shifts the cached prefix; native Responses
           // clients only round-trip encrypted reasoning items.
           break
+        case 'image': {
+          // Responses carries images as an `input_image` part on a user
+          // message; assistant items only accept `output_text`, so an image
+          // on an assistant turn (shouldn't happen) is skipped rather than
+          // sent in an invalid shape.
+          if (msg.role === 'assistant') break
+          const part = imageBlockToCodexImagePart(block)
+          textParts.push(part ?? { type: 'input_text', text: unsendableCodexMedia(block) })
+          break
+        }
+        default:
+          // Anthropic `document` blocks (PDF attachments) aren't in
+          // ProviderContentBlock's union but do reach the lane, and the
+          // Responses API needs an uploaded file id rather than inline
+          // bytes — say so instead of dropping them silently.
+          if ((block as { type: string }).type === 'document') {
+            const part: CodexContentPart = msg.role === 'assistant'
+              ? { type: 'output_text', text: unsendableCodexMedia(block) }
+              : { type: 'input_text', text: unsendableCodexMedia(block) }
+            textParts.push(part)
+          }
+          break
       }
     }
 
@@ -848,24 +877,88 @@ export function convertHistoryToCodex(
       out.push({ type: 'message', role: msg.role, content: textParts })
     }
     out.push(...tailItems)
+    if (trailingImageParts.length > 0) {
+      out.push({ type: 'message', role: 'user', content: trailingImageParts })
+    }
   }
 
   return out
 }
 
-function stringifyToolResultContent(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    const parts: string[] = []
-    for (const b of content as any[]) {
-      if (b && typeof b === 'object') {
-        if ('text' in b && typeof b.text === 'string') parts.push(b.text)
-        else parts.push(JSON.stringify(b))
-      }
-    }
-    return parts.join('\n')
+/**
+ * Map an Anthropic image block onto a Responses `input_image` part. Base64
+ * sources become a data URL, http(s) sources pass through unchanged, and
+ * anything else returns null so the caller can emit a text marker instead.
+ */
+function imageBlockToCodexImagePart(block: unknown): CodexContentPart | null {
+  const src = (
+    block as { source?: { data?: string; media_type?: string; url?: string } } | null
+  )?.source
+  if (!src) return null
+  if (typeof src.data === 'string' && src.data.length > 0) {
+    const mime = src.media_type ?? 'image/png'
+    return { type: 'input_image', image_url: `data:${mime};base64,${src.data}` }
   }
-  return JSON.stringify(content ?? '')
+  if (typeof src.url === 'string' && src.url.length > 0) {
+    return { type: 'input_image', image_url: src.url }
+  }
+  return null
+}
+
+/**
+ * Deterministic marker for media this lane can't forward. Never the bytes.
+ * Codex DOES carry images, so the reasons here are narrower than the generic
+ * "this lane cannot receive attachments" default.
+ */
+function unsendableCodexMedia(block: unknown): string {
+  const isDocument = (block as { type?: string } | null)?.type === 'document'
+  return describeUnsendableMedia(
+    block,
+    isDocument
+      // Responses takes PDFs as an uploaded file id, not inline bytes.
+      ? 'this lane forwards images only'
+      : 'unsupported image source',
+  )
+}
+
+/**
+ * Split a tool_result's content into the string that goes in
+ * `function_call_output.output` and the image parts that ride along in the
+ * user message emitted right after it.
+ *
+ * The previous stringifier JSON.stringify-ed image blocks, which dumped the
+ * whole base64 payload into the prompt as text: thousands of wasted tokens
+ * per screenshot, replayed on every later turn, and nothing the model could
+ * actually see (so it described an image it never received).
+ */
+function splitCodexToolResultContent(
+  content: unknown,
+): { output: string; images: CodexContentPart[] } {
+  if (typeof content === 'string') return { output: content, images: [] }
+  if (!Array.isArray(content)) {
+    return { output: JSON.stringify(content ?? ''), images: [] }
+  }
+  const parts: string[] = []
+  const images: CodexContentPart[] = []
+  for (const b of content as any[]) {
+    if (!b || typeof b !== 'object') continue
+    if ('text' in b && typeof b.text === 'string') {
+      parts.push(b.text)
+      continue
+    }
+    if (b.type === 'image' || b.type === 'document') {
+      const part = b.type === 'image' ? imageBlockToCodexImagePart(b) : null
+      if (part) {
+        images.push(part)
+        parts.push('[image attached below]')
+      } else {
+        parts.push(unsendableCodexMedia(b))
+      }
+      continue
+    }
+    parts.push(JSON.stringify(b))
+  }
+  return { output: parts.join('\n'), images }
 }
 
 // Inverse of each native adaptInput. Most are identity; a couple diverge.

@@ -36,6 +36,19 @@ import {
 import type { Lane } from './types.js'
 import { getSessionId } from '../bootstrap/state.js'
 import { filterProviderToolsForLane } from './tool_filter.js'
+import { prefetchMediaText } from './shared/media_extract.js'
+import { decideImageSupport } from './shared/vision_capability.js'
+
+/**
+ * Lanes whose wire format always carries attachments natively. Their
+ * screenshots and PDFs must never be replaced by OCR text: looking at the
+ * pixels beats reading a transcript of them.
+ *
+ * Note this is about the LANE's transport, not the model. Within
+ * openai-compat the answer is per-model (Kimi and Qwen-VL see, Devstral does
+ * not), so that lane asks `modelAcceptsImages` instead of appearing here.
+ */
+const LANES_WITH_NATIVE_MEDIA = new Set(['gemini', 'codex', 'cline', 'kilo'])
 import type { APIProvider } from '../utils/model/providers.js'
 import type { QuerySource } from '../constants/querySource.js'
 
@@ -90,6 +103,24 @@ export class LaneBackedProvider implements BaseProvider {
     // Async iterable that calls the lane and forwards events verbatim.
     const events = (async function* (): AsyncIterable<AnthropicStreamEvent> {
       const tools = filterProviderToolsForLane(lane.name, params.tools ?? [])
+
+      // Resolve attachment text BEFORE the lane converts history, and only
+      // where it is actually needed: lanes with native transport, and compat
+      // models the catalog says accept images, keep sending real pixels.
+      // Everything else gets OCR'd text so a screenshot or PDF is not lost.
+      //
+      // Runs once per attachment (memoized by content hash) and never inside
+      // the converters: a network call there would slow every turn and make
+      // the serialized history non-deterministic, breaking the prompt cache.
+      if (!LANES_WITH_NATIVE_MEDIA.has(lane.name)) {
+        await prefetchMediaText(params.messages ?? [], {
+          // Thunk: consulted (and frozen) only if an unresolved image is
+          // actually present, so the same answer the converter uses.
+          includeImages: () => decideImageSupport(providerHint, resolvedModel) !== true,
+          signal: controller.signal,
+        })
+      }
+
       const gen = streamAsProvider({
         model: resolvedModel,
         messages: params.messages,

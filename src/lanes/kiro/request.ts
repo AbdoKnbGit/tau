@@ -36,6 +36,8 @@ import {
   sanitizeSchemaForLane,
 } from '../shared/mcp_bridge.js'
 import { normalizeKiroModelId } from './catalog.js'
+import { isMediaBlock } from '../shared/media_blocks.js'
+import { renderMediaForTextLane } from '../shared/media_extract.js'
 import {
   isKiroShellCandidate,
   resolvePreferredKiroShellToolName,
@@ -472,7 +474,7 @@ function _compressKiroToolDescription(
 
 // ─── Message conversion ──────────────────────────────────────────
 
-function _convertMessages(
+export function _convertMessages(
   messages: ProviderMessage[],
   systemText: string,
   tools: KiroToolSpec[],
@@ -797,11 +799,15 @@ function _extractUserBlocks(content: string | ProviderContentBlock[]): {
         status: block.is_error ? 'error' : 'success',
         content: [{ text: _stringifyToolResultContent(block.content) }],
       })
+    } else if (isMediaBlock(block)) {
+      // Kiro supports base64 images through a separate `images` field on
+      // userInputMessage, which this converter does not populate. Pasted
+      // screenshots DO reach here (attachments.ts emits image blocks on the
+      // user message), so emit a marker: dropping them silently leaves the
+      // `[Image #N]` marker in the text pointing at nothing, and the model
+      // then describes an image it never received.
+      texts.push(renderMediaForTextLane(block))
     }
-    // Images: Kiro supports base64 via a separate `images` field on
-    // userInputMessage, but the claudex tool stack never emits image
-    // blocks in provider messages (screenshots go through the Read
-    // tool), so we intentionally skip them.
   }
   return { text: texts.join('\n'), toolResults }
 }
@@ -840,6 +846,10 @@ function _stringifyToolResultContent(
   for (const block of content) {
     if (typeof block === 'object' && block && 'text' in block && typeof block.text === 'string') {
       parts.push(block.text)
+    } else if (isMediaBlock(block)) {
+      // Never JSON.stringify an image block: that puts its whole base64
+      // payload in the prompt as text. See shared/media_blocks.ts.
+      parts.push(renderMediaForTextLane(block))
     } else if (typeof block === 'object' && block) {
       parts.push(JSON.stringify(block))
     }

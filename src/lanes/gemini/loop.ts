@@ -1060,6 +1060,31 @@ function convertHistoryToGemini(
           case 'thinking':
             if (block.thinking) parts.push({ thought: true, text: block.thinking })
             break
+          case 'image': {
+            // Pasted screenshots arrive as an Anthropic image block on the
+            // user message. The tool-result path already maps these to
+            // inlineData; without this case they were dropped, leaving the
+            // `[Image #N]` marker in the text with nothing behind it.
+            const inline = imageBlockToInlineData(block)
+            if (inline) parts.push({ inlineData: inline })
+            else parts.push({ text: '[image not sent: unsupported image source]' })
+            break
+          }
+          default: {
+            // Anthropic `document` blocks (PDF attachments) aren't in
+            // ProviderContentBlock's union but do reach the lane. Gemini can
+            // take PDFs as inlineData, but only under a request-size budget
+            // this converter doesn't own — say so rather than drop silently.
+            if ((block as { type: string }).type === 'document') {
+              // Gemini can take PDFs as inlineData, but only under a
+              // request-size budget this converter does not own. Say so
+              // rather than dropping it silently. No OCR on this lane.
+              const mime = (block as { source?: { media_type?: string } }).source?.media_type
+                ?? 'application/pdf'
+              parts.push({ text: `[document not sent (${mime}): this lane forwards images only]` })
+            }
+            break
+          }
         }
       }
     }
@@ -1068,6 +1093,14 @@ function convertHistoryToGemini(
   }
 
   return contents
+}
+
+/** Test-only handle on the Anthropic-IR → Gemini `contents` conversion. */
+export function _convertHistoryToGeminiForTest(
+  messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
+  toolUseIdToNative: Map<string, string> = new Map(),
+): GeminiContent[] {
+  return convertHistoryToGemini(messages, toolUseIdToNative)
 }
 
 function stableAntigravitySessionId(
@@ -1099,6 +1132,27 @@ function stableNegativeHash(text: string): string {
     hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0
   }
   return `-${Math.abs(hash).toString()}`
+}
+
+/**
+ * Map an Anthropic image block onto a Gemini `inlineData` part.
+ *
+ * Mirrors the mapping inside splitToolResultContent (the tool-result path,
+ * which already worked); kept as a separate helper so that path stays
+ * byte-for-byte untouched. Returns null for URL-only sources — Gemini does
+ * not fetch remote images, so the caller emits a marker instead.
+ */
+function imageBlockToInlineData(
+  block: unknown,
+): { mimeType: string; data: string } | null {
+  const src = (
+    block as { source?: { data?: string; media_type?: string; mediaType?: string } } | null
+  )?.source
+  if (!src || typeof src.data !== 'string' || src.data.length === 0) return null
+  return {
+    mimeType: src.media_type ?? src.mediaType ?? 'image/png',
+    data: src.data,
+  }
 }
 
 /**

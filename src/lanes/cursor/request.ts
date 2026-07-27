@@ -38,6 +38,8 @@ import {
   getCursorRegistrationByImplId,
   getCursorRegistrationByNativeName,
 } from './tools.js'
+import { isMediaBlock } from '../shared/media_blocks.js'
+import { renderMediaForTextLane } from '../shared/media_extract.js'
 
 export interface BuildCursorBodyParams {
   model: string
@@ -242,7 +244,7 @@ function _buildToolNameMap(messages: ProviderMessage[]): Map<string, string> {
   return map
 }
 
-function _convertMessages(
+export function _convertMessages(
   messages: ProviderMessage[],
   systemText: string,
 ): NormalizedCursorMessage[] {
@@ -279,6 +281,12 @@ function _convertMessages(
                 ...(block.is_error ? { isError: true } : {}),
               }],
             })
+          } else if (isMediaBlock(block)) {
+            // Pasted screenshots reach the lane as image blocks. Cursor's
+            // normalized message shape here is text-only, so emit a marker
+            // instead of dropping them and leaving `[Image #N]` pointing at
+            // nothing for the model to describe from imagination.
+            parts.push({ type: 'text', text: renderMediaForTextLane(block) })
           }
         }
 
@@ -338,6 +346,10 @@ function _stringifyToolResult(
   for (const block of content) {
     if (typeof block === 'object' && block && 'text' in block && typeof block.text === 'string') {
       parts.push(block.text)
+    } else if (isMediaBlock(block)) {
+      // Never JSON.stringify an image block: that puts its whole base64
+      // payload in the prompt as text. See shared/media_blocks.ts.
+      parts.push(renderMediaForTextLane(block))
     } else if (typeof block === 'object' && block) {
       parts.push(JSON.stringify(block))
     }

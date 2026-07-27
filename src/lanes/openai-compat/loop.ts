@@ -38,6 +38,9 @@ import {
   freezeSessionVolatileText,
   volatileFreezeKey,
 } from '../shared/volatile_freeze.js'
+import { isMediaBlock } from '../shared/media_blocks.js'
+import { renderMediaForTextLane } from '../shared/media_extract.js'
+import { decideImageSupport, recordModelVision } from '../shared/vision_capability.js'
 import { recordOpenRouterServedProvider } from './transformers/openrouter.js'
 import {
   OPENROUTER_VOLATILE_CONTEXT,
@@ -60,6 +63,7 @@ import {
 } from '../../utils/model/copilotAccount.js'
 import {
   toOpenRouterModelInfo,
+  openRouterModelAcceptsImages,
   type OpenRouterCatalogModel,
 } from '../../utils/model/openrouterCatalog.js'
 import { resolveOpenRouterVirtualModelId } from '../../utils/model/openrouterAliases.js'
@@ -1234,6 +1238,13 @@ function toCompatCatalogModel(
   if (providerName === 'opencode' && isOpencodeAnonymousModelId(model.id) && !tags.includes('free')) {
     tags.push('free')
   }
+  // Remember whether this provider says the model takes image input, so
+  // request-time conversion can send real pixels instead of transcribing.
+  // Only recorded when the payload actually carried modality information:
+  // absence of a `vision` tag is not evidence of blindness.
+  if (compatCatalogStatesModality(model)) {
+    recordModelVision(providerName, model.id, tags.includes('vision'))
+  }
   const provider =
     typeof model.owned_by === 'string'
     && model.owned_by.length > 0
@@ -1348,6 +1359,24 @@ function isCloudflareTextGenerationModel(model: CompatCatalogModel): boolean {
   return id.startsWith('@cf/')
 }
 
+/**
+ * True when the catalog entry actually said something about modality.
+ *
+ * The distinction matters: a provider that simply lists model ids tells us
+ * nothing, and "no vision flag" from such a provider must stay `unknown`
+ * rather than being recorded as "cannot see". Unknown falls back to text,
+ * which is safe; a false negative would permanently blind a model that can
+ * in fact see.
+ */
+function compatCatalogStatesModality(model: CompatCatalogModel): boolean {
+  return (
+    typeof model.supports_vision === 'boolean'
+    || typeof model.capabilities?.vision === 'boolean'
+    || (Array.isArray(model.tags) && model.tags.some(t => t === 'vision'))
+    || openRouterModelAcceptsImages(model)
+  )
+}
+
 function normalizeCompatCatalogTags(model: CompatCatalogModel): string[] {
   const tags = new Set<string>()
   for (const tag of model.tags ?? []) {
@@ -1359,7 +1388,13 @@ function normalizeCompatCatalogTags(model: CompatCatalogModel): string[] {
   if (model.supports_reasoning === true || tags.has('reasoning')) {
     tags.add('reasoning')
   }
-  if (model.supports_vision === true || model.capabilities?.vision === true || tags.has('vision')) {
+  if (
+    model.supports_vision === true
+    || model.capabilities?.vision === true
+    || tags.has('vision')
+    // OpenRouter-shaped rows carry `architecture.input_modalities`.
+    || openRouterModelAcceptsImages(model)
+  ) {
     tags.add('vision')
   }
   if (model.supports_caching === true || tags.has('implicit-caching') || tags.has('explicit-caching')) {
@@ -1420,6 +1455,16 @@ const OPENCODE_ANTHROPIC_ROUTE_MODELS = new Set([
 function isOpenCodeAnthropicRouteModel(model: string): boolean {
   const m = model.trim().toLowerCase()
   return OPENCODE_ANTHROPIC_ROUTE_MODELS.has(m.endsWith('-free') ? m.slice(0, -5) : m)
+}
+
+// These rows do NOT go through the Chat Completions conversion at all: they
+// are forwarded as Anthropic-format messages verbatim, so image blocks reach
+// the model untouched. Recording that here is a fact about our own transport,
+// not a guess about the model, and it stops the attachment prefetch paying
+// for OCR whose output the route would never use.
+for (const routeModel of OPENCODE_ANTHROPIC_ROUTE_MODELS) {
+  recordModelVision('opencode', routeModel, true)
+  recordModelVision('opencodego', routeModel, true)
 }
 
 // Anthropic 4-breakpoint budget: 1 on the system tail + 2 rolling on the last
@@ -2333,9 +2378,15 @@ function stripCacheControlFromMessage(m: OpenAIChatMessage): OpenAIChatMessage {
 function applyLastOnlyCacheBreakpoints(messages: OpenAIChatMessage[], model = ''): void {
   const stampLast = (parts: Array<{ type: string; text?: string; cache_control?: { type: string } }>): void => {
     if (parts.length === 0) return
-    const last = parts[parts.length - 1]
-    if (last && last.type === 'text' && !last.cache_control) {
-      last.cache_control = { type: 'ephemeral' }
+    // Walk back to the last TEXT part rather than only inspecting the final
+    // element: a message carrying an attachment ends with an image part, and
+    // stamping nothing there would silently drop a rolling breakpoint on
+    // every turn that includes a screenshot.
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const part = parts[i]
+      if (!part || part.type !== 'text') continue
+      if (!part.cache_control) part.cache_control = { type: 'ephemeral' }
+      return
     }
   }
 
@@ -2508,16 +2559,34 @@ function isToolRecord(value: unknown): value is Record<string, unknown> {
 function toOllamaMessage(m: OpenAIChatMessage): Record<string, unknown> {
   // Ollama wants flat string content; collapse OpenAI parts arrays.
   let content = ''
+  // /api/chat carries images in a sibling `images` array of bare base64
+  // (no data: prefix), NOT inside content. Without this, an image part sent
+  // to a vision-capable local model (llava, qwen-vl) would be filtered out
+  // of the text collapse and silently disappear.
+  const images: string[] = []
   if (typeof m.content === 'string') {
     content = m.content
   } else if (Array.isArray(m.content)) {
-    content = m.content
-      .filter((p: any) => p && p.type === 'text' && typeof p.text === 'string')
-      .map((p: any) => p.text)
-      .join('\n')
+    const texts: string[] = []
+    for (const p of m.content as any[]) {
+      if (!p || typeof p !== 'object') continue
+      if (p.type === 'text' && typeof p.text === 'string') {
+        texts.push(p.text)
+        continue
+      }
+      if (p.type === 'image_url') {
+        const url = p.image_url?.url
+        if (typeof url === 'string') {
+          const base64 = /^data:[^;,]+;base64,(.+)$/.exec(url)?.[1]
+          if (base64) images.push(base64)
+        }
+      }
+    }
+    content = texts.join('\n')
   }
 
   const out: Record<string, unknown> = { role: m.role, content }
+  if (images.length > 0) out.images = images
 
   if (m.tool_calls && m.tool_calls.length > 0) {
     out.tool_calls = m.tool_calls.map(tc => ({
@@ -2896,10 +2965,10 @@ function convertHistoryToOpenAI(
   model = '',
 ): OpenAIChatMessage[] {
   if (provider === 'deepseek' && model.toLowerCase() !== 'deepseek-reasoner') {
-    return convertHistoryToOpenAIForDeepSeek(messages, systemText)
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
   }
   if (provider === 'moonshot' && isMoonshotThinkingModel(model)) {
-    return convertHistoryToOpenAIForDeepSeek(messages, systemText)
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
   }
   // OpenCode Zen with per-model thinking enabled: the gateway forwards
   // `reasoning_content` from streamed deltas, and the downstream upstream
@@ -2916,12 +2985,12 @@ function convertHistoryToOpenAI(
     (provider === 'opencode' || provider === 'opencodego')
     && opencodeThinkingActive(provider, model)
   ) {
-    return convertHistoryToOpenAIForDeepSeek(messages, systemText)
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
   }
   if (provider === 'cloudflare' && cloudflareReasoningContentReplayRequired(model)) {
-    return convertHistoryToOpenAIForDeepSeek(messages, systemText)
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
   }
-  return convertHistoryToOpenAIDefault(messages, systemText)
+  return convertHistoryToOpenAIDefault(messages, systemText, provider, model)
 }
 
 function convertHistoryToOpenAIForOpenRouter(
@@ -2954,9 +3023,22 @@ function opencodeThinkingActive(provider: ProviderType, model: string): boolean 
 function convertHistoryToOpenAIDefault(
   messages: ProviderMessage[],
   systemText: string,
+  provider?: ProviderType,
+  model?: string,
 ): OpenAIChatMessage[] {
   const out: OpenAIChatMessage[] = []
   if (systemText) out.push({ role: 'system', content: systemText })
+
+  // Only send pixels when the provider's own catalog said this model takes
+  // image input. Unknown stays on the text path, which every provider
+  // accepts — a wrong answer here can cost quality, never a failed request.
+  //
+  // Resolved lazily and frozen on first use so a catalog that loads mid
+  // conversation cannot re-render an already-sent message and invalidate the
+  // cached prefix. A conversation with no attachments never freezes anything.
+  let imageSupport: boolean | undefined
+  const canSeeImages = (): boolean =>
+    (imageSupport ??= decideImageSupport(provider, model))
 
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
@@ -2970,6 +3052,8 @@ function convertHistoryToOpenAIDefault(
     const texts: string[] = []
     const toolCalls: NonNullable<OpenAIChatMessage['tool_calls']> = []
     const toolResults: OpenAIChatMessage[] = []
+    const imageParts: OpenAIImagePart[] = []
+    const toolResultImageParts: OpenAIImagePart[] = []
 
     for (const block of msg.content) {
       switch (block.type) {
@@ -2990,29 +3074,74 @@ function convertHistoryToOpenAIDefault(
           break
         case 'tool_result':
           if (block.tool_use_id) {
+            // A `tool` message's content must be a string, so images found
+            // in a tool result ride in a user message emitted right after
+            // it (same shape the shared anthropic_to_openai adapter uses).
+            const forwardImages = contentHasImageBlock(block.content) && canSeeImages()
+            if (forwardImages) {
+              toolResultImageParts.push(...collectImageParts(block.content))
+            }
             toolResults.push({
               role: 'tool',
               tool_call_id: block.tool_use_id,
               content: typeof block.content === 'string'
                 ? block.content
-                : stringifyToolContent(block.content),
+                : stringifyToolContent(block.content, forwardImages),
             })
           }
           break
         case 'thinking':
           // OpenAI Chat Completions doesn't echo thinking back — skip.
           break
+        case 'image': {
+          // Pasted screenshots reach the lane as an Anthropic image block.
+          // Models the catalog says can see get the real bytes; the rest get
+          // OCR text or a marker, because dropping the block silently leaves
+          // the `[Image #N]` marker in the text with nothing behind it and
+          // the model then describes an image it never received.
+          const part = canSeeImages() ? toOpenAIImagePart(block) : null
+          if (part) imageParts.push(part)
+          else texts.push(renderMediaForTextLane(block))
+          break
+        }
+        default:
+          // Anthropic `document` blocks (PDF attachments from FileReadTool)
+          // aren't in ProviderContentBlock's union but do reach the lane.
+          // Every other block type stays silently skipped, exactly as before.
+          if ((block as { type: string }).type === 'document') {
+            texts.push(renderMediaForTextLane(block))
+          }
+          break
       }
     }
 
-    if (texts.length > 0 || toolCalls.length > 0) {
+    if (texts.length > 0 || toolCalls.length > 0 || imageParts.length > 0) {
+      const role = msg.role === 'assistant' ? 'assistant' : 'user'
+      // Assistant turns can't carry image parts; only user input does.
+      const sendParts = imageParts.length > 0 && role === 'user'
       out.push({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: texts.length > 0 ? texts.join('\n') : null,
+        role,
+        content: sendParts
+          ? [
+              ...(texts.length > 0
+                ? [{ type: 'text' as const, text: texts.join('\n') }]
+                : []),
+              ...imageParts,
+            ]
+          : texts.length > 0 ? texts.join('\n') : null,
         ...(toolCalls.length > 0 && { tool_calls: toolCalls }),
       })
     }
     out.push(...toolResults)
+    if (toolResultImageParts.length > 0) {
+      out.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Visual observation from the previous tool result:' },
+          ...toolResultImageParts,
+        ],
+      })
+    }
   }
 
   return out
@@ -3097,9 +3226,14 @@ function insertOpenRouterVolatileContext(
 function convertHistoryToOpenAIForDeepSeek(
   messages: ProviderMessage[],
   systemText: string,
+  provider?: ProviderType,
+  model?: string,
 ): OpenAIChatMessage[] {
   const out: OpenAIChatMessage[] = []
   if (systemText) out.push({ role: 'system', content: systemText })
+  let imageSupport: boolean | undefined
+  const canSeeImages = (): boolean =>
+    (imageSupport ??= decideImageSupport(provider, model))
 
   let pendingReasoning: string | null = null
   let pendingAssistantTexts: string[] = []
@@ -3136,6 +3270,8 @@ function convertHistoryToOpenAIForDeepSeek(
     const toolCalls: NonNullable<OpenAIChatMessage['tool_calls']> = []
     const toolResults: OpenAIChatMessage[] = []
     const thinkingBlocks: string[] = []
+    const imageParts: OpenAIImagePart[] = []
+    const toolResultImageParts: OpenAIImagePart[] = []
 
     for (const block of msg.content) {
       switch (block.type) {
@@ -3156,17 +3292,34 @@ function convertHistoryToOpenAIForDeepSeek(
           break
         case 'tool_result':
           if (block.tool_use_id) {
+            const forwardImages = contentHasImageBlock(block.content) && canSeeImages()
+            if (forwardImages) {
+              toolResultImageParts.push(...collectImageParts(block.content))
+            }
             toolResults.push({
               role: 'tool',
               tool_call_id: block.tool_use_id,
               content: typeof block.content === 'string'
                 ? block.content
-                : stringifyToolContent(block.content),
+                : stringifyToolContent(block.content, forwardImages),
             })
           }
           break
         case 'thinking':
           if (block.thinking) thinkingBlocks.push(block.thinking)
+          break
+        case 'image': {
+          // Same rule as the default converter: real pixels when the catalog
+          // says the model takes them, OCR text or a marker otherwise.
+          const part = canSeeImages() ? toOpenAIImagePart(block) : null
+          if (part) imageParts.push(part)
+          else texts.push(renderMediaForTextLane(block))
+          break
+        }
+        default:
+          if ((block as { type: string }).type === 'document') {
+            texts.push(renderMediaForTextLane(block))
+          }
           break
       }
     }
@@ -3198,14 +3351,46 @@ function convertHistoryToOpenAIForDeepSeek(
     }
 
     flushPendingAssistantText()
-    if (texts.length > 0) {
-      out.push({ role: 'user', content: texts.join('\n') })
+    if (texts.length > 0 || imageParts.length > 0) {
+      out.push({
+        role: 'user',
+        content: imageParts.length > 0
+          ? [
+              ...(texts.length > 0
+                ? [{ type: 'text' as const, text: texts.join('\n') }]
+                : []),
+              ...imageParts,
+            ]
+          : texts.join('\n'),
+      })
     }
     out.push(...toolResults)
+    if (toolResultImageParts.length > 0) {
+      out.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Visual observation from the previous tool result:' },
+          ...toolResultImageParts,
+        ],
+      })
+    }
   }
 
   flushPendingAssistantText()
   return out
+}
+
+/** Test-only: Ollama native message shaping (images ride in a sibling field). */
+export function _toOllamaMessageForTest(m: OpenAIChatMessage): Record<string, unknown> {
+  return toOllamaMessage(m)
+}
+
+/** Test-only: rolling cache-breakpoint placement. */
+export function _applyLastOnlyCacheBreakpointsForTest(
+  messages: OpenAIChatMessage[],
+  model = '',
+): void {
+  applyLastOnlyCacheBreakpoints(messages, model)
 }
 
 export function _convertHistoryToOpenAIForTest(
@@ -3217,13 +3402,68 @@ export function _convertHistoryToOpenAIForTest(
   return convertHistoryToOpenAI(messages, systemText, provider, model)
 }
 
-function stringifyToolContent(content: unknown): string {
+/** OpenAI Chat Completions image content part. */
+type OpenAIImagePart = { type: 'image_url'; image_url: { url: string } }
+
+/**
+ * Anthropic image block → OpenAI `image_url` part. Base64 becomes a data URL,
+ * remote URLs pass through, anything else returns null so the caller can fall
+ * back to text.
+ */
+function toOpenAIImagePart(block: unknown): OpenAIImagePart | null {
+  const src = (
+    block as { source?: { data?: string; media_type?: string; url?: string } } | null
+  )?.source
+  if (!src) return null
+  if (typeof src.data === 'string' && src.data.length > 0) {
+    const mime = src.media_type ?? 'image/png'
+    return { type: 'image_url', image_url: { url: `data:${mime};base64,${src.data}` } }
+  }
+  if (typeof src.url === 'string' && src.url.length > 0) {
+    return { type: 'image_url', image_url: { url: src.url } }
+  }
+  return null
+}
+
+/** Cheap probe so the capability decision is only taken when it matters. */
+function contentHasImageBlock(content: unknown): boolean {
+  return Array.isArray(content)
+    && (content as any[]).some(b => b && typeof b === 'object' && b.type === 'image')
+}
+
+function collectImageParts(content: unknown): OpenAIImagePart[] {
+  if (!Array.isArray(content)) return []
+  const out: OpenAIImagePart[] = []
+  for (const b of content as any[]) {
+    if (!b || typeof b !== 'object' || b.type !== 'image') continue
+    const part = toOpenAIImagePart(b)
+    if (part) out.push(part)
+  }
+  return out
+}
+
+/**
+ * @param imagesSentSeparately true when the caller is also emitting the
+ *   images as real `image_url` parts in a following user message, so the
+ *   string should point at them instead of announcing they were dropped.
+ */
+function stringifyToolContent(
+  content: unknown,
+  imagesSentSeparately = false,
+): string {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
     const parts: string[] = []
     for (const b of content as any[]) {
       if (b && typeof b === 'object') {
         if ('text' in b && typeof b.text === 'string') parts.push(b.text)
+        else if (isMediaBlock(b)) {
+          parts.push(
+            imagesSentSeparately && b.type === 'image'
+              ? '[image attached below]'
+              : renderMediaForTextLane(b),
+          )
+        }
         else parts.push(JSON.stringify(b))
       }
     }
