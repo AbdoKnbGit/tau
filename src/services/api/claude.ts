@@ -67,6 +67,12 @@ import {
   getModelMaxOutputTokens,
   getSonnet1mExpTreatmentEnabled,
 } from '../../utils/context.js'
+import {
+  createRepetitionGuard,
+  formatRepetitionNotice,
+  trimRepeatedTail,
+  type RepetitionDetection,
+} from '../../utils/degenerateRepetition.js'
 import { resolveAppliedEffort } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -2480,6 +2486,37 @@ async function* queryModel(
             ? 300_000
             : 90_000
     const STREAM_IDLE_WARNING_MS = STREAM_IDLE_TIMEOUT_MS / 2
+
+    // Degenerate output-loop guard. The idle watchdog above bounds a stream
+    // that stopped saying anything; this one bounds a stream that will not
+    // stop saying the *same* thing. A model that loops emits chunks at full
+    // speed, so nothing else in this loop notices — the turn simply runs to
+    // the output-token ceiling, burning the whole budget on one repeated
+    // sentence. Unlike the watchdog, this cannot false-positive on a slow but
+    // healthy stream: it requires an exactly-repeating run, which legitimate
+    // prose does not produce. Kill switch: CLAUDE_DISABLE_REPETITION_GUARD.
+    const repetitionGuardEnabled = !isEnvTruthy(
+      process.env.CLAUDE_DISABLE_REPETITION_GUARD,
+    )
+    const repetitionGuard = createRepetitionGuard({
+      minRepeats: validateBoundedIntEnvVar(
+        'CLAUDE_REPETITION_MIN_REPEATS',
+        process.env.CLAUDE_REPETITION_MIN_REPEATS,
+        6,
+        10_000,
+      ).effective,
+      minRepeatedChars: validateBoundedIntEnvVar(
+        'CLAUDE_REPETITION_MIN_CHARS',
+        process.env.CLAUDE_REPETITION_MIN_CHARS,
+        1500,
+        1_000_000,
+      ).effective,
+    })
+    let repetitionStop: {
+      index: number
+      detection: RepetitionDetection
+    } | null = null
+
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
     let streamWatchdogFiredAt: number | null = null
@@ -2748,6 +2785,15 @@ async function* queryModel(
                     throw new Error('Content block is not a text block')
                   }
                   contentBlock.text += delta.text
+                  if (repetitionGuardEnabled && !repetitionStop) {
+                    const detection = repetitionGuard.check(
+                      part.index,
+                      contentBlock.text,
+                    )
+                    if (detection) {
+                      repetitionStop = { index: part.index, detection }
+                    }
+                  }
                   break
                 case 'signature_delta':
                   if (
@@ -2930,6 +2976,75 @@ async function* queryModel(
           type: 'stream_event',
           event: part,
           ...(part.type === 'message_start' ? { ttftMs } : undefined),
+        }
+
+        // The model is looping and will not stop on its own. Finalize the
+        // offending block as if content_block_stop had arrived — trimmed back
+        // to the point where the loop began — and stop reading.
+        //
+        // Synthesizing the end rather than throwing is the whole point: an
+        // incomplete stream here would be treated as a broken provider and
+        // retried through the non-streaming fallback, which re-runs the same
+        // prompt, produces the same loop, and this time cannot be cut short.
+        if (repetitionStop) {
+          const { index, detection } = repetitionStop
+          const block = contentBlocks[index]
+          logForDebugging(
+            `Degenerate output loop: the model repeated ${detection.period} chars ${detection.repeats} times (${JSON.stringify(detection.unit)}); truncating the response`,
+            { level: 'warn' },
+          )
+          logEvent('tengu_degenerate_repetition_stopped', {
+            model:
+              options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            request_id: (streamRequestId ??
+              'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            period: detection.period,
+            repeats: detection.repeats,
+            repeated_chars: detection.repeatedChars,
+          })
+          if (block?.type === 'text' && partialMessage) {
+            block.text =
+              trimRepeatedTail(block.text, detection) +
+              formatRepetitionNotice(detection)
+            const m: AssistantMessage = {
+              message: {
+                ...partialMessage,
+                content: normalizeContentFromAPI(
+                  [block] as BetaContentBlock[],
+                  tools,
+                  options.agentId,
+                ),
+              },
+              requestId: streamRequestId ?? undefined,
+              type: 'assistant',
+              uuid: randomUUID(),
+              timestamp: new Date().toISOString(),
+              ...(process.env.USER_TYPE === 'ant' &&
+                research !== undefined && { research }),
+              ...(advisorModel && { advisorModel }),
+            }
+            newMessages.push(m)
+            yield m
+          }
+          // end_turn, not max_tokens: the response is over and the user should
+          // get control back, rather than query.ts offering to continue a
+          // generation that was going nowhere.
+          stopReason = 'end_turn'
+          const lastMsg = newMessages.at(-1)
+          if (lastMsg) {
+            lastMsg.message.usage = usage
+            lastMsg.message.stop_reason = stopReason
+          }
+          // Cost normally lands in the message_delta handler, which this turn
+          // never reaches. Only the usage that actually arrived is charged, so
+          // input cost is exact and the abandoned output tokens go unbilled
+          // rather than being guessed at.
+          costUSD += addToTotalSessionCost(
+            calculateUSDCost(resolvedModel, usage),
+            usage,
+            options.model,
+          )
+          break
         }
       }
       // Clear the idle timeout watchdog now that the stream loop has exited

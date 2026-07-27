@@ -3,7 +3,6 @@ import { basename, relative } from 'path';
 import React, { Suspense, use, useMemo } from 'react';
 import { FileEditToolDiff } from 'src/components/FileEditToolDiff.js';
 import { getCwd } from 'src/utils/cwd.js';
-import { isENOENT } from 'src/utils/errors.js';
 import { detectEncodingForResolvedPath } from 'src/utils/fileRead.js';
 import { getFsImplementation } from 'src/utils/fsOperations.js';
 import { Text } from '../../../ink.js';
@@ -67,10 +66,11 @@ export function SedEditPermissionRequest(t0) {
   }
   return t2;
 }
-function _temp(e) {
-  if (!isENOENT(e)) {
-    throw e;
-  }
+function _temp(_e) {
+  // Same rule as FileWritePermissionRequest: an unreadable target degrades to
+  // an empty preview rather than throwing. This one lands in a Suspense
+  // boundary via a rejected promise, so a non-ENOENT read error took out the
+  // permission prompt the same way.
   return {
     oldContent: "",
     fileExists: false

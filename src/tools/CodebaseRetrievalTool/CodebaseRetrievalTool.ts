@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { createElement } from 'react'
 import { extname, isAbsolute, join, relative, resolve } from 'path'
@@ -16,50 +17,112 @@ const PROMPT = `Search the local repository by intent using lightweight lexical 
 
 Use when the user asks where behavior lives, how a feature works, what to change for an intent, or when broad semantic-style repo orientation is useful before Grep/LSP/Read. Prefer CodeGraph first when a .codegraph directory exists.`
 
+/**
+ * Directories whose contents are installed or generated rather than written.
+ * These matter more than they look: the walk stops at 15k files, so anything
+ * that fills the budget with machine-generated content pushes the project's
+ * own source out of the search. A virtualenv alone can hold tens of
+ * thousands of `.py` files — which the old extension allowlist happily read.
+ */
 const SKIP_DIRS = new Set([
   '.git',
   'node_modules',
+  'bower_components',
   'dist',
   'build',
   'out',
+  'target',
   '.next',
   '.nuxt',
+  '.svelte-kit',
   'coverage',
   '.cache',
+  '.parcel-cache',
   '.turbo',
   'vendor',
   '__pycache__',
+  '.venv',
+  'venv',
+  'site-packages',
+  '.tox',
+  '.mypy_cache',
+  '.pytest_cache',
+  '.ruff_cache',
+  '.ipynb_checkpoints',
+  '.gradle',
+  '.terraform',
 ])
 
-const TEXT_EXTS = new Set([
-  '.ts',
-  '.tsx',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-  '.py',
-  '.go',
-  '.rs',
-  '.java',
-  '.kt',
-  '.cs',
-  '.php',
-  '.rb',
-  '.swift',
-  '.vue',
-  '.svelte',
-  '.html',
-  '.css',
-  '.scss',
-  '.json',
-  '.yaml',
-  '.yml',
-  '.toml',
-  '.md',
-  '.mdx',
-  '.sql',
+/**
+ * Binary and generated formats, skipped without being opened.
+ *
+ * This is a denylist on purpose. It used to be an allowlist of ~28 source
+ * extensions, which silently made whole projects invisible: a folder holding
+ * `.ipynb`, `.txt` and `.csv` reported "searched 1 file" and "no matches",
+ * and a model handed that answer twice has nothing left to work with. Any
+ * allowlist is a promise to have thought of every language and every layout,
+ * which is not a promise this tool can keep — so it now reads what is not
+ * known to be binary, and {@link looksBinary} catches whatever slips through.
+ */
+const SKIP_EXTS = new Set([
+  // images / media
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.avif', '.tiff',
+  '.svgz', '.psd', '.mp3', '.wav', '.ogg', '.flac', '.mp4', '.avi', '.mov',
+  '.mkv', '.webm',
+  // archives / documents
+  '.zip', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar', '.tar', '.jar', '.war',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt',
+  // executables / objects / fonts
+  '.exe', '.dll', '.so', '.dylib', '.bin', '.o', '.obj', '.a', '.lib', '.pdb',
+  '.class', '.pyc', '.pyo', '.wasm', '.node', '.ttf', '.otf', '.woff',
+  '.woff2', '.eot',
+  // datastores and model weights — an ML checkout is mostly these
+  '.db', '.sqlite', '.sqlite3', '.mdb', '.parquet', '.feather', '.arrow',
+  '.pkl', '.pickle', '.joblib', '.npy', '.npz', '.h5', '.hdf5', '.pt', '.pth',
+  '.ckpt', '.safetensors', '.onnx', '.pb', '.tflite', '.gguf', '.msgpack',
+  // generated text that is real, searchable, and never what anyone means
+  '.map', '.min.js', '.min.css',
 ])
+
+/**
+ * `extname` sees only the last dot, so the compound suffixes in
+ * {@link SKIP_EXTS} are matched against the whole name.
+ */
+function isSkippedFile(name: string): boolean {
+  const lower = name.toLowerCase()
+  if (SKIP_EXTS.has(extname(lower))) return true
+  return lower.endsWith('.min.js') || lower.endsWith('.min.css')
+}
+
+/**
+ * Binary content that carries no telltale extension (or none at all). Same
+ * test git uses: a NUL byte near the start means the bytes are not text.
+ */
+function looksBinary(content: string): boolean {
+  return content.lastIndexOf('\0', 4096) !== -1
+}
+
+/**
+ * Notebook JSON is mostly bookkeeping — cell metadata, execution counts,
+ * base64 image outputs. Scoring and quoting that rather than the code would
+ * let a notebook match on noise and then return a snippet of nothing, so the
+ * cell sources stand in for the file.
+ */
+function extractNotebookSource(content: string): string {
+  try {
+    const cells = (JSON.parse(content) as { cells?: unknown }).cells
+    if (!Array.isArray(cells)) return content
+    const parts: string[] = []
+    for (const cell of cells) {
+      const source = (cell as { source?: unknown } | null)?.source
+      if (typeof source === 'string') parts.push(source)
+      else if (Array.isArray(source)) parts.push(source.join(''))
+    }
+    return parts.length > 0 ? parts.join('\n') : content
+  } catch {
+    return content
+  }
+}
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -140,7 +203,57 @@ function resolveRoot(root: string | undefined): string {
   return isAbsolute(value) ? value : resolve(cwd, value)
 }
 
+/**
+ * Files git would show: tracked, plus untracked ones that are not ignored.
+ *
+ * Ignored trees are not just wasted budget, they are wrong answers. A repo
+ * that vendors other checkouts, or a `.claude/worktrees/` copy of itself,
+ * hands back a stale near-identical twin of the file the caller wanted —
+ * same basename, same path shape, months out of date — and the walk can burn
+ * its entire file budget inside them before reaching the project's own src.
+ * .gitignore already records which of those the project disowns, so this asks
+ * git rather than guessing with directory names.
+ *
+ * Returns null when the root is not a git repo, git is missing, or the
+ * listing is unusable — every one of which falls back to {@link walkFs}.
+ */
+function listGitFiles(root: string): string[] | null {
+  let stdout: string
+  try {
+    stdout = execFileSync(
+      'git',
+      ['-C', root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+      {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 10_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      },
+    )
+  } catch {
+    return null
+  }
+  const relatives = stdout.split('\0').filter(Boolean)
+  return relatives.length > 0 ? relatives.map(rel => join(root, rel)) : null
+}
+
 function walk(root: string, maxFiles: number): { files: string[]; truncated: boolean } {
+  const tracked = listGitFiles(root)
+  if (tracked) {
+    const files: string[] = []
+    for (const path of tracked) {
+      if (files.length >= maxFiles) return { files, truncated: true }
+      if (isSkippedFile(path)) continue
+      const stat = safeStat(path)
+      if (stat?.isFile() && stat.size <= 250_000) files.push(path)
+    }
+    return { files, truncated: false }
+  }
+  return walkFs(root, maxFiles)
+}
+
+function walkFs(root: string, maxFiles: number): { files: string[]; truncated: boolean } {
   const files: string[] = []
   let truncated = false
 
@@ -163,7 +276,7 @@ function walk(root: string, maxFiles: number): { files: string[]; truncated: boo
       const path = join(dir, entry.name)
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) visit(path)
-      } else if (entry.isFile() && TEXT_EXTS.has(extname(entry.name).toLowerCase())) {
+      } else if (entry.isFile() && !isSkippedFile(entry.name)) {
         const stat = safeStat(path)
         if (stat && stat.size <= 250_000) files.push(path)
       }
@@ -192,6 +305,10 @@ function scoreFile(path: string, root: string, queryTerms: string[], includeSnip
     content = readFileSync(path, 'utf8')
   } catch {
     return null
+  }
+  if (looksBinary(content)) return null
+  if (extname(path).toLowerCase() === '.ipynb') {
+    content = extractNotebookSource(content)
   }
   const rel = relative(root, path)
   const haystack = `${rel}\n${content}`.toLowerCase()

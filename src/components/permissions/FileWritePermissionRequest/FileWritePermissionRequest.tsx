@@ -1,11 +1,11 @@
 import { c as _c } from "react/compiler-runtime";
+import { existsSync } from 'fs';
 import { basename, relative } from 'path';
 import React, { useMemo } from 'react';
 import type { z } from 'zod/v4';
 import { Text } from '../../../ink.js';
 import { FileWriteTool } from '../../../tools/FileWriteTool/FileWriteTool.js';
 import { getCwd } from '../../../utils/cwd.js';
-import { isENOENT } from '../../../utils/errors.js';
 import { readFileSync } from '../../../utils/fileRead.js';
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog.js';
 import { createSingleEditDiffConfig, type FileEdit, type IDEDiffSupport } from '../FilePermissionDialog/ideDiffConfig.js';
@@ -17,8 +17,10 @@ const ideDiffSupport: IDEDiffSupport<FileWriteToolInput> = {
     let oldContent: string;
     try {
       oldContent = readFileSync(input.file_path);
-    } catch (e) {
-      if (!isENOENT(e)) throw e;
+    } catch {
+      // Any unreadable target is previewed as a plain create. Rethrowing a
+      // non-ENOENT read error here used to escape into the render (see the
+      // dialog body below for why that is fatal).
       oldContent = '';
     }
     return createSingleEditDiffConfig(input.file_path, oldContent, input.content, false // For file writes, we replace the entire content
@@ -59,22 +61,27 @@ export function FileWritePermissionRequest(props) {
         fileExists: true,
         oldContent: readFileSync(file_path)
       };
-    } catch (t2) {
-      const e = t2;
-      if (!isENOENT(e)) {
-        throw e;
-      }
-      let t3;
-      if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
-        t3 = {
-          fileExists: false,
-          oldContent: ""
-        };
-        $[4] = t3;
-      } else {
-        t3 = $[4];
-      }
-      t1 = t3;
+    } catch {
+      // Never rethrow out of the render. This dialog's whole job is to show
+      // the pending write and ask; whether the *old* content can be read is
+      // not its call to make, and the write itself will report a real failure
+      // through the tool result. A throw here escapes into Ink's render, which
+      // tears the tree down while the terminal keeps the last painted frame:
+      // the prompt is still on screen with nothing mounted behind it, so Esc,
+      // Tab and Ctrl+C all land on a dead UI and the session looks hung.
+      //
+      // Reproduced with a file_path that is a directory (readFileSync throws
+      // EISDIR, which isENOENT rejects). Windows adds more ways in — a
+      // Controlled-Folder-Access path or a file held open by another process
+      // fails with EPERM/EBUSY, not ENOENT.
+      //
+      // existsSync keeps the header honest ("Overwrite" vs "Create") without
+      // needing the contents; no diff is shown, so the full new content is
+      // previewed instead, which is what a reviewer needs to see anyway.
+      t1 = {
+        fileExists: existsSync(file_path),
+        oldContent: ""
+      };
     }
     $[2] = file_path;
     $[3] = t1;

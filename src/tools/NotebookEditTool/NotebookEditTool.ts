@@ -49,13 +49,17 @@ export const inputSchema = lazySchema(() =>
       .enum(['code', 'markdown'])
       .optional()
       .describe(
-        'The type of the cell (code or markdown). If not specified, it defaults to the current cell type. Required when edit_mode=insert.',
+        // Leads with the requirement. When this read "If not specified, it
+        // defaults to the current cell type. Required when edit_mode=insert.",
+        // models took the first clause and dropped the field, so every insert
+        // cost a failed call and a retry before it landed.
+        'REQUIRED when edit_mode=insert: pass "code" or "markdown". For edit_mode=replace it is optional and defaults to the cell\'s current type. Ignored for delete.',
       ),
     edit_mode: z
       .enum(['replace', 'insert', 'delete'])
       .optional()
       .describe(
-        'The type of edit to make (replace, insert, delete). Defaults to replace.',
+        'The type of edit to make (replace, insert, delete). Defaults to replace. Passing insert also requires cell_type.',
       ),
   }),
 )

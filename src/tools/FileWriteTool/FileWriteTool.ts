@@ -1,3 +1,4 @@
+import { existsSync } from 'fs'
 import { dirname, sep } from 'path'
 import { pathToFileURL } from 'url'
 import { logEvent } from 'src/services/analytics/index.js'
@@ -320,7 +321,27 @@ export const FileWriteTool = buildTool({
     // the old file's line endings (or sampled the repo via ripgrep for new
     // files), which silently corrupted e.g. bash scripts with \r on Linux when
     // overwriting a CRLF file or when binaries in cwd poisoned the repo sample.
-    writeTextContent(fullFilePath, content, enc, 'LF')
+    try {
+      writeTextContent(fullFilePath, content, enc, 'LF')
+    } catch (e) {
+      // "no such file or directory" is a lie when the directory is right
+      // there. The parent was just mkdir'd above, so an ENOENT that survives
+      // into the write means the path exists but refuses to accept a new file
+      // — on Windows that is almost always Controlled Folder Access (Defender
+      // ransomware protection covers Pictures/Documents/Desktop by default),
+      // which reports a blocked create as ENOENT rather than a permission
+      // error. Left raw, the model reads "directory missing", retries with a
+      // different separator, and burns turns on a path that can never work.
+      if (isENOENT(e) && existsSync(dir)) {
+        throw new Error(
+          `Cannot create ${fullFilePath}: the directory exists but the system refused to create the file. ` +
+            (process.platform === 'win32'
+              ? 'This is usually Windows Controlled Folder Access (Defender ransomware protection), which reports blocked writes as "no such file or directory". Check Windows Security > Virus & threat protection > Ransomware protection > Protected folders, or write somewhere else.'
+              : 'Check directory permissions, or write somewhere else.'),
+        )
+      }
+      throw e
+    }
 
     // Notify LSP servers about file modification (didChange) and save (didSave)
     const lspManager = getLspServerManager()
