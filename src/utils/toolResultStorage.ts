@@ -15,6 +15,7 @@ import {
   MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
 } from '../constants/toolLimits.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
+import { searchToolResultFile } from './toolResultSearch.js'
 import { logEvent } from '../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../services/analytics/metadata.js'
 import type { Message } from '../types/message.js'
@@ -163,6 +164,7 @@ export type RetrievePersistedToolResultOptions = {
   maxBytes?: number
   startLine?: number
   lineCount?: number
+  query?: string
 }
 
 export type RetrievedPersistedToolResult =
@@ -483,6 +485,50 @@ async function readLineRange(
   }
 }
 
+/**
+ * Find `query` inside a saved output and render the hits as a range.
+ *
+ * The zero-match reply carries the exact line count on purpose. A search that
+ * finds nothing always ran to EOF, so the count is free and it turns a dead end
+ * into the one fact needed to pick a line range without another probe.
+ */
+async function searchRange(
+  path: string,
+  query: string,
+  totalBytes: number,
+): Promise<RetrievedPersistedToolResultRange> {
+  const found = await searchToolResultFile(path, query, {
+    maxBytes: MAX_RETRIEVE_BYTES,
+    maxMatches: MAX_RETRIEVE_LINES,
+  })
+
+  if (found.binary) {
+    return {
+      range: 'binary output, not searched',
+      content: `This saved output looks binary, so "${query}" was not searched for. Read a byte range instead.`,
+      truncated: false,
+    }
+  }
+
+  if (found.matches === 0) {
+    return {
+      range: `0 matches for "${query}"`,
+      content:
+        `No line contains "${query}". This output has ${found.scannedLines} lines ` +
+        `across ${totalBytes} bytes; read a range with startLine/lineCount instead of searching again.`,
+      truncated: false,
+    }
+  }
+
+  return {
+    range:
+      `${found.matches} matching line${found.matches === 1 ? '' : 's'} for "${query}"` +
+      (found.truncated ? ' (capped)' : ''),
+    content: found.content,
+    truncated: found.truncated,
+  }
+}
+
 export async function retrievePersistedToolResult(
   options: RetrievePersistedToolResultOptions,
 ): Promise<RetrievedPersistedToolResult> {
@@ -499,8 +545,12 @@ export async function retrievePersistedToolResult(
     return { ok: false, error: `Not a file: ${resolved.path}` }
   }
 
-  const range =
-    options.startLine !== undefined || options.lineCount !== undefined
+  // Search wins over the range inputs: a model that knows what it is looking
+  // for should never also have to guess where it lives.
+  const query = options.query?.trim()
+  const range = query
+    ? await searchRange(resolved.path, query, fileStat.size)
+    : options.startLine !== undefined || options.lineCount !== undefined
       ? await readLineRange(resolved.path, options.startLine, options.lineCount)
       : await readByteRange(
           resolved.path,

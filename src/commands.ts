@@ -209,6 +209,7 @@ import {
 import rateLimitOptions from './commands/rate-limit-options/index.js'
 import statusline from './commands/statusline.js'
 import effort from './commands/effort/index.js'
+import visionModel from './commands/vision-model/index.js'
 import thinking from './commands/thinking/index.js'
 import dangerouslySkipPermissions from './commands/dangerously-skip-permissions/index.js'
 import stats from './commands/stats/index.js'
@@ -305,6 +306,7 @@ const COMMANDS = memoize((): Command[] => [
   diff,
   doctor,
   effort,
+  visionModel,
   exit,
   fast,
   files,

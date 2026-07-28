@@ -402,6 +402,11 @@ export type GlobalConfig = {
   // Terminal progress bar configuration (OSC 9;4)
   terminalProgressBarEnabled: boolean
 
+  // Which model describes an image when the active model cannot see one (set
+  // via /vision-model). Unset means auto-pick from whichever configured
+  // provider can serve as a describer; null means never describe.
+  visionModel?: { provider: string; model: string } | null
+
   // Terminal tab status indicator (OSC 21337). When on, emits a colored
   // dot + status text to the tab sidebar and drops the spinner prefix
   // from the title (the dot makes it redundant).

@@ -47,8 +47,16 @@ import { decideImageSupport } from './shared/vision_capability.js'
  * Note this is about the LANE's transport, not the model. Within
  * openai-compat the answer is per-model (Kimi and Qwen-VL see, Devstral does
  * not), so that lane asks `modelAcceptsImages` instead of appearing here.
+ *
+ * Cline and KiloCode used to be listed here and should not have been. They are
+ * routers: the transport takes an image_url part, then hands it to whatever
+ * upstream model the user selected, which may not read images at all. Treating
+ * the lane as sighted meant never resolving OCR or a description for them, so
+ * KiloCode returned `404 No endpoints found that support image input` and Cline
+ * dropped the image silently and let the model invent what it showed. Both now
+ * decide per-model, exactly like openai-compat.
  */
-const LANES_WITH_NATIVE_MEDIA = new Set(['gemini', 'codex', 'cline', 'kilo'])
+const LANES_WITH_NATIVE_MEDIA = new Set(['gemini', 'codex'])
 import type { APIProvider } from '../utils/model/providers.js'
 import type { QuerySource } from '../constants/querySource.js'
 

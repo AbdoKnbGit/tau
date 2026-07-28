@@ -64,6 +64,8 @@ import {
   KILO_FALLBACK_MODELS,
   KILO_FALLBACK_FREE_IDS,
 } from './catalog.js'
+import { decideImageSupport } from '../shared/vision_capability.js'
+import { substituteUnsendableMedia } from '../shared/media_extract.js'
 import { applyKiloCacheBreakpoints } from './cache.js'
 import {
   kiloToolCallKey,
@@ -268,8 +270,14 @@ export class KiloLane implements Lane {
 
     const preserveCacheControl = this._supportsPromptCache(params.model)
     const system = this._prependToolUsageRules(params.system, params.tools.length > 0)
+    // KiloCode routes to whichever upstream model is selected. Sending an image
+    // to one that cannot take it is a hard `404 No endpoints found that support
+    // image input`, which fails the whole turn rather than just the attachment.
+    const outboundMessages = decideImageSupport(params.providerHint, params.model)
+      ? params.messages
+      : substituteUnsendableMedia(params.messages)
     const messages = anthropicMessagesToOpenAI(
-      params.messages,
+      outboundMessages,
       system,
       { preserveCacheControl },
     )

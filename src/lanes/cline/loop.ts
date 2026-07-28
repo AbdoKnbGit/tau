@@ -52,6 +52,8 @@ import {
   getClinePassModels,
   isClinePassProvider,
 } from '../../utils/model/clinePassCatalog.js'
+import { decideImageSupport } from '../shared/vision_capability.js'
+import { substituteUnsendableMedia } from '../shared/media_extract.js'
 import { buildClineToolsForRequest } from './tools.js'
 import {
   buildClineBlockedInvalidToolCallText,
@@ -416,8 +418,15 @@ export class ClineLane implements Lane {
 
     const preserveCacheControl = this._supportsPromptCache(params.model)
     const system = this._prependToolUsageRules(params.system, params.tools.length > 0)
+    // Cline routes to whichever upstream model is selected, so carrying an
+    // image over the wire says nothing about the model being able to read it.
+    // When it cannot, swap in the OCR/description text rather than shipping
+    // pixels that get silently dropped and answered about anyway.
+    const outboundMessages = decideImageSupport(params.providerHint, params.model)
+      ? params.messages
+      : substituteUnsendableMedia(params.messages)
     const messages = anthropicMessagesToOpenAI(
-      params.messages,
+      outboundMessages,
       system,
       { preserveCacheControl },
     )
