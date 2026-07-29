@@ -58,6 +58,13 @@ import {
   mapNotebookCellsToToolResult,
   readNotebook,
 } from '../../utils/notebook.js'
+import {
+  hasApprovedOfficeUpload,
+  isOfficeDocExtension,
+  isOfficeParseEnabled,
+  officeParseDisabledMessage,
+  parseOfficeDocument,
+} from '../../utils/officeDocs.js'
 import { expandPath } from '../../utils/path.js'
 import { extractPDFPages, getPDFPageCount, readPDF } from '../../utils/pdf.js'
 import {
@@ -385,7 +392,7 @@ export type Output = z.infer<OutputSchema>
 
 export const FileReadTool = buildTool({
   name: FILE_READ_TOOL_NAME,
-  searchHint: 'read files, images, PDFs, notebooks',
+  searchHint: 'read files, images, PDFs, Word/Excel documents, notebooks',
   // Output is bounded by maxTokens (validateContentTokens). Persisting to a
   // file the model reads back with Read is circular — never persist.
   maxResultSizeChars: Infinity,
@@ -446,11 +453,37 @@ export const FileReadTool = buildTool({
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
     const appState = context.getAppState()
-    return checkReadPermissionForTool(
+    const decision = await checkReadPermissionForTool(
       FileReadTool,
       input,
       appState.toolPermissionContext,
     )
+
+    // Reading an office document uploads it to Firecrawl to be converted —
+    // the only path in this tool that sends file contents off the machine. A
+    // filesystem read rule grants local access and cannot speak to egress, so
+    // ask once per session on top of whatever those rules decided. A denial
+    // still wins. parseOfficeDocument records the approval on its first
+    // success, so this asks once and then stays quiet.
+    if (
+      decision.behavior === 'allow' &&
+      isOfficeParseEnabled() &&
+      !hasApprovedOfficeUpload() &&
+      isOfficeDocExtension(path.extname(input.file_path).toLowerCase())
+    ) {
+      const decisionReason = {
+        type: 'other' as const,
+        reason:
+          'Office documents have no local parser; reading one uploads it to Firecrawl for conversion to markdown',
+      }
+      return {
+        behavior: 'ask',
+        decisionReason,
+        message: `Claude wants to read ${path.basename(input.file_path)}, which uploads it to Firecrawl to convert it to text`,
+      }
+    }
+
+    return decision
   },
   renderToolUseMessage,
   renderToolUseTag,
@@ -520,14 +553,22 @@ export const FileReadTool = buildTool({
     // Binary extension check (string check on extension only, no I/O).
     // PDF, images, and SVG are excluded - this tool renders them natively.
     const ext = path.extname(fullFilePath).toLowerCase()
+    // Office documents are binary containers with no local parser, but the
+    // office branch in callInner converts them to markdown. They stay rejected
+    // when the user has turned conversion off.
+    const isOfficeDoc = isOfficeDocExtension(ext)
+    const isConvertibleOfficeDoc = isOfficeDoc && isOfficeParseEnabled()
     if (
       hasBinaryExtension(fullFilePath) &&
       !isPDFExtension(ext) &&
+      !isConvertibleOfficeDoc &&
       !IMAGE_EXTENSIONS.has(ext.slice(1))
     ) {
       return {
         result: false,
-        message: `This tool cannot read binary files. The file appears to be a binary ${ext} file. Please use appropriate tools for binary file analysis.`,
+        message: isOfficeDoc
+          ? officeParseDisabledMessage(ext)
+          : `This tool cannot read binary files. The file appears to be a binary ${ext} file. Please use appropriate tools for binary file analysis.`,
         errorCode: 4,
       }
     }
@@ -1183,8 +1224,77 @@ async function callInner(
     }
   }
 
+  // --- Office document (Word / Excel / OpenDocument) ---
+  // Placed after the PDF branch on purpose: .pdf keeps its native, on-machine
+  // path and must never reach the uploader. These formats are binary
+  // containers with no local parser, so they are converted to markdown.
+  if (isOfficeDocExtension(ext)) {
+    const parsed = await parseOfficeDocument(
+      resolvedFilePath,
+      context.abortController.signal,
+    )
+
+    // Slice the converted markdown so offset/limit behave as they do for text.
+    const allLines = parsed.markdown.split('\n')
+    const totalLines = allLines.length
+    const startLine = offset === 0 ? 1 : offset
+    const sliceStart = startLine - 1
+    const selected = allLines.slice(
+      sliceStart,
+      limit === undefined ? undefined : sliceStart + limit,
+    )
+    const content = selected.join('\n')
+
+    await validateContentTokens(content, ext, maxTokens)
+
+    // Deliberately NOT written to readFileState. That map is what Edit and
+    // Write diff against, and this markdown is a rendering rather than the
+    // bytes on disk — feeding it to them would corrupt the document. Leaving
+    // it unset makes both refuse until the file has been read as text, which
+    // for a binary container never happens. Repeat reads are served by the
+    // parse cache in officeDocs.ts instead of the readFileState dedup above.
+    context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
+
+    logFileOperation({
+      operation: 'read',
+      tool: 'FileReadTool',
+      filePath: fullFilePath,
+      content,
+    })
+    const officeAnalyticsExt = getFileExtensionForAnalytics(fullFilePath)
+    logEvent('tengu_file_read_office_parse', {
+      cached: parsed.cached,
+      truncated: selected.length < totalLines,
+      ...(officeAnalyticsExt !== undefined && { ext: officeAnalyticsExt }),
+    })
+
+    const notes = [
+      `Converted ${path.basename(fullFilePath)} to markdown${parsed.cached ? ' (cached from an earlier read)' : ' using Firecrawl'}.`,
+      'This is a text rendering of a binary document, so it cannot be modified with Edit or Write.',
+    ]
+    if (parsed.warning) {
+      notes.push(`Conversion warning: ${parsed.warning}`)
+    }
+
+    return {
+      data: {
+        type: 'text' as const,
+        file: {
+          filePath: file_path,
+          content,
+          numLines: selected.length,
+          startLine,
+          totalLines,
+        },
+      },
+      newMessages: [
+        createUserMessage({ content: notes.join(' '), isMeta: true }),
+      ],
+    }
+  }
+
   // --- Skeleton view (structure with long function bodies elided) ---
-  // Only reached for text files: notebook/image/PDF branches returned above.
+  // Only reached for text files: notebook/image/PDF/office branches returned above.
   // Any unsupported/unparseable case falls through to the normal text read.
   if (skeletonMode !== 'off') {
     // Allow larger files than a plain full read: the OUTPUT is what reaches

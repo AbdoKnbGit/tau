@@ -1,3 +1,4 @@
+import { isOfficeParseEnabled } from '../../utils/officeDocs.js'
 import { isPDFSupported } from '../../utils/pdfUtils.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 
@@ -44,7 +45,11 @@ ${lineFormat}
       : ''
   }
 - LARGE code files auto-skeleton: a whole-file Read (no offset/limit) of a supported code file (ts/js/py/go/rs/java/rb/cs/c/cpp/php and variants) above ~16KB returns the file's STRUCTURE — imports, signatures, and class shapes with long function bodies elided — instead of full content. Each elision marker shows the exact offset/limit Read call to expand that body, and line numbers are the file's real line numbers. Read specific ranges (offset/limit) for the bodies you need, pass skeleton: false to force full content, or skeleton: true to force a skeleton for any supported file. Unsupported files always return a normal read. Editing still requires a full-content Read of the relevant range first.
-- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.
+- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.${
+    isOfficeParseEnabled()
+      ? `\n- This tool reads Word, Excel, and OpenDocument files (.docx, .doc, .xlsx, .xls, .odt) by converting them to markdown. Read them DIRECTLY with this tool. Do NOT use ${BASH_TOOL_NAME} with python, docx, zipfile, unzip, or any other workaround to extract their text — this tool handles them and those workarounds lose tables and formatting. Converting uploads the file, so the first one in a session asks the user for approval. The result is a text rendering, so the file cannot be changed with Edit or Write. PowerPoint (.pptx, .ppt) and .ods/.odp are NOT supported by this tool.`
+      : ''
+  }
 - This tool can only read files, not directories. To read a directory, use an ls command via the ${BASH_TOOL_NAME} tool.
 - You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.`

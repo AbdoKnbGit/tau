@@ -229,6 +229,7 @@ import {
 } from './hooks.js'
 import { jsonStringify } from './slowOperations.js'
 import { isPDFExtension } from './pdfUtils.js'
+import { isOfficeDocExtension } from './officeDocs.js'
 import { getLocalISODate } from '../constants/common.js'
 import { getPDFPageCount } from './pdf.js'
 import { PDF_AT_MENTION_INLINE_THRESHOLD } from '../constants/apiLimits.js'
@@ -3162,7 +3163,11 @@ export async function generateFileAttachment(
     )
   ) {
     const ext = parse(filename).ext.toLowerCase()
-    if (!isPDFExtension(ext)) {
+    // Office documents are exempt for the same reason PDFs are: the on-disk
+    // size is zip and XML overhead and says nothing about how much text comes
+    // out of the conversion. FileReadTool's own size ceiling and token
+    // validation are the real gates.
+    if (!isPDFExtension(ext) && !isOfficeDocExtension(ext)) {
       try {
         const stats = await getFsImplementation().stat(filename)
         logEvent('tengu_attachment_file_too_large', {
