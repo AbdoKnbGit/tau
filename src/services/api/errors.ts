@@ -194,6 +194,33 @@ export function getRequestTooLargeErrorMessage(): string {
     ? `Request too large (${limits}). Try with a smaller file.`
     : `Request too large (${limits}). Double press esc to go back and try with a smaller file.`
 }
+
+/**
+ * Infrastructure-level "the serialized body is too many bytes" rejections.
+ *
+ * The Anthropic API answers a clean 413, but the gateways and reverse proxies
+ * in front of the OpenAI-compat lanes usually do not: nginx and Express
+ * body-parser answer 'request entity too large', serverless hosts answer
+ * 'function_payload_too_large', and both commonly arrive under a rewritten
+ * 400/500 status wrapped in a lane-specific Error rather than an APIError.
+ * Matching the body text is the only way to recognize those.
+ *
+ * This is a byte-size condition, NOT a token-count one. It fires while the
+ * token counter still reads healthy, because base64 media inflates bytes far
+ * faster than tokens. Prompt-too-long has its own separate path
+ * (isPromptTooLongMessage) and must not be routed here.
+ *
+ * Deliberately narrow. The bare phrase 'request too large' is excluded because
+ * Groq uses it for a per-minute TOKEN cap (see lanes/openai-compat/
+ * transformers/groq.ts) — treating that as a payload rejection would strip the
+ * user's images when the real remedy is fewer tokens or a wait.
+ */
+const REQUEST_TOO_LARGE_BODY_PATTERN =
+  /request entity too large|function_payload_too_large|payload too large/i
+
+export function isRequestTooLargeBody(raw: string): boolean {
+  return REQUEST_TOO_LARGE_BODY_PATTERN.test(raw)
+}
 export const OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE =
   'Your account does not have access to Tau. Please run /login.'
 
@@ -654,9 +681,20 @@ export function getAssistantMessageFromError(
     })
   }
 
-  // Check for request too large errors (413 status)
-  // This typically happens when a large PDF + conversation context exceeds the 32MB API limit
-  if (error instanceof APIError && error.status === 413) {
+  // Check for request too large errors (413 status, or a gateway body that
+  // says so under a rewritten status — see isRequestTooLargeBody).
+  // This typically happens when a large PDF + conversation context exceeds the 32MB API limit,
+  // or when a proxy in front of an OpenAI-compat lane caps the body well below that.
+  //
+  // Returning getRequestTooLargeErrorMessage() verbatim is load-bearing: that
+  // exact string is the key normalizeMessagesForAPI looks up in errorToBlockTypes
+  // (utils/messages.ts) to strip document/image blocks from the offending user
+  // message on the next request. A differently-worded message would surface the
+  // failure but never shed the media, so every retry would fail identically.
+  if (
+    (error instanceof APIError && error.status === 413) ||
+    (error instanceof Error && isRequestTooLargeBody(error.message))
+  ) {
     return createAssistantAPIErrorMessage({
       content: getRequestTooLargeErrorMessage(),
       error: 'invalid_request',
