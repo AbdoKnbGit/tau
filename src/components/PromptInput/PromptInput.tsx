@@ -55,6 +55,7 @@ import type { BaseTextInputProps, PromptInputMode, VimMode } from '../../types/t
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
 import { count } from '../../utils/array.js';
 import type { AutoUpdaterResult } from '../../utils/autoUpdater.js';
+import { getClipboardImageSetupHint } from '../../utils/clipboardImage.js';
 import { Cursor } from '../../utils/Cursor.js';
 import { getGlobalConfig, type PastedContent, saveGlobalConfig } from '../../utils/config.js';
 import { logForDebugging } from '../../utils/debug.js';
@@ -1633,19 +1634,23 @@ function PromptInput({
 
   // Handler for chat:imagePaste - paste image from clipboard
   const handleImagePaste = useCallback(() => {
-    void getImageFromClipboard().then(imageData => {
+    void getImageFromClipboard().then(async imageData => {
       if (imageData) {
-        onImagePaste(imageData.base64, imageData.mediaType);
-      } else {
-        const shortcutDisplay = getShortcutDisplay('chat:imagePaste', 'Chat', 'ctrl+v');
-        const message = env.isSSH() ? "No image found in clipboard. You're SSH'd; try scp?" : `No image found in clipboard. Use ${shortcutDisplay} to paste images.`;
-        addNotification({
-          key: 'no-image-in-clipboard',
-          text: message,
-          priority: 'immediate',
-          timeoutMs: 1000
-        });
+        onImagePaste(imageData.base64, imageData.mediaType, undefined, imageData.dimensions);
+        return;
       }
+      // Nothing came back. Separate "the clipboard held no image" from "this
+      // machine has no way to read the clipboard at all" (no xclip on Linux,
+      // WSL interop disabled) - they look identical to the user otherwise.
+      const setupHint = env.isSSH() ? "You're SSH'd; try scp?" : await getClipboardImageSetupHint();
+      const shortcutDisplay = getShortcutDisplay('chat:imagePaste', 'Chat', 'ctrl+v');
+      const message = setupHint ? `No image found in clipboard. ${setupHint}` : `No image found in clipboard. Copy an image, then press ${shortcutDisplay}.`;
+      addNotification({
+        key: 'no-image-in-clipboard',
+        text: message,
+        priority: 'immediate',
+        timeoutMs: setupHint ? 6000 : 1000
+      });
     });
   }, [addNotification, onImagePaste]);
 

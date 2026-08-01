@@ -9,10 +9,19 @@ import type { KeybindingBlock } from './types.js'
  * These are loaded first, then user keybindings.json overrides them.
  */
 
-// Platform-specific image paste shortcut:
-// - Windows: alt+v (ctrl+v is system paste)
-// - Other platforms: ctrl+v
-const IMAGE_PASTE_KEY = getPlatform() === 'windows' ? 'alt+v' : 'ctrl+v'
+// Image paste. Several keys map to the one action because which of them
+// actually reaches us is up to the terminal:
+// - ctrl+v is primary everywhere except native Windows, where the terminal
+//   almost always claims it for system paste (so alt+v is primary there).
+// - ctrl+shift+v is the paste shortcut in most Linux/Windows terminals.
+//   Those swallow it and the binding stays inert, but terminals speaking the
+//   kitty keyboard protocol forward it, giving a second entry point.
+// Order matters: getBindingDisplayText takes the LAST binding for an action,
+// so the key that hints should advertise goes last.
+const IMAGE_PASTE_KEYS =
+  getPlatform() === 'windows'
+    ? ['ctrl+shift+v', 'ctrl+v', 'alt+v']
+    : ['ctrl+shift+v', 'ctrl+v']
 
 // Modifier-only chords (like shift+tab) may fail on Windows Terminal without VT mode
 // See: https://github.com/microsoft/terminal/issues/879#issuecomment-618801651
@@ -83,8 +92,12 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       'ctrl+x ctrl+e': 'chat:externalEditor',
       'ctrl+g': 'chat:externalEditor',
       'ctrl+s': 'chat:stash',
-      // Image paste shortcut (platform-specific key defined above)
-      [IMAGE_PASTE_KEY]: 'chat:imagePaste',
+      // Image paste shortcuts (platform-specific keys defined above)
+      ...Object.fromEntries(
+        IMAGE_PASTE_KEYS.map(
+          (key): [string, 'chat:imagePaste'] => [key, 'chat:imagePaste'],
+        ),
+      ),
       ...(feature('MESSAGE_ACTIONS')
         ? { 'shift+up': 'chat:messageActions' as const }
         : {}),

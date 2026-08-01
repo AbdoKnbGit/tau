@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
 import { execa } from 'execa'
-import { basename, extname, isAbsolute, join } from 'path'
+import { basename, extname, isAbsolute } from 'path'
 import {
   IMAGE_MAX_HEIGHT,
   IMAGE_MAX_WIDTH,
@@ -9,8 +9,12 @@ import {
 } from '../constants/apiLimits.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { getImageProcessor } from '../tools/FileReadTool/imageProcessor.js'
+import {
+  getClipboardTextCommand,
+  hasClipboardImage,
+  readClipboardImageBytes,
+} from './clipboardImage.js'
 import { logForDebugging } from './debug.js'
-import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import {
   detectImageFormatFromBase64,
@@ -28,61 +32,6 @@ type SupportedPlatform = 'darwin' | 'linux' | 'win32'
 
 // Threshold in characters for when to consider text a "large paste"
 export const PASTE_THRESHOLD = 800
-function getClipboardCommands() {
-  const platform = process.platform as SupportedPlatform
-
-  // Platform-specific temporary file paths
-  // Use CLAUDE_CODE_TMPDIR if set, otherwise fall back to platform defaults
-  const baseTmpDir =
-    process.env.CLAUDE_CODE_TMPDIR ||
-    (platform === 'win32' ? process.env.TEMP || 'C:\\Temp' : '/tmp')
-  const screenshotFilename = 'claude_cli_latest_screenshot.png'
-  const tempPaths: Record<SupportedPlatform, string> = {
-    darwin: join(baseTmpDir, screenshotFilename),
-    linux: join(baseTmpDir, screenshotFilename),
-    win32: join(baseTmpDir, screenshotFilename),
-  }
-
-  const screenshotPath = tempPaths[platform] || tempPaths.linux
-
-  // Platform-specific clipboard commands
-  const commands: Record<
-    SupportedPlatform,
-    {
-      checkImage: string
-      saveImage: string
-      getPath: string
-      deleteFile: string
-    }
-  > = {
-    darwin: {
-      checkImage: `osascript -e 'the clipboard as «class PNGf»'`,
-      saveImage: `osascript -e 'set png_data to (the clipboard as «class PNGf»)' -e 'set fp to open for access POSIX file "${screenshotPath}" with write permission' -e 'write png_data to fp' -e 'close access fp'`,
-      getPath: `osascript -e 'get POSIX path of (the clipboard as «class furl»)'`,
-      deleteFile: `rm -f "${screenshotPath}"`,
-    },
-    linux: {
-      checkImage:
-        'xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -E "image/(png|jpeg|jpg|gif|webp|bmp)" || wl-paste -l 2>/dev/null | grep -E "image/(png|jpeg|jpg|gif|webp|bmp)"',
-      saveImage: `xclip -selection clipboard -t image/png -o > "${screenshotPath}" 2>/dev/null || wl-paste --type image/png > "${screenshotPath}" 2>/dev/null || xclip -selection clipboard -t image/bmp -o > "${screenshotPath}" 2>/dev/null || wl-paste --type image/bmp > "${screenshotPath}"`,
-      getPath:
-        'xclip -selection clipboard -t text/plain -o 2>/dev/null || wl-paste 2>/dev/null',
-      deleteFile: `rm -f "${screenshotPath}"`,
-    },
-    win32: {
-      checkImage:
-        'powershell -NoProfile -Command "(Get-Clipboard -Format Image) -ne $null"',
-      saveImage: `powershell -NoProfile -Command "$img = Get-Clipboard -Format Image; if ($img) { $img.Save('${screenshotPath.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png) }"`,
-      getPath: 'powershell -NoProfile -Command "Get-Clipboard"',
-      deleteFile: `del /f "${screenshotPath}"`,
-    },
-  }
-
-  return {
-    commands: commands[platform] || commands.linux,
-    screenshotPath,
-  }
-}
 
 export type ImageWithDimensions = {
   base64: string
@@ -94,10 +43,8 @@ export type ImageWithDimensions = {
  * Check if clipboard contains an image without retrieving it.
  */
 export async function hasImageInClipboard(): Promise<boolean> {
-  if (process.platform !== 'darwin') {
-    return false
-  }
   if (
+    process.platform === 'darwin' &&
     feature('NATIVE_CLIPBOARD_IMAGE') &&
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_collage_kaleidoscope', true)
   ) {
@@ -114,11 +61,7 @@ export async function hasImageInClipboard(): Promise<boolean> {
       logError(e as Error)
     }
   }
-  const result = await execFileNoThrowWithCwd('osascript', [
-    '-e',
-    'the clipboard as «class PNGf»',
-  ])
-  return result.code === 0
+  return hasClipboardImage()
 }
 
 export async function getImageFromClipboard(): Promise<ImageWithDimensions | null> {
@@ -183,28 +126,13 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
     }
   }
 
-  const { commands, screenshotPath } = getClipboardCommands()
   try {
-    // Check if clipboard has image
-    const checkResult = await execa(commands.checkImage, {
-      shell: true,
-      reject: false,
-    })
-    if (checkResult.exitCode !== 0) {
+    // Platform backend: osascript on macOS, powershell.exe on Windows/WSL,
+    // xclip/wl-paste on Linux. See utils/clipboardImage.ts.
+    let imageBuffer = await readClipboardImageBytes()
+    if (!imageBuffer) {
       return null
     }
-
-    // Save the image
-    const saveResult = await execa(commands.saveImage, {
-      shell: true,
-      reject: false,
-    })
-    if (saveResult.exitCode !== 0) {
-      return null
-    }
-
-    // Read the image and convert to base64
-    let imageBuffer = getFsImplementation().readFileBytesSync(screenshotPath)
 
     // BMP is not supported by the API — convert to PNG via Sharp.
     // This handles WSL2 where Windows copies images as BMP by default.
@@ -228,25 +156,21 @@ export async function getImageFromClipboard(): Promise<ImageWithDimensions | nul
     // Detect format from magic bytes
     const mediaType = detectImageFormatFromBase64(base64Image)
 
-    // Cleanup (fire-and-forget, don't await)
-    void execa(commands.deleteFile, { shell: true, reject: false })
-
     return {
       base64: base64Image,
       mediaType,
       dimensions: resized.dimensions,
     }
-  } catch {
+  } catch (e) {
+    logError(e as Error)
     return null
   }
 }
 
 export async function getImagePathFromClipboard(): Promise<string | null> {
-  const { commands } = getClipboardCommands()
-
   try {
     // Try to get text from clipboard
-    const result = await execa(commands.getPath, {
+    const result = await execa(getClipboardTextCommand(), {
       shell: true,
       reject: false,
     })
