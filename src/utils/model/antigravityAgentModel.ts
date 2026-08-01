@@ -1,4 +1,5 @@
 import type { APIProvider } from './providers.js'
+import { isModelAlias } from './aliases.js'
 
 export const ANTIGRAVITY_OPUS_46_MODEL = 'claude-opus-4-6-thinking'
 export const ANTIGRAVITY_SONNET_46_MODEL = 'claude-sonnet-4-6'
@@ -16,37 +17,20 @@ function resolveProvider(provider: APIProvider | undefined): APIProvider {
   return providers.getAPIProvider()
 }
 
-function isAntigravityOpus46Parent(parentModel: string): boolean {
-  const normalized = normalizedModelId(parentModel)
-  return (
-    normalized === ANTIGRAVITY_OPUS_46_MODEL ||
-    normalized === 'claude-opus-4-6'
-  )
-}
-
+/**
+ * Antigravity's automatic agent model policy. The historical export name is
+ * retained for compatibility, but the policy now applies to both Claude and
+ * Gemini parent sessions rather than only Opus 4.6.
+ */
 export function resolveAntigravityOpus46AgentModel(
   modelSpec: string | undefined,
   parentModel: string,
   provider?: APIProvider,
 ): string | null {
   if (resolveProvider(provider) !== 'antigravity') return null
-  if (!isAntigravityOpus46Parent(parentModel)) return null
 
   const model = normalizedModelId(modelSpec ?? 'inherit')
-  switch (model) {
-    case 'inherit':
-    case 'opus':
-    case 'best':
-    case 'opusplan':
-    case ANTIGRAVITY_OPUS_46_MODEL:
-    case 'claude-opus-4-6':
-      return parentModel
-    case 'sonnet':
-    case ANTIGRAVITY_SONNET_46_MODEL:
-      return ANTIGRAVITY_SONNET_46_MODEL
-    case 'haiku':
-      return ANTIGRAVITY_FAST_AGENT_MODEL
-    default:
-      return null
-  }
+  if (model === 'inherit') return parentModel
+  if (isModelAlias(model)) return ANTIGRAVITY_FAST_AGENT_MODEL
+  return null
 }

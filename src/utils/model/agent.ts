@@ -1,8 +1,8 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
+import { resolveAgentAliasPolicy } from './agentAliasFallback.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
-import { shouldInheritOpenRouterGptAlias } from './openaiGptModels.js'
 import {
   getCanonicalName,
   getRuntimeMainLoopModel,
@@ -10,7 +10,6 @@ import {
 } from './model.js'
 import { getAPIProvider } from './providers.js'
 import { getForcedProvider } from '../forcedProvider.js'
-import { resolveAntigravityOpus46AgentModel } from './antigravityAgentModel.js'
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
@@ -65,15 +64,16 @@ export function getAgentModel(
     return resolvedModel
   }
 
-  // Explicit caller intent always wins. If the AgentTool caller passed a
-  // model (team-mode roster pin, programmatic SDK caller, --model on a
-  // teammate spawn), honor it — do NOT let CLAUDE_CODE_SUBAGENT_MODEL or
-  // any other session-wide override silently swap it. This is the same
-  // contract enforced for forced providers in v0.9.3-v0.9.4: when the
-  // caller declares the exact model, runtime sugar yields.
+  // A tool-level selection wins over CLAUDE_CODE_SUBAGENT_MODEL and other
+  // session-wide defaults. Concrete IDs pass through unchanged; tier aliases
+  // are translated by the active provider's agent policy below.
   if (toolSpecifiedModel) {
-    const scopedModel = resolveAntigravityOpus46AgentModel(toolSpecifiedModel, parentModel)
-    if (scopedModel) return scopedModel
+    const policyModel = resolveAgentAliasPolicy(
+      toolSpecifiedModel,
+      parentModel,
+      getAPIProvider(),
+    )
+    if (policyModel) return policyModel
     if (aliasMatchesParentTier(toolSpecifiedModel, parentModel)) {
       return parentModel
     }
@@ -87,18 +87,16 @@ export function getAgentModel(
   // model with whatever default this var holds, exactly the cross-binding
   // contamination we shipped v0.9.3-v0.9.4 to prevent.
   if (process.env.CLAUDE_CODE_SUBAGENT_MODEL && getForcedProvider() === undefined) {
-    const scopedModel = resolveAntigravityOpus46AgentModel(
+    const policyModel = resolveAgentAliasPolicy(
       process.env.CLAUDE_CODE_SUBAGENT_MODEL,
       parentModel,
+      getAPIProvider(),
     )
-    if (scopedModel) return scopedModel
+    if (policyModel) return policyModel
     return parseUserSpecifiedModel(process.env.CLAUDE_CODE_SUBAGENT_MODEL)
   }
 
   const agentModelWithExp = agentModel ?? getDefaultSubagentModel()
-
-  const scopedModel = resolveAntigravityOpus46AgentModel(agentModelWithExp, parentModel)
-  if (scopedModel) return scopedModel
 
   if (agentModelWithExp === 'inherit') {
     // Apply runtime model resolution for inherit to get the effective model
@@ -109,6 +107,13 @@ export function getAgentModel(
       exceeds200kTokens: false,
     })
   }
+
+  const policyModel = resolveAgentAliasPolicy(
+    agentModelWithExp,
+    parentModel,
+    getAPIProvider(),
+  )
+  if (policyModel) return policyModel
 
   if (aliasMatchesParentTier(agentModelWithExp, parentModel)) {
     return parentModel
@@ -136,10 +141,7 @@ function aliasMatchesParentTier(alias: string, parentModel: string): boolean {
     case 'opus':
       return canonical.includes('opus')
     case 'sonnet':
-      return (
-        canonical.includes('sonnet') ||
-        shouldInheritOpenRouterGptAlias(alias, parentModel, getAPIProvider())
-      )
+      return canonical.includes('sonnet')
     case 'haiku':
       return canonical.includes('haiku')
     default:

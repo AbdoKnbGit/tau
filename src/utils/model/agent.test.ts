@@ -8,16 +8,31 @@ import {
 import {
   isConcreteOpenAIGptModelForProvider,
   selectFreshOpenAIGptModelForProvider,
-  shouldInheritOpenRouterGptAlias,
 } from './openaiGptModels.js'
 import {
   getRuntimeSkillModel,
   resolveSkillFrontmatterModel,
   shouldHonorSkillModelOverride,
 } from './skillModel.js'
+import {
+  OPENAI_FAST_AGENT_MODEL,
+  OPENROUTER_AGENT_MODEL,
+  isDirectOpenAIFastAgentParent,
+  resolveAgentAliasPolicy,
+} from './agentAliasFallback.js'
+import type { APIProvider } from './providers.js'
 
 let passed = 0
 let failed = 0
+const ROUTED_ALIASES = [
+  'haiku',
+  'sonnet',
+  'opus',
+  'best',
+  'opusplan',
+  'sonnet[1m]',
+  'opus[1m]',
+] as const
 
 function test(name: string, fn: () => void): void {
   try {
@@ -37,53 +52,43 @@ function assert(cond: unknown, hint: string): void {
 function main(): void {
   console.log('agent model resolver:')
 
-  test('Antigravity Opus 4.6 default agents inherit the parent model', () => {
-    const resolved = resolveAntigravityOpus46AgentModel(
-      undefined,
-      'claude-opus-4-6-thinking',
-      'antigravity',
-    )
-    assert(resolved === 'claude-opus-4-6-thinking', `model=${resolved}`)
+  test('Antigravity inherit remains the exact Claude or Gemini parent', () => {
+    for (const parent of ['claude-opus-4-6-thinking', 'gemini-3.1-pro-high']) {
+      const omitted = resolveAntigravityOpus46AgentModel(
+        undefined,
+        parent,
+        'antigravity',
+      )
+      const inherited = resolveAntigravityOpus46AgentModel(
+        'inherit',
+        parent,
+        'antigravity',
+      )
+      assert(omitted === parent, `${parent}/omitted=${omitted}`)
+      assert(inherited === parent, `${parent}/inherit=${inherited}`)
+    }
   })
 
-  test('Antigravity Opus 4.6 sonnet agents stay on Antigravity Claude', () => {
-    const resolved = resolveAntigravityOpus46AgentModel(
-      'sonnet',
-      'claude-opus-4-6-thinking',
-      'antigravity',
-    )
-    assert(resolved === 'claude-sonnet-4-6', `model=${resolved}`)
+  test('Antigravity aliases always use its Flash-low agent model', () => {
+    for (const parent of ['claude-opus-4-6-thinking', 'gemini-3.1-pro-high']) {
+      for (const alias of ROUTED_ALIASES) {
+        const resolved = resolveAntigravityOpus46AgentModel(
+          alias,
+          parent,
+          'antigravity',
+        )
+        assert(resolved === 'gemini-3.5-flash-low', `${parent}/${alias}=${resolved}`)
+      }
+    }
   })
 
-  test('Antigravity Opus 4.6 fast agents do not fall back to OpenAI', () => {
+  test('Antigravity concrete model ids are not redirected', () => {
     const resolved = resolveAntigravityOpus46AgentModel(
-      'haiku',
+      'claude-sonnet-4-6',
       'claude-opus-4-6-thinking',
       'antigravity',
     )
-    assert(resolved === 'gemini-3.5-flash-low', `model=${resolved}`)
-  })
-
-  test('Antigravity Opus 4.6 tool model aliases use Antigravity models', () => {
-    const haiku = resolveAntigravityOpus46AgentModel(
-      'haiku',
-      'claude-opus-4-6-thinking',
-      'antigravity',
-    )
-    const sonnet = resolveAntigravityOpus46AgentModel(
-      'sonnet',
-      'claude-opus-4-6-thinking',
-      'antigravity',
-    )
-    const opus = resolveAntigravityOpus46AgentModel(
-      'opus',
-      'claude-opus-4-6-thinking',
-      'antigravity',
-    )
-
-    assert(haiku === 'gemini-3.5-flash-low', `haiku=${haiku}`)
-    assert(sonnet === 'claude-sonnet-4-6', `sonnet=${sonnet}`)
-    assert(opus === 'claude-opus-4-6-thinking', `opus=${opus}`)
+    assert(resolved === null, `model=${resolved}`)
   })
 
   test('non-Antigravity providers are untouched', () => {
@@ -95,13 +100,8 @@ function main(): void {
     assert(resolved === null, `model=${resolved}`)
   })
 
-  test('OpenRouter GPT sonnet agents inherit the session GPT model', () => {
+  test('OpenAI GPT selection helpers remain provider-scoped', () => {
     const concrete = isConcreteOpenAIGptModelForProvider(
-      'openai/gpt-5.4',
-      'openrouter',
-    )
-    const inherit = shouldInheritOpenRouterGptAlias(
-      'sonnet',
       'openai/gpt-5.4',
       'openrouter',
     )
@@ -111,22 +111,14 @@ function main(): void {
       provider: 'openrouter',
       renderedMainLoopModel: 'openai/gpt-5.5',
     })
-    const directOpenAi = shouldInheritOpenRouterGptAlias(
-      'sonnet',
-      'openai/gpt-5.4',
+    const direct = isConcreteOpenAIGptModelForProvider(
+      'gpt-5.4',
       'openai',
-    )
-    const haiku = shouldInheritOpenRouterGptAlias(
-      'haiku',
-      'openai/gpt-5.4',
-      'openrouter',
     )
 
     assert(concrete, 'OpenRouter openai/gpt-* should count as concrete GPT')
-    assert(inherit, 'expected OpenRouter GPT sonnet alias to inherit parent')
     assert(fresh === 'openai/gpt-5.4', `fresh=${fresh}`)
-    assert(!directOpenAi, 'direct OpenAI provider should keep normal aliases')
-    assert(!haiku, 'haiku aliases should keep the fast-model mapping')
+    assert(direct, 'direct OpenAI gpt-* should count as concrete GPT')
   })
 
   test('non-Cursor skill aliases inherit the caller model', () => {
@@ -155,6 +147,140 @@ function main(): void {
 
     assert(shouldHonorSkillModelOverride('cursor'), 'cursor should be honored')
     assert(resolved === 'sonnet', `model=${resolved}`)
+  })
+
+  // ── live provider policy for spawned-agent tier aliases ─────────────
+
+  test('direct OpenAI fast-agent parents cover the requested GPT families', () => {
+    for (const parent of [
+      'gpt-5.2',
+      'gpt-5.2-codex',
+      'gpt-5.4',
+      'gpt-5.5-pro',
+      'gpt-5.6-sol',
+      'openai/gpt-5.6-terra',
+    ]) {
+      assert(isDirectOpenAIFastAgentParent(parent), `parent=${parent}`)
+    }
+    assert(!isDirectOpenAIFastAgentParent('gpt-5.3-codex'), '5.3 is not in policy')
+    assert(!isDirectOpenAIFastAgentParent('o4-mini'), 'o-series is not in policy')
+  })
+
+  test('direct OpenAI aliases use native GPT-5.4 mini', () => {
+    for (const parent of ['gpt-5.2-codex', 'gpt-5.4', 'gpt-5.5', 'gpt-5.6-sol']) {
+      for (const alias of ROUTED_ALIASES) {
+        const resolved = resolveAgentAliasPolicy(alias, parent, 'openai')
+        assert(resolved === OPENAI_FAST_AGENT_MODEL, `${parent}/${alias}=${resolved}`)
+        assert(!resolved.startsWith('openai/'), `OpenAI route was namespaced: ${resolved}`)
+      }
+    }
+  })
+
+  test('other direct OpenAI parents inherit', () => {
+    for (const parent of ['gpt-5.3-codex', 'o4-mini', 'custom-openai-model']) {
+      const resolved = resolveAgentAliasPolicy('haiku', parent, 'openai')
+      assert(resolved === parent, `${parent}=${resolved}`)
+    }
+  })
+
+  test('OpenRouter always uses the requested free Nemotron for aliases', () => {
+    for (const parent of [
+      'anthropic/claude-sonnet-4.6',
+      'openai/gpt-5.6',
+      'deepseek/deepseek-v4-flash',
+      'google/gemini-3.1-pro',
+      OPENROUTER_AGENT_MODEL,
+    ]) {
+      for (const alias of ROUTED_ALIASES) {
+        const resolved = resolveAgentAliasPolicy(alias, parent, 'openrouter')
+        assert(resolved === OPENROUTER_AGENT_MODEL, `${parent}/${alias}=${resolved}`)
+      }
+    }
+  })
+
+  test('Antigravity always uses its Flash-low agent model for aliases', () => {
+    for (const parent of [
+      'claude-opus-4-6-thinking',
+      'claude-sonnet-4-6',
+      'gemini-3.1-pro-high',
+      'gemini-3.5-flash-low',
+    ]) {
+      for (const alias of ROUTED_ALIASES) {
+        const resolved = resolveAgentAliasPolicy(alias, parent, 'antigravity')
+        assert(resolved === 'gemini-3.5-flash-low', `${parent}/${alias}=${resolved}`)
+      }
+    }
+  })
+
+  test('Anthropic-native providers retain normal tier resolution', () => {
+    for (const provider of ['firstParty', 'bedrock', 'vertex', 'foundry'] as const) {
+      for (const alias of ROUTED_ALIASES) {
+        const resolved = resolveAgentAliasPolicy(alias, 'claude-sonnet-4-6', provider)
+        assert(resolved === undefined, `${provider}/${alias}=${resolved}`)
+      }
+    }
+  })
+
+  test('every other provider inherits the exact parent model', () => {
+    const cases: Array<[APIProvider, string]> = [
+      ['gemini', 'gemini-3.1-pro-preview'],
+      ['glm', 'glm-5-turbo'],
+      ['copilot', 'claude-sonnet-4.7'],
+      ['agentrouter', 'deepseek-v3.2'],
+      ['kiro', 'claude-sonnet-4-5'],
+      ['cursor', 'composer-2'],
+      ['cline', 'minimax-m2.5'],
+      ['kilocode', 'qwen3-coder'],
+      ['iflow', 'glm-4.7'],
+      ['ollama', 'qwen3-coder:30b'],
+      ['cloudflare', '@cf/openai/gpt-oss-120b'],
+    ]
+    for (const [provider, parent] of cases) {
+      for (const alias of ROUTED_ALIASES) {
+        const resolved = resolveAgentAliasPolicy(alias, parent, provider)
+        assert(resolved === parent, `${provider}/${alias}=${resolved}`)
+      }
+    }
+  })
+
+  test('concrete model ids and inherit are outside alias policy', () => {
+    for (const spec of [
+      'inherit',
+      'claude-haiku-4.5',
+      'llama3.2:1b',
+      'composer-2',
+      'nvidia/nemotron-3-ultra-550b-a55b:free',
+    ]) {
+      const resolved = resolveAgentAliasPolicy(spec, 'openai/gpt-5.6', 'openrouter')
+      assert(resolved === undefined, `${spec} was redirected to ${resolved}`)
+    }
+  })
+
+  test('alias matching is case and whitespace insensitive', () => {
+    const resolved = resolveAgentAliasPolicy(
+      '  Haiku  ',
+      'deepseek/deepseek-v4-flash',
+      'openrouter',
+    )
+    assert(resolved === OPENROUTER_AGENT_MODEL, `model=${resolved}`)
+  })
+
+  test('provider and parent changes are reflected without memoization', () => {
+    const first = resolveAgentAliasPolicy(
+      'haiku',
+      'openai/gpt-5.6',
+      'openrouter',
+    )
+    const second = resolveAgentAliasPolicy('haiku', 'glm-4.7', 'glm')
+    const third = resolveAgentAliasPolicy(
+      'haiku',
+      'anthropic/claude-sonnet-4.6',
+      'openrouter',
+    )
+
+    assert(first === OPENROUTER_AGENT_MODEL, `first=${first}`)
+    assert(second === 'glm-4.7', `second=${second}`)
+    assert(third === OPENROUTER_AGENT_MODEL, `third=${third}`)
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

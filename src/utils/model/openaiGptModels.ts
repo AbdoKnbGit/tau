@@ -15,18 +15,6 @@ export function isConcreteOpenAIGptModelForProvider(
   return false
 }
 
-export function shouldInheritOpenRouterGptAlias(
-  alias: string,
-  parentModel: string,
-  provider: APIProvider,
-): boolean {
-  return (
-    provider === 'openrouter' &&
-    alias.toLowerCase() === 'sonnet' &&
-    isConcreteOpenAIGptModelForProvider(parentModel, provider)
-  )
-}
-
 export function selectFreshOpenAIGptModelForProvider({
   fallback,
   selected,
