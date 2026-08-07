@@ -5,8 +5,8 @@ const mode = {
   name: 'mode',
   aliases: ['power', 'powermode'],
   description:
-    'Switch power mode: cheap (core tools only), normal, or full power',
-  argumentHint: '[cheap|normal|full]',
+    'Switch Tau mode: cheap, normal, or Rust',
+  argumentHint: '[cheap|normal|rust]',
   isEnabled: () => true,
   isHidden: false,
   load: () => import('./mode.js'),

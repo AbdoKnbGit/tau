@@ -17,7 +17,10 @@ import type {
   LocalJSXCommandCall,
   LocalJSXCommandContext,
 } from '../../types/command.js'
-import { getPowerModeFromSettings } from '../../utils/powerMode.js'
+import {
+  getPowerModeFromSettings,
+  isNormalToolingMode,
+} from '../../utils/powerMode.js'
 import {
   getDisabledPrebuiltToolIds,
   normalizeDisabledPrebuiltToolIds,
@@ -473,14 +476,13 @@ function pad(value: string, width: number): string {
 }
 
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
-  // /tools only applies in normal power mode; cheap/full force the toggle
-  // state wholesale. The command is hidden outside normal mode, but guard
-  // direct invocation too (e.g. typed before the command list refreshed
-  // after a /mode switch) with a note instead of the picker.
+  // /tools applies in normal-compatible modes; cheap/full force the toggle
+  // state wholesale. Guard direct invocation in forcing modes too (e.g. typed
+  // before the command list refreshed after a /mode switch).
   const powerMode = getPowerModeFromSettings(getInitialSettings())
-  if (powerMode !== 'normal') {
+  if (!isNormalToolingMode(powerMode)) {
     onDone(
-      `Power mode '${powerMode}' forces all optional tools ${powerMode === 'cheap' ? 'OFF' : 'ON'} — /tools applies in normal mode. Switch with /mode normal.`,
+      `Mode '${powerMode}' forces all optional tools ${powerMode === 'cheap' ? 'OFF' : 'ON'} — /tools applies in normal and Rust modes. Switch with /mode normal or /mode rust.`,
       { display: 'system' },
     )
     return

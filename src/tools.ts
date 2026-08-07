@@ -73,6 +73,7 @@ const getSendMessageTool = () =>
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { AFT_READ_ONLY_TOOLS } from './tools/AFTTool/AFTTools.js'
 import { NATIVE_READ_ONLY_TOOLS } from './tools/NativeTools/NativeTools.js'
+import { RUST_MODE_TOOLS } from './tools/RustTool/RustTool.js'
 import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { SnapshotTool } from './tools/SnapshotTool/SnapshotTool.js'
 import { FileDiffTool } from './tools/FileDiffTool/FileDiffTool.js'
@@ -278,6 +279,7 @@ export function getAllBaseTools(): Tools {
     ...(isEnvTruthy(process.env.TAU_PTY_ENABLE) ? [PtyTool] : []),
     ...AFT_READ_ONLY_TOOLS,
     ...NATIVE_READ_ONLY_TOOLS,
+    ...RUST_MODE_TOOLS,
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
     ...(ListPeersTool ? [ListPeersTool] : []),

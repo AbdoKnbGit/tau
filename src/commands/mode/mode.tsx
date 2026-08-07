@@ -42,6 +42,8 @@ const MODE_SUMMARY: Record<PowerMode, string> = {
   cheap:
     'core tools only — optional tools, skills, agents, plugins, MCP, and LSP are off and hidden from the model',
   normal: 'default behavior — your /tools toggles, MCP, skills, and LSP apply',
+  rust:
+    'normal behavior plus Rust-focused guidance and native Rust capabilities when available',
   full: 'everything on — all optional tools enabled (/tools hidden; saved toggles return in normal mode)',
 }
 
@@ -123,9 +125,9 @@ function applyPowerMode(
 function doneMessage(mode: PowerMode, changed: boolean): string {
   const label = POWER_MODE_LABELS[mode].toLowerCase()
   if (!changed) {
-    return `Power mode already set to ${label} — ${MODE_SUMMARY[mode]}`
+    return `Mode already set to ${label} — ${MODE_SUMMARY[mode]}`
   }
-  return `Power mode set to ${label} — ${MODE_SUMMARY[mode]}. Tool set updated; the prompt cache re-warms once on your next message.`
+  return `Mode set to ${label} — ${MODE_SUMMARY[mode]}. Tool set updated; the prompt cache re-warms once on your next message.`
 }
 
 function PowerModePicker({
@@ -138,7 +140,7 @@ function PowerModePicker({
   const [initialMode] = useState<PowerMode>(currentPowerMode)
   const [focused, setFocused] = useState<PowerMode>(initialMode)
 
-  // Only cheap/normal are offered; 'full' is retired from the UI. If the
+  // Cheap/normal/rust are offered; 'full' is retired from the UI. If the
   // session is somehow still on 'full' (persisted setting), surface it as the
   // current option so the user can move off it — but never present it as a new
   // choice.
@@ -160,10 +162,10 @@ function PowerModePicker({
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="column">
           <Text bold color="permission">
-            Power mode
+            Tau mode
           </Text>
           <Text dimColor>
-            Choose how much machinery Tau loads — the accent color previews as
+            Choose how Tau operates — the identity and accent color preview as
             you move
           </Text>
         </Box>
@@ -228,7 +230,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     const mode = normalizePowerMode(trimmed)
     if (!mode) {
       onDone(
-        `Unknown power mode '${trimmed}'. Use cheap or normal.`,
+        `Unknown mode '${trimmed}'. Use cheap, normal, or rust.`,
         { display: 'system' },
       )
       return null

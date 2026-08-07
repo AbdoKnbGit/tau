@@ -9,6 +9,8 @@ import type { SettingsJson } from './settings/types.js'
  *   starts. Only the core file/shell/search/task tools remain.
  * - `normal`: current default behavior. The user's own /tools toggles apply,
  *   MCP/skills/agents/plugins/LSP load as configured.
+ * - `rust`: normal-mode machinery plus mode-gated native Rust capabilities
+ *   and routing guidance.
  * - `full`: everything on. All optional prebuilt tool toggles are forced on
  *   regardless of saved /tools state; MCP/skills/agents/LSP behave as in
  *   normal mode.
@@ -19,7 +21,7 @@ import type { SettingsJson } from './settings/types.js'
  * within a mode the tool list is stable, so prompt caching is unaffected
  * except for the single expected re-warm when the user changes modes.
  */
-export const POWER_MODES = ['cheap', 'normal', 'full'] as const
+export const POWER_MODES = ['cheap', 'normal', 'rust', 'full'] as const
 
 export type PowerMode = (typeof POWER_MODES)[number]
 
@@ -31,9 +33,14 @@ export type PowerMode = (typeof POWER_MODES)[number]
  * still resolves and `/mode full` still works for power users, but it is no
  * longer advertised or shown as a selectable option.
  */
-export const SELECTABLE_POWER_MODES = ['cheap', 'normal'] as const
+export const SELECTABLE_POWER_MODES = ['cheap', 'normal', 'rust'] as const
 
 export const DEFAULT_POWER_MODE: PowerMode = 'normal'
+
+/** Modes that retain the user's normal /tools and provider behavior. */
+export function isNormalToolingMode(mode: PowerMode): boolean {
+  return mode === 'normal' || mode === 'rust'
+}
 
 type SettingsWithPowerMode = Pick<SettingsJson, 'powerMode'>
 
@@ -54,6 +61,9 @@ export function normalizePowerMode(value: string): PowerMode | null {
     case 'default':
     case 'balanced':
       return 'normal'
+    case 'rust':
+    case 'rustcode':
+      return 'rust'
     case 'full':
     case 'fullpower':
     case 'full-power':
@@ -90,7 +100,7 @@ function resolvePowerModeFromSettingsValue(
   settings: SettingsWithPowerMode | undefined,
 ): PowerMode {
   const value = settings?.powerMode
-  if (value === 'cheap' || value === 'full') return value
+  if (value === 'cheap' || value === 'rust' || value === 'full') return value
   return DEFAULT_POWER_MODE
 }
 
@@ -140,6 +150,7 @@ export function resetSessionPowerModeForTesting(): void {
 export const POWER_MODE_LABELS: Record<PowerMode, string> = {
   cheap: 'Cheap',
   normal: 'Normal',
+  rust: 'Rust',
   full: 'Full power',
 }
 
@@ -148,5 +159,7 @@ export const POWER_MODE_DESCRIPTIONS: Record<PowerMode, string> = {
     'Core tools only — optional tools, skills, agents, plugins, MCP, and LSP are all off and hidden from the model (folder configs are ignored; /tools hidden)',
   normal:
     'Default behavior — your /tools toggles apply; MCP, skills, agents, and LSP load as configured',
+  rust:
+    'Normal behavior plus Rust-focused guidance and native Rust capabilities when available',
   full: 'Everything on — all optional tools forced on; /tools hidden (your saved toggles return in normal mode)',
 }

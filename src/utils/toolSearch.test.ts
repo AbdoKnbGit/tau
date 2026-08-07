@@ -7,6 +7,10 @@
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
 import { shouldDisableToolDeferralForProvider } from './toolDeferralPolicy.js'
 import { providerSupportsAnthropicToolSearch } from './model/providerCapabilities.js'
+import {
+  PROVIDER_DISPLAY_NAMES,
+  type APIProvider,
+} from './model/providers.js'
 import { extractDiscoveredToolNames } from './toolDiscoveryScan.js'
 import { selectToolsForToolSearchRequest } from './toolSearchRequestFilter.js'
 
@@ -87,6 +91,10 @@ test('first-party Anthropic disables schema deferral', () => {
     shouldDisableToolDeferralForProvider('firstParty', 'full'),
     'first-party full mode should send schemas inline',
   )
+  assert(
+    shouldDisableToolDeferralForProvider('firstParty', 'rust'),
+    'first-party rust mode should send schemas inline',
+  )
 })
 
 test('Bedrock keeps existing Anthropic deferral policy', () => {
@@ -98,6 +106,20 @@ test('Bedrock keeps existing Anthropic deferral policy', () => {
     !shouldDisableToolDeferralForProvider('bedrock', 'full'),
     'bedrock full mode should keep existing deferral',
   )
+  assert(
+    !shouldDisableToolDeferralForProvider('bedrock', 'rust'),
+    'bedrock rust mode should keep existing deferral',
+  )
+})
+
+test('Rust mode preserves normal deferral behavior on every provider', () => {
+  for (const provider of Object.keys(PROVIDER_DISPLAY_NAMES) as APIProvider[]) {
+    assert(
+      shouldDisableToolDeferralForProvider(provider, 'rust') ===
+        shouldDisableToolDeferralForProvider(provider, 'normal'),
+      `${provider} changed schema-deferral behavior in rust mode`,
+    )
+  }
 })
 
 test('first-party Anthropic keeps deferred schemas on the request', () => {

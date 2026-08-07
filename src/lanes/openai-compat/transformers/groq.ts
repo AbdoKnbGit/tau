@@ -19,6 +19,7 @@
 
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest, OpenAIChatMessage } from './shared_types.js'
+import { RUST_TOOL_NAME } from '../../../tools/RustTool/constants.js'
 
 export const groqTransformer: Transformer = {
   id: 'groq',
@@ -174,4 +175,5 @@ const GROQ_SMALL_TIER_TOOL_ALLOWLIST = new Set<string>([
   'WebSearch', 'WebFetch',
   // Delegation / MCP entrypoint
   'Agent', 'Skill',
+  RUST_TOOL_NAME,
 ])

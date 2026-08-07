@@ -27,6 +27,7 @@ import {
   type SystemBlock,
 } from './base_provider.js'
 import { anthropicToGeminiRequest } from '../adapters/anthropic_to_gemini.js'
+import { RUST_TOOL_NAME } from '../../../tools/RustTool/constants.js'
 import {
   geminiStreamToAnthropicEvents,
   geminiMessageToAnthropic,
@@ -463,6 +464,7 @@ const GEMINI_MAX_TOOL_RESULT_CHARS = 4000    // Cap individual tool results in h
 // These are enough for basic coding tasks without burning tokens.
 const CORE_TOOL_NAMES = new Set([
   'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep',
+  RUST_TOOL_NAME,
 ])
 
 // ─── System Instruction Splitter ─────────────────────────────────

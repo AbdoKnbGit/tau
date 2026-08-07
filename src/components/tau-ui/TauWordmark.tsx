@@ -8,12 +8,16 @@ import {
   useAnimationFrame,
 } from '../../ink.js'
 import {
+  getPowerModeThemeMode,
   getPowerModeWordmarkPalette,
   initializePowerModeTheme,
   subscribePowerModeTheme,
   type WordmarkPalette,
 } from '../../utils/modeTheme.js'
-import { getPowerModeFromSettings } from '../../utils/powerMode.js'
+import {
+  getPowerModeFromSettings,
+  type PowerMode,
+} from '../../utils/powerMode.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { interpolateColor, toRGBColor } from '../Spinner/utils.js'
 
@@ -35,30 +39,32 @@ type Burst = {
   x: number
   y: number
   glyph: number
+  identity: WordmarkIdentity
   at: number
   force: number
 }
 
-const LETTERS = [
-  ['     ', '▀▀█▀▀', '  █_ ', '  ▀~ '],
-  ['     ', '█▀▀█ ', '█__█ ', '▀~~▀ '],
-  ['     ', '█  █ ', '█__█ ', '▀▀▀▀ '],
-  ['     ', '█▀▀▀ ', '█___ ', '▀▀▀▀ '],
-  ['     ', '█▀▀█ ', '█__█ ', '▀▀▀▀ '],
-  ['   ▄ ', '█▀▀█ ', '█__█ ', '▀▀▀▀ '],
-  ['     ', '█▀▀▀ ', '█^^^ ', '▀~~~ '],
-] as const
-
 const LETTER_GAP = ' '
-const FULL = Array.from({ length: 4 }, (_, y) =>
-  LETTERS.map(letter => letter[y]).join(LETTER_GAP),
-)
-const ROWS = FULL.length
-const COLS = Math.max(...FULL.map(line => line.length))
-const LINES = FULL.map(line => line.padEnd(COLS, ' '))
-const SPAN = Math.hypot(COLS, ROWS * 2) * 0.94
 const BUILD_STEP_MS = 26
 const BUILD_POP_MS = 260
+
+type Letter = readonly [string, string, string, string]
+type WordmarkIdentity = 'taucode' | 'rustcode'
+
+// One block font for both identities. Normal/cheap/full spell TAUCODE; Rust
+// mode swaps only the glyph sequence, preserving the same geometry, tracing,
+// launch reveal, idle ripple, and click animation algorithms.
+const LETTERS = {
+  t: ['     ', '▀▀█▀▀', '  █_ ', '  ▀~ '],
+  a: ['     ', '█▀▀█ ', '█__█ ', '▀~~▀ '],
+  u: ['     ', '█  █ ', '█__█ ', '▀▀▀▀ '],
+  r: ['     ', '█▀▀█ ', '█_▀▄ ', '▀~ ▀ '],
+  s: ['     ', '█▀▀▀ ', '▀▀▀█ ', '▀▀▀▀ '],
+  c: ['     ', '█▀▀▀ ', '█___ ', '▀▀▀▀ '],
+  o: ['     ', '█▀▀█ ', '█__█ ', '▀▀▀▀ '],
+  d: ['   ▄ ', '█▀▀█ ', '█__█ ', '▀▀▀▀ '],
+  e: ['     ', '█▀▀▀ ', '█^^^ ', '▀~~~ '],
+} as const satisfies Record<string, Letter>
 
 const NEAR = [
   [1, 0],
@@ -208,28 +214,26 @@ function mapGlyphs(lines: readonly string[]): LogoMap {
   return { glyph, trace, center }
 }
 
-const MAP = mapGlyphs(LINES)
-const BUILD_CELLS = LINES.flatMap((line, y) =>
-  Array.from(line)
-    .map((char, x) => ({ char, x, y }))
-    .filter(cell => painted(cell.char)),
-).sort((a, b) => {
-  const aGlyph = MAP.glyph.get(key(a.x, a.y)) ?? nearestBuildGlyph(a.x, a.y)
-  const bGlyph = MAP.glyph.get(key(b.x, b.y)) ?? nearestBuildGlyph(b.x, b.y)
-  const aCenter = aGlyph === undefined ? a.x : MAP.center.get(aGlyph)?.x ?? a.x
-  const bCenter = bGlyph === undefined ? b.x : MAP.center.get(bGlyph)?.x ?? b.x
-  return aCenter - bCenter || a.x - b.x || a.y - b.y
-})
-const BUILD_INDEX = new Map(
-  BUILD_CELLS.map((cell, index) => [key(cell.x, cell.y), index]),
-)
-const BUILD_MS = BUILD_CELLS.length * BUILD_STEP_MS + BUILD_POP_MS
+type WordmarkDefinition = {
+  identity: WordmarkIdentity
+  lines: readonly string[]
+  rows: number
+  cols: number
+  span: number
+  map: LogoMap
+  buildIndex: ReadonlyMap<string, number>
+  buildMs: number
+}
 
-function nearestBuildGlyph(x: number, y: number): number | undefined {
+function nearestBuildGlyph(
+  map: LogoMap,
+  x: number,
+  y: number,
+): number | undefined {
   let best: number | undefined
   let bestDistance = Infinity
 
-  for (const [glyph, center] of MAP.center.entries()) {
+  for (const [glyph, center] of map.center.entries()) {
     const distance = Math.hypot(x + 0.5 - center.x, y * 2 + 1 - center.y)
     if (distance < bestDistance) {
       best = glyph
@@ -240,20 +244,96 @@ function nearestBuildGlyph(x: number, y: number): number | undefined {
   return best
 }
 
-function select(x: number, y: number): number | undefined {
-  const direct = MAP.glyph.get(key(x, y))
-  if (direct !== undefined) return direct
-
-  return NEAR.map(([dx, dy]) => MAP.glyph.get(key(x + dx, y + dy))).find(
-    (item): item is number => item !== undefined,
+function createWordmark(
+  identity: WordmarkIdentity,
+  letters: readonly Letter[],
+): WordmarkDefinition {
+  const full = Array.from({ length: 4 }, (_, y) =>
+    letters.map(letter => letter[y]).join(LETTER_GAP),
   )
+  const rows = full.length
+  const cols = Math.max(...full.map(line => line.length))
+  const lines = full.map(line => line.padEnd(cols, ' '))
+  const map = mapGlyphs(lines)
+  const buildCells = lines
+    .flatMap((line, y) =>
+      Array.from(line)
+        .map((char, x) => ({ char, x, y }))
+        .filter(cell => painted(cell.char)),
+    )
+    .sort((a, b) => {
+      const aGlyph =
+        map.glyph.get(key(a.x, a.y)) ?? nearestBuildGlyph(map, a.x, a.y)
+      const bGlyph =
+        map.glyph.get(key(b.x, b.y)) ?? nearestBuildGlyph(map, b.x, b.y)
+      const aCenter =
+        aGlyph === undefined ? a.x : map.center.get(aGlyph)?.x ?? a.x
+      const bCenter =
+        bGlyph === undefined ? b.x : map.center.get(bGlyph)?.x ?? b.x
+      return aCenter - bCenter || a.x - b.x || a.y - b.y
+    })
+
+  return {
+    identity,
+    lines,
+    rows,
+    cols,
+    span: Math.hypot(cols, rows * 2) * 0.94,
+    map,
+    buildIndex: new Map(
+      buildCells.map((cell, index) => [key(cell.x, cell.y), index]),
+    ),
+    buildMs: buildCells.length * BUILD_STEP_MS + BUILD_POP_MS,
+  }
 }
 
-function nearestGlyph(x: number, y: number): number | undefined {
+const TAUCODE_WORDMARK = createWordmark('taucode', [
+  LETTERS.t,
+  LETTERS.a,
+  LETTERS.u,
+  LETTERS.c,
+  LETTERS.o,
+  LETTERS.d,
+  LETTERS.e,
+])
+
+const RUSTCODE_WORDMARK = createWordmark('rustcode', [
+  LETTERS.r,
+  LETTERS.u,
+  LETTERS.s,
+  LETTERS.t,
+  LETTERS.c,
+  LETTERS.o,
+  LETTERS.d,
+  LETTERS.e,
+])
+
+function wordmarkForMode(mode: PowerMode): WordmarkDefinition {
+  return mode === 'rust' ? RUSTCODE_WORDMARK : TAUCODE_WORDMARK
+}
+
+function select(
+  wordmark: WordmarkDefinition,
+  x: number,
+  y: number,
+): number | undefined {
+  const direct = wordmark.map.glyph.get(key(x, y))
+  if (direct !== undefined) return direct
+
+  return NEAR.map(([dx, dy]) =>
+    wordmark.map.glyph.get(key(x + dx, y + dy)),
+  ).find((item): item is number => item !== undefined)
+}
+
+function nearestGlyph(
+  wordmark: WordmarkDefinition,
+  x: number,
+  y: number,
+): number | undefined {
   let best: number | undefined
   let bestDistance = Infinity
 
-  for (const [glyph, center] of MAP.center.entries()) {
+  for (const [glyph, center] of wordmark.map.center.entries()) {
     const distance = Math.hypot(x + 0.5 - center.x, y * 2 + 1 - center.y)
     if (distance < bestDistance) {
       best = glyph
@@ -273,18 +353,27 @@ function gaussian(value: number, width: number): number {
   return Math.exp(-((value / width) ** 2))
 }
 
-function baseInk(palette: WordmarkPalette, x: number): RGB {
-  return mix(palette.bodyLeft, palette.bodyRight, COLS > 1 ? x / (COLS - 1) : 1)
+function baseInk(
+  palette: WordmarkPalette,
+  wordmark: WordmarkDefinition,
+  x: number,
+): RGB {
+  return mix(
+    palette.bodyLeft,
+    palette.bodyRight,
+    wordmark.cols > 1 ? x / (wordmark.cols - 1) : 1,
+  )
 }
 
 function idle(
+  wordmark: WordmarkDefinition,
   x: number,
   pixelY: number,
   time: number,
 ): { peak: number; primary: number } {
-  const centerX = COLS / 2
-  const centerY = ROWS
-  const reach = SPAN + IDLE_TAIL
+  const centerX = wordmark.cols / 2
+  const centerY = wordmark.rows
+  const reach = wordmark.span + IDLE_TAIL
   const dist = Math.hypot(x + 0.5 - centerX, pixelY + 0.5 - centerY)
   let peak = 0
   let primary = 0
@@ -317,6 +406,7 @@ function idle(
 }
 
 function burstEffect(
+  wordmark: WordmarkDefinition,
   x: number,
   y: number,
   bursts: readonly Burst[],
@@ -326,6 +416,7 @@ function burstEffect(
   let primary = 0
 
   for (const burst of bursts) {
+    if (burst.identity !== wordmark.identity) continue
     const age = time - burst.at
     if (age < 0 || age > BLOOM_MS) continue
 
@@ -335,7 +426,7 @@ function burstEffect(
     const dist = Math.hypot(dx, dy)
 
     if (age <= RIPPLE_MS) {
-      const radius = SPAN * (1 - (1 - clamp(p)) ** 1.62)
+      const radius = wordmark.span * (1 - (1 - clamp(p)) ** 1.62)
       const fade = (1 - clamp(p)) ** 1.32
       const edge = gaussian(dist - radius, 0.76) * fade * burst.force
       const trail = dist < radius ? Math.exp(-(radius - dist) / 2.3) * fade : 0
@@ -349,7 +440,7 @@ function burstEffect(
       primary += edge * 0.5 + trail * 0.2
     }
 
-    const step = MAP.trace.get(key(x, y))
+    const step = wordmark.map.trace.get(key(x, y))
     if (step && step.glyph === burst.glyph && step.l > 1) {
       const life = clamp(age / BLOOM_MS)
       const head = (age * 0.033) % step.l
@@ -362,8 +453,8 @@ function burstEffect(
       primary += trace * 0.42 * burst.force
     }
 
-    const center = MAP.center.get(burst.glyph)
-    if (center && MAP.glyph.get(key(x, y)) === burst.glyph) {
+    const center = wordmark.map.center.get(burst.glyph)
+    if (center && wordmark.map.glyph.get(key(x, y)) === burst.glyph) {
       const life = clamp(age / BLOOM_MS)
       const centerDistance = Math.hypot(x + 0.5 - center.x, y * 2 + 1 - center.y)
       const bloom = gaussian(centerDistance, 3.2) * (1 - life) ** 2
@@ -386,6 +477,7 @@ function tone(
 }
 
 function colorFor(
+  wordmark: WordmarkDefinition,
   palette: WordmarkPalette,
   base: RGB,
   x: number,
@@ -398,8 +490,14 @@ function colorFor(
 ): string {
   if (!animatable) return toRGBColor(base)
 
-  const pulse = idle(x, pixelY, time)
-  const burst = burstEffect(x, Math.floor(pixelY / 2), bursts, time)
+  const pulse = idle(wordmark, x, pixelY, time)
+  const burst = burstEffect(
+    wordmark,
+    x,
+    Math.floor(pixelY / 2),
+    bursts,
+    time,
+  )
   return tone(
     palette,
     base,
@@ -420,19 +518,26 @@ export function TauWordmark(): React.ReactNode {
   const [buildStartedAt] = useState(() => (animatable && !launchPlayed ? time : null))
   const [bursts, setBursts] = useState<readonly Burst[]>([])
 
-  // Mode palette (grey / bronze / gold). When animating, the 40ms frame loop
-  // samples the in-flight /mode cross-fade each render, so the logo fades in
-  // sync with the rest of the UI. With reduced motion there is no frame loop:
-  // subscribe to mode changes and snap straight to the target palette.
+  // Mode identity and palette. Rust swaps TAUCODE for RUSTCODE while reusing
+  // this component's exact font, reveal path, idle ripple, and click behavior.
+  // The palette continues to sample the shared /mode cross-fade.
+  const wordmark = wordmarkForMode(getPowerModeThemeMode())
   const palette = getPowerModeWordmarkPalette({ snap: !animatable })
   const [, bumpModeRepaint] = useState(0)
   useEffect(() => {
-    if (animatable) return
     return subscribePowerModeTheme(() => bumpModeRepaint(n => n + 1))
-  }, [animatable])
+  }, [])
+
+  // A click burst belongs to the glyph map that created it. Discard bursts
+  // when the identity changes so TAUCODE glyph ids never leak into RUSTCODE.
+  useEffect(() => {
+    setBursts(list => (list.length === 0 ? list : []))
+  }, [wordmark])
 
   const progress =
-    buildStartedAt == null ? 1 : clamp((time - buildStartedAt) / BUILD_MS)
+    buildStartedAt == null
+      ? 1
+      : clamp((time - buildStartedAt) / wordmark.buildMs)
 
   useEffect(() => {
     if (progress >= 1) launchPlayed = true
@@ -452,9 +557,9 @@ export function TauWordmark(): React.ReactNode {
 
     const x = Math.floor(event.localCol)
     const y = Math.floor(event.localRow)
-    if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return
+    if (x < 0 || x >= wordmark.cols || y < 0 || y >= wordmark.rows) return
 
-    const glyph = select(x, y) ?? nearestGlyph(x, y)
+    const glyph = select(wordmark, x, y) ?? nearestGlyph(wordmark, x, y)
     if (glyph === undefined) return
 
     event.stopImmediatePropagation()
@@ -464,6 +569,7 @@ export function TauWordmark(): React.ReactNode {
         x: x + 0.5,
         y: y * 2 + 1,
         glyph,
+        identity: wordmark.identity,
         at: time,
         force: 1 + Math.min(0.45, list.length * 0.12),
       },
@@ -471,7 +577,7 @@ export function TauWordmark(): React.ReactNode {
   }
 
   const renderCell = (char: string, x: number, y: number) => {
-    const index = BUILD_INDEX.get(key(x, y))
+    const index = wordmark.buildIndex.get(key(x, y))
     const buildAge =
       buildStartedAt == null || index === undefined
         ? Infinity
@@ -487,8 +593,9 @@ export function TauWordmark(): React.ReactNode {
     const extraPrimary = pop * 0.34
 
     const inkTop = colorFor(
+      wordmark,
       palette,
-      baseInk(palette, x),
+      baseInk(palette, wordmark, x),
       x,
       y * 2,
       bursts,
@@ -498,8 +605,9 @@ export function TauWordmark(): React.ReactNode {
       extraPrimary,
     )
     const inkBottom = colorFor(
+      wordmark,
       palette,
-      baseInk(palette, x),
+      baseInk(palette, wordmark, x),
       x,
       y * 2 + 1,
       bursts,
@@ -509,6 +617,7 @@ export function TauWordmark(): React.ReactNode {
       extraPrimary,
     )
     const shadowTop = colorFor(
+      wordmark,
       palette,
       palette.shadow,
       x,
@@ -520,6 +629,7 @@ export function TauWordmark(): React.ReactNode {
       extraPrimary * 0.2,
     )
     const shadowBottom = colorFor(
+      wordmark,
       palette,
       palette.shadow,
       x,
@@ -572,8 +682,9 @@ export function TauWordmark(): React.ReactNode {
         <Text
           key={x}
           color={colorFor(
+            wordmark,
             palette,
-            baseInk(palette, x),
+            baseInk(palette, wordmark, x),
             x,
             y * 2 + 1,
             bursts,
@@ -606,7 +717,10 @@ export function TauWordmark(): React.ReactNode {
     }
 
     return (
-      <Text key={x} color={tone(palette, baseInk(palette, x), 0, 0)}>
+      <Text
+        key={x}
+        color={tone(palette, baseInk(palette, wordmark, x), 0, 0)}
+      >
         {char}
       </Text>
     )
@@ -614,7 +728,7 @@ export function TauWordmark(): React.ReactNode {
 
   return (
     <NoSelect ref={ref} flexDirection="column" onClick={handleClick}>
-      {LINES.map((line, y) => (
+      {wordmark.lines.map((line, y) => (
         <Box key={y}>{Array.from(line).map((char, x) => renderCell(char, x, y))}</Box>
       ))}
     </NoSelect>

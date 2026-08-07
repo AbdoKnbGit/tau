@@ -74,21 +74,25 @@ Opens an interactive picker for optional Tau prebuilt tools. Basic agent tools s
 /tools status              print current state
 ```
 
-**`/mode` - Switch power mode (cheap / normal / full)**
-One switch for how much machinery Tau loads, with a matching accent color that cross-fades on change.
+**`/mode` - Switch Tau mode (cheap / normal / rust)**
+One switch for how Tau operates, with a matching identity and accent color that cross-fades on change.
 
 - `cheap` - core tools only. Optional tools, skills, agents, plugins, MCP, and LSP are all off AND hidden from the model (system prompt and listings included); folder configs (`.claude/skills`, `.claude/agents`, `.mcp.json`, plugins) are ignored. Soft bronze accents.
 - `normal` - default behavior. Your `/tools` toggles apply; MCP, skills, agents, and LSP load as configured. Standard theme.
+- `rust` - normal behavior plus Rust-focused guidance and native Rust capabilities when available. The TAUCODE wordmark becomes RUSTCODE with a green gradient. The native `Rust` tool provides `workspace_context`, `focused_command`, `test_map`, `diagnostics`, `dependency_cost`, `artifact_size`, `profile_advice`, and `unsafe_audit`.
 - `full` - everything on. Every optional tool is enabled regardless of saved `/tools` toggles. Soft gold accents.
 
 ```
 /mode          open the picker (live palette preview)
 /mode cheap    minimal footprint
 /mode normal   back to default
+/mode rust     Rust-focused capabilities and identity
 /mode full     everything on
 ```
 
-Saved `/tools` toggles are never rewritten - cheap/full override them while active, and normal restores them (`/tools` itself only appears in normal mode). Switching modes changes the tool set and system prompt once, so the prompt cache re-warms on the next message and then stays stable.
+Saved `/tools` toggles are never rewritten - cheap/full override them while active, and normal or Rust mode restores them (`/tools` appears in both normal-compatible modes). Switching modes changes the tool set and system prompt once, so the prompt cache re-warms on the next message and then stays stable.
+
+The Rust capability is a stateless native helper built during install when Cargo 1.85+ is available. It plans focused Cargo argv and inspects existing source, diagnostics, lockfiles, profiles, and artifacts; it does not run builds/tests, edit files, resolve dependencies, create `Cargo.lock`, write into the inspected project's `target/`, or maintain a runtime cache. Tau's existing tool layer remains responsible for mode gating, permissions, provider schemas, timeout, cancellation, and output limits; Bash remains the only execution path for recommended Cargo commands.
 
 **`/fallback` - Recover automatically**
 Automatic recovery when a model fails mid-session. Configure a fallback and keep working through provider outages.

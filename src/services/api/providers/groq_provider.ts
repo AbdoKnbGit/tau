@@ -21,6 +21,7 @@
  */
 
 import { OpenAIProvider } from './openai_provider.js'
+import { RUST_TOOL_NAME } from '../../../tools/RustTool/constants.js'
 import type {
   ProviderConfig,
   ProviderRequestParams,
@@ -48,6 +49,7 @@ const GROQ_TOOLS = new Set([
   'Grep',
   'WebSearch',
   'WebFetch',
+  RUST_TOOL_NAME,
 ])
 
 export class GroqProvider extends OpenAIProvider {
@@ -118,7 +120,7 @@ export class GroqProvider extends OpenAIProvider {
     }
 
     const trimmed = fullText.slice(0, cutPoint) +
-      '\n\n[Instructions trimmed. Tools available: Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch. ' +
+      '\n\n[Instructions trimmed. Core tools are listed in this note; any additional tool shown in your current tool list is also callable. ' +
       'ONLY call tools that are in your tool list. Do NOT invent or guess tool names.]'
 
     if (typeof system === 'string') return trimmed

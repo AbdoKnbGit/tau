@@ -525,6 +525,32 @@ function getCheapModeToolsSection(): string | null {
   ].join(`\n`)
 }
 
+/**
+ * Provider-neutral routing for Rust mode. The guidance is capability-based so
+ * it remains correct when a provider renames built-in tools. It also handles
+ * the rollout interval before the native Rust tool is registered: the model is
+ * told explicitly not to invent it.
+ */
+function getRustModeToolsSection(
+  enabledTools?: ReadonlySet<string>,
+): string | null {
+  if (getPowerModeFromSettings(getInitialSettings()) !== 'rust') return null
+
+  const hasRustTool = enabledTools?.has('Rust')
+  return [
+    `# Mode: rust`,
+    ...prependBullets([
+      `Rust mode keeps the normal Tau toolset and adds bounded, read-only native Rust analysis. Do not route every .rs task through it: continue to use symbol navigation for definitions/references, file tools for reading and editing, text search for literal searches, and the shell for command execution.`,
+      hasRustTool === true
+        ? `The dedicated Rust capability exposes exactly these actions: workspace_context for Cargo ownership and metadata; focused_command for argv-safe Cargo planning; test_map for syntax-aware test scopes; diagnostics for parsing existing rustc/Clippy output; dependency_cost for an existing Cargo.lock graph; artifact_size for existing target outputs; profile_advice for evidence-based Cargo profile tradeoffs; and unsafe_audit for syntax-aware unsafe/FFI/export inventory. Use only actions declared in its current schema.`
+        : hasRustTool === false
+          ? `No dedicated Rust capability is present in the current tool list yet. Use the available normal tools and never invent or claim to have a Rust-specific tool that is not listed.`
+          : `Use a dedicated Rust capability only if it appears in your current tool list; otherwise use the available normal tools. Never invent or claim to have a Rust-specific tool that is not listed.`,
+      `Routing boundary: workspace_context only orients; focused_command only plans and the existing shell executes under its normal permission, timeout, and cancellation path. diagnostics only parses output already produced elsewhere. dependency_cost never resolves or fetches. artifact_size never builds. profile_advice never edits. unsafe_audit inventories syntax but does not prove soundness. Prefer the narrow matching action over ad-hoc Cargo metadata parsing, but skip it when the answer is already known or the task is source reading, navigation, literal search, editing, or execution.`,
+    ]),
+  ].join(`\n`)
+}
+
 function getAgentToolSection(): string {
   return isForkSubagentEnabled()
     ? `Calling ${AGENT_TOOL_NAME} without a subagent_type creates a fork, which runs in the background and keeps its tool output out of your context \u2014 so you can keep chatting with the user while it works. Reach for it when research or multi-step implementation work would otherwise fill your context with raw output you won't need again. **If you ARE the fork** \u2014 execute directly; do not re-delegate.`
@@ -663,10 +689,12 @@ export async function getSystemPrompt(
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
 ): Promise<string[]> {
+  const enabledTools = new Set(tools.map(_ => _.name))
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return [
       `You are Tau, a multi-provider AI coding CLI.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
-    ]
+      getRustModeToolsSection(enabledTools),
+    ].filter((section): section is string => section !== null)
   }
 
   const cwd = getCwd()
@@ -677,8 +705,6 @@ export async function getSystemPrompt(
   ])
 
   const settings = getInitialSettings()
-  const enabledTools = new Set(tools.map(_ => _.name))
-
   if (
     (feature('PROACTIVE') || feature('KAIROS')) &&
     proactiveModule?.isProactiveActive()
@@ -692,6 +718,7 @@ ${CYBER_RISK_INSTRUCTION}`,
       await loadMemoryPrompt(),
       envInfo,
       getLanguageSection(settings.language),
+      getRustModeToolsSection(enabledTools),
       // When delta enabled, instructions are announced via persisted
       // mcp_instructions_delta attachments (attachments.ts) instead.
       isMcpInstructionsDeltaEnabled()
@@ -792,6 +819,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     getActionsSection(),
     getUsingYourToolsSection(enabledTools),
     getCheapModeToolsSection(),
+    getRustModeToolsSection(enabledTools),
     getSimpleToneAndStyleSection(),
     getOutputEfficiencySection(),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===
@@ -1016,10 +1044,12 @@ export async function enhanceSystemPromptWithEnvDetails(
       ? getDiscoverSkillsGuidance()
       : null
   const envInfo = await computeEnvInfo(model, additionalWorkingDirectories)
+  const rustModeGuidance = getRustModeToolsSection(enabledToolNames)
   return [
     ...existingSystemPrompt,
     notes,
     ...(discoverSkillsGuidance !== null ? [discoverSkillsGuidance] : []),
+    ...(rustModeGuidance !== null ? [rustModeGuidance] : []),
     envInfo,
   ]
 }

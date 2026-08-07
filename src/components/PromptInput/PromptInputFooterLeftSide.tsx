@@ -310,8 +310,8 @@ function ModeIndicator({
     }
   }, [voiceEnabled, voiceHintUnderCap]);
   const isKillAgentsConfirmShowing = useAppState(s_7 => s_7.notifications.current?.key === 'kill-agents-confirm');
-  // Power mode chip (bronze "cheap" / gold "full power"); hidden in normal
-  // mode. Colored via the 'brand' slot, which the mode overlay tints.
+  // Mode chip (bronze cheap / green Rust / gold full); hidden in normal mode.
+  // Colored via the 'brand' slot, which the mode overlay tints.
   const powerMode = useAppState(s_8 => getPowerModeFromSettings(s_8.settings));
 
   // Derive team info from teamContext (no filesystem I/O needed)
@@ -361,7 +361,7 @@ function ModeIndicator({
 
   // Persistent power-mode indicator (only when not in normal mode).
   const powerModePart = powerMode !== 'normal' ? <Text color="brand" key="power-mode">
-        ◆ {powerMode === 'cheap' ? 'cheap mode' : 'full power'}
+        ◆ {powerMode === 'cheap' ? 'cheap mode' : powerMode === 'rust' ? 'rust mode' : 'full power'}
       </Text> : null;
 
   // Build parts array - exclude BackgroundTaskStatus when we have teammate pills

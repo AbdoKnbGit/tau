@@ -13,6 +13,7 @@
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 import { ALL_NIM_MODELS } from '../../../utils/model/nim_catalog.js'
+import { RUST_TOOL_NAME } from '../../../tools/RustTool/constants.js'
 
 const DEFAULT_NIM_MAX_TOKENS = 8192
 
@@ -133,6 +134,7 @@ const NIM_FAST_TOOL_ALLOWLIST = new Set<string>([
   'WebSearch', 'WebFetch',
   // Planning / delegation
   'TodoWrite', 'Agent', 'Task', 'Skill', 'ToolSearch',
+  RUST_TOOL_NAME,
   // OpenAI-compat lane native names.
   'execute_command', 'read_file', 'write_file',
   'str_replace', 'edit_block', 'edit_file',
