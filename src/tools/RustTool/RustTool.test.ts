@@ -242,11 +242,21 @@ async function main(): Promise<void> {
       /diagnostics requires exactly one of path or input/,
     )
 
+    const inlineDiagnosticUse = RustTool.renderToolUseMessage(
+      { action: 'diagnostics', input: 'error: fixture failure' },
+      { theme: 'dark', verbose: false },
+    ) as unknown as { props: { children: string } }
+    assert.equal(
+      inlineDiagnosticUse.props.children,
+      'Rust diagnostics captured compiler output',
+    )
+
     const prompt = await RustTool.prompt()
     assert.match(prompt, /focused_command: produce exact Cargo argv/)
     assert.match(prompt, /diagnostics.*never invokes/)
     assert.match(prompt, /not a proof of soundness/)
     assert.match(prompt, /recognized fields owned by another action.*ignored/)
+    assert.match(prompt, /Never pass a workspace\/source directory/)
     console.log('RustTool: all capability assertions passed')
   } finally {
     resetSessionPowerModeForTesting()

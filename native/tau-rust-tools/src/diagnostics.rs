@@ -150,6 +150,17 @@ pub fn parse_diagnostics_file(path: &Path, max_items: Option<usize>) -> Result<D
         path: path.to_path_buf(),
         source,
     })?;
+    if !metadata.is_file() {
+        let path_kind = if metadata.is_dir() {
+            "a directory"
+        } else {
+            "a non-regular file"
+        };
+        return Err(Error::Usage(format!(
+            "diagnostics --file expects a regular file containing existing rustc or Clippy output; received {path_kind}: {}. Use --stdin for captured diagnostic text",
+            path.display()
+        )));
+    }
     if metadata.len() > MAX_INPUT_BYTES as u64 {
         return Err(Error::Usage(format!(
             "diagnostic file exceeds the {MAX_INPUT_BYTES}-byte limit"

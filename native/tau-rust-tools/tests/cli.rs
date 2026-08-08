@@ -102,3 +102,20 @@ fn diagnostics_accepts_json_lines_over_stdin() {
     assert_eq!(json["counts"]["error"], 1);
     assert_eq!(json["diagnostics"][0]["message"], "fixture failure");
 }
+
+#[test]
+fn diagnostics_rejects_a_directory_as_a_usage_error() {
+    let fixture = TempDir::new().expect("temporary directory");
+    let output = binary()
+        .args(["diagnostics", "--file"])
+        .arg(fixture.path())
+        .output()
+        .expect("run native helper");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("diagnostics --file expects a regular file"));
+    assert!(stderr.contains("received a directory"));
+    assert!(stderr.contains("Use --stdin for captured diagnostic text"));
+    assert!(!stderr.contains("Access is denied"));
+}

@@ -35,7 +35,7 @@ const inputSchema = lazySchema(() =>
         'Rust capability to use. This provider-compatible schema is a flat superset; recognized fields irrelevant to the selected action are ignored.',
       ),
     path: pathField.describe(
-      'Workspace/source path for every action except diagnostics; for diagnostics it may be an existing output file. test_map requires an existing .rs file.',
+      'Workspace/source path for every action except diagnostics. For diagnostics it must be a regular file containing existing rustc/Clippy output, never a workspace directory. test_map requires an existing .rs file.',
     ),
     operation: z
       .enum(['check', 'build', 'clippy', 'test', 'bench', 'doc', 'run'])
@@ -79,7 +79,7 @@ const inputSchema = lazySchema(() =>
       .max(8_388_608)
       .optional()
       .describe(
-        'diagnostics only: existing rustc/Clippy JSON-lines or text. Use exactly one of input or path.',
+        'diagnostics only: captured rustc/Clippy JSON-lines or text, parsed through stdin without reading the workspace. Use exactly one of input or path.',
       ),
     maxItems: z
       .number()
@@ -469,7 +469,7 @@ export const RustTool = buildTool({
 - workspace_context: Cargo workspace/package/target/features/edition/MSRV orientation. No command planning.
 - focused_command: produce exact Cargo argv for check/build/clippy/test/bench/doc/run. It never executes; use Bash for execution.
 - test_map: syntax-aware mapping of one .rs file to its harness scope and declared test filters. It never runs tests and does not replace LSP or source search.
-- diagnostics: parse output already produced by rustc or Clippy, preserving spans and machine suggestions. It never invokes them; use Bash to produce fresh output.
+- diagnostics: parse output already produced by rustc or Clippy, preserving spans and machine suggestions. It never invokes them or inspects a workspace; use Bash to produce fresh output. Pass captured output as input, or set path to a regular diagnostic-output file. Never pass a workspace/source directory as the diagnostics path.
 - dependency_cost: inspect an existing Cargo.lock graph and direct dependency fan-out. It never resolves, fetches, updates, or edits dependencies.
 - artifact_size: measure existing target artifacts and incremental storage. It never builds and does not replace a profiler.
 - profile_advice: compare actual Cargo profile values with a declared goal and explain tradeoffs. It never edits Cargo.toml and advice must be validated by measurement.
@@ -509,10 +509,16 @@ Do not use Rust for general file reading/editing, definitions/references, litera
   },
   renderToolUseMessage(input, { verbose }) {
     const path = input.path ?? getCwd()
+    const target =
+      input.action === 'diagnostics' && input.input !== undefined
+        ? 'captured compiler output'
+        : verbose
+          ? path
+          : getDisplayPath(path)
     return React.createElement(
       Text,
       null,
-      `Rust ${displayAction(input.action)} ${verbose ? path : getDisplayPath(path)}`,
+      `Rust ${displayAction(input.action)} ${target}`,
     )
   },
   renderToolResultMessage: renderResult,
