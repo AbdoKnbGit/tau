@@ -2,7 +2,7 @@
   <img src="Logo.png" alt="Tau logo" width="120">
 </p>
 
-# Tau - The Best Free Coding Agent
+# Tau - Your Adaptive Coding Agent
 
 [![npm version](https://img.shields.io/npm/v/%40abdoknbgit%2Ftau.svg)](https://www.npmjs.com/package/@abdoknbgit/tau)
 [![npm downloads](https://img.shields.io/npm/dm/%40abdoknbgit%2Ftau.svg)](https://www.npmjs.com/package/@abdoknbgit/tau)
