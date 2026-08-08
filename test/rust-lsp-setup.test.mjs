@@ -8,7 +8,12 @@ import { transform } from 'esbuild'
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 
 function source(relativePath) {
-  return readFileSync(join(repositoryRoot, relativePath), 'utf8')
+  // Git may check out text with CRLF on Windows. Normalize source-shape
+  // assertions so this test behaves identically on every supported OS.
+  return readFileSync(join(repositoryRoot, relativePath), 'utf8').replace(
+    /\r\n?/g,
+    '\n',
+  )
 }
 
 async function loadRustDecisionFunction() {
