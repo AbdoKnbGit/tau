@@ -16,6 +16,7 @@
  * litellm/llms/<provider>/chat/transformation.py.
  */
 
+import { APIConnectionError } from '@anthropic-ai/sdk'
 import type {
   AnthropicStreamEvent,
   ModelInfo,
@@ -634,6 +635,14 @@ export class OpenAICompatLane implements Lane {
         signal,
       })
     } catch (err: any) {
+      if (provider === 'opencode' || provider === 'opencodego') {
+        // Do not turn a transient OpenCode transport failure into a completed
+        // assistant turn. The provider shim's retry controller can only retry
+        // thrown errors; emitting an error message here made every subsequent
+        // user "continue" a new turn and shifted the rolling cache prefix.
+        if (signal?.aborted && err instanceof Error) throw err
+        throw createOpenCodeConnectionError(provider, err)
+      }
       if (!messageStartEmitted) {
         const mst = emitMessageStart()
         if (mst) yield mst
@@ -1434,6 +1443,17 @@ function blankUsage(i: number, o: number, c: number, r: number): NormalizedUsage
   }
 }
 
+function createOpenCodeConnectionError(
+  provider: 'opencode' | 'opencodego',
+  error: unknown,
+): APIConnectionError {
+  const cause = error instanceof Error ? error : new Error(String(error))
+  return new APIConnectionError({
+    message: `${provider} API connection error: ${cause.message}`,
+    cause,
+  })
+}
+
 function* emitErrorText(text: string): Generator<AnthropicStreamEvent> {
   yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
@@ -1617,7 +1637,10 @@ async function* streamOpenCodeAnthropicRoute(
       connectionError = error
       response = null
       if (params.signal?.aborted) break
-      continue
+      // Connection failures are retried by the shared request retry layer.
+      // Avoid multiplying its attempts inside this route; the status retry
+      // loop below remains useful for OpenCode's intermittent upstream 5xxs.
+      break
     }
     if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_STATUS_RETRIES) {
       await response.text().catch(() => {})
@@ -1627,17 +1650,8 @@ async function* streamOpenCodeAnthropicRoute(
   }
 
   if (!response) {
-    yield emitSyntheticStart()
-    yield* emitErrorText(
-      `${provider} API connection error: ${connectionError instanceof Error ? connectionError.message : String(connectionError)}`,
-    )
-    yield {
-      type: 'message_delta',
-      delta: { stop_reason: 'end_turn' },
-      usage: { output_tokens: 0 },
-    }
-    yield { type: 'message_stop' }
-    return blankUsage(0, 0, 0, 0)
+    if (params.signal?.aborted && connectionError instanceof Error) throw connectionError
+    throw createOpenCodeConnectionError(provider, connectionError)
   }
 
   if (!response.ok) {

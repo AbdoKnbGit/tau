@@ -8,12 +8,14 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { APIConnectionError } from '@anthropic-ai/sdk'
 import type { AnthropicStreamEvent } from '../../services/api/providers/base_provider.js'
 import { OpenAICompatLane } from './loop.js'
 
 type CapturedRequest = {
   url: string
   headers: Record<string, string>
+  rawBody: string
   body: Record<string, any>
 }
 
@@ -36,6 +38,7 @@ async function captureRequest(
     request = {
       url: String(url),
       headers: init?.headers as Record<string, string>,
+      rawBody: String(init?.body ?? ''),
       body: JSON.parse(String(init?.body ?? '{}')) as Record<string, any>,
     }
 
@@ -248,6 +251,95 @@ async function main(): Promise<void> {
       if (oldClient === undefined) delete process.env.OPENCODE_CLIENT
       else process.env.OPENCODE_CLIENT = oldClient
       lane.unregisterProvider('opencodego')
+    }
+  }
+
+  // A connection failure must escape the lane as a retryable exception. The
+  // shared retry controller then repeats the identical provider turn instead
+  // of persisting an assistant error and requiring a cache-shifting "continue".
+  {
+    const lane = new OpenAICompatLane()
+    lane.registerProvider('opencode', 'test-opencode-key', 'https://opencode.ai/zen/v1')
+    const oldFetch = globalThis.fetch
+    const oldClient = process.env.OPENCODE_CLIENT
+    process.env.OPENCODE_CLIENT = 'opencode-tau/test'
+    const requests: CapturedRequest[] = []
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      requests.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string>,
+        rawBody: String(init?.body ?? ''),
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, any>,
+      })
+      if (requests.length === 1) throw new TypeError('fetch failed')
+
+      const chunks = [
+        {
+          id: 'chatcmpl_connection_retry',
+          object: 'chat.completion.chunk',
+          model: 'glm-5.2',
+          choices: [{ index: 0, delta: { content: 'recovered' }, finish_reason: null }],
+        },
+        {
+          id: 'chatcmpl_connection_retry',
+          object: 'chat.completion.chunk',
+          model: 'glm-5.2',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+        },
+      ]
+      const sse = chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')
+        + 'data: [DONE]\n\n'
+      return new Response(sse, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    }) as typeof fetch
+
+    try {
+      let connectionError: unknown
+      let events: AnthropicStreamEvent[] | undefined
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const attemptEvents: AnthropicStreamEvent[] = []
+          const stream = lane.streamAsProvider({
+            model: 'glm-5.2',
+            messages: [{ role: 'user', content: 'keep the prefix stable' }],
+            system: 'You are a coding agent.',
+            tools: [],
+            max_tokens: 1024,
+            thinking: { type: 'disabled' },
+            signal: new AbortController().signal,
+            sessionId: 'session-fixed',
+            providerHint: 'opencode',
+          })
+          for await (const event of stream) attemptEvents.push(event)
+          // Assign only the successful attempt; the failed transport must
+          // not have emitted a synthetic assistant error into history.
+          events = attemptEvents
+          break
+        } catch (error) {
+          connectionError = error
+        }
+      }
+
+      assert(connectionError instanceof APIConnectionError, 'connection failure must be retryable')
+      assert.match(connectionError.message, /opencode API connection error: fetch failed/)
+      assert.equal(requests.length, 2, 'expected a retry to issue the same provider turn')
+      assert.equal(requests[1]!.rawBody, requests[0]!.rawBody, 'retry must keep the prompt body byte-stable')
+      assert.equal(requests[0]!.headers['x-opencode-session'], 'session-fixed')
+      assert.equal(requests[1]!.headers['x-opencode-session'], 'session-fixed')
+      assert.equal(requests[0]!.headers['x-opencode-request'], requests[1]!.headers['x-opencode-request'])
+      const text = events
+        .filter(event => event.type === 'content_block_delta' && event.delta?.type === 'text_delta')
+        .map((event: any) => event.delta.text)
+        .join('')
+      assert.equal(text, 'recovered')
+    } finally {
+      globalThis.fetch = oldFetch
+      if (oldClient === undefined) delete process.env.OPENCODE_CLIENT
+      else process.env.OPENCODE_CLIENT = oldClient
+      lane.unregisterProvider('opencode')
     }
   }
 
