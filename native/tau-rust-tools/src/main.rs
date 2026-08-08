@@ -59,8 +59,8 @@ struct PathOptions {
 struct FocusedCommandArgs {
     #[command(flatten)]
     common: PathOptions,
-    /// Cargo operation: check, build, clippy, test, bench, doc, or run.
-    #[arg(long)]
+    /// Cargo operation: check, build, clippy, test, bench, doc, or run. Defaults to check.
+    #[arg(long, default_value = "check")]
     operation: String,
     /// Features to add, as a comma-delimited list. May be repeated.
     #[arg(long, value_delimiter = ',')]
@@ -121,8 +121,8 @@ struct ArtifactSizeArgs {
 struct ProfileAdviceArgs {
     #[command(flatten)]
     common: PathOptions,
-    /// Goal: balanced, dev_speed, release_size, runtime_performance, or compile_time.
-    #[arg(long)]
+    /// Goal: balanced, dev_speed, release_size, runtime_performance, or compile_time. Defaults to balanced.
+    #[arg(long, default_value = "balanced")]
     goal: String,
     /// Cargo profile to assess. Defaults according to the selected goal.
     #[arg(long)]

@@ -119,3 +119,50 @@ fn diagnostics_rejects_a_directory_as_a_usage_error() {
     assert!(stderr.contains("Use --stdin for captured diagnostic text"));
     assert!(!stderr.contains("Access is denied"));
 }
+
+#[test]
+fn semantic_options_have_conservative_cli_defaults() {
+    let fixture = TempDir::new().expect("temporary directory");
+    let root = fixture.path().join("defaults");
+    fs::create_dir_all(root.join("src")).expect("create source directory");
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"
+[package]
+name = "default-safe"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .expect("write Cargo.toml");
+    fs::write(root.join("src/lib.rs"), "pub struct DefaultSafe;\n").expect("write lib.rs");
+
+    let focused = binary()
+        .args(["focused-command", "--path"])
+        .arg(&root)
+        .output()
+        .expect("plan default focused command");
+    assert!(
+        focused.status.success(),
+        "{}",
+        String::from_utf8_lossy(&focused.stderr)
+    );
+    let focused_json: Value = serde_json::from_slice(&focused.stdout).expect("focused JSON");
+    assert_eq!(focused_json["operation"], "check");
+    assert_eq!(focused_json["args"][0], "check");
+
+    let advice = binary()
+        .args(["profile-advice", "--path"])
+        .arg(&root)
+        .args(["--profile", "dev"])
+        .output()
+        .expect("inspect default profile goal");
+    assert!(
+        advice.status.success(),
+        "{}",
+        String::from_utf8_lossy(&advice.stderr)
+    );
+    let advice_json: Value = serde_json::from_slice(&advice.stdout).expect("advice JSON");
+    assert_eq!(advice_json["goal"], "balanced");
+    assert_eq!(advice_json["profile"], "dev");
+}

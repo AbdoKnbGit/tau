@@ -40,7 +40,9 @@ const inputSchema = lazySchema(() =>
     operation: z
       .enum(['check', 'build', 'clippy', 'test', 'bench', 'doc', 'run'])
       .optional()
-      .describe('Required only for focused_command.'),
+      .describe(
+        'focused_command only: Cargo operation to plan. Defaults to check when omitted.',
+      ),
     features: z
       .array(z.string())
       .max(128)
@@ -104,7 +106,9 @@ const inputSchema = lazySchema(() =>
         'compile_time',
       ])
       .optional()
-      .describe('Required only for profile_advice.'),
+      .describe(
+        'profile_advice only: optimization objective. Defaults to balanced when omitted.',
+      ),
     maxFiles: z
       .number()
       .int()
@@ -394,9 +398,8 @@ export function buildRustNativeInvocation(input: z.output<InputSchema>): {
         args: ['--path', path, '--pretty'],
       }
     case 'focused_command': {
-      if (!input.operation)
-        throw new Error('focused_command requires operation')
-      const args = ['--path', path, '--operation', input.operation, '--pretty']
+      const operation = input.operation ?? 'check'
+      const args = ['--path', path, '--operation', operation, '--pretty']
       for (const feature of input.features ?? [])
         args.push('--features', feature)
       if (input.allFeatures) args.push('--all-features')
@@ -438,8 +441,8 @@ export function buildRustNativeInvocation(input: z.output<InputSchema>): {
       return { command: 'artifact-size', args }
     }
     case 'profile_advice': {
-      if (!input.goal) throw new Error('profile_advice requires goal')
-      const args = ['--path', path, '--goal', input.goal]
+      const goal = input.goal ?? 'balanced'
+      const args = ['--path', path, '--goal', goal]
       const profile = input.profile ?? (input.release ? 'release' : undefined)
       if (profile) args.push('--profile', profile)
       args.push('--pretty')
@@ -467,12 +470,12 @@ export const RustTool = buildTool({
   async prompt() {
     return `Use this tool only in rustcode mode, and choose one action by ownership:
 - workspace_context: Cargo workspace/package/target/features/edition/MSRV orientation. No command planning.
-- focused_command: produce exact Cargo argv for check/build/clippy/test/bench/doc/run. It never executes; use Bash for execution.
+- focused_command: produce exact Cargo argv for check/build/clippy/test/bench/doc/run. It never executes; use Bash for execution. Choose operation explicitly when intent is known; omitted operation conservatively defaults to check.
 - test_map: syntax-aware mapping of one .rs file to its harness scope and declared test filters. It never runs tests and does not replace LSP or source search.
 - diagnostics: parse output already produced by rustc or Clippy, preserving spans and machine suggestions. It never invokes them or inspects a workspace; use Bash to produce fresh output. Pass captured output as input, or set path to a regular diagnostic-output file. Never pass a workspace/source directory as the diagnostics path.
 - dependency_cost: inspect an existing Cargo.lock graph and direct dependency fan-out. It never resolves, fetches, updates, or edits dependencies.
 - artifact_size: measure existing target artifacts and incremental storage. It never builds and does not replace a profiler.
-- profile_advice: compare actual Cargo profile values with a declared goal and explain tradeoffs. It never edits Cargo.toml and advice must be validated by measurement.
+- profile_advice: compare actual Cargo profile values with a declared goal and explain tradeoffs. It never edits Cargo.toml and advice must be validated by measurement. Choose goal explicitly when intent is known; omitted goal conservatively defaults to balanced.
 - unsafe_audit: parse Rust syntax to inventory unsafe blocks/functions/traits/impls, extern boundaries, exported ABI attributes, and SAFETY documentation. It is not a proof of soundness or a replacement for Miri/security review.
 
 Send only the fields documented for the chosen action. Because every provider receives one flat compatibility schema, recognized fields owned by another action are safely ignored rather than failing the call. Unknown fields remain invalid.

@@ -116,6 +116,14 @@ async function main(): Promise<void> {
     assert.deepEqual(properties.action?.enum, RUST_TOOL_ACTIONS)
     assert.equal(providerSchema.anyOf, undefined)
     assert.equal(providerSchema.oneOf, undefined)
+    assert.match(
+      String(properties.operation?.description),
+      /Defaults to check when omitted/,
+    )
+    assert.match(
+      String(properties.goal?.description),
+      /Defaults to balanced when omitted/,
+    )
     assert.equal(
       RustTool.inputSchema.safeParse({
         action: 'dependency_cost',
@@ -229,13 +237,44 @@ async function main(): Promise<void> {
       },
       'An explicit profile should win over the release shorthand',
     )
-    assert.throws(
-      () => buildRustNativeInvocation({ action: 'focused_command' }),
-      /focused_command requires operation/,
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'focused_command',
+        path: '/work/demo',
+        targetTriple: 'x86_64-pc-windows-msvc',
+      }),
+      {
+        command: 'focused-command',
+        args: [
+          '--path',
+          '/work/demo',
+          '--operation',
+          'check',
+          '--pretty',
+          '--target',
+          'x86_64-pc-windows-msvc',
+        ],
+      },
     )
-    assert.throws(
-      () => buildRustNativeInvocation({ action: 'profile_advice' }),
-      /profile_advice requires goal/,
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'profile_advice',
+        path: '/work/demo',
+        profile: 'dev',
+        release: false,
+      }),
+      {
+        command: 'profile-advice',
+        args: [
+          '--path',
+          '/work/demo',
+          '--goal',
+          'balanced',
+          '--profile',
+          'dev',
+          '--pretty',
+        ],
+      },
     )
     assert.throws(
       () => buildRustNativeInvocation({ action: 'diagnostics' }),
@@ -257,6 +296,8 @@ async function main(): Promise<void> {
     assert.match(prompt, /not a proof of soundness/)
     assert.match(prompt, /recognized fields owned by another action.*ignored/)
     assert.match(prompt, /Never pass a workspace\/source directory/)
+    assert.match(prompt, /operation conservatively defaults to check/)
+    assert.match(prompt, /goal conservatively defaults to balanced/)
     console.log('RustTool: all capability assertions passed')
   } finally {
     resetSessionPowerModeForTesting()
