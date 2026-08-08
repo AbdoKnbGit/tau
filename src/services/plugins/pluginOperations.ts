@@ -15,7 +15,8 @@ import { dirname, join } from 'path'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { isBuiltinPluginId } from '../../plugins/builtinPlugins.js'
 import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
-import { isENOENT, toError } from '../../utils/errors.js'
+import { logForDebugging } from '../../utils/debug.js'
+import { errorMessage, isENOENT, toError } from '../../utils/errors.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import { logError } from '../../utils/log.js'
 import {
@@ -36,6 +37,7 @@ import {
   getMarketplace,
   getPluginById,
   loadKnownMarketplacesConfig,
+  refreshMarketplace,
 } from '../../utils/plugins/marketplaceManager.js'
 import { deletePluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import {
@@ -830,13 +832,103 @@ export async function updatePluginOp(
   plugin: string,
   scope: PluginScope,
 ): Promise<PluginUpdateResult> {
-  // Parse the plugin identifier to get the full plugin ID
-  const { name: pluginName, marketplace: marketplaceName } =
-    parsePluginIdentifier(plugin)
-  const pluginId = marketplaceName ? `${pluginName}@${marketplaceName}` : plugin
+  const parsedPlugin = parsePluginIdentifier(plugin)
+  const pluginName = parsedPlugin.name
+  let marketplaceName = parsedPlugin.marketplace
+  let pluginId = marketplaceName
+    ? `${pluginName}@${marketplaceName}`
+    : plugin
+
+  // Installations are keyed by name@marketplace. Resolve the short form from
+  // disk before marketplace lookup so `plugin update foo` targets the same
+  // installation as `plugin update foo@catalog`. Prefer the requested scope;
+  // require qualification only when more than one installation is plausible.
+  const diskData = loadInstalledPluginsFromDisk()
+  const projectPath = getProjectPathForScope(scope)
+  if (!marketplaceName) {
+    const matchingPluginIds = Object.keys(diskData.plugins).filter(
+      installedPluginId =>
+        parsePluginIdentifier(installedPluginId).name === pluginName,
+    )
+    const matchingScopeIds = matchingPluginIds.filter(installedPluginId =>
+      diskData.plugins[installedPluginId]?.some(
+        installation =>
+          installation.scope === scope &&
+          installation.projectPath === projectPath,
+      ),
+    )
+    const candidates =
+      matchingScopeIds.length > 0 ? matchingScopeIds : matchingPluginIds
+
+    if (candidates.length > 1) {
+      return {
+        success: false,
+        message: `Plugin "${pluginName}" is installed from multiple marketplaces (${candidates.sort().join(', ')}). Specify plugin@marketplace.`,
+        pluginId,
+        scope,
+      }
+    }
+    if (candidates[0]) {
+      pluginId = candidates[0]
+      marketplaceName = parsePluginIdentifier(pluginId).marketplace
+    } else {
+      return {
+        success: false,
+        message: `Plugin "${pluginName}" is not installed`,
+        pluginId,
+        scope,
+      }
+    }
+  }
+
+  // An explicit update must resolve against the latest marketplace catalog.
+  // Refresh only remote marketplace sources; local and settings-backed sources
+  // have no upstream to fetch. If refresh fails, retain the cached catalog but
+  // surface that it may be stale instead of reporting a misleading clean bill.
+  let refreshWarning: string | undefined
+  let cachedPluginInfo:
+    | Awaited<ReturnType<typeof getPluginById>>
+    | undefined
+  if (marketplaceName) {
+    const marketplaceSource = (await loadKnownMarketplacesConfig())[
+      marketplaceName
+    ]?.source
+    if (
+      marketplaceSource?.source === 'github' ||
+      marketplaceSource?.source === 'git' ||
+      marketplaceSource?.source === 'url'
+    ) {
+      // Keep a parsed copy in memory before refreshing. A failed git refresh
+      // can clean up an unusable clone before its re-clone also fails; this
+      // snapshot is what makes the documented cached-data fallback reliable.
+      try {
+        cachedPluginInfo = await getPluginById(pluginId)
+      } catch (error) {
+        logForDebugging(
+          `Could not read cached marketplace '${marketplaceName}' before refresh: ${errorMessage(error)}`,
+          { level: 'warn' },
+        )
+      }
+      try {
+        await refreshMarketplace(marketplaceName, undefined, {
+          skipIfRecent: true,
+        })
+      } catch (error) {
+        const detail = errorMessage(error)
+        refreshWarning = `marketplace not refreshed (${detail})`
+        logForDebugging(
+          `Failed to refresh marketplace '${marketplaceName}' before updating '${pluginId}'; using cached data: ${detail}`,
+          { level: 'warn' },
+        )
+      }
+    }
+  }
 
   // Get plugin info from marketplace
-  const pluginInfo = await getPluginById(plugin)
+  const pluginInfo =
+    refreshWarning && cachedPluginInfo
+      ? cachedPluginInfo
+      : await getPluginById(pluginId)
   if (!pluginInfo) {
     return {
       success: false,
@@ -848,8 +940,6 @@ export async function updatePluginOp(
 
   const { entry, marketplaceInstallLocation } = pluginInfo
 
-  // Get installations from disk
-  const diskData = loadInstalledPluginsFromDisk()
   const installations = diskData.plugins[pluginId]
 
   if (!installations || installations.length === 0) {
@@ -860,9 +950,6 @@ export async function updatePluginOp(
       scope,
     }
   }
-
-  // Determine projectPath based on scope
-  const projectPath = getProjectPathForScope(scope)
 
   // Find the installation for this scope
   const installation = installations.find(
@@ -886,6 +973,7 @@ export async function updatePluginOp(
     installation,
     scope,
     projectPath,
+    refreshWarning,
   })
 }
 
@@ -901,6 +989,7 @@ async function performPluginUpdate({
   installation,
   scope,
   projectPath,
+  refreshWarning,
 }: {
   pluginId: string
   pluginName: string
@@ -909,9 +998,13 @@ async function performPluginUpdate({
   installation: { version?: string; installPath: string }
   scope: PluginScope
   projectPath: string | undefined
+  refreshWarning?: string
 }): Promise<PluginUpdateResult> {
   const fs = getFsImplementation()
   const oldVersion = installation.version
+  const refreshWarningSuffix = refreshWarning
+    ? `\nWarning: ${refreshWarning} — version shown may be stale.`
+    : ''
 
   let sourcePath: string
   let newVersion: string
@@ -1021,7 +1114,7 @@ async function performPluginUpdate({
     if (isUpToDate) {
       return {
         success: true,
-        message: `${pluginName} is already at the latest version (${newVersion}).`,
+        message: `${pluginName} is already at the latest version (${newVersion}).${refreshWarningSuffix}`,
         pluginId,
         newVersion,
         oldVersion,
@@ -1066,7 +1159,7 @@ async function performPluginUpdate({
     }
 
     const scopeDesc = projectPath ? `${scope} (${projectPath})` : scope
-    const message = `Plugin "${pluginName}" updated from ${oldVersion || 'unknown'} to ${newVersion} for scope ${scopeDesc}. Restart to apply changes.`
+    const message = `Plugin "${pluginName}" updated from ${oldVersion || 'unknown'} to ${newVersion} for scope ${scopeDesc}. Restart to apply changes.${refreshWarningSuffix}`
 
     return {
       success: true,

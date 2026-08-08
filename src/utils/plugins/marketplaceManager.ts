@@ -2365,7 +2365,10 @@ export async function refreshAllMarketplaces(): Promise<void> {
 export async function refreshMarketplace(
   name: string,
   onProgress?: MarketplaceProgressCallback,
-  options?: { disableCredentialHelper?: boolean },
+  options?: {
+    disableCredentialHelper?: boolean
+    skipIfRecent?: boolean
+  },
 ): Promise<void> {
   const config = await loadKnownMarketplacesConfig()
   const entry = config[name]
@@ -2374,6 +2377,19 @@ export async function refreshMarketplace(
     throw new Error(
       `Marketplace '${name}' not found. Available marketplaces: ${Object.keys(config).join(', ')}`,
     )
+  }
+
+  // Update-all and explicit plugin updates can converge on the same catalog in
+  // quick succession. Avoid a redundant network fetch while still allowing a
+  // failed refresh (which does not update lastUpdated) to be retried at once.
+  if (options?.skipIfRecent && entry.lastUpdated) {
+    const elapsedMs = Date.now() - Date.parse(entry.lastUpdated)
+    if (elapsedMs >= 0 && elapsedMs < 30_000) {
+      logForDebugging(
+        `Skipping refresh for marketplace '${name}'; refreshed ${Math.round(elapsedMs / 1000)}s ago`,
+      )
+      return
+    }
   }
 
   // Clear the memoization cache for this specific marketplace

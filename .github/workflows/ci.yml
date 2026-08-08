@@ -58,6 +58,9 @@ jobs:
       - name: Build with esbuild (default, Node-only)
         run: npm run build
 
+      - name: Test plugin update marketplace refresh with local Git remotes
+        run: node --test test/plugin-update-marketplace-refresh.test.mjs
+
       - name: Smoke test - version
         run: node dist/cli.mjs --version
 
