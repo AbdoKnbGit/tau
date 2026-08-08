@@ -6,6 +6,7 @@ import {
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import {
   RustTool,
+  buildRustNativeInvocation,
   formatRustCapability,
   formatRustWorkspaceContext,
   isRustCapabilityEnabled,
@@ -115,11 +116,137 @@ async function main(): Promise<void> {
     assert.deepEqual(properties.action?.enum, RUST_TOOL_ACTIONS)
     assert.equal(providerSchema.anyOf, undefined)
     assert.equal(providerSchema.oneOf, undefined)
+    assert.equal(
+      RustTool.inputSchema.safeParse({
+        action: 'dependency_cost',
+        unknownField: true,
+      }).success,
+      false,
+      'The compatibility schema must remain strict for truly unknown fields',
+    )
+
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'dependency_cost',
+        path: '/work/demo',
+        targetTriple: 'x86_64-unknown-linux-gnu',
+      }),
+      {
+        command: 'dependency-cost',
+        args: ['--path', '/work/demo', '--pretty'],
+      },
+    )
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'dependency_cost',
+        path: '/work/demo',
+        limit: 10,
+      }),
+      {
+        command: 'dependency-cost',
+        args: ['--path', '/work/demo', '--pretty'],
+      },
+    )
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'profile_advice',
+        path: '/work/demo',
+        goal: 'runtime_performance',
+        targetTriple: 'x86_64-unknown-linux-gnu',
+      }),
+      {
+        command: 'profile-advice',
+        args: [
+          '--path',
+          '/work/demo',
+          '--goal',
+          'runtime_performance',
+          '--pretty',
+        ],
+      },
+    )
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'profile_advice',
+        path: '/work/demo',
+        goal: 'runtime_performance',
+        release: true,
+        targetTriple: 'x86_64-unknown-linux-gnu',
+      }),
+      {
+        command: 'profile-advice',
+        args: [
+          '--path',
+          '/work/demo',
+          '--goal',
+          'runtime_performance',
+          '--profile',
+          'release',
+          '--pretty',
+        ],
+      },
+    )
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'unsafe_audit',
+        path: '/work/demo/src',
+        maxFiles: 50,
+        targetTriple: 'x86_64-unknown-linux-gnu',
+      }),
+      {
+        command: 'unsafe-audit',
+        args: [
+          '--path',
+          '/work/demo/src',
+          '--max-files',
+          '50',
+          '--pretty',
+        ],
+      },
+    )
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'artifact_size',
+        path: '/work/demo',
+        profile: 'dev',
+        release: true,
+        targetTriple: 'aarch64-unknown-linux-gnu',
+        limit: 5,
+      }),
+      {
+        command: 'artifact-size',
+        args: [
+          '--path',
+          '/work/demo',
+          '--profile',
+          'dev',
+          '--target',
+          'aarch64-unknown-linux-gnu',
+          '--limit',
+          '5',
+          '--pretty',
+        ],
+      },
+      'An explicit profile should win over the release shorthand',
+    )
+    assert.throws(
+      () => buildRustNativeInvocation({ action: 'focused_command' }),
+      /focused_command requires operation/,
+    )
+    assert.throws(
+      () => buildRustNativeInvocation({ action: 'profile_advice' }),
+      /profile_advice requires goal/,
+    )
+    assert.throws(
+      () => buildRustNativeInvocation({ action: 'diagnostics' }),
+      /diagnostics requires exactly one of path or input/,
+    )
 
     const prompt = await RustTool.prompt()
     assert.match(prompt, /focused_command: produce exact Cargo argv/)
     assert.match(prompt, /diagnostics.*never invokes/)
     assert.match(prompt, /not a proof of soundness/)
+    assert.match(prompt, /recognized fields owned by another action.*ignored/)
     console.log('RustTool: all capability assertions passed')
   } finally {
     resetSessionPowerModeForTesting()

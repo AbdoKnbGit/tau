@@ -32,7 +32,7 @@ const inputSchema = lazySchema(() =>
     action: z
       .enum(RUST_TOOL_ACTIONS)
       .describe(
-        'Rust capability to use. Supply only fields documented for that action.',
+        'Rust capability to use. This provider-compatible schema is a flat superset; recognized fields irrelevant to the selected action are ignored.',
       ),
     path: pathField.describe(
       'Workspace/source path for every action except diagnostics; for diagnostics it may be an existing output file. test_map requires an existing .rs file.',
@@ -57,7 +57,9 @@ const inputSchema = lazySchema(() =>
     release: z
       .boolean()
       .optional()
-      .describe('focused_command only: use the release profile.'),
+      .describe(
+        'Use the release profile for focused_command, artifact_size, or profile_advice. An explicit profile takes precedence.',
+      ),
     profile: z
       .string()
       .optional()
@@ -371,12 +373,19 @@ export function isRustCapabilityEnabled(): boolean {
   )
 }
 
-function nativeInvocation(input: z.output<InputSchema>): {
+/**
+ * Convert the provider-safe flat schema into one action-specific native call.
+ *
+ * Providers must see one strict object instead of a discriminated union because
+ * some schema sanitizers collapse unions to their first branch. The switch is
+ * therefore the action boundary: it deliberately ignores recognized fields
+ * owned by another action while Zod continues to reject unknown properties.
+ */
+export function buildRustNativeInvocation(input: z.output<InputSchema>): {
   command: string
   args: string[]
   stdin?: string
 } {
-  validateActionFields(input)
   const path = input.path ?? getCwd()
   switch (input.action) {
     case 'workspace_context':
@@ -392,8 +401,8 @@ function nativeInvocation(input: z.output<InputSchema>): {
         args.push('--features', feature)
       if (input.allFeatures) args.push('--all-features')
       if (input.noDefaultFeatures) args.push('--no-default-features')
-      if (input.release) args.push('--release')
       if (input.profile) args.push('--profile', input.profile)
+      else if (input.release) args.push('--release')
       if (input.targetTriple) args.push('--target', input.targetTriple)
       return { command: 'focused-command', args }
     }
@@ -421,7 +430,8 @@ function nativeInvocation(input: z.output<InputSchema>): {
       return { command: 'dependency-cost', args: ['--path', path, '--pretty'] }
     case 'artifact_size': {
       const args = ['--path', path]
-      if (input.profile) args.push('--profile', input.profile)
+      const profile = input.profile ?? (input.release ? 'release' : undefined)
+      if (profile) args.push('--profile', profile)
       if (input.targetTriple) args.push('--target', input.targetTriple)
       if (input.limit) args.push('--limit', String(input.limit))
       args.push('--pretty')
@@ -430,7 +440,8 @@ function nativeInvocation(input: z.output<InputSchema>): {
     case 'profile_advice': {
       if (!input.goal) throw new Error('profile_advice requires goal')
       const args = ['--path', path, '--goal', input.goal]
-      if (input.profile) args.push('--profile', input.profile)
+      const profile = input.profile ?? (input.release ? 'release' : undefined)
+      if (profile) args.push('--profile', profile)
       args.push('--pretty')
       return { command: 'profile-advice', args }
     }
@@ -440,43 +451,6 @@ function nativeInvocation(input: z.output<InputSchema>): {
       args.push('--pretty')
       return { command: 'unsafe-audit', args }
     }
-  }
-}
-
-function validateActionFields(input: z.output<InputSchema>): void {
-  const allowed: Record<(typeof RUST_TOOL_ACTIONS)[number], ReadonlySet<string>> = {
-    workspace_context: new Set(['action', 'path']),
-    focused_command: new Set([
-      'action',
-      'path',
-      'operation',
-      'features',
-      'allFeatures',
-      'noDefaultFeatures',
-      'release',
-      'profile',
-      'targetTriple',
-    ]),
-    test_map: new Set(['action', 'path', 'includeDocTests']),
-    diagnostics: new Set(['action', 'path', 'input', 'maxItems']),
-    dependency_cost: new Set(['action', 'path']),
-    artifact_size: new Set([
-      'action',
-      'path',
-      'profile',
-      'targetTriple',
-      'limit',
-    ]),
-    profile_advice: new Set(['action', 'path', 'goal', 'profile']),
-    unsafe_audit: new Set(['action', 'path', 'maxFiles']),
-  }
-  const unexpected = Object.entries(input)
-    .filter(([key, value]) => value !== undefined && !allowed[input.action].has(key))
-    .map(([key]) => key)
-  if (unexpected.length > 0) {
-    throw new Error(
-      `${input.action} does not accept field${unexpected.length === 1 ? '' : 's'}: ${unexpected.join(', ')}`,
-    )
   }
 }
 
@@ -500,6 +474,8 @@ export const RustTool = buildTool({
 - artifact_size: measure existing target artifacts and incremental storage. It never builds and does not replace a profiler.
 - profile_advice: compare actual Cargo profile values with a declared goal and explain tradeoffs. It never edits Cargo.toml and advice must be validated by measurement.
 - unsafe_audit: parse Rust syntax to inventory unsafe blocks/functions/traits/impls, extern boundaries, exported ABI attributes, and SAFETY documentation. It is not a proof of soundness or a replacement for Miri/security review.
+
+Send only the fields documented for the chosen action. Because every provider receives one flat compatibility schema, recognized fields owned by another action are safely ignored rather than failing the call. Unknown fields remain invalid.
 
 Do not use Rust for general file reading/editing, definitions/references, literal search, arbitrary commands, or command execution; use Read/Edit, LSP, Grep, or Bash. Avoid calling an action when its answer is already known. All actions are stateless and read-only.`
   },
@@ -543,7 +519,7 @@ Do not use Rust for general file reading/editing, definitions/references, litera
   async call(input, context) {
     if (!RUST_TOOL_ACTIONS.includes(input.action))
       throw new Error(`Unsupported Rust action: ${input.action}`)
-    const invocation = nativeInvocation(input)
+    const invocation = buildRustNativeInvocation(input)
     const stdout = await runNativeRustTool(
       invocation.command,
       invocation.args,
