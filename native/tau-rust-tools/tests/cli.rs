@@ -70,9 +70,42 @@ fn help_advertises_every_native_rust_capability() {
         "artifact-size",
         "profile-advice",
         "unsafe-audit",
+        "generated-code-map",
+        "build-environment",
+        "change-impact",
     ] {
         assert!(help.contains(command), "missing {command} from CLI help");
     }
+}
+
+#[test]
+fn generated_code_map_accepts_a_manifest_path_without_running_cargo_builds() {
+    let fixture = TempDir::new().expect("temporary crate");
+    let root = fixture.path();
+    fs::create_dir_all(root.join("src")).expect("create source directory");
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname='generated-cli'\nversion='0.1.0'\nedition='2021'\n",
+    )
+    .expect("write Cargo.toml");
+    fs::write(root.join("src/lib.rs"), "pub struct Source;\n").expect("write lib.rs");
+
+    let output = binary()
+        .args(["generated-code-map", "--path"])
+        .arg(root.join("Cargo.toml"))
+        .arg("--pretty")
+        .output()
+        .expect("run generated-code map");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    assert_eq!(json["scannedFiles"], 1);
+    assert!(!root.join("Cargo.lock").exists());
+    assert!(!root.join("target").exists());
 }
 
 #[test]
@@ -165,4 +198,31 @@ edition = "2021"
     let advice_json: Value = serde_json::from_slice(&advice.stdout).expect("advice JSON");
     assert_eq!(advice_json["goal"], "balanced");
     assert_eq!(advice_json["profile"], "dev");
+
+    let environment = binary()
+        .args(["build-environment", "--path"])
+        .arg(&root)
+        .output()
+        .expect("inspect default build environment");
+    assert!(
+        environment.status.success(),
+        "{}",
+        String::from_utf8_lossy(&environment.stderr)
+    );
+    let environment_json: Value =
+        serde_json::from_slice(&environment.stdout).expect("environment JSON");
+    assert!(environment_json["resolutionDirectory"].is_string());
+
+    let impact = binary()
+        .args(["change-impact", "--path"])
+        .arg(&root)
+        .output()
+        .expect("inspect default change impact");
+    assert!(
+        impact.status.success(),
+        "{}",
+        String::from_utf8_lossy(&impact.stderr)
+    );
+    let impact_json: Value = serde_json::from_slice(&impact.stdout).expect("impact JSON");
+    assert_eq!(impact_json["scope"], "whole_workspace");
 }

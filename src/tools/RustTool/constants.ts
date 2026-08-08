@@ -9,4 +9,7 @@ export const RUST_TOOL_ACTIONS = [
   'artifact_size',
   'profile_advice',
   'unsafe_audit',
+  'generated_code_map',
+  'build_environment',
+  'change_impact',
 ] as const

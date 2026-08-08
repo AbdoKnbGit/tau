@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
 use tau_rust_tools::{
-    advise_profile, analyze_dependency_cost, audit_unsafe, inspect_artifact_sizes,
-    inspect_workspace, map_tests, parse_diagnostics, parse_diagnostics_file, plan_focused_command,
-    CargoOperation, Error, FocusedCommandOptions, ProfileGoal, Result,
+    advise_profile, analyze_change_impact, analyze_dependency_cost, audit_unsafe,
+    inspect_artifact_sizes, inspect_build_environment, inspect_workspace, map_generated_code,
+    map_tests, parse_diagnostics, parse_diagnostics_file, plan_focused_command, CargoOperation,
+    Error, FocusedCommandOptions, ProfileGoal, Result,
 };
 
 const MAX_DIAGNOSTIC_STDIN_BYTES: u64 = 8 * 1024 * 1024;
@@ -43,6 +44,12 @@ enum Command {
     ProfileAdvice(ProfileAdviceArgs),
     /// Parse Rust syntax to inventory unsafe, FFI, and exported ABI surfaces.
     UnsafeAudit(UnsafeAuditArgs),
+    /// Map generated Rust consumers, build scripts, generator inputs, and generated-file markers.
+    GeneratedCodeMap(GeneratedCodeMapArgs),
+    /// Explain workspace-scoped Cargo, target, toolchain, wrapper, and Rust flag resolution.
+    BuildEnvironment(BuildEnvironmentArgs),
+    /// Map changed paths to affected local packages and focused Cargo validation argv.
+    ChangeImpact(ChangeImpactArgs),
 }
 
 #[derive(Clone, Debug, Args)]
@@ -138,6 +145,33 @@ struct UnsafeAuditArgs {
     max_files: Option<usize>,
 }
 
+#[derive(Debug, Args)]
+struct GeneratedCodeMapArgs {
+    #[command(flatten)]
+    common: PathOptions,
+    /// Maximum number of Rust files to parse.
+    #[arg(long)]
+    max_files: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+struct BuildEnvironmentArgs {
+    #[command(flatten)]
+    common: PathOptions,
+    /// Target triple whose exact linker, runner, and rustflags settings should be selected.
+    #[arg(long = "target")]
+    target_triple: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ChangeImpactArgs {
+    #[command(flatten)]
+    common: PathOptions,
+    /// Workspace-relative or absolute changed path. May be repeated; omitted means whole workspace.
+    #[arg(long = "changed-path")]
+    changed_paths: Vec<PathBuf>,
+}
+
 fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -220,6 +254,25 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::UnsafeAudit(arguments) => {
             let value = audit_unsafe(&query_path(arguments.common.path)?, arguments.max_files)?;
+            print_json(&value, arguments.common.pretty)
+        }
+        Command::GeneratedCodeMap(arguments) => {
+            let value =
+                map_generated_code(&query_path(arguments.common.path)?, arguments.max_files)?;
+            print_json(&value, arguments.common.pretty)
+        }
+        Command::BuildEnvironment(arguments) => {
+            let value = inspect_build_environment(
+                &query_path(arguments.common.path)?,
+                arguments.target_triple.as_deref(),
+            )?;
+            print_json(&value, arguments.common.pretty)
+        }
+        Command::ChangeImpact(arguments) => {
+            let value = analyze_change_impact(
+                &query_path(arguments.common.path)?,
+                &arguments.changed_paths,
+            )?;
             print_json(&value, arguments.common.pretty)
         }
     }

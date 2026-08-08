@@ -93,6 +93,95 @@ async function main(): Promise<void> {
     assert.match(diagnostics, /error\[E0308\]/)
     assert.match(diagnostics, /src[/\\]lib.rs:4:7/)
 
+    const generatedCode = formatRustCapability(
+      'generated_code_map',
+      JSON.stringify({
+        scannedFiles: 3,
+        parsedFiles: 3,
+        buildScripts: [
+          {
+            package: 'demo-core',
+            path: '/work/demo/build.rs',
+            generatorCrates: ['prost-build'],
+            rerunInputs: ['proto/service.proto'],
+          },
+        ],
+        consumers: [
+          {
+            confidence: 'high',
+            macroName: 'include!',
+            file: '/work/demo/src/lib.rs',
+            line: 4,
+            outputHint: 'service.rs',
+            usesOutDir: true,
+            generatorCrates: ['prost-build'],
+            recommendation: 'Edit the schema, then regenerate.',
+          },
+        ],
+        generatedFiles: [],
+        warnings: [],
+      }),
+    )
+    assert.match(generatedCode, /generated-code map/)
+    assert.match(generatedCode, /prost-build/)
+    assert.match(generatedCode, /service\.rs \(OUT_DIR\)/)
+
+    const buildEnvironment = formatRustCapability(
+      'build_environment',
+      JSON.stringify({
+        resolutionDirectory: '/work/demo',
+        requestedTarget: 'x86_64-unknown-linux-gnu',
+        effectiveToolchain: {
+          value: '1.85.0',
+          source: '/work/demo/rust-toolchain.toml',
+        },
+        configSources: [{ path: '/work/demo/.cargo/config.toml' }],
+        effectiveSettings: [
+          {
+            key: 'target.linker',
+            value: 'clang',
+            source: '/work/demo/.cargo/config.toml',
+          },
+        ],
+        conditionalTargetSettings: [],
+        environment: [],
+        warnings: [],
+      }),
+    )
+    assert.match(buildEnvironment, /target x86_64-unknown-linux-gnu/)
+    assert.match(buildEnvironment, /target\.linker = clang/)
+
+    const changeImpact = formatRustCapability(
+      'change_impact',
+      JSON.stringify({
+        scope: 'focused',
+        dependencyEdges: 1,
+        changes: [
+          {
+            path: '/work/demo/core/src/lib.rs',
+            classification: 'package_source',
+            package: 'core',
+            propagatesToDependents: true,
+          },
+        ],
+        affectedPackages: [
+          { name: 'core', direct: true, dependencyDistance: 0 },
+          { name: 'app', direct: false, dependencyDistance: 1 },
+        ],
+        commands: [
+          {
+            program: 'cargo',
+            args: ['check', '-p', 'core', '-p', 'app', '--all-targets'],
+            priority: 'required',
+            rationale: 'check affected packages',
+          },
+        ],
+        warnings: [],
+      }),
+    )
+    assert.match(changeImpact, /2 affected packages/)
+    assert.match(changeImpact, /cargo check -p core -p app --all-targets/)
+
     const minimalInputs = [
       { action: 'workspace_context' },
       { action: 'focused_command', operation: 'check' },
@@ -102,12 +191,15 @@ async function main(): Promise<void> {
       { action: 'artifact_size' },
       { action: 'profile_advice', goal: 'balanced' },
       { action: 'unsafe_audit' },
+      { action: 'generated_code_map' },
+      { action: 'build_environment' },
+      { action: 'change_impact' },
     ]
     assert.deepEqual(
       minimalInputs.map(input => RustTool.inputSchema.safeParse(input).success),
       RUST_TOOL_ACTIONS.map(() => true),
     )
-    assert.equal(RUST_TOOL_ACTIONS.length, 8)
+    assert.equal(RUST_TOOL_ACTIONS.length, 11)
     const providerSchema = zodToJsonSchema(RustTool.inputSchema)
     const properties = providerSchema.properties as Record<
       string,
@@ -123,6 +215,10 @@ async function main(): Promise<void> {
     assert.match(
       String(properties.goal?.description),
       /Defaults to balanced when omitted/,
+    )
+    assert.match(
+      String(properties.changedPaths?.description),
+      /Omitted or empty conservatively means the whole workspace/,
     )
     assert.equal(
       RustTool.inputSchema.safeParse({
@@ -143,6 +239,74 @@ async function main(): Promise<void> {
         command: 'dependency-cost',
         args: ['--path', '/work/demo', '--pretty'],
       },
+    )
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'generated_code_map',
+        path: '/work/demo',
+        maxFiles: 250,
+        targetTriple: 'x86_64-unknown-linux-gnu',
+        limit: 5,
+      }),
+      {
+        command: 'generated-code-map',
+        args: [
+          '--path',
+          '/work/demo',
+          '--max-files',
+          '250',
+          '--pretty',
+        ],
+      },
+      'Recognized fields for other actions must be ignored',
+    )
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'build_environment',
+        path: '/work/demo',
+        targetTriple: 'aarch64-unknown-linux-gnu',
+        maxFiles: 25,
+        goal: 'release_size',
+      }),
+      {
+        command: 'build-environment',
+        args: [
+          '--path',
+          '/work/demo',
+          '--target',
+          'aarch64-unknown-linux-gnu',
+          '--pretty',
+        ],
+      },
+    )
+    assert.deepEqual(
+      buildRustNativeInvocation({
+        action: 'change_impact',
+        path: '/work/demo',
+        changedPaths: ['crates/core/src/lib.rs', 'Cargo.lock'],
+        targetTriple: 'x86_64-unknown-linux-gnu',
+        release: true,
+      }),
+      {
+        command: 'change-impact',
+        args: [
+          '--path',
+          '/work/demo',
+          '--changed-path',
+          'crates/core/src/lib.rs',
+          '--changed-path',
+          'Cargo.lock',
+          '--pretty',
+        ],
+      },
+    )
+    assert.deepEqual(
+      buildRustNativeInvocation({ action: 'change_impact', path: '/work/demo' }),
+      {
+        command: 'change-impact',
+        args: ['--path', '/work/demo', '--pretty'],
+      },
+      'Missing changedPaths must select the native whole-workspace default',
     )
     assert.deepEqual(
       buildRustNativeInvocation({
@@ -298,6 +462,11 @@ async function main(): Promise<void> {
     assert.match(prompt, /Never pass a workspace\/source directory/)
     assert.match(prompt, /operation conservatively defaults to check/)
     assert.match(prompt, /goal conservatively defaults to balanced/)
+    assert.match(prompt, /generated_code_map.*OUT_DIR ownership/)
+    assert.match(prompt, /never runs build\.rs/)
+    assert.match(prompt, /build_environment.*Cargo config precedence/)
+    assert.match(prompt, /change_impact.*never reads Git/)
+    assert.match(prompt, /Omitted changedPaths conservatively means/)
     console.log('RustTool: all capability assertions passed')
   } finally {
     resetSessionPowerModeForTesting()
