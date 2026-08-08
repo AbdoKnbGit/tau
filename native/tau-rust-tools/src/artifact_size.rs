@@ -5,12 +5,13 @@ use serde::Serialize;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::error::{Error, Result};
-use crate::workspace::inspect_workspace;
+use crate::workspace::{inspect_workspace, is_within, path_key};
 
 const SCHEMA_VERSION: u32 = 1;
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
 const MAX_FILES: usize = 200_000;
+const NATIVE_TARGET_TRIPLE: &str = env!("TAU_RUST_TOOLS_BUILD_TARGET");
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,16 +64,39 @@ pub fn inspect_artifact_sizes(
     if let Some(target_triple) = target_triple {
         validate_directory_name(target_triple, "target triple")?;
     }
-    let target_root = target_triple
-        .map(|triple| context.workspace_root.join("target").join(triple))
-        .unwrap_or_else(|| context.workspace_root.join("target"));
-    let selected_profile = profile
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| default_profile(&target_root));
-    validate_directory_name(&selected_profile, "artifact profile")?;
-    let target_directory = target_root.join(&selected_profile);
+    if let Some(profile) = profile {
+        validate_directory_name(profile, "artifact profile")?;
+    }
     let output_limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let mut warnings = context.warnings;
+    let (target_directory, selected_profile) = if let Some(directory) =
+        explicit_profile_directory(&context.query_path, &context.workspace_root, profile)
+    {
+        let selected_profile = profile
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| profile_from_directory(&directory));
+        if let Some(target_triple) = target_triple {
+            warnings.push(format!(
+                "the explicit artifact profile directory {} takes precedence over target layout inference for {target_triple}",
+                directory.display()
+            ));
+        }
+        (directory, selected_profile)
+    } else {
+        let target_root = explicit_target_root(
+            &context.query_path,
+            &context.workspace_root,
+            profile,
+            target_triple,
+        )
+        .unwrap_or_else(|| context.workspace_root.join("target"));
+        let layout_root = target_layout_root(&target_root, profile, target_triple, &mut warnings);
+        let selected_profile = profile
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| default_profile(&layout_root));
+        let directory = layout_root.join(profile_directory(&selected_profile));
+        (directory, selected_profile)
+    };
     if !target_directory.is_dir() {
         warnings.push(format!(
             "{} does not exist; artifact-size inspects existing outputs and will not run Cargo",
@@ -212,11 +236,113 @@ pub fn inspect_artifact_sizes(
     })
 }
 
+fn explicit_profile_directory(
+    query: &Path,
+    workspace_root: &Path,
+    requested_profile: Option<&str>,
+) -> Option<PathBuf> {
+    let start = if query.is_dir() {
+        query
+    } else {
+        query.parent()?
+    };
+    let default_target_root = workspace_root.join("target");
+    for candidate in start.ancestors() {
+        if path_key(candidate) == path_key(workspace_root) {
+            break;
+        }
+        let Some(directory_name) = candidate.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let profile_matches = requested_profile
+            .map(|profile| directory_name == profile_directory(profile))
+            .unwrap_or_else(|| matches!(directory_name, "debug" | "release"));
+        if !profile_matches {
+            continue;
+        }
+        let is_exact_query = path_key(candidate) == path_key(start);
+        if is_exact_query || is_within(&default_target_root, candidate) {
+            return Some(candidate.to_path_buf());
+        }
+    }
+    None
+}
+
+fn explicit_target_root(
+    query: &Path,
+    workspace_root: &Path,
+    requested_profile: Option<&str>,
+    target_triple: Option<&str>,
+) -> Option<PathBuf> {
+    if !query.is_dir() || path_key(query) == path_key(workspace_root) {
+        return None;
+    }
+    let has_native_layout = layout_has_profile(query, requested_profile);
+    let has_target_layout = target_triple
+        .is_some_and(|triple| layout_has_profile(&query.join(triple), requested_profile));
+    (has_native_layout || has_target_layout).then(|| query.to_path_buf())
+}
+
+fn target_layout_root(
+    target_root: &Path,
+    requested_profile: Option<&str>,
+    target_triple: Option<&str>,
+    warnings: &mut Vec<String>,
+) -> PathBuf {
+    let Some(target_triple) = target_triple else {
+        return target_root.to_path_buf();
+    };
+    let targeted_root = target_root.join(target_triple);
+    if !target_triple.eq_ignore_ascii_case(NATIVE_TARGET_TRIPLE) {
+        return targeted_root;
+    }
+
+    let targeted_exists = layout_has_profile(&targeted_root, requested_profile);
+    let native_exists = layout_has_profile(target_root, requested_profile);
+    if targeted_exists {
+        if native_exists {
+            warnings.push(format!(
+                "both native and explicit-target artifact layouts exist for {target_triple}; the target-specific layout was selected. Pass the exact profile directory to inspect the native layout"
+            ));
+        }
+        return targeted_root;
+    }
+
+    warnings.push(format!(
+        "requested target {target_triple} matches this executable's native target; no matching target-specific output exists, so Cargo's native target/<profile> layout was selected"
+    ));
+    target_root.to_path_buf()
+}
+
+fn layout_has_profile(target_root: &Path, requested_profile: Option<&str>) -> bool {
+    requested_profile.map_or_else(
+        || target_root.join("debug").is_dir() || target_root.join("release").is_dir(),
+        |profile| target_root.join(profile_directory(profile)).is_dir(),
+    )
+}
+
+fn profile_directory(profile: &str) -> &str {
+    match profile {
+        "dev" | "test" | "debug" => "debug",
+        "release" | "bench" => "release",
+        custom => custom,
+    }
+}
+
+fn profile_from_directory(directory: &Path) -> String {
+    match directory.file_name().and_then(|name| name.to_str()) {
+        Some("debug") => "dev".to_owned(),
+        Some("release") => "release".to_owned(),
+        Some(custom) => custom.to_owned(),
+        None => "dev".to_owned(),
+    }
+}
+
 fn default_profile(target_root: &Path) -> String {
     if target_root.join("release").is_dir() {
         "release"
     } else {
-        "debug"
+        "dev"
     }
     .to_owned()
 }

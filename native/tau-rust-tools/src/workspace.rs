@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use cargo_toml::{Dependency, Manifest, Product};
 use glob::{glob, Pattern};
@@ -58,7 +57,7 @@ pub fn inspect_workspace(query: &Path) -> Result<WorkspaceContext> {
     let query_path = absolute_lexical(query)?;
     let nearest_manifest = find_nearest_manifest(&query_path)?;
     let mut warnings = Vec::new();
-    let workspace_manifest = locate_workspace_manifest(&nearest_manifest, &mut warnings);
+    let workspace_manifest = locate_workspace_manifest(&nearest_manifest, &mut warnings)?;
     let workspace_root = workspace_manifest
         .parent()
         .ok_or_else(|| Error::Workspace("workspace manifest has no parent directory".to_owned()))?
@@ -171,44 +170,101 @@ fn find_nearest_manifest(query: &Path) -> Result<PathBuf> {
     }
 }
 
-fn locate_workspace_manifest(nearest: &Path, warnings: &mut Vec<String>) -> PathBuf {
-    let mut command = Command::new("cargo");
-    command.args([
-        "locate-project",
-        "--workspace",
-        "--message-format",
-        "plain",
-        "--frozen",
-        "--manifest-path",
-    ]);
-    command.arg(nearest);
-    command.env("CARGO_TERM_COLOR", "never");
-    match command.output() {
-        Ok(output) if output.status.success() => {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            let path = PathBuf::from(value);
-            if path.is_file() {
-                return canonicalize_friendly(&path);
-            }
-            warnings.push(
-                "Cargo returned an invalid workspace manifest path; using the nearest Cargo.toml"
-                    .to_owned(),
-            );
-        }
-        Ok(output) => {
-            let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            warnings.push(if detail.is_empty() {
-                "Cargo could not resolve the workspace root; using the nearest Cargo.toml"
-                    .to_owned()
-            } else {
-                format!("Cargo workspace lookup failed ({detail}); using the nearest Cargo.toml")
-            });
-        }
-        Err(error) => warnings.push(format!(
-            "Cargo is unavailable for workspace-root lookup ({error}); using the nearest Cargo.toml"
-        )),
+fn locate_workspace_manifest(nearest: &Path, warnings: &mut Vec<String>) -> Result<PathBuf> {
+    let nearest_manifest = parse_manifest(nearest)?;
+    if nearest_manifest.workspace.is_some() {
+        return Ok(nearest.to_path_buf());
     }
-    nearest.to_path_buf()
+
+    if let Some(workspace_hint) = nearest_manifest
+        .package
+        .as_ref()
+        .and_then(|package| package.workspace.as_deref())
+    {
+        let candidate = explicit_workspace_manifest(nearest, workspace_hint);
+        match parse_manifest(&candidate) {
+            Ok(manifest) if manifest.workspace.is_some() => return Ok(candidate),
+            Ok(_) => warnings.push(format!(
+                "package.workspace resolves to {}, but that manifest has no [workspace] table; treating the package as standalone",
+                candidate.display()
+            )),
+            Err(error) => warnings.push(format!(
+                "package.workspace could not be resolved through {} ({error}); treating the package as standalone",
+                candidate.display()
+            )),
+        }
+        return Ok(nearest.to_path_buf());
+    }
+
+    let Some(package_root) = nearest.parent() else {
+        return Ok(nearest.to_path_buf());
+    };
+    for ancestor in package_root.ancestors().skip(1) {
+        let candidate = ancestor.join("Cargo.toml");
+        if !candidate.is_file() {
+            continue;
+        }
+        let manifest = match parse_manifest(&candidate) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                warnings.push(format!(
+                    "ancestor manifest {} could not be inspected ({error}); continuing filesystem-only workspace discovery",
+                    candidate.display()
+                ));
+                continue;
+            }
+        };
+        if manifest.workspace.is_none() {
+            continue;
+        }
+        let candidate = canonicalize_friendly(&candidate);
+        if workspace_contains_manifest(&candidate, &manifest, nearest) {
+            return Ok(candidate);
+        }
+        warnings.push(format!(
+            "{} is below workspace {}, but is not a declared or in-tree path dependency member; treating it as a standalone package",
+            nearest.display(),
+            candidate.display()
+        ));
+        return Ok(nearest.to_path_buf());
+    }
+
+    Ok(nearest.to_path_buf())
+}
+
+fn explicit_workspace_manifest(package_manifest: &Path, workspace_hint: &Path) -> PathBuf {
+    let package_root = package_manifest.parent().unwrap_or(Path::new("."));
+    let resolved = if workspace_hint.is_absolute() {
+        workspace_hint.to_path_buf()
+    } else {
+        package_root.join(workspace_hint)
+    };
+    let normalized = normalize_lexical(&resolved);
+    let candidate = if normalized
+        .file_name()
+        .is_some_and(|name| name == "Cargo.toml")
+    {
+        normalized
+    } else {
+        normalized.join("Cargo.toml")
+    };
+    canonicalize_friendly(&candidate)
+}
+
+fn workspace_contains_manifest(
+    workspace_manifest: &Path,
+    manifest: &Manifest,
+    target_manifest: &Path,
+) -> bool {
+    let mut ignored_warnings = Vec::new();
+    collect_member_manifests(
+        workspace_manifest,
+        manifest,
+        workspace_manifest,
+        &mut ignored_warnings,
+    )
+    .iter()
+    .any(|candidate| path_key(candidate) == path_key(target_manifest))
 }
 
 fn parse_manifest(path: &Path) -> Result<Manifest> {

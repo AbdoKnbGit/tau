@@ -590,12 +590,12 @@ export const RustTool = buildTool({
   },
   async prompt() {
     return `Use this tool only in rustcode mode, and choose one action by ownership:
-- workspace_context: Cargo workspace/package/target/features/edition/MSRV orientation. No command planning.
+- workspace_context: filesystem-only Cargo workspace/package/target/features/edition/MSRV orientation. It never launches Cargo or Rustup and performs no command planning.
 - focused_command: produce exact Cargo argv for check/build/clippy/test/bench/doc/run. It never executes; use Bash for execution. Choose operation explicitly when intent is known; omitted operation conservatively defaults to check.
 - test_map: syntax-aware mapping of one .rs file to its harness scope and declared test filters. It never runs tests and does not replace LSP or source search.
 - diagnostics: parse output already produced by rustc or Clippy, preserving spans and machine suggestions. It never invokes them or inspects a workspace; use Bash to produce fresh output. Pass captured output as input, or set path to a regular diagnostic-output file. Never pass a workspace/source directory as the diagnostics path.
 - dependency_cost: inspect an existing Cargo.lock graph and direct dependency fan-out. It never resolves, fetches, updates, or edits dependencies.
-- artifact_size: measure existing target artifacts and incremental storage. It never builds and does not replace a profiler.
+- artifact_size: measure existing target artifacts and incremental storage. Pass a workspace or an exact existing profile directory; an explicit profile directory wins over layout inference. It distinguishes Cargo's native target/<profile-directory> layout from explicit/cross-target target/<triple>/<profile-directory>, and maps dev/test to debug plus bench to release. It never builds and does not replace a profiler.
 - profile_advice: compare actual Cargo profile values with a declared goal and explain tradeoffs. It never edits Cargo.toml and advice must be validated by measurement. Choose goal explicitly when intent is known; omitted goal conservatively defaults to balanced.
 - unsafe_audit: parse Rust syntax to inventory unsafe blocks/functions/traits/impls, extern boundaries, exported ABI attributes, and SAFETY documentation. It is not a proof of soundness or a replacement for Miri/security review.
 - generated_code_map: trace include!/include_str!/include_bytes! consumers, OUT_DIR ownership, package build scripts, known generator crates, rerun-if-changed inputs, and generated-file markers before editing. It never runs build.rs, Cargo builds/checks, procedural macros, or generators. Use it for generated-code ownership, not general text search or symbol navigation.

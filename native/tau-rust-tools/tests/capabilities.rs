@@ -231,6 +231,143 @@ fn artifact_size_only_measures_existing_outputs() {
 }
 
 #[test]
+fn artifact_size_maps_native_dev_profile_to_target_debug() {
+    let fixture = basic_crate();
+    let root = fixture.path();
+    write(
+        root,
+        "target/debug/deps/libnative-12345678.rlib",
+        &"x".repeat(97),
+    );
+
+    let report = inspect_artifact_sizes(
+        root,
+        Some("dev"),
+        Some(env!("TAU_RUST_TOOLS_BUILD_TARGET")),
+        Some(10),
+    )
+    .expect("inspect native-layout artifacts");
+
+    assert_eq!(report.profile, "dev");
+    assert_eq!(report.target_directory, root.join("target/debug"));
+    assert_eq!(report.total_bytes, 97);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("native target")));
+}
+
+#[test]
+fn artifact_size_prefers_existing_explicit_target_layout_for_host_triple() {
+    let fixture = basic_crate();
+    let root = fixture.path();
+    let host = env!("TAU_RUST_TOOLS_BUILD_TARGET");
+    write(
+        root,
+        "target/debug/deps/libnative-12345678.rlib",
+        &"x".repeat(32),
+    );
+    write(
+        root,
+        &format!("target/{host}/debug/deps/libtargeted-12345678.rlib"),
+        &"x".repeat(64),
+    );
+
+    let report = inspect_artifact_sizes(root, Some("dev"), Some(host), Some(10))
+        .expect("inspect explicitly targeted host artifacts");
+
+    assert_eq!(
+        report.target_directory,
+        root.join("target").join(host).join("debug")
+    );
+    assert_eq!(report.total_bytes, 64);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("both native and explicit-target")));
+}
+
+#[test]
+fn artifact_size_respects_explicit_profile_directory_over_target_inference() {
+    let fixture = basic_crate();
+    let root = fixture.path();
+    write(
+        root,
+        "target/debug/deps/libexplicit-12345678.rlib",
+        &"x".repeat(48),
+    );
+
+    let report = inspect_artifact_sizes(
+        &root.join("target/debug"),
+        Some("dev"),
+        Some("wasm32-unknown-unknown"),
+        Some(10),
+    )
+    .expect("inspect explicit artifact directory");
+
+    assert_eq!(report.target_directory, root.join("target/debug"));
+    assert_eq!(report.total_bytes, 48);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("takes precedence")));
+}
+
+#[test]
+fn artifact_size_keeps_cross_target_outputs_isolated() {
+    let fixture = basic_crate();
+    let root = fixture.path();
+    write(root, "target/debug/native.exe", &"x".repeat(32));
+    write(
+        root,
+        "target/wasm32-unknown-unknown/release/app.wasm",
+        &"x".repeat(80),
+    );
+
+    let report = inspect_artifact_sizes(
+        root,
+        Some("release"),
+        Some("wasm32-unknown-unknown"),
+        Some(10),
+    )
+    .expect("inspect cross-target artifacts");
+
+    assert_eq!(
+        report.target_directory,
+        root.join("target/wasm32-unknown-unknown/release")
+    );
+    assert_eq!(report.total_bytes, 80);
+}
+
+#[test]
+fn artifact_size_maps_test_and_bench_profiles_to_cargo_output_directories() {
+    let fixture = basic_crate();
+    let root = fixture.path();
+    write(
+        root,
+        "target/debug/deps/libtest_profile-12345678.rlib",
+        &"x".repeat(40),
+    );
+    write(
+        root,
+        "target/release/deps/libbench_profile-12345678.rlib",
+        &"x".repeat(60),
+    );
+
+    let test_report = inspect_artifact_sizes(root, Some("test"), None, Some(10))
+        .expect("inspect test-profile artifacts");
+    let bench_report = inspect_artifact_sizes(root, Some("bench"), None, Some(10))
+        .expect("inspect bench-profile artifacts");
+
+    assert_eq!(test_report.target_directory, root.join("target/debug"));
+    assert_eq!(test_report.profile, "test");
+    assert_eq!(test_report.total_bytes, 40);
+    assert_eq!(bench_report.target_directory, root.join("target/release"));
+    assert_eq!(bench_report.profile, "bench");
+    assert_eq!(bench_report.total_bytes, 60);
+}
+
+#[test]
 fn profile_advice_uses_actual_workspace_profile_values() {
     let fixture = TempDir::new().expect("temporary crate");
     let root = fixture.path();

@@ -18,7 +18,7 @@ const MAX_DIAGNOSTIC_STDIN_BYTES: u64 = 8 * 1024 * 1024;
     name = "tau-rust-tools",
     version,
     about = "Stateless native Rust capabilities for Tau",
-    long_about = "Stateless, read-only Rust analysis and Cargo command planning for Tau. This binary never edits source or manifests, resolves dependencies, or runs builds, tests, Clippy, or profilers."
+    long_about = "Stateless, read-only Rust analysis and Cargo command planning for Tau. Workspace discovery is filesystem-only and never launches Cargo or Rustup. This binary never edits source or manifests, resolves dependencies, or runs builds, tests, Clippy, or profilers."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -116,7 +116,7 @@ struct ArtifactSizeArgs {
     /// Existing Cargo profile directory, such as debug or release.
     #[arg(long)]
     profile: Option<String>,
-    /// Existing Rust target triple directory below target/.
+    /// Rust target triple. Existing explicit-target output wins; native builds fall back to target/<profile>.
     #[arg(long = "target")]
     target_triple: Option<String>,
     /// Maximum number of top artifacts and duplicate groups to return.

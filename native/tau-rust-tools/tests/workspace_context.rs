@@ -145,6 +145,89 @@ edition = "2021"
 }
 
 #[test]
+fn follows_explicit_package_workspace_with_filesystem_only_discovery() {
+    let fixture = TempDir::new().expect("temporary workspace");
+    let root = fixture.path();
+    write(
+        root,
+        "workspace/Cargo.toml",
+        r#"
+[workspace]
+members = []
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    write(
+        root,
+        "member/Cargo.toml",
+        r#"
+[package]
+name = "explicit-member"
+version.workspace = true
+edition.workspace = true
+workspace = "../workspace"
+"#,
+    );
+    write(root, "member/src/lib.rs", "pub struct ExplicitMember;\n");
+
+    let context = inspect_workspace(&root.join("member/src/lib.rs"))
+        .expect("inspect explicitly linked workspace member");
+
+    assert_eq!(context.workspace_root, root.join("workspace"));
+    assert_eq!(
+        context
+            .selected_package
+            .as_ref()
+            .map(|package| package.name.as_str()),
+        Some("explicit-member")
+    );
+    assert!(!root.join("workspace/Cargo.lock").exists());
+    assert!(!root.join("workspace/target").exists());
+}
+
+#[test]
+fn keeps_unlisted_nested_package_out_of_an_ancestor_workspace() {
+    let fixture = TempDir::new().expect("temporary workspace");
+    let root = fixture.path();
+    write(
+        root,
+        "Cargo.toml",
+        r#"
+[workspace]
+members = ["member"]
+resolver = "2"
+"#,
+    );
+    write(
+        root,
+        "member/Cargo.toml",
+        "[package]\nname='listed'\nversion='0.1.0'\nedition='2021'\n",
+    );
+    write(root, "member/src/lib.rs", "pub struct Listed;\n");
+    write(
+        root,
+        "scratch/Cargo.toml",
+        "[package]\nname='standalone'\nversion='0.1.0'\nedition='2021'\n",
+    );
+    write(root, "scratch/src/lib.rs", "pub struct Standalone;\n");
+
+    let context =
+        inspect_workspace(&root.join("scratch/src/lib.rs")).expect("inspect nested standalone");
+
+    assert_eq!(context.workspace_root, root.join("scratch"));
+    assert_eq!(context.packages.len(), 1);
+    assert_eq!(context.packages[0].name, "standalone");
+    assert!(context
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("not a declared or in-tree path dependency member")));
+}
+
+#[test]
 fn maps_nonexistent_module_to_library_without_touching_disk() {
     let fixture = TempDir::new().expect("temporary workspace");
     let root = fixture.path();

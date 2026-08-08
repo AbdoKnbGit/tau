@@ -455,8 +455,11 @@ async function main(): Promise<void> {
     )
 
     const prompt = await RustTool.prompt()
+    assert.match(prompt, /workspace_context.*never launches Cargo or Rustup/)
     assert.match(prompt, /focused_command: produce exact Cargo argv/)
     assert.match(prompt, /diagnostics.*never invokes/)
+    assert.match(prompt, /artifact_size.*explicit profile directory wins/)
+    assert.match(prompt, /dev\/test to debug/)
     assert.match(prompt, /not a proof of soundness/)
     assert.match(prompt, /recognized fields owned by another action.*ignored/)
     assert.match(prompt, /Never pass a workspace\/source directory/)
