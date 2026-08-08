@@ -1,9 +1,13 @@
-import type { PluginError } from '../../types/plugin.js'
+import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage, toError } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { getPluginLspServers } from '../../utils/plugins/lspPluginIntegration.js'
 import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
+import {
+  checkRustAnalyzerReadiness,
+  isRustAnalyzerCommand,
+} from './rustAnalyzerSetup.js'
 import type { ScopedLspServerConfig } from './types.js'
 
 /**
@@ -25,7 +29,7 @@ export async function getAllLspServers(): Promise<{
     // Each plugin is independent — results are merged in original order so
     // Object.assign collision precedence (later plugins win) is preserved.
     const results = await Promise.all(
-      plugins.map(async plugin => {
+      plugins.map(async (plugin: LoadedPlugin) => {
         const errors: PluginError[] = []
         try {
           const scopedServers = await getPluginLspServers(plugin, errors)
@@ -45,11 +49,30 @@ export async function getAllLspServers(): Promise<{
     for (const { plugin, scopedServers, errors } of results) {
       const serverCount = scopedServers ? Object.keys(scopedServers).length : 0
       if (serverCount > 0) {
+        const availableServers: Record<string, ScopedLspServerConfig> = {}
+        for (const [name, config] of Object.entries(
+          scopedServers as Record<string, ScopedLspServerConfig>,
+        )) {
+          if (isRustAnalyzerCommand(config.command)) {
+            const readiness = await checkRustAnalyzerReadiness(
+              config.workspaceFolder,
+              config.command,
+            )
+            if (!readiness.ready) {
+              logForDebugging(
+                `Skipping unavailable Rust LSP server ${name}: ${readiness.detail ?? 'readiness check failed'}`,
+              )
+              continue
+            }
+          }
+          availableServers[name] = config
+        }
+
         // Merge into all servers (already scoped by getPluginLspServers)
-        Object.assign(allServers, scopedServers)
+        Object.assign(allServers, availableServers)
 
         logForDebugging(
-          `Loaded ${serverCount} LSP server(s) from plugin: ${plugin.name}`,
+          `Loaded ${Object.keys(availableServers).length} of ${serverCount} LSP server(s) from plugin: ${plugin.name}`,
         )
       }
 

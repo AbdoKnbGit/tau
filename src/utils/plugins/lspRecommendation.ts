@@ -2,8 +2,9 @@
  * LSP Plugin Recommendation Utility
  *
  * Scans installed marketplaces for LSP plugins and recommends plugins
- * based on file extensions, but ONLY when the LSP binary is already
- * installed on the system.
+ * based on file extensions. Most plugins are recommended only when their
+ * binary is available. The official Rust plugin additionally guides users
+ * through plugin enablement and rust-analyzer component setup.
  *
  * Limitation: Can only detect LSP plugins that declare their servers
  * inline in the marketplace entry. Plugins with separate .lsp.json files
@@ -14,6 +15,11 @@ import { extname } from 'path'
 import { isBinaryInstalled } from '../binaryCheck.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { logForDebugging } from '../debug.js'
+import {
+  checkRustAnalyzerReadiness,
+  RUST_ANALYZER_PLUGIN_ID,
+} from '../../services/lsp/rustAnalyzerSetup.js'
+import { getSettings_DEPRECATED } from '../settings/settings.js'
 import { isPluginInstalled } from './installedPluginsManager.js'
 import {
   getMarketplace,
@@ -23,6 +29,12 @@ import {
   ALLOWED_OFFICIAL_MARKETPLACE_NAMES,
   type PluginMarketplaceEntry,
 } from './schemas.js'
+import { isPluginBlockedByPolicy } from './pluginPolicy.js'
+
+export type LspRecommendationAction =
+  | 'install-plugin'
+  | 'enable-plugin'
+  | 'install-server'
 
 /**
  * LSP plugin recommendation returned to the caller
@@ -35,6 +47,9 @@ export type LspPluginRecommendation = {
   isOfficial: boolean // From official marketplace?
   extensions: string[] // File extensions this plugin supports
   command: string // LSP server command (e.g., "typescript-language-server")
+  action: LspRecommendationAction
+  serverReady: boolean
+  canAutoInstallServer: boolean
 }
 
 // Maximum number of times user can ignore recommendations before we stop showing
@@ -152,6 +167,17 @@ type LspPluginInfo = {
   isOfficial: boolean
 }
 
+export function decideRustLspRecommendation(input: {
+  installed: boolean
+  enabled: boolean
+  ready: boolean
+}): LspRecommendationAction | null {
+  if (!input.installed) return 'install-plugin'
+  if (!input.enabled) return 'enable-plugin'
+  if (!input.ready) return 'install-server'
+  return null
+}
+
 /**
  * Get all LSP plugins from all installed marketplaces
  *
@@ -210,8 +236,9 @@ async function getLspPluginsFromMarketplaces(): Promise<
  *
  * Returns recommendations for plugins that:
  * 1. Support the file's extension
- * 2. Have their LSP binary installed on the system
- * 3. Are not already installed
+ * 2. Have their LSP binary installed on the system, except for the official
+ *    Rust plugin which can offer rustup-backed setup
+ * 3. Need installation, enablement, or server setup
  * 4. Are not in the user's "never suggest" list
  *
  * Results are sorted with official marketplace plugins first.
@@ -261,6 +288,18 @@ export async function getMatchingLspPlugins(
       continue
     }
 
+    if (isPluginBlockedByPolicy(pluginId)) {
+      logForDebugging(
+        `[lspRecommendation] Skipping ${pluginId} (blocked by policy)`,
+      )
+      continue
+    }
+
+    if (pluginId === RUST_ANALYZER_PLUGIN_ID) {
+      matchingPlugins.push({ info, pluginId })
+      continue
+    }
+
     // Filter: not already installed
     if (isPluginInstalled(pluginId)) {
       logForDebugging(
@@ -273,12 +312,46 @@ export async function getMatchingLspPlugins(
   }
 
   // Filter: binary must be installed (async check)
-  const pluginsWithBinary: Array<{ info: LspPluginInfo; pluginId: string }> = []
+  const actionablePlugins: Array<{
+    info: LspPluginInfo
+    pluginId: string
+    action: LspRecommendationAction
+    serverReady: boolean
+    canAutoInstallServer: boolean
+  }> = []
 
   for (const { info, pluginId } of matchingPlugins) {
+    if (pluginId === RUST_ANALYZER_PLUGIN_ID) {
+      const readiness = await checkRustAnalyzerReadiness()
+      const installed = isPluginInstalled(pluginId)
+      const enabled =
+        getSettings_DEPRECATED().enabledPlugins?.[pluginId] === true
+      const action = decideRustLspRecommendation({
+        installed,
+        enabled,
+        ready: readiness.ready,
+      })
+      if (action) {
+        actionablePlugins.push({
+          info,
+          pluginId,
+          action,
+          serverReady: readiness.ready,
+          canAutoInstallServer: readiness.rustupPath !== null,
+        })
+      }
+      continue
+    }
+
     const binaryExists = await isBinaryInstalled(info.command)
     if (binaryExists) {
-      pluginsWithBinary.push({ info, pluginId })
+      actionablePlugins.push({
+        info,
+        pluginId,
+        action: 'install-plugin',
+        serverReady: true,
+        canAutoInstallServer: false,
+      })
       logForDebugging(
         `[lspRecommendation] Binary '${info.command}' found for ${pluginId}`,
       )
@@ -290,22 +363,27 @@ export async function getMatchingLspPlugins(
   }
 
   // Sort: official marketplaces first
-  pluginsWithBinary.sort((a, b) => {
+  actionablePlugins.sort((a, b) => {
     if (a.info.isOfficial && !b.info.isOfficial) return -1
     if (!a.info.isOfficial && b.info.isOfficial) return 1
     return 0
   })
 
   // Convert to recommendations
-  return pluginsWithBinary.map(({ info, pluginId }) => ({
-    pluginId,
-    pluginName: info.entry.name,
-    marketplaceName: info.marketplaceName,
-    description: info.entry.description,
-    isOfficial: info.isOfficial,
-    extensions: Array.from(info.extensions),
-    command: info.command,
-  }))
+  return actionablePlugins.map(
+    ({ info, pluginId, action, serverReady, canAutoInstallServer }) => ({
+      pluginId,
+      pluginName: info.entry.name,
+      marketplaceName: info.marketplaceName,
+      description: info.entry.description,
+      isOfficial: info.isOfficial,
+      extensions: Array.from(info.extensions),
+      command: info.command,
+      action,
+      serverReady,
+      canAutoInstallServer,
+    }),
+  )
 }
 
 /**

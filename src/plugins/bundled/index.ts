@@ -32,7 +32,6 @@ const LESS_LANGUAGE_ID = 'less'
 const JSON_LANGUAGE_ID = 'json'
 const JSONC_LANGUAGE_ID = 'jsonc'
 const PYTHON_LANGUAGE_ID = 'python'
-const RUST_LANGUAGE_ID = 'rust'
 const C_LANGUAGE_ID = 'c'
 const CPP_LANGUAGE_ID = 'cpp'
 
@@ -150,18 +149,9 @@ export function initBuiltinPlugins(): void {
         startupTimeout: 20_000,
         maxRestarts: 5,
       },
-      // Compiled-language servers are not distributed on npm, so they can't
-      // be bundled. They're configured here so they work automatically when
-      // the binary is already on the user's PATH, and degrade gracefully
-      // (missing binary => server skipped, no crash) when it isn't.
-      'rust-analyzer': {
-        command: 'rust-analyzer',
-        extensionToLanguage: {
-          '.rs': RUST_LANGUAGE_ID,
-        },
-        startupTimeout: 30_000,
-        maxRestarts: 5,
-      },
+      // clangd is not distributed on npm, so it cannot be bundled. Rust is
+      // intentionally owned by rust-analyzer-lsp@claude-plugins-official so
+      // that enabling the official plugin cannot create a duplicate server.
       clangd: {
         command: 'clangd',
         extensionToLanguage: {

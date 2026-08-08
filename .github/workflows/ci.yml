@@ -43,7 +43,7 @@ jobs:
         run: npm ci
 
       - name: Test installer, release gate, lifecycle bridge, and production lock
-        run: node --test packages/tau-installer/test/installer.test.mjs test/lifecycle-bridge.test.mjs test/platform-support.test.mjs test/production-shrinkwrap.test.mjs test/release-gate.test.mjs test/update-routing.test.mjs
+        run: node --test packages/tau-installer/test/installer.test.mjs test/lifecycle-bridge.test.mjs test/platform-support.test.mjs test/production-shrinkwrap.test.mjs test/release-gate.test.mjs test/rust-lsp-setup.test.mjs test/update-routing.test.mjs
 
       - name: Verify production shrinkwrap is current
         run: npm run shrinkwrap:check
