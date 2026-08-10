@@ -196,12 +196,51 @@ version = "1.0.0"
     );
     let lock_before = fs::read(root.join("Cargo.lock")).expect("read lockfile");
 
-    let report = analyze_dependency_cost(root).expect("analyze dependency cost");
+    let report = analyze_dependency_cost(&root.join("Cargo.lock"))
+        .expect("analyze dependency cost from lockfile path");
 
+    assert_eq!(report.package, "cost-fixture");
     assert_eq!(report.locked_packages, 4);
     assert_eq!(report.direct_dependencies[0].locked_versions.len(), 2);
     assert_eq!(report.direct_dependencies[0].transitive_packages, 1);
     assert_eq!(report.duplicate_versions[0].package, "foo");
+    assert_eq!(fs::read(root.join("Cargo.lock")).unwrap(), lock_before);
+}
+
+#[test]
+fn dependency_cost_reports_virtual_workspace_lock_graph_without_inventing_a_package() {
+    let fixture = TempDir::new().expect("temporary workspace");
+    let root = fixture.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = ['crates/member']\nresolver = '2'\n",
+    );
+    write(
+        root,
+        "crates/member/Cargo.toml",
+        "[package]\nname = 'member'\nversion = '0.1.0'\nedition = '2021'\n",
+    );
+    write(root, "crates/member/src/lib.rs", "pub struct Member;\n");
+    write(
+        root,
+        "Cargo.lock",
+        "version = 3\n\n[[package]]\nname = 'member'\nversion = '0.1.0'\n",
+    );
+    let lock_before = fs::read(root.join("Cargo.lock")).expect("read lockfile");
+
+    let report = analyze_dependency_cost(&root.join("Cargo.lock"))
+        .expect("analyze virtual workspace lockfile");
+
+    assert_eq!(report.package, "workspace");
+    assert_eq!(report.manifest_path, root.join("Cargo.toml"));
+    assert_eq!(report.lock_path, root.join("Cargo.lock"));
+    assert_eq!(report.locked_packages, 1);
+    assert!(report.direct_dependencies.is_empty());
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("direct package dependency costs are omitted")));
     assert_eq!(fs::read(root.join("Cargo.lock")).unwrap(), lock_before);
 }
 
@@ -429,9 +468,15 @@ extern "C" {
 }
 "#,
     );
+    write(
+        root,
+        "tests/outside_scope.rs",
+        "pub unsafe fn outside_requested_directory() {}\n",
+    );
 
-    let report = audit_unsafe(root, Some(10)).expect("audit unsafe code");
+    let report = audit_unsafe(&root.join("src"), Some(10)).expect("audit unsafe code");
 
+    assert_eq!(report.scan_root, root.join("src"));
     assert_eq!(report.scanned_files, 1);
     assert_eq!(report.counts["unsafe_function"], 2);
     assert_eq!(report.counts["unsafe_block"], 1);
@@ -639,15 +684,14 @@ fn change_impact_propagates_source_changes_but_keeps_test_changes_local() {
         .commands
         .iter()
         .find(|command| command.args.first().map(String::as_str) == Some("check"))
-        .expect("focused check command");
+        .expect("impact check command");
+    assert!(check.args.iter().any(|argument| argument == "--workspace"));
+    assert_eq!(check.packages.len(), 2);
     assert!(check
-        .args
-        .windows(2)
-        .any(|values| values == ["-p", "impact-core"]));
-    assert!(check
-        .args
-        .windows(2)
-        .any(|values| values == ["-p", "impact-app"]));
+        .packages
+        .iter()
+        .any(|package| package == "impact-core"));
+    assert!(check.packages.iter().any(|package| package == "impact-app"));
 
     let tests = analyze_change_impact(root, &[PathBuf::from("crates/app/tests/integration.rs")])
         .expect("analyze test-only impact");
@@ -665,6 +709,109 @@ fn change_impact_propagates_source_changes_but_keeps_test_changes_local() {
     assert_eq!(default_scope.scope, "whole_workspace");
     assert_eq!(default_scope.affected_packages.len(), 2);
     assert_eq!(default_scope.commands[0].args[1], "--workspace");
+    assert!(!root.join("Cargo.lock").exists());
+    assert!(!root.join("target").exists());
+}
+
+#[test]
+fn change_impact_minimizes_scope_without_losing_validation_coverage() {
+    const PACKAGE_COUNT: usize = 100;
+    // Deliberately exceeds the former fixed 64-package widening threshold.
+    const FOCUSED_COUNT: usize = 70;
+
+    let fixture = TempDir::new().expect("temporary workspace");
+    let root = fixture.path();
+    let members = (0..PACKAGE_COUNT)
+        .map(|index| format!("'crates/package-{index:03}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    write(
+        root,
+        "Cargo.toml",
+        &format!("[workspace]\nmembers=[{members}]\nresolver='2'\n"),
+    );
+    for index in 0..PACKAGE_COUNT {
+        write(
+            root,
+            &format!("crates/package-{index:03}/Cargo.toml"),
+            &format!(
+                "[package]\nname='impact-package-{index:03}'\nversion='0.1.0'\nedition='2021'\n"
+            ),
+        );
+        write(
+            root,
+            &format!("crates/package-{index:03}/src/lib.rs"),
+            "pub fn value() {}\n",
+        );
+        write(
+            root,
+            &format!("crates/package-{index:03}/tests/integration.rs"),
+            "#[test]\nfn integration() {}\n",
+        );
+    }
+
+    let focused_paths = (0..FOCUSED_COUNT)
+        .map(|index| PathBuf::from(format!("crates/package-{index:03}/tests/integration.rs")))
+        .collect::<Vec<_>>();
+    let focused = analyze_change_impact(root, &focused_paths).expect("analyze focused impact");
+    let focused_again = analyze_change_impact(root, &focused_paths).expect("repeat focused impact");
+    let focused_tests = focused
+        .commands
+        .iter()
+        .filter(|command| command.args.first().map(String::as_str) == Some("test"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(focused_tests.len(), 1);
+    assert!(focused_tests[0]
+        .args
+        .iter()
+        .any(|argument| argument == "--workspace"));
+    assert_eq!(
+        focused_tests[0]
+            .args
+            .windows(2)
+            .filter(|values| values[0] == "--exclude")
+            .map(|values| values[1].clone())
+            .collect::<Vec<_>>(),
+        (FOCUSED_COUNT..PACKAGE_COUNT)
+            .map(|index| format!("impact-package-{index:03}"))
+            .collect::<Vec<_>>(),
+        "the shorter workspace-exclusion form must omit every unrelated package exactly once"
+    );
+    assert_eq!(
+        focused_tests
+            .iter()
+            .flat_map(|command| command.packages.iter().cloned())
+            .collect::<Vec<_>>(),
+        (0..FOCUSED_COUNT)
+            .map(|index| format!("impact-package-{index:03}"))
+            .collect::<Vec<_>>(),
+        "focused commands must cover every impacted package and no unrelated package"
+    );
+    assert_eq!(
+        serde_json::to_string(&focused.commands).expect("serialize first plan"),
+        serde_json::to_string(&focused_again.commands).expect("serialize repeated plan"),
+        "identical workspace input must produce an identical validation plan"
+    );
+
+    let all_paths = (0..PACKAGE_COUNT)
+        .map(|index| PathBuf::from(format!("crates/package-{index:03}/tests/integration.rs")))
+        .collect::<Vec<_>>();
+    let workspace = analyze_change_impact(root, &all_paths).expect("analyze workspace impact");
+    let workspace_test = workspace
+        .commands
+        .iter()
+        .find(|command| command.args.first().map(String::as_str) == Some("test"))
+        .expect("workspace test command");
+    assert!(workspace_test
+        .args
+        .iter()
+        .any(|argument| argument == "--workspace"));
+    assert!(!workspace_test
+        .args
+        .iter()
+        .any(|argument| argument == "--exclude"));
+    assert_eq!(workspace_test.packages.len(), PACKAGE_COUNT);
     assert!(!root.join("Cargo.lock").exists());
     assert!(!root.join("target").exists());
 }

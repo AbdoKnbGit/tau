@@ -77,6 +77,7 @@ import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { shouldEmitSystemPromptBoundary } from '../utils/betas.js'
 import { isForkSubagentEnabled } from '../tools/AgentTool/forkSubagent.js'
+import { RUST_REQUEST_EFFICIENCY_GUIDANCE } from '../tools/RustTool/constants.js'
 import {
   systemPromptSection,
   DANGEROUS_uncachedSystemPromptSection,
@@ -546,7 +547,8 @@ function getRustModeToolsSection(
         : hasRustTool === false
           ? `No dedicated Rust capability is present in the current tool list yet. Use the available normal tools and never invent or claim to have a Rust-specific tool that is not listed.`
           : `Use a dedicated Rust capability only if it appears in your current tool list; otherwise use the available normal tools. Never invent or claim to have a Rust-specific tool that is not listed.`,
-      `Routing boundary: workspace_context only orients through filesystem inspection and never launches Cargo or Rustup; focused_command only plans and the existing shell executes under its normal permission, timeout, and cancellation path. diagnostics only parses output already produced elsewhere. dependency_cost never resolves or fetches. artifact_size never builds, respects an exact profile directory, and distinguishes native from explicit/cross-target layouts. profile_advice never edits. unsafe_audit inventories syntax but does not prove soundness. generated_code_map traces static ownership clues but never executes build scripts, generators, Cargo builds/checks, or procedural macros. build_environment reads only workspace-scoped config plus an environment allowlist and does not replace workspace_context. change_impact never reads Git and does not replace generic diff risk or shell execution. Prefer the narrow matching action over ad-hoc Cargo metadata parsing, but skip it when the answer is already known or the task is source reading, navigation, literal search, editing, or execution.`,
+      `Routing boundary: when the user supplies changed paths and asks about impact or validation, call change_impact directly; it resolves ownership, so do not pre-call workspace_context or focused_command. workspace_context only orients. focused_command preserves the most specific named path and only plans; the normal shell executes. diagnostics only parses existing output, so request Cargo/Clippy --message-format=json for fresh diagnostics and pass captured stdout as input. Keep every other action within its read-only purpose above. Treat returned Cargo program+args as OS-neutral argv: preserve every argument, never rewrite selectors with shell substitutions, brace expansion, globs, loops, or platform-specific shorthand, and recognize --workspace plus --exclude as exact focused coverage. Skip redundant actions and continue using normal tools for source reading, navigation, search, editing, and execution.`,
+      RUST_REQUEST_EFFICIENCY_GUIDANCE,
     ]),
   ].join(`\n`)
 }

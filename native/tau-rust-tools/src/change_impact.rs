@@ -11,7 +11,17 @@ use crate::workspace::{
 
 const SCHEMA_VERSION: u32 = 1;
 const MAX_CHANGED_PATHS: usize = 512;
-const MAX_PACKAGES_PER_COMMAND: usize = 64;
+// Planned commands may be copied through cmd.exe even when Tau itself uses a
+// different shell. Stay below its 8,191-character boundary without consulting
+// machine-specific state, and split focused selectors instead of widening the
+// validation scope merely because a workspace has many packages.
+const PORTABLE_COMMAND_BYTES: usize = 7_000;
+// A Cargo work unit normally contributes at least one progress/summary line.
+// Modeling it as 64 output bytes lets the planner compare extra compilation
+// with the exact serialized size of package selectors in one deterministic,
+// provider-independent unit. This is a scope estimate, not wall-clock timing.
+const ESTIMATED_WORK_OUTPUT_BYTES: u64 = 64;
+const COMMAND_LAUNCH_OUTPUT_BYTES: u64 = 32;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +84,12 @@ struct DirectImpact {
     check: bool,
     test: bool,
     doc: bool,
+}
+
+#[derive(Clone, Debug)]
+struct CommandPlan {
+    commands: Vec<ValidationCommand>,
+    estimated_cost_bytes: u64,
 }
 
 pub fn analyze_change_impact(
@@ -150,7 +166,7 @@ pub fn analyze_change_impact(
         whole_workspace,
         &direct,
         &impact_by_package,
-        &mut warnings,
+        &edges,
     );
     if edges.iter().any(|edge| edge.target.is_some()) {
         warnings.push(
@@ -607,7 +623,7 @@ fn validation_commands(
     whole_workspace: bool,
     direct: &BTreeMap<usize, DirectImpact>,
     impacts: &BTreeMap<usize, DirectImpact>,
-    warnings: &mut Vec<String>,
+    edges: &[DependencyEdge],
 ) -> Vec<ValidationCommand> {
     if impacts.is_empty() {
         return Vec::new();
@@ -652,55 +668,55 @@ fn validation_commands(
         .filter(|name| !tests.contains(name))
         .collect::<Vec<_>>();
     let mut commands = Vec::new();
-    push_package_command(
+    push_optimized_package_commands(
         &mut commands,
         context,
+        edges,
         "check",
         &check,
         &["--all-targets"],
         "required",
         "check directly changed packages and their reverse local dependents",
-        warnings,
     );
-    push_package_command(
+    push_optimized_package_commands(
         &mut commands,
         context,
+        edges,
         "test",
         &tests,
         &[],
         "required",
         "run tests owned by directly changed packages",
-        warnings,
     );
-    push_package_command(
+    push_optimized_package_commands(
         &mut commands,
         context,
+        edges,
         "test",
         &dependent_tests,
         &[],
         "recommended",
         "run reverse-dependent tests when the changed API or behavior may cross package boundaries",
-        warnings,
     );
-    push_package_command(
+    push_optimized_package_commands(
         &mut commands,
         context,
+        edges,
         "clippy",
         &lint,
         &["--all-targets"],
         "recommended",
         "lint directly changed compilation surfaces without linting unrelated members",
-        warnings,
     );
-    push_package_command(
+    push_optimized_package_commands(
         &mut commands,
         context,
+        edges,
         "test",
         &docs,
         &["--doc"],
         "recommended",
         "validate package documentation examples",
-        warnings,
     );
     commands
 }
@@ -722,26 +738,188 @@ fn package_names(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push_package_command(
+fn push_optimized_package_commands(
     output: &mut Vec<ValidationCommand>,
+    context: &WorkspaceContext,
+    edges: &[DependencyEdge],
+    operation: &str,
+    packages: &[String],
+    trailing_args: &[&str],
+    priority: &str,
+    rationale: &str,
+) {
+    if packages.is_empty() {
+        return;
+    }
+
+    let focused = focused_command_plan(
+        context,
+        edges,
+        operation,
+        packages,
+        trailing_args,
+        priority,
+        rationale,
+    );
+    let excluded = workspace_exclusion_command_plan(
+        context,
+        edges,
+        operation,
+        packages,
+        trailing_args,
+        priority,
+        rationale,
+    );
+    let workspace = workspace_command_plan(
+        context,
+        edges,
+        operation,
+        trailing_args,
+        priority,
+        rationale,
+    );
+    // Exact focused coverage wins ties. First select its shortest portable
+    // representation, then widen only when validating the complete workspace
+    // has a strictly lower static cost.
+    let exact = match excluded {
+        Some(plan) if plan.estimated_cost_bytes < focused.estimated_cost_bytes => plan,
+        _ => focused,
+    };
+    let selected = if workspace.estimated_cost_bytes < exact.estimated_cost_bytes {
+        workspace
+    } else {
+        exact
+    };
+    output.extend(selected.commands);
+}
+
+fn focused_command_plan(
+    context: &WorkspaceContext,
+    edges: &[DependencyEdge],
+    operation: &str,
+    packages: &[String],
+    trailing_args: &[&str],
+    priority: &str,
+    rationale: &str,
+) -> CommandPlan {
+    let package_indices = named_package_indices(context, packages);
+    let work_units =
+        estimated_work_units(context, edges, &package_indices, operation, trailing_args);
+    let batches = focused_package_batches(operation, packages, trailing_args);
+    let commands = batches
+        .into_iter()
+        .map(|batch| {
+            package_command(
+                context,
+                operation,
+                &batch,
+                trailing_args,
+                priority,
+                rationale,
+                false,
+                &[],
+            )
+        })
+        .collect::<Vec<_>>();
+    CommandPlan {
+        estimated_cost_bytes: estimated_plan_cost(work_units, &commands),
+        commands,
+    }
+}
+
+fn workspace_exclusion_command_plan(
+    context: &WorkspaceContext,
+    edges: &[DependencyEdge],
+    operation: &str,
+    packages: &[String],
+    trailing_args: &[&str],
+    priority: &str,
+    rationale: &str,
+) -> Option<CommandPlan> {
+    let selected_indices = named_package_indices(context, packages);
+    let excluded = context
+        .packages
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !selected_indices.contains(index))
+        .map(|(_, package)| package.name.clone())
+        .collect::<Vec<_>>();
+    if excluded.is_empty() {
+        return None;
+    }
+
+    let command = package_command(
+        context,
+        operation,
+        packages,
+        trailing_args,
+        priority,
+        rationale,
+        true,
+        &excluded,
+    );
+    if rendered_args_bytes(&command.program, command.args.iter().map(String::as_str))
+        > PORTABLE_COMMAND_BYTES
+    {
+        return None;
+    }
+    let work_units =
+        estimated_work_units(context, edges, &selected_indices, operation, trailing_args);
+    Some(CommandPlan {
+        estimated_cost_bytes: estimated_plan_cost(work_units, std::slice::from_ref(&command)),
+        commands: vec![command],
+    })
+}
+
+fn workspace_command_plan(
+    context: &WorkspaceContext,
+    edges: &[DependencyEdge],
+    operation: &str,
+    trailing_args: &[&str],
+    priority: &str,
+    rationale: &str,
+) -> CommandPlan {
+    let all_indices = (0..context.packages.len()).collect::<BTreeSet<_>>();
+    let work_units = estimated_work_units(context, edges, &all_indices, operation, trailing_args);
+    let packages = context
+        .packages
+        .iter()
+        .map(|package| package.name.clone())
+        .collect::<Vec<_>>();
+    let commands = vec![package_command(
+        context,
+        operation,
+        &packages,
+        trailing_args,
+        priority,
+        rationale,
+        true,
+        &[],
+    )];
+    CommandPlan {
+        estimated_cost_bytes: estimated_plan_cost(work_units, &commands),
+        commands,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn package_command(
     context: &WorkspaceContext,
     operation: &str,
     packages: &[String],
     trailing_args: &[&str],
     priority: &str,
     rationale: &str,
-    warnings: &mut Vec<String>,
-) {
-    if packages.is_empty() {
-        return;
-    }
+    workspace: bool,
+    excluded: &[String],
+) -> ValidationCommand {
     let mut args = vec![operation.to_owned()];
-    if packages.len() > MAX_PACKAGES_PER_COMMAND {
+    if workspace {
         args.push("--workspace".to_owned());
-        warnings.push(format!(
-            "{operation} scope widened to --workspace because {} package selectors exceed the {MAX_PACKAGES_PER_COMMAND}-package argv limit",
-            packages.len()
-        ));
+        for package in excluded {
+            args.push("--exclude".to_owned());
+            args.push(package.clone());
+        }
     } else {
         for package in packages {
             args.push("-p".to_owned());
@@ -749,14 +927,120 @@ fn push_package_command(
         }
     }
     args.extend(trailing_args.iter().map(|value| (*value).to_owned()));
-    output.push(ValidationCommand {
+    ValidationCommand {
         program: "cargo".to_owned(),
         args,
         cwd: context.workspace_root.clone(),
         priority: priority.to_owned(),
         packages: packages.to_vec(),
         rationale: rationale.to_owned(),
-    });
+    }
+}
+
+fn focused_package_batches(
+    operation: &str,
+    packages: &[String],
+    trailing_args: &[&str],
+) -> Vec<Vec<String>> {
+    let fixed_bytes = rendered_args_bytes(
+        "cargo",
+        std::iter::once(operation).chain(trailing_args.iter().copied()),
+    );
+    let mut batches = Vec::<Vec<String>>::new();
+    let mut current = Vec::<String>::new();
+    let mut current_bytes = fixed_bytes;
+    for package in packages {
+        // Rendered selector is ` -p <package>`.
+        let selector_bytes = 4usize.saturating_add(package.len());
+        if !current.is_empty()
+            && current_bytes.saturating_add(selector_bytes) > PORTABLE_COMMAND_BYTES
+        {
+            batches.push(std::mem::take(&mut current));
+            current_bytes = fixed_bytes;
+        }
+        current.push(package.clone());
+        current_bytes = current_bytes.saturating_add(selector_bytes);
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
+fn named_package_indices(context: &WorkspaceContext, packages: &[String]) -> BTreeSet<usize> {
+    let names = packages.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    context
+        .packages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, package)| names.contains(package.name.as_str()).then_some(index))
+        .collect()
+}
+
+fn estimated_work_units(
+    context: &WorkspaceContext,
+    edges: &[DependencyEdge],
+    selected: &BTreeSet<usize>,
+    operation: &str,
+    trailing_args: &[&str],
+) -> usize {
+    let mut closure = selected.clone();
+    let mut queue = selected.iter().copied().collect::<VecDeque<_>>();
+    while let Some(dependent) = queue.pop_front() {
+        for edge in edges.iter().filter(|edge| edge.dependent == dependent) {
+            if closure.insert(edge.dependency) {
+                queue.push_back(edge.dependency);
+            }
+        }
+    }
+    closure
+        .into_iter()
+        .filter_map(|index| context.packages.get(index).map(|package| (index, package)))
+        .map(|(index, package)| {
+            if selected.contains(&index) {
+                selected_package_work_units(package, operation, trailing_args)
+            } else {
+                1
+            }
+        })
+        .sum()
+}
+
+fn selected_package_work_units(
+    package: &PackageContext,
+    operation: &str,
+    trailing_args: &[&str],
+) -> usize {
+    if operation == "test" && trailing_args.contains(&"--doc") {
+        // A selected doctest package is both compiled as a dependency surface
+        // and executed as documentation tests. A transitive dependency only
+        // pays the former unit in `estimated_work_units`.
+        return 2;
+    }
+    match operation {
+        "test" => package.targets.len().max(1).saturating_add(1),
+        "check" | "clippy" => package.targets.len().max(1),
+        _ => 1,
+    }
+}
+
+fn estimated_plan_cost(work_units: usize, commands: &[ValidationCommand]) -> u64 {
+    let command_bytes = commands
+        .iter()
+        .map(|command| {
+            rendered_args_bytes(&command.program, command.args.iter().map(String::as_str)) as u64
+        })
+        .sum::<u64>();
+    (work_units as u64)
+        .saturating_mul(ESTIMATED_WORK_OUTPUT_BYTES)
+        .saturating_add(command_bytes)
+        .saturating_add((commands.len() as u64).saturating_mul(COMMAND_LAUNCH_OUTPUT_BYTES))
+}
+
+fn rendered_args_bytes<'a>(program: &str, args: impl Iterator<Item = &'a str>) -> usize {
+    args.fold(program.len(), |bytes, argument| {
+        bytes.saturating_add(1).saturating_add(argument.len())
+    })
 }
 
 #[cfg(test)]
@@ -770,5 +1054,31 @@ mod tests {
         let error = analyze_change_impact(Path::new("."), &paths)
             .expect_err("oversized changed path list must fail before workspace inspection");
         assert!(matches!(error, Error::Usage(_)));
+    }
+
+    #[test]
+    fn focused_batches_are_portable_complete_and_deterministic() {
+        let packages = (0..160)
+            .map(|index| format!("package-{index:03}-{}", "x".repeat(48)))
+            .collect::<Vec<_>>();
+        let first = focused_package_batches("check", &packages, &["--all-targets"]);
+        let second = focused_package_batches("check", &packages, &["--all-targets"]);
+
+        assert_eq!(first, second);
+        assert!(
+            first.len() > 1,
+            "long selectors should be split, not widened"
+        );
+        assert_eq!(
+            first.iter().flatten().cloned().collect::<Vec<_>>(),
+            packages,
+            "batching must preserve every package exactly once and in order"
+        );
+        assert!(first.iter().all(|batch| {
+            let args = std::iter::once("check")
+                .chain(batch.iter().flat_map(|package| ["-p", package.as_str()]))
+                .chain(std::iter::once("--all-targets"));
+            rendered_args_bytes("cargo", args) <= PORTABLE_COMMAND_BYTES
+        }));
     }
 }

@@ -73,17 +73,35 @@ struct DirectDependency {
 
 pub fn analyze_dependency_cost(query: &Path) -> Result<DependencyCostReport> {
     let context = inspect_workspace(query)?;
-    let package = context
-        .selected_package
-        .ok_or_else(|| Error::Usage(format!("no Cargo package owns {}", query.display())))?;
-    let manifest =
-        Manifest::from_path(&package.manifest_path).map_err(|error| Error::Manifest {
-            path: package.manifest_path.clone(),
-            detail: error.to_string(),
-        })?;
     let lock_path = context.workspace_root.join("Cargo.lock");
     let mut warnings = context.warnings;
-    let direct = collect_direct_dependencies(&manifest);
+    let (package_name, package_version, manifest_path, direct) = if let Some(package) =
+        context.selected_package
+    {
+        let manifest =
+            Manifest::from_path(&package.manifest_path).map_err(|error| Error::Manifest {
+                path: package.manifest_path.clone(),
+                detail: error.to_string(),
+            })?;
+        let direct = collect_direct_dependencies(&manifest);
+        (
+            package.name,
+            Some(package.version),
+            package.manifest_path,
+            direct,
+        )
+    } else {
+        warnings.push(format!(
+                "{} selects the workspace lock graph rather than one Cargo package; direct package dependency costs are omitted. Pass a package manifest, source path, or package directory to include direct fan-out",
+                context.query_path.display()
+            ));
+        (
+            "workspace".to_owned(),
+            None,
+            context.workspace_manifest,
+            BTreeMap::new(),
+        )
+    };
     if !lock_path.is_file() {
         warnings.push(
             "Cargo.lock is absent; dependency cost requires an existing lockfile and will not generate one"
@@ -91,8 +109,8 @@ pub fn analyze_dependency_cost(query: &Path) -> Result<DependencyCostReport> {
         );
         return Ok(DependencyCostReport {
             schema_version: SCHEMA_VERSION,
-            package: package.name,
-            manifest_path: package.manifest_path,
+            package: package_name,
+            manifest_path,
             lock_path,
             locked_packages: 0,
             direct_dependencies: direct.into_values().map(empty_cost).collect(),
@@ -127,12 +145,14 @@ pub fn analyze_dependency_cost(query: &Path) -> Result<DependencyCostReport> {
 
     let by_name = index_packages(&lock.package);
     let graph = dependency_graph(&lock.package, &by_name);
-    let (has_locked_root, direct_roots) =
-        direct_lock_roots(&package.name, &package.version, &lock.package, &graph);
-    if !has_locked_root {
+    let (has_locked_root, direct_roots) = package_version.as_deref().map_or_else(
+        || (false, BTreeMap::new()),
+        |version| direct_lock_roots(&package_name, version, &lock.package, &graph),
+    );
+    if let Some(version) = package_version.as_deref().filter(|_| !has_locked_root) {
         warnings.push(format!(
             "package {:?} v{} is absent from Cargo.lock; direct costs use conservative name matching",
-            package.name, package.version
+            package_name, version
         ));
     }
     let mut direct_costs = direct
@@ -172,8 +192,8 @@ pub fn analyze_dependency_cost(query: &Path) -> Result<DependencyCostReport> {
 
     Ok(DependencyCostReport {
         schema_version: SCHEMA_VERSION,
-        package: package.name,
-        manifest_path: package.manifest_path,
+        package: package_name,
+        manifest_path,
         lock_path,
         locked_packages: lock.package.len(),
         direct_dependencies: direct_costs,

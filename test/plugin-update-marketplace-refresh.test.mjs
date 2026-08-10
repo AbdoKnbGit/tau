@@ -23,6 +23,8 @@ async function run(file, args, options = {}) {
     return await execFileAsync(file, args, {
       cwd: repoRoot,
       maxBuffer: 10 * 1024 * 1024,
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
       ...options,
     })
   } catch (error) {
@@ -130,6 +132,9 @@ test(
         DISABLE_AUTOUPDATER: '1',
         DISABLE_ERROR_REPORTING: '1',
         DISABLE_TELEMETRY: '1',
+        CLAUDE_CODE_PLUGIN_GIT_TIMEOUT_MS: '10000',
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_ASKPASS: '',
         NO_COLOR: '1',
       }
 

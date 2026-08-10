@@ -45,7 +45,7 @@ pub struct UnsafeFinding {
 
 pub fn audit_unsafe(query: &Path, max_files: Option<usize>) -> Result<UnsafeAuditReport> {
     let context = inspect_workspace(query)?;
-    let scan_root = if query.is_file() {
+    let scan_root = if context.query_path.is_file() || context.query_path.is_dir() {
         context.query_path.clone()
     } else if let Some(package) = context.selected_package.as_ref() {
         package.package_root.clone()

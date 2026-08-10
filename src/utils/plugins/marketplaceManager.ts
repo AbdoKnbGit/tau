@@ -540,7 +540,13 @@ export async function gitPull(
     const fetchResult = await execFileNoThrowWithCwd(
       gitExe(),
       [...credentialArgs, 'fetch', 'origin', ref],
-      { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
+      {
+        cwd,
+        timeout: getPluginGitTimeoutMs(),
+        stdin: 'ignore',
+        env,
+        killTreeOnTimeout: true,
+      },
     )
 
     if (fetchResult.code !== 0) {
@@ -550,7 +556,13 @@ export async function gitPull(
     const checkoutResult = await execFileNoThrowWithCwd(
       gitExe(),
       [...credentialArgs, 'checkout', ref],
-      { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
+      {
+        cwd,
+        timeout: getPluginGitTimeoutMs(),
+        stdin: 'ignore',
+        env,
+        killTreeOnTimeout: true,
+      },
     )
 
     if (checkoutResult.code !== 0) {
@@ -560,7 +572,13 @@ export async function gitPull(
     const pullResult = await execFileNoThrowWithCwd(
       gitExe(),
       [...credentialArgs, 'pull', 'origin', ref],
-      { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
+      {
+        cwd,
+        timeout: getPluginGitTimeoutMs(),
+        stdin: 'ignore',
+        env,
+        killTreeOnTimeout: true,
+      },
     )
     if (pullResult.code !== 0) {
       return enhanceGitPullErrorMessages(pullResult)
@@ -572,7 +590,13 @@ export async function gitPull(
   const result = await execFileNoThrowWithCwd(
     gitExe(),
     [...credentialArgs, 'pull', 'origin', 'HEAD'],
-    { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
+    {
+      cwd,
+      timeout: getPluginGitTimeoutMs(),
+      stdin: 'ignore',
+      env,
+      killTreeOnTimeout: true,
+    },
   )
   if (result.code !== 0) {
     return enhanceGitPullErrorMessages(result)
@@ -633,7 +657,13 @@ async function gitSubmoduleUpdate(
       '--depth',
       '1',
     ],
-    { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
+    {
+      cwd,
+      timeout: getPluginGitTimeoutMs(),
+      stdin: 'ignore',
+      env,
+      killTreeOnTimeout: true,
+    },
   )
   if (result.code !== 0) {
     logForDebugging(
@@ -840,6 +870,7 @@ export async function gitClone(
     timeout: timeoutMs,
     stdin: 'ignore',
     env: { ...process.env, ...GIT_NO_PROMPT_ENV },
+    killTreeOnTimeout: true,
   })
 
   // Scrub credentials from execa's error/stderr fields before any logging or
@@ -866,6 +897,7 @@ export async function gitClone(
           timeout: timeoutMs,
           stdin: 'ignore',
           env: { ...process.env, ...GIT_NO_PROMPT_ENV },
+          killTreeOnTimeout: true,
         },
       )
       if (sparseResult.code !== 0) {
@@ -885,6 +917,7 @@ export async function gitClone(
           timeout: timeoutMs,
           stdin: 'ignore',
           env: { ...process.env, ...GIT_NO_PROMPT_ENV },
+          killTreeOnTimeout: true,
         },
       )
       if (checkoutResult.code !== 0) {
@@ -1041,14 +1074,26 @@ export async function reconcileSparseCheckout(
     return execFileNoThrowWithCwd(
       gitExe(),
       ['sparse-checkout', 'set', '--cone', '--', ...sparsePaths],
-      { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
+      {
+        cwd,
+        timeout: getPluginGitTimeoutMs(),
+        stdin: 'ignore',
+        env,
+        killTreeOnTimeout: true,
+      },
     )
   }
 
   const check = await execFileNoThrowWithCwd(
     gitExe(),
     ['config', '--get', 'core.sparseCheckout'],
-    { cwd, stdin: 'ignore', env },
+    {
+      cwd,
+      timeout: getPluginGitTimeoutMs(),
+      stdin: 'ignore',
+      env,
+      killTreeOnTimeout: true,
+    },
   )
   if (check.code === 0 && check.stdout.trim() === 'true') {
     return {

@@ -16,7 +16,11 @@ import { checkReadPermissionForTool } from '../../utils/permissions/filesystem.j
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { getPowerModeFromSettings } from '../../utils/powerMode.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
-import { RUST_TOOL_ACTIONS, RUST_TOOL_NAME } from './constants.js'
+import {
+  RUST_REQUEST_EFFICIENCY_GUIDANCE,
+  RUST_TOOL_ACTIONS,
+  RUST_TOOL_NAME,
+} from './constants.js'
 
 type RustOutput = { text: string }
 
@@ -24,7 +28,7 @@ const pathField = z
   .string()
   .optional()
   .describe(
-    'Rust source file, Cargo.toml, or directory. Defaults to the current workspace.',
+    'Rust source file, Cargo.toml, Cargo.lock, or directory. Defaults to the current workspace.',
   )
 
 const inputSchema = lazySchema(() =>
@@ -35,7 +39,7 @@ const inputSchema = lazySchema(() =>
         'Rust capability to use. This provider-compatible schema is a flat superset; recognized fields irrelevant to the selected action are ignored.',
       ),
     path: pathField.describe(
-      'Workspace/source path for every action except diagnostics. For diagnostics it must be a regular file containing existing rustc/Clippy output, never a workspace directory. test_map requires an existing .rs file.',
+      'Workspace/source path for every action except diagnostics. Preserve the most specific user-supplied path: focused_command must receive the source/test file when one was named, and test_map requires an existing .rs file. For diagnostics this must instead be a regular file containing existing rustc/Clippy output, never a workspace directory.',
     ),
     operation: z
       .enum(['check', 'build', 'clippy', 'test', 'bench', 'doc', 'run'])
@@ -165,6 +169,19 @@ function formatCommand(value: unknown): string {
   const program = asString(command.program)
   const args = asArray(command.args).map(asString).filter(Boolean)
   return [program, ...args].filter(Boolean).map(quoteArg).join(' ')
+}
+
+function formatCommandSelection(value: unknown): string {
+  const command = safeRecord(value)
+  const args = asArray(command.args).map(asString).filter(Boolean)
+  const packages = asArray(command.packages).map(asString).filter(Boolean)
+  const exclusions = args.filter(argument => argument === '--exclude').length
+  if (exclusions > 0)
+    return `focused ${packages.length} package${packages.length === 1 ? '' : 's'} via ${exclusions} workspace exclusion${exclusions === 1 ? '' : 's'}`
+  if (args.includes('--workspace')) return 'whole workspace'
+  const selectors = args.filter(argument => argument === '-p').length
+  const packageCount = packages.length || selectors
+  return `focused ${packageCount} package${packageCount === 1 ? '' : 's'}`
 }
 
 function appendWarnings(lines: string[], value: unknown): void {
@@ -438,7 +455,7 @@ export function formatRustCapability(action: string, json: string): string {
         lines.push(`Affected packages: +${affected.length - 60} more`)
       for (const command of commands)
         lines.push(
-          `${asString(command.priority) || 'recommended'}: ${formatCommand(command)} | ${asString(command.rationale)}`,
+          `${asString(command.priority) || 'recommended'} (${formatCommandSelection(command)}): ${formatCommand(command)} | ${asString(command.rationale)}`,
         )
       break
     }
@@ -590,19 +607,21 @@ export const RustTool = buildTool({
   },
   async prompt() {
     return `Use this tool only in rustcode mode, and choose one action by ownership:
-- workspace_context: filesystem-only Cargo workspace/package/target/features/edition/MSRV orientation. It never launches Cargo or Rustup and performs no command planning.
-- focused_command: produce exact Cargo argv for check/build/clippy/test/bench/doc/run. It never executes; use Bash for execution. Choose operation explicitly when intent is known; omitted operation conservatively defaults to check.
+- workspace_context: filesystem-only Cargo workspace/package/target/features/edition/MSRV orientation. It never launches Cargo or Rustup and performs no command planning. Do not pre-call it before focused_command or change_impact; those resolve the workspace themselves.
+- focused_command: produce exact Cargo argv for check/build/clippy/test/bench/doc/run. Preserve a named source/test file instead of broadening it to a package directory. It never executes; use Bash for execution. Choose operation explicitly when intent is known; omitted operation conservatively defaults to check.
 - test_map: syntax-aware mapping of one .rs file to its harness scope and declared test filters. It never runs tests and does not replace LSP or source search.
-- diagnostics: parse output already produced by rustc or Clippy, preserving spans and machine suggestions. It never invokes them or inspects a workspace; use Bash to produce fresh output. Pass captured output as input, or set path to a regular diagnostic-output file. Never pass a workspace/source directory as the diagnostics path.
-- dependency_cost: inspect an existing Cargo.lock graph and direct dependency fan-out. It never resolves, fetches, updates, or edits dependencies.
+- diagnostics: parse output already produced by rustc or Clippy, preserving spans and machine suggestions. It never invokes them or inspects a workspace; for fresh output use Bash with Cargo/Clippy --message-format=json, then pass captured stdout as input. Plain text is a fallback with weaker spans. Never pass a workspace/source directory as the diagnostics path.
+- dependency_cost: inspect an existing Cargo.lock graph and direct dependency fan-out. A Cargo.lock or virtual-workspace path returns workspace-wide lock metrics without inventing a package; direct fan-out is included only when the path selects one package. It never resolves, fetches, updates, or edits dependencies.
 - artifact_size: measure existing target artifacts and incremental storage. Pass a workspace or an exact existing profile directory; an explicit profile directory wins over layout inference. It distinguishes Cargo's native target/<profile-directory> layout from explicit/cross-target target/<triple>/<profile-directory>, and maps dev/test to debug plus bench to release. It never builds and does not replace a profiler.
 - profile_advice: compare actual Cargo profile values with a declared goal and explain tradeoffs. It never edits Cargo.toml and advice must be validated by measurement. Choose goal explicitly when intent is known; omitted goal conservatively defaults to balanced.
-- unsafe_audit: parse Rust syntax to inventory unsafe blocks/functions/traits/impls, extern boundaries, exported ABI attributes, and SAFETY documentation. It is not a proof of soundness or a replacement for Miri/security review.
+- unsafe_audit: parse Rust syntax under exactly the requested file or directory to inventory unsafe blocks/functions/traits/impls, extern boundaries, exported ABI attributes, and SAFETY documentation. It is not a proof of soundness or a replacement for Miri/security review.
 - generated_code_map: trace include!/include_str!/include_bytes! consumers, OUT_DIR ownership, package build scripts, known generator crates, rerun-if-changed inputs, and generated-file markers before editing. It never runs build.rs, Cargo builds/checks, procedural macros, or generators. Use it for generated-code ownership, not general text search or symbol navigation.
 - build_environment: explain workspace-scoped Cargo config precedence, rust-toolchain selection, an explicit/effective target, linker, runner, rustflags, wrappers, target directory, offline mode, and redacted source replacement. Use it for "why does this Rust build behave differently here?", not package discovery or command execution. It reads no Cargo-home or above-workspace config and returns only an environment allowlist.
-- change_impact: map caller-supplied changed paths through reverse local normal/build/development dependency edges and return focused Cargo argv. It never reads Git or executes commands; use Git/ChangeRisk/Bash to obtain changed paths and Bash to execute the plan. Omitted changedPaths conservatively means the whole workspace, so never invent paths or call it repeatedly without new evidence.
+- change_impact: map caller-supplied changed paths through reverse local normal/build/development dependency edges and return minimum-cost Cargo argv. It already resolves workspace ownership, so do not pre-call workspace_context or focused_command. A command using --workspace plus --exclude remains exact focused coverage; only bare --workspace is whole-workspace validation. Treat program+args as OS-neutral argv: preserve them exactly and never replace selectors with shell substitutions, brace expansion, globs, loops, or platform-specific shorthand. It never reads Git or executes commands; use Git/ChangeRisk/Bash to obtain changed paths and Bash to execute the plan. Omitted changedPaths conservatively means the whole workspace, so never invent paths or call it repeatedly without new evidence.
 
 Send only the fields documented for the chosen action. Because every provider receives one flat compatibility schema, recognized fields owned by another action are safely ignored rather than failing the call. Unknown fields remain invalid.
+
+${RUST_REQUEST_EFFICIENCY_GUIDANCE}
 
 Do not use Rust for general file reading/editing, definitions/references, literal search, arbitrary commands, or command execution; use Read/Edit, LSP, Grep, or Bash. Avoid calling an action when its answer is already known. All actions are stateless and read-only.`
   },

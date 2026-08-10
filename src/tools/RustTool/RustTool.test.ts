@@ -173,6 +173,7 @@ async function main(): Promise<void> {
             program: 'cargo',
             args: ['check', '-p', 'core', '-p', 'app', '--all-targets'],
             priority: 'required',
+            packages: ['core', 'app'],
             rationale: 'check affected packages',
           },
         ],
@@ -180,7 +181,45 @@ async function main(): Promise<void> {
       }),
     )
     assert.match(changeImpact, /2 affected packages/)
+    assert.match(changeImpact, /focused 2 packages/)
     assert.match(changeImpact, /cargo check -p core -p app --all-targets/)
+
+    const excludedImpact = formatRustCapability(
+      'change_impact',
+      JSON.stringify({
+        scope: 'focused',
+        dependencyEdges: 0,
+        changes: [],
+        affectedPackages: [
+          { name: 'core', direct: true, dependencyDistance: 0 },
+          { name: 'app', direct: false, dependencyDistance: 1 },
+        ],
+        commands: [
+          {
+            program: 'cargo',
+            args: [
+              'check',
+              '--workspace',
+              '--exclude',
+              'unrelated',
+              '--all-targets',
+            ],
+            priority: 'required',
+            packages: ['core', 'app'],
+            rationale: 'check exact affected set',
+          },
+        ],
+        warnings: [],
+      }),
+    )
+    assert.match(
+      excludedImpact,
+      /focused 2 packages via 1 workspace exclusion/,
+    )
+    assert.match(
+      excludedImpact,
+      /cargo check --workspace --exclude unrelated --all-targets/,
+    )
 
     const minimalInputs = [
       { action: 'workspace_context' },
@@ -208,6 +247,7 @@ async function main(): Promise<void> {
     assert.deepEqual(properties.action?.enum, RUST_TOOL_ACTIONS)
     assert.equal(providerSchema.anyOf, undefined)
     assert.equal(providerSchema.oneOf, undefined)
+    assert.match(String(properties.path?.description), /Cargo\.lock/)
     assert.match(
       String(properties.operation?.description),
       /Defaults to check when omitted/,
@@ -232,12 +272,12 @@ async function main(): Promise<void> {
     assert.deepEqual(
       buildRustNativeInvocation({
         action: 'dependency_cost',
-        path: '/work/demo',
+        path: '/work/demo/Cargo.lock',
         targetTriple: 'x86_64-unknown-linux-gnu',
       }),
       {
         command: 'dependency-cost',
-        args: ['--path', '/work/demo', '--pretty'],
+        args: ['--path', '/work/demo/Cargo.lock', '--pretty'],
       },
     )
     assert.deepEqual(
@@ -456,8 +496,13 @@ async function main(): Promise<void> {
 
     const prompt = await RustTool.prompt()
     assert.match(prompt, /workspace_context.*never launches Cargo or Rustup/)
+    assert.match(prompt, /Do not pre-call it before focused_command or change_impact/)
     assert.match(prompt, /focused_command: produce exact Cargo argv/)
+    assert.match(prompt, /Preserve a named source\/test file/)
     assert.match(prompt, /diagnostics.*never invokes/)
+    assert.match(prompt, /--message-format=json/)
+    assert.match(prompt, /Cargo\.lock or virtual-workspace path returns workspace-wide lock metrics/)
+    assert.match(prompt, /without inventing a package/)
     assert.match(prompt, /artifact_size.*explicit profile directory wins/)
     assert.match(prompt, /dev\/test to debug/)
     assert.match(prompt, /not a proof of soundness/)
@@ -469,7 +514,17 @@ async function main(): Promise<void> {
     assert.match(prompt, /never runs build\.rs/)
     assert.match(prompt, /build_environment.*Cargo config precedence/)
     assert.match(prompt, /change_impact.*never reads Git/)
+    assert.match(prompt, /--workspace plus --exclude remains exact focused coverage/)
+    assert.match(prompt, /never replace selectors with shell substitutions/)
     assert.match(prompt, /Omitted changedPaths conservatively means/)
+    assert.match(prompt, /Plan Rust capability calls across the whole request/)
+    assert.match(prompt, /workspace_context once with the most specific relevant path/)
+    assert.match(prompt, /never batch independent classifications/)
+    assert.match(prompt, /multi-path call intentionally returns their union/)
+    assert.match(prompt, /earlier identical result is the first sample/)
+    assert.match(prompt, /same input is not called three times/)
+    assert.match(prompt, /each unique Cargo program plus argv once/)
+    assert.match(prompt, /never alter or abbreviate argv/)
     console.log('RustTool: all capability assertions passed')
   } finally {
     resetSessionPowerModeForTesting()

@@ -57,6 +57,45 @@ fn rejects_duplicate_path_flags_with_usage_exit_code() {
 }
 
 #[test]
+fn dependency_cost_accepts_a_relative_virtual_workspace_lockfile() {
+    let fixture = TempDir::new().expect("temporary workspace");
+    let root = fixture.path();
+    fs::create_dir_all(root.join("member/src")).expect("create member source directory");
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = ['member']\nresolver = '2'\n",
+    )
+    .expect("write workspace manifest");
+    fs::write(
+        root.join("member/Cargo.toml"),
+        "[package]\nname = 'member'\nversion = '0.1.0'\nedition = '2021'\n",
+    )
+    .expect("write member manifest");
+    fs::write(root.join("member/src/lib.rs"), "pub struct Member;\n").expect("write member source");
+    fs::write(
+        root.join("Cargo.lock"),
+        "version = 3\n\n[[package]]\nname = 'member'\nversion = '0.1.0'\n",
+    )
+    .expect("write lockfile");
+
+    let output = binary()
+        .current_dir(root)
+        .args(["dependency-cost", "--path", "Cargo.lock", "--pretty"])
+        .output()
+        .expect("run dependency-cost from a relative lockfile path");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    assert_eq!(json["package"], "workspace");
+    assert_eq!(json["lockedPackages"], 1);
+    assert_eq!(json["directDependencies"], serde_json::json!([]));
+}
+
+#[test]
 fn help_advertises_every_native_rust_capability() {
     let output = binary().arg("--help").output().expect("show helper help");
     assert!(output.status.success());
