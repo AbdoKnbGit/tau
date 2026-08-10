@@ -126,6 +126,9 @@ test(
       const env = {
         ...process.env,
         CLAUDE_CONFIG_DIR: configDir,
+        // Explicit local plugin management does not require a provider. Keep
+        // this fixture isolated from CI's provider-auth startup policy.
+        CLAUDE_CODE_SIMPLE: '1',
         CLAUDE_CODE_PLUGIN_CACHE_DIR: pluginsDir,
         CLAUDE_CODE_PLUGIN_USE_ZIP_CACHE: '0',
         CLAUDE_CODE_USE_COWORK_PLUGINS: '0',
