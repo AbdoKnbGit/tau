@@ -42,6 +42,16 @@ npx -y @abdoknbgit/tau-installer@latest
 
 **Requirements:** Node.js 20.19+ or 22.12+ (require(esm) support), Git, Bash, `gh` for GitHub automation, and Go 1.25.8+ to build the optional native Tau helpers from source.
 
+### Rustcode mode (optional)
+
+Rustcode keeps Tau's normal tools and adds native, read-only Rust workspace analysis, focused Cargo planning, test mapping, compiler-diagnostic parsing, dependency and artifact inspection, profile advice, unsafe auditing, generated-code mapping, build-environment analysis, and change-impact planning.
+
+Install Rust **before** Tau so Tau can build and expose these native capabilities. Rust requires additional disk space. If `rustup` is not installed yet, follow the official [Rust installation instructions](https://www.rust-lang.org/tools/install). Then install and activate the stable toolchain:
+
+```bash
+rustup default stable
+```
+
 ---
 
 ## Launch
