@@ -144,7 +144,9 @@ export function hasAnyThirdPartyProviderConfigured(): boolean {
  */
 function detectKeyFormat(provider: string, key: string): string {
   // OAuth token entries are JSON blobs, not raw keys
-  if (provider.endsWith('_oauth')) return 'oauth_token'
+  if (provider.endsWith('_oauth') || provider.startsWith('gemini_oauth_')) {
+    return 'oauth_token'
+  }
 
   const prefixes: Record<string, string> = {
     openai: 'sk-',

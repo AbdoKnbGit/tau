@@ -8,7 +8,14 @@ import {
   ANTIGRAVITY_MODEL_IDS,
   ANTIGRAVITY_MODELS,
   ANTIGRAVITY_PICKER_MODELS,
+  antigravityLoadCodeAssistHeaders,
+  antigravityOnboardUserBody,
+  antigravityOnboardUserHeaders,
+  codeAssistAntigravityOnboardTierId,
+  codeAssistEligibilityErrorMessage,
   codeAssistGenerationBases,
+  codeAssistHasEligibleTier,
+  codeAssistOnboardingDecision,
   executorForModel,
   getAntigravityModelDisplayName,
   isAntigravityGeminiModel,
@@ -233,6 +240,97 @@ async function main(): Promise<void> {
     const cliBases = codeAssistGenerationBases('cli')
     assert(cliBases.length === 1, `cli bases=${cliBases.length}`)
     assert(cliBases[0] === 'https://cloudcode-pa.googleapis.com/v1internal', `cli base=${cliBases[0]}`)
+  })
+
+  await test('keeps user-managed standard tiers classified for Gemini CLI', async () => {
+    const current = codeAssistOnboardingDecision({
+      cloudaicompanionProject: {},
+      currentTier: { id: 'standard-tier' },
+    })
+    assert(current.kind === 'require-user-project', `current decision=${current.kind}`)
+    assert(current.tierId === 'standard-tier', `current tier=${current.tierId}`)
+
+    const allowed = codeAssistOnboardingDecision({
+      cloudaicompanionProject: {},
+      allowedTiers: [{
+        id: 'standard-tier',
+        isDefault: true,
+        userDefinedCloudaicompanionProject: true,
+      }],
+    })
+    assert(allowed.kind === 'require-user-project', `allowed decision=${allowed.kind}`)
+
+    const free = codeAssistOnboardingDecision({
+      allowedTiers: [{ id: 'free-tier', isDefault: true }],
+    })
+    assert(free.kind === 'onboard', `free decision=${free.kind}`)
+  })
+
+  await test('bootstraps Antigravity standard-tier with the native auth fingerprint', async () => {
+    const standardTierResponse = {
+      cloudaicompanionProject: {},
+      currentTier: { id: 'standard-tier' },
+      allowedTiers: [{
+        id: 'standard-tier',
+        isDefault: true,
+        userDefinedCloudaicompanionProject: true,
+      }],
+    }
+    const tierId = codeAssistAntigravityOnboardTierId(standardTierResponse)
+    assert(tierId === 'standard-tier', `Antigravity tier=${tierId}`)
+    const decision = codeAssistOnboardingDecision(standardTierResponse, 'antigravity')
+    assert(decision.kind === 'onboard', `Antigravity decision=${decision.kind}`)
+
+    const loadHeaders = antigravityLoadCodeAssistHeaders('access-token')
+    assert(
+      loadHeaders['User-Agent'] === 'antigravity/hub/2.2.1 darwin/arm64',
+      `load UA=${loadHeaders['User-Agent']}`,
+    )
+    assert(!('X-Goog-Api-Client' in loadHeaders), 'load request has legacy X-Goog header')
+    assert(!('Client-Metadata' in loadHeaders), 'load request has legacy Client-Metadata header')
+
+    const onboardHeaders = antigravityOnboardUserHeaders('access-token')
+    assert(
+      onboardHeaders['User-Agent'] ===
+        'antigravity/hub/2.2.1 darwin/arm64 google-api-nodejs-client/10.3.0',
+      `onboard UA=${onboardHeaders['User-Agent']}`,
+    )
+    assert(
+      onboardHeaders['X-Goog-Api-Client'] === 'gl-node/22.21.1',
+      `onboard X-Goog=${onboardHeaders['X-Goog-Api-Client']}`,
+    )
+
+    const body = antigravityOnboardUserBody(tierId)
+    assert(body.tier_id === 'standard-tier', `tier_id=${body.tier_id}`)
+    assert(body.metadata.ide_type === 'ANTIGRAVITY', `ide_type=${body.metadata.ide_type}`)
+    assert(body.metadata.ide_version === '2.2.1', `ide_version=${body.metadata.ide_version}`)
+  })
+
+  await test('turns shutdown eligibility responses into actionable errors', async () => {
+    const unsupported = codeAssistEligibilityErrorMessage('antigravity', [{
+      reasonCode: 'UNSUPPORTED_CLIENT',
+      reasonMessage: 'This client is no longer supported.',
+    }])
+    assert(unsupported?.includes('https://antigravity.google/'), `unsupported=${unsupported}`)
+    assert(unsupported?.includes('/login antigravity'), `unsupported=${unsupported}`)
+
+    const validation = codeAssistEligibilityErrorMessage('antigravity', [{
+      reasonCode: 'VALIDATION_REQUIRED',
+      reasonMessage: 'Verify the account',
+      validationUrl: 'https://example.test/verify',
+    }])
+    assert(validation?.includes('Verify the account'), `validation=${validation}`)
+    assert(validation?.includes('https://example.test/verify'), `validation=${validation}`)
+  })
+
+  await test('does not mistake an unavailable tier for total account ineligibility', async () => {
+    assert(codeAssistHasEligibleTier({
+      allowedTiers: [{ id: 'free-tier', isDefault: true }],
+      ineligibleTiers: [{ reasonCode: 'UNSUPPORTED_CLIENT' }],
+    }), 'allowed free tier was ignored')
+    assert(!codeAssistHasEligibleTier({
+      ineligibleTiers: [{ reasonCode: 'UNSUPPORTED_CLIENT' }],
+    }), 'ineligible-only response was treated as usable')
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

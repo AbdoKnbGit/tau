@@ -62,6 +62,26 @@ export const ANTIGRAVITY_GENERATION_BASE = `${ANTIGRAVITY_ENDPOINT_DAILY}/v1inte
 
 export type GeminiExecutor = 'cli' | 'antigravity'
 
+export interface CodeAssistIneligibleTier {
+  reasonCode?: string
+  reasonMessage?: string
+  validationUrl?: string
+  validationLearnMoreUrl?: string
+}
+
+export interface CodeAssistLoadData {
+  cloudaicompanionProject?: string | { id?: string }
+  currentTier?: { id?: string; name?: string }
+  paidTier?: { id?: string; name?: string }
+  allowedTiers?: Array<{
+    id?: string
+    name?: string
+    isDefault?: boolean
+    userDefinedCloudaicompanionProject?: boolean
+  }>
+  ineligibleTiers?: CodeAssistIneligibleTier[]
+}
+
 export function codeAssistGenerationBase(executor: GeminiExecutor): string {
   return executor === 'antigravity' ? ANTIGRAVITY_GENERATION_BASE : CODE_ASSIST_BASE
 }
@@ -394,12 +414,13 @@ export function executorForModel(model: string): GeminiExecutor {
   return ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase()) ? 'antigravity' : 'cli'
 }
 
-// CLIProxyAPI's Antigravity onboarding headers. These are used during
-// loadCodeAssist / onboardUser — NOT on generateContent calls.
-const API_USER_AGENT = 'google-api-nodejs-client/9.15.1'
-const API_CLIENT = 'google-cloud-sdk vscode_cloudshelleditor/0.1'
-const CLIENT_METADATA =
-  '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}'
+// Current Antigravity auth/bootstrap fingerprint. These values are used only
+// by loadCodeAssist/onboardUser/quota authentication, not generation calls.
+const ANTIGRAVITY_AUTH_VERSION = '2.2.1'
+const ANTIGRAVITY_AUTH_BASE_UA =
+  `antigravity/hub/${ANTIGRAVITY_AUTH_VERSION} darwin/arm64`
+const ANTIGRAVITY_NODE_API_CLIENT = 'google-api-nodejs-client/10.3.0'
+const ANTIGRAVITY_NODE_X_GOOG_API_CLIENT = 'gl-node/22.21.1'
 
 const CONFIG_DIR = join(homedir(), '.config', 'claude-code')
 
@@ -408,7 +429,7 @@ const CONFIG_DIR = join(homedir(), '.config', 'claude-code')
 const CACHE_FILE_CLI = join(CONFIG_DIR, 'gemini-code-assist-cli.json')
 const CACHE_FILE_ANTIGRAVITY = join(CONFIG_DIR, 'gemini-code-assist.json')
 
-const CACHE_VERSION = 6  // bump: drop allowedTiers from tier detection
+const CACHE_VERSION = 7  // bump: retry project bootstrap after standard-tier migration
 
 interface CodeAssistCache {
   version: number
@@ -549,15 +570,40 @@ function _writeCache(executor: GeminiExecutor, cache: CodeAssistCache): void {
   }
 }
 
-/** Onboarding headers for the Antigravity executor. */
-function _antigravityOnboardHeaders(accessToken: string): Record<string, string> {
+/** Native headers for Antigravity loadCodeAssist. */
+export function antigravityLoadCodeAssistHeaders(
+  accessToken: string,
+): Record<string, string> {
   return {
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
-    'User-Agent': API_USER_AGENT,
-    'X-Goog-Api-Client': API_CLIENT,
-    'Client-Metadata': CLIENT_METADATA,
-    'Connection': 'keep-alive',
+    'User-Agent': ANTIGRAVITY_AUTH_BASE_UA,
+  }
+}
+
+/** Native control-plane headers for Antigravity onboardUser. */
+export function antigravityOnboardUserHeaders(
+  accessToken: string,
+): Record<string, string> {
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+    'User-Agent': `${ANTIGRAVITY_AUTH_BASE_UA} ${ANTIGRAVITY_NODE_API_CLIENT}`,
+    'X-Goog-Api-Client': ANTIGRAVITY_NODE_X_GOOG_API_CLIENT,
+  }
+}
+
+export function antigravityOnboardUserBody(tierId: string): {
+  tier_id: string
+  metadata: { ide_type: string; ide_version: string; ide_name: string }
+} {
+  return {
+    tier_id: tierId,
+    metadata: {
+      ide_type: 'ANTIGRAVITY',
+      ide_version: ANTIGRAVITY_AUTH_VERSION,
+      ide_name: 'antigravity',
+    },
   }
 }
 
@@ -610,6 +656,66 @@ async function _fetchWithTransientRetry(
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
 }
 
+async function _loadCodeAssist(
+  accessToken: string,
+  executor: GeminiExecutor,
+): Promise<CodeAssistLoadData> {
+  const isAntigravity = executor === 'antigravity'
+  const headers = isAntigravity
+    ? antigravityLoadCodeAssistHeaders(accessToken)
+    : _cliOnboardHeaders(accessToken)
+  const body = isAntigravity
+    ? { metadata: { ideType: 'ANTIGRAVITY' } }
+    : {
+      metadata: {
+        ideType: 'GEMINI_CLI',
+        platform: 'PLATFORM_UNSPECIFIED',
+        pluginType: 'GEMINI',
+      },
+    }
+
+  const response = await _fetchWithTransientRetry(`${CODE_ASSIST_BASE}:loadCodeAssist`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '')
+    const eligibilityError = codeAssistEligibilityErrorMessage(
+      executor,
+      undefined,
+      errorText,
+    )
+    if (eligibilityError) throw new Error(eligibilityError)
+    throw new Error(
+      `Gemini Code Assist loadCodeAssist failed (${response.status}): ${errorText.slice(0, 300)}`,
+    )
+  }
+
+  try {
+    return (await response.json()) as CodeAssistLoadData
+  } catch (error) {
+    throw new Error(
+      `Gemini Code Assist loadCodeAssist returned invalid JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
+  }
+}
+
+async function _rediscoverAntigravityProject(accessToken: string): Promise<string | null> {
+  const maxAttempts = 6
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, attempt * 500))
+    }
+    const refreshed = await _loadCodeAssist(accessToken, 'antigravity')
+    const projectId = _extractProjectId(refreshed.cloudaicompanionProject)
+    if (projectId) return projectId
+  }
+  return null
+}
+
 /**
  * Ensure the user is onboarded to Code Assist and return the project ID.
  *
@@ -622,48 +728,9 @@ export async function ensureCodeAssistReady(
   executor: GeminiExecutor = 'antigravity',
 ): Promise<string | null> {
   const cached = _readCache(executor)
-  if (cached) return cached.projectId
+  if (cached?.projectId) return cached.projectId
 
-  // CLI uses GEMINI_CLI ideType; Antigravity uses ANTIGRAVITY.
-  const ideType = executor === 'cli' ? 'GEMINI_CLI' : 'ANTIGRAVITY'
-  const headers = executor === 'cli'
-    ? _cliOnboardHeaders(accessToken)
-    : _antigravityOnboardHeaders(accessToken)
-
-  const loadReqBody = {
-    metadata: {
-      ideType,
-      platform: 'PLATFORM_UNSPECIFIED',
-      pluginType: 'GEMINI',
-    },
-  }
-
-  const loadRes = await _fetchWithTransientRetry(`${CODE_ASSIST_BASE}:loadCodeAssist`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(loadReqBody),
-  })
-
-  if (!loadRes.ok) {
-    const errText = await loadRes.text().catch(() => '')
-    throw new Error(
-      `Gemini Code Assist loadCodeAssist failed (${loadRes.status}): ${errText.slice(0, 300)}`,
-    )
-  }
-
-  // The response shape for cloudaicompanionProject is either a plain
-  // string or an object with an `id` field (CLIProxyAPI handles both
-  // cases — we do too).
-  const loadData = (await loadRes.json()) as {
-    cloudaicompanionProject?: string | { id?: string }
-    currentTier?: { id?: string }
-    paidTier?: { id?: string }
-    allowedTiers?: Array<{
-      id?: string
-      name?: string
-      isDefault?: boolean
-    }>
-  }
+  const loadData = await _loadCodeAssist(accessToken, executor)
 
   // Capture the user's effective tier so the model picker can decide
   // whether to surface Pro models. Use `paidTier.id` first (set when
@@ -729,22 +796,47 @@ export async function ensureCodeAssistReady(
     return directProjectId
   }
 
-  // No project bound yet → run onboardUser. Pick the default allowed
-  // tier, or fall back to "legacy-tier" the way CLIProxyAPI does.
-  let tierId = 'legacy-tier'
-  if (loadData.allowedTiers) {
-    for (const tier of loadData.allowedTiers) {
-      if (tier.isDefault && tier.id && tier.id.trim() !== '') {
-        tierId = tier.id.trim()
-        break
-      }
-    }
+  // `ineligibleTiers` can coexist with usable tiers (for example, a free
+  // account may be ineligible for a paid tier). Treat it as fatal only when
+  // loadCodeAssist did not advertise any tier the account can actually use.
+  const hasEligibleTier = codeAssistHasEligibleTier(loadData)
+  if (!hasEligibleTier) {
+    const eligibilityError = codeAssistEligibilityErrorMessage(
+      executor,
+      loadData.ineligibleTiers,
+    )
+    if (eligibilityError) throw new Error(eligibilityError)
   }
 
-  const onboardedProject = await _onboardUser(accessToken, tierId, executor)
-  const entitled = onboardedProject
-    ? await _fetchEntitledModelIds(accessToken, onboardedProject, executor)
-    : undefined
+  const onboarding = codeAssistOnboardingDecision(loadData, executor)
+  if (onboarding.kind === 'require-user-project') {
+    throw new Error(_userDefinedProjectMessage(onboarding.tierId))
+  }
+  const tierId = onboarding.tierId
+
+  // Antigravity standard-tier onboarding commonly returns `{done:true}` with
+  // no project in that response. That means the bootstrap was accepted; the
+  // assigned project is exposed by a subsequent loadCodeAssist call. Current
+  // Antigravity proxies use this load → onboard → load sequence.
+  const immediateProject = await _onboardUser(accessToken, tierId, executor)
+  const onboardedProject = immediateProject ?? (
+    executor === 'antigravity'
+      ? await _rediscoverAntigravityProject(accessToken)
+      : null
+  )
+  if (!onboardedProject) {
+    throw new Error(
+      executor === 'antigravity'
+        ? `Antigravity accepted onboarding for tier "${tierId}" but did not expose the assigned project after retrying loadCodeAssist. ` +
+            'Tau did not cache an empty project; retry the request once to resume project discovery.'
+        : 'Gemini Code Assist onboarding completed without a project id.',
+    )
+  }
+  const entitled = await _fetchEntitledModelIds(
+    accessToken,
+    onboardedProject,
+    executor,
+  )
   _writeCache(executor, {
     version: CACHE_VERSION,
     projectId: onboardedProject,
@@ -807,7 +899,7 @@ async function _fetchQuotaBuckets(
 ): Promise<GeminiQuotaBucket[] | undefined> {
   const headers = executor === 'cli'
     ? _cliOnboardHeaders(accessToken)
-    : _antigravityOnboardHeaders(accessToken)
+    : antigravityLoadCodeAssistHeaders(accessToken)
 
   try {
     const res = await _fetchWithTransientRetry(
@@ -843,6 +935,103 @@ export async function fetchGeminiCliQuotaBuckets(
   projectId: string,
 ): Promise<GeminiQuotaBucket[] | undefined> {
   return _fetchQuotaBuckets(accessToken, projectId, 'cli')
+}
+
+export type CodeAssistOnboardingDecision =
+  | { kind: 'onboard'; tierId: string }
+  | { kind: 'require-user-project'; tierId: string }
+
+export function codeAssistHasEligibleTier(loadData: CodeAssistLoadData): boolean {
+  return !!(
+    _normalizeTier(loadData.paidTier?.id) ||
+    _normalizeTier(loadData.currentTier?.id) ||
+    loadData.allowedTiers?.some(tier => !!_normalizeTier(tier.id))
+  )
+}
+
+/**
+ * Tier accepted by Antigravity's onboardUser endpoint. The default allowed
+ * tier is the control-plane input; paidTier describes quota and is not a
+ * reliable onboardUser tier id.
+ */
+export function codeAssistAntigravityOnboardTierId(
+  loadData: CodeAssistLoadData,
+): string {
+  const allowedTier = loadData.allowedTiers?.find(tier => tier.isDefault)
+    ?? loadData.allowedTiers?.[0]
+  return _normalizeTier(allowedTier?.id)
+    ?? _normalizeTier(loadData.currentTier?.id)
+    ?? GEMINI_TIER_FREE
+}
+
+export function codeAssistOnboardingDecision(
+  loadData: CodeAssistLoadData,
+  executor: GeminiExecutor = 'cli',
+): CodeAssistOnboardingDecision {
+  if (executor === 'antigravity') {
+    return {
+      kind: 'onboard',
+      tierId: codeAssistAntigravityOnboardTierId(loadData),
+    }
+  }
+
+  const currentTierId = _normalizeTier(loadData.paidTier?.id)
+    ?? _normalizeTier(loadData.currentTier?.id)
+  if (currentTierId) {
+    return { kind: 'require-user-project', tierId: currentTierId }
+  }
+
+  const tier = loadData.allowedTiers?.find(candidate => candidate.isDefault)
+    ?? loadData.allowedTiers?.[0]
+  const tierId = _normalizeTier(tier?.id) ?? GEMINI_TIER_LEGACY
+  if (tierId !== GEMINI_TIER_FREE || tier?.userDefinedCloudaicompanionProject === true) {
+    return { kind: 'require-user-project', tierId }
+  }
+  return { kind: 'onboard', tierId }
+}
+
+export function codeAssistEligibilityErrorMessage(
+  executor: GeminiExecutor,
+  tiers?: CodeAssistIneligibleTier[],
+  rawResponse = '',
+): string | null {
+  const tierDetails = (tiers ?? []).flatMap(tier => [
+    tier.reasonCode?.trim() ?? '',
+    tier.reasonMessage?.trim() ?? '',
+  ])
+  const combined = [rawResponse, ...tierDetails].filter(Boolean).join(' ')
+
+  if (/UNSUPPORTED_CLIENT/i.test(combined)) {
+    return executor === 'antigravity'
+      ? 'Google rejected this account for Antigravity (UNSUPPORTED_CLIENT). ' +
+          'Confirm an active Antigravity plan at https://antigravity.google/ and run `/login antigravity` again.'
+      : 'Gemini Code Assist consumer OAuth is no longer supported. ' +
+          'Migrate the account to Antigravity at https://antigravity.google/.'
+  }
+
+  if (!tiers?.length) return null
+
+  const reasons = tiers
+    .map(tier => tier.reasonMessage?.trim() || tier.reasonCode?.trim())
+    .filter((reason): reason is string => !!reason)
+  const validationUrls = tiers.flatMap(tier => [
+    tier.validationUrl?.trim(),
+    tier.validationLearnMoreUrl?.trim(),
+  ]).filter((url): url is string => !!url)
+
+  const detail = reasons.length > 0 ? reasons.join('; ') : 'the account is not eligible'
+  const validation = validationUrls.length > 0
+    ? ` Complete account validation: ${validationUrls.join(' ')}`
+    : ''
+  const product = executor === 'antigravity' ? 'Antigravity' : 'Gemini Code Assist'
+  return `${product} access is unavailable: ${detail}.${validation}`
+}
+
+function _userDefinedProjectMessage(tierId: string): string {
+  return `Gemini Code Assist did not return a managed project for tier "${tierId}". ` +
+    'Set GOOGLE_CLOUD_PROJECT (or GEMINI_CLOUD_PROJECT) to a Google Cloud project ' +
+    'where Gemini for Google Cloud is enabled, then retry. Tau skipped legacy ' +
+    'onboardUser provisioning because this tier requires a user-defined project.'
 }
 
 function _normalizeTier(tier: string | null | undefined): string | null {
@@ -910,9 +1099,8 @@ function _extractProjectId(
 }
 
 /**
- * Run Code Assist onboardUser and poll for completion, following
- * CLIProxyAPI's retry loop (5 attempts, 2s between, 30s timeout each).
- * Throws if we can't extract a project id after the final attempt.
+ * Run Code Assist onboardUser. A completed Antigravity operation may omit
+ * the project id; callers must then rediscover it with loadCodeAssist.
  */
 async function _onboardUser(
   accessToken: string,
@@ -922,15 +1110,17 @@ async function _onboardUser(
   const ideType = executor === 'cli' ? 'GEMINI_CLI' : 'ANTIGRAVITY'
   const headers = executor === 'cli'
     ? _cliOnboardHeaders(accessToken)
-    : _antigravityOnboardHeaders(accessToken)
-  const requestBody = {
-    tierId,
-    metadata: {
-      ideType,
-      platform: 'PLATFORM_UNSPECIFIED',
-      pluginType: 'GEMINI',
-    },
-  }
+    : antigravityOnboardUserHeaders(accessToken)
+  const requestBody = executor === 'antigravity'
+    ? antigravityOnboardUserBody(tierId)
+    : {
+      tierId,
+      metadata: {
+        ideType,
+        platform: 'PLATFORM_UNSPECIFIED',
+        pluginType: 'GEMINI',
+      },
+    }
   const bodyJson = JSON.stringify(requestBody)
 
   const maxAttempts = 5
@@ -984,11 +1174,7 @@ async function _onboardUser(
 
     if (data.done === true) {
       const projectId = _extractProjectId(data.response?.cloudaicompanionProject)
-      if (projectId) return projectId
-      throw new Error(
-        'Gemini Code Assist onboardUser finished without a project id. ' +
-          'Try signing out and back in with /provider.',
-      )
+      return projectId
     }
 
     // Not done yet — wait and retry. Use 1.5s instead of CLIProxyAPI's 2s

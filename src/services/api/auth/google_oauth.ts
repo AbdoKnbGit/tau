@@ -7,9 +7,9 @@
  *      Port: 8085, path: /oauth2callback
  *
  *   2. Antigravity — pro models (3.1-pro-high, 3.1-pro-low)
- *      Client: 1071006060591-... (from CLIProxyAPI antigravity)
- *      Scopes: +cclog, +experimentsandconfigs
- *      Port: 51121, path: /oauth-callback
+ *      Client: 1071006060591-... (used by the Antigravity OAuth flow)
+ *      Scopes: +cclog, +experimentsandconfigs, +openid
+ *      Redirect: https://antigravity.google/oauth-callback (manual code paste)
  *
  * Both can be active simultaneously. The Gemini provider routes each model
  * to the correct token automatically.
@@ -76,6 +76,12 @@ interface OAuthClientConfig {
   storageKey: string
 }
 
+export interface AntigravityOAuthHandles {
+  authUrl: string
+  codeVerifier: string
+  state: string
+}
+
 function _configFor(type: GeminiOAuthType): OAuthClientConfig {
   if (type === 'cli') {
     const { id, secret } = _geminiCliCreds()
@@ -100,6 +106,7 @@ function _configFor(type: GeminiOAuthType): OAuthClientConfig {
     port: 51121,
     redirectPath: '/oauth-callback',
     scopes: [
+      'openid',
       'https://www.googleapis.com/auth/cloud-platform',
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/userinfo.profile',
@@ -114,6 +121,7 @@ function _configFor(type: GeminiOAuthType): OAuthClientConfig {
 
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+export const ANTIGRAVITY_REDIRECT_URI = 'https://antigravity.google/oauth-callback'
 
 // ─── PKCE helpers ─────────────────────────────────────────────────────
 
@@ -127,14 +135,110 @@ function generateCodeChallenge(verifier: string): string {
 
 // ─── Public API ───────────────────────────────────────────────────────
 
+function _buildAuthorizationUrl(
+  cfg: OAuthClientConfig,
+  redirectUri: string,
+  codeChallenge: string,
+  state: string,
+): string {
+  const authUrl = new URL(GOOGLE_AUTH_URL)
+  authUrl.searchParams.set('client_id', cfg.clientId)
+  authUrl.searchParams.set('redirect_uri', redirectUri)
+  authUrl.searchParams.set('response_type', 'code')
+  authUrl.searchParams.set('scope', cfg.scopes)
+  authUrl.searchParams.set('state', state)
+  authUrl.searchParams.set('code_challenge', codeChallenge)
+  authUrl.searchParams.set('code_challenge_method', 'S256')
+  authUrl.searchParams.set('access_type', 'offline')
+  authUrl.searchParams.set('prompt', 'consent')
+  return authUrl.toString()
+}
+
 /**
- * Start an OAuth flow for the given type.
- * Opens the browser and waits for callback.
+ * Begin Antigravity's browser OAuth flow.
+ *
+ * Unlike Gemini CLI, Antigravity registers a fixed HTTPS redirect. Google's
+ * callback page displays the authorization code for the user to paste back
+ * into Tau, so no localhost listener is involved.
+ */
+export function initiateAntigravityOAuth(): AntigravityOAuthHandles {
+  const cfg = _configFor('antigravity')
+  const codeVerifier = generateCodeVerifier()
+  const state = randomBytes(16).toString('hex')
+  const authUrl = _buildAuthorizationUrl(
+    cfg,
+    ANTIGRAVITY_REDIRECT_URI,
+    generateCodeChallenge(codeVerifier),
+    state,
+  )
+  return { authUrl, codeVerifier, state }
+}
+
+export function parseAntigravityOAuthCallback(input: string): {
+  code?: string
+  state?: string
+} {
+  const trimmed = input.trim()
+  if (!trimmed) return {}
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed)
+      return {
+        code: url.searchParams.get('code') || undefined,
+        state: url.searchParams.get('state') || undefined,
+      }
+    } catch {
+      return {}
+    }
+  }
+
+  const candidate = trimmed.startsWith('?') ? trimmed.slice(1) : trimmed
+  if (candidate.includes('=')) {
+    const params = new URLSearchParams(candidate)
+    const code = params.get('code') || undefined
+    const state = params.get('state') || undefined
+    if (code || state) return { code, state }
+  }
+
+  return { code: trimmed }
+}
+
+export async function completeAntigravityOAuth(
+  handles: AntigravityOAuthHandles,
+  callbackInput: string,
+): Promise<{ accessToken: string; refreshToken: string }> {
+  const parsed = parseAntigravityOAuthCallback(callbackInput)
+  if (!parsed.code) {
+    throw new Error('Missing Antigravity authorization code.')
+  }
+  if (parsed.state && parsed.state !== handles.state) {
+    throw new Error('Antigravity OAuth state mismatch. Start the login flow again.')
+  }
+
+  return _exchangeAndPersistGoogleCode(
+    'antigravity',
+    parsed.code,
+    handles.codeVerifier,
+    ANTIGRAVITY_REDIRECT_URI,
+  )
+}
+
+/**
+ * Start Gemini CLI's loopback OAuth flow. Antigravity uses the explicit
+ * initiate/complete functions above because its HTTPS callback requires a
+ * manual code paste.
  */
 export async function startGeminiOAuth(type: GeminiOAuthType): Promise<{
   accessToken: string
   refreshToken: string
 }> {
+  if (type === 'antigravity') {
+    throw new Error(
+      'Antigravity login requires an authorization-code paste. Run `/login antigravity`.',
+    )
+  }
+
   const cfg = _configFor(type)
   const codeVerifier = generateCodeVerifier()
   const codeChallenge = generateCodeChallenge(codeVerifier)
@@ -155,18 +259,7 @@ export async function startGeminiOAuth(type: GeminiOAuthType): Promise<{
 
   const redirectUri = `http://localhost:${actualPort}${cfg.redirectPath}`
 
-  const authUrl = new URL(GOOGLE_AUTH_URL)
-  authUrl.searchParams.set('client_id', cfg.clientId)
-  authUrl.searchParams.set('redirect_uri', redirectUri)
-  authUrl.searchParams.set('response_type', 'code')
-  authUrl.searchParams.set('scope', cfg.scopes)
-  authUrl.searchParams.set('state', state)
-  authUrl.searchParams.set('code_challenge', codeChallenge)
-  authUrl.searchParams.set('code_challenge_method', 'S256')
-  authUrl.searchParams.set('access_type', 'offline')
-  authUrl.searchParams.set('prompt', 'consent')
-
-  const authUrlString = authUrl.toString()
+  const authUrlString = _buildAuthorizationUrl(cfg, redirectUri, codeChallenge, state)
   const opened = await openBrowser(authUrlString)
   if (!opened) {
     console.log(
@@ -176,11 +269,21 @@ export async function startGeminiOAuth(type: GeminiOAuthType): Promise<{
 
   const authCode = await codePromise
 
+  return _exchangeAndPersistGoogleCode(type, authCode, codeVerifier, redirectUri)
+}
+
+async function _exchangeAndPersistGoogleCode(
+  type: GeminiOAuthType,
+  code: string,
+  codeVerifier: string,
+  redirectUri: string,
+): Promise<{ accessToken: string; refreshToken: string }> {
+  const cfg = _configFor(type)
   const tokenResponse = await fetch(GOOGLE_TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      code: authCode,
+      code,
       client_id: cfg.clientId,
       client_secret: cfg.clientSecret,
       redirect_uri: redirectUri,

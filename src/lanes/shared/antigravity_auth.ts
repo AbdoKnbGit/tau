@@ -9,8 +9,8 @@
  * Flow (from reference/opencode-antigravity-auth-main/):
  *   1. PKCE S256: generate verifier + challenge, open browser to
  *      accounts.google.com/o/oauth2/v2/auth with hardcoded client_id.
- *   2. Local callback on http://localhost:51121/oauth-callback captures
- *      the authorization code.
+ *   2. Google's fixed https://antigravity.google/oauth-callback page shows
+ *      the authorization code for the user to paste into the client.
  *   3. POST to oauth2.googleapis.com/token with code + verifier →
  *      { access_token, refresh_token, expires_in }.
  *   4. Discover the Code Assist project via v1internal:loadCodeAssist;
@@ -50,8 +50,10 @@ export const ANTIGRAVITY_CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g4
 export const ANTIGRAVITY_CLIENT_SECRET = (
   ['GOCS', 'PX-', 'K58FWR486', 'LdLJ1mLB8sXC4z6qDAf'].join('')
 )
+export const ANTIGRAVITY_REDIRECT_URI = 'https://antigravity.google/oauth-callback'
 
 export const ANTIGRAVITY_SCOPES = [
+  'openid',
   'https://www.googleapis.com/auth/cloud-platform',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
@@ -134,7 +136,7 @@ export interface AuthorizationUrlOpts {
 
 export function buildAuthorizationUrl(opts: AuthorizationUrlOpts): string {
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
-  const redirectUri = opts.redirectUri ?? 'http://localhost:51121/oauth-callback'
+  const redirectUri = opts.redirectUri ?? ANTIGRAVITY_REDIRECT_URI
   url.searchParams.set('client_id', ANTIGRAVITY_CLIENT_ID)
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('redirect_uri', redirectUri)
@@ -197,7 +199,7 @@ export async function awaitAuthorizationCode(port = 51121, timeoutMs = 5 * 60_00
 export async function exchangeCodeForTokens(
   code: string,
   verifier: string,
-  redirectUri = 'http://localhost:51121/oauth-callback',
+  redirectUri = ANTIGRAVITY_REDIRECT_URI,
 ): Promise<AntigravityTokens> {
   const resp = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',

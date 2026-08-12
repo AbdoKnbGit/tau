@@ -44,8 +44,11 @@ import {
 } from '../../../utils/auth.js'
 import {
   getGeminiOAuthToken,
+  initiateAntigravityOAuth,
+  completeAntigravityOAuth,
   startGeminiOAuth,
   refreshGeminiOAuth,
+  type AntigravityOAuthHandles,
   type GeminiOAuthType,
 } from './google_oauth.js'
 import { getOpenAIOAuthToken, startOpenAIOAuthFlow, refreshOpenAIToken } from './openai_oauth.js'
@@ -199,6 +202,19 @@ export async function startGeminiOAuthFlow(type: GeminiOAuthType): Promise<{
 }> {
   return startGeminiOAuth(type)
 }
+
+export function initiateAntigravityOAuthFlow(): AntigravityOAuthHandles {
+  return initiateAntigravityOAuth()
+}
+
+export async function completeAntigravityOAuthFlow(
+  handles: AntigravityOAuthHandles,
+  callbackInput: string,
+): Promise<{ accessToken: string; refreshToken: string }> {
+  return completeAntigravityOAuth(handles, callbackInput)
+}
+
+export type { AntigravityOAuthHandles }
 
 /**
  * Refresh an OAuth token for a provider.

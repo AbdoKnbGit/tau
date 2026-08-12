@@ -15,7 +15,13 @@ import {
   saveProviderKey,
   validateKeyFormat,
 } from '../services/api/auth/api_key_manager.js'
-import { startProviderOAuth, startGeminiOAuthFlow } from '../services/api/auth/provider_auth.js'
+import {
+  completeAntigravityOAuthFlow,
+  initiateAntigravityOAuthFlow,
+  startProviderOAuth,
+  startGeminiOAuthFlow,
+  type AntigravityOAuthHandles,
+} from '../services/api/auth/provider_auth.js'
 import {
   initiateCopilotOAuth, completeCopilotOAuth, type CopilotDeviceHandles,
   initiateClineOAuth, completeClineOAuth, type ClineDeviceHandles,
@@ -408,6 +414,7 @@ type FlowState =
   | { step: 'cloudflare_api_token_input'; accountId: string; error?: string }
   | { step: 'oauth_pending' }
   | { step: 'device_code'; userCode: string; verificationUri: string }
+  | { step: 'antigravity_callback'; authUrl: string }
   | { step: 'kiro_social_callback'; providerLabel: string; authUrl: string }
   | { step: 'validating' }
   | { step: 'success' }
@@ -467,6 +474,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
   const [apiKeyCursorOffset, setApiKeyCursorOffset] = useState(0)
   const [callbackUrlInput, setCallbackUrlInput] = useState('')
   const [callbackUrlCursorOffset, setCallbackUrlCursorOffset] = useState(0)
+  const [antigravityOAuth, setAntigravityOAuth] = useState<AntigravityOAuthHandles | null>(null)
   const [kiroSocialState, setKiroSocialState] = useState<{
     providerLabel: string
     provider: 'google' | 'github'
@@ -583,11 +591,28 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       return
     }
 
+    if (method === 'oauth_antigravity') {
+      setState({ step: 'oauth_pending' })
+      try {
+        const handles = initiateAntigravityOAuthFlow()
+        setAntigravityOAuth(handles)
+        setCallbackUrlInput('')
+        setCallbackUrlCursorOffset(0)
+        setState({ step: 'antigravity_callback', authUrl: handles.authUrl })
+        void openBrowser(handles.authUrl).catch(() => {})
+      } catch (err) {
+        setState({
+          step: 'error',
+          message: (err as Error)?.message ?? 'Antigravity OAuth failed',
+        })
+      }
+      return
+    }
+
     setState({ step: 'oauth_pending' })
     const oauthPromise =
       method === 'oauth_cli' ? startGeminiOAuthFlow('cli')
-        : method === 'oauth_antigravity' ? startGeminiOAuthFlow('antigravity')
-          : startProviderOAuth(provider)
+        : startProviderOAuth(provider)
     oauthPromise
       .then(async () => {
         // Activating OAuth deactivates API key for this provider.
@@ -603,6 +628,26 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       })
       .catch((err) => {
         setState({ step: 'error', message: err?.message ?? 'OAuth flow failed' })
+      })
+  }
+
+  function handleAntigravityCallbackSubmit(value: string) {
+    const callbackInput = value.trim()
+    if (!callbackInput || !antigravityOAuth) return
+
+    setState({ step: 'validating' })
+    completeAntigravityOAuthFlow(antigravityOAuth, callbackInput)
+      .then(async () => {
+        deleteProviderKey('antigravity')
+        await reloadSavedGoogleOAuthInRuntime('antigravity', 'oauth_antigravity')
+        setState({ step: 'success' })
+        setTimeout(() => onDone(true), 1000)
+      })
+      .catch((err) => {
+        setState({
+          step: 'error',
+          message: (err as Error)?.message ?? 'Antigravity OAuth failed',
+        })
       })
   }
 
@@ -949,6 +994,37 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
           </Box>
           <Text dimColor>URL: <Text color="suggestion">{state.verificationUri}</Text></Text>
           <Text dimColor>Waiting for authorization...</Text>
+        </Box>
+      )}
+
+      {state.step === 'antigravity_callback' && (
+        <Box flexDirection="column">
+          <Text bold>Step 1 — Sign in to Antigravity in your browser</Text>
+          <Text dimColor>If it did not open, copy this URL:</Text>
+          <Box marginLeft={2} marginBottom={1}>
+            <Text color="suggestion">{state.authUrl}</Text>
+          </Box>
+          <Text bold>Step 2 — Paste the authorization code below</Text>
+          <Text dimColor>
+            The Antigravity callback page displays a code after Google sign-in. Copy that code and paste it here.
+          </Text>
+          <Box marginTop={1}>
+            <Text>Authorization code: </Text>
+            <TextInput
+              value={callbackUrlInput}
+              onChange={setCallbackUrlInput}
+              onSubmit={handleAntigravityCallbackSubmit}
+              placeholder="Paste the Antigravity authorization code..."
+              focus={true}
+              showCursor={true}
+              columns={inputColumns}
+              cursorOffset={callbackUrlCursorOffset}
+              onChangeCursorOffset={setCallbackUrlCursorOffset}
+            />
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>Enter to submit, Esc to cancel</Text>
+          </Box>
         </Box>
       )}
 
