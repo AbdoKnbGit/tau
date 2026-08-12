@@ -15,6 +15,12 @@ on:
   schedule:
     - cron: '17 6 * * *'
 
+# Hosted Windows images can expose an Ollama CLI. Model pre-pulls are optional
+# first-run preparation and can wait on network/model services for many minutes;
+# CI exercises Tau's required install lifecycle without that external setup.
+env:
+  TAU_SKIP_OLLAMA_PREPULL: '1'
+
 jobs:
   # Main matrix
   # Every OS x Node 20 (minimum) and Node 22 (current LTS). fail-fast is
