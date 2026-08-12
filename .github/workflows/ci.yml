@@ -40,7 +40,21 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        run: |
+          INSTALL_STATUS=1
+          for ATTEMPT in 1 2 3; do
+            if npm ci; then
+              INSTALL_STATUS=0
+              break
+            else
+              INSTALL_STATUS=$?
+            fi
+            if [ "$ATTEMPT" -lt 3 ]; then
+              echo "npm ci failed (attempt $ATTEMPT/3); retrying transient lifecycle downloads..." >&2
+            fi
+          done
+          exit "$INSTALL_STATUS"
 
       - name: Test installer, release gate, lifecycle bridge, and production lock
         run: node --test packages/tau-installer/test/installer.test.mjs test/lifecycle-bridge.test.mjs test/platform-support.test.mjs test/production-shrinkwrap.test.mjs test/release-gate.test.mjs test/rust-lsp-setup.test.mjs test/update-routing.test.mjs
@@ -91,7 +105,19 @@ jobs:
             echo 'postpack must remove the transient root npm-shrinkwrap.json.' >&2
             exit 1
           fi
-          npm install -g "./$TARBALL"
+          INSTALL_STATUS=1
+          for ATTEMPT in 1 2 3; do
+            if npm install -g "./$TARBALL"; then
+              INSTALL_STATUS=0
+              break
+            else
+              INSTALL_STATUS=$?
+            fi
+            if [ "$ATTEMPT" -lt 3 ]; then
+              echo "Global install failed (attempt $ATTEMPT/3); retrying transient lifecycle downloads..." >&2
+            fi
+          done
+          exit "$INSTALL_STATUS"
 
       - name: Smoke test - global Tau binary runs
         run: tau --version
@@ -149,15 +175,24 @@ jobs:
       - name: Install dependencies with reviewed project policy
         shell: bash
         run: |
-          set +e
-          INSTALL_OUTPUT="$(npm ci --ignore-scripts=false --dry-run=false --dangerously-allow-all-scripts=false --strict-allow-scripts=true --no-audit --no-fund 2>&1)"
-          INSTALL_STATUS=$?
-          set -e
-          printf '%s\n' "$INSTALL_OUTPUT"
-          if grep -E 'npm warn (allow-scripts|install-scripts)' <<< "$INSTALL_OUTPUT" > /dev/null; then
-            echo 'Project installation reported an unapproved lifecycle script.' >&2
-            exit 1
-          fi
+          INSTALL_STATUS=1
+          for ATTEMPT in 1 2 3; do
+            set +e
+            INSTALL_OUTPUT="$(npm ci --ignore-scripts=false --dry-run=false --dangerously-allow-all-scripts=false --strict-allow-scripts=true --no-audit --no-fund 2>&1)"
+            INSTALL_STATUS=$?
+            set -e
+            printf '%s\n' "$INSTALL_OUTPUT"
+            if grep -E 'npm warn (allow-scripts|install-scripts)' <<< "$INSTALL_OUTPUT" > /dev/null; then
+              echo 'Project installation reported an unapproved lifecycle script.' >&2
+              exit 1
+            fi
+            if [ "$INSTALL_STATUS" -eq 0 ]; then
+              break
+            fi
+            if [ "$ATTEMPT" -lt 3 ]; then
+              echo "npm ci failed (attempt $ATTEMPT/3); retrying transient lifecycle downloads..." >&2
+            fi
+          done
           if [ "$INSTALL_STATUS" -ne 0 ]; then
             exit "$INSTALL_STATUS"
           fi
@@ -192,16 +227,25 @@ jobs:
           # not by the package.json name. Registry users still use Tau's name.
           ALLOW_SCRIPTS="file:$PWD/$TARBALL,$REGISTRY_ALLOW_SCRIPTS"
 
-          set +e
-          INSTALL_OUTPUT="$(npm install --global "./$TARBALL" --ignore-scripts=false --dry-run=false --dangerously-allow-all-scripts=false --strict-allow-scripts=true "--allow-scripts=$ALLOW_SCRIPTS" --no-audit --no-fund 2>&1)"
-          INSTALL_STATUS=$?
-          set -e
+          INSTALL_STATUS=1
+          for ATTEMPT in 1 2 3; do
+            set +e
+            INSTALL_OUTPUT="$(npm install --global "./$TARBALL" --ignore-scripts=false --dry-run=false --dangerously-allow-all-scripts=false --strict-allow-scripts=true "--allow-scripts=$ALLOW_SCRIPTS" --no-audit --no-fund 2>&1)"
+            INSTALL_STATUS=$?
+            set -e
 
-          printf '%s\n' "$INSTALL_OUTPUT"
-          if grep -E 'npm warn (allow-scripts|install-scripts)' <<< "$INSTALL_OUTPUT" > /dev/null; then
-            echo 'npm reported an unapproved lifecycle script during Tau installation.' >&2
-            exit 1
-          fi
+            printf '%s\n' "$INSTALL_OUTPUT"
+            if grep -E 'npm warn (allow-scripts|install-scripts)' <<< "$INSTALL_OUTPUT" > /dev/null; then
+              echo 'npm reported an unapproved lifecycle script during Tau installation.' >&2
+              exit 1
+            fi
+            if [ "$INSTALL_STATUS" -eq 0 ]; then
+              break
+            fi
+            if [ "$ATTEMPT" -lt 3 ]; then
+              echo "Tau global installation failed (attempt $ATTEMPT/3); retrying transient lifecycle downloads..." >&2
+            fi
+          done
           if [ "$INSTALL_STATUS" -ne 0 ]; then
             echo "Tau global installation failed with exit code $INSTALL_STATUS." >&2
             exit "$INSTALL_STATUS"
@@ -231,7 +275,18 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        shell: pwsh
+        run: |
+          $installStatus = 1
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            npm ci
+            $installStatus = $LASTEXITCODE
+            if ($installStatus -eq 0) { break }
+            if ($attempt -lt 3) {
+              Write-Warning "npm ci failed (attempt $attempt/3); retrying transient lifecycle downloads..."
+            }
+          }
+          if ($installStatus -ne 0) { exit $installStatus }
 
       - name: Build
         run: npm run build
@@ -240,7 +295,16 @@ jobs:
         shell: pwsh
         run: |
           $tarball = (npm pack --quiet | Select-Object -Last 1).Trim()
-          npm install -g "./$tarball"
+          $installStatus = 1
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            npm install -g "./$tarball"
+            $installStatus = $LASTEXITCODE
+            if ($installStatus -eq 0) { break }
+            if ($attempt -lt 3) {
+              Write-Warning "Global install failed (attempt $attempt/3); retrying transient lifecycle downloads..."
+            }
+          }
+          if ($installStatus -ne 0) { exit $installStatus }
 
       - name: Smoke test - no git-bash on PATH
         shell: pwsh
