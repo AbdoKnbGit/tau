@@ -42,6 +42,27 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
+          if ! command -v rg > /dev/null 2>&1; then
+            case "$RUNNER_OS" in
+              Linux)
+                sudo apt-get update
+                sudo apt-get install --yes ripgrep
+                ;;
+              macOS)
+                brew install ripgrep
+                ;;
+              Windows)
+                choco install ripgrep --yes --no-progress
+                ;;
+              *)
+                echo "Unsupported runner OS: $RUNNER_OS" >&2
+                exit 1
+                ;;
+            esac
+            hash -r
+          fi
+          rg --version
+
           INSTALL_STATUS=1
           for ATTEMPT in 1 2 3; do
             if npm ci; then
@@ -175,6 +196,13 @@ jobs:
       - name: Install dependencies with reviewed project policy
         shell: bash
         run: |
+          if ! command -v rg > /dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes ripgrep
+            hash -r
+          fi
+          rg --version
+
           INSTALL_STATUS=1
           for ATTEMPT in 1 2 3; do
             set +e
@@ -277,6 +305,12 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+            choco install ripgrep --yes --no-progress
+          }
+          rg --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           $installStatus = 1
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             npm ci
@@ -339,7 +373,16 @@ jobs:
       - uses: oven-sh/setup-bun@v1
         with:
           bun-version: latest
-      - run: npm ci
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if ! command -v rg > /dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes ripgrep
+            hash -r
+          fi
+          rg --version
+          npm ci
       - name: Test filesystem safety helpers
         run: |
           bun run src/utils/execFileNoThrow.test.ts
