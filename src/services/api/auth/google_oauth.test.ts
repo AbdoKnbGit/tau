@@ -8,6 +8,7 @@ import {
   ANTIGRAVITY_REDIRECT_URI,
   completeAntigravityOAuth,
   initiateAntigravityOAuth,
+  mergeGoogleOAuthTokens,
   parseAntigravityOAuthCallback,
 } from './google_oauth.js'
 
@@ -51,6 +52,60 @@ async function main(): Promise<void> {
     )
     assert(url.searchParams.get('code_challenge_method') === 'S256', 'PKCE S256 missing')
     assert(url.searchParams.get('state') === handles.state, 'state mismatch')
+    assert(url.searchParams.get('access_type') === 'offline', 'offline access missing')
+    assert(url.searchParams.get('prompt') === 'consent', 'consent prompt missing')
+  })
+
+  await test('preserves the refresh token when a refresh response omits a replacement', () => {
+    const stored = mergeGoogleOAuthTokens(
+      {
+        access_token: 'new-access',
+        expires_in: 3600,
+        token_type: 'Bearer',
+        scope: 'openid',
+      },
+      'saved-refresh',
+      1_000,
+    )
+    assert(stored.accessToken === 'new-access', 'new access token was not stored')
+    assert(stored.refreshToken === 'saved-refresh', 'saved refresh token was discarded')
+    assert(stored.expiresAt === 3_601_000, `wrong expiry: ${stored.expiresAt}`)
+  })
+
+  await test('uses a newly issued refresh token when Google returns one', () => {
+    const stored = mergeGoogleOAuthTokens(
+      {
+        access_token: 'new-access',
+        refresh_token: 'new-refresh',
+        expires_in: 3600,
+        token_type: 'Bearer',
+        scope: 'openid',
+      },
+      'saved-refresh',
+      1_000,
+    )
+    assert(stored.refreshToken === 'new-refresh', 'new refresh token was not stored')
+  })
+
+  await test('does not report persistent Antigravity login without a refresh token', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      access_token: 'temporary-access',
+      expires_in: 3600,
+      token_type: 'Bearer',
+      scope: 'openid',
+    }), { status: 200 })) as typeof fetch
+
+    const handles = initiateAntigravityOAuth()
+    let message = ''
+    try {
+      await completeAntigravityOAuth(handles, `?code=temporary&state=${handles.state}`)
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    assert(/refresh token/i.test(message), `unexpected error: ${message}`)
   })
 
   await test('accepts a bare code, query string, or full callback URL', () => {

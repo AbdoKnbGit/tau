@@ -26,7 +26,7 @@ import { openBrowser } from '../../../utils/browser.js'
 
 export type GeminiOAuthType = 'cli' | 'antigravity'
 
-interface GoogleOAuthTokens {
+export interface GoogleOAuthTokens {
   access_token: string
   refresh_token?: string
   expires_in: number
@@ -34,7 +34,7 @@ interface GoogleOAuthTokens {
   scope: string
 }
 
-interface StoredGoogleTokens {
+export interface StoredGoogleTokens {
   accessToken: string
   refreshToken: string
   expiresAt: number  // Unix timestamp ms
@@ -131,6 +131,25 @@ function generateCodeVerifier(): string {
 
 function generateCodeChallenge(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url')
+}
+
+/**
+ * Convert Google's response into Tau's persistent token shape.
+ *
+ * Google's refresh-token grant normally returns only a new access token. Keep
+ * the refresh token that authorized that grant instead of replacing it with an
+ * empty string and forcing another interactive login after the next expiry.
+ */
+export function mergeGoogleOAuthTokens(
+  tokens: GoogleOAuthTokens,
+  previousRefreshToken = '',
+  now = Date.now(),
+): StoredGoogleTokens {
+  return {
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token?.trim() || previousRefreshToken,
+    expiresAt: now + tokens.expires_in * 1000,
+  }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────
@@ -299,10 +318,12 @@ async function _exchangeAndPersistGoogleCode(
 
   const tokens = (await tokenResponse.json()) as GoogleOAuthTokens
 
-  const stored: StoredGoogleTokens = {
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token ?? '',
-    expiresAt: Date.now() + tokens.expires_in * 1000,
+  const stored = mergeGoogleOAuthTokens(tokens)
+  if (type === 'antigravity' && !stored.refreshToken) {
+    throw new Error(
+      'Google did not return a refresh token for persistent Antigravity login. '
+      + 'Remove Tau from your Google account connections, then run `/login antigravity` again.',
+    )
   }
   saveProviderKey(cfg.storageKey, JSON.stringify(stored))
 
@@ -365,11 +386,7 @@ export async function refreshGeminiOAuth(
 
   const tokens = (await response.json()) as GoogleOAuthTokens
 
-  const stored: StoredGoogleTokens = {
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token ?? refreshToken,
-    expiresAt: Date.now() + tokens.expires_in * 1000,
-  }
+  const stored = mergeGoogleOAuthTokens(tokens, refreshToken)
   saveProviderKey(cfg.storageKey, JSON.stringify(stored))
 
   // Keep the running session in sync with the freshly-refreshed token.

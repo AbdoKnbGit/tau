@@ -19,6 +19,7 @@ import {
   getMockSubscriptionType,
   shouldUseMockSubscription,
 } from '../services/mockRateLimits.js'
+import { loadProviderKey } from '../services/api/auth/api_key_manager.js'
 import {
   isOAuthTokenExpired,
   refreshOAuthToken,
@@ -1885,25 +1886,18 @@ export function getProviderOAuthToken(provider: APIProvider): string | null {
 /** Load a stored OAuth token from provider-keys.json */
 function _loadStoredOAuthToken(provider: string): string | null {
   try {
-    const { readFileSync, existsSync } = require('fs')
-    const { join } = require('path')
-    const { homedir } = require('os')
-    const keysFile = join(homedir(), '.config', 'claude-code', 'provider-keys.json')
-    if (!existsSync(keysFile)) return null
-    const data = JSON.parse(readFileSync(keysFile, 'utf-8'))
-
     // Gemini now uses the CLI-tier OAuth only — Antigravity has its own
     // provider row that reads gemini_oauth_antigravity directly.
     if (provider === 'gemini') {
-      return _tryParseToken(data?.keys?.['gemini_oauth_cli'])
-          ?? _tryParseToken(data?.keys?.['gemini_oauth'])  // legacy
+      return _tryParseToken(loadProviderKey('gemini_oauth_cli') ?? undefined)
+          ?? _tryParseToken(loadProviderKey('gemini_oauth') ?? undefined)  // legacy
     }
     if (provider === 'antigravity') {
-      return _tryParseToken(data?.keys?.['gemini_oauth_antigravity'])
+      return _tryParseToken(loadProviderKey('gemini_oauth_antigravity') ?? undefined)
     }
 
     const oauthKey = `${provider}_oauth`
-    return _tryParseToken(data?.keys?.[oauthKey])
+    return _tryParseToken(loadProviderKey(oauthKey) ?? undefined)
   } catch {
     return null
   }
@@ -1911,22 +1905,15 @@ function _loadStoredOAuthToken(provider: string): string | null {
 
 function _hasStoredOAuthCredential(provider: string): boolean {
   try {
-    const { readFileSync, existsSync } = require('fs')
-    const { join } = require('path')
-    const { homedir } = require('os')
-    const keysFile = join(homedir(), '.config', 'claude-code', 'provider-keys.json')
-    if (!existsSync(keysFile)) return false
-    const data = JSON.parse(readFileSync(keysFile, 'utf-8'))
-
     if (provider === 'gemini') {
-      return _hasStoredOAuthBlob(data?.keys?.['gemini_oauth_cli'])
-        || _hasStoredOAuthBlob(data?.keys?.['gemini_oauth'])
+      return _hasStoredOAuthBlob(loadProviderKey('gemini_oauth_cli') ?? undefined)
+        || _hasStoredOAuthBlob(loadProviderKey('gemini_oauth') ?? undefined)
     }
     if (provider === 'antigravity') {
-      return _hasStoredOAuthBlob(data?.keys?.['gemini_oauth_antigravity'])
+      return _hasStoredOAuthBlob(loadProviderKey('gemini_oauth_antigravity') ?? undefined)
     }
 
-    return _hasStoredOAuthBlob(data?.keys?.[`${provider}_oauth`])
+    return _hasStoredOAuthBlob(loadProviderKey(`${provider}_oauth`) ?? undefined)
   } catch {
     return false
   }
@@ -2182,14 +2169,7 @@ function _validateKeyFormat(provider: APIProvider, key: string): { valid: boolea
 /** Load a stored key from ~/.config/claude-code/provider-keys.json */
 function _loadStoredKey(provider: string): string | null {
   try {
-    // Dynamic import to avoid circular deps — api_key_manager is a leaf module
-    const { readFileSync, existsSync } = require('fs')
-    const { join } = require('path')
-    const { homedir } = require('os')
-    const keysFile = join(homedir(), '.config', 'claude-code', 'provider-keys.json')
-    if (!existsSync(keysFile)) return null
-    const data = JSON.parse(readFileSync(keysFile, 'utf-8'))
-    return data?.keys?.[provider] ?? null
+    return loadProviderKey(provider)
   } catch {
     return null
   }
