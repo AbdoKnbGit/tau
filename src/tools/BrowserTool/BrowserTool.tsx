@@ -85,6 +85,7 @@ AUTOMATIC BEHAVIORS (read the warnings, do not fight them):
 - JS dialogs (alert/confirm/prompt) are auto-accepted so they can never wedge the session; the dialog text shows up in warnings.
 - Downloads land in a known folder; "Download finished: name → path" appears in warnings.
 - Consent banners auto-dismissed; new tabs from clicks auto-followed; hidden lazy content nudged awake.
+- If the user focuses or interacts with another browser tab, the tool follows that active tab automatically and reports the handoff in warnings.
 
 RECOVERY (the reason field tells you which happened — adjust, do not retry blindly):
 - stale_ref — the page changed since your last observe. Observe and use the new refs.

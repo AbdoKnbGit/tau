@@ -186,6 +186,13 @@ interface TargetInfo {
   url: string;
 }
 
+export interface TabActivityProbe {
+  focused: boolean;
+  visible: boolean;
+  url?: string;
+  title?: string;
+}
+
 interface KeyEntry {
   key: string;
   code: string;
@@ -450,11 +457,98 @@ function createRefRegistryKey(): string {
   );
 }
 
+function createTabActivityBindingName(): string {
+  return (
+    "__tauTabActivity_" +
+    Date.now().toString(36) +
+    "_" +
+    Math.random().toString(36).slice(2)
+  );
+}
+
+/**
+ * Browser-side activity tracker. It reports only trusted focus/input events;
+ * Node verifies focus again before changing the active CDP target. The tracker
+ * owns and cleans up only its own listeners, so it cannot disturb application
+ * or extension listeners on the page.
+ */
+export function buildTabActivityScript(bindingName: string): string {
+  const binding = JSON.stringify(bindingName);
+  return `
+(function(){
+  const bindingName = ${binding};
+  const stateKey = '__tauTabActivityTracker';
+  const previous = window[stateKey];
+  if (previous && previous.bindingName === bindingName) return true;
+  if (previous && typeof previous.cleanup === 'function') {
+    try { previous.cleanup(); } catch (e) {}
+  }
+
+  const listeners = [];
+  const add = (target, type, handler) => {
+    target.addEventListener(type, handler, true);
+    listeners.push({ target, type, handler });
+  };
+  const notify = (event) => {
+    if (!event || event.isTrusted !== true) return;
+    if (document.visibilityState !== 'visible' || !document.hasFocus()) return;
+    const report = window[bindingName];
+    if (typeof report !== 'function') return;
+    try {
+      report(JSON.stringify({ type: String(event.type || 'activity'), ts: Date.now() }));
+    } catch (e) {}
+  };
+
+  for (const type of ['pointerdown', 'mousedown', 'touchstart', 'keydown']) {
+    add(document, type, notify);
+  }
+  add(window, 'focus', notify);
+  add(document, 'visibilitychange', notify);
+
+  const state = {
+    bindingName,
+    cleanup() {
+      for (const item of listeners) {
+        try { item.target.removeEventListener(item.type, item.handler, true); } catch (e) {}
+      }
+    }
+  };
+  try {
+    Object.defineProperty(window, stateKey, { configurable: true, value: state });
+  } catch (e) {
+    window[stateKey] = state;
+  }
+  return true;
+})()
+`;
+}
+
+/** Pure decision gate used after a tab reports human activity. */
+export function shouldAdoptTabActivity(
+  activeTargetId: string | undefined,
+  candidateTargetId: string | undefined,
+  probe: TabActivityProbe | null,
+): boolean {
+  return !!(
+    candidateTargetId &&
+    candidateTargetId !== activeTargetId &&
+    probe?.focused &&
+    probe.visible
+  );
+}
+
 class BrowserSessionService {
   private client?: CdpClient;
   private child?: ChildProcess;
   private mode: "spawned" | "attached" = "spawned";
   private sessions = new Map<string, string>();
+  /** Coalesces concurrent attachment attempts for the same tab. */
+  private sessionPromises = new Map<string, Promise<string>>();
+  /** Tabs with the full console/network/stealth setup, not just activity tracking. */
+  private fullyPreparedTargets = new Set<string>();
+  /** Tabs with the human-activity binding and page listener installed. */
+  private activityTargets = new Set<string>();
+  private activityBindingName = createTabActivityBindingName();
   private activeTargetId?: string;
   private cachedElements = new Map<number, InteractiveElement>();
   private cachedElementsTargetId?: string;
@@ -624,6 +718,7 @@ class BrowserSessionService {
       await this.setupDownloads();
       await this.prepareStealth();
       await this.ensureActiveTarget();
+      await this.startTabActivityTracking();
       return {
         launched: "attached",
         note: `Attached to the already-running browser on port ${connectPort} (its real profile and logins).`,
@@ -641,6 +736,7 @@ class BrowserSessionService {
     await this.setupDownloads();
     await this.prepareStealth();
     await this.ensureActiveTarget();
+    await this.startTabActivityTracking();
     return {
       launched: "spawned",
       note: `Launched ${launched.executable}${headless ? " (headless)" : ""} with an isolated automation profile.`,
@@ -697,6 +793,7 @@ class BrowserSessionService {
   }
 
   async selectTab(index: number): Promise<TabInfo[]> {
+    const client = this.requireClient();
     const tabs = await this.listTabs();
     const tab = tabs[index];
     if (!tab) {
@@ -704,7 +801,10 @@ class BrowserSessionService {
         `No tab with index ${index}. Open tabs: ${tabs.map((t) => `${t.index}: ${t.title || t.url}`).join(", ") || "none"}`,
       );
     }
+    // Keep the tool's active target and the user-visible browser tab aligned.
+    await client.send("Target.activateTarget", { targetId: tab.targetId });
     this.activeTargetId = tab.targetId;
+    this.coordClicks = [];
     await this.getActiveSession();
     return this.listTabs();
   }
@@ -715,7 +815,9 @@ class BrowserSessionService {
       "Target.createTarget",
       { url: "about:blank" },
     );
+    await client.send("Target.activateTarget", { targetId });
     this.activeTargetId = targetId;
+    this.coordClicks = [];
     await this.getActiveSession();
     if (url) await this.navigate(url);
   }
@@ -735,6 +837,9 @@ class BrowserSessionService {
     const staleSession = this.sessions.get(tab.targetId);
     if (staleSession) this.sessionToTarget.delete(staleSession);
     this.sessions.delete(tab.targetId);
+    this.sessionPromises.delete(tab.targetId);
+    this.fullyPreparedTargets.delete(tab.targetId);
+    this.activityTargets.delete(tab.targetId);
     this.consoleBuf.delete(tab.targetId);
     this.networkBuf.delete(tab.targetId);
     this.networkIndex.delete(tab.targetId);
@@ -2058,21 +2163,56 @@ class BrowserSessionService {
   }
 
   private async getActiveSession(): Promise<string> {
-    const client = this.requireClient();
     if (!this.activeTargetId) {
       await this.ensureActiveTarget();
     }
     const targetId = this.activeTargetId!;
+    const sessionId = await this.ensureTargetSession(targetId);
+    await this.prepareTargetForAutomation(targetId, sessionId);
+    return sessionId;
+  }
+
+  /**
+   * Attaches to a page once and installs only the lightweight activity tracker.
+   * Background tabs stay free of console/network capture until the user or the
+   * tool actually makes one active.
+   */
+  private async ensureTargetSession(targetId: string): Promise<string> {
+    const client = this.requireClient();
     const cached = this.sessions.get(targetId);
     if (cached) return cached;
-    const { sessionId } = await client.send<{ sessionId: string }>(
-      "Target.attachToTarget",
-      { targetId, flatten: true },
-    );
-    this.sessions.set(targetId, sessionId);
-    this.sessionToTarget.set(sessionId, targetId);
-    await client.send("Page.enable", {}, sessionId).catch(() => undefined);
-    await client.send("Runtime.enable", {}, sessionId).catch(() => undefined);
+    const pending = this.sessionPromises.get(targetId);
+    if (pending) return pending;
+
+    const attachment = (async () => {
+      const { sessionId } = await client.send<{ sessionId: string }>(
+        "Target.attachToTarget",
+        { targetId, flatten: true },
+      );
+      this.sessions.set(targetId, sessionId);
+      this.sessionToTarget.set(sessionId, targetId);
+      await client.send("Page.enable", {}, sessionId).catch(() => undefined);
+      await client.send("Runtime.enable", {}, sessionId).catch(() => undefined);
+      await this.installTabActivityTracker(targetId, sessionId);
+      return sessionId;
+    })();
+    this.sessionPromises.set(targetId, attachment);
+    try {
+      return await attachment;
+    } finally {
+      if (this.sessionPromises.get(targetId) === attachment) {
+        this.sessionPromises.delete(targetId);
+      }
+    }
+  }
+
+  private async prepareTargetForAutomation(
+    targetId: string,
+    sessionId: string,
+  ): Promise<void> {
+    if (this.fullyPreparedTargets.has(targetId)) return;
+    this.fullyPreparedTargets.add(targetId);
+    const client = this.requireClient();
     // Console/network capture and dialog interception ride on these domains;
     // failures are tolerated (an exotic target without them still browses).
     await client.send("Log.enable", {}, sessionId).catch(() => undefined);
@@ -2084,7 +2224,127 @@ class BrowserSessionService {
       )
       .catch(() => undefined);
     await this.installStealth(targetId, sessionId);
-    return sessionId;
+  }
+
+  private async installTabActivityTracker(
+    targetId: string,
+    sessionId: string,
+  ): Promise<void> {
+    if (this.activityTargets.has(targetId)) return;
+    this.activityTargets.add(targetId);
+    const client = this.client;
+    if (!client) return;
+    const source = buildTabActivityScript(this.activityBindingName);
+    await client
+      .send("Runtime.addBinding", { name: this.activityBindingName }, sessionId)
+      .catch(() => undefined);
+    await client
+      .send("Page.addScriptToEvaluateOnNewDocument", { source }, sessionId)
+      .catch(() => undefined);
+    // The new-document hook covers future navigations; this covers the page
+    // already loaded when Tau attaches to an existing browser.
+    await client
+      .send(
+        "Runtime.evaluate",
+        { expression: source, returnByValue: true },
+        sessionId,
+      )
+      .catch(() => undefined);
+  }
+
+  /** Discover existing/future pages, attach the tracker once, then align with the focused tab. */
+  private async startTabActivityTracking(): Promise<void> {
+    const client = this.requireClient();
+    await client
+      .send("Target.setDiscoverTargets", { discover: true })
+      .catch(() => undefined);
+    const { targetInfos } = await client.send<{ targetInfos: TargetInfo[] }>(
+      "Target.getTargets",
+    );
+    await Promise.allSettled(
+      targetInfos
+        .filter(isRegularPage)
+        .map((target) => this.ensureTargetSession(target.targetId)),
+    );
+    await this.syncFocusedTab(false);
+  }
+
+  private async probeTabFocus(
+    sessionId: string,
+  ): Promise<TabActivityProbe | null> {
+    const client = this.client;
+    if (!client?.isOpen) return null;
+    const evaluated = await client
+      .send<EvaluateResult>(
+        "Runtime.evaluate",
+        {
+          expression:
+            `({ focused: document.hasFocus(), ` +
+            `visible: document.visibilityState === "visible", ` +
+            `url: location.href, title: document.title })`,
+          returnByValue: true,
+        },
+        sessionId,
+        2_000,
+      )
+      .catch(() => null);
+    const value = evaluated?.result?.value;
+    if (!value || typeof value !== "object") return null;
+    const probe = value as Partial<TabActivityProbe>;
+    return {
+      focused: probe.focused === true,
+      visible: probe.visible === true,
+      ...(typeof probe.url === "string" ? { url: probe.url } : {}),
+      ...(typeof probe.title === "string" ? { title: probe.title } : {}),
+    };
+  }
+
+  private adoptActiveTarget(
+    targetId: string,
+    probe: TabActivityProbe,
+    announce: boolean,
+  ): void {
+    if (targetId === this.activeTargetId) return;
+    this.activeTargetId = targetId;
+    this.lastKnownUrl = probe.url ?? this.lastKnownUrl;
+    this.coordClicks = [];
+    if (announce) {
+      const label = probe.title?.trim() || probe.url || "another browser tab";
+      this.sessionNotes.push(
+        `Browser focus moved to ${label}; Browser followed the active tab.`,
+      );
+    }
+  }
+
+  private async syncFocusedTab(announce: boolean): Promise<void> {
+    const entries = [...this.sessions.entries()];
+    const probes = await Promise.all(
+      entries.map(async ([targetId, sessionId]) => ({
+        targetId,
+        probe: await this.probeTabFocus(sessionId),
+      })),
+    );
+    const focused = probes.find(
+      ({ targetId, probe }) =>
+        shouldAdoptTabActivity(this.activeTargetId, targetId, probe),
+    );
+    if (focused?.probe) {
+      this.adoptActiveTarget(focused.targetId, focused.probe, announce);
+    }
+  }
+
+  private async handleTabActivityBinding(
+    params: { name?: string },
+    sessionId?: string,
+  ): Promise<void> {
+    if (params.name !== this.activityBindingName || !sessionId) return;
+    const targetId = this.sessionToTarget.get(sessionId);
+    if (!targetId || targetId === this.activeTargetId) return;
+    const probe = await this.probeTabFocus(sessionId);
+    if (!shouldAdoptTabActivity(this.activeTargetId, targetId, probe) || !probe) {
+      return;
+    }
+    this.adoptActiveTarget(targetId, probe, true);
   }
 
   /**
@@ -2165,11 +2425,24 @@ class BrowserSessionService {
   private installClientHooks(): void {
     const client = this.client;
     if (!client) return;
+    client.on(
+      "Target.targetCreated",
+      (params: { targetInfo?: TargetInfo }) => {
+        const target = params.targetInfo;
+        if (!target || !isRegularPage(target)) return;
+        // Event listeners are synchronous in the minimal CDP client; attachment
+        // is best-effort and coalesced with any simultaneous explicit switch.
+        void this.ensureTargetSession(target.targetId).catch(() => undefined);
+      },
+    );
     client.on("Target.detachedFromTarget", (params: { sessionId?: string }) => {
       for (const [targetId, sessionId] of this.sessions) {
         if (sessionId === params.sessionId) {
           this.sessions.delete(targetId);
           this.sessionToTarget.delete(sessionId);
+          this.sessionPromises.delete(targetId);
+          this.fullyPreparedTargets.delete(targetId);
+          this.activityTargets.delete(targetId);
         }
       }
     });
@@ -2179,6 +2452,14 @@ class BrowserSessionService {
 
     const targetOf = (sessionId?: string): string | undefined =>
       sessionId ? this.sessionToTarget.get(sessionId) : undefined;
+    client.on(
+      "Runtime.bindingCalled",
+      (params: { name?: string }, sessionId?: string) => {
+        void this.handleTabActivityBinding(params, sessionId).catch(
+          () => undefined,
+        );
+      },
+    );
     const pushConsole = (targetId: string, entry: ConsoleEntry) => {
       let buf = this.consoleBuf.get(targetId);
       if (!buf) {
@@ -2419,7 +2700,7 @@ class BrowserSessionService {
     );
   }
 
-  /** Returns and clears pending dialog/download notes for outcome warnings. */
+  /** Returns and clears pending browser-session notes for outcome warnings. */
   drainSessionNotes(): string[] {
     if (this.sessionNotes.length === 0) return [];
     const notes = this.sessionNotes.slice(-8);
@@ -2450,7 +2731,11 @@ class BrowserSessionService {
     this.client = undefined;
     this.child = undefined;
     this.sessions.clear();
+    this.sessionPromises.clear();
     this.sessionToTarget.clear();
+    this.fullyPreparedTargets.clear();
+    this.activityTargets.clear();
+    this.activityBindingName = createTabActivityBindingName();
     this.activeTargetId = undefined;
     this.cachedElements.clear();
     this.cachedElementsTargetId = undefined;
