@@ -25,6 +25,7 @@
  */
 
 import { randomUUID } from 'crypto'
+import { APIConnectionError } from '@anthropic-ai/sdk'
 import type {
   AnthropicStreamEvent,
 } from '../../services/api/providers/base_provider.js'
@@ -51,7 +52,11 @@ import {
   freezeSessionVolatileText,
   volatileFreezeKey,
 } from '../shared/volatile_freeze.js'
-import { geminiApi, TAU_STABLE_SESSION_ID_FIELD } from './api.js'
+import {
+  geminiApi,
+  isGeminiRetryableNetworkError,
+  TAU_STABLE_SESSION_ID_FIELD,
+} from './api.js'
 import { getOrCreateCacheWithUsage, invalidateCache } from '../../services/api/providers/gemini_cache.js'
 import {
   ANTIGRAVITY_MODEL_IDS,
@@ -128,6 +133,7 @@ export class GeminiLane implements Lane {
     // we fall back to treating the whole thing as stable (no regression).
     const split = splitSystemAtBoundary(systemText)
     const isAntigravityModel = ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase())
+    const isAntigravityRequest = providerHint === 'antigravity' || isAntigravityModel
     const isAntigravityGemini =
       isAntigravityModel && isAntigravityGeminiModel(model)
     // Snapshot semantics for EVERY request on this lane, not just Antigravity
@@ -251,7 +257,7 @@ export class GeminiLane implements Lane {
       thinking,
       cacheName,
     })
-    if (isAntigravityModel) {
+    if (isAntigravityRequest) {
       // Session-id mimicry (→ X-Machine-Session-Id) and the cache-debug
       // trace shape/observe the call without affecting latency, so they
       // apply to every Antigravity request — Gemini and Claude alike.
@@ -617,6 +623,22 @@ export class GeminiLane implements Lane {
         && (err.status === 404 || /cachedContent/i.test(err.body))
       ) {
         invalidateCache(cacheName)
+      }
+      if (
+        isAntigravityRequest
+        && !signal.aborted
+        && isGeminiRetryableNetworkError(err)
+      ) {
+        // The API client has exhausted its bounded same-request backoff. Do
+        // not persist that transport failure as an assistant turn: the shared
+        // retry controller can repeat the identical request while preserving
+        // Antigravity's prompt bytes and stable X-Machine-Session-Id affinity.
+        currentCall = null
+        const cause = err instanceof Error ? err : new Error(String(err))
+        throw new APIConnectionError({
+          message: `Antigravity API connection error (model: ${model}): ${cause.message}`,
+          cause,
+        })
       }
       // Make sure message_start is emitted so downstream assembly works.
       if (!messageStartEmitted) {

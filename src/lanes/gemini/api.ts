@@ -1227,13 +1227,17 @@ function getNetworkErrorCode(error: unknown): string | undefined {
   return undefined
 }
 
-function isRetryableTransport(error: unknown): boolean {
-  if (error instanceof GeminiApiError) return error.isRetryable
+export function isGeminiRetryableNetworkError(error: unknown): boolean {
   if (error instanceof EndpointTimeoutError) return true
   const code = getNetworkErrorCode(error)
   if (code && RETRYABLE_NETWORK_CODES.has(code)) return true
   if (error instanceof Error && error.message.toLowerCase().includes('fetch failed')) return true
   return false
+}
+
+function isRetryableTransport(error: unknown): boolean {
+  if (error instanceof GeminiApiError) return error.isRetryable
+  return isGeminiRetryableNetworkError(error)
 }
 
 function parseRetryAfter(value: string | null): number | undefined {
