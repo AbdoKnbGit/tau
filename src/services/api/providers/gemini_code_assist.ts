@@ -313,6 +313,9 @@ export function codeAssistGenerationBasesForModel(
 // Code Assist proxy (cloudcode-pa). They share the `userAgent: "antigravity"`
 // envelope but need small content-level fixes (see wrapForCodeAssist).
 export const ANTIGRAVITY_MODELS: readonly ModelInfo[] = [
+  { id: 'gemini-3.7-flash-high', name: 'Gemini 3.7 Flash (High)', contextWindow: 1048576 },
+  { id: 'gemini-3.7-flash-medium', name: 'Gemini 3.7 Flash (Medium)', contextWindow: 1048576 },
+  { id: 'gemini-3.7-flash-low', name: 'Gemini 3.7 Flash (Low)', contextWindow: 1048576 },
   { id: 'gemini-3.6-flash-high', name: 'Gemini 3.6 Flash (High)', contextWindow: 1048576 },
   { id: 'gemini-3.6-flash-medium', name: 'Gemini 3.6 Flash (Medium)', contextWindow: 1048576 },
   { id: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)', contextWindow: 1048576 },
@@ -391,6 +394,9 @@ export function getAntigravityModelDisplayName(model: string): string | null {
 
 export function resolveAntigravityWireModel(model: string): string {
   const normalized = model.toLowerCase()
+  if (/^gemini-3\.7-flash-(?:high|medium|low)$/.test(normalized)) {
+    return 'gemini-3.7-flash-tiered'
+  }
   if (/^gemini-3\.6-flash-(?:high|medium|low)$/.test(normalized)) {
     return 'gemini-3.6-flash-tiered'
   }

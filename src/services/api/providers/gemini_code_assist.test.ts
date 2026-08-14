@@ -144,6 +144,20 @@ async function main(): Promise<void> {
     }
   })
 
+  await test('routes Gemini 3.7 Flash picker variants through the tiered Antigravity model', async () => {
+    const variants = new Map([
+      ['gemini-3.7-flash-high', 'Gemini 3.7 Flash (High)'],
+      ['gemini-3.7-flash-medium', 'Gemini 3.7 Flash (Medium)'],
+      ['gemini-3.7-flash-low', 'Gemini 3.7 Flash (Low)'],
+    ])
+    for (const [id, name] of variants) {
+      const pickerModel = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
+      assert(pickerModel?.name === name, `missing ${name} from Antigravity picker`)
+      assert(executorForModel(id) === 'antigravity', `${id} must use Antigravity`)
+      assert(resolveAntigravityWireModel(id) === 'gemini-3.7-flash-tiered', `${id} must use the tiered wire model`)
+    }
+  })
+
   await test('gemini-3-flash is hidden from the picker but stays routable', async () => {
     // Hidden from selection: its channel commits the implicit cache slowly
     // and misses replicas often (measured 64-71% vs 85-93% on 3.5/Claude).

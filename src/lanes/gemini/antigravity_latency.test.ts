@@ -42,6 +42,14 @@ function main(): void {
     assert(cfg.includeThoughts === true, `includeThoughts=${String(cfg.includeThoughts)}`)
   })
 
+  test('Gemini 3.7 Flash variants preserve their Antigravity thinking level', () => {
+    for (const level of ['low', 'medium', 'high'] as const) {
+      const cfg = resolveThinkingConfig(`gemini-3.7-flash-${level}`, -1)
+      assert(cfg.thinkingLevel === level, `${level} thinkingLevel=${String(cfg.thinkingLevel)}`)
+      assert(cfg.includeThoughts === false, `${level} includeThoughts=${String(cfg.includeThoughts)}`)
+    }
+  })
+
   test('TAU_GEMINI_INCLUDE_THOUGHTS can opt back into visible thoughts', () => {
     process.env.TAU_GEMINI_INCLUDE_THOUGHTS = '1'
     try {
