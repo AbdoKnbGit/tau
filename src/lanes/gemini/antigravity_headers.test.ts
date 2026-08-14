@@ -4,7 +4,10 @@
  * Run: bun run src/lanes/gemini/antigravity_headers.test.ts
  */
 
-import { ANTIGRAVITY_API_VERSION } from '../../constants/antigravity.js'
+import {
+  ANTIGRAVITY_API_VERSION,
+  ANTIGRAVITY_HUB_USER_AGENT,
+} from '../../constants/antigravity.js'
 import {
   ANTIGRAVITY_GENERATION_BASE,
   CODE_ASSIST_BASE,
@@ -41,14 +44,18 @@ function main(): void {
   console.log('antigravity headers:')
 
   test('generateContent headers advertise the current Antigravity API version', () => {
-    assert(ANTIGRAVITY_API_VERSION === '2.0.0', `unexpected Antigravity version: ${ANTIGRAVITY_API_VERSION}`)
+    assert(ANTIGRAVITY_API_VERSION === '2.8.1', `unexpected Antigravity version: ${ANTIGRAVITY_API_VERSION}`)
     const headers = antigravityApiHeaders('token')
     assert(
-      headers['User-Agent']?.startsWith(`antigravity/${ANTIGRAVITY_API_VERSION} `),
+      headers['User-Agent'] === ANTIGRAVITY_HUB_USER_AGENT,
       `bad User-Agent: ${headers['User-Agent']}`,
     )
     assert(!('X-Goog-Api-Client' in headers), 'generateContent path should not add X-Goog-Api-Client')
-    assert(headers['x-request-source'] === 'local', 'missing local request source')
+    assert(!('x-request-source' in headers), 'generation path should not add proxy-only request source')
+    assert(
+      Object.keys(headers).sort().join(',') === 'Authorization,Content-Type,User-Agent',
+      `unexpected generation headers: ${Object.keys(headers).join(',')}`,
+    )
   })
 
   test('Antigravity generation routes to the working daily backend', () => {
@@ -259,13 +266,13 @@ function main(): void {
     )
   })
 
-  test('legacy project-discovery headers use the same Antigravity API version', () => {
+  test('legacy project-discovery headers use the same minimal Hub identity', () => {
     const headers = buildApiHeaders('token')
     assert(
-      headers['User-Agent']?.startsWith(`antigravity/${ANTIGRAVITY_API_VERSION} `),
+      headers['User-Agent'] === ANTIGRAVITY_HUB_USER_AGENT,
       `bad User-Agent: ${headers['User-Agent']}`,
     )
-    assert(headers['Client-Metadata']?.includes('"ideType":"ANTIGRAVITY"'), 'metadata lost Antigravity ideType')
+    assert(!('Client-Metadata' in headers), 'project discovery should not send legacy client metadata')
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

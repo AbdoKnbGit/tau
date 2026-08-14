@@ -70,13 +70,6 @@ const GEMINI_PRO_MODEL_IDS = new Set([
   'gemini-2.5-pro',
 ])
 
-function antigravitySessionHeaders(wrappedBody: Record<string, unknown>): Record<string, string> {
-  const request = wrappedBody.request as { sessionId?: unknown } | undefined
-  return typeof request?.sessionId === 'string'
-    ? { 'X-Machine-Session-Id': request.sessionId }
-    : {}
-}
-
 class CodeAssistEndpointTimeoutError extends Error {
   constructor(message: string) {
     super(message)
@@ -708,12 +701,7 @@ export class GeminiProvider extends BaseProvider {
         : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
 
       const headers = executor === 'antigravity'
-        ? {
-          ...antigravityApiHeaders(oauthToken),
-          ...antigravitySessionHeaders(wrapped as unknown as Record<string, unknown>),
-          'Accept': 'text/event-stream',
-          'Connection': 'keep-alive',
-        }
+        ? antigravityApiHeaders(oauthToken)
         : { ...geminiCLIApiHeaders(oauthToken, model), 'Connection': 'keep-alive' }
 
       const ac = new AbortController()
@@ -837,12 +825,7 @@ export class GeminiProvider extends BaseProvider {
         : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
 
       const headers = executor === 'antigravity'
-        ? {
-          ...antigravityApiHeaders(oauthToken),
-          ...antigravitySessionHeaders(wrapped as unknown as Record<string, unknown>),
-          'Accept': 'application/json',
-          'Connection': 'keep-alive',
-        }
+        ? antigravityApiHeaders(oauthToken)
         : { ...geminiCLIApiHeaders(oauthToken, model), 'Connection': 'keep-alive' }
 
       let response: Response | null = null

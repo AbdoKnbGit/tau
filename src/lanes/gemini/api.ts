@@ -53,13 +53,6 @@ import { parseGeminiApiSSE as parseGeminiApiSSEEvent } from './api_sse.js'
 // identical so isPromptTooLongMessage() downstream matches.
 const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 
-function antigravitySessionHeaders(wrappedBody: Record<string, unknown>): Record<string, string> {
-  const request = wrappedBody.request as { sessionId?: unknown } | undefined
-  return typeof request?.sessionId === 'string'
-    ? { 'X-Machine-Session-Id': request.sessionId }
-    : {}
-}
-
 export const TAU_STABLE_SESSION_ID_FIELD = '__tauStableSessionId'
 
 function takeTauStableSessionId(body: Record<string, unknown>): string | undefined {
@@ -500,12 +493,7 @@ class GeminiApiClient {
             ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId))
             : wrapForGeminiCLI(model, projectId, body)
           const headers = executor === 'antigravity'
-            ? {
-              ...antigravityApiHeaders(token),
-              ...antigravitySessionHeaders(wrappedBody as unknown as Record<string, unknown>),
-              'Accept': 'text/event-stream',
-              'Connection': 'keep-alive',
-            }
+            ? antigravityApiHeaders(token)
             : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
           // Code Assist uses proto-json snake_case — rename thoughtSignature
           // on the wire. One string replace on the outgoing payload; cheap.
@@ -793,12 +781,7 @@ class GeminiApiClient {
             ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId))
             : wrapForGeminiCLI(model, projectId, body)
           const headers = executor === 'antigravity'
-            ? {
-              ...antigravityApiHeaders(token),
-              ...antigravitySessionHeaders(wrappedBody as unknown as Record<string, unknown>),
-              'Accept': 'application/json',
-              'Connection': 'keep-alive',
-            }
+            ? antigravityApiHeaders(token)
             : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
           const serialized = JSON.stringify(wrappedBody)
             .replace(/"thoughtSignature"\s*:/g, '"thought_signature":')

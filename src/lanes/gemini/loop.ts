@@ -258,8 +258,8 @@ export class GeminiLane implements Lane {
       cacheName,
     })
     if (isAntigravityRequest) {
-      // Session-id mimicry (→ X-Machine-Session-Id) and the cache-debug
-      // trace shape/observe the call without affecting latency, so they
+      // A stable body session ID and the cache-debug trace shape/observe the
+      // call without affecting latency, so they
       // apply to every Antigravity request — Gemini and Claude alike.
       request[TAU_STABLE_SESSION_ID_FIELD] = stableAntigravitySessionId(sessionId, messages)
       if (process.env.TAU_CACHE_DEBUG) {
@@ -632,7 +632,7 @@ export class GeminiLane implements Lane {
         // The API client has exhausted its bounded same-request backoff. Do
         // not persist that transport failure as an assistant turn: the shared
         // retry controller can repeat the identical request while preserving
-        // Antigravity's prompt bytes and stable X-Machine-Session-Id affinity.
+        // Antigravity's prompt bytes and stable body session affinity.
         currentCall = null
         const cause = err instanceof Error ? err : new Error(String(err))
         throw new APIConnectionError({

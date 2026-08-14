@@ -22,12 +22,9 @@
  * Before making calls, the user must be "onboarded" — this happens once via
  * loadCodeAssist → onboardUser, and the returned project ID is cached on disk.
  *
- * IMPORTANT: metadata.ideType MUST be "ANTIGRAVITY" (not IDE_UNSPECIFIED)
- * and the request must carry the User-Agent / X-Goog-Api-Client /
- * Client-Metadata headers below. That's the combination that routes
- * quota against the Antigravity pool instead of the free Code Assist
- * tier — and it's the difference between gemini-3-pro-preview working
- * and throwing "Rate limit or quota exceeded" on the second message.
+ * IMPORTANT: metadata.ideType MUST be "ANTIGRAVITY" (not IDE_UNSPECIFIED).
+ * Bootstrap and generation also need one consistent Hub User-Agent;
+ * onboardUser alone adds the node client routing header.
  *
  * Ported from router-for-me/CLIProxyAPI internal/auth/antigravity/auth.go.
  */
@@ -51,6 +48,7 @@ import {
   ANTIGRAVITY_ENDPOINT_DAILY,
   ANTIGRAVITY_ENDPOINT_DAILY_SANDBOX,
   ANTIGRAVITY_ENDPOINT_PROD,
+  ANTIGRAVITY_HUB_USER_AGENT,
 } from '../../../constants/antigravity.js'
 
 export const CODE_ASSIST_BASE = `${ANTIGRAVITY_ENDPOINT_PROD}/v1internal`
@@ -420,11 +418,8 @@ export function executorForModel(model: string): GeminiExecutor {
   return ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase()) ? 'antigravity' : 'cli'
 }
 
-// Current Antigravity auth/bootstrap fingerprint. These values are used only
-// by loadCodeAssist/onboardUser/quota authentication, not generation calls.
-const ANTIGRAVITY_AUTH_VERSION = '2.2.1'
-const ANTIGRAVITY_AUTH_BASE_UA =
-  `antigravity/hub/${ANTIGRAVITY_AUTH_VERSION} darwin/arm64`
+// Antigravity onboardUser adds its node client marker to the shared Hub
+// fingerprint used by loadCodeAssist and generation.
 const ANTIGRAVITY_NODE_API_CLIENT = 'google-api-nodejs-client/10.3.0'
 const ANTIGRAVITY_NODE_X_GOOG_API_CLIENT = 'gl-node/22.21.1'
 
@@ -583,7 +578,7 @@ export function antigravityLoadCodeAssistHeaders(
   return {
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
-    'User-Agent': ANTIGRAVITY_AUTH_BASE_UA,
+    'User-Agent': ANTIGRAVITY_HUB_USER_AGENT,
   }
 }
 
@@ -594,7 +589,7 @@ export function antigravityOnboardUserHeaders(
   return {
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
-    'User-Agent': `${ANTIGRAVITY_AUTH_BASE_UA} ${ANTIGRAVITY_NODE_API_CLIENT}`,
+    'User-Agent': `${ANTIGRAVITY_HUB_USER_AGENT} ${ANTIGRAVITY_NODE_API_CLIENT}`,
     'X-Goog-Api-Client': ANTIGRAVITY_NODE_X_GOOG_API_CLIENT,
   }
 }
@@ -607,7 +602,7 @@ export function antigravityOnboardUserBody(tierId: string): {
     tier_id: tierId,
     metadata: {
       ide_type: 'ANTIGRAVITY',
-      ide_version: ANTIGRAVITY_AUTH_VERSION,
+      ide_version: ANTIGRAVITY_API_VERSION,
       ide_name: 'antigravity',
     },
   }
@@ -1313,18 +1308,15 @@ export function geminiCLIApiHeaders(accessToken: string, model: string): Record<
 
 /**
  * Headers for Antigravity executor API calls.
- * Matches CLIProxyAPI's antigravity executor:
- *   User-Agent: antigravity/<version> <os>/<arch>
- *   NO X-Goog-Api-Client header — quota routing relies on body.userAgent instead.
+ * Keep these minimal and identical across operating systems; the request body
+ * carries the Antigravity routing metadata. X-Goog-Api-Client is only used by
+ * onboardUser above.
  */
 export function antigravityApiHeaders(accessToken: string): Record<string, string> {
-  const os = process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux'
-  const arch = process.arch === 'x64' ? 'x64' : process.arch === 'arm64' ? 'arm64' : 'x86'
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${accessToken}`,
-    'User-Agent': `antigravity/${ANTIGRAVITY_API_VERSION} ${os}/${arch}`,
-    'x-request-source': 'local',
+    'User-Agent': ANTIGRAVITY_HUB_USER_AGENT,
   }
 }
 

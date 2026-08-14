@@ -1,4 +1,9 @@
-export const ANTIGRAVITY_API_VERSION = '2.0.0'
+// Keep control-plane and generation calls on one Antigravity Hub release.
+// Mixing client families creates an inconsistent request profile and makes
+// opaque backend rejections much harder to distinguish from real quota errors.
+export const ANTIGRAVITY_API_VERSION = '2.8.1'
+export const ANTIGRAVITY_HUB_USER_AGENT =
+  `antigravity/hub/${ANTIGRAVITY_API_VERSION} darwin/arm64`
 // Primary generation channel. The non-sandbox daily endpoint is what the
 // Antigravity client actually ships against (and what CLIProxyAPI/9router
 // route to first — CLIProxyAPI has the sandbox host commented out

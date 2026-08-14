@@ -23,6 +23,10 @@ import {
   resolveAntigravityWireModel,
   wrapForCodeAssist,
 } from './gemini_code_assist.js'
+import {
+  ANTIGRAVITY_API_VERSION,
+  ANTIGRAVITY_HUB_USER_AGENT,
+} from '../../../constants/antigravity.js'
 import type { GeminiStreamChunk } from '../adapters/gemini_to_anthropic.js'
 
 let passed = 0
@@ -297,7 +301,7 @@ async function main(): Promise<void> {
 
     const loadHeaders = antigravityLoadCodeAssistHeaders('access-token')
     assert(
-      loadHeaders['User-Agent'] === 'antigravity/hub/2.2.1 darwin/arm64',
+      loadHeaders['User-Agent'] === ANTIGRAVITY_HUB_USER_AGENT,
       `load UA=${loadHeaders['User-Agent']}`,
     )
     assert(!('X-Goog-Api-Client' in loadHeaders), 'load request has legacy X-Goog header')
@@ -306,7 +310,7 @@ async function main(): Promise<void> {
     const onboardHeaders = antigravityOnboardUserHeaders('access-token')
     assert(
       onboardHeaders['User-Agent'] ===
-        'antigravity/hub/2.2.1 darwin/arm64 google-api-nodejs-client/10.3.0',
+        `${ANTIGRAVITY_HUB_USER_AGENT} google-api-nodejs-client/10.3.0`,
       `onboard UA=${onboardHeaders['User-Agent']}`,
     )
     assert(
@@ -317,7 +321,7 @@ async function main(): Promise<void> {
     const body = antigravityOnboardUserBody(tierId)
     assert(body.tier_id === 'standard-tier', `tier_id=${body.tier_id}`)
     assert(body.metadata.ide_type === 'ANTIGRAVITY', `ide_type=${body.metadata.ide_type}`)
-    assert(body.metadata.ide_version === '2.2.1', `ide_version=${body.metadata.ide_version}`)
+    assert(body.metadata.ide_version === ANTIGRAVITY_API_VERSION, `ide_version=${body.metadata.ide_version}`)
   })
 
   await test('turns shutdown eligibility responses into actionable errors', async () => {

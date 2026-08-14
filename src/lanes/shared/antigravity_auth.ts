@@ -31,10 +31,10 @@ import { join } from 'path'
 import { homedir, platform } from 'os'
 import { URL } from 'url'
 import {
-  ANTIGRAVITY_API_VERSION,
   ANTIGRAVITY_ENDPOINT_AUTOPUSH,
   ANTIGRAVITY_ENDPOINT_DAILY,
   ANTIGRAVITY_ENDPOINT_PROD,
+  ANTIGRAVITY_HUB_USER_AGENT,
 } from '../../constants/antigravity.js'
 
 // Hardcoded from upstream plugin. These are public installed-app credentials
@@ -285,9 +285,7 @@ export function buildApiHeaders(accessToken: string): Record<string, string> {
   return {
     'Authorization': `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
-    'User-Agent': `antigravity/${ANTIGRAVITY_API_VERSION} google-cloud-sdk vscode_cloudshelleditor/0.1`,
-    'X-Goog-Api-Client': 'google-cloud-sdk vscode_cloudshelleditor/0.1',
-    'Client-Metadata': '{"ideType":"ANTIGRAVITY","platform":"WINDOWS","pluginType":"GEMINI"}',
+    'User-Agent': ANTIGRAVITY_HUB_USER_AGENT,
   }
 }
 

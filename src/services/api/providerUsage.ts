@@ -22,7 +22,6 @@ import {
   parseAntigravityUsage,
 } from './antigravityUsageParser.js'
 import {
-  ANTIGRAVITY_API_VERSION,
   ANTIGRAVITY_ENDPOINT_AUTOPUSH,
   ANTIGRAVITY_ENDPOINT_DAILY,
   ANTIGRAVITY_ENDPOINT_PROD,
@@ -2494,13 +2493,7 @@ async function fetchAntigravityAvailableModels(
     ANTIGRAVITY_ENDPOINT_AUTOPUSH,
   ]
   const payloads = projectId ? [{ project: projectId }, {}] : [{}]
-  const headers = {
-    ...antigravityApiHeaders(accessToken),
-    Accept: 'application/json',
-    'X-Client-Name': 'antigravity',
-    'X-Client-Version': ANTIGRAVITY_API_VERSION,
-    'x-request-source': 'local',
-  }
+  const headers = antigravityApiHeaders(accessToken)
   let bestData: unknown = null
   const errors: string[] = []
 
