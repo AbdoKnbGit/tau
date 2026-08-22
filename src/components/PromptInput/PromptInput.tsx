@@ -119,6 +119,7 @@ import type { SuggestionItem } from './PromptInputFooterSuggestions.js';
 import { PromptInputModeIndicator } from './PromptInputModeIndicator.js';
 import { PromptInputQueuedCommands } from './PromptInputQueuedCommands.js';
 import { PromptInputStashNotice } from './PromptInputStashNotice.js';
+import { PromptInputStatusBar } from './PromptInputStatusBar.js';
 import { useMaybeTruncateInput } from './useMaybeTruncateInput.js';
 import { usePromptInputPlaceholder } from './usePromptInputPlaceholder.js';
 import { useShowFastIconHint } from './useShowFastIconHint.js';
@@ -2009,7 +2010,8 @@ function PromptInput({
     rows
   } = useTerminalSize();
   const promptFrameColumns = isCenteredPrompt && columns >= 80 ? Math.min(columns - 4, Math.max(72, Math.floor(columns * 0.78))) : columns;
-  const textInputColumns = promptFrameColumns - 3 - companionReservedColumns(promptFrameColumns, companionSpeaking);
+  const promptContentColumns = promptFrameColumns - companionReservedColumns(promptFrameColumns, companionSpeaking);
+  const textInputColumns = promptContentColumns - 3;
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
@@ -2306,6 +2308,7 @@ function PromptInput({
           </Box>
         </>}
       <PromptInputFooter apiKeyStatus={apiKeyStatus} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={input.length > 0} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} bridgeSelected={bridgeSelected} tmuxSelected={tmuxSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
+      <PromptInputStatusBar messages={messages} columns={promptContentColumns} />
       {isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {isFullscreenEnvEnabled() ?
     // position=absolute takes zero layout height so the spinner
