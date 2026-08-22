@@ -46,7 +46,8 @@
     "postinstall": "node scripts/postinstall.mjs",
     "prepublishOnly": "node release/production-shrinkwrap.mjs --check && node release/verify-installer-published.mjs && node build.mjs",
     "prepack": "node release/production-shrinkwrap.mjs --stage",
-    "postpack": "node release/production-shrinkwrap.mjs --clean"
+    "postpack": "node release/production-shrinkwrap.mjs --clean",
+    "open-when-up": "node scripts/open-if-running.js http://localhost:3000"
   },
   "keywords": [
     "tau",
