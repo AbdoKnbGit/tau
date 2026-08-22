@@ -26,31 +26,31 @@ const inputSchema = lazySchema(() =>
     action: z
       .enum(['save', 'list', 'diff', 'restore'])
       .describe(
-        '"save" creates a snapshot; "list" returns recent snapshots; "diff" returns per-file changes between the current working tree and a snapshot; "restore" rolls the working tree back to a snapshot.',
+        'save, list, diff, or restore',
       ),
     hash: z
       .string()
       .optional()
       .describe(
-        'Required for "diff" and "restore". Full or unambiguous prefix of a snapshot hash.',
+        'Required for diff/restore; full hash or prefix',
       ),
     compareHash: z
       .string()
       .optional()
       .describe(
-        'Optional second snapshot hash. When set with "diff", compares snapshot `hash` (base) against `compareHash` (target) instead of against the working tree.',
+        'For diff, optional target snapshot; hash is the base',
       ),
     label: z
       .string()
       .optional()
-      .describe('Optional short description for the snapshot (save only).'),
+      .describe('Short save label'),
     limit: z
       .number()
       .int()
       .min(1)
       .max(500)
       .optional()
-      .describe('Max entries for "list" (default 20, max 500).'),
+      .describe('List limit; default 20, max 500'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>

@@ -23,6 +23,14 @@
 export const DEFAULT_MAX_RESULT_SIZE_CHARS = 20_000
 
 /**
+ * Cheap-mode system cap for one inline tool result. Persisted results keep a
+ * deterministic ~2 KB evidence preview plus a ToolOutputRetrieve handle, so
+ * 10 KB leaves useful local context without allowing every tool invocation to
+ * permanently add the normal-mode 20 KB ceiling to the transcript.
+ */
+export const CHEAP_MODE_MAX_RESULT_SIZE_CHARS = 10_000
+
+/**
  * Maximum size for tool results in tokens.
  * Based on analysis of tool result sizes, we set this to a reasonable upper bound
  * to prevent excessively large tool results from consuming too much context.
@@ -63,6 +71,25 @@ export const MAX_TOOL_RESULT_BYTES = MAX_TOOL_RESULT_TOKENS * BYTES_PER_TOKEN
  * see getPerMessageBudgetLimit() in toolResultStorage.ts.
  */
 export const MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 60_000
+
+/**
+ * Cheap-mode aggregate target for one API-level user message. This is high
+ * enough for several small parallel results, while bounding a reducible fresh
+ * tool batch to roughly 6K text tokens. Frozen historical bytes, Read output,
+ * or blocks smaller than a retrieval handle are explicit irreducible overage.
+ */
+export const CHEAP_MODE_MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 24_000
+
+/**
+ * Maximum raw payload returned by one ToolOutputRetrieve call in cheap mode.
+ * Kept below the 10 KB per-tool persistence threshold so retrieving a saved
+ * result cannot create another persisted-output handle. Pagination and search
+ * still expose the complete file across bounded calls.
+ */
+export const CHEAP_MODE_TOOL_OUTPUT_RETRIEVE_BYTES = 8_000
+
+/** Preview payload used only when the aggregate message budget offloads a result. */
+export const AGGREGATE_TOOL_RESULT_PREVIEW_CHARS = 512
 
 /**
  * Maximum character length for tool summary strings in compact views.

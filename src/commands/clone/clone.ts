@@ -13,6 +13,7 @@ import type {
 } from '../../types/logs.js'
 import { parseJSONL } from '../../utils/json.js'
 import {
+  dedupeContentReplacementRecords,
   getFirstMeaningfulUserMessageTextContent,
   getProjectDir,
   getTranscriptPath,
@@ -94,13 +95,15 @@ async function createClone(customTitle?: string): Promise<{
       isTranscriptMessage(entry) && !entry.isSidechain,
   )
 
-  const contentReplacementRecords = entries
-    .filter(
-      (entry): entry is ContentReplacementEntry =>
-        entry.type === 'content-replacement' &&
-        entry.sessionId === originalSessionId,
-    )
-    .flatMap(entry => entry.replacements)
+  const contentReplacementRecords = dedupeContentReplacementRecords(
+    entries
+      .filter(
+        (entry): entry is ContentReplacementEntry =>
+          entry.type === 'content-replacement' &&
+          entry.sessionId === originalSessionId,
+      )
+      .flatMap(entry => entry.replacements),
+  )
 
   if (mainConversationEntries.length === 0) {
     throw new Error('No messages to clone')

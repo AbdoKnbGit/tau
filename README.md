@@ -84,7 +84,7 @@ tau update
 
 **`/tools`** - Toggle the optional tools available in normal mode.
 
-**`/mode cheap`** - Use core tools only. **`/mode normal`** - Use your configured tools.
+**`/mode cheap`** - Use a compact, cache-stable core with bounded tool output. **`/mode normal`** - Use your configured tools.
 
 See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 

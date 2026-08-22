@@ -28,9 +28,7 @@ export { TOOL_SEARCH_TOOL_NAME } from './constants.js'
 
 import { TOOL_SEARCH_TOOL_NAME } from './constants.js'
 
-const PROMPT_HEAD = `Fetches full schema definitions for deferred tools so they can be called.
-
-`
+const PROMPT_HEAD = `Loads callable schemas for deferred tools. `
 
 // Matches isDeferredToolsDeltaEnabled in toolSearch.ts (not imported —
 // toolSearch.ts imports from this file). When enabled: tools announced
@@ -41,18 +39,13 @@ function getToolLocationHint(): string {
     process.env.USER_TYPE === 'ant' ||
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_glacier_2xr', false)
   return deltaEnabled
-    ? 'Deferred tools appear by name in <system-reminder> messages.'
-    : 'Deferred tools appear by name in <available-deferred-tools> messages.'
+    ? 'Their names and short intents appear in <system-reminder> messages.'
+    : 'Their names and short intents appear in <available-deferred-tools> messages.'
 }
 
-const PROMPT_TAIL = ` Until fetched, only the name is known — there is no parameter schema, so the tool cannot be invoked. This tool takes a query, matches it against the deferred tool list, and returns the matched tools' complete JSONSchema definitions inside a <functions> block. Once a tool's schema appears in that result, it is callable exactly like any tool defined at the top of the prompt.
+const PROMPT_TAIL = ` Load before calling: the intent list is not a parameter schema. A call made without the schema still runs when its arguments happen to match, but any parameter the schema does not define is rejected rather than ignored. Batch related exact names to avoid repeated cache re-warms.
 
-Result format: each matched tool appears as one <function>{"description": "...", "name": "...", "parameters": {...}}</function> line inside the <functions> block — the same encoding as the tool list at the top of this prompt.
-
-Query forms:
-- "select:Read,Edit,Grep" — fetch these exact tools by name
-- "notebook jupyter" — keyword search, up to max_results best matches
-- "+slack send" — require "slack" in the name, rank by remaining terms`
+Queries: "select:Read,Edit,Grep" for exact names; "notebook jupyter" for keywords; "+slack send" to require a term.`
 
 /**
  * Check if a tool should be deferred (requires ToolSearch to load).
@@ -64,25 +57,11 @@ Query forms:
  * _meta['anthropic/alwaysLoad']). This check runs first, before any other rule.
  */
 export function isDeferredTool(tool: Tool): boolean {
-  // Power-mode gate — nothing is deferred in these cases. On the native
-  // (non-Anthropic) lanes a deferred tool is physically dropped from the
-  // request and reaches the model as a name-only stub, so the model calls it
-  // blind (TaskCreate, WebFetch, NotebookEdit, …) and the call fails schema
-  // validation before it can recover. Sending every schema upfront makes tool
-  // calling behave identically on every provider with zero first-call
-  // failures, and with zero deferred tools ToolSearch drops out of the request
-  // automatically (claude.ts / native lazy paths both guard on "no deferred
-  // tools").
-  //
-  //   - cheap: never defer, on any provider. The cheap tool set is a small
-  //     fixed allowlist so deferral saves almost nothing, and MCP tools are
-  //     already excluded from the pool, so this can't pull MCP into the prompt.
-  //   - normal (the default): never defer on a native lane — the schema-fail
-  //     non-Anthropic lanes; Bedrock/Vertex/Foundry keep their existing
-  //     server-side deferral behavior.
-  //   - full (retired/hidden): unchanged — defers as before.
-  // Policy override: first-party Anthropic keeps schemas inline to avoid
-  // direct calls with hidden/remembered parameter shapes.
+  // Provider gate. Deferral is enabled only for Anthropic's native discovery
+  // transport or a Tau lane with a verified client-side implementation. Every
+  // other/dedicated provider receives eager schemas. The central policy also
+  // keeps cheap client-native lanes eager for prefix-cache stability while
+  // retaining server-native deferral, whose physical tool block stays fixed.
   const powerMode = getPowerModeFromSettings(getInitialSettings())
   if (shouldDisableToolDeferralForProvider(getAPIProvider(), powerMode)) {
     return false
@@ -136,12 +115,44 @@ export function isDeferredTool(tool: Tool): boolean {
 }
 
 /**
- * Format one deferred-tool line for the <available-deferred-tools> user
- * message. Search hints (tool.searchHint) are not rendered — the
- * hints A/B (exp_xenhnnmn0smrx4, stopped Mar 21) showed no benefit.
+ * Format a compact discovery catalog entry. Name-only entries encouraged
+ * weaker models to call hidden tools with guessed parameters. A one-line
+ * intent provides enough routing signal while keeping the parameter schema
+ * deferred. MCP metadata is untrusted, so normalize and cap it here even when
+ * an upstream adapter already sanitized it.
  */
+export const MAX_DEFERRED_TOOL_INTENT_CHARS = 120
+
+function normalizeDeferredToolIntent(intent: string): string {
+  // Catalog lines are embedded inside an XML-ish system-reminder wrapper.
+  // Reject delimiter characters instead of escaping them: escaping can grow a
+  // 10k untrusted MCP hint before the cap is applied, and truncating an entity
+  // can leave a raw `&` at the boundary. Removing the three delimiters first
+  // keeps the cap deterministic and makes closing-tag injection impossible.
+  const normalized = intent
+    .replace(/[<>&]/g, ' ')
+    .replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, ' ')
+    .trim()
+  const characters = Array.from(normalized)
+  if (characters.length <= MAX_DEFERRED_TOOL_INTENT_CHARS) return normalized
+  return `${characters.slice(0, MAX_DEFERRED_TOOL_INTENT_CHARS - 1).join('')}…`
+}
+
 export function formatDeferredToolLine(tool: Tool): string {
-  return tool.name
+  const inferredIntent = tool.name
+    .replace(/^mcp__/, '')
+    .replace(/__/g, ' via ')
+    .replace(/_/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+  // MCP metadata is controlled by an external server. The callable name is
+  // already enough to infer a compact intent, so never place its searchHint in
+  // model-visible XML. Built-in hints are still normalized defensively.
+  const isUntrustedMcpTool = tool.isMcp === true || tool.name.startsWith('mcp__')
+  const explicitIntent = !isUntrustedMcpTool && tool.searchHint
+    ? normalizeDeferredToolIntent(tool.searchHint)
+    : ''
+  return `${tool.name} — ${explicitIntent || normalizeDeferredToolIntent(inferredIntent)}`
 }
 
 export function getPrompt(): string {

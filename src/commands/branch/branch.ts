@@ -13,6 +13,7 @@ import type {
 } from '../../types/logs.js'
 import { parseJSONL } from '../../utils/json.js'
 import {
+  dedupeContentReplacementRecords,
   getFirstMeaningfulUserMessageTextContent,
   getProjectDir,
   getTranscriptPath,
@@ -113,13 +114,15 @@ async function createFork(customTitle?: string): Promise<{
   // as FROZEN and sent as full content (prompt cache miss + permanent overage).
   // sessionId must be rewritten since loadTranscriptFile keys lookup by the
   // session's messages' sessionId.
-  const contentReplacementRecords = entries
-    .filter(
-      (entry): entry is ContentReplacementEntry =>
-        entry.type === 'content-replacement' &&
-        entry.sessionId === originalSessionId,
-    )
-    .flatMap(entry => entry.replacements)
+  const contentReplacementRecords = dedupeContentReplacementRecords(
+    entries
+      .filter(
+        (entry): entry is ContentReplacementEntry =>
+          entry.type === 'content-replacement' &&
+          entry.sessionId === originalSessionId,
+      )
+      .flatMap(entry => entry.replacements),
+  )
 
   if (mainConversationEntries.length === 0) {
     throw new Error('No messages to branch')

@@ -36,56 +36,56 @@ const inputSchema = lazySchema(() =>
     pattern: z
       .string()
       .describe(
-        'The regular expression pattern to search for in file contents',
+        'Ripgrep regular expression',
       ),
     path: z
       .string()
       .optional()
       .describe(
-        'File or directory to search in (rg PATH). Defaults to current working directory.',
+        'File/directory; defaults to cwd',
       ),
     glob: z
       .string()
       .optional()
       .describe(
-        'Glob pattern to filter files (e.g. "*.js", "*.{ts,tsx}") - maps to rg --glob',
+        'File filter glob, e.g. "*.{ts,tsx}"',
       ),
     output_mode: z
       .enum(['content', 'files_with_matches', 'count'])
       .optional()
       .describe(
-        'Output mode: "content" shows matching lines (supports -A/-B/-C context, -n line numbers, head_limit), "files_with_matches" shows file paths (supports head_limit), "count" shows match counts (supports head_limit). Defaults to "files_with_matches".',
+        'content=lines, files_with_matches=paths (default), count=counts',
       ),
     '-B': semanticNumber(z.number().optional()).describe(
-      'Number of lines to show before each match (rg -B). Requires output_mode: "content", ignored otherwise.',
+      'Lines before each match; content mode only',
     ),
     '-A': semanticNumber(z.number().optional()).describe(
-      'Number of lines to show after each match (rg -A). Requires output_mode: "content", ignored otherwise.',
+      'Lines after each match; content mode only',
     ),
     '-C': semanticNumber(z.number().optional()).describe('Alias for context.'),
     context: semanticNumber(z.number().optional()).describe(
-      'Number of lines to show before and after each match (rg -C). Requires output_mode: "content", ignored otherwise.',
+      'Lines before and after; content mode only',
     ),
     '-n': semanticBoolean(z.boolean().optional()).describe(
-      'Show line numbers in output (rg -n). Requires output_mode: "content", ignored otherwise. Defaults to true.',
+      'Show line numbers in content mode; default true',
     ),
     '-i': semanticBoolean(z.boolean().optional()).describe(
-      'Case insensitive search (rg -i)',
+      'Case-insensitive search',
     ),
     type: z
       .string()
       .optional()
       .describe(
-        'File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than include for standard file types.',
+        'Ripgrep file type, e.g. js, py, rust, go',
       ),
     head_limit: semanticNumber(z.number().optional()).describe(
-      'Limit output to first N lines/entries, equivalent to "| head -N". Works across all output modes: content (limits output lines), files_with_matches (limits file paths), count (limits count entries). Defaults to 250 when unspecified. Pass 0 for unlimited (use sparingly — large result sets waste context). In content mode, when matches flood far past the limit the result becomes a per-file summary (match counts + line numbers) instead of a truncated line dump; narrow the search or paginate to see the lines themselves.',
+      'Max lines/entries after offset; default 250, 0 unlimited. Flooded content may become a per-file summary.',
     ),
     offset: semanticNumber(z.number().optional()).describe(
-      'Skip first N lines/entries before applying head_limit, equivalent to "| tail -n +N | head -N". Works across all output modes. Defaults to 0.',
+      'Skip N lines/entries before head_limit; default 0',
     ),
     multiline: semanticBoolean(z.boolean().optional()).describe(
-      'Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false.',
+      'Allow patterns and `.` to span lines; default false',
     ),
   }),
 )

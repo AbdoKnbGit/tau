@@ -197,7 +197,10 @@ import {
   isToolSearchEnabled,
   isToolSearchToolAvailable,
 } from 'src/utils/toolSearch.js'
-import { selectToolsForToolSearchRequest } from 'src/utils/toolSearchRequestFilter.js'
+import {
+  resolveToolSearchRequestTransports,
+  selectToolsForToolSearchRequest,
+} from 'src/utils/toolSearchRequestFilter.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
 import {
@@ -1605,6 +1608,15 @@ async function* queryModel(
     'query',
   )
   let useNativeLaneToolSearch = isNativeLaneToolSearchEnabled(options.model)
+  const requestProvider = getAPIProvider()
+  const routedToolSearch = resolveToolSearchRequestTransports({
+    useToolSearch,
+    useNativeLaneToolSearch,
+    provider: requestProvider,
+    model: options.model,
+  })
+  useToolSearch = routedToolSearch.useToolSearch
+  useNativeLaneToolSearch = routedToolSearch.useNativeLaneToolSearch
 
   // Precompute once — isDeferredTool does 2 GrowthBook lookups per call
   const deferredToolNames = new Set<string>()
@@ -1653,7 +1665,8 @@ async function* queryModel(
     useNativeLaneToolSearch,
     deferredToolNames,
     discoveredToolNames: extractDiscoveredToolNames(messages),
-    provider: getAPIProvider(),
+    provider: requestProvider,
+    model: options.model,
   })
 
   // Add tool search beta header if enabled - required for defer_loading to be accepted

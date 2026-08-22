@@ -494,6 +494,39 @@ type InternalEventWriter = (
 ) => Promise<void>
 
 /**
+ * CCR's internal-event payload is an opaque Entry and supplies its own UUID,
+ * so main-thread replacement metadata can use the existing transcript event
+ * contract. Agent-scoped records are not foreground metadata. Legacy v1
+ * session-ingress is intentionally excluded: its append chain requires a
+ * TranscriptMessage UUID and has no metadata-entry protocol.
+ */
+function getContentReplacementCCRWrite(
+  entry: ContentReplacementEntry,
+):
+  | { eventType: 'transcript'; payload: Record<string, unknown> }
+  | undefined {
+  if (entry.agentId) return undefined
+  return {
+    eventType: 'transcript',
+    payload: entry as unknown as Record<string, unknown>,
+  }
+}
+
+/** Last decision for a tool_use_id wins, matching resume reconstruction. */
+export function dedupeContentReplacementRecords(
+  records: readonly ContentReplacementRecord[],
+): ContentReplacementRecord[] {
+  const byDecision = new Map<string, ContentReplacementRecord>()
+  for (const record of records) {
+    const key = `${record.kind}\0${record.toolUseId}`
+    // Delete first so Map iteration follows the order of final occurrences.
+    byDecision.delete(key)
+    byDecision.set(key, record)
+  }
+  return [...byDecision.values()]
+}
+
+/**
  * Register a CCR v2 internal event writer for transcript persistence.
  * When set, transcript messages are written as internal worker events
  * instead of going through v1 Session Ingress.
@@ -554,6 +587,8 @@ class Project {
   private internalEventWriter: InternalEventWriter | null = null
   private internalEventReader: InternalEventReader | null = null
   private internalSubagentEventReader: InternalEventReader | null = null
+  /** Exact fork seeds already written in this process, keyed by fresh SID. */
+  private inheritedContentReplacementKeys = new Set<string>()
   private pendingWriteCount: number = 0
   private flushResolvers: Array<() => void> = []
   // Per-file write queues. Each entry carries a resolve callback so
@@ -838,26 +873,42 @@ class Project {
     }
   }
 
-  async flush(): Promise<void> {
-    // Cancel pending timer
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer)
-      this.flushTimer = null
+  private hasQueuedWrites(): boolean {
+    for (const queue of this.writeQueues.values()) {
+      if (queue.length > 0) return true
     }
-    // Wait for any in-flight drain to finish
-    if (this.activeDrain) {
-      await this.activeDrain
-    }
-    // Drain anything remaining in the queues
-    await this.drainWriteQueue()
+    return false
+  }
 
-    // Wait for non-queue tracked operations (e.g. removeMessageByUuid)
-    if (this.pendingWriteCount === 0) {
-      return
+  async flush(): Promise<void> {
+    // Repeat until nothing is left in either place. A tracked write can reach
+    // enqueueWrite only after an await of its own — appending to a session
+    // other than the current one stats the target file first — so a single
+    // drain-then-wait pass can return with that entry freshly queued and
+    // unwritten. On shutdown that silently drops it; for a content-replacement
+    // record the resumed session then re-sends the full tool output.
+    for (let pass = 0; pass < 8; pass++) {
+      // Cancel pending timer
+      if (this.flushTimer) {
+        clearTimeout(this.flushTimer)
+        this.flushTimer = null
+      }
+      // Wait for any in-flight drain to finish
+      if (this.activeDrain) {
+        await this.activeDrain
+      }
+      // Drain anything remaining in the queues
+      await this.drainWriteQueue()
+
+      // Wait for non-queue tracked operations (e.g. removeMessageByUuid)
+      if (this.pendingWriteCount > 0) {
+        await new Promise<void>(resolve => {
+          this.flushResolvers.push(resolve)
+        })
+        continue
+      }
+      if (!this.hasQueuedWrites() && !this.activeDrain) return
     }
-    return new Promise<void>(resolve => {
-      this.flushResolvers.push(resolve)
-    })
   }
 
   /**
@@ -1113,16 +1164,34 @@ class Project {
   async insertContentReplacement(
     replacements: ContentReplacementRecord[],
     agentId?: AgentId,
+    sessionId: UUID = getSessionId() as UUID,
   ) {
     return this.trackWrite(async () => {
       const entry: ContentReplacementEntry = {
         type: 'content-replacement',
-        sessionId: getSessionId() as UUID,
+        sessionId,
         agentId,
         replacements,
       }
-      await this.appendEntry(entry)
+      await this.appendEntry(entry, sessionId)
     })
+  }
+
+  async insertInheritedContentReplacements(
+    replacements: readonly ContentReplacementRecord[],
+  ): Promise<void> {
+    const sessionId = getSessionId() as UUID
+    const unrecorded = dedupeContentReplacementRecords(replacements).filter(
+      record => {
+        const key = `${sessionId}\0${record.kind}\0${record.toolUseId}\0${record.replacement}`
+        if (this.inheritedContentReplacementKeys.has(key)) return false
+        this.inheritedContentReplacementKeys.add(key)
+        return true
+      },
+    )
+    if (unrecorded.length > 0) {
+      await this.insertContentReplacement(unrecorded)
+    }
   }
 
   async appendEntry(entry: Entry, sessionId: UUID = getSessionId() as UUID) {
@@ -1205,6 +1274,7 @@ class Project {
         ? getAgentTranscriptPath(entry.agentId)
         : sessionFile
       void this.enqueueWrite(targetFile, entry)
+      await this.persistContentReplacementToCCR(entry)
     } else if (entry.type === 'marble-origami-commit') {
       // Always append. Commit order matters for restore (later commits may
       // reference earlier commits' summary messages), so these must be
@@ -1342,6 +1412,21 @@ class Project {
     }
   }
 
+  private async persistContentReplacementToCCR(
+    entry: ContentReplacementEntry,
+  ): Promise<void> {
+    const write = getContentReplacementCCRWrite(entry)
+    if (!write || !this.internalEventWriter || isShuttingDown()) return
+    try {
+      await this.internalEventWriter(write.eventType, write.payload)
+    } catch {
+      logEvent('tengu_session_persistence_failed', {})
+      logForDebugging(
+        'Failed to write content replacement as CCR internal event',
+      )
+    }
+  }
+
   setRemoteIngressUrl(url: string): void {
     this.remoteIngressUrl = url
     logForDebugging(`Remote persistence enabled with URL: ${url}`)
@@ -1358,6 +1443,17 @@ class Project {
     )
     // Use fast flush interval for CCR v2
     this.FLUSH_INTERVAL_MS = REMOTE_FLUSH_INTERVAL_MS
+  }
+
+  allowsFreshContentReplacements(): boolean {
+    // Local transcripts and CCR can persist exact replacement decisions.
+    // Legacy v1 session-ingress only accepts UUID-chained TranscriptMessage
+    // entries, so fresh previews in that worker could not survive resume.
+    const legacyRemotePersistence =
+      isEnvTruthy(process.env.ENABLE_SESSION_PERSISTENCE) &&
+      this.remoteIngressUrl !== null &&
+      this.internalEventWriter === null
+    return !legacyRemotePersistence
   }
 
   setInternalEventReader(reader: InternalEventReader): void {
@@ -1491,11 +1587,38 @@ export async function recordAttributionSnapshot(
   await getProject().insertAttributionSnapshot(snapshot)
 }
 
-export async function recordContentReplacement(
-  replacements: ContentReplacementRecord[],
+/**
+ * Bind a replacement recorder to the session that owns the messages being
+ * budgeted, before the budget's persist step awaits.
+ *
+ * The preview is applied to the wire message first and its record is written
+ * after; a session switch (/clear, /resume, teleport adopt) can land in that
+ * gap. Reading the session id at write time would then file the record under
+ * the new session, and the old transcript would resume with those results
+ * classified frozen — full content back on the wire, which is the exact cache
+ * miss and budget overage the preview existed to prevent.
+ */
+export function createContentReplacementRecorder(
   agentId?: AgentId,
-) {
-  await getProject().insertContentReplacement(replacements, agentId)
+): (records: ContentReplacementRecord[]) => void {
+  const sessionId = getSessionId() as UUID
+  return records => {
+    void getProject()
+      .insertContentReplacement(records, agentId, sessionId)
+      .catch(logError)
+  }
+}
+
+/** Seed source decisions once into a fresh --fork-session transcript. */
+export async function recordInheritedContentReplacementsForFork(
+  replacements: readonly ContentReplacementRecord[],
+): Promise<void> {
+  await getProject().insertInheritedContentReplacements(replacements)
+}
+
+/** False only for legacy v1 remote workers that cannot upload metadata. */
+export function allowsFreshContentReplacements(): boolean {
+  return getProject().allowsFreshContentReplacements()
 }
 
 /**

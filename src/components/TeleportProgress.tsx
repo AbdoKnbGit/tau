@@ -134,6 +134,7 @@ export async function teleportWithProgress(root: Root, sessionId: string): Promi
   } = await checkOutTeleportedSessionBranch(result.branch);
   return {
     messages: processMessagesForTeleportResume(result.log, branchError),
+    contentReplacements: result.contentReplacements,
     branchName
   };
 }

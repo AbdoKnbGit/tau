@@ -20,7 +20,7 @@ import type { Message, SystemMessage } from '../types/message.js';
 import type { PermissionMode } from '../types/permissions.js';
 import { checkAndRefreshOAuthTokenIfNeeded, getClaudeAIOAuthTokens } from './auth.js';
 import { checkGithubAppInstalled } from './background/remote/preconditions.js';
-import { deserializeMessages, type TeleportRemoteResponse } from './conversationRecovery.js';
+import { deserializeMessages, extractTeleportResumeData, type TeleportRemoteResponse } from './conversationRecovery.js';
 import { getCwd } from './cwd.js';
 import { logForDebugging } from './debug.js';
 import { detectCurrentRepositoryWithHost, parseGitHubRepository, parseGitRemote } from './detectRepository.js';
@@ -33,7 +33,6 @@ import { safeParseJSON } from './json.js';
 import { logError } from './log.js';
 import { createSystemMessage, createUserMessage } from './messages.js';
 import { getMainLoopModel } from './model/model.js';
-import { isTranscriptMessage } from './sessionStorage.js';
 import { getSettings_DEPRECATED } from './settings/settings.js';
 import { jsonStringify } from './slowOperations.js';
 import { asSystemPrompt } from './systemPromptType.js';
@@ -42,6 +41,7 @@ import { fetchEnvironments } from './teleport/environments.js';
 import { createAndUploadGitBundle } from './teleport/gitBundle.js';
 export type TeleportResult = {
   messages: Message[];
+  contentReplacements: TeleportRemoteResponse['contentReplacements'];
   branchName: string;
 };
 export type TeleportProgressStep = 'validating' | 'fetching_logs' | 'fetching_branch' | 'checking_out' | 'done';
@@ -560,7 +560,8 @@ export async function teleportToRemoteWithErrorHandling(root: Root, description:
  * @param accessToken The OAuth access token
  * @param onProgress Optional callback for progress updates
  * @param sessionData Optional session data (used to extract branch info)
- * @returns TeleportRemoteResponse with session logs as Message[]
+ * @returns Transcript messages plus any exact aggregate-preview decisions
+ * available from the remote event stream
  */
 export async function teleportFromSessionsAPI(sessionId: string, orgUUID: string, accessToken: string, onProgress?: TeleportProgressCallback, sessionData?: SessionResource): Promise<TeleportRemoteResponse> {
   const startTime = Date.now();
@@ -584,9 +585,13 @@ export async function teleportFromSessionsAPI(sessionId: string, orgUUID: string
       throw new Error('Failed to fetch session logs');
     }
 
-    // Filter to get only transcript messages, excluding sidechain messages
+    // Split transcript messages from cache-stability metadata before filtering.
+    // Both CCR v2 and session-ingress return the original opaque Entry values.
     const filterStartTime = Date.now();
-    const messages = logs.filter(entry => isTranscriptMessage(entry) && !entry.isSidechain) as Message[];
+    const {
+      log: messages,
+      contentReplacements
+    } = extractTeleportResumeData(logs);
     logForDebugging(`[teleport] Filtered ${logs.length} entries to ${messages.length} messages in ${Date.now() - filterStartTime}ms`);
 
     // Extract branch info from session data
@@ -598,6 +603,7 @@ export async function teleportFromSessionsAPI(sessionId: string, orgUUID: string
     logForDebugging(`[teleport] Total teleportFromSessionsAPI time: ${Date.now() - startTime}ms`);
     return {
       log: messages,
+      contentReplacements,
       branch
     };
   } catch (error) {

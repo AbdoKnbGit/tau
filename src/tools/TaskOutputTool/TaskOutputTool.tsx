@@ -29,9 +29,9 @@ import { AgentPromptDisplay, AgentResponseDisplay } from '../AgentTool/UI.js';
 import BashToolResultMessage from '../BashTool/BashToolResultMessage.js';
 import { TASK_OUTPUT_TOOL_NAME } from './constants.js';
 const inputSchema = lazySchema(() => z.strictObject({
-  task_id: z.string().describe('The task ID to get output from'),
-  block: semanticBoolean(z.boolean().default(true)).describe('Whether to wait for completion'),
-  timeout: z.number().min(0).max(600000).default(30000).describe('Max wait time in ms')
+  task_id: z.string().describe('Background task ID'),
+  block: semanticBoolean(z.boolean().default(true)).describe('Wait for completion; default true'),
+  timeout: z.number().min(0).max(600000).default(30000).describe('Wait timeout in ms; default 30000')
 }));
 type InputSchema = ReturnType<typeof inputSchema>;
 type TaskOutputToolInput = z.infer<InputSchema>;
@@ -233,15 +233,7 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     return input.task_id;
   },
   async prompt() {
-    return `DEPRECATED: Prefer using the Read tool on the task's output file path instead. Background tasks return their output file path in the tool result, and you receive a <task-notification> with the same path when the task completes — Read that file directly.
-
-- Retrieves output from a running or completed task (background shell, agent, or remote session)
-- Takes a task_id parameter identifying the task
-- Returns the task output along with status information
-- Use block=true (default) to wait for task completion
-- Use block=false for non-blocking check of current status
-- Task IDs can be found using the /tasks command
-- Works with all task types: background shells, async agents, and remote sessions`;
+    return `Deprecated compatibility path for background shell/agent/remote output. Prefer Read on the output path from the task result or <task-notification>. Set block=false for a status check; the default waits up to timeout. Task IDs come from a Bash run_in_background result or /tasks — never a TaskCreate item number.`;
   },
   async validateInput({
     task_id

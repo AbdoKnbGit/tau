@@ -290,6 +290,8 @@ export type ToolUseContext = {
    * resumeAgentBackground threads one reconstructed from sidechain records.
    */
   contentReplacementState?: ContentReplacementState
+  /** Retain lazy cheap-mode provisioning across query() invocations. */
+  setContentReplacementState?: (state: ContentReplacementState) => void
   /**
    * Parent's rendered system prompt bytes, frozen at turn start.
    * Used by fork subagents to share the parent's prompt cache — re-calling

@@ -16,23 +16,14 @@ import { logForDebugging } from '../../utils/debug.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
 import { isToolSearchEnabledOptimistic } from '../../utils/toolSearch.js'
+import {
+  toolSearchInputSchema,
+  type ToolSearchInputSchema,
+} from './inputSchema.js'
 import { getPrompt, isDeferredTool, TOOL_SEARCH_TOOL_NAME } from './prompt.js'
 
-export const inputSchema = lazySchema(() =>
-  z.object({
-    query: z
-      .string()
-      .describe(
-        'Query to find deferred tools. Use "select:<tool_name>" for direct selection, or keywords to search.',
-      ),
-    max_results: z
-      .number()
-      .optional()
-      .default(5)
-      .describe('Maximum number of results to return (default: 5)'),
-  }),
-)
-type InputSchema = ReturnType<typeof inputSchema>
+export const inputSchema = toolSearchInputSchema
+type InputSchema = ToolSearchInputSchema
 
 export const outputSchema = lazySchema(() =>
   z.object({
@@ -462,6 +453,10 @@ export const ToolSearchTool = buildTool({
     return {
       type: 'tool_result',
       tool_use_id: toolUseID,
+      // Anthropic requires a tool_result that loads schemas to contain only
+      // tool_reference blocks. Mixing a text acknowledgement into this array
+      // makes the first-party request invalid. Recovery guidance lives in the
+      // ToolSearch prompt / guard error instead of contaminating this shape.
       content: content.matches.map(name => ({
         type: 'tool_reference' as const,
         tool_name: name,

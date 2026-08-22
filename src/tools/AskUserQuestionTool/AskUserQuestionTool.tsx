@@ -12,22 +12,22 @@ import { buildTool, type ToolDef } from '../../Tool.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { ASK_USER_QUESTION_TOOL_CHIP_WIDTH, ASK_USER_QUESTION_TOOL_NAME, ASK_USER_QUESTION_TOOL_PROMPT, DESCRIPTION, PREVIEW_FEATURE_PROMPT } from './prompt.js';
 const questionOptionSchema = lazySchema(() => z.object({
-  label: z.string().describe('The display text for this option that the user will see and select. Should be concise (1-5 words) and clearly describe the choice.'),
-  description: z.string().describe('Explanation of what this option means or what will happen if chosen. Useful for providing context about trade-offs or implications.'),
-  preview: z.string().optional().describe('Optional preview content rendered when this option is focused. Use for mockups, code snippets, or visual comparisons that help users compare options. See the tool description for the expected content format.')
+  label: z.string().describe('Distinct 1-5 word option label'),
+  description: z.string().describe('One sentence explaining impact or trade-off'),
+  preview: z.string().optional().describe('Optional comparison preview; format is defined in the tool description')
 }));
 const questionSchema = lazySchema(() => z.object({
-  question: z.string().describe('The complete question to ask the user. Should be clear, specific, and end with a question mark. Example: "Which library should we use for date formatting?" If multiSelect is true, phrase it accordingly, e.g. "Which features do you want to enable?"'),
-  header: z.string().describe(`Very short label displayed as a chip/tag (max ${ASK_USER_QUESTION_TOOL_CHIP_WIDTH} chars). Examples: "Auth method", "Library", "Approach".`),
-  options: z.array(questionOptionSchema()).min(2).max(4).describe(`The available choices for this question. Must have 2-4 options. Each option should be a distinct, mutually exclusive choice (unless multiSelect is enabled). There should be no 'Other' option, that will be provided automatically.`),
-  multiSelect: z.boolean().default(false).describe('Set to true to allow the user to select multiple options instead of just one. Use when choices are not mutually exclusive.')
+  question: z.string().describe('Clear, specific question'),
+  header: z.string().describe(`Short chip label; max ${ASK_USER_QUESTION_TOOL_CHIP_WIDTH} characters`),
+  options: z.array(questionOptionSchema()).min(2).max(4).describe('2-4 distinct choices; omit automatic Other'),
+  multiSelect: z.boolean().default(false).describe('Allow multiple non-exclusive choices')
 }));
 const annotationsSchema = lazySchema(() => {
   const annotationSchema = z.object({
-    preview: z.string().optional().describe('The preview content of the selected option, if the question used previews.'),
-    notes: z.string().optional().describe('Free-text notes the user added to their selection.')
+    preview: z.string().optional().describe('Selected preview content'),
+    notes: z.string().optional().describe('User notes')
   });
-  return z.record(z.string(), annotationSchema).optional().describe('Optional per-question annotations from the user (e.g., notes on preview selections). Keyed by question text.');
+  return z.record(z.string(), annotationSchema).optional().describe('User annotations keyed by question text');
 });
 const UNIQUENESS_REFINE = {
   check: (data: {
@@ -53,22 +53,22 @@ const UNIQUENESS_REFINE = {
   message: 'Question texts must be unique, option labels must be unique within each question'
 } as const;
 const commonFields = lazySchema(() => ({
-  answers: z.record(z.string(), z.string()).optional().describe('User answers collected by the permission component'),
+  answers: z.record(z.string(), z.string()).optional().describe('UI-populated answers'),
   annotations: annotationsSchema(),
   metadata: z.object({
-    source: z.string().optional().describe('Optional identifier for the source of this question (e.g., "remember" for /remember command). Used for analytics tracking.')
-  }).optional().describe('Optional metadata for tracking and analytics purposes. Not displayed to user.')
+    source: z.string().optional().describe('Internal source identifier')
+  }).optional().describe('Internal metadata')
 }));
 const inputSchema = lazySchema(() => z.strictObject({
-  questions: z.array(questionSchema()).min(1).max(4).describe('Questions to ask the user (1-4 questions)'),
+  questions: z.array(questionSchema()).min(1).max(4).describe('1-4 questions'),
   ...commonFields()
 }).refine(UNIQUENESS_REFINE.check, {
   message: UNIQUENESS_REFINE.message
 }));
 type InputSchema = ReturnType<typeof inputSchema>;
 const outputSchema = lazySchema(() => z.object({
-  questions: z.array(questionSchema()).describe('The questions that were asked'),
-  answers: z.record(z.string(), z.string()).describe('The answers provided by the user (question text -> answer string; multi-select answers are comma-separated)'),
+  questions: z.array(questionSchema()).describe('Questions asked'),
+  answers: z.record(z.string(), z.string()).describe('Answers keyed by question; multi-select values are comma-separated'),
   annotations: annotationsSchema()
 }));
 type OutputSchema = ReturnType<typeof outputSchema>;

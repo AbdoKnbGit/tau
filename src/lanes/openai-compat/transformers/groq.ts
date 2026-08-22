@@ -19,7 +19,10 @@
 
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest, OpenAIChatMessage } from './shared_types.js'
-import { RUST_TOOL_NAME } from '../../../tools/RustTool/constants.js'
+import {
+  isSmallTierGroqModel,
+  isToolKeptByGroqSmallTierFilter,
+} from '../groq_tool_policy.js'
 
 export const groqTransformer: Transformer = {
   id: 'groq',
@@ -111,8 +114,7 @@ export const groqTransformer: Transformer = {
     // user configured. Upgrading to a paid dev tier lifts the cap and
     // the filter can be relaxed per-model if needed.
     if (!isSmallTierGroqModel(model)) return tools
-    return tools.filter(t => GROQ_SMALL_TIER_TOOL_ALLOWLIST.has(t.name)
-      || t.name.startsWith('mcp__'))
+    return tools.filter(t => isToolKeptByGroqSmallTierFilter(model, t.name))
   },
 
   skipToolUsagePreamble(model: string): boolean {
@@ -145,35 +147,3 @@ function groqModelSupportsReasoning(model: string): boolean {
   if (m.includes('gpt-oss')) return true
   return false
 }
-
-function isSmallTierGroqModel(model: string): boolean {
-  // Every Groq chat model on the free / on-demand tier has a tight
-  // per-minute token cap and 413s on the full claudex tool set:
-  //   llama-3.1-8b-instant      → 6000 TPM
-  //   llama-3.3-70b-versatile   → 12000 TPM
-  //   openai/gpt-oss-20b        → 8000 TPM
-  //   openai/gpt-oss-120b       → 8000 TPM
-  // So the small-tier filter applies to ALL supported models. Users on
-  // a paid Dev tier can lift this by setting CLAUDEX_GROQ_FULL_TOOLS=1
-  // (not yet wired — relaxation is one env-var check away).
-  const m = model.toLowerCase()
-  return m.startsWith('llama-') || m.includes('gpt-oss')
-}
-
-// Small-tier allowlist: FS + shell + web + delegation. Keeps the
-// request inside the 6k-12k TPM budget while preserving the user's
-// ability to spawn sub-agents and call MCP tools (which pass through
-// via the mcp__ prefix check above).
-const GROQ_SMALL_TIER_TOOL_ALLOWLIST = new Set<string>([
-  // Shell
-  'Bash',
-  // Filesystem
-  'Read', 'Write', 'Edit',
-  // Search
-  'Grep', 'Glob',
-  // Web
-  'WebSearch', 'WebFetch',
-  // Delegation / MCP entrypoint
-  'Agent', 'Skill',
-  RUST_TOOL_NAME,
-])

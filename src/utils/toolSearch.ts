@@ -9,6 +9,7 @@
 import memoize from 'lodash-es/memoize.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { isAntigravityModelId } from '../services/api/providers/gemini_code_assist.js'
+import { providerWillUseNativeLane } from '../services/api/providers/nativeLaneReadiness.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -40,6 +41,9 @@ import {
   isFirstPartyAnthropicBaseUrl,
 } from './model/providers.js'
 import { providerSupportsAnthropicToolSearch } from './model/providerCapabilities.js'
+import { getPowerModeFromSettings } from './powerMode.js'
+import { getInitialSettings } from './settings/settings.js'
+import { providerModelSupportsClientSideToolDiscovery } from './toolDeferralPolicy.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
 
@@ -162,56 +166,6 @@ const getDeferredToolTokenCount = memoize(
  */
 export type ToolSearchMode = 'tst' | 'tst-auto' | 'standard'
 
-const OPENAI_COMPAT_NATIVE_TOOL_SEARCH_PROVIDERS = new Set([
-  'openrouter',
-  'agentrouter',
-  'modelrouter',
-  'vercel',
-  'requesty',
-  'opencode',
-  'opencodego',
-  'fireworks',
-  'cloudflare',
-  'groq',
-  'mistral',
-  'nim',
-  'deepseek',
-  'glm',
-  'moonshot',
-  'minimax',
-  'ollama',
-  'lmstudio',
-  'copilot',
-  'iflow',
-])
-
-function nativeLaneEnabledByEnv(laneName: string, provider: string): boolean {
-  const raw = process.env.CLAUDEX_NATIVE_LANES
-  if (!raw) return true
-
-  const normalized = raw.toLowerCase().trim()
-  if (
-    normalized === 'off' ||
-    normalized === 'legacy' ||
-    normalized === '0' ||
-    normalized === 'false'
-  ) {
-    return false
-  }
-  if (normalized === 'all' || normalized === '1' || normalized === 'true') {
-    return true
-  }
-
-  const tokens = normalized.split(/[,\s]+/).filter(Boolean)
-  const disabled = new Set(
-    tokens.filter(t => t.startsWith('-')).map(t => t.slice(1)),
-  )
-  if (disabled.has(laneName) || disabled.has(provider)) return false
-
-  const enabled = tokens.filter(t => !t.startsWith('-'))
-  return enabled.length === 0 || enabled.includes(laneName) || enabled.includes(provider)
-}
-
 /**
  * Native non-Anthropic lanes have their own tool-loading path. This is not
  * Anthropic `defer_loading` / `tool_reference` support: Tau keeps ToolSearch
@@ -230,14 +184,16 @@ function nativeLaneEnabledByEnv(laneName: string, provider: string): boolean {
  */
 export function isNativeLaneToolSearchEnabled(model?: string): boolean {
   const provider = getAPIProvider()
-  const laneName = provider === 'gemini'
-    ? 'gemini'
-    : OPENAI_COMPAT_NATIVE_TOOL_SEARCH_PROVIDERS.has(provider)
-      ? 'openai-compat'
-      : null
-
-  if (!laneName) return false
-  if (!nativeLaneEnabledByEnv(laneName, provider)) return false
+  if (!providerModelSupportsClientSideToolDiscovery(provider, model)) {
+    return false
+  }
+  // Cheap's already-compact eager schemas keep the entire request prefix
+  // stable. Client-side appends would rewarm that prefix for every load.
+  if (getPowerModeFromSettings(getInitialSettings()) === 'cheap') return false
+  // Authoritative route check shared with createProvider. This also performs
+  // synchronous one-time lane initialization, preventing an eager first turn
+  // followed by a lazy second turn solely because the lane became initialized.
+  if (!providerWillUseNativeLane(provider)) return false
   if (isEnvDefinedFalsy(process.env.ENABLE_TOOL_SEARCH)) return false
   if (parseAutoPercentage(process.env.ENABLE_TOOL_SEARCH ?? '') === 100) {
     return false
@@ -379,6 +335,11 @@ export function modelSupportsToolReference(model: string): boolean {
 let loggedOptimistic = false
 
 export function isToolSearchEnabledOptimistic(): boolean {
+  // Cheap mode defers nothing on any provider (see
+  // shouldDisableToolDeferralForProvider), so ToolSearch would have no schema
+  // to load. Advertising it anyway would add its own description and schema to
+  // the very payload cheap mode exists to shrink.
+  if (getPowerModeFromSettings(getInitialSettings()) === 'cheap') return false
   if (isNativeLaneToolSearchEnabled()) {
     if (!loggedOptimistic) {
       loggedOptimistic = true
@@ -534,6 +495,11 @@ export async function isToolSearchEnabled(
         'external') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       ...extraProps,
     })
+  }
+
+  if (getPowerModeFromSettings(getInitialSettings()) === 'cheap') {
+    logModeDecision(false, 'standard', 'cheap_mode_eager_schemas')
+    return false
   }
 
   // Check if model supports tool_reference

@@ -4,7 +4,9 @@
  *   | limit         | default | checks                    | cost          | on overflow     |
  *   |---------------|---------|---------------------------|---------------|-----------------|
  *   | maxSizeBytes  | 256 KB  | TOTAL FILE SIZE (not out) | 1 stat        | throws pre-read |
- *   | maxTokens     | 25000   | actual output tokens      | API roundtrip | throws post-read|
+ *   | maxTokens     | 25000*  | actual output tokens      | API roundtrip | throws post-read|
+ *
+ * *Cheap mode uses 16000. Normal/rust/full retain 25000.
  *
  * Known mismatch: maxSizeBytes gates on total file size, not the slice.
  * Tested truncating instead of throwing for explicit-limit reads that
@@ -15,7 +17,12 @@
 import memoize from 'lodash-es/memoize.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { MAX_OUTPUT_SIZE } from 'src/utils/file.js'
+import {
+  getPowerModeFromSettings,
+  type PowerMode,
+} from 'src/utils/powerMode.js'
 export const DEFAULT_MAX_OUTPUT_TOKENS = 25000
+export const CHEAP_MODE_MAX_OUTPUT_TOKENS = 16000
 
 /**
  * Env var override for max output tokens. Returns undefined when unset/invalid
@@ -44,49 +51,62 @@ export type FileReadingLimits = {
  * override. Memoized so the GrowthBook value is fixed at first call — avoids
  * the cap changing mid-session as the flag refreshes in the background.
  *
- * Precedence for maxTokens: env var > GrowthBook > DEFAULT_MAX_OUTPUT_TOKENS.
+ * Precedence for maxTokens: env var > GrowthBook > mode default.
  * (Env var is a user-set override, should beat experiment infrastructure.)
  *
  * Defensive: each field is individually validated; invalid values fall
  * through to the hardcoded defaults (no route to cap=0).
  */
-export const getDefaultFileReadingLimits = memoize((): FileReadingLimits => {
-  const override =
-    getFeatureValue_CACHED_MAY_BE_STALE<Partial<FileReadingLimits> | null>(
-      'tengu_amber_wren',
-      {},
-    )
+function getCurrentPowerMode(): PowerMode {
+  return getPowerModeFromSettings(undefined)
+}
 
-  const maxSizeBytes =
-    typeof override?.maxSizeBytes === 'number' &&
-    Number.isFinite(override.maxSizeBytes) &&
-    override.maxSizeBytes > 0
-      ? override.maxSizeBytes
-      : MAX_OUTPUT_SIZE
+export const getDefaultFileReadingLimits = memoize(
+  (): FileReadingLimits => {
+    const powerMode = getCurrentPowerMode()
+    const override =
+      getFeatureValue_CACHED_MAY_BE_STALE<Partial<FileReadingLimits> | null>(
+        'tengu_amber_wren',
+        {},
+      )
 
-  const envMaxTokens = getEnvMaxTokens()
-  const maxTokens =
-    envMaxTokens ??
-    (typeof override?.maxTokens === 'number' &&
-    Number.isFinite(override.maxTokens) &&
-    override.maxTokens > 0
-      ? override.maxTokens
-      : DEFAULT_MAX_OUTPUT_TOKENS)
+    const maxSizeBytes =
+      typeof override?.maxSizeBytes === 'number' &&
+      Number.isFinite(override.maxSizeBytes) &&
+      override.maxSizeBytes > 0
+        ? override.maxSizeBytes
+        : MAX_OUTPUT_SIZE
 
-  const includeMaxSizeInPrompt =
-    typeof override?.includeMaxSizeInPrompt === 'boolean'
-      ? override.includeMaxSizeInPrompt
-      : undefined
+    const envMaxTokens = getEnvMaxTokens()
+    const maxTokens =
+      envMaxTokens ??
+      (typeof override?.maxTokens === 'number' &&
+      Number.isFinite(override.maxTokens) &&
+      override.maxTokens > 0
+        ? override.maxTokens
+        : powerMode === 'cheap'
+          ? CHEAP_MODE_MAX_OUTPUT_TOKENS
+          : DEFAULT_MAX_OUTPUT_TOKENS)
 
-  const targetedRangeNudge =
-    typeof override?.targetedRangeNudge === 'boolean'
-      ? override.targetedRangeNudge
-      : undefined
+    const includeMaxSizeInPrompt =
+      typeof override?.includeMaxSizeInPrompt === 'boolean'
+        ? override.includeMaxSizeInPrompt
+        : undefined
 
-  return {
-    maxSizeBytes,
-    maxTokens,
-    includeMaxSizeInPrompt,
-    targetedRangeNudge,
-  }
-})
+    const targetedRangeNudge =
+      typeof override?.targetedRangeNudge === 'boolean'
+        ? override.targetedRangeNudge
+        : undefined
+
+    return {
+      maxSizeBytes,
+      maxTokens,
+      includeMaxSizeInPrompt,
+      targetedRangeNudge,
+    }
+  },
+  // Cache independently per mode. A /mode transition is an intentional
+  // one-time prompt rewarm, while revisiting a mode reuses the exact same
+  // limits even if GrowthBook refreshes in the background.
+  () => getCurrentPowerMode(),
+)

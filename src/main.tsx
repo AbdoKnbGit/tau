@@ -172,6 +172,7 @@ import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js';
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js';
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js';
 import { type ProcessedResume, processResumedConversation } from 'src/utils/sessionRestore.js';
+import type { ContentReplacementRecord } from 'src/utils/toolResultStorage.js';
 import { parseSettingSourcesFlag } from 'src/utils/settings/constants.js';
 import { setCwd } from 'src/utils/Shell.js';
 import { plural } from 'src/utils/stringUtils.js';
@@ -3476,6 +3477,7 @@ async function run(): Promise<CommanderCommand> {
       } = await import('./commands/clear/caches.js');
       clearSessionCaches();
       let messages: MessageType[] | null = null;
+      let teleportContentReplacements: ContentReplacementRecord[] | undefined = undefined;
       let processedResume: ProcessedResume | undefined = undefined;
       let maybeSessionId = validateUuid(options.resume);
       let searchTerm: string | undefined = undefined;
@@ -3631,6 +3633,7 @@ async function run(): Promise<CommanderCommand> {
             branchError
           } = await checkOutTeleportedSessionBranch(teleportResult.branch);
           messages = processMessagesForTeleportResume(teleportResult.log, branchError);
+          teleportContentReplacements = teleportResult.contentReplacements;
         } else if (typeof teleport === 'string') {
           logEvent('tengu_teleport_resume_session', {
             mode: 'direct' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
@@ -3682,6 +3685,7 @@ async function run(): Promise<CommanderCommand> {
               sessionId: teleport
             });
             messages = result.messages;
+            teleportContentReplacements = result.contentReplacements;
           } catch (error) {
             if (error instanceof TeleportOperationError) {
               process.stderr.write(error.formattedMessage + '\n');
@@ -3840,7 +3844,7 @@ async function run(): Promise<CommanderCommand> {
         agentColor: undefined as AgentColorName | undefined,
         restoredAgentDef: mainThreadAgentDefinition,
         initialState,
-        contentReplacements: undefined
+        contentReplacements: teleportContentReplacements
       } : undefined);
       if (resumeData) {
         maybeActivateProactive(options);

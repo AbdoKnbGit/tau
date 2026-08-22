@@ -5,6 +5,7 @@ import type {
 import {
   isAntigravityModelId,
 } from '../../services/api/providers/gemini_code_assist.js'
+import { TOOL_SEARCH_TOOL_NAME } from '../../tools/ToolSearchTool/constants.js'
 import { isEnvDefinedFalsy } from '../../utils/envUtils.js'
 import {
   extractLoadedToolNames,
@@ -44,6 +45,10 @@ export function selectGeminiToolsForRequest(
   if (!shouldUseGeminiNativeLazyTools(options.model, options.providerHint)) {
     return tools
   }
+  // Discovery cannot make progress without its dispatcher. Preserve full
+  // schemas as the correctness fallback (for example when a provider/model
+  // filter removes ToolSearch).
+  if (!tools.some(tool => tool.name === TOOL_SEARCH_TOOL_NAME)) return tools
   // Sticky per-session registry: compaction can erase the history evidence of
   // a load, and the tool block must never shrink or reorder mid-session.
   const loaded = stickyLoadedToolNames(

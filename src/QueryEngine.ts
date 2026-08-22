@@ -78,6 +78,12 @@ import {
 import { asSystemPrompt } from './utils/systemPromptType.js'
 import { resolveThemeSetting } from './utils/systemTheme.js'
 import {
+  getContentReplacementStateBinding,
+  provisionContentReplacementState,
+  type ContentReplacementRecord,
+  type ContentReplacementStateRef,
+} from './utils/toolResultStorage.js'
+import {
   shouldEnableThinkingByDefault,
   type ThinkingConfig,
 } from './utils/thinking.js'
@@ -137,6 +143,14 @@ export type QueryEngineConfig = {
   getAppState: () => AppState
   setAppState: (f: (prev: AppState) => AppState) => void
   initialMessages?: Message[]
+  /** Exact saved preview decisions when constructing from a resumed transcript. */
+  initialContentReplacements?: ContentReplacementRecord[]
+  /**
+   * Conversation-owned replacement state. The headless runner creates a new
+   * QueryEngine for each queued turn, so it supplies one stable ref here to
+   * keep aggregate-budget decisions byte-identical across those engines.
+   */
+  contentReplacementStateRef?: ContentReplacementStateRef
   readFileCache: FileStateCache
   customSystemPrompt?: string
   appendSystemPrompt?: string
@@ -196,6 +210,7 @@ export class QueryEngine {
   // many turns in SDK mode.
   private discoveredSkillNames = new Set<string>()
   private loadedNestedMemoryPaths = new Set<string>()
+  private contentReplacementStateRef: ContentReplacementStateRef
 
   constructor(config: QueryEngineConfig) {
     this.config = config
@@ -204,6 +219,15 @@ export class QueryEngine {
     this.permissionDenials = []
     this.readFileState = config.readFileCache
     this.totalUsage = EMPTY_USAGE
+    this.contentReplacementStateRef =
+      config.contentReplacementStateRef ?? { current: undefined }
+    if (!this.contentReplacementStateRef.current) {
+      this.contentReplacementStateRef.current =
+        provisionContentReplacementState(
+          config.initialMessages,
+          config.initialContentReplacements,
+        )
+    }
   }
 
   async *submitMessage(
@@ -392,6 +416,7 @@ export class QueryEngine {
         })
       },
       setSDKStatus,
+      ...getContentReplacementStateBinding(this.contentReplacementStateRef),
     }
 
     // Handle orphaned permission (only once per engine lifetime)
@@ -524,6 +549,7 @@ export class QueryEngine {
       updateFileHistoryState: processUserInputContext.updateFileHistoryState,
       updateAttributionState: processUserInputContext.updateAttributionState,
       setSDKStatus,
+      ...getContentReplacementStateBinding(this.contentReplacementStateRef),
     }
 
     headlessProfilerCheckpoint('before_skills_plugins')
@@ -1214,6 +1240,8 @@ export async function* ask({
   agents = [],
   setSDKStatus,
   orphanedPermission,
+  initialContentReplacements,
+  contentReplacementStateRef,
 }: {
   commands: Command[]
   prompt: string | Array<ContentBlockParam>
@@ -1245,6 +1273,10 @@ export async function* ask({
   agents?: AgentDefinition[]
   setSDKStatus?: (status: SDKStatus) => void
   orphanedPermission?: OrphanedPermission
+  /** Saved aggregate-result preview decisions for SDK transcript resume. */
+  initialContentReplacements?: ContentReplacementRecord[]
+  /** Stable owner shared by repeated one-shot ask() calls in one conversation. */
+  contentReplacementStateRef?: ContentReplacementStateRef
 }): AsyncGenerator<SDKMessage, void, unknown> {
   const engine = new QueryEngine({
     cwd,
@@ -1256,6 +1288,8 @@ export async function* ask({
     getAppState,
     setAppState,
     initialMessages: mutableMessages,
+    initialContentReplacements,
+    contentReplacementStateRef,
     readFileCache: cloneFileStateCache(getReadFileCache()),
     customSystemPrompt,
     appendSystemPrompt,

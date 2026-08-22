@@ -9,6 +9,7 @@ import { TodoListSchema } from '../../utils/todo/types.js'
 import { VERIFICATION_AGENT_TYPE } from '../AgentTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
+import { getTodoUpdateMessage, prepareTodoUpdate } from './todoState.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -21,6 +22,8 @@ const outputSchema = lazySchema(() =>
   z.object({
     oldTodos: TodoListSchema().describe('The todo list before the update'),
     newTodos: TodoListSchema().describe('The todo list after the update'),
+    unchanged: z.boolean().optional(),
+    normalized: z.boolean().optional(),
     verificationNudgeNeeded: z.boolean().optional(),
   }),
 )
@@ -66,8 +69,7 @@ export const TodoWriteTool = buildTool({
     const appState = context.getAppState()
     const todoKey = context.agentId ?? getSessionId()
     const oldTodos = appState.todos[todoKey] ?? []
-    const allDone = todos.every(_ => _.status === 'completed')
-    const newTodos = allDone ? [] : todos
+    const update = prepareTodoUpdate(oldTodos, todos)
 
     // Structural nudge: if the main-thread agent is closing out a 3+ item
     // list and none of those items was a verification step, append a reminder
@@ -78,31 +80,41 @@ export const TodoWriteTool = buildTool({
       feature('VERIFICATION_AGENT') &&
       getFeatureValue_CACHED_MAY_BE_STALE('tengu_hive_evidence', false) &&
       !context.agentId &&
-      allDone &&
-      todos.length >= 3 &&
-      !todos.some(t => /verif/i.test(t.content))
+      !update.unchanged &&
+      update.allDone &&
+      update.normalizedTodos.length >= 3 &&
+      !update.normalizedTodos.some(t => /verif/i.test(t.content))
     ) {
       verificationNudgeNeeded = true
     }
 
-    context.setAppState(prev => ({
-      ...prev,
-      todos: {
-        ...prev.todos,
-        [todoKey]: newTodos,
-      },
-    }))
+    if (!update.unchanged) {
+      context.setAppState(prev => ({
+        ...prev,
+        todos: {
+          ...prev.todos,
+          [todoKey]: update.storedTodos,
+        },
+      }))
+    }
 
     return {
       data: {
         oldTodos,
-        newTodos: todos,
+        // Preserve the established result shape: a completing call reports the
+        // completed items even though session state is cleared internally.
+        newTodos: update.normalizedTodos,
+        unchanged: update.unchanged,
+        normalized: update.normalized,
         verificationNudgeNeeded,
       },
     }
   },
-  mapToolResultToToolResultBlockParam({ verificationNudgeNeeded }, toolUseID) {
-    const base = `Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable`
+  mapToolResultToToolResultBlockParam(
+    { newTodos, unchanged, normalized, verificationNudgeNeeded },
+    toolUseID,
+  ) {
+    const base = getTodoUpdateMessage({ newTodos, unchanged, normalized })
     const nudge = verificationNudgeNeeded
       ? `\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step. Before writing your final summary, spawn the verification agent (subagent_type="${VERIFICATION_AGENT_TYPE}"). You cannot self-assign PARTIAL by listing caveats in your summary \u2014 only the verifier issues a verdict.`
       : ''

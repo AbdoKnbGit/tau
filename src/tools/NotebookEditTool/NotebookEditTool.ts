@@ -17,7 +17,13 @@ import { expandPath } from '../../utils/path.js'
 import { checkWritePermissionForTool } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
+import { FILE_UNEXPECTEDLY_MODIFIED_ERROR } from '../FileEditTool/constants.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from './constants.js'
+import {
+  getNotebookNoOpMessage,
+  isNotebookReplaceNoOp,
+  notebookChangedSinceRead,
+} from './notebookNoOp.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
 import {
   getToolUseSummary,
@@ -32,34 +38,30 @@ export const inputSchema = lazySchema(() =>
     notebook_path: z
       .string()
       .describe(
-        'The absolute path to the Jupyter notebook file to edit (must be absolute, not relative)',
+        'Absolute .ipynb path',
       ),
     cell_id: z
       .string()
       .optional()
       .describe(
-        'The actual cell ID from the notebook Read output, for example "cell-0". Required for replace/delete. When inserting, the new cell is inserted after this cell, or at the beginning if omitted.',
+        'Exact Read cell ID. Required for replace/delete; insert goes after it or at the beginning when omitted.',
       ),
     new_source: z
       .string()
       .describe(
-        'The new source for the cell. Required for all modes; use an empty string for delete.',
+        'New cell source; use empty string for delete',
       ),
     cell_type: z
       .enum(['code', 'markdown'])
       .optional()
       .describe(
-        // Leads with the requirement. When this read "If not specified, it
-        // defaults to the current cell type. Required when edit_mode=insert.",
-        // models took the first clause and dropped the field, so every insert
-        // cost a failed call and a retry before it landed.
-        'REQUIRED when edit_mode=insert: pass "code" or "markdown". For edit_mode=replace it is optional and defaults to the cell\'s current type. Ignored for delete.',
+        'REQUIRED for insert; optional new type for replace; ignored for delete',
       ),
     edit_mode: z
       .enum(['replace', 'insert', 'delete'])
       .optional()
       .describe(
-        'The type of edit to make (replace, insert, delete). Defaults to replace. Passing insert also requires cell_type.',
+        'Defaults to replace; insert requires cell_type',
       ),
   }),
 )
@@ -81,6 +83,10 @@ export const outputSchema = lazySchema(() =>
       .string()
       .optional()
       .describe('Error message if the operation failed'),
+    noOp: z
+      .boolean()
+      .optional()
+      .describe('True when the requested replacement was already applied'),
     // Fields for attribution tracking
     notebook_path: z.string().describe('The path to the notebook file'),
     original_file: z
@@ -147,7 +153,7 @@ export const NotebookEditTool = buildTool({
     )
   },
   mapToolResultToToolResultBlockParam(
-    { cell_id, edit_mode, new_source, error },
+    { cell_id, edit_mode, new_source, error, noOp },
     toolUseID,
   ) {
     if (error) {
@@ -156,6 +162,13 @@ export const NotebookEditTool = buildTool({
         type: 'tool_result',
         content: error,
         is_error: true,
+      }
+    }
+    if (noOp) {
+      return {
+        tool_use_id: toolUseID,
+        type: 'tool_result',
+        content: getNotebookNoOpMessage(cell_id),
       }
     }
     switch (edit_mode) {
@@ -328,6 +341,46 @@ export const NotebookEditTool = buildTool({
     // write all use one canonical path spelling (and match the Read tool's key).
     const fullPath = expandPath(notebook_path)
 
+    // Snapshot exact on-disk bytes before the asynchronous history hook. The
+    // Read tool stores a rendered cell view for notebooks, not raw .ipynb JSON,
+    // so this local snapshot is the only reliable same-timestamp race guard.
+    const contentBeforeHooks = readFileSyncWithMetadata(fullPath).content
+
+    // Fast no-op check before history. This read never leads to a write; the
+    // authoritative read/parse below still happens after the final await so
+    // there is no lost-update window.
+    if ((originalEditMode ?? 'replace') === 'replace' && cell_id) {
+      try {
+        const notebook = jsonParse(contentBeforeHooks) as NotebookContent
+        let cellIndex = notebook.cells.findIndex(cell => cell.id === cell_id)
+        if (cellIndex === -1) {
+          cellIndex = parseCellId(cell_id) ?? -1
+        }
+        const targetCell = notebook.cells[cellIndex]
+        if (
+          targetCell &&
+          isNotebookReplaceNoOp(targetCell, new_source, cell_type)
+        ) {
+          return {
+            data: {
+              new_source,
+              cell_type: targetCell.cell_type,
+              language: notebook.metadata.language_info?.name ?? 'python',
+              edit_mode: 'replace',
+              cell_id: targetCell.id ?? cell_id,
+              error: '',
+              noOp: true,
+              notebook_path: fullPath,
+              original_file: contentBeforeHooks,
+              updated_file: contentBeforeHooks,
+            },
+          }
+        }
+      } catch {
+        // The authoritative path below preserves existing actionable errors.
+      }
+    }
+
     if (fileHistoryEnabled()) {
       await fileHistoryTrackEdit(
         updateFileHistoryState,
@@ -343,6 +396,17 @@ export const NotebookEditTool = buildTool({
       // which redid safeResolvePath and/or a 4KB readSync).
       const { content, encoding, lineEndings } =
         readFileSyncWithMetadata(fullPath)
+      const lastRead = readFileState.get(fullPath)
+      if (
+        notebookChangedSinceRead(
+          content,
+          getFileModificationTime(fullPath),
+          lastRead,
+          contentBeforeHooks,
+        )
+      ) {
+        throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
+      }
       // Must use non-memoized jsonParse here: safeParseJSON caches by content
       // string and returns a shared object reference, but we mutate the
       // notebook in place below (cells.splice, targetCell.source = ...).
@@ -388,7 +452,7 @@ export const NotebookEditTool = buildTool({
       }
 
       // Convert replace to insert if trying to replace one past the end
-      let edit_mode = originalEditMode
+      let edit_mode = originalEditMode ?? 'replace'
       if (edit_mode === 'replace' && cellIndex === notebook.cells.length) {
         edit_mode = 'insert'
         if (!cell_type) {
@@ -406,6 +470,26 @@ export const NotebookEditTool = buildTool({
           new_cell_id = Math.random().toString(36).substring(2, 15)
         } else if (cell_id !== null) {
           new_cell_id = cell_id
+        }
+      }
+
+      if (edit_mode === 'replace') {
+        const targetCell = notebook.cells[cellIndex]!
+        if (isNotebookReplaceNoOp(targetCell, new_source, cell_type)) {
+          return {
+            data: {
+              new_source,
+              cell_type: targetCell.cell_type,
+              language,
+              edit_mode,
+              cell_id: targetCell.id ?? cell_id,
+              error: '',
+              noOp: true,
+              notebook_path: fullPath,
+              original_file: content,
+              updated_file: content,
+            },
+          }
         }
       }
 

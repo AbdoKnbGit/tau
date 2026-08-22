@@ -244,49 +244,39 @@ const bashCommandFlagValueSchema = z.union([bashCommandFlagScalarSchema, z.array
 const bashCommandTokenSchema = z.union([
   z.strictObject({
     kind: z.literal('arg'),
-    value: z.string().describe('Raw argument token rendered with safe Bash quoting')
+    value: z.string().describe('Safely quoted argument')
   }),
   z.strictObject({
     kind: z.literal('flag'),
-    name: z.string().describe('Flag name with or without leading dashes'),
-    value: bashCommandFlagValueSchema.optional().describe('Flag value. true emits the flag, false omits it, arrays repeat the same flag.'),
-    style: z.enum(['space', 'equals', 'boolean']).optional().describe('How to render the flag value. Default is space: --flag value.')
+    name: z.string().describe('Flag name, with or without dashes'),
+    value: bashCommandFlagValueSchema.optional().describe('Value; arrays repeat, false omits'),
+    style: z.enum(['space', 'equals', 'boolean']).optional().describe('Rendering style; default space')
   }),
   z.strictObject({
-    kind: z.literal('separator').describe('Render a -- separator before trailing positional arguments')
+    kind: z.literal('separator').describe('Render `--`')
   })
 ]);
 const bashCommandPartsSchema = z.strictObject({
-  executable: z.string().describe('Base executable, for example docker, git, python, pytest, npm, or an executable path'),
-  tokens: z.array(bashCommandTokenSchema).optional().describe('Fully ordered argument tokens after the executable. Use this when flags must appear between subcommands, for example docker compose --file file up --detach service. When tokens is provided, grouped subcommands/flags/positionals are ignored.'),
-  subcommands: z.array(z.string()).optional().describe('Ordered CLI subcommands that come immediately after the executable'),
+  executable: z.string().describe('Executable name or path'),
+  tokens: z.array(bashCommandTokenSchema).optional().describe('Fully ordered arguments. When set, other argument groups are ignored.'),
+  subcommands: z.array(z.string()).optional().describe('Ordered subcommands'),
   flags: z.array(z.strictObject({
-    name: z.string().describe('Flag name with or without leading dashes, for example f, file, --file, detach, or -k'),
-    value: bashCommandFlagValueSchema.optional().describe('Flag value. true emits the flag, false omits it, arrays repeat the same flag.'),
-    style: z.enum(['space', 'equals', 'boolean']).optional().describe('How to render the flag value. Default is space: --flag value.')
-  })).optional().describe('Ordered flags to render with safe Bash quoting'),
-  positionals: z.array(z.string()).optional().describe('Ordered positional arguments rendered after flags'),
-  trailing_args: z.array(z.string()).optional().describe('Arguments rendered after a -- separator')
+    name: z.string().describe('Flag name, with or without dashes'),
+    value: bashCommandFlagValueSchema.optional().describe('Value; arrays repeat the flag, false omits it'),
+    style: z.enum(['space', 'equals', 'boolean']).optional().describe('Rendering style; default space')
+  })).optional().describe('Ordered, safely quoted flags'),
+  positionals: z.array(z.string()).optional().describe('Arguments after flags'),
+  trailing_args: z.array(z.string()).optional().describe('Arguments after `--`')
 });
 const fullInputSchema = lazySchema(() => z.strictObject({
   command: z.string().describe('The command to execute'),
   timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),
-  description: z.string().optional().describe(`Clear, concise description of what this command does in active voice. Never use words like "complex" or "risk" in the description - just describe what it does.
-
-For simple commands (git, npm, standard CLI tools), keep it brief (5-10 words):
-- ls → "List files in current directory"
-- git status → "Show working tree status"
-- npm install → "Install package dependencies"
-
-For commands that are harder to parse at a glance (piped commands, obscure flags, etc.), add enough context to clarify what it does:
-- find . -name "*.tmp" -exec rm {} \\; → "Find and delete all .tmp files recursively"
-- git reset --hard origin/main → "Discard all local changes and match remote main"
-- curl -s url | jq '.data[]' → "Fetch JSON from URL and extract data array elements"`),
-  run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run the whole command as a tracked background task. Use this for long-running servers, watchers, port-forwards, SSH tunnels, and foreground container runs. Do not put '&', 'nohup', 'disown', 'echo $!', 'docker compose up -d', or 'docker run -d' in the command; remove shell-level detaching and set this field instead.`),
-  plan_only: semanticBoolean(z.boolean().optional()).describe('Set to true only when the user explicitly asks for a dry-run command plan. Normal commands execute directly.'),
-  syntax_confirmed: semanticBoolean(z.boolean().optional()).describe('Deprecated compatibility flag. It has no effect; normal commands execute directly after safety and permission checks.'),
-  command_parts: bashCommandPartsSchema.optional().describe('Optional structured Bash command form. Tau compiles these parts into a safely quoted Bash command. If the compiled result does not exactly match `command`, the parts are ignored and `command` executes as written (the result notes this). Use this for complex external CLI syntax instead of hand-quoting raw Bash.'),
-  dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.'),
+  description: z.string().optional().describe('Brief active-voice summary of the command'),
+  run_in_background: semanticBoolean(z.boolean().optional()).describe('Run the whole command as a tracked background task; do not detach inside `command`.'),
+  plan_only: semanticBoolean(z.boolean().optional()).describe('Dry-run plan only; use only when explicitly requested'),
+  syntax_confirmed: semanticBoolean(z.boolean().optional()).describe('Deprecated no-op compatibility flag'),
+  command_parts: bashCommandPartsSchema.optional().describe('Optional safely quoted structure. Used only when it compiles exactly to `command`; otherwise ignored with a result note.'),
+  dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Run outside the sandbox; use only when authorized'),
   workdir: z.string().optional().describe('Deprecated internal/back-compat execution directory. The model-facing schema omits this field; encode target directories in the command with absolute paths or native CLI location flags.'),
   _simulatedSedEdit: z.object({
     filePath: z.string(),

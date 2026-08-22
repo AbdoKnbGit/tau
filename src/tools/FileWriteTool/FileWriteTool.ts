@@ -48,6 +48,7 @@ import { validateEditSyntax } from '../../utils/treesitter/validateEdit.js'
 import { FILE_UNEXPECTEDLY_MODIFIED_ERROR } from '../FileEditTool/constants.js'
 import { gitDiffSchema, hunkSchema } from '../FileEditTool/types.js'
 import { FILE_WRITE_TOOL_NAME, getWriteToolDescription } from './prompt.js'
+import { getFileWriteNoOpMessage, isFileWriteNoOp } from './writeNoOp.js'
 import {
   getToolUseSummary,
   isResultTruncated,
@@ -101,6 +102,10 @@ const outputSchema = lazySchema(() =>
       .describe(
         'Advisory note when the write introduced a named import that the Node builtin module does not export (non-blocking)',
       ),
+    noOp: z
+      .boolean()
+      .optional()
+      .describe('True when the file already had the requested content'),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -263,18 +268,37 @@ export const FileWriteTool = buildTool({
     // Activate conditional skills whose path patterns match this file
     activateConditionalSkillsForPaths([fullFilePath], cwd)
 
-    await diagnosticTracker.beforeFileEdited(fullFilePath)
-
     // Ensure parent directory exists before the atomic read-modify-write section.
     // Must stay OUTSIDE the critical section below (a yield between the staleness
     // check and writeTextContent lets concurrent edits interleave), and BEFORE the
     // write (lazy-mkdir-on-ENOENT would fire a spurious tengu_atomic_write_error
     // inside writeFileSyncAndFlush_DEPRECATED before ENOENT propagates back).
     await getFsImplementation().mkdir(dir)
+
+    // Fast idempotency check before edit diagnostics/history hooks. No read-state
+    // check is needed to skip a write: if disk already equals the requested
+    // bytes, returning without mutation is safe even after an external change.
+    try {
+      const current = readFileSyncWithMetadata(fullFilePath)
+      if (isFileWriteNoOp(current.content, current.hasCRLF, content)) {
+        return {
+          data: {
+            type: 'update' as const,
+            filePath: file_path,
+            content,
+            structuredPatch: [],
+            originalFile: current.content,
+            noOp: true,
+          },
+        }
+      }
+    } catch (error) {
+      if (!isENOENT(error)) throw error
+    }
+
+    await diagnosticTracker.beforeFileEdited(fullFilePath)
+
     if (fileHistoryEnabled()) {
-      // Backup captures pre-edit content — safe to call before the staleness
-      // check (idempotent v1 backup keyed on content hash; if staleness fails
-      // later we just have an unused backup, not corrupt state).
       await fileHistoryTrackEdit(
         updateFileHistoryState,
         fullFilePath,
@@ -315,6 +339,22 @@ export const FileWriteTool = buildTool({
 
     const enc = meta?.encoding ?? 'utf8'
     const oldContent = meta?.content ?? null
+
+    if (
+      meta !== null &&
+      isFileWriteNoOp(meta.content, meta.hasCRLF, content)
+    ) {
+      return {
+        data: {
+          type: 'update' as const,
+          filePath: file_path,
+          content,
+          structuredPatch: [],
+          originalFile: meta.content,
+          noOp: true,
+        },
+      }
+    }
 
     // Write is a full content replacement — the model sent explicit line endings
     // in `content` and meant them. Do not rewrite them. Previously we preserved
@@ -480,9 +520,16 @@ export const FileWriteTool = buildTool({
     }
   },
   mapToolResultToToolResultBlockParam(
-    { filePath, type, syntaxWarning, importWarning },
+    { filePath, type, syntaxWarning, importWarning, noOp },
     toolUseID,
   ) {
+    if (noOp) {
+      return {
+        tool_use_id: toolUseID,
+        type: 'tool_result',
+        content: getFileWriteNoOpMessage(filePath),
+      }
+    }
     const warnings = [syntaxWarning, importWarning].filter(Boolean).join('\n')
     const warningSuffix = warnings ? `\n\n${warnings}` : ''
     switch (type) {

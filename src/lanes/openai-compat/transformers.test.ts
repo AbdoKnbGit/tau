@@ -635,7 +635,8 @@ function main(): void {
       { name: 'Grep' }, { name: 'Glob' }, { name: 'WebSearch' }, { name: 'WebFetch' },
       { name: 'Agent' }, { name: 'Skill' },
       { name: 'Rust' },
-      { name: 'TaskCreate' }, { name: 'CronCreate' }, { name: 'NotebookEdit' },
+      { name: 'ToolSearch' },
+      { name: 'TaskCreate' }, { name: 'CronCreate' }, { name: 'NotebookEdit' }, { name: 'Snapshot' },
       { name: 'PushNotification' }, { name: 'RemoteTrigger' }, { name: 'ScheduleWakeup' },
       { name: 'ExitPlanMode' }, { name: 'EnterWorktree' }, { name: 'AskUserQuestion' },
       { name: 'mcp__github__list_issues' }, { name: 'mcp__slack__send' },
@@ -653,6 +654,8 @@ function main(): void {
     assert(!names.includes('TaskCreate'), 'TaskCreate should be dropped')
     assert(!names.includes('CronCreate'), 'CronCreate should be dropped')
     assert(!names.includes('NotebookEdit'), 'NotebookEdit should be dropped')
+    assert(!names.includes('Snapshot'), 'Snapshot should be dropped')
+    assert(!names.includes('ToolSearch'), 'small-tier result is eager because ToolSearch is absent')
   })
   test('groq filters tools for gpt-oss too (8k TPM on-demand cap)', () => {
     const raw = [
@@ -881,25 +884,47 @@ function main(): void {
     }
   })
   test('nim filters to fast core tools unless full tools are requested', () => {
-    const raw = [
-      { name: 'Bash' }, { name: 'PowerShell' }, { name: 'Read' }, { name: 'Edit' },
-      { name: 'Write' }, { name: 'Grep' }, { name: 'Glob' }, { name: 'TodoWrite' },
-      { name: 'Agent' }, { name: 'Skill' }, { name: 'WebSearch' }, { name: 'WebFetch' },
-      { name: 'NotebookEdit' }, { name: 'TaskCreate' }, { name: 'CronCreate' },
-      { name: 'RemoteTrigger' }, { name: 'mcp__github__list_issues' },
-      { name: 'Rust' },
-    ]
-    const kept = TRANSFORMERS.nim.filterTools?.('moonshotai/kimi-k2-instruct', raw) ?? raw
-    const names = kept.map(t => t.name)
-    assert(names.includes('Read') && names.includes('Bash') && names.includes('PowerShell'),
-      'expected core shell/read tools kept')
-    assert(names.includes('Grep') && names.includes('Glob') && names.includes('TodoWrite'),
-      'expected core search/planning tools kept')
-    assert(names.includes('Agent') && names.includes('Skill'), 'expected delegation helpers kept')
-    assert(names.includes('Rust'), 'expected Rust capability kept in NIM fast mode')
-    assert(!names.includes('NotebookEdit'), 'NotebookEdit should be dropped in NIM fast mode')
-    assert(!names.includes('CronCreate'), 'CronCreate should be dropped in NIM fast mode')
-    assert(!names.includes('mcp__github__list_issues'), 'MCP should be opt-in for NIM fast mode')
+    const envNames = [
+      'NIM_NO_OPTIMIZE', 'CLAUDEX_NIM_NO_OPTIMIZE',
+      'NIM_FULL_TOOLS', 'CLAUDEX_NIM_FULL_TOOLS',
+      'NIM_KEEP_MCP_TOOLS', 'CLAUDEX_NIM_KEEP_MCP_TOOLS',
+    ] as const
+    const saved = new Map(envNames.map(name => [name, process.env[name]]))
+    for (const name of envNames) delete process.env[name]
+    try {
+      const raw = [
+        { name: 'Bash' }, { name: 'PowerShell' }, { name: 'Read' }, { name: 'Edit' },
+        { name: 'Write' }, { name: 'Grep' }, { name: 'Glob' }, { name: 'TodoWrite' },
+        { name: 'Agent' }, { name: 'Skill' }, { name: 'WebSearch' }, { name: 'WebFetch' },
+        { name: 'ToolSearch' }, { name: 'NotebookEdit' }, { name: 'Snapshot' },
+        { name: 'TaskCreate' }, { name: 'CronCreate' }, { name: 'RemoteTrigger' },
+        { name: 'mcp__github__list_issues' }, { name: 'Rust' },
+      ]
+      const kept = TRANSFORMERS.nim.filterTools?.('moonshotai/kimi-k2-instruct', raw) ?? raw
+      const names = kept.map(t => t.name)
+      assert(names.includes('Read') && names.includes('Bash') && names.includes('PowerShell'),
+        'expected core shell/read tools kept')
+      assert(names.includes('Grep') && names.includes('Glob') && names.includes('TodoWrite'),
+        'expected core search/planning tools kept')
+      assert(names.includes('Agent') && names.includes('Skill'), 'expected delegation helpers kept')
+      assert(names.includes('ToolSearch') && names.includes('Rust'),
+        'expected discovery/Rust helpers kept by the raw transformer policy')
+      assert(!names.includes('NotebookEdit'), 'NotebookEdit should be dropped in NIM fast mode')
+      assert(!names.includes('Snapshot'), 'Snapshot should be dropped in NIM fast mode')
+      assert(!names.includes('CronCreate'), 'CronCreate should be dropped in NIM fast mode')
+      assert(!names.includes('mcp__github__list_issues'), 'MCP should be opt-in for NIM fast mode')
+
+      process.env.NIM_KEEP_MCP_TOOLS = '1'
+      const withMcp = TRANSFORMERS.nim.filterTools?.('moonshotai/kimi-k2-instruct', raw) ?? raw
+      assert(withMcp.some(t => t.name === 'mcp__github__list_issues'), 'MCP keep flag was ignored')
+      assert(!withMcp.some(t => t.name === 'NotebookEdit'), 'MCP keep leaked outside allowlist')
+    } finally {
+      for (const name of envNames) {
+        const value = saved.get(name)
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
   })
   test('nim skips compat tool preamble by default', () => {
     assert(TRANSFORMERS.nim.skipToolUsagePreamble?.('moonshotai/kimi-k2-instruct') === true,

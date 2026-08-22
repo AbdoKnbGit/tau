@@ -13,7 +13,11 @@
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 import { ALL_NIM_MODELS } from '../../../utils/model/nim_catalog.js'
-import { RUST_TOOL_NAME } from '../../../tools/RustTool/constants.js'
+import {
+  areNimOptimizationsDisabled,
+  isNimFastToolFilterActive,
+  isToolKeptByNimFastFilter,
+} from '../nim_tool_policy.js'
 
 const DEFAULT_NIM_MAX_TOKENS = 8192
 
@@ -54,7 +58,7 @@ export const nimTransformer: Transformer = {
   },
 
   clampMaxTokens(requested: number): number {
-    if (nimOptimizationsDisabled()) return requested
+    if (areNimOptimizationsDisabled()) return requested
     const cap = readPositiveIntEnv('NIM_MAX_TOKENS')
       ?? readPositiveIntEnv('PROVIDER_MAX_TOKENS')
       ?? DEFAULT_NIM_MAX_TOKENS
@@ -88,26 +92,14 @@ export const nimTransformer: Transformer = {
   },
 
   filterTools<T extends { name: string }>(_model: string, tools: T[]): T[] {
-    if (nimOptimizationsDisabled() || envFlag('NIM_FULL_TOOLS') || envFlag('CLAUDEX_NIM_FULL_TOOLS')) {
-      return tools
-    }
-
-    return tools.filter(t =>
-      NIM_FAST_TOOL_ALLOWLIST.has(t.name)
-      || (envFlag('NIM_KEEP_MCP_TOOLS') || envFlag('CLAUDEX_NIM_KEEP_MCP_TOOLS')
-        ? t.name.startsWith('mcp__')
-        : false),
-    )
+    if (!isNimFastToolFilterActive()) return tools
+    return tools.filter(t => isToolKeptByNimFastFilter(t.name))
   },
 
   skipToolUsagePreamble(_model: string): boolean {
-    if (nimOptimizationsDisabled()) return false
+    if (areNimOptimizationsDisabled()) return false
     return !(envFlag('NIM_TOOL_PREAMBLE') || envFlag('CLAUDEX_NIM_TOOL_PREAMBLE'))
   },
-}
-
-function nimOptimizationsDisabled(): boolean {
-  return envFlag('NIM_NO_OPTIMIZE') || envFlag('CLAUDEX_NIM_NO_OPTIMIZE')
 }
 
 function envFlag(name: string): boolean {
@@ -122,21 +114,3 @@ function readPositiveIntEnv(name: string): number | null {
   const value = Number.parseInt(raw, 10)
   return Number.isFinite(value) && value > 0 ? value : null
 }
-
-const NIM_FAST_TOOL_ALLOWLIST = new Set<string>([
-  // Shell
-  'Bash', 'PowerShell',
-  // Filesystem
-  'Read', 'Write', 'Edit',
-  // Search
-  'Grep', 'Glob',
-  // Web
-  'WebSearch', 'WebFetch',
-  // Planning / delegation
-  'TodoWrite', 'Agent', 'Task', 'Skill', 'ToolSearch',
-  RUST_TOOL_NAME,
-  // OpenAI-compat lane native names.
-  'execute_command', 'read_file', 'write_file',
-  'str_replace', 'edit_block', 'edit_file',
-  'find_files', 'search_text', 'web_search',
-])

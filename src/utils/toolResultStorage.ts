@@ -5,17 +5,24 @@
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { createReadStream } from 'fs'
 import { mkdir, open, readdir, stat, writeFile } from 'fs/promises'
-import { isAbsolute, join, relative, resolve } from 'path'
+import { dirname, isAbsolute, join, relative, resolve } from 'path'
 import { createInterface } from 'readline'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import {
+  AGGREGATE_TOOL_RESULT_PREVIEW_CHARS,
   BYTES_PER_TOKEN,
+  CHEAP_MODE_MAX_RESULT_SIZE_CHARS,
+  CHEAP_MODE_MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
+  CHEAP_MODE_TOOL_OUTPUT_RETRIEVE_BYTES,
   DEFAULT_MAX_RESULT_SIZE_CHARS,
   MAX_TOOL_RESULT_BYTES,
   MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
 } from '../constants/toolLimits.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
-import { searchToolResultFile } from './toolResultSearch.js'
+import {
+  searchToolResultFile,
+  truncateUtf8ToBytes,
+} from './toolResultSearch.js'
 import { logEvent } from '../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../services/analytics/metadata.js'
 import type { Message } from '../types/message.js'
@@ -24,6 +31,7 @@ import { getCwd } from './cwd.js'
 import { getErrnoCode, toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
+import { getPowerModeFromSettings } from './powerMode.js'
 import { getProjectDir } from './sessionStorage.js'
 import { jsonStringify } from './slowOperations.js'
 import {
@@ -77,6 +85,13 @@ const PER_MESSAGE_BUDGET_ENV_KEYS = [
   'CLAUDE_CODE_TOOL_RESULTS_BUDGET_CHARS',
 ] as const
 
+function isCheapPowerMode(): boolean {
+  // The session pin is seeded before queries/tools run. Passing undefined
+  // avoids pulling the full settings loader into this hot storage module;
+  // before startup seeding the documented fallback is normal mode.
+  return getPowerModeFromSettings(undefined) === 'cheap'
+}
+
 /**
  * Resolve the effective persistence threshold for a tool.
  * GrowthBook override wins when present; otherwise falls back to the declared
@@ -114,7 +129,9 @@ export function getPersistenceThreshold(
   }
   const globalDefault =
     getPositiveIntEnv(PERSIST_THRESHOLD_ENV_KEYS) ??
-    DEFAULT_MAX_RESULT_SIZE_CHARS
+    (isCheapPowerMode()
+      ? CHEAP_MODE_MAX_RESULT_SIZE_CHARS
+      : DEFAULT_MAX_RESULT_SIZE_CHARS)
   return Math.min(declaredMaxResultSizeChars, globalDefault)
 }
 
@@ -130,6 +147,17 @@ export type PersistedToolResult = {
 // Error result when persistence fails
 export type PersistToolResultError = {
   error: string
+}
+
+function serializePersistableToolResult(
+  content: NonNullable<ToolResultBlockParam['content']>,
+): { isJson: boolean; contentStr: string } | null {
+  const isJson = Array.isArray(content)
+  if (isJson && content.some(block => block.type !== 'text')) return null
+  return {
+    isJson,
+    contentStr: isJson ? jsonStringify(content, null, 2) : content,
+  }
 }
 
 /**
@@ -191,6 +219,26 @@ const DEFAULT_RETRIEVE_BYTES = 20_000
 const MAX_RETRIEVE_BYTES = 100_000
 const DEFAULT_RETRIEVE_LINES = 200
 const MAX_RETRIEVE_LINES = 2_000
+const MAX_RETRIEVE_QUERY_LABEL_CHARS = 200
+
+export type ToolOutputRetrieveLimits = {
+  defaultBytes: number
+  maxBytes: number
+}
+
+/** Normal retrieval behavior is unchanged; cheap mode uses one 8 KB page. */
+export function getToolOutputRetrieveLimits(): ToolOutputRetrieveLimits {
+  return isCheapPowerMode()
+    ? {
+        defaultBytes: CHEAP_MODE_TOOL_OUTPUT_RETRIEVE_BYTES,
+        maxBytes: CHEAP_MODE_TOOL_OUTPUT_RETRIEVE_BYTES,
+      }
+    : {
+        defaultBytes: DEFAULT_RETRIEVE_BYTES,
+        maxBytes: MAX_RETRIEVE_BYTES,
+      }
+}
+
 function isInsidePath(child: string, parent: string): boolean {
   const rel = relative(parent, child)
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
@@ -402,11 +450,39 @@ function clampPositiveInt(
   return Math.min(Math.max(Math.floor(value), 1), max)
 }
 
+function isUtf8ContinuationByte(byte: number): boolean {
+  return (byte & 0xc0) === 0x80
+}
+
+/** Length of the largest complete UTF-8 prefix in a boundary-aligned buffer. */
+function completeUtf8PrefixLength(buffer: Buffer): number {
+  if (buffer.length === 0) return 0
+  let leadIndex = buffer.length - 1
+  while (leadIndex >= 0 && isUtf8ContinuationByte(buffer[leadIndex]!)) {
+    leadIndex--
+  }
+  if (leadIndex < 0) return 0
+
+  const lead = buffer[leadIndex]!
+  const sequenceBytes =
+    lead < 0x80
+      ? 1
+      : (lead & 0xe0) === 0xc0
+        ? 2
+        : (lead & 0xf0) === 0xe0
+          ? 3
+          : (lead & 0xf8) === 0xf0
+            ? 4
+            : 1
+  return buffer.length - leadIndex >= sequenceBytes ? buffer.length : leadIndex
+}
+
 async function readByteRange(
   path: string,
   totalBytes: number,
   startByteInput: number | undefined,
   maxBytesInput: number | undefined,
+  limits: ToolOutputRetrieveLimits,
 ): Promise<RetrievedPersistedToolResultRange> {
   const startByte =
     startByteInput === undefined || !Number.isFinite(startByteInput)
@@ -414,10 +490,23 @@ async function readByteRange(
       : Math.min(Math.max(Math.floor(startByteInput), 0), totalBytes)
   const maxBytes = clampPositiveInt(
     maxBytesInput,
-    DEFAULT_RETRIEVE_BYTES,
-    MAX_RETRIEVE_BYTES,
+    limits.defaultBytes,
+    limits.maxBytes,
   )
-  const bytesToRead = Math.min(maxBytes, Math.max(totalBytes - startByte, 0))
+  if (startByte === totalBytes) {
+    return {
+      range: `bytes ${startByte}-${startByte} of ${totalBytes}`,
+      content: '',
+      truncated: false,
+    }
+  }
+
+  // Three lookahead bytes let an arbitrary continuation-byte start advance to
+  // the next character while still retaining a full maxBytes-sized candidate.
+  const bytesToRead = Math.min(
+    maxBytes + 3,
+    Math.max(totalBytes - startByte, 0),
+  )
   const buffer = Buffer.alloc(bytesToRead)
   const handle = await open(path, 'r')
   try {
@@ -427,10 +516,30 @@ async function readByteRange(
       bytesToRead,
       startByte,
     )
-    const endByte = startByte + bytesRead
+    let leadingSkip = 0
+    while (
+      leadingSkip < bytesRead &&
+      isUtf8ContinuationByte(buffer[leadingSkip]!)
+    ) {
+      leadingSkip++
+    }
+    const actualStartByte = startByte + leadingSkip
+    const candidate = buffer.subarray(
+      leadingSkip,
+      Math.min(leadingSkip + maxBytes, bytesRead),
+    )
+    const completeBytes = completeUtf8PrefixLength(candidate)
+    const endByte = actualStartByte + completeBytes
+    const decoded = candidate.subarray(0, completeBytes).toString('utf8')
     return {
-      range: `bytes ${startByte}-${Math.max(endByte - 1, startByte)} of ${totalBytes}`,
-      content: buffer.subarray(0, bytesRead).toString('utf8'),
+      range:
+        completeBytes > 0
+          ? `bytes ${actualStartByte}-${endByte - 1} of ${totalBytes}`
+          : `bytes ${actualStartByte}-(no complete UTF-8 character) of ${totalBytes}`,
+      // Invalid binary bytes decode as the three-byte U+FFFD marker. Retain the
+      // raw range semantics but hard-cap that expansion; valid UTF-8 is already
+      // boundary-aligned above and therefore passes through unchanged.
+      content: truncateUtf8ToBytes(decoded, maxBytes),
       truncated: endByte < totalBytes,
     }
   } finally {
@@ -442,6 +551,7 @@ async function readLineRange(
   path: string,
   startLineInput: number | undefined,
   lineCountInput: number | undefined,
+  maxOutputBytes: number,
 ): Promise<RetrievedPersistedToolResultRange> {
   const startLine = clampPositiveInt(startLineInput, 1, Number.MAX_SAFE_INTEGER)
   const lineCount = clampPositiveInt(
@@ -466,15 +576,23 @@ async function readLineRange(
       rl.close()
       break
     }
-    if (currentSize + line.length > MAX_RETRIEVE_BYTES) {
-      const remaining = Math.max(MAX_RETRIEVE_BYTES - currentSize, 0)
-      if (remaining > 0) lines.push(line.slice(0, remaining))
+    const separatorBytes = lines.length > 0 ? 1 : 0
+    const lineBytes = Buffer.byteLength(line, 'utf8')
+    if (currentSize + separatorBytes + lineBytes > maxOutputBytes) {
+      const remaining = Math.max(
+        maxOutputBytes - currentSize - separatorBytes,
+        0,
+      )
+      if (remaining > 0) {
+        const prefix = truncateUtf8ToBytes(line, remaining)
+        if (prefix.length > 0) lines.push(prefix)
+      }
       truncated = true
       rl.close()
       break
     }
     lines.push(line)
-    currentSize += line.length + 1
+    currentSize += separatorBytes + lineBytes
   }
 
   const endLine = lines.length > 0 ? startLine + lines.length - 1 : startLine
@@ -496,25 +614,30 @@ async function searchRange(
   path: string,
   query: string,
   totalBytes: number,
+  maxOutputBytes: number,
 ): Promise<RetrievedPersistedToolResultRange> {
+  const queryLabel =
+    query.length <= MAX_RETRIEVE_QUERY_LABEL_CHARS
+      ? query
+      : `${query.slice(0, MAX_RETRIEVE_QUERY_LABEL_CHARS - 1)}…`
   const found = await searchToolResultFile(path, query, {
-    maxBytes: MAX_RETRIEVE_BYTES,
+    maxBytes: maxOutputBytes,
     maxMatches: MAX_RETRIEVE_LINES,
   })
 
   if (found.binary) {
     return {
       range: 'binary output, not searched',
-      content: `This saved output looks binary, so "${query}" was not searched for. Read a byte range instead.`,
+      content: `This saved output looks binary, so "${queryLabel}" was not searched for. Read a byte range instead.`,
       truncated: false,
     }
   }
 
   if (found.matches === 0) {
     return {
-      range: `0 matches for "${query}"`,
+      range: `0 matches for "${queryLabel}"`,
       content:
-        `No line contains "${query}". This output has ${found.scannedLines} lines ` +
+        `No line contains "${queryLabel}". This output has ${found.scannedLines} lines ` +
         `across ${totalBytes} bytes; read a range with startLine/lineCount instead of searching again.`,
       truncated: false,
     }
@@ -522,7 +645,7 @@ async function searchRange(
 
   return {
     range:
-      `${found.matches} matching line${found.matches === 1 ? '' : 's'} for "${query}"` +
+      `${found.matches} matching line${found.matches === 1 ? '' : 's'} for "${queryLabel}"` +
       (found.truncated ? ' (capped)' : ''),
     content: found.content,
     truncated: found.truncated,
@@ -547,16 +670,23 @@ export async function retrievePersistedToolResult(
 
   // Search wins over the range inputs: a model that knows what it is looking
   // for should never also have to guess where it lives.
+  const limits = getToolOutputRetrieveLimits()
   const query = options.query?.trim()
   const range = query
-    ? await searchRange(resolved.path, query, fileStat.size)
+    ? await searchRange(resolved.path, query, fileStat.size, limits.maxBytes)
     : options.startLine !== undefined || options.lineCount !== undefined
-      ? await readLineRange(resolved.path, options.startLine, options.lineCount)
+      ? await readLineRange(
+          resolved.path,
+          options.startLine,
+          options.lineCount,
+          limits.maxBytes,
+        )
       : await readByteRange(
           resolved.path,
           fileStat.size,
           options.startByte,
           options.maxBytes,
+          limits,
         )
 
   return {
@@ -570,40 +700,22 @@ export async function retrievePersistedToolResult(
 /**
  * Ensure the session-specific tool results directory exists
  */
-export async function ensureToolResultsDir(): Promise<void> {
+export async function ensureToolResultsDir(
+  directory = getToolResultsDir(),
+): Promise<void> {
   try {
-    await mkdir(getToolResultsDir(), { recursive: true })
+    await mkdir(directory, { recursive: true })
   } catch {
     // Directory may already exist
   }
 }
 
-/**
- * Persist a tool result to disk and return information about the persisted file
- *
- * @param content - The tool result content to persist (string or array of content blocks)
- * @param toolUseId - The ID of the tool use that produced the result
- * @returns Information about the persisted file including filepath and preview
- */
-export async function persistToolResult(
-  content: NonNullable<ToolResultBlockParam['content']>,
-  toolUseId: string,
+async function persistSerializedToolResult(
+  contentStr: string,
+  isJson: boolean,
+  filepath: string,
 ): Promise<PersistedToolResult | PersistToolResultError> {
-  const isJson = Array.isArray(content)
-
-  // Check for non-text content - we can only persist text blocks
-  if (isJson) {
-    const hasNonTextContent = content.some(block => block.type !== 'text')
-    if (hasNonTextContent) {
-      return {
-        error: 'Cannot persist tool results containing non-text content',
-      }
-    }
-  }
-
-  await ensureToolResultsDir()
-  const filepath = getToolResultPath(toolUseId, isJson)
-  const contentStr = isJson ? jsonStringify(content, null, 2) : content
+  await ensureToolResultsDir(dirname(filepath))
 
   // tool_use_id is unique per invocation and content is deterministic for a
   // given id, so skip if the file already exists. This prevents re-writing
@@ -622,9 +734,7 @@ export async function persistToolResult(
     // EEXIST: already persisted on a prior turn, fall through to preview
   }
 
-  // Generate a preview
   const { preview, hasMore } = generatePreview(contentStr, PREVIEW_SIZE_BYTES)
-
   return {
     filepath,
     originalSize: contentStr.length,
@@ -635,23 +745,49 @@ export async function persistToolResult(
 }
 
 /**
+ * Persist a tool result to disk and return information about the persisted file
+ *
+ * @param content - The tool result content to persist (string or array of content blocks)
+ * @param toolUseId - The ID of the tool use that produced the result
+ * @returns Information about the persisted file including filepath and preview
+ */
+export async function persistToolResult(
+  content: NonNullable<ToolResultBlockParam['content']>,
+  toolUseId: string,
+): Promise<PersistedToolResult | PersistToolResultError> {
+  const serialized = serializePersistableToolResult(content)
+  if (!serialized) {
+    return {
+      error: 'Cannot persist tool results containing non-text content',
+    }
+  }
+  const { isJson, contentStr } = serialized
+  // Capture the absolute session-scoped target before the first await. A
+  // concurrent /clear can regenerate the session ID while mkdir is pending;
+  // deriving the path afterwards would advertise/write a different session.
+  const filepath = getToolResultPath(toolUseId, isJson)
+  return persistSerializedToolResult(contentStr, isJson, filepath)
+}
+
+/**
  * Build a message for large tool results with preview
  */
 export function buildLargeToolResultMessage(
   result: PersistedToolResult,
   originalContent?: NonNullable<ToolResultBlockParam['content']>,
+  previewSizeChars = PREVIEW_SIZE_BYTES,
 ): string {
   const preview = selectToolResultPreview(
     result.preview,
     originalContent,
-    PREVIEW_SIZE_BYTES,
+    previewSizeChars,
   )
   let message = `${PERSISTED_OUTPUT_TAG}\n`
   message += `Output too large (${formatFileSize(result.originalSize)}). Full output saved to: ${result.filepath}\n\n`
   message +=
     preview === result.preview
-      ? `Preview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):\n`
-      : `Preview (compressed to ${formatFileSize(PREVIEW_SIZE_BYTES)}):\n`
+      ? `Preview (first ${formatFileSize(previewSizeChars)}):\n`
+      : `Preview (compressed to ${formatFileSize(previewSizeChars)}):\n`
   message += preview
   message += result.hasMore ? '\n...\n' : '\n'
   message += PERSISTED_OUTPUT_CLOSING_TAG
@@ -850,10 +986,18 @@ export function isPersistError(
 export type ContentReplacementState = {
   seenIds: Set<string>
   replacements: Map<string, string>
+  /** Whether the experiment also permits fresh replacements outside cheap. */
+  enabledOutsideCheap: boolean
 }
 
-export function createContentReplacementState(): ContentReplacementState {
-  return { seenIds: new Set(), replacements: new Map() }
+export function createContentReplacementState(
+  enabledOutsideCheap = true,
+): ContentReplacementState {
+  return {
+    seenIds: new Set(),
+    replacements: new Map(),
+    enabledOutsideCheap,
+  }
 }
 
 /**
@@ -868,6 +1012,7 @@ export function cloneContentReplacementState(
   return {
     seenIds: new Set(source.seenIds),
     replacements: new Map(source.replacements),
+    enabledOutsideCheap: source.enabledOutsideCheap,
   }
 }
 
@@ -899,14 +1044,17 @@ export function getPerMessageBudgetLimit(): number {
   ) {
     return override
   }
-  return MAX_TOOL_RESULTS_PER_MESSAGE_CHARS
+  return isCheapPowerMode()
+    ? CHEAP_MODE_MAX_TOOL_RESULTS_PER_MESSAGE_CHARS
+    : MAX_TOOL_RESULTS_PER_MESSAGE_CHARS
 }
 
 /**
  * Provision replacement state for a new conversation thread.
  *
  * Encapsulates the feature-flag gate + reconstruct-vs-fresh choice:
- *   - Flag off → undefined (query.ts skips enforcement entirely)
+ *   - Fresh non-cheap + flag off → undefined (query.ts skips enforcement)
+ *   - Cheap mode, or stored replacement records → provision regardless
  *   - No initialMessages (cold start) → fresh
  *   - initialMessages present → reconstruct (freeze all candidate IDs so the
  *     budget never replaces content the model already saw unreplaced). Empty
@@ -921,14 +1069,40 @@ export function provisionContentReplacementState(
     'tengu_hawthorn_steeple',
     false,
   )
-  if (!enabled) return undefined
+  const hasStoredToolResultReplacement =
+    initialMessages !== undefined &&
+    initialContentReplacements?.some(r => r.kind === 'tool-result') === true
+  // Cheap mode always provisions the decision map: its lower aggregate
+  // ceiling is part of the mode contract, not an experiment. Stored records
+  // also force reconstruction in normal mode: otherwise resuming a session
+  // created in cheap mode would expand its exact saved previews back to raw
+  // output and drift the provider prefix. Fresh normal sessions retain the
+  // exact historical feature-flag gate.
+  if (!enabled && !isCheapPowerMode() && !hasStoredToolResultReplacement) {
+    return undefined
+  }
   if (initialMessages) {
     return reconstructContentReplacementState(
       initialMessages,
       initialContentReplacements ?? [],
+      undefined,
+      enabled,
     )
   }
-  return createContentReplacementState()
+  return createContentReplacementState(enabled)
+}
+
+/**
+ * Lazily enter the cheap-mode aggregate policy after an in-session /mode
+ * switch. Historical tool results are reconstructed as seen/unreplaced, so
+ * the switch never rewrites a prefix the model already consumed. The caller
+ * retains the returned state for future query turns.
+ */
+export function provisionCheapContentReplacementStateForQuery(
+  messages: Message[],
+): ContentReplacementState | undefined {
+  if (!isCheapPowerMode()) return undefined
+  return provisionContentReplacementState(messages, [])
 }
 
 /**
@@ -962,6 +1136,18 @@ type CandidatePartition = {
   mustReapply: Array<ToolResultCandidate & { replacement: string }>
   frozen: ToolResultCandidate[]
   fresh: ToolResultCandidate[]
+}
+
+type ToolResultCandidateGroup = {
+  candidates: ToolResultCandidate[]
+  /** Already-persisted previews that cannot be rewritten cache-safely. */
+  fixedCompactedSize: number
+}
+
+type PlannedToolResultReplacement = {
+  candidate: ToolResultCandidate
+  replacement: string
+  serialized: { contentStr: string; isJson: boolean; filepath: string }
 }
 
 function isContentAlreadyCompacted(
@@ -1041,6 +1227,22 @@ function collectCandidatesFromMessage(message: Message): ToolResultCandidate[] {
   })
 }
 
+function collectFixedCompactedSizeFromMessage(message: Message): number {
+  if (message.type !== 'user' || !Array.isArray(message.message.content)) {
+    return 0
+  }
+  return message.message.content.reduce((sum, block) => {
+    if (
+      block.type !== 'tool_result' ||
+      !block.content ||
+      !isContentAlreadyCompacted(block.content)
+    ) {
+      return sum
+    }
+    return sum + contentSize(block.content)
+  }, 0)
+}
+
 /**
  * Extract candidate tool_result blocks grouped by API-level user message.
  *
@@ -1068,13 +1270,20 @@ function collectCandidatesFromMessage(message: Message): ToolResultCandidate[] {
  */
 function collectCandidatesByMessage(
   messages: Message[],
-): ToolResultCandidate[][] {
-  const groups: ToolResultCandidate[][] = []
+): ToolResultCandidateGroup[] {
+  const groups: ToolResultCandidateGroup[] = []
   let current: ToolResultCandidate[] = []
+  let currentFixedCompactedSize = 0
 
   const flush = () => {
-    if (current.length > 0) groups.push(current)
+    if (current.length > 0) {
+      groups.push({
+        candidates: current,
+        fixedCompactedSize: currentFixedCompactedSize,
+      })
+    }
     current = []
+    currentFixedCompactedSize = 0
   }
 
   // Track all assistant message.ids seen so far — same-ID fragments are
@@ -1093,6 +1302,7 @@ function collectCandidatesByMessage(
   for (const message of messages) {
     if (message.type === 'user') {
       current.push(...collectCandidatesFromMessage(message))
+      currentFixedCompactedSize += collectFixedCompactedSizeFromMessage(message)
     } else if (message.type === 'assistant') {
       if (!seenAsstIds.has(message.message.id)) {
         flush()
@@ -1135,27 +1345,96 @@ function partitionByPriorDecision(
   )
 }
 
+function planToolResultReplacement(
+  candidate: ToolResultCandidate,
+): PlannedToolResultReplacement | null {
+  const serialized = serializePersistableToolResult(candidate.content)
+  if (!serialized) return null
+  const { preview, hasMore } = generatePreview(
+    serialized.contentStr,
+    AGGREGATE_TOOL_RESULT_PREVIEW_CHARS,
+  )
+  const persisted: PersistedToolResult = {
+    filepath: getToolResultPath(candidate.toolUseId, serialized.isJson),
+    originalSize: serialized.contentStr.length,
+    isJson: serialized.isJson,
+    preview,
+    hasMore,
+  }
+  return {
+    candidate,
+    replacement: buildLargeToolResultMessage(
+      persisted,
+      candidate.content,
+      AGGREGATE_TOOL_RESULT_PREVIEW_CHARS,
+    ),
+    serialized: {
+      contentStr: serialized.contentStr,
+      isJson: serialized.isJson,
+      filepath: persisted.filepath,
+    },
+  }
+}
+
+/** Empty decision map with the same frozen outside-cheap policy. */
+export function createEmptyContentReplacementStateLike(
+  source: ContentReplacementState,
+): ContentReplacementState {
+  return createContentReplacementState(source.enabledOutsideCheap)
+}
+
+export type ContentReplacementStateRef = {
+  current: ContentReplacementState | undefined
+}
+
 /**
- * Pick the largest fresh results to replace until the model-visible total
- * (frozen + remaining fresh) is at or under budget, or fresh is exhausted.
- * If frozen results alone exceed budget we accept the overage — microcompact
- * will eventually clear them.
+ * Bind one persistent owner to a freshly rebuilt ToolUseContext-like object.
+ * QueryEngine rebuilds that context on every submit; the setter writes through
+ * to the engine-owned ref so the next submit receives the same decision map.
+ */
+export function getContentReplacementStateBinding(
+  ref: ContentReplacementStateRef,
+): {
+  contentReplacementState: ContentReplacementState | undefined
+  setContentReplacementState: (state: ContentReplacementState) => void
+} {
+  return {
+    contentReplacementState: ref.current,
+    setContentReplacementState: state => {
+      ref.current = state
+    },
+  }
+}
+
+/**
+ * Choose by exact model-visible savings, not original size. This matters for
+ * many ~2 KB results: a normal 2 KB persisted preview would not shrink them,
+ * while the dedicated 512-char aggregate preview does. Keep selecting until
+ * the target is met or no persistable result has positive savings. The latter
+ * is an explicit irreducible overage (e.g. frozen/Read output or tiny blocks
+ * smaller than any useful retrieval handle), never a falsely "enforced" cap.
  */
 function selectFreshToReplace(
   fresh: ToolResultCandidate[],
-  frozenSize: number,
+  fixedSize: number,
   limit: number,
-): ToolResultCandidate[] {
-  const sorted = [...fresh].sort((a, b) => b.size - a.size)
-  const selected: ToolResultCandidate[] = []
-  let remaining = frozenSize + fresh.reduce((sum, c) => sum + c.size, 0)
-  for (const c of sorted) {
+): PlannedToolResultReplacement[] {
+  const sorted = fresh
+    .map(planToolResultReplacement)
+    .filter((plan): plan is PlannedToolResultReplacement => plan !== null)
+    .sort((a, b) => {
+      const aSavings = a.candidate.size - a.replacement.length
+      const bSavings = b.candidate.size - b.replacement.length
+      return bSavings - aSavings || b.candidate.size - a.candidate.size
+    })
+  const selected: PlannedToolResultReplacement[] = []
+  let remaining = fixedSize + fresh.reduce((sum, c) => sum + c.size, 0)
+  for (const plan of sorted) {
     if (remaining <= limit) break
-    selected.push(c)
-    // We don't know the replacement size until after persist, but previews
-    // are ~2K and results hitting this path are much larger, so subtracting
-    // the full size is a close approximation for selection purposes.
-    remaining -= c.size
+    const savings = plan.candidate.size - plan.replacement.length
+    if (savings <= 0) break
+    selected.push(plan)
+    remaining -= savings
   }
   return selected
 }
@@ -1195,12 +1474,16 @@ function replaceToolResultContents(
 }
 
 async function buildReplacement(
-  candidate: ToolResultCandidate,
+  plan: PlannedToolResultReplacement,
 ): Promise<{ content: string; originalSize: number } | null> {
-  const result = await persistToolResult(candidate.content, candidate.toolUseId)
+  const result = await persistSerializedToolResult(
+    plan.serialized.contentStr,
+    plan.serialized.isJson,
+    plan.serialized.filepath,
+  )
   if (isPersistError(result)) return null
   return {
-    content: buildLargeToolResultMessage(result, candidate.content),
+    content: plan.replacement,
     originalSize: result.originalSize,
   }
 }
@@ -1209,9 +1492,10 @@ async function buildReplacement(
  * Enforce the per-message budget on aggregate tool result size.
  *
  * For each user message whose tool_result blocks together exceed the
- * per-message limit (see getPerMessageBudgetLimit), the largest FRESH
- * (never-before-seen) results in THAT message are persisted to disk and
- * replaced with previews.
+ * per-message limit (see getPerMessageBudgetLimit), FRESH (never-before-seen)
+ * results are persisted by exact positive savings until the message reaches
+ * the target or only irreducible bytes remain. Existing persisted previews
+ * count toward the target but are never rewritten.
  * Messages are evaluated independently — a 150K result in one message and
  * a 150K result in another are both under budget and untouched.
  *
@@ -1239,6 +1523,7 @@ export async function enforceToolResultBudget(
   messages: Message[],
   state: ContentReplacementState,
   skipToolNames: ReadonlySet<string> = new Set(),
+  allowFreshReplacements = true,
 ): Promise<{
   messages: Message[]
   newlyReplaced: ToolResultReplacementRecord[]
@@ -1252,17 +1537,20 @@ export async function enforceToolResultBudget(
   // Resolve once per call. A mid-session flag change only affects FRESH
   // messages (prior decisions are frozen via seenIds/replacements), so
   // prompt cache for already-seen content is preserved regardless.
-  const limit = getPerMessageBudgetLimit()
+  const limit = allowFreshReplacements
+    ? getPerMessageBudgetLimit()
+    : Number.POSITIVE_INFINITY
 
   // Walk each API-level message group independently. For previously-processed messages
   // (all IDs in seenIds) this just re-applies cached replacements. For the
   // single new message this turn added, it runs the budget check.
   const replacementMap = new Map<string, string>()
-  const toPersist: ToolResultCandidate[] = []
+  const toPersist: PlannedToolResultReplacement[] = []
   let reappliedCount = 0
   let messagesOverBudget = 0
 
-  for (const candidates of candidatesByMessage) {
+  for (const group of candidatesByMessage) {
+    const { candidates } = group
     const { mustReapply, frozen, fresh } = partitionByPriorDecision(
       candidates,
       state,
@@ -1291,12 +1579,20 @@ export async function enforceToolResultBudget(
     skipped.forEach(c => state.seenIds.add(c.toolUseId))
     const eligible = fresh.filter(c => !shouldSkip(c.toolUseId))
 
-    const frozenSize = frozen.reduce((sum, c) => sum + c.size, 0)
+    const frozenSize = frozen
+      .filter(c => !shouldSkip(c.toolUseId))
+      .reduce((sum, c) => sum + c.size, 0)
+    const reappliedSize = mustReapply.reduce(
+      (sum, c) => sum + c.replacement.length,
+      0,
+    )
+    const fixedSize =
+      group.fixedCompactedSize + frozenSize + reappliedSize
     const freshSize = eligible.reduce((sum, c) => sum + c.size, 0)
 
     const selected =
-      frozenSize + freshSize > limit
-        ? selectFreshToReplace(eligible, frozenSize, limit)
+      fixedSize + freshSize > limit
+        ? selectFreshToReplace(eligible, fixedSize, limit)
         : []
 
     // Mark non-persisting candidates as seen NOW (synchronously). IDs
@@ -1305,7 +1601,9 @@ export async function enforceToolResultBudget(
     // concurrent reader (once subagents share state) ever sees X∈seenIds
     // but X∉replacements, which would misclassify X as frozen and send
     // full content while the main thread sends the preview → cache miss.
-    const selectedIds = new Set(selected.map(c => c.toolUseId))
+    const selectedIds = new Set(
+      selected.map(plan => plan.candidate.toolUseId),
+    )
     candidates
       .filter(c => !selectedIds.has(c.toolUseId))
       .forEach(c => state.seenIds.add(c.toolUseId))
@@ -1322,7 +1620,9 @@ export async function enforceToolResultBudget(
   // Fresh: concurrent persist for all selected candidates across all
   // messages. In practice toPersist comes from a single message per turn.
   const freshReplacements = await Promise.all(
-    toPersist.map(async c => [c, await buildReplacement(c)] as const),
+    toPersist.map(
+      async plan => [plan.candidate, await buildReplacement(plan)] as const,
+    ),
   )
   const newlyReplaced: ToolResultReplacementRecord[] = []
   let replacedSize = 0
@@ -1395,9 +1695,16 @@ export async function applyToolResultBudget(
   state: ContentReplacementState | undefined,
   writeToTranscript?: (records: ToolResultReplacementRecord[]) => void,
   skipToolNames?: ReadonlySet<string>,
+  allowFreshReplacements = true,
 ): Promise<Message[]> {
   if (!state) return messages
-  const result = await enforceToolResultBudget(messages, state, skipToolNames)
+  const result = await enforceToolResultBudget(
+    messages,
+    state,
+    skipToolNames,
+    allowFreshReplacements &&
+      (isCheapPowerMode() || state.enabledOutsideCheap),
+  )
   if (result.newlyReplaced.length > 0) {
     writeToTranscript?.(result.newlyReplaced)
   }
@@ -1430,11 +1737,12 @@ export function reconstructContentReplacementState(
   messages: Message[],
   records: ContentReplacementRecord[],
   inheritedReplacements?: ReadonlyMap<string, string>,
+  enabledOutsideCheap = true,
 ): ContentReplacementState {
-  const state = createContentReplacementState()
+  const state = createContentReplacementState(enabledOutsideCheap)
   const candidateIds = new Set(
     collectCandidatesByMessage(messages)
-      .flat()
+      .flatMap(group => group.candidates)
       .map(c => c.toolUseId),
   )
 
@@ -1459,9 +1767,10 @@ export function reconstructContentReplacementState(
 /**
  * AgentTool-resume variant: encapsulates the feature-flag gate + parent
  * gap-fill so both AgentTool.call and resumeAgentBackground share one
- * implementation. Returns undefined when parentState is undefined (feature
- * off); otherwise reconstructs from sidechain records with parent's live
- * replacements filling gaps for fork-inherited mustReapply entries.
+ * implementation. Saved sidechain records force a reapply-only state even
+ * when the parent has no aggregate-budget state (for example, resuming a
+ * cheap subagent from a fresh normal/flag-off parent). When available, the
+ * parent's live replacements still fill gaps for fork-inherited entries.
  *
  * Kept out of AgentTool.tsx — that file is at the feature() DCE complexity
  * cliff and cannot tolerate even +1 net source line without silently
@@ -1472,11 +1781,15 @@ export function reconstructForSubagentResume(
   resumedMessages: Message[],
   sidechainRecords: ContentReplacementRecord[],
 ): ContentReplacementState | undefined {
-  if (!parentState) return undefined
+  const hasStoredToolResultReplacement = sidechainRecords.some(
+    record => record.kind === 'tool-result',
+  )
+  if (!parentState && !hasStoredToolResultReplacement) return undefined
   return reconstructContentReplacementState(
     resumedMessages,
     sidechainRecords,
-    parentState.replacements,
+    parentState?.replacements,
+    parentState?.enabledOutsideCheap ?? false,
   )
 }
 

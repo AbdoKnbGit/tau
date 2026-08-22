@@ -97,7 +97,7 @@ import {
   writeToMailbox,
 } from '../teammateMailbox.js'
 import { unregisterAgent as unregisterPerfettoAgent } from '../telemetry/perfettoTracing.js'
-import { createContentReplacementState } from '../toolResultStorage.js'
+import { createEmptyContentReplacementStateLike } from '../toolResultStorage.js'
 import { TEAM_LEAD_NAME } from './constants.js'
 import {
   getLeaderSetToolPermissionContext,
@@ -1050,7 +1050,9 @@ export async function runInProcessTeammate(
     // earlier iterations' incremental frozen-first decisions → wire prefix
     // differs → cache miss. Gated on parent to inherit feature-flag-off.
     let teammateReplacementState = toolUseContext.contentReplacementState
-      ? createContentReplacementState()
+      ? createEmptyContentReplacementStateLike(
+          toolUseContext.contentReplacementState,
+        )
       : undefined
 
     // Main teammate loop - runs until abort or shutdown approved
@@ -1118,7 +1120,9 @@ export async function runInProcessTeammate(
         // so old tool_use_ids are gone. Stale Map entries are harmless
         // (UUID keys never match) but accumulate memory over long runs.
         if (teammateReplacementState) {
-          teammateReplacementState = createContentReplacementState()
+          teammateReplacementState = createEmptyContentReplacementStateLike(
+            teammateReplacementState,
+          )
         }
         // Update allMessages in place with compacted version
         allMessages.length = 0

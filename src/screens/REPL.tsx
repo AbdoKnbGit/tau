@@ -1988,17 +1988,27 @@ export function REPL({
 
       // Reconstruct replacement state for the resumed session. Runs after
       // setSessionId so any NEW replacements post-resume write to the
-      // resumed session's tool-results dir. Gated on ref.current: the
-      // initial mount already read the feature flag, so we don't re-read
-      // it here (mid-session flag flips stay unobservable in both
-      // directions).
+      // resumed session's tool-results dir. An existing state retains its
+      // session-frozen non-cheap feature decision. With no state, provision
+      // when current mode is cheap OR stored replacement records must be
+      // re-applied; a fresh normal feature-off resume remains undefined.
       //
       // Skipped for in-session /branch: the existing ref is already correct
       // (branch preserves tool_use_ids), so there's no need to reconstruct.
       // createFork() does write content-replacement entries to the forked
       // JSONL with the fork's sessionId, so `tau -r {forkId}` also works.
-      if (contentReplacementStateRef.current && entrypoint !== 'fork') {
-        contentReplacementStateRef.current = reconstructContentReplacementState(messages, log.contentReplacements ?? []);
+      if (entrypoint !== 'fork') {
+        contentReplacementStateRef.current = contentReplacementStateRef.current
+          ? reconstructContentReplacementState(
+              messages,
+              log.contentReplacements ?? [],
+              undefined,
+              contentReplacementStateRef.current.enabledOutsideCheap,
+            )
+          : provisionContentReplacementState(
+              messages,
+              log.contentReplacements ?? [],
+            );
       }
 
       // Reset messages to the provided initial messages
@@ -2649,7 +2659,10 @@ export function REPL({
       resume,
       setConversationId,
       requestPrompt: feature('HOOK_PROMPTS') ? requestPrompt : undefined,
-      contentReplacementState: contentReplacementStateRef.current
+      contentReplacementState: contentReplacementStateRef.current,
+      setContentReplacementState: state => {
+        contentReplacementStateRef.current = state;
+      }
     };
   }, [commands, combinedInitialTools, mainThreadAgentDefinition, debug, initialMcpClients, ideInstallationStatus, dynamicMcpConfig, theme, allowedAgentTypes, store, mainLoopModel, setAppState, reverify, addNotification, setMessages, onChangeDynamicMcpConfig, resume, requestPrompt, disabled, customSystemPrompt, appendSystemPrompt, setConversationId]);
 

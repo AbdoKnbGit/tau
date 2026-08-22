@@ -76,6 +76,8 @@ export function readFileSyncWithMetadata(filePath: string): {
   content: string
   encoding: BufferEncoding
   lineEndings: LineEndingType
+  /** Exact full-file signal used when byte-identical replacement matters. */
+  hasCRLF: boolean
 } {
   const fs = getFsImplementation()
   const { resolvedPath, isSymlink } = safeResolvePath(fs, filePath)
@@ -90,10 +92,12 @@ export function readFileSyncWithMetadata(filePath: string): {
   // the distinction. 4096 code units is ≥ detectLineEndings's 4096-byte
   // readSync sample (line endings are ASCII, so the unit mismatch is moot).
   const lineEndings = detectLineEndingsForString(raw.slice(0, 4096))
+  const hasCRLF = raw.includes('\r\n')
   return {
     content: raw.replaceAll('\r\n', '\n'),
     encoding,
     lineEndings,
+    hasCRLF,
   }
 }
 

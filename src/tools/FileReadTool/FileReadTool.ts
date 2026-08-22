@@ -253,13 +253,13 @@ const inputSchema = lazySchema(() =>
       'The number of lines to read. Only provide if the file is too large to read at once.',
     ),
     skeleton: semanticBoolean(z.boolean().optional()).describe(
-      'Return the file structure instead of full content: imports, signatures, and class shapes, with long function bodies elided. Each elision marker shows the exact offset/limit Read call to expand that body, and line numbers are the real file line numbers. Ideal first look at a large code file. Supported for common code languages (ts/js/py/go/rs/java/rb/cs/c/cpp/php); other files fall back to a normal read. NOTE: large supported code files return a skeleton AUTOMATICALLY when this parameter is omitted and no offset/limit is given; pass skeleton: false to force full content, or offset/limit to read a verbatim range. Editing still requires a full-content Read first.',
+      'Return code structure with bodies elided. Large supported code files auto-skeleton on whole-file reads; false forces full content. Markers give exact offset/limit ranges.',
     ),
     pages: z
       .string()
       .optional()
       .describe(
-        `Page range for PDF files (e.g., "1-5", "3", "10-20"). PDF-only — ignored for text/code files; use offset/limit to read a range there. Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
+        `PDF page range such as "1-5"; maximum ${PDF_MAX_PAGES_PER_READ} pages.`,
       ),
   }),
 )

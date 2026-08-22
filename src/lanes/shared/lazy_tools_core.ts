@@ -7,6 +7,12 @@
  * have no server-side defer, so they physically drop undiscovered tools — which
  * puts the tool block's bytes under our control and makes ORDER a caching
  * concern. This module owns that ordering so it can't drift between lanes.
+ *
+ * Unlike server-native tail injection, appending a definition to a front-of-
+ * request tools array causes one expected cache re-warm for the system/history
+ * that follows it. Append-only ordering still matters: it preserves the entire
+ * previous tool-array prefix, prevents repeated churn, and makes every loaded
+ * set stable from the next turn onward.
  */
 
 import type {
@@ -173,8 +179,10 @@ export function _resetStickyLoadedToolsForTest(): void {
  *      exactly what the plain `tools.filter()` did, because deferred tools like
  *      WebBrowser/LSP/MCP are interleaved with core tools in the source list.)
  *
- * Between ToolSearch calls the block is byte-stable (full cache hit); on a load
- * turn only the freshly-appended tail is cold.
+ * Between ToolSearch calls the block is byte-stable. A load turn appends one
+ * cold tail and may re-warm later request sections because native providers put
+ * tools before history; previously loaded definitions are never removed or
+ * reordered, so the re-warm happens at most once per newly loaded batch.
  */
 export function selectLazyToolsForRequest(
   tools: ProviderTool[],

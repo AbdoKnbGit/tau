@@ -46,7 +46,7 @@ import { getPlansDirectory } from './plans.js'
 import { setCwd } from './Shell.js'
 import {
   adoptResumedSessionFile,
-  recordContentReplacement,
+  recordInheritedContentReplacementsForFork,
   resetSessionFilePointer,
   restoreSessionMetadata,
   saveMode,
@@ -459,7 +459,9 @@ export async function processResumedConversation(
     // → they're classified as FROZEN → full content sent (cache miss, permanent
     // overage). insertContentReplacement stamps sessionId = getSessionId() =
     // the fresh ID, so loadTranscriptFile's keyed lookup will match.
-    await recordContentReplacement(result.contentReplacements)
+    await recordInheritedContentReplacementsForFork(
+      result.contentReplacements,
+    )
   }
 
   // Restore session metadata so /status shows the saved name and metadata

@@ -67,6 +67,21 @@ function positiveInt(value: number | undefined, fallback: number): number {
   return Math.floor(value)
 }
 
+/** Return the longest code-point-aligned prefix whose UTF-8 encoding fits. */
+export function truncateUtf8ToBytes(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value
+  let bytes = 0
+  let end = 0
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (bytes + characterBytes > maxBytes) break
+    bytes += characterBytes
+    end += character.length
+  }
+  return value.slice(0, end)
+}
+
 /**
  * Return `line` when it fits, else a window centred on the hit so the model
  * sees the match in context instead of the first `maxChars` of boilerplate.
@@ -140,7 +155,9 @@ export async function searchToolResultFile(
     if (at === -1) continue
 
     const rendered = `${scannedLines}: ${windowAround(line, at, needle.length, maxLineChars)}`
-    if (size + rendered.length > maxBytes) {
+    const separatorBytes = blocks.length > 0 ? 1 : 0
+    const renderedBytes = Buffer.byteLength(rendered, 'utf8')
+    if (size + separatorBytes + renderedBytes > maxBytes) {
       truncated = true
       completed = false
       rl.close()
@@ -149,7 +166,7 @@ export async function searchToolResultFile(
 
     blocks.push(rendered)
     matches++
-    size += rendered.length + 1
+    size += separatorBytes + renderedBytes
 
     if (matches >= maxMatches) {
       truncated = true

@@ -145,6 +145,18 @@ await test('includes deferred tools after ToolSearch loaded them', async () => {
   )
 })
 
+await test('missing ToolSearch automatically falls back to eager schemas', async () => {
+  const selected = selectOpenAICompatToolsForRequest([
+    tool('Read'),
+    tool('NotebookEdit', true),
+  ], [])
+
+  assert(
+    selected.map(t => t.name).join(',') === 'Read,NotebookEdit',
+    selected.map(t => t.name).join(','),
+  )
+})
+
 await test('includes deferred tools carried by compact boundary metadata', async () => {
   const selected = selectOpenAICompatToolsForRequest(
     [tool('Read'), tool('ToolSearch'), tool('TaskCreate', true)],

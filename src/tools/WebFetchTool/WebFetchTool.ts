@@ -23,8 +23,8 @@ import {
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
-    url: z.string().url().describe('The URL to fetch content from'),
-    prompt: z.string().describe('The prompt to run on the fetched content'),
+    url: z.string().url().describe('Fully formed public URL'),
+    prompt: z.string().describe('Information to extract from the page'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -185,7 +185,7 @@ export const WebFetchTool = buildTool({
     // between SDK query() calls (when ToolSearch enablement varies due to
     // MCP tool count thresholds), invalidating the Anthropic API prompt
     // cache on each toggle — two consecutive cache misses per flicker event.
-    return `IMPORTANT: WebFetch WILL FAIL for authenticated or private URLs. Before using this tool, check if the URL points to an authenticated service (e.g. Google Docs, Confluence, Jira, GitHub). If so, look for a specialized MCP tool that provides authenticated access.
+    return `Authenticated/private URLs fail; use an authenticated MCP tool when available.
 ${DESCRIPTION}`
   },
   async validateInput(input) {

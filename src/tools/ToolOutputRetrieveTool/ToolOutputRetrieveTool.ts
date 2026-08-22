@@ -10,11 +10,7 @@ import { TOOL_OUTPUT_RETRIEVE_TOOL_NAME } from './constants.js'
 const DESCRIPTION =
   'Recover a bounded range from a persisted Tau tool output, background task output, or artifact. Read-only.'
 
-const PROMPT = `Read a bounded range from a Tau persisted tool output, Tau-managed background task output, or Tau-managed artifact. This is read-only and only allows files inside Tau tool-results directories, project temp task-output directories, or the project-local .tau directory. For ordinary project files, use the Read tool instead.
-
-Use when a prior tool result says "Full output saved to:", when a background task output_file ending in .output needs inspection, or when a path under the project's .tau directory (artifacts, diff-artifacts, mermaid, specs, …) needs inspection. Provide path OR toolUseId; if both are given, the path is tried first and the id is used as a fallback. Retrieve the smallest byte or line range needed; do not read the full original unless the task truly requires it.
-
-When you are looking for something specific (an error string, a symbol, a filename) rather than a region you already know the position of, pass query instead of guessing offsets. It scans the whole saved output and returns only the matching lines with their line numbers, so one call replaces a sequence of blind range probes. query is a literal, case-insensitive substring, not a regex or a glob. It takes precedence over startByte/maxBytes/startLine/lineCount, so send it alone. If it reports 0 matches it also reports the total line count: use that to pick a range rather than searching again.`
+const PROMPT = `Read a bounded range from persisted Tau tool/background output or a project .tau artifact. For ordinary files use Read. Use only a path or id an earlier result reported (e.g. a "Full output saved to:" line); never build one from a tool_use id in history. Supply path or toolUseId; when both are set, path is tried first and the id is fallback. Prefer the smallest byte/line range. Cheap mode caps each returned page/search at 8000 bytes; continue from the reported range when needed. To find a known string, use query: it is literal and case-insensitive, searches the whole output, returns matching numbered lines, and overrides range fields. After zero matches, use the reported line count to choose one range instead of probing repeatedly.`
 
 function renderText(message: string): React.ReactNode {
   return createElement(Text, null, message)
@@ -25,41 +21,41 @@ const inputSchema = lazySchema(() =>
     path: z
       .string()
       .optional()
-      .describe('Absolute saved-output path, background task .output path, .tau artifact path, or a filename relative to the current tool-results directory.'),
+      .describe('Saved-output, task .output, or .tau artifact path'),
     toolUseId: z
       .string()
       .optional()
-      .describe('Tool use id (or background task id) to recover from the current session tool-results / task-output directories. Used when path is omitted, or as fallback when both are provided.'),
+      .describe('Tool/background task id; fallback when path is also set'),
     startByte: z
       .number()
       .int()
       .min(0)
       .optional()
-      .describe('Zero-based byte offset. Ignored when line range inputs are provided. Defaults to 0.'),
+      .describe('Zero-based byte offset; default 0'),
     maxBytes: z
       .number()
       .int()
       .min(1)
       .max(100_000)
       .optional()
-      .describe('Maximum bytes to return. Defaults to 20000 and is capped at 100000.'),
+      .describe('Max bytes; normal default 20000/max 100000; cheap caps 8000'),
     startLine: z
       .number()
       .int()
       .min(1)
       .optional()
-      .describe('One-based line number to start from. Enables line-range mode.'),
+      .describe('One-based first line; enables line mode'),
     lineCount: z
       .number()
       .int()
       .min(1)
       .max(2_000)
       .optional()
-      .describe('Maximum lines to return in line-range mode. Defaults to 200 and is capped at 2000.'),
+      .describe('Max lines; default 200, max 2000'),
     query: z
       .string()
       .optional()
-      .describe('Literal, case-insensitive substring to search for (not a regex). Returns matching lines with their line numbers, and overrides the byte and line range inputs.'),
+      .describe('Literal case-insensitive search; overrides ranges'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>

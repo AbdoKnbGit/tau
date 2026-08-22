@@ -7,12 +7,14 @@ import {
 import {
   MEMORY_DRIFT_CAVEAT,
   MEMORY_FRONTMATTER_EXAMPLE,
+  MEMORY_TYPES,
   TRUSTING_RECALL_SECTION,
   TYPES_SECTION_COMBINED,
   WHAT_NOT_TO_SAVE_SECTION,
 } from './memoryTypes.js'
 import { getAutoMemPath } from './paths.js'
 import { getTeamMemPath } from './teamMemPaths.js'
+import { isReplModeEnabled } from '../tools/REPLTool/constants.js'
 
 /**
  * Build the combined prompt when both auto memory and team memory are enabled.
@@ -97,4 +99,59 @@ export function buildCombinedMemoryPrompt(
   ]
 
   return lines.join('\n')
+}
+
+/** Cheap-mode combined private/team contract; normal keeps the eval-tuned prompt. */
+export function buildCompactCombinedMemoryPrompt(
+  extraGuidelines?: string[],
+  skipIndex = false,
+  replMode = isReplModeEnabled(),
+): string {
+  const autoDir = getAutoMemPath()
+  const teamDir = getTeamMemPath()
+  const indexGuidance = skipIndex
+    ? '- Store each memory in its own topic file; this configuration does not require index updates.'
+    : `- After writing a topic file, add/update one pointer in that directory's \`${ENTRYPOINT_NAME}\`: \`- [Title](file.md) — one-line hook\`. Indexes have no frontmatter; keep pointers under ~150 characters, never put memory content there, and keep each index within ${MAX_ENTRYPOINT_LINES} lines.`
+
+  return [
+    '# Memory',
+    replMode
+      ? `Private directory: \`${autoDir}\`. Shared team directory: \`${teamDir}\`. Both exist; write through the REPL's documented file interface—do not call hidden primitive tools, probe for the directories, or run mkdir.`
+      : `Private directory: \`${autoDir}\`. Shared team directory: \`${teamDir}\`. Both exist; write directly with Write—do not probe or run mkdir.`,
+    '',
+    '## Save and scope contract',
+    '- Explicit remember request: save immediately under the best type/scope. Forget request: remove or update the relevant entry.',
+    '- Save only durable context not reliably derivable from current code or git:',
+    '  - `user`: role/goals/knowledge; always private.',
+    '  - `feedback`: correction, preference, or confirmed non-obvious success; private by default, team only for a project-wide convention.',
+    '  - `invariant`: explicitly absolute gate; team by default, private only for a personal hard line; surface conflicts rather than overriding it.',
+    '  - `decision`: significant choice, alternatives, and rationale; usually team; mark superseded decisions.',
+    '  - `project`: non-code goals/deadlines/incidents/coordination; strongly prefer team and make dates absolute.',
+    '  - `reference`: location of current external information; usually team.',
+    '- Never put secrets/credentials or sensitive personal data in team memory. Never save negative personal judgments, code patterns/architecture/paths, git history, fix recipes, CLAUDE.md content, or current-task/conversation/temporary state. These exclusions still apply when asked; isolate the surprising durable lesson or ask what it is.',
+    '',
+    '## File contract',
+    'Use one semantic topic file per memory in the chosen directory, with:',
+    '```markdown',
+    '---',
+    'name: <specific name>',
+    'description: <one-line relevance hook>',
+    `type: <${MEMORY_TYPES.join('|')}>`,
+    '---',
+    '<rule or fact; for feedback/invariant/decision/project include **Why:** and **How to apply:**>',
+    '```',
+    '- Search first and update instead of duplicating. Keep frontmatter accurate; update/remove stale or wrong memories.',
+    indexGuidance,
+    '',
+    '## Recall contract',
+    '- Access relevant private/team memory and always access it when explicitly asked to check, recall, or remember.',
+    '- If told to ignore/not use memory, act as if both indexes were empty: do not apply, cite, compare against, or mention memory.',
+    '- Memory is historical, not current truth. Before advice/action, verify paths, functions/flags, and external resources. Current evidence wins; update/remove stale memory. Use code/git for recent repo state.',
+    '- Plans and tasks track this conversation; memory is only durable future context.',
+    ...(extraGuidelines && extraGuidelines.length > 0
+      ? ['', ...extraGuidelines]
+      : []),
+    '',
+    ...buildSearchingPastContextSection(autoDir),
+  ].join('\n')
 }

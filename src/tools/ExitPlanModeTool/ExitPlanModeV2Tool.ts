@@ -64,11 +64,11 @@ const permissionSetupModule = feature('TRANSCRIPT_CLASSIFIER')
  */
 const allowedPromptSchema = lazySchema(() =>
   z.object({
-    tool: z.string().describe('The tool this prompt applies to. Currently only "Bash" is acted upon; other values are accepted but ignored.'),
+    tool: z.string().describe('Tool name; currently only Bash is acted on'),
     prompt: z
       .string()
       .describe(
-        'Semantic description of the action, e.g. "run tests", "install dependencies"',
+        'Semantic action, e.g. "run tests"',
       ),
   }),
 )
@@ -83,7 +83,7 @@ const inputSchema = lazySchema(() =>
         .array(allowedPromptSchema())
         .optional()
         .describe(
-          'Prompt-based permissions needed to implement the plan. These describe categories of actions rather than specific commands.',
+          'Semantic Bash action categories needed by the plan',
         ),
     })
     .passthrough(),

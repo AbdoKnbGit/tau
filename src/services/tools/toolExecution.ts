@@ -123,6 +123,13 @@ import {
   isToolSearchToolAvailable,
 } from '../../utils/toolSearch.js'
 import {
+  type BlindCallCheck,
+  checkBlindDeferredCallInput,
+} from '../../utils/blindToolCallValidation.js'
+import { blindCallRecoveryHint } from '../../utils/toolSearchCallDecision.js'
+import { getLazyToolCallDecision } from '../../utils/toolSearchCallGuard.js'
+import { normalizeToolSearchInput } from '../../utils/toolSearchInput.js'
+import {
   McpAuthError,
   McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../mcp/client.js'
@@ -700,6 +707,48 @@ async function checkPermissionsAndCallTool(
     progress: ToolProgress<ToolProgressData> | ProgressMessage<HookProgress>,
   ) => void,
 ): Promise<MessageUpdateLazy[]> {
+  const lazyCallDecision = await getLazyToolCallDecision({
+    tool,
+    messages: toolUseContext.messages,
+    tools: toolUseContext.options.tools,
+    // A response can come from a routed/fallback model that differs from the
+    // configured main-loop model. Discovery support must match the request
+    // that actually produced this tool_use, not stale session configuration.
+    model:
+      typeof assistantMessage.message.model === 'string' &&
+      assistantMessage.message.model.trim().length > 0
+        ? assistantMessage.message.model
+        : toolUseContext.options.mainLoopModel,
+    getToolPermissionContext: async () =>
+      toolUseContext.getAppState().toolPermissionContext,
+    agents: toolUseContext.options.agentDefinitions.activeAgents,
+  })
+  if (lazyCallDecision.action === 'reject_unavailable') {
+    logForDebugging(
+      `${tool.name} call blocked because the provider omitted its schema`,
+    )
+    logEvent('tengu_deferred_tool_blind_call_blocked', {
+      toolName: sanitizeToolNameForAnalytics(tool.name),
+      isMcp: tool.isMcp ?? false,
+    })
+    return [
+      {
+        message: createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              content: `<tool_use_error>${lazyCallDecision.message}</tool_use_error>`,
+              is_error: true,
+              tool_use_id: toolUseID,
+            },
+          ],
+          toolUseResult: lazyCallDecision.message,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      },
+    ]
+  }
+
   // Validate input types with zod (surprisingly, the model is not great at generating valid input).
   // Use .strip() mode: silently drop unknown properties instead of rejecting.
   // Third-party models (Gemini, DeepSeek, etc.) frequently hallucinate extra
@@ -719,29 +768,55 @@ async function checkPermissionsAndCallTool(
   // before Zod validation. Non-frontier models (especially free-tier
   // OpenRouter models) frequently emit JSON strings for typed parameters
   // because they lack strict schema adherence.
+  const normalizedInput =
+    tool.name === TOOL_SEARCH_TOOL_NAME
+      ? normalizeToolSearchInput(input)
+      : input
   const coercedInput = coerceToolInput(
-    input as Record<string, unknown>,
+    normalizedInput as Record<string, unknown>,
     tool.inputSchema,
   )
-  const parsedInput = strippedSchema.safeParse(coercedInput)
-  if (!parsedInput.success) {
-    let errorContent = formatZodValidationError(
-      tool.name,
-      parsedInput.error,
-      tool.inputSchema,
-      input,
-    )
-    errorContent = appendToolInputValidationRecoveryHint(
-      tool.name,
-      input,
-      errorContent,
-    )
+  // A blind deferred call — one produced by a request that did not carry this
+  // tool's schema — runs like any other call, provided its arguments match the
+  // schema Tau holds locally. Zod's .strip() would drop an invented parameter
+  // silently, so unknown keys (and MCP argument shapes, which Zod cannot see)
+  // are checked here instead.
+  const blindCheck: BlindCallCheck =
+    lazyCallDecision.action === 'execute_unverified'
+      ? checkBlindDeferredCallInput(tool, coercedInput)
+      : { ok: true }
 
-    const schemaHint = buildSchemaNotSentHint(
-      tool,
-      toolUseContext.messages,
-      toolUseContext.options.tools,
-    )
+  const parsedInput = strippedSchema.safeParse(coercedInput)
+  if (!parsedInput.success || !blindCheck.ok) {
+    let errorContent = !parsedInput.success
+      ? appendToolInputValidationRecoveryHint(
+          tool.name,
+          input,
+          formatZodValidationError(
+            tool.name,
+            parsedInput.error,
+            tool.inputSchema,
+            input,
+          ),
+        )
+      : blindCheck.ok
+        ? ''
+        : blindCheck.message
+
+    // A blind call already knows why the schema was missing and inlines the
+    // expected schema above, so point at the one recovery step that actually
+    // applies on this lane instead of the generic hint.
+    const schemaHint =
+      lazyCallDecision.action === 'execute_unverified'
+        ? blindCallRecoveryHint(
+            tool.name,
+            lazyCallDecision.requiresExplicitSelection,
+          )
+        : buildSchemaNotSentHint(
+            tool,
+            toolUseContext.messages,
+            toolUseContext.options.tools,
+          )
     if (schemaHint) {
       logEvent('tengu_deferred_tool_schema_not_sent', {
         toolName: sanitizeToolNameForAnalytics(tool.name),

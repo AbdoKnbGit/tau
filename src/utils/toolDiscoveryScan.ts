@@ -105,3 +105,33 @@ export function scanDiscoveredToolNames(messages: Message[]): DiscoveredToolScan
 export function extractDiscoveredToolNames(messages: Message[]): Set<string> {
   return scanDiscoveredToolNames(messages).names
 }
+
+/**
+ * Extract only concrete ToolSearch evidence accepted by Anthropic's server-
+ * native discovery protocol.
+ *
+ * A direct assistant tool_use is not a schema load on that transport. It must
+ * therefore never satisfy the execution guard, even though client-native
+ * lanes intentionally treat the same direct call as a signal to append the
+ * schema on their next request. Compact-boundary summaries are also excluded:
+ * once the reference-bearing message is gone, the server no longer has the
+ * reference in context and the safe action is to select the tool again.
+ */
+export function extractToolReferenceNames(messages: Message[]): Set<string> {
+  const names = new Set<string>()
+
+  for (const msg of messages) {
+    if (msg.type !== 'user') continue
+    const content = msg.message?.content
+    if (!Array.isArray(content)) continue
+
+    for (const block of content) {
+      if (!isToolResultBlockWithContent(block)) continue
+      for (const item of block.content) {
+        if (isToolReferenceWithName(item)) names.add(item.tool_name)
+      }
+    }
+  }
+
+  return names
+}

@@ -124,8 +124,14 @@ import { createDumpPromptsFetch } from './services/api/dumpPrompts.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
 import { queryCheckpoint } from './utils/queryProfiler.js'
 import { runTools } from './services/tools/toolOrchestration.js'
-import { applyToolResultBudget } from './utils/toolResultStorage.js'
-import { recordContentReplacement } from './utils/sessionStorage.js'
+import {
+  applyToolResultBudget,
+  provisionCheapContentReplacementStateForQuery,
+} from './utils/toolResultStorage.js'
+import {
+  allowsFreshContentReplacements,
+  createContentReplacementRecorder,
+} from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
 import { buildQueryConfig } from './query/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
@@ -407,28 +413,36 @@ async function* queryLoop(
     // Enforce per-message budget on aggregate tool result size. Runs BEFORE
     // microcompact — cached MC operates purely by tool_use_id (never inspects
     // content), so content replacement is invisible to it and the two compose
-    // cleanly. No-ops when contentReplacementState is undefined (feature off).
+    // cleanly. Cheap mode lazily provisions a retained state below after an
+    // in-session /mode switch; a fresh non-cheap feature-off session no-ops.
     // Persist only for querySources that read records back on resume: agentId
     // routes to sidechain file (AgentTool resume) or session file (/resume).
     // Ephemeral runForkedAgent callers (agent_summary etc.) don't persist.
     const persistReplacements =
       querySource.startsWith('agent:') ||
-      querySource.startsWith('repl_main_thread')
+      querySource.startsWith('repl_main_thread') ||
+      querySource === 'sdk'
+    if (!toolUseContext.contentReplacementState) {
+      const provisioned = provisionCheapContentReplacementStateForQuery(
+        messagesForQuery,
+      )
+      if (provisioned) {
+        toolUseContext.contentReplacementState = provisioned
+        toolUseContext.setContentReplacementState?.(provisioned)
+      }
+    }
     messagesForQuery = await applyToolResultBudget(
       messagesForQuery,
       toolUseContext.contentReplacementState,
       persistReplacements
-        ? records =>
-            void recordContentReplacement(
-              records,
-              toolUseContext.agentId,
-            ).catch(logError)
+        ? createContentReplacementRecorder(toolUseContext.agentId)
         : undefined,
       new Set(
         toolUseContext.options.tools
           .filter(t => !Number.isFinite(t.maxResultSizeChars))
           .map(t => t.name),
       ),
+      allowsFreshContentReplacements(),
     )
 
     // Apply snip before microcompact (both may run — they are not mutually exclusive).

@@ -8,6 +8,7 @@ import type {
   AttributionSnapshotMessage,
   ContextCollapseCommitEntry,
   ContextCollapseSnapshotEntry,
+  Entry,
   LogOption,
   PersistedWorktreeSession,
   SerializedMessage,
@@ -41,6 +42,7 @@ import {
   checkResumeConsistency,
   getLastSessionLog,
   getSessionIdFromLog,
+  isTranscriptMessage,
   isLiteLog,
   loadFullLog,
   loadMessageLogs,
@@ -133,7 +135,40 @@ function migrateLegacyAttachmentTypes(message: Message): Message {
 
 export type TeleportRemoteResponse = {
   log: Message[]
+  contentReplacements: ContentReplacementRecord[]
   branch?: string
+}
+
+/**
+ * Split the opaque Entry payload returned by both CCR teleport-events and
+ * legacy session-ingress. Metadata entries are deliberately not transcript
+ * messages, so teleport must collect replacement records before filtering.
+ * Agent-scoped records belong to sidechains and are excluded with their
+ * sidechain messages.
+ */
+export function extractTeleportResumeData(
+  entries: readonly Entry[],
+): Pick<TeleportRemoteResponse, 'log' | 'contentReplacements'> {
+  const log: Message[] = []
+  const contentReplacements: ContentReplacementRecord[] = []
+  for (const entry of entries) {
+    if (isTranscriptMessage(entry)) {
+      if (!entry.isSidechain) log.push(entry)
+      continue
+    }
+    if (entry.type === 'content-replacement' && !entry.agentId) {
+      for (const replacement of entry.replacements) {
+        if (
+          replacement.kind === 'tool-result' &&
+          typeof replacement.toolUseId === 'string' &&
+          typeof replacement.replacement === 'string'
+        ) {
+          contentReplacements.push(replacement)
+        }
+      }
+    }
+  }
+  return { log, contentReplacements }
 }
 
 export type TurnInterruptionState =
@@ -416,8 +451,13 @@ export function restoreSkillStateFromMessages(messages: Message[]): void {
 export async function loadMessagesFromJsonlPath(path: string): Promise<{
   messages: SerializedMessage[]
   sessionId: UUID | undefined
+  contentReplacements: ContentReplacementRecord[]
 }> {
-  const { messages: byUuid, leafUuids } = await loadTranscriptFile(path)
+  const {
+    messages: byUuid,
+    leafUuids,
+    contentReplacements,
+  } = await loadTranscriptFile(path)
   let tip: (typeof byUuid extends Map<UUID, infer T> ? T : never) | null = null
   let tipTs = 0
   for (const m of byUuid.values()) {
@@ -428,7 +468,8 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
       tip = m
     }
   }
-  if (!tip) return { messages: [], sessionId: undefined }
+  if (!tip)
+    return { messages: [], sessionId: undefined, contentReplacements: [] }
   const chain = buildConversationChain(byUuid, tip)
   return {
     messages: removeExtraFields(chain),
@@ -436,6 +477,8 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
     // transcript, so the root retains the source session's ID. Matches
     // loadFullLog's mostRecentLeaf.sessionId.
     sessionId: tip.sessionId as UUID | undefined,
+    contentReplacements:
+      contentReplacements.get(tip.sessionId as UUID) ?? [],
   }
 }
 
@@ -483,6 +526,7 @@ export async function loadConversationForResume(
     let log: LogOption | null = null
     let messages: Message[] | null = null
     let sessionId: UUID | undefined
+    let replacementsFromJsonl: ContentReplacementRecord[] | undefined
 
     if (source === undefined) {
       // --continue: most recent session, skipping live --bg/daemon sessions
@@ -517,6 +561,7 @@ export async function loadConversationForResume(
       const loaded = await loadMessagesFromJsonlPath(sourceJsonlFile)
       messages = loaded.messages
       sessionId = loaded.sessionId
+      replacementsFromJsonl = loaded.contentReplacements
     } else if (typeof source === 'string') {
       // Load specific session by ID
       log = await getLastSessionLog(source as UUID)
@@ -572,7 +617,7 @@ export async function loadConversationForResume(
       turnInterruptionState: deserialized.turnInterruptionState,
       fileHistorySnapshots: log?.fileHistorySnapshots,
       attributionSnapshots: log?.attributionSnapshots,
-      contentReplacements: log?.contentReplacements,
+      contentReplacements: log?.contentReplacements ?? replacementsFromJsonl,
       contextCollapseCommits: log?.contextCollapseCommits,
       contextCollapseSnapshot: log?.contextCollapseSnapshot,
       sessionId,

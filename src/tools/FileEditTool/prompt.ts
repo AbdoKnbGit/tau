@@ -2,7 +2,7 @@ import { isCompactLinePrefixEnabled } from '../../utils/file.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 
 function getPreReadInstruction(): string {
-  return `\n- ALWAYS read the file with the \`${FILE_READ_TOOL_NAME}\` tool before editing it - read first, every time. Your \`old_string\` must match the file's exact current contents character-for-character, so an edit made without reading first will usually fail to match (and may be stale). Never edit a file you have not just read. Do the read quietly; do not send routine "let me read" narration to the user.`
+  return `\n- Read the current target range with ${FILE_READ_TOOL_NAME} first; \`old_string\` must match it exactly.`
 }
 
 export function getEditToolDescription(): string {
@@ -15,16 +15,14 @@ function getDefaultEditDescription(): string {
     : 'spaces + line number + arrow'
   const minimalUniquenessHint =
     process.env.USER_TYPE === 'ant'
-      ? `\n- Use the smallest old_string that's clearly unique — usually 2-4 adjacent lines is sufficient. Avoid including 10+ lines of context when less uniquely identifies the target.`
+      ? '\n- Prefer the smallest clearly unique old_string, usually 2-4 lines.'
       : ''
   return `Performs exact string replacements in files.
 
 Usage:${getPreReadInstruction()}
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: ${prefixFormat}. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.${minimalUniquenessHint}
-- Use \`replace_all\` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
-- Every successful edit CHANGES the file: an old_string prepared from an earlier read goes stale the moment your own edit touches that region. The success result shows the updated region — treat those lines as the ONLY source of truth for any follow-up old_string in that file, and re-read the file whenever you are not certain what it now contains.
-- If an edit fails with "String to replace not found", do NOT retry with guessed variants of old_string. The error shows the file's current content or its closest-matching region — copy old_string exactly from there (or Read the file again). If it says the edit was already applied, move on; do not re-issue it.`
+- Read line prefixes use ${prefixFormat}; exclude the prefix but preserve content indentation.
+- \`old_string\` must be unique unless \`replace_all\` is true.${minimalUniquenessHint}
+- A successful edit makes earlier text stale. Use the returned updated region or re-read before the next overlapping edit.
+- On not-found, use the error's current/closest text; never guess. If it says already applied, do not retry.
+- Prefer Edit for existing files. Add documentation or emoji only when requested.`
 }

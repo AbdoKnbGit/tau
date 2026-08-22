@@ -34,6 +34,10 @@ import { OPENAI_COMPAT_TOOL_REGISTRY, selectEditToolSet } from './tools.js'
 import { getCompatShellDescription } from './shell_descriptions.js'
 import { filterToSingleShell } from './single_shell.js'
 import { selectOpenAICompatToolsForRequest } from './lazy_tools.js'
+import {
+  isOpenCodeAnthropicRouteModel,
+  OPENCODE_ANTHROPIC_ROUTE_MODELS,
+} from './opencode_anthropic_route.js'
 import { recordCompatCacheDebug } from './cache_debug.js'
 import {
   freezeSessionVolatileText,
@@ -1465,18 +1469,6 @@ function* emitErrorText(text: string): Generator<AnthropicStreamEvent> {
 // opencode / opencode-go catalogs. The `-free` variants share the base row.
 // (The minimax rows carry the same override; they stay on oa-compat here until
 // their /messages behavior is verified — their reasoning shaping differs.)
-const OPENCODE_ANTHROPIC_ROUTE_MODELS = new Set([
-  'qwen3.5-plus',
-  'qwen3.6-plus',
-  'qwen3.7-plus',
-  'qwen3.7-max',
-])
-
-function isOpenCodeAnthropicRouteModel(model: string): boolean {
-  const m = model.trim().toLowerCase()
-  return OPENCODE_ANTHROPIC_ROUTE_MODELS.has(m.endsWith('-free') ? m.slice(0, -5) : m)
-}
-
 // These rows do NOT go through the Chat Completions conversion at all: they
 // are forwarded as Anthropic-format messages verbatim, so image blocks reach
 // the model untouched. Recording that here is a fact about our own transport,

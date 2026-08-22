@@ -1,5 +1,5 @@
 import { z } from 'zod/v4'
-import type { TaskStateBase } from '../../Task.js'
+import { isTerminalTaskStatus, type TaskStateBase } from '../../Task.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { stopTask } from '../../tasks/stopTask.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -13,9 +13,9 @@ const inputSchema = lazySchema(() =>
     task_id: z
       .string()
       .optional()
-      .describe('The ID of the background task to stop'),
+      .describe('Background task ID'),
     // shell_id is accepted for backward compatibility with the deprecated KillShell tool
-    shell_id: z.string().optional().describe('Deprecated: use task_id instead'),
+    shell_id: z.string().optional().describe('Deprecated alias for task_id'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -113,7 +113,7 @@ export const TaskStopTool = buildTool({
     // Already-finished task: report the (already reached) end state as
     // success instead of erroring. stopTask would throw 'not_running'.
     const existing = getAppState().tasks?.[id] as TaskStateBase | undefined
-    if (existing && existing.status !== 'running') {
+    if (existing && isTerminalTaskStatus(existing.status)) {
       return {
         data: {
           message: `Task ${id} is already finished (status: ${existing.status}); nothing to stop. Use ${TASK_OUTPUT_TOOL_NAME} to read its output.`,

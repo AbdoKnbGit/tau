@@ -29,6 +29,7 @@ import { getProjectDir } from '../utils/sessionStorage.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
 import {
   MEMORY_FRONTMATTER_EXAMPLE,
+  MEMORY_TYPES,
   TRUSTING_RECALL_SECTION,
   TYPES_SECTION_INDIVIDUAL,
   WHAT_NOT_TO_SAVE_SECTION,
@@ -134,6 +135,17 @@ export const SELF_LEARNING_OFFER_GUIDANCE = [
   'When you finish a SUBSTANTIAL, multi-step task (many steps/tool calls, not routine Q&A or a small edit) and reach a natural stopping point, judge whether it produced ONE lesson worth carrying into the NEXT project — same stack/template or a different one. A lesson is critical, general, and reusable: framework/library judgement (e.g. when to use plain HTML vs a React component, a hook/rendering pitfall, an idiom that should be the default), a whole CLASS of bug and how to avoid it, a hard-won constraint or gotcha of a tool/API/runtime, a workflow principle that clearly paid off, or a USER PREFERENCE for how they like things done.',
   'Only if such a lesson clearly exists, use the AskUserQuestion tool (options: Approve / Edit wording / Skip — never more than 4) to ask whether to save it. Present it as a single concentrated, PORTABLE bullet — a general principle, never specific code, file paths, symbol names, or line numbers. On approve, save it to the active memory directory as a topic file with `origin: learned` and today’s `learnedAt`, and add a one-line `MEMORY.md` pointer — it becomes active from the next session (no separate promote step); on edit, save their reworded version.',
   'Rules: never interrupt mid-task — only offer once the work is done; at most once per substantial task; if the work was routine, project-specific, or there is no general lesson, say nothing (a junk lesson is worse than none). The user can review, edit, delete, or toggle saved lessons anytime with the /learned command.',
+].join('\n')
+
+/**
+ * Cheap-mode form of SELF_LEARNING_OFFER_GUIDANCE. It preserves the same
+ * trigger, approval, portability, write, and rate-limit contract without the
+ * long teaching examples. Normal mode deliberately keeps the evaluated text.
+ */
+export const COMPACT_SELF_LEARNING_OFFER_GUIDANCE = [
+  '## Optional learned lesson',
+  'Only at the natural end of a substantial multi-step task, and at most once, decide whether there is exactly one critical, portable lesson useful beyond this project (a user preference, reusable workflow principle, tool/runtime constraint, or class of bug). Never interrupt work or offer for routine/project-specific facts.',
+  'If one clearly exists, ask with AskUserQuestion using Approve / Edit wording / Skip (at most 4 options). Present one concentrated general bullet with no project paths, symbols, or line numbers. On Approve or Edit, write the approved wording to a topic file with `origin: learned` and today\'s `learnedAt`, then add one `MEMORY.md` pointer; it becomes active next session. Otherwise save nothing. `/learned` manages saved lessons.',
 ].join('\n')
 
 /**
@@ -284,6 +296,72 @@ export function buildMemoryLines(
 }
 
 /**
+ * Cheap-mode memory contract. The normal prompt above is intentionally left
+ * unchanged because its examples are eval-tuned. This version states each
+ * behavioral invariant once and relies on the closed schema instead of
+ * carrying examples for every type on every request.
+ */
+export function buildCompactMemoryLines(
+  displayName: string,
+  memoryDir: string,
+  extraGuidelines?: string[],
+  skipIndex = false,
+  replMode = isReplModeEnabled(),
+): string[] {
+  const indexGuidance = skipIndex
+    ? [
+        '- Store each memory in its own topic file; this configuration does not require an index update.',
+      ]
+    : [
+        `- After writing a topic file, add or update one pointer in \`${ENTRYPOINT_NAME}\`: \`- [Title](file.md) — one-line hook\`. The index has no frontmatter; keep each pointer under ~150 characters, never put memory content there, and keep it within ${MAX_ENTRYPOINT_LINES} lines.`,
+      ]
+
+  const lines = [
+    `# ${displayName}`,
+    replMode
+      ? `Persistent memory directory: \`${memoryDir}\`. It already exists; write through the REPL's documented file interface—do not call hidden primitive tools, probe for the directory, or run mkdir.`
+      : `Persistent memory directory: \`${memoryDir}\`. It already exists; write directly with the Write tool—do not probe for it or run mkdir.`,
+    '',
+    '## Save contract',
+    '- If the user explicitly asks to remember something, save it immediately under the best type. If asked to forget it, find and remove or update the relevant memory.',
+    '- Save only durable context that future conversations cannot reliably derive from current code or git:',
+    '  - `user`: role, goals, responsibilities, knowledge, or useful personal context.',
+    '  - `feedback`: a correction, preference, or confirmed non-obvious approach; record why it worked or failed.',
+    '  - `invariant`: an explicitly absolute rule; treat it as a gate and surface conflicts instead of silently overriding it.',
+    '  - `decision`: a significant choice, rejected alternatives, and rationale; mark it superseded when a later decision replaces it.',
+    '  - `project`: non-derivable goals, deadlines, incidents, or coordination context; convert relative dates to absolute dates.',
+    '  - `reference`: where current information lives in an external system.',
+    '- Never save secrets or sensitive credentials, negative personal judgments, code patterns/architecture/paths, git history, fix recipes, CLAUDE.md content, or current-task/conversation/temporary state. These exclusions still apply when asked to save; isolate the surprising durable lesson or ask what that lesson is.',
+    '',
+    '## File contract',
+    'Use one semantic topic file per memory (not chronological files), with this exact frontmatter:',
+    '```markdown',
+    '---',
+    'name: <specific name>',
+    'description: <one-line relevance hook>',
+    `type: <${MEMORY_TYPES.join('|')}>`,
+    '---',
+    '<rule or fact; for feedback/invariant/decision/project include **Why:** and **How to apply:**>',
+    '```',
+    '- Search for an existing topic first: update it instead of duplicating it. Keep frontmatter accurate; update or remove stale/wrong entries.',
+    ...indexGuidance,
+    '',
+    '## Recall contract',
+    '- Access memory when it appears relevant or the user explicitly asks you to check, recall, or remember.',
+    '- If the user says to ignore/not use memory, act as if it were empty: do not apply, cite, compare against, or mention it.',
+    '- Memory is a historical claim, not current truth. Before advice or action, verify named paths exist, grep named functions/flags, and inspect current resources. Current evidence wins; update/remove stale memory. For recent repo state, use code and git rather than a frozen memory snapshot.',
+    '- Use plans and task tracking for work in this conversation; memory is only for durable future context.',
+    ...(extraGuidelines && extraGuidelines.length > 0
+      ? ['', ...extraGuidelines]
+      : []),
+    '',
+  ]
+
+  lines.push(...buildSearchingPastContextSection(memoryDir))
+  return lines
+}
+
+/**
  * Build the typed-memory prompt with MEMORY.md content included.
  * Used by agent memory (which has no getClaudeMds() equivalent).
  */
@@ -342,7 +420,10 @@ export function buildMemoryPrompt(params: {
  * files + MEMORY.md. MEMORY.md is still loaded into context (via claudemd.ts)
  * as the distilled index — this prompt only changes where NEW memories go.
  */
-function buildAssistantDailyLogPrompt(skipIndex = false): string {
+function buildAssistantDailyLogPrompt(
+  skipIndex = false,
+  compact = false,
+): string {
   const memoryDir = getAutoMemPath()
   // Describe the path as a pattern rather than inlining today's literal path:
   // this prompt is cached by systemPromptSection('memory', ...) and NOT
@@ -351,6 +432,20 @@ function buildAssistantDailyLogPrompt(skipIndex = false): string {
   // than the user-context message — the latter is intentionally left stale to
   // preserve the prompt cache prefix across midnight.
   const logPathPattern = join(memoryDir, 'logs', 'YYYY', 'MM', 'YYYY-MM-DD.md')
+
+  if (compact) {
+    return [
+      '# auto memory',
+      `Append durable, non-derivable memories to today\'s log at \`${logPathPattern}\`, substituting the current date. Use short timestamped bullets; create parents on first write, never rewrite the append-only log, and move to the new date when it changes.`,
+      'Log explicit remember requests, user corrections/preferences, user context, non-code project decisions/deadlines/incidents, and external-system pointers. Never log secrets, code/architecture/paths, git history, fix recipes, CLAUDE.md content, or temporary/current-task state.',
+      ...(skipIndex
+        ? []
+        : [
+            `\`${ENTRYPOINT_NAME}\` is the nightly distilled index: read it for orientation but do not edit it; new information goes only to today\'s log.`,
+          ]),
+      ...buildSearchingPastContextSection(memoryDir),
+    ].join('\n')
+  }
 
   const lines: string[] = [
     '# auto memory',
@@ -434,8 +529,11 @@ export function buildSearchingPastContextSection(autoMemDir: string): string[] {
  *
  * Returns null when auto memory is disabled.
  */
-export async function loadMemoryPrompt(): Promise<string | null> {
+export async function loadMemoryPrompt(
+  options: { compact?: boolean } = {},
+): Promise<string | null> {
   const autoEnabled = isAutoMemoryEnabled()
+  const compact = options.compact === true
 
   const skipIndex = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_moth_copse',
@@ -452,7 +550,7 @@ export async function loadMemoryPrompt(): Promise<string | null> {
       memory_type:
         'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    return buildAssistantDailyLogPrompt(skipIndex)
+    return buildAssistantDailyLogPrompt(skipIndex, compact)
   }
 
   // Cowork injects memory-policy text via env var; thread into all builders.
@@ -466,7 +564,11 @@ export async function loadMemoryPrompt(): Promise<string | null> {
   // lives in the memory section, which is AFTER the prompt cache boundary, so
   // it never affects the cached prefix.
   if (isSelfLearningEnabled()) {
-    extraList.push(SELF_LEARNING_OFFER_GUIDANCE)
+    extraList.push(
+      compact
+        ? COMPACT_SELF_LEARNING_OFFER_GUIDANCE
+        : SELF_LEARNING_OFFER_GUIDANCE,
+    )
   }
   const extraGuidelines = extraList.length > 0 ? extraList : undefined
 
@@ -490,10 +592,15 @@ export async function loadMemoryPrompt(): Promise<string | null> {
         memory_type:
           'team' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
-      return teamMemPrompts!.buildCombinedMemoryPrompt(
-        extraGuidelines,
-        skipIndex,
-      )
+      return compact
+        ? teamMemPrompts!.buildCompactCombinedMemoryPrompt(
+            extraGuidelines,
+            skipIndex,
+          )
+        : teamMemPrompts!.buildCombinedMemoryPrompt(
+            extraGuidelines,
+            skipIndex,
+          )
     }
   }
 
@@ -506,7 +613,7 @@ export async function loadMemoryPrompt(): Promise<string | null> {
       memory_type:
         'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    return buildMemoryLines(
+    return (compact ? buildCompactMemoryLines : buildMemoryLines)(
       'auto memory',
       autoDir,
       extraGuidelines,

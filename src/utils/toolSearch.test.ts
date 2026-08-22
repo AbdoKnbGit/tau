@@ -5,13 +5,24 @@
  */
 
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
-import { shouldDisableToolDeferralForProvider } from './toolDeferralPolicy.js'
+import {
+  providerSupportsClientSideToolDiscovery,
+  providerSupportsSafeToolDiscovery,
+  shouldDisableToolDeferralForProvider,
+} from './toolDeferralPolicy.js'
 import { providerSupportsAnthropicToolSearch } from './model/providerCapabilities.js'
 import {
   PROVIDER_DISPLAY_NAMES,
   type APIProvider,
 } from './model/providers.js'
+import { z } from 'zod/v4'
+import {
+  checkBlindDeferredCallInput,
+  resetBlindCallValidatorCache,
+} from './blindToolCallValidation.js'
 import { extractDiscoveredToolNames } from './toolDiscoveryScan.js'
+import { decideLazyToolCall } from './toolSearchCallDecision.js'
+import { normalizeToolSearchInput } from './toolSearchInput.js'
 import { selectToolsForToolSearchRequest } from './toolSearchRequestFilter.js'
 
 let passed = 0
@@ -82,18 +93,18 @@ test('direct assistant tool_use marks deferred tool as discovered for retry', ()
   assert(discovered.has('TaskUpdate'), 'TaskUpdate should be discovered')
 })
 
-test('first-party Anthropic disables schema deferral', () => {
+test('first-party Anthropic uses its native safe discovery transport', () => {
   assert(
-    shouldDisableToolDeferralForProvider('firstParty', 'normal'),
-    'first-party normal mode should send schemas inline',
+    !shouldDisableToolDeferralForProvider('firstParty', 'normal'),
+    'first-party normal mode should support server-native discovery',
   )
   assert(
-    shouldDisableToolDeferralForProvider('firstParty', 'full'),
-    'first-party full mode should send schemas inline',
+    !shouldDisableToolDeferralForProvider('firstParty', 'full'),
+    'first-party full mode should support server-native discovery',
   )
   assert(
-    shouldDisableToolDeferralForProvider('firstParty', 'rust'),
-    'first-party rust mode should send schemas inline',
+    shouldDisableToolDeferralForProvider('firstParty', 'cheap'),
+    'cheap mode must send eager schemas even on the server-native transport',
   )
 })
 
@@ -119,6 +130,51 @@ test('Rust mode preserves normal deferral behavior on every provider', () => {
         shouldDisableToolDeferralForProvider(provider, 'normal'),
       `${provider} changed schema-deferral behavior in rust mode`,
     )
+  }
+})
+
+test('every provider is eager in cheap and lazy only in normal/full modes', () => {
+  for (const provider of Object.keys(PROVIDER_DISPLAY_NAMES) as APIProvider[]) {
+    assert(
+      shouldDisableToolDeferralForProvider(provider, 'cheap'),
+      `${provider}/cheap deferred a schema`,
+    )
+  }
+  for (const provider of ['gemini', 'openrouter', 'opencode', 'deepseek'] as const) {
+    assert(providerSupportsClientSideToolDiscovery(provider), provider)
+    assert(providerSupportsSafeToolDiscovery(provider), provider)
+    assert(
+      shouldDisableToolDeferralForProvider(provider, 'cheap'),
+      `${provider}/cheap must keep a stable eager prefix`,
+    )
+    for (const mode of ['normal', 'rust', 'full'] as const) {
+      assert(
+        !shouldDisableToolDeferralForProvider(provider, mode),
+        `${provider}/${mode} unexpectedly disabled`,
+      )
+    }
+  }
+})
+
+test('AgentRouter bypass path does not opt into client-side discovery', () => {
+  assert(!providerSupportsClientSideToolDiscovery('agentrouter'), 'agentrouter')
+  for (const mode of ['cheap', 'normal', 'rust', 'full'] as const) {
+    assert(
+      shouldDisableToolDeferralForProvider('agentrouter', mode),
+      `agentrouter/${mode} must stay eager`,
+    )
+  }
+})
+
+test('unknown or dedicated lanes fall back to eager schemas', () => {
+  for (const provider of ['cursor', 'openai', 'commandcode', 'kiro'] as const) {
+    assert(!providerSupportsSafeToolDiscovery(provider), provider)
+    for (const mode of ['cheap', 'normal', 'rust', 'full'] as const) {
+      assert(
+        shouldDisableToolDeferralForProvider(provider, mode),
+        `${provider}/${mode} must stay eager`,
+      )
+    }
   }
 })
 
@@ -161,6 +217,125 @@ test('non-first-party Anthropic providers keep discovered-only filtering', () =>
   assert(selected.includes(TOOL_SEARCH_TOOL_NAME), 'ToolSearch was filtered')
   assert(selected.includes('TaskUpdate'), 'discovered tool was filtered')
   assert(!selected.includes('WebFetch'), 'undiscovered tool should stay filtered')
+})
+
+test('native request filtering preserves the full pool for lane fallback', () => {
+  const tools = [
+    { name: TOOL_SEARCH_TOOL_NAME },
+    { name: 'Read' },
+    { name: 'NotebookEdit' },
+  ] as any
+
+  const selected = selectToolsForToolSearchRequest(tools, {
+    useToolSearch: false,
+    useNativeLaneToolSearch: true,
+    deferredToolNames: new Set(['NotebookEdit']),
+    discoveredToolNames: new Set(),
+    provider: 'deepseek',
+  })
+
+  assert(selected.length === tools.length, 'native source schema was discarded')
+  assert(selected[2] === tools[2], 'native source order/reference changed')
+})
+
+test('ToolSearch repairs guessed parameter aliases without changing its public dialect', () => {
+  const repaired = normalizeToolSearchInput({
+    tool_name: 'NotebookEdit',
+    max_results: '3',
+    invented_parameter: true,
+  }) as Record<string, unknown>
+  assert(repaired.query === 'select:NotebookEdit', String(repaired.query))
+  assert(repaired.max_results === '3', 'coercible fields should be preserved')
+
+  const canonical = normalizeToolSearchInput({
+    query: 'web current information',
+    tool_name: 'WrongGuess',
+  }) as Record<string, unknown>
+  assert(canonical.query === 'web current information', 'canonical query lost')
+})
+
+const builtinToolFixture = {
+  name: 'NotebookEdit',
+  isMcp: false,
+  inputSchema: z.object({
+    notebook_path: z.string(),
+    new_source: z.string(),
+    cell_type: z.enum(['code', 'markdown']).optional(),
+  }),
+} as never
+
+const mcpToolFixture = {
+  name: 'mcp__github__create_issue',
+  isMcp: true,
+  inputSchema: z.object({}),
+  inputJSONSchema: {
+    type: 'object',
+    properties: {
+      repo: { type: 'string' },
+      title: { type: 'string' },
+    },
+    required: ['repo', 'title'],
+  },
+} as never
+
+test('blind deferred call runs when its arguments match the real schema', () => {
+  resetBlindCallValidatorCache()
+  const first = decideLazyToolCall({
+    toolName: 'NotebookEdit',
+    isDeferred: true,
+    schemaWasLoaded: false,
+    discoveryIsActive: true,
+  })
+  assert(
+    first.action === 'execute_unverified',
+    'blind call was not routed to local verification',
+  )
+
+  const wellFormed = checkBlindDeferredCallInput(builtinToolFixture, {
+    notebook_path: '/tmp/a.ipynb',
+    new_source: 'print(1)',
+    cell_type: 'code',
+  })
+  assert(wellFormed.ok, 'a correct blind call was refused')
+
+  const guessed = checkBlindDeferredCallInput(builtinToolFixture, {
+    notebook_path: '/tmp/a.ipynb',
+    new_source: 'print(1)',
+    overwrite_kernel: true,
+  })
+  assert(!guessed.ok, 'invented parameter was accepted on a blind call')
+  assert(guessed.ok || guessed.message.includes('overwrite_kernel'), 'invented key not named')
+  assert(
+    guessed.ok || guessed.message.includes('Expected input schema'),
+    'schema was not inlined for recovery',
+  )
+
+  const retry = decideLazyToolCall({
+    toolName: 'NotebookEdit',
+    isDeferred: true,
+    schemaWasLoaded: true,
+    discoveryIsActive: true,
+  })
+  assert(retry.action === 'execute', 'schema-loaded retry stayed guarded')
+})
+
+test('blind MCP call is validated against the server-declared JSON schema', () => {
+  resetBlindCallValidatorCache()
+  const ok = checkBlindDeferredCallInput(mcpToolFixture, {
+    repo: 'a/b',
+    title: 'hello',
+  })
+  assert(ok.ok, 'a correct blind MCP call was refused')
+
+  const missing = checkBlindDeferredCallInput(mcpToolFixture, { repo: 'a/b' })
+  assert(!missing.ok, 'blind MCP call ran without a required argument')
+
+  const invented = checkBlindDeferredCallInput(mcpToolFixture, {
+    repo: 'a/b',
+    title: 'hello',
+    assignee: 'nobody',
+  })
+  assert(!invented.ok, 'blind MCP call ran with an invented argument')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

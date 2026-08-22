@@ -89,6 +89,11 @@ import { parsePluginIdentifier } from 'src/utils/plugins/pluginIdentifier.js'
 import { validateUuid } from 'src/utils/uuid.js'
 import { fromArray } from 'src/utils/generators.js'
 import { ask } from 'src/QueryEngine.js'
+import {
+  provisionContentReplacementState,
+  type ContentReplacementRecord,
+  type ContentReplacementStateRef,
+} from 'src/utils/toolResultStorage.js'
 import type { PermissionPromptTool } from 'src/utils/queryHelpers.js'
 import {
   createFileStateCacheWithSizeLimit,
@@ -208,6 +213,7 @@ import {
   resetSessionFilePointer,
   doesMessageExistInSession,
   findUnresolvedToolUse,
+  recordInheritedContentReplacementsForFork,
   recordAttributionSnapshot,
   saveAgentSetting,
   saveMode,
@@ -683,6 +689,7 @@ export async function runHeadless(
   const appState = getAppState()
   const {
     messages: initialMessages,
+    contentReplacements: initialContentReplacements,
     turnInterruptionState,
     agentSetting: resumedAgentSetting,
   } = await loadInitialMessages(setAppState, {
@@ -695,6 +702,15 @@ export async function runHeadless(
     sessionStartHooksPromise: options.sessionStartHooksPromise,
     restoredWorkerState: structuredIO.restoredWorkerState,
   })
+
+  // A fork keeps the fresh startup session ID. Source messages are copied
+  // lazily by the query transcript writer, while replacement decisions are
+  // separate metadata and must be restamped into that fresh transcript once.
+  if (options.forkSession && initialContentReplacements?.length) {
+    await recordInheritedContentReplacementsForFork(
+      initialContentReplacements,
+    )
+  }
 
   // SessionStart hooks can emit initialUserMessage — the first user turn for
   // headless orchestrator sessions where stdin is empty and additionalContext
@@ -869,6 +885,7 @@ export async function runHeadless(
     [...commands, ...appState.mcp.commands],
     filteredTools,
     initialMessages,
+    initialContentReplacements,
     canUseTool,
     sdkMcpConfigs,
     getAppState,
@@ -981,6 +998,7 @@ function runHeadlessStreaming(
   commands: Command[],
   tools: Tools,
   initialMessages: Message[],
+  initialContentReplacements: ContentReplacementRecord[] | undefined,
   canUseTool: CanUseToolFn,
   sdkMcpConfigs: Record<string, McpSdkServerConfig>,
   getAppState: () => AppState,
@@ -1145,6 +1163,15 @@ function runHeadlessStreaming(
   // include Assistant, User, Attachment, and Progress messages.
   // TODO: Clean up this code to avoid passing around a mutable array.
   const mutableMessages: Message[] = initialMessages
+  // ask() is a one-turn convenience wrapper and creates a QueryEngine for
+  // every dequeued SDK command. Keep the replacement map at conversation
+  // scope so prior aggregate previews never expand between those engines.
+  const contentReplacementStateRef: ContentReplacementStateRef = {
+    current: provisionContentReplacementState(
+      initialMessages,
+      initialContentReplacements,
+    ),
+  }
 
   // Seed the readFileState cache from the transcript (content the model saw,
   // with message timestamps) so getChangedFiles can detect external edits.
@@ -2171,6 +2198,8 @@ function runHeadlessStreaming(
               fallbackModel: options.fallbackModel,
               jsonSchema: getInitJsonSchema() ?? options.jsonSchema,
               mutableMessages,
+              initialContentReplacements,
+              contentReplacementStateRef,
               getReadFileCache: () =>
                 pendingSeeds.size === 0
                   ? readFileState
@@ -4892,6 +4921,7 @@ export function removeInterruptedMessage(
 
 type LoadInitialMessagesResult = {
   messages: Message[]
+  contentReplacements?: ContentReplacementRecord[]
   turnInterruptionState?: TurnInterruptionState
   agentSetting?: string
 }
@@ -4980,6 +5010,7 @@ async function loadInitialMessages(
 
         return {
           messages: result.messages,
+          contentReplacements: result.contentReplacements,
           turnInterruptionState: result.turnInterruptionState,
           agentSetting: result.agentSetting,
         }
@@ -5022,6 +5053,7 @@ async function loadInitialMessages(
           teleportResult.log,
           branchError,
         ),
+        contentReplacements: teleportResult.contentReplacements,
       }
     } catch (error) {
       logError(error)
@@ -5178,6 +5210,7 @@ async function loadInitialMessages(
 
       return {
         messages: result.messages,
+        contentReplacements: result.contentReplacements,
         turnInterruptionState: result.turnInterruptionState,
         agentSetting: result.agentSetting,
       }

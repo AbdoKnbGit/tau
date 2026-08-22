@@ -844,8 +844,12 @@ async function handleSpawnInProcess(
   const { setAppState, getAppState } = context
   const { name, prompt, agent_type, plan_mode_required } = input
 
-  // Resolve model: 'inherit' → leader's model; undefined → default Opus
-  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
+  // Resolve the ordinary fallback now; a custom agent definition may take
+  // precedence after it has been loaded below.
+  const fallbackModel = resolveTeammateModel(
+    input.model,
+    getAppState().mainLoopModel,
+  )
 
   if (!name || !prompt) {
     throw new Error('name and prompt are required for spawn operation')
@@ -886,6 +890,15 @@ async function handleSpawnInProcess(
     )
   }
 
+  // Keep the runtime override empty when an unqualified spawn selected a
+  // custom agent model. runAgent() will then resolve that model after applying
+  // the agent's provider context.
+  const model =
+    input.model === undefined && agentDefinition?.model
+      ? undefined
+      : fallbackModel
+  const displayModel = model ?? agentDefinition?.model
+
   // Spawn in-process teammate
   const config: InProcessSpawnConfig = {
     name: sanitizedName,
@@ -893,7 +906,7 @@ async function handleSpawnInProcess(
     prompt,
     color: teammateColor,
     planModeRequired: plan_mode_required ?? false,
-    model,
+    model: displayModel,
   }
 
   const result = await spawnInProcessTeammate(config, context)
@@ -996,7 +1009,7 @@ async function handleSpawnInProcess(
     agentId: teammateId,
     name: sanitizedName,
     agentType: agent_type,
-    model,
+    model: displayModel,
     prompt,
     color: teammateColor,
     planModeRequired: plan_mode_required,
@@ -1018,7 +1031,7 @@ async function handleSpawnInProcess(
       teammate_id: teammateId,
       agent_id: teammateId,
       agent_type,
-      model,
+      model: displayModel,
       name: sanitizedName,
       color: teammateColor,
       tmux_session_name: 'in-process',

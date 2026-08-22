@@ -33,28 +33,23 @@ function assertIncludes(lines: string[], text: string): void {
 function main(): void {
   console.log('bash command best practices:')
 
-  test('covers quoting, errors, Docker stdin, Python heredocs, and shell features', () => {
+  test('covers the compact correctness contract', () => {
     const guidance = getBashCommandBestPractices()
     for (const expected of [
       '"$var"',
       '"$(command)"',
       '"${array[@]}"',
-      'grep pattern file',
       'set -o pipefail',
       '>file 2>&1',
       'docker exec -i',
-      'stay in the foreground automatically',
       "python <<'PY'",
-      'inline evaluator',
-      '--option value',
       'Process substitution',
-      'bash --version',
-      'run_in_background: true',
-      'echo $!',
-      'docker compose up -d',
       'export NAME=value',
     ]) {
       assertIncludes(guidance, expected)
+    }
+    if (Buffer.byteLength(guidance.join('\n')) > 2_500) {
+      throw new Error('command guidance exceeded 2500-byte budget')
     }
   })
 
@@ -62,40 +57,35 @@ function main(): void {
 
   test('Linux uses Linux paths, /dev/null, and documents GNU behavior', () => {
     const guidance = getBashPlatformBestPractices('linux')
-    assertIncludes(guidance, '/home/name/project')
+    assertIncludes(guidance, '/home/...')
     assertIncludes(guidance, '/dev/null')
-    assertIncludes(guidance, 'readlink -f')
-    assertIncludes(guidance, 'GNU')
+    assertIncludes(guidance, 'GNU-only')
   })
 
   test('macOS uses BSD-compatible commands and avoids readlink -f assumptions', () => {
     const guidance = getBashPlatformBestPractices('macos')
-    assertIncludes(guidance, '/Users/name/project')
+    assertIncludes(guidance, '/Users/...')
     assertIncludes(guidance, 'BSD')
     assertIncludes(guidance, 'readlink -f')
-    assertIncludes(guidance, 'greadlink')
-    assertIncludes(guidance, 'Bash 3.x')
+    assertIncludes(guidance, 'Bash may be 3.x')
   })
 
   test('Git Bash uses POSIX Windows paths and never NUL', () => {
     const guidance = getBashPlatformBestPractices('windows')
-    assertIncludes(guidance, '/c/Users/name/project')
-    assertIncludes(guidance, 'C:/Users/name/project')
-    assertIncludes(guidance, 'cygpath -w')
+    assertIncludes(guidance, '/c/path')
+    assertIncludes(guidance, 'C:/path')
     assertIncludes(guidance, '/dev/null')
-    assertIncludes(guidance, 'Never redirect to `NUL`')
+    assertIncludes(guidance, '`NUL`')
     assertIncludes(guidance, 'CRLF')
-    assertIncludes(guidance, 'same native per-user temporary directory')
     assertIncludes(guidance, 'MSYS')
-    assertIncludes(guidance, 'static remote arguments')
-    assertIncludes(guidance, 'Quoting only the direct')
+    assertIncludes(guidance, 'static container')
   })
 
   test('WSL separates Linux paths from mounted Windows paths', () => {
     const guidance = getBashPlatformBestPractices('wsl')
-    assertIncludes(guidance, '/home/name/project')
-    assertIncludes(guidance, '/mnt/c/Users/name/project')
-    assertIncludes(guidance, 'wslpath -w')
+    assertIncludes(guidance, '/home/...')
+    assertIncludes(guidance, '/mnt/c/...')
+    assertIncludes(guidance, 'wslpath')
     assertIncludes(guidance, '/dev/null')
   })
 

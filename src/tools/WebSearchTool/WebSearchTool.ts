@@ -34,15 +34,15 @@ import {
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
-    query: z.string().min(2).describe('The search query to use'),
+    query: z.string().min(2).describe('Web search query'),
     allowed_domains: z
       .array(z.string())
       .optional()
-      .describe('Only include search results from these hostnames, without protocol or path'),
+      .describe('Include only these plain hostnames'),
     blocked_domains: z
       .array(z.string())
       .optional()
-      .describe('Never include search results from these hostnames, without protocol or path'),
+      .describe('Exclude these plain hostnames'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>

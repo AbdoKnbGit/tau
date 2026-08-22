@@ -104,6 +104,19 @@ test('keeps undiscovered deferred tools out of Gemini declarations', () => {
   )
 })
 
+test('missing ToolSearch automatically falls back to eager Gemini schemas', () => {
+  const selected = selectGeminiToolsForRequest(
+    [tool('Read'), tool('NotebookEdit', true)],
+    [],
+    { model: 'gemini-2.5-pro', providerHint: 'gemini' },
+  )
+
+  assert(
+    names(selected).join(',') === 'Read,NotebookEdit',
+    names(selected).join(','),
+  )
+})
+
 test('includes a deferred tool after ToolSearch loaded it', () => {
   const messages: ProviderMessage[] = [{
     role: 'user',

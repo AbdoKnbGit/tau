@@ -61,6 +61,7 @@ import { sanitizeProviderMessagesForNonCursorTransport } from './sanitizeProvide
 import { warmupCodeAssist } from './gemini_code_assist.js'
 import { initLanes, getLane } from '../../../lanes/index.js'
 import { LaneBackedProvider } from '../../../lanes/provider-bridge.js'
+import { installNativeLaneReadinessResolver } from './nativeLaneReadiness.js'
 
 // Lazy-init lanes once per process. Reads env-vars AND stored credentials
 // (the ones /login writes to provider-keys.json) so users who authenticated
@@ -256,30 +257,48 @@ function _nativeLaneEnabledFor(provider: APIProvider): boolean {
 }
 
 /**
+ * Resolve the exact native lane createProvider would use right now.
+ *
+ * This synchronous readiness check is shared with the upstream tool-schema
+ * gate. Previously that gate duplicated only the env allowlist and ran before
+ * lane initialization, so turn one could be eager on the legacy provider and
+ * turn two suddenly become lazy after createProvider initialized the lane.
+ */
+function _readyNativeLaneFor(provider: APIProvider) {
+  _ensureLanesInitialized()
+  if (!_nativeLaneEnabledFor(provider)) return null
+
+  const lane = getLane(_laneNameForProvider(provider))
+  const providerAuthReady =
+    provider === 'cline' || provider === 'clinepass'
+      ? getProviderAuthMethod(provider) === 'oauth'
+      : true
+  return lane && lane.isHealthy() && providerAuthReady ? lane : null
+}
+
+/** True iff createProvider will select a LaneBackedProvider for this call. */
+export function providerUsesNativeLane(provider: APIProvider): boolean {
+  return _readyNativeLaneFor(provider) !== null
+}
+
+installNativeLaneReadinessResolver(providerUsesNativeLane)
+
+/**
  * Create a provider instance for the given provider type.
  * Resolves auth method (API key vs OAuth) and injects the right credentials.
  */
 function createProvider(provider: APIProvider): BaseProvider {
-  _ensureLanesInitialized()
-
   // Native-lane opt-in. When set, use the LaneBackedProvider so the model
   // sees its home environment (native tools, native prompt, native cache,
   // native API). Otherwise fall through to the legacy shim path.
-  if (_nativeLaneEnabledFor(provider)) {
-    const laneName = _laneNameForProvider(provider)
-    const lane = getLane(laneName)
-    const providerAuthReady =
-      provider === 'cline' || provider === 'clinepass'
-        ? getProviderAuthMethod(provider) === 'oauth'
-        : true
-    if (lane && lane.isHealthy() && providerAuthReady) {
-      // Pass the provider name as a hint so shared lanes (openai-compat)
-      // can filter /v1/models per-provider — otherwise /models groq
-      // returns the union of every compat provider's catalog.
-      return new LaneBackedProvider(lane, provider)
-    }
-    // Lane not registered / unhealthy → legacy path below.
+  const nativeLane = _readyNativeLaneFor(provider)
+  if (nativeLane) {
+    // Pass the provider name as a hint so shared lanes (openai-compat)
+    // can filter /v1/models per-provider — otherwise /models groq
+    // returns the union of every compat provider's catalog.
+    return new LaneBackedProvider(nativeLane, provider)
   }
+  // Lane disabled / unregistered / unhealthy → legacy path below.
 
   const authMethod = getProviderAuthMethod(provider)
   const apiKey = provider === 'opencode' || provider === 'opencodego'
