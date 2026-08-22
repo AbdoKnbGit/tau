@@ -624,6 +624,17 @@ export type GlobalConfig = {
     >
   >
 
+  // Models the user starred in a picker, in the order they starred them.
+  // Rendered at the top of the quick model picker (Alt+P) so switching
+  // between a handful of models across providers doesn't mean walking the
+  // full /models browser. Each entry carries its provider because selecting
+  // a favorite switches the lane too. See utils/model/favoriteModels.ts.
+  favoriteModels?: Array<{
+    provider: string
+    model: string
+    label?: string
+  }>
+
   // Whether /fallback should automatically continue on the configured chain
   // when the active model fails with an API/auth/quota/server-side error.
   fallbackEnabled?: boolean
@@ -751,6 +762,7 @@ export const GLOBAL_CONFIG_KEYS = [
   'remoteControlAtStartup',
   'remoteDialogSeen',
   'surfPhaseTargets',
+  'favoriteModels',
   'fallbackEnabled',
   'fallbackTargets',
   'teamModeEnabled',

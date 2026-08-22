@@ -5,12 +5,16 @@ import { useCallback, useMemo, useState } from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled } from 'src/utils/fastMode.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text, useInput } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
+import { applyFavoriteModel, favoriteDescription, favoriteDisplayLabel, favoriteOptionValue, FAVORITE_MARKER, getFavoriteModels, isFavoriteModel, MAX_FAVORITE_MODELS, parseFavoriteOptionValue, toggleFavoriteModel } from '../utils/model/favoriteModels.js';
+import { getAPIProvider } from '../utils/model/providers.js';
+import { isConcreteOpenAIGptModelForProvider } from '../utils/model/openaiGptModels.js';
+import { setMainLoopModelOverride } from '../bootstrap/state.js';
 import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
 import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../utils/model/model.js';
-import { getModelOptions } from '../utils/model/modelOptions.js';
+import { getModelOptions, type ModelOption } from '../utils/model/modelOptions.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { Select } from './CustomSelect/index.js';
@@ -51,7 +55,20 @@ export function ModelPicker(t0) {
   const setAppState = useSetAppState();
   const exitState = useExitOnCtrlCDWithKeybindings();
   const initialValue = initial === null ? NO_PREFERENCE : initial;
-  const [focusedValue, setFocusedValue] = useState(initialValue);
+  // Favorites are read from GlobalConfig on every render; this counter just
+  // forces that re-read after the `f` key mutates the list.
+  const [favoritesVersion, setFavoritesVersion] = useState(0);
+  const [favoriteNotice, setFavoriteNotice] = useState<string | null>(null);
+  const activeProvider = getAPIProvider();
+  const favorites = useMemo(() => getFavoriteModels(), [favoritesVersion]);
+  // A favorited current model is rendered in the pinned section under a
+  // namespaced value, so focus that row instead of falling through to the
+  // top of the list.
+  const focusTarget = initialValue !== NO_PREFERENCE && isFavoriteModel(activeProvider, initialValue) ? favoriteOptionValue({
+    provider: activeProvider,
+    model: initialValue
+  }) : initialValue;
+  const [focusedValue, setFocusedValue] = useState(focusTarget);
   const isFastMode = useAppState(_temp);
   const [hasToggledEffort, setHasToggledEffort] = useState(false);
   const effortValue = useAppState(_temp2);
@@ -113,25 +130,19 @@ export function ModelPicker(t0) {
     t4 = modelOptions;
   }
   const optionsWithInitial = t4;
-  let t5;
-  if ($[12] !== optionsWithInitial) {
-    t5 = optionsWithInitial.map(_temp3);
-    $[12] = optionsWithInitial;
-    $[13] = t5;
-  } else {
-    t5 = $[13];
-  }
-  const selectOptions = t5;
-  let t6;
-  if ($[14] !== initialValue || $[15] !== selectOptions) {
-    t6 = selectOptions.some(_ => _.value === initialValue) ? initialValue : selectOptions[0]?.value ?? undefined;
-    $[14] = initialValue;
-    $[15] = selectOptions;
-    $[16] = t6;
-  } else {
-    t6 = $[16];
-  }
-  const initialFocusValue = t6;
+  // Favorites lead the list — that is the whole point of the quick picker.
+  // A favorited model is removed from its usual position rather than shown
+  // twice, so the star always means "this one moved to the top".
+  const selectOptions = useMemo(() => {
+    const pinned = favorites.map(favorite => ({
+      value: favoriteOptionValue(favorite),
+      label: `${FAVORITE_MARKER} ${favoriteDisplayLabel(favorite)}`,
+      description: favoriteDescription(favorite)
+    }));
+    const rest = optionsWithInitial.filter((opt: ModelOption) => opt.value === null || !isFavoriteModel(activeProvider, opt.value)).map(_temp3);
+    return [...pinned, ...rest];
+  }, [favorites, optionsWithInitial, activeProvider]);
+  const initialFocusValue = selectOptions.some(_ => _.value === focusTarget) ? focusTarget : selectOptions[0]?.value ?? undefined;
   const visibleCount = Math.min(10, selectOptions.length);
   const hiddenCount = Math.max(0, selectOptions.length - visibleCount);
   let t7;
@@ -242,6 +253,19 @@ export function ModelPicker(t0) {
       }
       const selectedModel = resolveOptionModel(value_0);
       const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel) ? effort : undefined;
+      // A favorite carries its own provider, so switch lanes before handing
+      // the plain model id to the caller's AppState write.
+      const favorite = parseFavoriteOptionValue(value_0);
+      if (favorite) {
+        const favoriteModel = applyFavoriteModel(favorite);
+        // Concrete GPT ids are resolved from the bootstrap override rather
+        // than AppState, so mirror what /models does on the same switch.
+        if (isConcreteOpenAIGptModelForProvider(favoriteModel, favorite.provider)) {
+          setMainLoopModelOverride(favoriteModel);
+        }
+        onSelect(favoriteModel, selectedEffort);
+        return;
+      }
       if (value_0 === NO_PREFERENCE) {
         onSelect(null, selectedEffort);
         return;
@@ -258,6 +282,45 @@ export function ModelPicker(t0) {
     t14 = $[40];
   }
   const handleSelect = t14;
+  // `f` stars the highlighted row. Unlike the /models browser there is no
+  // search box here, so the bare key is free.
+  useInput((inputChar, key) => {
+    const isFavoriteKey = !key.meta && (inputChar === 'f' || inputChar === 'F' || (key.ctrl && inputChar === 'f'));
+    if (!isFavoriteKey) {
+      // Any other key means the user moved on; drop the last message.
+      if (favoriteNotice !== null) {
+        setFavoriteNotice(null);
+      }
+      return;
+    }
+    if (!focusedValue) {
+      return;
+    }
+    const focusedFavorite = parseFavoriteOptionValue(focusedValue);
+    if (focusedFavorite) {
+      toggleFavoriteModel(focusedFavorite.provider, focusedFavorite.model);
+      setFavoriteNotice(`Removed ${favoriteDisplayLabel(focusedFavorite)} from favorites`);
+      setFavoritesVersion(version => version + 1);
+      return;
+    }
+    if (focusedValue === NO_PREFERENCE) {
+      setFavoriteNotice("The default option can't be favorited — pick a named model");
+      return;
+    }
+    const focusedOption = selectOptions.find(opt_2 => opt_2.value === focusedValue);
+    const result = toggleFavoriteModel(activeProvider, focusedValue, focusedOption?.label);
+    if (result.status === "full") {
+      setFavoriteNotice(`Favorites are full (${MAX_FAVORITE_MODELS}) — unstar one first`);
+      return;
+    }
+    if (result.status === "invalid") {
+      setFavoriteNotice("That model can't be favorited");
+      return;
+    }
+    const shownName = focusedOption?.label ?? focusedValue;
+    setFavoriteNotice(result.status === "added" ? `${FAVORITE_MARKER} Favorited ${shownName}` : `Removed ${shownName} from favorites`);
+    setFavoritesVersion(version => version + 1);
+  });
   let t15;
   if ($[41] === Symbol.for("react.memo_cache_sentinel")) {
     t15 = <Text color="remember" bold={true}>Select model</Text>;
@@ -293,12 +356,12 @@ export function ModelPicker(t0) {
   }
   const t20 = onCancel ?? _temp4;
   let t21;
-  if ($[49] !== handleFocus || $[50] !== handleSelect || $[51] !== initialFocusValue || $[52] !== initialValue || $[53] !== selectOptions || $[54] !== t20 || $[55] !== visibleCount) {
-    t21 = <Box flexDirection="column"><Select defaultValue={initialValue} defaultFocusValue={initialFocusValue} options={selectOptions} onChange={handleSelect} onFocus={handleFocus} onCancel={t20} visibleOptionCount={visibleCount} /></Box>;
+  if ($[49] !== handleFocus || $[50] !== handleSelect || $[51] !== initialFocusValue || $[52] !== focusTarget || $[53] !== selectOptions || $[54] !== t20 || $[55] !== visibleCount) {
+    t21 = <Box flexDirection="column"><Select defaultValue={focusTarget} defaultFocusValue={initialFocusValue} options={selectOptions} onChange={handleSelect} onFocus={handleFocus} onCancel={t20} visibleOptionCount={visibleCount} /></Box>;
     $[49] = handleFocus;
     $[50] = handleSelect;
     $[51] = initialFocusValue;
-    $[52] = initialValue;
+    $[52] = focusTarget;
     $[53] = selectOptions;
     $[54] = t20;
     $[55] = visibleCount;
@@ -342,17 +405,8 @@ export function ModelPicker(t0) {
   } else {
     t25 = $[68];
   }
-  let t26;
-  if ($[69] !== t19 || $[70] !== t23 || $[71] !== t24 || $[72] !== t25) {
-    t26 = <Box flexDirection="column">{t19}{t23}{t24}{t25}</Box>;
-    $[69] = t19;
-    $[70] = t23;
-    $[71] = t24;
-    $[72] = t25;
-    $[73] = t26;
-  } else {
-    t26 = $[73];
-  }
+  const favoriteHint = <Box marginBottom={1} flexDirection="column">{favoriteNotice ? <Text color="warning">{favoriteNotice}</Text> : <Text dimColor={true}>Press <Text bold={true}>f</Text> to {FAVORITE_MARKER} favorite the highlighted model ({favorites.length}/{MAX_FAVORITE_MODELS}). Favorites stay pinned to the top here.</Text>}</Box>;
+  const t26 = <Box flexDirection="column">{t19}{t23}{t24}{t25}{favoriteHint}</Box>;
   let t27;
   if ($[74] !== exitState || $[75] !== isStandaloneCommand) {
     t27 = isStandaloneCommand && <Text dimColor={true} italic={true}>{exitState.pending ? <>Press {exitState.keyName} again to exit</> : <Byline><KeyboardShortcutHint shortcut="Enter" action="confirm" /><ConfigurableShortcutHint action="select:cancel" context="Select" fallback="Esc" description="exit" /></Byline>}</Text>;
@@ -400,6 +454,10 @@ function _temp(s) {
 }
 function resolveOptionModel(value?: string): string | undefined {
   if (!value) return undefined;
+  // Favorite rows carry a namespaced value; parseUserSpecifiedModel would
+  // mangle it into a bogus model id.
+  const favorite = parseFavoriteOptionValue(value);
+  if (favorite) return favorite.model;
   return value === NO_PREFERENCE ? getDefaultMainLoopModel() : parseUserSpecifiedModel(value);
 }
 function EffortLevelIndicator(t0) {

@@ -17,6 +17,13 @@ Live model browser. Fetches the real catalog from your provider API, lets you se
 /model kimi-k2-5            set a model directly
 ```
 
+**Favorites - quick switching between the models you actually use**
+Press `Ctrl+F` on any model in `/models` to star it. Starred models are pinned
+to the top of the quick picker (`Alt+P`), so hopping between, say, a Gemini on
+Antigravity and a DeepSeek is two keys instead of a walk through the browser.
+Each favorite remembers its provider, so picking one switches the lane too.
+Press `f` in the quick picker to star or unstar the highlighted model. Up to 12.
+
 ## Web Search
 
 **`WebSearch` - Firecrawl-hosted web search**

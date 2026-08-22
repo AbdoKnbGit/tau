@@ -24,6 +24,13 @@ import {
   modelSupportsReasoning,
 } from '../utils/model/openaiReasoning.js'
 import {
+  FAVORITE_MARKER,
+  getFavoriteModels,
+  isFavoriteModel,
+  MAX_FAVORITE_MODELS,
+  toggleFavoriteModel,
+} from '../utils/model/favoriteModels.js'
+import {
   getDeepSeekV4Thinking,
   isDeepSeekV4ThinkingModel,
   toggleDeepSeekV4Thinking,
@@ -72,6 +79,9 @@ type Props = {
 type Step = 'provider' | 'models'
 
 const MAX_VISIBLE_MODELS = 16
+
+/** Raw byte some terminals send for Ctrl+F instead of a decoded key event. */
+const CTRL_F_RAW = String.fromCharCode(6)
 
 /** Flattened list entry used for keyboard navigation across sections. */
 type FlatRow =
@@ -259,6 +269,10 @@ export function ProviderModelPicker({
   const [, setCommandCodeEffortTick] = useState(0)
   const [, setCloudflareEffortTick] = useState(0)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
+  // Bumped when a favorite is toggled so the ★ column re-renders. The list
+  // itself lives in GlobalConfig and is read fresh during render.
+  const [favoritesVersion, setFavoritesVersion] = useState(0)
+  const [favoriteNotice, setFavoriteNotice] = useState<string | null>(null)
 
   const selectedProvider =
     lockedProvider
@@ -334,8 +348,21 @@ export function ProviderModelPicker({
 
   const visibleRows = flatRows.slice(scrollOffset, scrollOffset + MAX_VISIBLE_MODELS)
   const totalMatches = flatRows.filter(r => r.kind === 'model').length
+  const favoriteCount = useMemo(
+    () => getFavoriteModels().length,
+    [favoritesVersion],
+  )
 
   useInput((input, key) => {
+    // Any key other than the toggle means the user moved on from the last
+    // favorite message.
+    if (
+      favoriteNotice !== null
+      && !((key.ctrl && input === 'f') || input === CTRL_F_RAW)
+    ) {
+      setFavoriteNotice(null)
+    }
+
     if (key.escape) {
       if (step === 'models') {
         if (lockedProvider) {
@@ -387,6 +414,53 @@ export function ProviderModelPicker({
           getSelectedModelId(selectedProvider, row.model, variantSelections),
         )
       }
+      return
+    }
+
+    // Ctrl+F stars the highlighted model. A bare `f` can't be used here —
+    // every printable key goes to the search box below.
+    if ((key.ctrl && input === 'f') || input === CTRL_F_RAW) {
+      const row = flatRows[selectedRowIndex]
+      if (row?.kind !== 'model') return
+
+      if (isVoiceConversationProvider(selectedProvider)) {
+        setFavoriteNotice('Voice models cannot be favorited')
+        return
+      }
+
+      const modelId = getSelectedModelId(
+        selectedProvider,
+        row.model,
+        variantSelections,
+      )
+      const variant = getSelectedVariant(
+        selectedProvider,
+        row.model,
+        variantSelections,
+      )
+      const result = toggleFavoriteModel(
+        selectedProvider,
+        modelId,
+        variant?.name ?? row.model.name ?? row.model.id,
+      )
+
+      if (result.status === 'full') {
+        setFavoriteNotice(
+          `Favorites are full (${MAX_FAVORITE_MODELS}) — unstar one first`,
+        )
+        return
+      }
+      if (result.status === 'invalid') {
+        setFavoriteNotice('That model cannot be favorited')
+        return
+      }
+
+      setFavoriteNotice(
+        result.status === 'added'
+          ? `${FAVORITE_MARKER} Added ${modelId} to favorites (Alt+P)`
+          : `Removed ${modelId} from favorites`,
+      )
+      setFavoritesVersion(version => version + 1)
       return
     }
 
@@ -645,6 +719,12 @@ export function ProviderModelPicker({
                 model.name && model.name !== model.id
                   ? `${model.id} - ${model.name}`
                   : model.id
+              const isStarred =
+                !isVoiceConversationProvider(selectedProvider)
+                && isFavoriteModel(
+                  selectedProvider,
+                  getSelectedModelId(selectedProvider, model, variantSelections),
+                )
               const isReasoning = selectedProvider === 'openai' && modelSupportsReasoning(model.id)
               const isDeepseekV4 = selectedProvider === 'deepseek' && isDeepSeekV4ThinkingModel(model.id)
               const isGlmThinking = selectedProvider === 'glm' && isGlmThinkingModel(model.id)
@@ -686,6 +766,11 @@ export function ProviderModelPicker({
                     {isSelected ? '> ' : '  '}
                     {label}
                   </Text>
+                  {isStarred && (
+                    <Text color="yellow" bold={isSelected}>
+                      {' '}{FAVORITE_MARKER}
+                    </Text>
+                  )}
                   {isReasoning && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ {getReasoningLabel(getOpenAIReasoningLevel(model.id))} ▶
@@ -760,9 +845,20 @@ export function ProviderModelPicker({
         </Box>
       )}
 
+      {favoriteNotice && (
+        <Box marginTop={1}>
+          <Text color="yellow">{favoriteNotice}</Text>
+        </Box>
+      )}
+
       <Box marginTop={1}>
         <Text dimColor>
           Type to filter | ↑/↓ navigate | ←/→ variant/reasoning | Enter select | Esc back
+        </Text>
+      </Box>
+      <Box>
+        <Text dimColor>
+          Ctrl+F {FAVORITE_MARKER} favorite ({favoriteCount}/{MAX_FAVORITE_MODELS}) — favorites lead the Alt+P picker
         </Text>
       </Box>
     </Box>
