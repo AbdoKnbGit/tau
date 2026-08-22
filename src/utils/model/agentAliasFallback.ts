@@ -80,3 +80,27 @@ export function resolveAgentAliasPolicy(
 
   return parentModel || undefined
 }
+
+/**
+ * Whether a tier alias resolves to a fixed model for this provider, without
+ * consulting the session's model.
+ *
+ * For every other provider `resolveAgentAliasPolicy` falls back to the parent
+ * model. That is fine when the agent is running on the session's own provider,
+ * but meaningless once an agent pins a different one: the fallback would ship
+ * the session's model id to a provider that never served it (e.g. `sonnet` +
+ * `provider: fireworks` sending `gemini-3-flash` to Fireworks). Agent loading
+ * uses this to reject that pairing instead of resolving it wrongly.
+ */
+export function resolvesAgentAliasIndependently(provider: APIProvider): boolean {
+  return (
+    // Anthropic-native routes run the real tier resolver.
+    provider === 'firstParty' ||
+    provider === 'bedrock' ||
+    provider === 'vertex' ||
+    provider === 'foundry' ||
+    // These two map every alias to a fixed model of their own.
+    provider === 'antigravity' ||
+    provider === 'openrouter'
+  )
+}

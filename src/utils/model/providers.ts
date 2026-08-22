@@ -181,6 +181,51 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   kiro: 'Kiro',
 }
 
+/**
+ * Resolve a human-written provider string to a canonical APIProvider id.
+ *
+ * Agent files are hand-edited, so `provider:` arrives in whatever form the
+ * user copied out of the UI. We accept:
+ *   - the canonical id                 -> "fireworks"
+ *   - the display name from the picker -> "Fireworks AI"
+ *   - anything differing only in case, spaces, dashes or underscores
+ *
+ * Returns undefined when nothing matches, so callers can report the bad value
+ * instead of silently falling back to the session provider (which would run
+ * the agent's model on the wrong lane).
+ */
+const normalizeProviderKey = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+let _providerLookup: Map<string, APIProvider> | null = null
+
+function getProviderLookup(): Map<string, APIProvider> {
+  if (_providerLookup) return _providerLookup
+  const lookup = new Map<string, APIProvider>()
+  // Canonical ids first so they win any collision with a display name.
+  for (const provider of VALID_PROVIDERS) {
+    lookup.set(normalizeProviderKey(provider), provider)
+  }
+  for (const provider of VALID_PROVIDERS) {
+    const key = normalizeProviderKey(PROVIDER_DISPLAY_NAMES[provider])
+    if (!lookup.has(key)) lookup.set(key, provider)
+  }
+  _providerLookup = lookup
+  return lookup
+}
+
+export function resolveAPIProviderName(value: string): APIProvider | undefined {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return undefined
+  if (isAPIProvider(trimmed)) return trimmed
+  return getProviderLookup().get(normalizeProviderKey(trimmed))
+}
+
+/** Canonical provider ids, for error messages that list valid choices. */
+export function listAPIProviderNames(): readonly APIProvider[] {
+  return VALID_PROVIDERS
+}
+
 /** Providers available for user selection in /provider and /login */
 // `iflow` is hidden from the user-facing pickers after its CLI shutdown announcement.
 // `modelrouter` is also hidden from /login and /models; backend support stays

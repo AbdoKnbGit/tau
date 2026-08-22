@@ -131,14 +131,7 @@ export function AgentDetail(t0) {
   } else {
     t15 = $[17];
   }
-  let t16;
-  if ($[18] !== agent.model) {
-    t16 = getAgentModelDisplay(agent.model);
-    $[18] = agent.model;
-    $[19] = t16;
-  } else {
-    t16 = $[19];
-  }
+  const t16 = getAgentModelDisplay(agent.model, agent.provider);
   let t17;
   if ($[20] !== t16) {
     t17 = <Text>{t15}: {t16}</Text>;

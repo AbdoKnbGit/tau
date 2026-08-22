@@ -37,6 +37,14 @@ import {
   loadPluginAgents,
 } from '../../utils/plugins/loadPluginAgents.js'
 import { getPowerModeFromSettings } from '../../utils/powerMode.js'
+import {
+  listAPIProviderNames,
+  PROVIDER_DISPLAY_NAMES,
+  resolveAPIProviderName,
+  type APIProvider,
+} from '../../utils/model/providers.js'
+import { isModelAlias } from '../../utils/model/aliases.js'
+import { resolvesAgentAliasIndependently } from '../../utils/model/agentAliasFallback.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { HooksSchema, type HooksSettings } from '../../utils/settings/types.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -73,31 +81,64 @@ const AgentMcpServerSpecSchema = lazySchema(() =>
 // Note: HooksSchema is lazy so the circular chain AppState -> loadAgentsDir -> settings/types
 // is broken at module load time
 const AgentJsonSchema = lazySchema(() =>
-  z.object({
-    description: z.string().min(1, 'Description cannot be empty'),
-    tools: z.array(z.string()).optional(),
-    disallowedTools: z.array(z.string()).optional(),
-    prompt: z.string().min(1, 'Prompt cannot be empty'),
-    model: z
-      .string()
-      .trim()
-      .min(1, 'Model cannot be empty')
-      .transform(m => (m.toLowerCase() === 'inherit' ? 'inherit' : m))
-      .optional(),
-    effort: z.union([z.enum(EFFORT_LEVELS), z.number().int()]).optional(),
-    permissionMode: z.enum(PERMISSION_MODES).optional(),
-    mcpServers: z.array(AgentMcpServerSpecSchema()).optional(),
-    hooks: HooksSchema().optional(),
-    maxTurns: z.number().int().positive().optional(),
-    skills: z.array(z.string()).optional(),
-    initialPrompt: z.string().optional(),
-    memory: z.enum(['user', 'project', 'local']).optional(),
-    background: z.boolean().optional(),
-    isolation: (process.env.USER_TYPE === 'ant'
-      ? z.enum(['worktree', 'remote'])
-      : z.enum(['worktree'])
-    ).optional(),
-  }),
+  z
+    .object({
+      description: z.string().min(1, 'Description cannot be empty'),
+      tools: z.array(z.string()).optional(),
+      disallowedTools: z.array(z.string()).optional(),
+      prompt: z.string().min(1, 'Prompt cannot be empty'),
+      model: z
+        .string()
+        .trim()
+        .min(1, 'Model cannot be empty')
+        .transform(m => (m.toLowerCase() === 'inherit' ? 'inherit' : m))
+        .optional(),
+      provider: z
+        .string()
+        .trim()
+        .refine(
+          value => resolveAPIProviderName(value) !== undefined,
+          'Provider is not supported',
+        )
+        .transform(value => resolveAPIProviderName(value) as APIProvider)
+        .optional(),
+      effort: z.union([z.enum(EFFORT_LEVELS), z.number().int()]).optional(),
+      permissionMode: z.enum(PERMISSION_MODES).optional(),
+      mcpServers: z.array(AgentMcpServerSpecSchema()).optional(),
+      hooks: HooksSchema().optional(),
+      maxTurns: z.number().int().positive().optional(),
+      skills: z.array(z.string()).optional(),
+      initialPrompt: z.string().optional(),
+      memory: z.enum(['user', 'project', 'local']).optional(),
+      background: z.boolean().optional(),
+      isolation: (process.env.USER_TYPE === 'ant'
+        ? z.enum(['worktree', 'remote'])
+        : z.enum(['worktree'])
+      ).optional(),
+    })
+    .refine(
+      definition =>
+        definition.provider === undefined ||
+        (definition.model !== undefined && definition.model !== 'inherit'),
+      {
+        message: 'Provider requires an explicit model',
+        path: ['provider'],
+      },
+    )
+    // A tier alias has no fixed model on most providers, so it would resolve
+    // to whatever the session is running — see resolvesAgentAliasIndependently.
+    .refine(
+      definition =>
+        definition.provider === undefined ||
+        definition.model === undefined ||
+        !isModelAlias(definition.model.toLowerCase()) ||
+        resolvesAgentAliasIndependently(definition.provider),
+      {
+        message:
+          'Provider requires a concrete model id, not a tier alias — this provider has no fixed model for that tier',
+        path: ['model'],
+      },
+    ),
 )
 
 const AgentsJsonSchema = lazySchema(() =>
@@ -115,6 +156,14 @@ export type BaseAgentDefinition = {
   hooks?: HooksSettings // Session-scoped hooks registered when agent starts
   color?: AgentColorName
   model?: string
+  provider?: APIProvider
+  /**
+   * Set when the agent file declares a provider we could not honor (unknown
+   * name, or a provider with no explicit model). The spawn path throws this
+   * instead of silently running the agent on the session provider — which
+   * would send the agent's model to a lane that does not serve it.
+   */
+  providerConfigError?: string
   effort?: EffortValue
   permissionMode?: PermissionMode
   maxTurns?: number // Maximum number of agentic turns before stopping
@@ -495,6 +544,7 @@ export function parseAgentFromJson(
       },
       source,
       ...(parsed.model ? { model: parsed.model } : {}),
+      ...(parsed.provider ? { provider: parsed.provider } : {}),
       ...(parsed.effort !== undefined ? { effort: parsed.effort } : {}),
       ...(parsed.permissionMode
         ? { permissionMode: parsed.permissionMode }
@@ -577,6 +627,57 @@ export function parseAgentFromMarkdown(
     if (typeof modelRaw === 'string' && modelRaw.trim().length > 0) {
       const trimmed = modelRaw.trim()
       model = trimmed.toLowerCase() === 'inherit' ? 'inherit' : trimmed
+    }
+
+    // `provider:` is hand-written in agent files, so accept the display name
+    // ("Fireworks AI") and loose casing as well as the canonical id. Anything
+    // we cannot honor is recorded and the binding is cleared, so a
+    // misconfigured agent can never influence routing: dropping the provider
+    // silently used to run the agent on the session provider with the agent's
+    // foreign model, producing confusing errors from the wrong lane (e.g. a
+    // Gemini 404 for a Fireworks model id). runAgent() throws this at spawn.
+    const providerRaw = frontmatter['provider']
+    const trimmedProvider =
+      typeof providerRaw === 'string' ? providerRaw.trim() : undefined
+    let provider =
+      trimmedProvider !== undefined
+        ? resolveAPIProviderName(trimmedProvider)
+        : undefined
+    let providerConfigError: string | undefined
+    const where = `Agent "${agentType}" (${filePath})`
+    if (
+      providerRaw !== undefined &&
+      (trimmedProvider === undefined || trimmedProvider.length === 0)
+    ) {
+      providerConfigError = `${where} has a non-string 'provider' in its frontmatter.`
+    } else if (trimmedProvider !== undefined && provider === undefined) {
+      providerConfigError =
+        `${where} declares provider '${trimmedProvider}', which is not a known provider. ` +
+        `Use one of: ${listAPIProviderNames().join(', ')}.`
+    } else if (
+      provider !== undefined &&
+      (model === undefined || model === 'inherit')
+    ) {
+      providerConfigError =
+        `${where} declares provider '${provider}' but no explicit model. ` +
+        `Add a 'model:' line naming a model that '${provider}' serves.`
+    } else if (
+      provider !== undefined &&
+      model !== undefined &&
+      isModelAlias(model.toLowerCase()) &&
+      !resolvesAgentAliasIndependently(provider)
+    ) {
+      // A tier alias has no fixed meaning on this provider, so it would
+      // resolve to whatever model the session happens to be running.
+      providerConfigError =
+        `${where} pairs provider '${provider}' with the tier alias '${model}'. ` +
+        `${PROVIDER_DISPLAY_NAMES[provider]} has no fixed model for that tier, so the alias would ` +
+        `resolve to whatever model your session is on. Name a concrete model id that '${provider}' serves.`
+    }
+    if (providerConfigError !== undefined) {
+      logForDebugging(providerConfigError)
+      // Invariant: a recorded error always clears the binding.
+      provider = undefined
     }
 
     // Parse background flag
@@ -743,6 +844,8 @@ export function parseAgentFromMarkdown(
         ? { color }
         : {}),
       ...(model !== undefined ? { model } : {}),
+      ...(provider !== undefined ? { provider } : {}),
+      ...(providerConfigError !== undefined ? { providerConfigError } : {}),
       ...(parsedEffort !== undefined ? { effort: parsedEffort } : {}),
       ...(isValidPermissionMode
         ? { permissionMode: permissionModeRaw as PermissionMode }

@@ -28,7 +28,7 @@ export function ConfirmStepWrapper({
   const saveAgent = useCallback(async (openInEditor: boolean): Promise<void> => {
     if (!wizardData?.finalAgent) return;
     try {
-      await saveAgentToFile(wizardData.location!, wizardData.finalAgent.agentType, wizardData.finalAgent.whenToUse, wizardData.finalAgent.tools, wizardData.finalAgent.getSystemPrompt(), true, wizardData.finalAgent.color, wizardData.finalAgent.model, wizardData.finalAgent.memory);
+      await saveAgentToFile(wizardData.location!, wizardData.finalAgent.agentType, wizardData.finalAgent.whenToUse, wizardData.finalAgent.tools, wizardData.finalAgent.getSystemPrompt(), true, wizardData.finalAgent.color, wizardData.finalAgent.model, wizardData.finalAgent.memory, undefined, wizardData.finalAgent.provider);
       setAppState(state => {
         if (!wizardData.finalAgent) return state;
         const allAgents = state.agentDefinitions.allAgents.concat(wizardData.finalAgent);

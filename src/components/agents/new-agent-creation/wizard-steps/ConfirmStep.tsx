@@ -199,14 +199,7 @@ export function ConfirmStep(t0) {
     } else {
       t28 = $[49];
     }
-    let t29;
-    if ($[50] !== agent.model) {
-      t29 = getAgentModelDisplay(agent.model);
-      $[50] = agent.model;
-      $[51] = t29;
-    } else {
-      t29 = $[51];
-    }
+    const t29 = getAgentModelDisplay(agent.model, agent.provider);
     if ($[52] !== t29) {
       t10 = <Text>{t28}: {t29}</Text>;
       $[52] = t29;

@@ -18,7 +18,7 @@ import { LocalShellTask } from 'src/tasks/LocalShellTask/LocalShellTask.js';
 import type { LocalWorkflowTaskState } from 'src/tasks/LocalWorkflowTask/LocalWorkflowTask.js';
 import type { MonitorMcpTaskState } from 'src/tasks/MonitorMcpTask/MonitorMcpTask.js';
 import { RemoteAgentTask, type RemoteAgentTaskState } from 'src/tasks/RemoteAgentTask/RemoteAgentTask.js';
-import { type BackgroundTaskState, isBackgroundTask, type TaskState } from 'src/tasks/types.js';
+import { type BackgroundTaskState, isTaskDialogItem, type TaskState } from 'src/tasks/types.js';
 import type { DeepImmutable } from 'src/types/utils.js';
 import { intersperse } from 'src/utils/array.js';
 import { TEAM_LEAD_NAME } from 'src/utils/swarm/constants.js';
@@ -119,10 +119,9 @@ const killMonitorMcp = monitorMcpModule?.killMonitorMcp ?? null;
 const MonitorMcpDetailDialog = feature('MONITOR_TOOL') ? (require('./MonitorMcpDetailDialog.js') as typeof import('./MonitorMcpDetailDialog.js')).MonitorMcpDetailDialog : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 
-// Helper to get filtered background tasks (excludes foregrounded local_agent)
-function getSelectableBackgroundTasks(tasks: Record<string, TaskState> | undefined, foregroundedTaskId: string | undefined): TaskState[] {
-  const backgroundTasks = Object.values(tasks ?? {}).filter(isBackgroundTask);
-  return backgroundTasks.filter(task => !(task.type === 'local_agent' && task.id === foregroundedTaskId));
+// Includes foreground local agents so all active agent sessions share one picker.
+function getSelectableTasks(tasks: Record<string, TaskState> | undefined): TaskState[] {
+  return Object.values(tasks ?? {}).filter(isTaskDialogItem);
 }
 export function BackgroundTasksDialog({
   onDone,
@@ -130,8 +129,6 @@ export function BackgroundTasksDialog({
   initialDetailTaskId
 }: Props): React.ReactNode {
   const tasks = useAppState(s => s.tasks);
-  const foregroundedTaskId = useAppState(s_0 => s_0.foregroundedTaskId);
-  const showSpinnerTree = useAppState(s_1 => s_1.expandedView) === 'teammates';
   const setAppState = useSetAppState();
   const killAgentsShortcut = useShortcutDisplay('chat:killAgents', 'Chat', 'ctrl+x ctrl+k');
   const typedTasks = tasks as Record<string, TaskState> | undefined;
@@ -149,7 +146,7 @@ export function BackgroundTasksDialog({
         itemId: initialDetailTaskId
       };
     }
-    const allItems = getSelectableBackgroundTasks(typedTasks, foregroundedTaskId);
+    const allItems = getSelectableTasks(typedTasks);
     if (allItems.length === 1) {
       skippedListOnMount.current = true;
       return {
@@ -179,7 +176,7 @@ export function BackgroundTasksDialog({
     allSelectableItems
   } = useMemo(() => {
     // Filter to only show running/pending background tasks, matching the status bar count
-    const backgroundTasks = Object.values(typedTasks ?? {}).filter(isBackgroundTask);
+    const backgroundTasks = Object.values(typedTasks ?? {}).filter(isTaskDialogItem);
     const allItems_0 = backgroundTasks.map(toListItem);
     const sorted = allItems_0.sort((a, b) => {
       const aStatus = a.status;
@@ -192,13 +189,11 @@ export function BackgroundTasksDialog({
     });
     const bash = sorted.filter(item => item.type === 'local_bash');
     const remote = sorted.filter(item_0 => item_0.type === 'remote_agent');
-    // Exclude foregrounded task - it's being viewed in the main UI, not a background task
-    const agent = sorted.filter(item_1 => item_1.type === 'local_agent' && item_1.id !== foregroundedTaskId);
+    const agent = sorted.filter(item_1 => item_1.type === 'local_agent');
     const workflows = sorted.filter(item_2 => item_2.type === 'local_workflow');
     const monitorMcp = sorted.filter(item_3 => item_3.type === 'monitor_mcp');
     const dreamTasks = sorted.filter(item_4 => item_4.type === 'dream');
-    // In spinner-tree mode, exclude teammates from the dialog (they appear in the tree)
-    const teammates = showSpinnerTree ? [] : sorted.filter(item_5 => item_5.type === 'in_process_teammate');
+    const teammates = sorted.filter(item_5 => item_5.type === 'in_process_teammate');
     // Add leader entry when there are teammates, so users can foreground back to leader
     const leaderItem: ListItem[] = teammates.length > 0 ? [{
       id: '__leader__',
@@ -219,7 +214,7 @@ export function BackgroundTasksDialog({
       // visually downward.
       allSelectableItems: [...leaderItem, ...teammates, ...bash, ...monitorMcp, ...remote, ...agent, ...workflows, ...dreamTasks]
     };
-  }, [typedTasks, foregroundedTaskId, showSpinnerTree]);
+  }, [typedTasks]);
   const currentSelection = allSelectableItems[selectedIndex] ?? null;
 
   // Use configurable keybindings for standard navigation and confirm/cancel.
@@ -288,10 +283,10 @@ export function BackgroundTasksDialog({
       }
     }
     if (e.key === 'f') {
-      if (currentSelection_0.type === 'in_process_teammate' && currentSelection_0.status === 'running') {
+      if ((currentSelection_0.type === 'in_process_teammate' || currentSelection_0.type === 'local_agent') && currentSelection_0.status === 'running') {
         e.preventDefault();
         enterTeammateView(currentSelection_0.id, setAppState);
-        onDone('Viewing teammate', {
+        onDone(currentSelection_0.type === 'local_agent' ? 'Viewing agent' : 'Viewing teammate', {
           display: 'system'
         });
       } else if (currentSelection_0.type === 'leader') {
@@ -327,7 +322,7 @@ export function BackgroundTasksDialog({
       const task = (typedTasks ?? {})[viewState.itemId];
       // Workflow tasks get a grace: their detail view stays open through
       // completion so the user sees the final state before eviction.
-      if (!task || task.type !== 'local_workflow' && !isBackgroundTask(task)) {
+      if (!task || task.type !== 'local_workflow' && !isTaskDialogItem(task)) {
         // Task was removed or is no longer a background task (e.g. killed).
         // If we skipped the list on mount, close the dialog entirely.
         if (skippedListOnMount.current) {
@@ -376,7 +371,12 @@ export function BackgroundTasksDialog({
       case 'local_bash':
         return <ShellDetailDialog shell={task_0} onDone={onDone} onKillShell={() => void killShellTask(task_0.id)} onBack={goBackToList} key={`shell-${task_0.id}`} />;
       case 'local_agent':
-        return <AsyncAgentDetailDialog agent={task_0} onDone={onDone} onKillAgent={() => void killAgentTask(task_0.id)} onBack={goBackToList} key={`agent-${task_0.id}`} />;
+        return <AsyncAgentDetailDialog agent={task_0} onDone={onDone} onKillAgent={() => void killAgentTask(task_0.id)} onBack={goBackToList} onForeground={() => {
+          enterTeammateView(task_0.id, setAppState);
+          onDone('Viewing agent', {
+            display: 'system'
+          });
+        }} key={`agent-${task_0.id}`} />;
       case 'remote_agent':
         return <RemoteSessionDetailDialog session={task_0} onDone={onDone} toolUseContext={toolUseContext} onBack={goBackToList} onKill={task_0.status !== 'running' ? undefined : task_0.isUltraplan ? () => void stopUltraplan(task_0.id, task_0.sessionId, setAppState) : () => void killRemoteAgentTask(task_0.id)} key={`session-${task_0.id}`} />;
       case 'in_process_teammate':
@@ -411,7 +411,7 @@ export function BackgroundTasksDialog({
               {runningAgentCount}{' '}
               {runningAgentCount !== 1 ? 'active agents' : 'active agent'}
             </Text>] : [])], index => <Text key={`separator-${index}`}> · </Text>);
-  const actions = [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(agentTasks.some(t => t.status === 'running') ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
+  const actions = [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...((currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_agent') && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(agentTasks.some(t => t.status === 'running') ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
   const handleCancel = () => onDone('Background tasks dialog dismissed', {
     display: 'system'
   });

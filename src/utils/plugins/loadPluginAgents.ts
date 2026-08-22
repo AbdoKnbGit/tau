@@ -158,7 +158,15 @@ async function loadAgentFromFile(
     // still ship hooks and MCP servers at the manifest level — that's the
     // install-time trust boundary. Per-agent declarations would let a single
     // agent file buried in agents/ silently add them.) See PR #22558 review.
-    for (const field of ['permissionMode', 'hooks', 'mcpServers'] as const) {
+    // 'provider' joins that list: pinning a provider decides which vendor
+    // receives the user's code and prompts. That is not a choice a marketplace
+    // agent file gets to make on the user's behalf.
+    for (const field of [
+      'permissionMode',
+      'hooks',
+      'mcpServers',
+      'provider',
+    ] as const) {
       if (frontmatter[field] !== undefined) {
         logForDebugging(
           `Plugin agent file ${filePath} sets ${field}, which is ignored for plugin agents. Use .claude/agents/ for this level of control.`,

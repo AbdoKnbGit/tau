@@ -44,3 +44,18 @@ export function isBackgroundTask(task: TaskState): task is BackgroundTaskState {
   }
   return true
 }
+
+/**
+ * Tasks shown in the centralized task/session picker. Unlike the status-bar
+ * background count, this includes a local sub-agent that is still running in
+ * the foreground so its transcript can be opened from the same list.
+ */
+export function isTaskDialogItem(
+  task: TaskState,
+): task is BackgroundTaskState {
+  return (
+    isBackgroundTask(task) ||
+    (task.type === 'local_agent' &&
+      (task.status === 'running' || task.status === 'pending'))
+  )
+}

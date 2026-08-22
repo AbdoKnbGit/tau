@@ -12,47 +12,11 @@ import { getCwd } from '../../utils/cwd.js'
 import type { EffortValue } from '../../utils/effort.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { getErrnoCode } from '../../utils/errors.js'
+import type { APIProvider } from '../../utils/model/providers.js'
 import { AGENT_PATHS } from './types.js'
+import { formatAgentAsMarkdown } from './agentMarkdown.js'
 
-/**
- * Formats agent data as markdown file content
- */
-export function formatAgentAsMarkdown(
-  agentType: string,
-  whenToUse: string,
-  tools: string[] | undefined,
-  systemPrompt: string,
-  color?: string,
-  model?: string,
-  memory?: AgentMemoryScope,
-  effort?: EffortValue,
-): string {
-  // For YAML double-quoted strings, we need to escape:
-  // - Backslashes: \ -> \\
-  // - Double quotes: " -> \"
-  // - Newlines: \n -> \\n (so yaml reads it as literal backslash-n, not newline)
-  const escapedWhenToUse = whenToUse
-    .replace(/\\/g, '\\\\') // Escape backslashes first
-    .replace(/"/g, '\\"') // Escape double quotes
-    .replace(/\n/g, '\\\\n') // Escape newlines as \\n so yaml preserves them as \n
-
-  // Omit tools field entirely when tools is undefined or ['*'] (all tools allowed)
-  const isAllTools =
-    tools === undefined || (tools.length === 1 && tools[0] === '*')
-  const toolsLine = isAllTools ? '' : `\ntools: ${tools.join(', ')}`
-  const modelLine = model ? `\nmodel: ${model}` : ''
-  const effortLine = effort !== undefined ? `\neffort: ${effort}` : ''
-  const colorLine = color ? `\ncolor: ${color}` : ''
-  const memoryLine = memory ? `\nmemory: ${memory}` : ''
-
-  return `---
-name: ${agentType}
-description: "${escapedWhenToUse}"${toolsLine}${modelLine}${effortLine}${colorLine}${memoryLine}
----
-
-${systemPrompt}
-`
-}
+export { formatAgentAsMarkdown } from './agentMarkdown.js'
 
 /**
  * Gets the directory path for an agent location
@@ -62,7 +26,7 @@ function getAgentDirectoryPath(location: SettingSource): string {
     case 'flagSettings':
       throw new Error(`Cannot get directory path for ${location} agents`)
     case 'userSettings':
-      return join(getTauConfigHomeDir(), AGENT_PATHS.AGENTS_DIR)
+      return join(getClaudeConfigHomeDir(), AGENT_PATHS.AGENTS_DIR)
     case 'projectSettings':
       return join(getCwd(), AGENT_PATHS.FOLDER_NAME, AGENT_PATHS.AGENTS_DIR)
     case 'policySettings':
@@ -174,6 +138,7 @@ export async function saveAgentToFile(
   model?: string,
   memory?: AgentMemoryScope,
   effort?: EffortValue,
+  provider?: APIProvider,
 ): Promise<void> {
   if (source === 'built-in') {
     throw new Error('Cannot save built-in agents')
@@ -191,6 +156,7 @@ export async function saveAgentToFile(
     model,
     memory,
     effort,
+    provider,
   )
   try {
     await writeFileAndFlush(filePath, content, checkExists ? 'wx' : 'w')
@@ -214,6 +180,7 @@ export async function updateAgentFile(
   newModel?: string,
   newMemory?: AgentMemoryScope,
   newEffort?: EffortValue,
+  newProvider?: APIProvider,
 ): Promise<void> {
   if (agent.source === 'built-in') {
     throw new Error('Cannot update built-in agents')
@@ -230,6 +197,7 @@ export async function updateAgentFile(
     newModel,
     newMemory,
     newEffort,
+    newProvider,
   )
 
   await writeFileAndFlush(filePath, content)

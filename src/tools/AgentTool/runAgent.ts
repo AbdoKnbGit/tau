@@ -84,6 +84,10 @@ import {
 } from '../../utils/telemetry/perfettoTracing.js'
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
+import {
+  canApplyAgentProvider,
+  runWithForcedProvider,
+} from '../../utils/forcedProvider.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 import { getGlobalConfig } from '../../utils/config.js'
@@ -299,7 +303,7 @@ function isRecordableMessage(
   )
 }
 
-export async function* runAgent({
+async function* runAgentWithoutProviderOverride({
   agentDefinition,
   promptMessages,
   toolUseContext,
@@ -949,6 +953,45 @@ export async function* runAgent({
       )
     }
     /* eslint-enable @typescript-eslint/no-require-imports */
+  }
+}
+
+type RunAgentOptions = Parameters<typeof runAgentWithoutProviderOverride>[0]
+
+/**
+ * Run a custom agent on its configured provider without changing the session's
+ * global provider. Explicit caller overrides (for example /team-mode) win;
+ * nested agent definitions may replace an inherited agent-scoped provider.
+ */
+export async function* runAgent(options: RunAgentOptions) {
+  // A provider we could not resolve is fatal, not something to shrug off. The
+  // agent's `model:` was chosen for that provider, so falling through to the
+  // session provider sends a foreign model id down the wrong lane and the user
+  // sees an unrelated error from whatever provider happens to be active.
+  const configError = options.agentDefinition.providerConfigError
+  if (configError !== undefined) {
+    throw new Error(
+      `${configError}\nFix the agent's frontmatter, then spawn it again.`,
+    )
+  }
+
+  const provider = options.agentDefinition.provider
+  if (!canApplyAgentProvider(provider)) {
+    yield* runAgentWithoutProviderOverride(options)
+    return
+  }
+
+  const context = { provider, source: 'agent' as const }
+  const iterator = runAgentWithoutProviderOverride(options)
+
+  try {
+    while (true) {
+      const next = await runWithForcedProvider(context, () => iterator.next())
+      if (next.done) return
+      yield next.value
+    }
+  } finally {
+    await runWithForcedProvider(context, () => iterator.return(undefined))
   }
 }
 

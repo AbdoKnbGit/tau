@@ -10,6 +10,7 @@ import type { Tools } from '../../Tool.js';
 import { type AgentColorName, setAgentColor } from '../../tools/AgentTool/agentColorManager.js';
 import { type AgentDefinition, getActiveAgentsFromList, isCustomAgent, isPluginAgent } from '../../tools/AgentTool/loadAgentsDir.js';
 import { editFileInEditor } from '../../utils/promptEditor.js';
+import type { APIProvider } from '../../utils/model/providers.js';
 import { getActualAgentFilePath, updateAgentFile } from './agentFileUtils.js';
 import { ColorPicker } from './ColorPicker.js';
 import { ModelSelector } from './ModelSelector.js';
@@ -26,6 +27,7 @@ type SaveChanges = {
   tools?: string[];
   color?: AgentColorName;
   model?: string;
+  provider?: APIProvider | null;
 };
 export function AgentEditor({
   agent,
@@ -51,13 +53,16 @@ export function AgentEditor({
     const {
       tools: newTools,
       color: newColor,
-      model: newModel
+      model: newModel,
+      provider: newProvider
     } = changes;
     const finalColor = newColor ?? selectedColor;
+    const finalProvider = newProvider === null ? undefined : newProvider ?? agent.provider;
     const hasToolsChanged = newTools !== undefined;
     const hasModelChanged = newModel !== undefined;
+    const hasProviderChanged = newProvider !== undefined && finalProvider !== agent.provider;
     const hasColorChanged = finalColor !== agent.color;
-    if (!hasToolsChanged && !hasModelChanged && !hasColorChanged) {
+    if (!hasToolsChanged && !hasModelChanged && !hasProviderChanged && !hasColorChanged) {
       return false;
     }
     try {
@@ -66,7 +71,7 @@ export function AgentEditor({
       if (!isCustomAgent(agent) && !isPluginAgent(agent)) {
         return false;
       }
-      await updateAgentFile(agent, agent.whenToUse, newTools ?? agent.tools, agent.getSystemPrompt(), finalColor, newModel ?? agent.model);
+      await updateAgentFile(agent, agent.whenToUse, newTools ?? agent.tools, agent.getSystemPrompt(), finalColor, newModel ?? agent.model, agent.memory, agent.effort, finalProvider);
       if (hasColorChanged && finalColor) {
         setAgentColor(agent.agentType, finalColor);
       }
@@ -75,7 +80,8 @@ export function AgentEditor({
           ...a,
           tools: newTools ?? a.tools,
           color: finalColor,
-          model: newModel ?? a.model
+          model: newModel ?? a.model,
+          provider: finalProvider
         } : a);
         return {
           ...state,
@@ -150,14 +156,14 @@ export function AgentEditor({
     case 'menu':
       return renderMenu();
     case 'edit-tools':
-      return <ToolSelector tools={tools} initialTools={agent.tools} onComplete={async finalTools => {
+      return <ToolSelector tools={tools} initialTools={agent.tools} onComplete={async (finalTools: string[]) => {
         setEditMode('menu');
         await handleSave({
           tools: finalTools
         });
       }} />;
     case 'edit-color':
-      return <ColorPicker agentName={agent.agentType} currentColor={selectedColor || agent.color as AgentColorName || 'automatic'} onConfirm={async color => {
+      return <ColorPicker agentName={agent.agentType} currentColor={selectedColor || agent.color as AgentColorName || 'automatic'} onConfirm={async (color: AgentColorName) => {
         setSelectedColor(color);
         setEditMode('menu');
         await handleSave({
@@ -165,10 +171,11 @@ export function AgentEditor({
         });
       }} />;
     case 'edit-model':
-      return <ModelSelector initialModel={agent.model} onComplete={async model => {
+      return <ModelSelector initialModel={agent.model} initialProvider={agent.provider} onCancel={() => setEditMode('menu')} onComplete={async (model, provider) => {
         setEditMode('menu');
         await handleSave({
-          model
+          model,
+          provider: provider ?? null
         });
       }} />;
     default:

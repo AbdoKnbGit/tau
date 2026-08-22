@@ -53,7 +53,7 @@ import type { AgentDefinition } from './loadAgentsDir.js';
 import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
 import { getPrompt } from './prompt.js';
 import { runAgent } from './runAgent.js';
-import { runWithForcedProvider } from '../../utils/forcedProvider.js';
+import { runWithAgentProvider, runWithForcedProvider } from '../../utils/forcedProvider.js';
 import { isAPIProvider } from '../../utils/model/providers.js';
 import type { ModelAlias } from '../../utils/model/aliases.js';
 import { getActiveTeamModeRoles, getTeamModeFallbackWorker, isTeamModeEnabled, isTeamModeFallbackEnabled } from '../../utils/teamMode/state.js';
@@ -580,7 +580,11 @@ export const AgentTool = buildTool({
     // model is widened to `string | undefined` to support model_id; cast to
     // ModelAlias is safe — getAgentModel runs through parseUserSpecifiedModel
     // which accepts arbitrary canonical model strings.
-    const resolvedAgentModel = getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, (isForkPath ? undefined : model) as ModelAlias | undefined, permissionMode);
+    // Resolve under the agent's own provider: getAgentModel() consults the
+    // active provider's alias policy, and outside this scope that is the
+    // session provider — which would hand a pinned agent a model its provider
+    // does not serve (and put that wrong name in its env-details prompt).
+    const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () => getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, (isForkPath ? undefined : model) as ModelAlias | undefined, permissionMode));
     logEvent('tengu_agent_tool_selected', {
       agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       model: resolvedAgentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

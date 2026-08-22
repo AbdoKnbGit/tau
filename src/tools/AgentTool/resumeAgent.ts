@@ -32,6 +32,7 @@ import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
+import { runWithAgentProvider } from '../../utils/forcedProvider.js'
 import { runAgent } from './runAgent.js'
 
 export type ResumeAgentResult = {
@@ -147,12 +148,16 @@ export async function resumeAgentBackground({
     }
   }
 
-  // Resolve model for analytics metadata (runAgent resolves its own internally)
-  const resolvedAgentModel = getAgentModel(
-    selectedAgent.model,
-    toolUseContext.options.mainLoopModel,
-    undefined,
-    permissionMode,
+  // Resolve model for analytics metadata (runAgent resolves its own
+  // internally). Scoped to the agent's provider so a pinned agent is not
+  // reported under the session provider's alias policy.
+  const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () =>
+    getAgentModel(
+      selectedAgent.model,
+      toolUseContext.options.mainLoopModel,
+      undefined,
+      permissionMode,
+    ),
   )
 
   const workerPermissionContext = {

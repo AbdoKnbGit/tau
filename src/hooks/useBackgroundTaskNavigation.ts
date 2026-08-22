@@ -19,7 +19,7 @@ import {
   type InProcessTeammateTaskState,
   isInProcessTeammateTask,
 } from '../tasks/InProcessTeammateTask/types.js'
-import { isBackgroundTask } from '../tasks/types.js'
+import { isTaskDialogItem } from '../tasks/types.js'
 
 // Step teammate selection by delta, wrapping across leader(-1)..teammates(0..n-1)..hide(n).
 // First step from a collapsed tree expands it and parks on leader.
@@ -77,10 +77,7 @@ export function useBackgroundTaskNavigation(options?: {
   const teammateTasks = getRunningTeammatesSorted(tasks)
   const teammateCount = teammateTasks.length
 
-  // Check for non-teammate background tasks (local_agent, local_bash, etc.)
-  const hasNonTeammateBackgroundTasks = Object.values(tasks).some(
-    t => isBackgroundTask(t) && t.type !== 'in_process_teammate',
-  )
+  const hasTaskDialogItems = Object.values(tasks).some(isTaskDialogItem)
 
   // Track previous teammate count to detect when teammates are removed
   const prevTeammateCountRef = useRef<number>(teammateCount)
@@ -180,10 +177,10 @@ export function useBackgroundTaskNavigation(options?: {
     // When showSpinnerTree is true, index === teammateCount is the "hide" row
     if (e.shift && (e.key === 'up' || e.key === 'down')) {
       e.preventDefault()
-      if (teammateCount > 0) {
+      if (hasTaskDialogItems && options?.onOpenBackgroundTasks) {
+        options.onOpenBackgroundTasks()
+      } else if (teammateCount > 0) {
         stepTeammateSelection(e.key === 'down' ? 1 : -1, setAppState)
-      } else if (hasNonTeammateBackgroundTasks) {
-        options?.onOpenBackgroundTasks?.()
       }
       return
     }

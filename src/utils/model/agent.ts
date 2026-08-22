@@ -8,7 +8,11 @@ import {
   getRuntimeMainLoopModel,
   parseUserSpecifiedModel,
 } from './model.js'
-import { getAPIProvider } from './providers.js'
+import {
+  getAPIProvider,
+  type APIProvider,
+  PROVIDER_DISPLAY_NAMES,
+} from './providers.js'
 import { getForcedProvider } from '../forcedProvider.js'
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
@@ -149,7 +153,13 @@ function aliasMatchesParentTier(alias: string, parentModel: string): boolean {
   }
 }
 
-export function getAgentModelDisplay(model: string | undefined): string {
+export function getAgentModelDisplay(
+  model: string | undefined,
+  provider?: APIProvider,
+): string {
+  if (provider) {
+    return `${PROVIDER_DISPLAY_NAMES[provider]} / ${model ?? 'inherit from parent'}`
+  }
   // When model is omitted, getDefaultSubagentModel() returns 'inherit' at runtime
   if (!model) return 'Inherit from parent (default)'
   if (model === 'inherit') return 'Inherit from parent'

@@ -998,6 +998,15 @@ export async function runInProcessTeammate(
     // Propagate model from custom agent definition so getAgentModel()
     // can use it as a fallback when no tool-level model is specified
     ...(agentDefinition?.model ? { model: agentDefinition.model } : {}),
+    // runAgent() scopes this override to the teammate's async call tree.
+    ...(agentDefinition?.provider
+      ? { provider: agentDefinition.provider }
+      : {}),
+    // Carry a bad provider binding through so runAgent() rejects the spawn
+    // instead of quietly running the teammate on the session provider.
+    ...(agentDefinition?.providerConfigError
+      ? { providerConfigError: agentDefinition.providerConfigError }
+      : {}),
   }
 
   // All messages across all prompts
