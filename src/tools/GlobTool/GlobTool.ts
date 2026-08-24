@@ -48,11 +48,66 @@ const outputSchema = lazySchema(() =>
     truncated: z
       .boolean()
       .describe('Whether results were truncated (limited to 100 files)'),
+    total: z
+      .number()
+      .optional()
+      .describe('Total matches found before truncation'),
+    shownEntries: z
+      .number()
+      .optional()
+      .describe('Distinct top-level entries represented in the returned page'),
+    totalEntries: z
+      .number()
+      .optional()
+      .describe('Distinct top-level entries across all matches'),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
+
+/**
+ * Footer for a truncated glob result.
+ *
+ * Results come back ripgrep `--sort=modified`, which is OLDEST first, and the
+ * page is a plain head of that order. So an over-cap page is the oldest slice
+ * of the tree and routinely comes from a single directory: an unpacked archive
+ * or an npm install restores old mtimes and sorts straight to the front. A bare
+ * "results are truncated" lets the model read that page as a representative
+ * sample of the whole tree and conclude the project is whatever that one folder
+ * holds. Report how concentrated the page actually is, and say which knob fixes
+ * it. Falls back to the original wording when the spread is unknown or the page
+ * already covers every top-level entry.
+ */
+export function formatGlobTruncationNotice(output: {
+  numFiles: number
+  total?: number
+  shownEntries?: number
+  totalEntries?: number
+}): string {
+  const shown =
+    output.total !== undefined
+      ? `Showing ${output.numFiles} of ${output.total} matches`
+      : `Showing ${output.numFiles} matches`
+  const { shownEntries, totalEntries } = output
+  if (
+    shownEntries !== undefined &&
+    totalEntries !== undefined &&
+    totalEntries > shownEntries
+  ) {
+    const from =
+      shownEntries === 1
+        ? 'all from 1 top-level entry'
+        : `from only ${shownEntries} top-level entries`
+    return (
+      `(${shown}, ${from}, but ${totalEntries} top-level entries matched. ` +
+      'Results are ordered oldest-modified first, so this page is NOT a ' +
+      'representative sample of the tree. Pass `path` to search one entry, ' +
+      'or use a more specific pattern.)'
+    )
+  }
+  return `(${shown}. Consider using a more specific path or pattern.)`
+}
 
 export const GlobTool = buildTool({
   name: GLOB_TOOL_NAME,
@@ -155,7 +210,7 @@ export const GlobTool = buildTool({
     const start = Date.now()
     const appState = getAppState()
     const limit = globLimits?.maxResults ?? 100
-    const { files, truncated } = await glob(
+    const { files, truncated, total, shownEntries, totalEntries } = await glob(
       input.pattern,
       GlobTool.getPath(input),
       { limit, offset: 0 },
@@ -169,6 +224,9 @@ export const GlobTool = buildTool({
       durationMs: Date.now() - start,
       numFiles: filenames.length,
       truncated,
+      total,
+      ...(shownEntries !== undefined && { shownEntries }),
+      ...(totalEntries !== undefined && { totalEntries }),
     }
     return {
       data: output,
@@ -187,11 +245,7 @@ export const GlobTool = buildTool({
       type: 'tool_result',
       content: [
         ...output.filenames,
-        ...(output.truncated
-          ? [
-              '(Results are truncated. Consider using a more specific path or pattern.)',
-            ]
-          : []),
+        ...(output.truncated ? [formatGlobTruncationNotice(output)] : []),
       ].join('\n'),
     }
   },

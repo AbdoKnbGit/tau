@@ -1,4 +1,4 @@
-import { basename, dirname, isAbsolute, join, sep } from 'path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'path'
 import type { ToolPermissionContext } from '../Tool.js'
 import { isEnvTruthy } from './envUtils.js'
 import {
@@ -63,13 +63,34 @@ export function extractGlobBaseDirectory(pattern: string): {
   return { baseDir, relativePattern }
 }
 
+/**
+ * First path segment of `p` relative to `root`. A file sitting directly in
+ * `root` groups under its own name. Notice-only, so a path outside `root`
+ * (which should not happen) falls back to the whole path instead of throwing.
+ */
+function topLevelEntry(p: string, root: string): string {
+  const rel = relative(root, p)
+  if (!rel || rel.startsWith('..')) return p
+  const cut = rel.search(/[\\/]/)
+  return cut === -1 ? rel : rel.slice(0, cut)
+}
+
 export async function glob(
   filePattern: string,
   cwd: string,
   { limit, offset }: { limit: number; offset: number },
   abortSignal: AbortSignal,
   toolPermissionContext: ToolPermissionContext,
-): Promise<{ files: string[]; truncated: boolean }> {
+): Promise<{
+  files: string[]
+  truncated: boolean
+  /** Total matches before the page slice. */
+  total: number
+  /** Distinct top-level entries in the returned page. Set only when truncated. */
+  shownEntries?: number
+  /** Distinct top-level entries across every match. Set only when truncated. */
+  totalEntries?: number
+}> {
   let searchDir = cwd
   let searchPattern = filePattern
 
@@ -126,5 +147,28 @@ export async function glob(
   const truncated = absolutePaths.length > offset + limit
   const files = absolutePaths.slice(offset, offset + limit)
 
-  return { files, truncated }
+  // Truncation-notice metadata. `--sort=modified` is oldest-first, so an
+  // over-cap page is the OLDEST slice of the tree and can sit entirely inside
+  // one directory — an unpacked archive or an npm install restores old mtimes
+  // and sorts to the front. Without the spread, a page drawn from one folder
+  // reads as if it represented the whole result. One pass over an array that
+  // is already materialized, so this adds no I/O and only runs when truncated.
+  let shownEntries: number | undefined
+  let totalEntries: number | undefined
+  if (truncated) {
+    const all = new Set<string>()
+    for (const p of absolutePaths) all.add(topLevelEntry(p, searchDir))
+    const shown = new Set<string>()
+    for (const p of files) shown.add(topLevelEntry(p, searchDir))
+    totalEntries = all.size
+    shownEntries = shown.size
+  }
+
+  return {
+    files,
+    truncated,
+    total: absolutePaths.length,
+    ...(shownEntries !== undefined && { shownEntries }),
+    ...(totalEntries !== undefined && { totalEntries }),
+  }
 }

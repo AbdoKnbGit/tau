@@ -79,6 +79,8 @@ import {
 } from '../../utils/errors.js'
 import { executePermissionDeniedHooks } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
+import { getSessionId } from '../../bootstrap/state.js'
+import { noteToolCall } from './repeatToolGuard.js'
 import {
   CANCEL_MESSAGE,
   createProgressMessage,
@@ -352,7 +354,91 @@ function getMcpServerBaseUrlFromToolName(
   return getLoggingSafeMcpBaseUrl(serverConnection.config)
 }
 
+/**
+ * Append the repeat-guard reminder to a tool_result block, in place.
+ *
+ * Mirrors the existing in-place `content.content = withMemoryCorrectionHint(...)`
+ * pattern above. Fails safe: an unexpected content shape is left untouched
+ * rather than rewritten, because a corrupted tool_result is far worse than a
+ * missed reminder.
+ */
+function appendReminderToToolResult(
+  update: MessageUpdateLazy,
+  toolUseId: string,
+  reminder: string,
+): boolean {
+  const content = (update as { message?: { message?: { content?: unknown } } })
+    .message?.message?.content
+  if (!Array.isArray(content)) return false
+  for (const block of content) {
+    if (
+      !block ||
+      typeof block !== 'object' ||
+      (block as { type?: string }).type !== 'tool_result' ||
+      (block as { tool_use_id?: string }).tool_use_id !== toolUseId
+    ) {
+      continue
+    }
+    const target = block as { content?: unknown }
+    if (typeof target.content === 'string') {
+      target.content = `${target.content}\n\n${reminder}`
+      return true
+    }
+    if (Array.isArray(target.content)) {
+      target.content.push({ type: 'text', text: reminder })
+      return true
+    }
+    if (target.content == null) {
+      target.content = reminder
+      return true
+    }
+    return false
+  }
+  return false
+}
+
+/**
+ * Executes one tool call, then appends a repeat-guard reminder to its result
+ * when the model has issued the same call with identical arguments too many
+ * times in a row. The reminder rides this call's own tool_result, so it stays
+ * in model order and never shifts the cached request prefix.
+ *
+ * Counting happens here, before the permission check inside the delegate, so a
+ * model hammering a DENIED call is caught too - that is the loop most worth
+ * breaking.
+ */
 export async function* runToolUse(
+  toolUse: ToolUseBlock,
+  assistantMessage: AssistantMessage,
+  canUseTool: CanUseToolFn,
+  toolUseContext: ToolUseContext,
+): AsyncGenerator<MessageUpdateLazy, void> {
+  // Subagents share this pipeline, so chains are keyed per agent: agentId when
+  // present, session id for the main thread.
+  const agentKey = toolUseContext.agentId ?? getSessionId()
+  let reminder: string | null = null
+  try {
+    reminder = noteToolCall(agentKey, toolUse.name, toolUse.input)
+  } catch (error) {
+    // Advisory only - never fail a tool call because the guard misbehaved.
+    logError(error)
+  }
+
+  let delivered = false
+  for await (const update of runToolUseInner(
+    toolUse,
+    assistantMessage,
+    canUseTool,
+    toolUseContext,
+  )) {
+    if (reminder && !delivered) {
+      delivered = appendReminderToToolResult(update, toolUse.id, reminder)
+    }
+    yield update
+  }
+}
+
+async function* runToolUseInner(
   toolUse: ToolUseBlock,
   assistantMessage: AssistantMessage,
   canUseTool: CanUseToolFn,
