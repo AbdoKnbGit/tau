@@ -110,6 +110,8 @@ const MANAGEABLE_PROVIDERS = [
   'requesty',
   'opencode',
   'opencodego',
+  'lxd',
+  'mimo',
   'fireworks',
   'cloudflare',
   'mistral',

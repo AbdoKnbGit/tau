@@ -104,6 +104,16 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     getKeyUrl: 'https://commandcode.ai/studio/api-keys',
     supportsOAuth: false,
   },
+  lxd: {
+    envVar: 'LXD_API_KEY',
+    getKeyUrl: 'https://api.lxds.org/instructions',
+    supportsOAuth: false,
+  },
+  mimo: {
+    envVar: 'MIMO_API_KEY',
+    getKeyUrl: 'https://xiaomimimo.com',
+    supportsOAuth: false,
+  },
   fireworks: {
     envVar: 'FIREWORKS_API_KEY',
     keyPrefix: 'fw_',
@@ -222,6 +232,10 @@ async function _testApiKey(
   try {
     let url: string
     let headers: Record<string, string> = {}
+    // Most providers can be probed with a plain GET /models. A few gate their
+    // catalog differently and need a POST to say anything about the key.
+    let method: 'GET' | 'POST' = 'GET'
+    let body: string | undefined
 
     switch (provider) {
       case 'gemini':
@@ -279,6 +293,31 @@ async function _testApiKey(
         url = 'https://opencode.ai/zen/go/v1/models'
         headers = { Authorization: `Bearer ${key}` }
         break
+      case 'lxd':
+        // LXD's /v1/models is public, so it answers 200 for any key and can't
+        // tell a good one from a bad one. Probe with a 1-token completion on
+        // the cheapest row instead: the relay answers 401 for a missing key
+        // and 403 for an invalid one, and both land before it bills.
+        url = 'https://api.lxds.org/v1/chat/completions'
+        headers = {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        }
+        method = 'POST'
+        body = JSON.stringify({
+          model: 'gpt-oss-120b',
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 1,
+          stream: false,
+        })
+        break
+      case 'mimo':
+        // MiMo gates /v1/models behind auth and reads a bare `api-key`
+        // header rather than a Bearer token, so a plain GET is a real
+        // credential check: a bad key answers 401 invalid_key.
+        url = `${process.env.MIMO_BASE_URL ?? 'https://api.xiaomimimo.com/v1'}/models`
+        headers = { 'api-key': key }
+        break
       case 'fireworks':
         url = 'https://api.fireworks.ai/inference/v1/models'
         headers = { Authorization: `Bearer ${key}` }
@@ -306,8 +345,9 @@ async function _testApiKey(
     }
 
     const res = await fetch(url, {
-      method: 'GET',
+      method,
       headers,
+      body,
       signal: AbortSignal.timeout(10_000),
     })
 
@@ -363,6 +403,8 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
     provider === 'requesty' ||
     provider === 'opencode' ||
     provider === 'opencodego' ||
+    provider === 'lxd' ||
+    provider === 'mimo' ||
     provider === 'commandcode' ||
     provider === 'fireworks' ||
     provider === 'cloudflare' ||

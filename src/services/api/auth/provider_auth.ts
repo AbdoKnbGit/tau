@@ -341,6 +341,8 @@ function _envVarName(provider: APIProvider): string {
     opencode: 'OPENCODE_API_KEY',
     opencodego: 'OPENCODE_API_KEY',
     commandcode: 'CMD_API_KEY',
+    lxd: 'LXD_API_KEY',
+    mimo: 'MIMO_API_KEY',
     fireworks: 'FIREWORKS_API_KEY',
     cloudflare: 'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID',
     groq: 'GROQ_API_KEY',

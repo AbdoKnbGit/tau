@@ -216,11 +216,14 @@ export async function loadProviderModels(
     'moonshot',
     'minimax',
     'antigravity',
+    'lxd',
+    'mimo',
   ].includes(provider)) {
     // Cursor's native picker order is provider-owned and should not be
     // alphabetized away; the ids intentionally mirror Cursor's own model surface.
-    // Cline, GLM, Moonshot, MiniMax, and Antigravity also return curated,
-    // provider-owned orders.
+    // Cline, GLM, Moonshot, MiniMax, Antigravity, and LXD also return curated,
+    // provider-owned orders (LXD leads with its cheap general-purpose rows and
+    // trails with the limited-time event rows).
     return models
   }
   if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty' || provider === 'opencode' || provider === 'commandcode') {

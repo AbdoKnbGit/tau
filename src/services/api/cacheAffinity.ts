@@ -13,6 +13,10 @@ const STABLE_REQUEST_SESSION_PROVIDERS = new Set<string>([
   'agentrouter',
   'opencode',
   'opencodego',
+  // LXD relays to a pool of upstream replicas. Without a stable per-session
+  // key the request can land on a different replica each turn and the
+  // implicit prefix cache never warms.
+  'lxd',
   'moonshot',
   'mistral',
   'fireworks',

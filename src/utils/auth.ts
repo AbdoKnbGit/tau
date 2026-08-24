@@ -1758,6 +1758,8 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   opencode:    ['api_key'],
   opencodego:  ['api_key'],
   commandcode: ['api_key'],
+  lxd:         ['api_key'],
+  mimo:        ['api_key'],
   fireworks:   ['api_key'],
   cloudflare:  ['api_key'],
   groq:        ['api_key'],
@@ -1851,6 +1853,8 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     // powers both tiers.
     case 'opencodego':  return process.env.OPENCODE_GO_API_KEY ?? process.env.OPENCODE_API_KEY ?? process.env.OPENCODE_ZEN_API_KEY ?? _loadStoredKey('opencodego') ?? _loadStoredKey('opencode') ?? loadOpenCodeApiKeyFromAuthFile()
     case 'commandcode': return process.env.CMD_API_KEY ?? process.env.COMMANDCODE_API_KEY ?? process.env.COMMAND_CODE_API_KEY ?? _loadStoredKey('commandcode') ?? loadCommandCodeApiKeyFromAuthFile()
+    case 'lxd':         return process.env.LXD_API_KEY ?? process.env.LXDS_API_KEY ?? _loadStoredKey('lxd')
+    case 'mimo':        return process.env.MIMO_API_KEY ?? process.env.XIAOMI_MIMO_API_KEY ?? _loadStoredKey('mimo')
     case 'fireworks':   return process.env.FIREWORKS_API_KEY ?? _loadStoredKey('fireworks')
     case 'cloudflare':  return process.env.CLOUDFLARE_WORKERS_AI_TOKEN ?? process.env.CLOUDFLARE_API_TOKEN ?? process.env.CLOUDFLARE_API_KEY ?? _loadStoredKey('cloudflare')
     case 'groq':        return process.env.GROQ_API_KEY ?? _loadStoredKey('groq')
@@ -1963,6 +1967,10 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'opencode':    return process.env.OPENCODE_BASE_URL ?? process.env.OPENCODE_ZEN_BASE_URL ?? 'https://opencode.ai/zen/v1'
     case 'opencodego':  return process.env.OPENCODE_GO_BASE_URL ?? 'https://opencode.ai/zen/go/v1'
     case 'commandcode': return normalizeCommandCodeBaseUrl(process.env.COMMANDCODE_BASE_URL ?? process.env.COMMAND_CODE_BASE_URL ?? process.env.CMD_BASE_URL ?? 'https://api.commandcode.ai/provider/v1')
+    case 'lxd':         return process.env.LXD_BASE_URL ?? process.env.LXDS_BASE_URL ?? 'https://api.lxds.org/v1'
+    // Token Plan subscribers point MIMO_BASE_URL at
+    // https://token-plan-sgp.xiaomimimo.com/v1 (or -cn); same wire protocol.
+    case 'mimo':        return process.env.MIMO_BASE_URL ?? process.env.XIAOMI_MIMO_BASE_URL ?? 'https://api.xiaomimimo.com/v1'
     case 'fireworks':   return process.env.FIREWORKS_BASE_URL ?? 'https://api.fireworks.ai/inference/v1'
     case 'cloudflare':  return getCloudflareWorkersAIBaseUrl()
     case 'groq':        return 'https://api.groq.com/openai/v1'
@@ -2113,6 +2121,8 @@ function _getApiKeyEnvName(provider: APIProvider): string {
     case 'requesty':    return 'REQUESTY_API_KEY'
     case 'opencodego':  return 'OPENCODE_API_KEY'
     case 'commandcode': return 'CMD_API_KEY'
+    case 'lxd':         return 'LXD_API_KEY'
+    case 'mimo':        return 'MIMO_API_KEY'
     case 'fireworks':   return 'FIREWORKS_API_KEY'
     case 'cloudflare':  return 'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID'
     case 'groq':        return 'GROQ_API_KEY'
@@ -2147,6 +2157,8 @@ function _validateKeyFormat(provider: APIProvider, key: string): { valid: boolea
     vercel:      { minLen: 10 },
     requesty:    { minLen: 10 },
     commandcode: { minLen: 10 },
+    lxd:         { minLen: 10 },
+    mimo:        { minLen: 10 },
     cloudflare:  { minLen: 10 },
     groq:        { prefix: 'gsk_', minLen: 20 },
     mistral:     { minLen: 20 },

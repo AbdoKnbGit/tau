@@ -23,6 +23,8 @@ const CLIENT_SIDE_TOOL_DISCOVERY_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'requesty',
   'opencode',
   'opencodego',
+  'lxd',
+  'mimo',
   'fireworks',
   'cloudflare',
   'groq',

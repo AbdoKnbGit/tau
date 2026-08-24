@@ -36,6 +36,8 @@ export function initOpenAICompatLane(providers?: {
   requesty?: { apiKey: string; baseUrl?: string }
   opencode?: { apiKey: string; baseUrl?: string }
   opencodego?: { apiKey: string; baseUrl?: string }
+  lxd?: { apiKey: string; baseUrl?: string }
+  mimo?: { apiKey: string; baseUrl?: string }
   fireworks?: { apiKey: string; baseUrl?: string }
   cloudflare?: { apiKey: string; baseUrl?: string }
   cline?: { apiKey: string; baseUrl?: string }
@@ -221,6 +223,30 @@ export function initOpenAICompatLane(providers?: {
       ?? process.env.OPENCODE_GO_BASE_URL
       ?? 'https://opencode.ai/zen/go/v1',
   )
+
+  const lxdKey = p.lxd?.apiKey ?? process.env.LXD_API_KEY ?? process.env.LXDS_API_KEY
+  if (lxdKey) {
+    openaiCompatLane.registerProvider(
+      'lxd', lxdKey,
+      p.lxd?.baseUrl
+        ?? process.env.LXD_BASE_URL
+        ?? process.env.LXDS_BASE_URL
+        ?? 'https://api.lxds.org/v1',
+    )
+  }
+
+  // Xiaomi MiMo. Token Plan subscribers point the base URL at
+  // token-plan-sgp / token-plan-cn; the wire protocol is identical.
+  const mimoKey = p.mimo?.apiKey ?? process.env.MIMO_API_KEY ?? process.env.XIAOMI_MIMO_API_KEY
+  if (mimoKey) {
+    openaiCompatLane.registerProvider(
+      'mimo', mimoKey,
+      p.mimo?.baseUrl
+        ?? process.env.MIMO_BASE_URL
+        ?? process.env.XIAOMI_MIMO_BASE_URL
+        ?? 'https://api.xiaomimimo.com/v1',
+    )
+  }
 
   const fireworksKey = p.fireworks?.apiKey ?? process.env.FIREWORKS_API_KEY
   if (fireworksKey) {

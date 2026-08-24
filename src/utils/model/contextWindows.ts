@@ -45,6 +45,27 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     'kimi-k2-0905-preview': 262_144,
     'kimi-k2-0711-preview': 131_072,
   },
+  // LXD serves ids that collide with other providers' catalogs
+  // (minimax-m3, deepseek-v4-*, glm-4.7-flash), and its context windows
+  // differ from those hosts. Scoping them here keeps each provider honest.
+  lxd: {
+    'gpt-oss-120b': 131_072,
+    'glm-4.7-flash': 131_072,
+    'llama-4-scout': 131_072,
+    'gemma-4-31b': 262_144,
+    'minimax-m3': 1_048_576,
+    'nemotron-3-ultra': 1_048_576,
+    'deepseek-v4-flash-0731': 1_048_576,
+    'qwen3.8-27b': 262_144,
+    'random-model': 256_000,
+    'deepseek-v4-pro-0813': 1_000_000,
+    'spy-model': 1_000_000,
+    'qwen-3.8-2.4t-a95b': 1_000_000,
+  },
+  mimo: {
+    'mimo-v2.5-pro': 1_000_000,
+    'mimo-v2.5': 1_000_000,
+  },
   minimax: {
     'minimax-m2.7': 204_800,
     'minimax-m2.7-highspeed': 204_800,

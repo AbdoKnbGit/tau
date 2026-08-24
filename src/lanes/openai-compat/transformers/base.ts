@@ -33,6 +33,8 @@ export type ProviderId =
   | 'requesty'
   | 'opencode'
   | 'opencodego'
+  | 'lxd'
+  | 'mimo'
   | 'fireworks'
   | 'cloudflare'
   | 'cline'
@@ -71,6 +73,15 @@ export interface Transformer {
    * Example: OpenRouter's HTTP-Referer + X-Title.
    */
   buildHeaders?(apiKey: string, ctx?: HeaderContext): Record<string, string>
+
+  /**
+   * Opt out of the lane's default `Authorization: Bearer <key>` header so
+   * `buildHeaders` can carry the credential itself. For providers that
+   * authenticate with a bare vendor header instead — Xiaomi MiMo reads
+   * `api-key: <key>` — where also sending a Bearer token means shipping the
+   * secret twice in two schemes. Default (absent) keeps the Bearer header.
+   */
+  ownsAuthHeader?(): boolean
 
   /**
    * Does this provider honor OpenAI's `function.strict: true` schema

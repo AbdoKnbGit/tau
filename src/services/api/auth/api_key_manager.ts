@@ -192,6 +192,8 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   opencode: { prefix: '', minLength: 10, displayName: 'OpenCode Zen' },
   opencodego: { prefix: '', minLength: 10, displayName: 'OpenCode Go' },
   commandcode: { prefix: '', minLength: 10, displayName: 'Command Code' },
+  lxd: { prefix: '', minLength: 10, displayName: 'LXD API' },
+  mimo: { prefix: '', minLength: 10, displayName: 'Xiaomi MiMo' },
   fireworks: { prefix: '', minLength: 10, displayName: 'Fireworks AI' },
   cloudflare: { prefix: '', minLength: 10, displayName: 'Cloudflare Workers AI' },
   groq: { prefix: 'gsk_', minLength: 20, displayName: 'Groq' },
@@ -344,6 +346,8 @@ export function deleteAllProviderCredentials(provider: string): void {
     provider === 'opencode' ||
     provider === 'opencodego' ||
     provider === 'commandcode' ||
+    provider === 'lxd' ||
+    provider === 'mimo' ||
     provider === 'fireworks' ||
     provider === 'cloudflare' ||
     provider === 'groq'

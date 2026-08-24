@@ -79,6 +79,8 @@ import {
   supportsOpencodeThinkingSelection,
 } from '../../utils/model/opencodeThinking.js'
 import { cloudflareReasoningContentReplayRequired } from '../../utils/model/cloudflareThinking.js'
+import { lxdReasoningContentReplayRequired } from '../../utils/model/lxdThinking.js'
+import { mimoReasoningContentReplayRequired } from '../../utils/model/mimoThinking.js'
 import { recordProviderModelContextWindows } from '../../utils/model/contextWindows.js'
 import { providerUsesStableRequestSession } from '../../services/api/cacheAffinity.js'
 import {
@@ -107,6 +109,8 @@ type ProviderType =
   | 'requesty'
   | 'opencode'
   | 'opencodego'
+  | 'lxd'
+  | 'mimo'
   | 'fireworks'
   | 'cloudflare'
   | 'cline'
@@ -131,6 +135,8 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('lxg2it') || b.includes('modelrouter')) return 'modelrouter'
   if (b.includes('ai-gateway.vercel') || b.includes('vercel')) return 'vercel'
   if (b.includes('requesty')) return 'requesty'
+  if (b.includes('lxds.org')) return 'lxd'
+  if (b.includes('xiaomimimo.com')) return 'mimo'
   if (b.includes('fireworks.ai')) return 'fireworks'
   if (b.includes('cloudflare.com/client/v4/accounts') || b.includes('cloudflare')) return 'cloudflare'
   // Go shares the opencode.ai host — match the `/zen/go` path first so it
@@ -1055,6 +1061,29 @@ export class OpenAICompatLane implements Lane {
         yield { type: 'message_stop' }
         return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
       }
+    }
+
+    // A terminal stream that carried no text, no reasoning, and no tool calls
+    // is a provider glitch, not a finished turn. Falling through would emit
+    // stop_reason 'end_turn', logging an empty assistant message and settling
+    // the turn as completed — so retry never runs, nothing reaches the caller,
+    // and an automated driver (goal rounds, team-mode) consumes a round on no
+    // progress. Throw instead: the shared retry controller can only retry
+    // thrown errors, and repeating the identical request preserves the rolling
+    // cache prefix that persisting an assistant error would shift (same reason
+    // the OpenCode transport failure above throws). Safe to repeat because the
+    // attempt produced nothing durable. Scoped to a non-aborted stream, and
+    // lmstudio is excluded because its non-streaming fallback above already
+    // owns this case and returns on every path it handles.
+    if (
+      !emittedAnyAssistantOutput &&
+      !signal?.aborted &&
+      provider !== 'lmstudio'
+    ) {
+      throw new APIConnectionError({
+        message: `${provider} returned an empty response (no content, reasoning, or tool calls).`,
+        cause: new Error('EMPTY_RESPONSE'),
+      })
     }
 
     if (!messageStartEmitted) {
@@ -2231,11 +2260,16 @@ function buildRequestHeaders(
     'Content-Type': 'application/json',
     'Accept': 'text/event-stream',
   }
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
   // Delegate provider-specific header additions (e.g. OpenRouter's
   // HTTP-Referer) to the transformer. Adding a new provider = one
   // buildHeaders() method in its transformer file.
   const transformer = getTransformer(provider as ProviderId)
+  // Most providers take the credential as a Bearer token. A transformer can
+  // claim auth for itself when its vendor uses a bare header instead (MiMo's
+  // `api-key`), so the key isn't also sent as a Bearer it never reads.
+  if (apiKey && !transformer.ownsAuthHeader?.()) {
+    headers['Authorization'] = `Bearer ${apiKey}`
+  }
   const extra = transformer.buildHeaders?.(apiKey, { model, sessionId }) ?? {}
   for (const [k, v] of Object.entries(extra)) headers[k] = v
   return headers
@@ -2996,6 +3030,22 @@ function convertHistoryToOpenAI(
   if (provider === 'cloudflare' && cloudflareReasoningContentReplayRequired(model)) {
     return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
   }
+  // LXD relays straight to the upstream model, so a thinking-on row inherits
+  // that upstream's replay contract: DeepSeek V4 and the Qwen/GLM thinking
+  // rows all expect `reasoning_content` echoed back on any replayed assistant
+  // tool-call message, and 400 with "reasoning_content must be passed back"
+  // on the next tool turn without it. The DeepSeek-style conversion does
+  // exactly that carry-back — same reasoning as the opencode branch above.
+  if (provider === 'lxd' && lxdReasoningContentReplayRequired(model)) {
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
+  }
+  // Xiaomi MiMo declares the same replay contract for every reasoning row
+  // (its integration sets preserveReasoningContent AND
+  // requireReasoningContentOnAssistantMessages), so the carry-back is wired
+  // in from the start rather than surfacing as a second-tool-turn failure.
+  if (provider === 'mimo' && mimoReasoningContentReplayRequired(model)) {
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
+  }
   return convertHistoryToOpenAIDefault(messages, systemText, provider, model)
 }
 
@@ -3025,6 +3075,7 @@ function opencodeThinkingActive(provider: ProviderType, model: string): boolean 
   if (!supportsOpencodeThinkingSelection(provider, model)) return false
   return getOpencodeEffort(model) !== 'default'
 }
+
 
 function convertHistoryToOpenAIDefault(
   messages: ProviderMessage[],

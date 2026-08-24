@@ -56,6 +56,8 @@ import { DeepSeekProvider } from './deepseek_provider.js'
 import { GlmProvider } from './glm_provider.js'
 import { MoonshotProvider } from './moonshot_provider.js'
 import { MiniMaxProvider } from './minimax_provider.js'
+import { LxdProvider } from './lxd_provider.js'
+import { MimoProvider } from './mimo_provider.js'
 import { OllamaProvider } from './ollama_provider.js'
 import { sanitizeProviderMessagesForNonCursorTransport } from './sanitizeProviderMessages.js'
 import { warmupCodeAssist } from './gemini_code_assist.js'
@@ -147,6 +149,10 @@ function _ensureLanesInitialized(): void {
       opencodeBaseUrl: getProviderBaseUrl('opencode'),
       opencodegoApiKey: getProviderRuntimeApiKey('opencodego') ?? undefined,
       opencodegoBaseUrl: getProviderBaseUrl('opencodego'),
+      lxdApiKey: getProviderApiKey('lxd') ?? undefined,
+      lxdBaseUrl: getProviderBaseUrl('lxd'),
+      mimoApiKey: getProviderApiKey('mimo') ?? undefined,
+      mimoBaseUrl: getProviderBaseUrl('mimo'),
       fireworksApiKey: getProviderApiKey('fireworks') ?? undefined,
       fireworksBaseUrl: getProviderBaseUrl('fireworks'),
       cloudflareApiKey: getProviderApiKey('cloudflare') ?? undefined,
@@ -198,6 +204,8 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'requesty':
     case 'opencode':
     case 'opencodego':
+    case 'lxd':
+    case 'mimo':
     case 'fireworks':
     case 'cloudflare':
       return 'openai-compat'
@@ -359,6 +367,10 @@ function createProvider(provider: APIProvider): BaseProvider {
     case 'fireworks':
     case 'cloudflare':
       return new OpenAIProvider({ apiKey, baseUrl })
+    case 'lxd':
+      return new LxdProvider({ apiKey, baseUrl })
+    case 'mimo':
+      return new MimoProvider({ apiKey, baseUrl })
     case 'commandcode':
       return new CommandCodeProvider({ apiKey, baseUrl })
     case 'groq':
@@ -815,6 +827,8 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     case 'requesty':
     case 'opencode':
     case 'opencodego':
+    case 'lxd':
+    case 'mimo':
     case 'fireworks':
     case 'cloudflare':
     case 'groq':

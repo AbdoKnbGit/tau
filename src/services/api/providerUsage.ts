@@ -28,6 +28,12 @@ import {
 } from '../../constants/antigravity.js'
 import { fetchUtilization, type Utilization } from './usage.js'
 import {
+  filterLxdModelCatalog,
+  listLxdModelMeta,
+  recordLxdCatalog,
+  type LxdCatalogRow,
+} from '../../utils/model/lxdCatalog.js'
+import {
   loadStore,
   refreshAccessToken,
   saveStore,
@@ -58,6 +64,8 @@ const DOCS = {
   deepseek: 'https://api-docs.deepseek.com/api/get-user-balance/',
   mistral: 'https://docs.mistral.ai/api/endpoint/beta/observability/chat_completion_events',
   glm: 'https://bigmodel.cn/finance/expensebill/list',
+  lxd: 'https://api.lxds.org/instructions',
+  mimo: 'https://xiaomimimo.com',
   moonshot: 'https://platform.kimi.ai/docs/api/balance',
   minimax: 'https://platform.minimax.io/docs/token-plan/faq',
   cursor: 'https://docs.cursor.com/en/account/teams/admin-api',
@@ -159,6 +167,8 @@ const REPORTERS: Reporter[] = [
   reportDeepSeek,
   reportMistral,
   reportGLM,
+  reportLXD,
+  reportMimo,
   reportMoonshot,
   reportMiniMax,
   reportOllama,
@@ -201,6 +211,8 @@ function nameToProvider(name: string): ProviderUsageId {
     case 'nim': return 'nim'
     case 'deepseek': return 'deepseek'
     case 'mistral': return 'mistral'
+    case 'lxd': return 'lxd'
+    case 'mimo': return 'mimo'
     case 'glm': return 'glm'
     case 'moonshot': return 'moonshot'
     case 'minimax': return 'minimax'
@@ -1122,6 +1134,135 @@ async function reportGLM(): Promise<ProviderUsageReport> {
         url: 'https://bigmodel.cn/finance/expensebill/list',
       },
     ],
+  }
+}
+
+/**
+ * LXD API (api.lxds.org).
+ *
+ * LXD bills in "Xen" credits and its dashboard exposes consumption through
+ * POST /user-stats — but that endpoint authenticates the browser account
+ * session, not an API key, so a key-holding CLI cannot read the balance.
+ * What IS public is the model catalog with per-model Xen pricing, so the
+ * report surfaces the live price board plus links to the dashboard, rather
+ * than pretending to a balance figure it cannot fetch.
+ */
+async function reportLXD(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('lxd')
+  const links: UsageLink[] = [
+    { label: 'LXD dashboard', url: 'https://api.lxds.org/instructions' },
+    { label: 'LXD account center', url: 'https://account.lxds.org' },
+  ]
+
+  if (!apiKey) {
+    return {
+      ...baseReport(
+        'lxd',
+        'not_configured',
+        'none',
+        'LXD usage',
+        'No LXD API key is configured.',
+      ),
+      docsUrl: DOCS.lxd,
+      links,
+    }
+  }
+
+  const metrics: UsageMetric[] = []
+  try {
+    const response = await fetch('https://api.lxds.org/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (response.ok) {
+      const data = (await response.json()) as { data?: LxdCatalogRow[] }
+      const rows = filterLxdModelCatalog(data.data ?? [])
+      recordLxdCatalog(rows)
+      const priced = listLxdModelMeta()
+        .filter(m => m.xenPerMillion.prompt > 0 || m.xenPerMillion.completion > 0)
+        .sort((a, b) => a.xenPerMillion.prompt - b.xenPerMillion.prompt)
+      const free = listLxdModelMeta().filter(
+        m => m.xenPerMillion.prompt === 0 && m.xenPerMillion.completion === 0,
+      )
+      if (priced.length > 0) {
+        const cheapest = priced[0]!
+        metrics.push({
+          label: 'Cheapest model',
+          summary: `${cheapest.name} — ${cheapest.xenPerMillion.prompt} in / ${cheapest.xenPerMillion.completion} out Xen per 1M`,
+        })
+      }
+      metrics.push({
+        label: 'Chat models',
+        summary: `${priced.length} billed, ${free.length} free/event`,
+      })
+    }
+  } catch {
+    // Price board is a nicety — a connected report without it is still useful.
+  }
+
+  return {
+    ...baseReport(
+      'lxd',
+      'connected',
+      'api_key',
+      'LXD usage',
+      'LXD API key is configured.',
+    ),
+    detail:
+      'LXD bills in Xen credits (free plan 5/day, developer plan 120/day, '
+      + 'pay-as-you-go $1 = 4,000 Xen). Consumption and per-key quotas live '
+      + 'behind the dashboard account session, which an API key cannot read, '
+      + 'so open the dashboard for the live balance.',
+    ...(metrics.length > 0 && { metrics }),
+    docsUrl: DOCS.lxd,
+    links,
+  }
+}
+
+/**
+ * Xiaomi MiMo.
+ *
+ * MiMo publishes no balance or quota endpoint — the vendor integration this
+ * was modelled on marks usage explicitly unsupported — so this reports
+ * connection state and links to the console rather than inventing a metric
+ * it cannot actually read.
+ */
+async function reportMimo(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('mimo')
+  const links: UsageLink[] = [
+    { label: 'Xiaomi MiMo console', url: 'https://xiaomimimo.com' },
+  ]
+
+  if (!apiKey) {
+    return {
+      ...baseReport(
+        'mimo',
+        'not_configured',
+        'none',
+        'Xiaomi MiMo usage',
+        'No MiMo API key is configured.',
+      ),
+      docsUrl: DOCS.mimo,
+      links,
+    }
+  }
+
+  const baseUrl = getProviderBaseUrl('mimo')
+  const tokenPlan = /token-plan/i.test(baseUrl)
+  return {
+    ...baseReport(
+      'mimo',
+      'connected',
+      'api_key',
+      'Xiaomi MiMo usage',
+      `MiMo API key is configured (${tokenPlan ? 'Token Plan' : 'pay-as-you-go'} endpoint).`,
+    ),
+    detail:
+      'MiMo exposes no public balance or quota API, so consumption is only '
+      + 'visible in the MiMo console. Token Plan subscribers can point '
+      + 'MIMO_BASE_URL at token-plan-sgp (or token-plan-cn) .xiaomimimo.com/v1.',
+    docsUrl: DOCS.mimo,
+    links,
   }
 }
 

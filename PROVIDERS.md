@@ -1,6 +1,6 @@
 # Supported Providers
 
-Tau ships **22 native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
+Tau ships **24 native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
 
 | Provider | Notes |
 |---|---|
@@ -26,6 +26,8 @@ Tau ships **22 native provider adapters**. Each speaks the provider's API direct
 | KiloCode | Lots of free models and decent to try for low-cost side tasks |
 | Kiro | Best performance/cost provider with large free credit |
 | OpenCode Zen | deepseek-v4-flash unlimited usage |
+| Xiaomi MiMo | MiMo V2.5 Pro and V2.5 direct from Xiaomi, up to 1M context. Authenticates with an `api-key` header; set `MIMO_BASE_URL` to a `token-plan-*` host for a Token Plan subscription |
+| LXD API | Open-model relay billed in Xen credits (5/day free, 120/day on the $10 plan). Per-model thinking-effort ladders come straight from its catalog, and the free limited-time event rows are surfaced too |
 
 ## LM Studio note
 
@@ -36,6 +38,41 @@ lms server start
 ```
 
 LM Studio defaults to `http://localhost:1234/v1` in Tau. Make sure LM Studio is running and a model is loaded before you select it in `/login`.
+
+## LXD thinking effort
+
+LXD publishes a different effort ladder per model, so the `/models` picker reads
+each row's ladder out of the API instead of showing a fixed low/medium/high set.
+Use `←` / `→` on a row to cycle it:
+
+```
+gpt-oss-120b - GPT OSS 120B                 ◀ Medium ▶   [reasoning] [tools]
+deepseek-v4-pro-0813 - DeepSeek V4 PRO      ◀ Max ▶      [reasoning] [FREE]
+nemotron-3-ultra - Nemotron 3 Ultra         ◀ High ▶     [reasoning] [tools]
+llama-4-scout - LLaMA 4 Scout                            [tools]
+```
+
+`Default` sends no `reasoning_effort` at all and lets LXD pick. The choice is
+per model and persists in `~/.claude/lxd-thinking.json`. Rows that publish no
+ladder (llama-4-scout, minimax-m3) show no chip, and Tau never sends a level a
+model hasn't declared.
+
+## Xiaomi MiMo endpoints
+
+One `MIMO_API_KEY` serves both billing surfaces — pick one with `MIMO_BASE_URL`:
+
+```bash
+# pay-as-you-go (default, no env var needed)
+https://api.xiaomimimo.com/v1
+
+# Token Plan subscription
+export MIMO_BASE_URL=https://token-plan-sgp.xiaomimimo.com/v1   # or token-plan-cn
+```
+
+Both MiMo rows reason on a low / medium / high ladder (MiMo's own default is
+medium); cycle it with `←` / `→` in `/models`. An explicit pick outranks the
+session's thinking budget, and the choice persists in
+`~/.claude/mimo-thinking.json`.
 
 ## Switching providers mid-session
 

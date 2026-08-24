@@ -65,6 +65,18 @@ import {
   supportsCloudflareThinkingSelection,
 } from '../utils/model/cloudflareThinking.js'
 import {
+  cycleLxdEffort,
+  getLxdEffort,
+  getLxdEffortLabel,
+  supportsLxdEffortSelection,
+} from '../utils/model/lxdThinking.js'
+import {
+  cycleMimoEffort,
+  getMimoEffort,
+  getMimoEffortLabel,
+  supportsMimoEffortSelection,
+} from '../utils/model/mimoThinking.js'
+import {
   getVoiceConversationStatus,
   hasVoiceConversationApiKey,
 } from '../voice/voiceConversation.js'
@@ -268,6 +280,8 @@ export function ProviderModelPicker({
   const [, setOpencodeEffortTick] = useState(0)
   const [, setCommandCodeEffortTick] = useState(0)
   const [, setCloudflareEffortTick] = useState(0)
+  const [, setLxdEffortTick] = useState(0)
+  const [, setMimoEffortTick] = useState(0)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
   // Bumped when a favorite is toggled so the ★ column re-renders. The list
   // itself lives in GlobalConfig and is read fresh during render.
@@ -587,6 +601,26 @@ export function ProviderModelPicker({
         setCloudflareEffortTick(tick => tick + 1)
         return
       }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'lxd'
+        && supportsLxdEffortSelection(row.model.id)
+      ) {
+        cycleLxdEffort(row.model.id, key.leftArrow ? 'left' : 'right')
+        setLxdEffortTick(tick => tick + 1)
+        return
+      }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'mimo'
+        && supportsMimoEffortSelection(row.model.id)
+      ) {
+        cycleMimoEffort(row.model.id, key.leftArrow ? 'left' : 'right')
+        setMimoEffortTick(tick => tick + 1)
+        return
+      }
       return
     }
 
@@ -742,6 +776,16 @@ export function ProviderModelPicker({
                 selectedProvider === 'cloudflare'
                 && supportsCloudflareThinkingSelection(model.id, model.tags)
               const cloudflareEffort = isCloudflareThinking ? getCloudflareEffort(model.id) : undefined
+              // LXD publishes a per-model effort ladder, so the chip only
+              // shows on rows that actually declare one.
+              const isLxdThinking =
+                selectedProvider === 'lxd' && supportsLxdEffortSelection(model.id)
+              const lxdEffort = isLxdThinking ? getLxdEffort(model.id) : undefined
+              // Every MiMo chat row reasons, on a uniform low/medium/high
+              // ladder that defaults to MiMo's own `medium`.
+              const isMimoThinking =
+                selectedProvider === 'mimo' && supportsMimoEffortSelection(model.id)
+              const mimoEffort = isMimoThinking ? getMimoEffort(model.id) : undefined
               const selectedVariant = getSelectedVariant(
                 selectedProvider,
                 model,
@@ -804,6 +848,16 @@ export function ProviderModelPicker({
                   {isCloudflareThinking && cloudflareEffort && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ Thinking {getCloudflareEffortLabel(cloudflareEffort)} ▶
+                    </Text>
+                  )}
+                  {isLxdThinking && lxdEffort && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ {getLxdEffortLabel(lxdEffort)} ▶
+                    </Text>
+                  )}
+                  {isMimoThinking && mimoEffort && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ {getMimoEffortLabel(mimoEffort)} ▶
                     </Text>
                   )}
                   {showVariant && selectedVariant && (

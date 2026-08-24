@@ -38,7 +38,8 @@ export interface OpenAIChatRequest {
   temperature?: number
   top_p?: number
   stop?: string[]
-  reasoning_effort?: 'low' | 'medium' | 'high'
+  /** 'none' and 'max' are used by relays with wider ladders (LXD, OpenCode Go). */
+  reasoning_effort?: 'none' | 'low' | 'medium' | 'high' | 'max'
   reasoning?: { effort?: string }
   thinking?: { type: 'enabled' } | { type: 'disabled' }
   extra_body?: Record<string, unknown>

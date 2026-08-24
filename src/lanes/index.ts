@@ -111,6 +111,12 @@ export function initLanes(opts?: {
   // OpenCode Go subscription (shares the OpenCode credential)
   opencodegoApiKey?: string
   opencodegoBaseUrl?: string
+  // LXD API (api.lxds.org)
+  lxdApiKey?: string
+  lxdBaseUrl?: string
+  // Xiaomi MiMo (api.xiaomimimo.com, token-plan-*.xiaomimimo.com)
+  mimoApiKey?: string
+  mimoBaseUrl?: string
   // Fireworks AI
   fireworksApiKey?: string
   fireworksBaseUrl?: string
@@ -227,6 +233,8 @@ export function initLanes(opts?: {
     requesty: opts?.requestyApiKey ? { apiKey: opts.requestyApiKey, baseUrl: opts.requestyBaseUrl } : undefined,
     opencode: opts?.opencodeApiKey ? { apiKey: opts.opencodeApiKey, baseUrl: opts.opencodeBaseUrl } : undefined,
     opencodego: opts?.opencodegoApiKey ? { apiKey: opts.opencodegoApiKey, baseUrl: opts.opencodegoBaseUrl } : undefined,
+    lxd: opts?.lxdApiKey ? { apiKey: opts.lxdApiKey, baseUrl: opts.lxdBaseUrl } : undefined,
+    mimo: opts?.mimoApiKey ? { apiKey: opts.mimoApiKey, baseUrl: opts.mimoBaseUrl } : undefined,
     fireworks: opts?.fireworksApiKey ? { apiKey: opts.fireworksApiKey, baseUrl: opts.fireworksBaseUrl } : undefined,
     cloudflare: opts?.cloudflareApiKey ? { apiKey: opts.cloudflareApiKey, baseUrl: opts.cloudflareBaseUrl } : undefined,
     iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,

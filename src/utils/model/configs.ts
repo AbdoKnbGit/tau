@@ -77,6 +77,14 @@ const GO_DEFAULT_MODELS = {
   haiku:  process.env.OPENCODE_GO_MODEL_HAIKU  ?? 'deepseek-v4-flash',
 }
 
+const MIMO_BASE_URL = process.env.MIMO_BASE_URL
+  ?? process.env.XIAOMI_MIMO_BASE_URL
+  ?? 'https://api.xiaomimimo.com/v1'
+
+const LXD_BASE_URL = process.env.LXD_BASE_URL
+  ?? process.env.LXDS_BASE_URL
+  ?? 'https://api.lxds.org/v1'
+
 const FIREWORKS_BASE_URL = process.env.FIREWORKS_BASE_URL
   ?? 'https://api.fireworks.ai/inference/v1'
 
@@ -599,6 +607,67 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.FIREWORKS_MODEL_OPUS   ?? 'accounts/fireworks/models/deepseek-v4-pro',
         sonnet: process.env.FIREWORKS_MODEL_SONNET ?? 'accounts/fireworks/models/kimi-k2p6',
         haiku:  process.env.FIREWORKS_MODEL_HAIKU  ?? 'accounts/fireworks/models/deepseek-v4-flash',
+      },
+    },
+  },
+
+  // LXD API (api.lxds.org). Xen is the credit unit: the free plan grants 5/day,
+  // the $10 developer plan 120/day. gpt-oss-120b is by far the cheapest capable
+  // row (10 / 54 Xen per 1M) so it anchors the haiku tier and the free tier;
+  // deepseek-v4-pro-0813 is the strongest reasoning row for opus.
+  lxd: {
+    displayName: 'LXD API',
+    baseUrl: LXD_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'LXD_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        // Event rows bill 0 Xen while their event runs.
+        opus:   process.env.LXD_MODEL_OPUS_FREE   ?? 'deepseek-v4-pro-0813',
+        sonnet: process.env.LXD_MODEL_SONNET_FREE ?? 'gpt-oss-120b',
+        haiku:  process.env.LXD_MODEL_HAIKU_FREE  ?? 'gpt-oss-120b',
+      },
+      pro: {
+        opus:   process.env.LXD_MODEL_OPUS   ?? 'deepseek-v4-pro-0813',
+        sonnet: process.env.LXD_MODEL_SONNET ?? 'deepseek-v4-flash-0731',
+        haiku:  process.env.LXD_MODEL_HAIKU  ?? 'gpt-oss-120b',
+      },
+      plus: {
+        opus:   process.env.LXD_MODEL_OPUS   ?? 'deepseek-v4-pro-0813',
+        sonnet: process.env.LXD_MODEL_SONNET ?? 'deepseek-v4-flash-0731',
+        haiku:  process.env.LXD_MODEL_HAIKU  ?? 'gpt-oss-120b',
+      },
+    },
+  },
+
+  // Xiaomi MiMo. One credential serves both the pay-as-you-go endpoint and
+  // the Token Plan subscription hosts; MIMO_BASE_URL selects between them.
+  mimo: {
+    displayName: 'Xiaomi MiMo',
+    baseUrl: MIMO_BASE_URL,
+    authType: 'x-api-key',
+    apiKeyEnv: 'MIMO_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.MIMO_MODEL_OPUS_FREE   ?? 'mimo-v2.5-pro',
+        sonnet: process.env.MIMO_MODEL_SONNET_FREE ?? 'mimo-v2.5',
+        haiku:  process.env.MIMO_MODEL_HAIKU_FREE  ?? 'mimo-v2.5',
+      },
+      pro: {
+        opus:   process.env.MIMO_MODEL_OPUS   ?? 'mimo-v2.5-pro',
+        sonnet: process.env.MIMO_MODEL_SONNET ?? 'mimo-v2.5',
+        haiku:  process.env.MIMO_MODEL_HAIKU  ?? 'mimo-v2.5',
+      },
+      plus: {
+        opus:   process.env.MIMO_MODEL_OPUS   ?? 'mimo-v2.5-pro',
+        sonnet: process.env.MIMO_MODEL_SONNET ?? 'mimo-v2.5',
+        haiku:  process.env.MIMO_MODEL_HAIKU  ?? 'mimo-v2.5',
       },
     },
   },

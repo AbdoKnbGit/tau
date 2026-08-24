@@ -111,6 +111,8 @@ function _autoCorrectProvider(
     || current === 'opencode'
     || current === 'opencodego'
     || current === 'commandcode'
+    || current === 'lxd'
+    || current === 'mimo'
     || current === 'groq'
     || current === 'mistral'
     || current === 'nim'
