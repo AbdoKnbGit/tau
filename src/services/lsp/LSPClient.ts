@@ -60,12 +60,24 @@ export function createLSPClient(
   let startFailed = false
   let startError: Error | undefined
   let isStopping = false // Track intentional shutdown to avoid spurious error logging
-  // Queue handlers registered before connection ready (lazy initialization support)
-  const pendingHandlers: Array<{
+  // Every handler this client has been given, in registration order.
+  //
+  // A registry rather than a queue, because a client outlives its connection.
+  // `stop()` disposes the connection and the handlers registered on it go with
+  // it, and a later `start()` builds a new connection that nothing re-registers
+  // on. Handlers are set up once, when the manager is constructed
+  // (registerLSPNotificationHandlers), so nothing was left to put them back: a
+  // server that crashed and recovered went on serving requests with its
+  // publishDiagnostics handler silently gone, and its diagnostics stopped
+  // reaching the model for the rest of the session with nothing said.
+  //
+  // Kept and re-applied on every connect instead. Re-applying is safe because
+  // each connect has a connection that has never seen these handlers.
+  const registeredHandlers: Array<{
     method: string
     handler: (params: unknown) => void
   }> = []
-  const pendingRequestHandlers: Array<{
+  const registeredRequestHandlers: Array<{
     method: string
     handler: (params: unknown) => unknown | Promise<unknown>
   }> = []
@@ -225,23 +237,23 @@ export function createLSPClient(
             )
           })
 
-        // 4. Apply any queued notification handlers
-        for (const { method, handler } of pendingHandlers) {
+        // 4. Apply every registered notification handler to this connection.
+        // Not drained: the same handlers have to be applied again the next time
+        // this client connects. See `registeredHandlers`.
+        for (const { method, handler } of registeredHandlers) {
           connection.onNotification(method, handler)
           logForDebugging(
-            `Applied queued notification handler for ${serverName}.${method}`,
+            `Applied notification handler for ${serverName}.${method}`,
           )
         }
-        pendingHandlers.length = 0 // Clear the queue
 
-        // 5. Apply any queued request handlers
-        for (const { method, handler } of pendingRequestHandlers) {
+        // 5. Apply every registered request handler to this connection.
+        for (const { method, handler } of registeredRequestHandlers) {
           connection.onRequest(method, handler)
           logForDebugging(
-            `Applied queued request handler for ${serverName}.${method}`,
+            `Applied request handler for ${serverName}.${method}`,
           )
         }
-        pendingRequestHandlers.length = 0 // Clear the queue
 
         logForDebugging(`LSP client started for ${serverName}`)
       } catch (error) {
@@ -336,8 +348,8 @@ export function createLSPClient(
 
     onNotification(method: string, handler: (params: unknown) => void): void {
       if (!connection) {
-        // Queue handler for application when connection is ready (lazy initialization)
-        pendingHandlers.push({ method, handler })
+        // Recorded now, applied on connect (lazy initialization)
+        registeredHandlers.push({ method, handler })
         logForDebugging(
           `Queued notification handler for ${serverName}.${method} (connection not ready)`,
         )
@@ -346,6 +358,9 @@ export function createLSPClient(
 
       checkStartFailed()
 
+      // Recorded as well as applied. A handler registered while a connection is
+      // live must still be there after a restart replaces that connection.
+      registeredHandlers.push({ method, handler })
       connection.onNotification(method, handler)
     },
 
@@ -354,8 +369,8 @@ export function createLSPClient(
       handler: (params: TParams) => TResult | Promise<TResult>,
     ): void {
       if (!connection) {
-        // Queue handler for application when connection is ready (lazy initialization)
-        pendingRequestHandlers.push({
+        // Recorded now, applied on connect (lazy initialization)
+        registeredRequestHandlers.push({
           method,
           handler: handler as (params: unknown) => unknown | Promise<unknown>,
         })
@@ -367,6 +382,11 @@ export function createLSPClient(
 
       checkStartFailed()
 
+      // Recorded as well as applied, for the same reason as onNotification.
+      registeredRequestHandlers.push({
+        method,
+        handler: handler as (params: unknown) => unknown | Promise<unknown>,
+      })
       connection.onRequest(method, handler)
     },
 
