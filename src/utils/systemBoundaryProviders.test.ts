@@ -29,12 +29,15 @@ console.log('system boundary splitting providers:')
 check('gemini', true)
 check('antigravity', true)
 check('openrouter', true)
+// DeepSeek's automatic prefix cache hits only on a byte-identical prefix, so
+// the OpenAI-compat lane splits on the marker and pins the volatile block as a
+// frozen leading user message (buildDeepSeekCacheStableMessages).
+check('deepseek', true)
 
 // Providers that do NOT strip the marker — must stay out, or the literal
 // marker text would reach the model.
 check('groq', false)
 check('mistral', false)
-check('deepseek', false)
 check('agentrouter', false)
 check('firstParty', false) // first-party path handles the marker separately
 

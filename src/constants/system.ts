@@ -6,6 +6,7 @@ import { logForDebugging } from '../utils/debug.js'
 import { isEnvDefinedFalsy } from '../utils/envUtils.js'
 import { getAPIProvider } from '../utils/model/providers.js'
 import { getWorkload } from '../utils/workloadContext.js'
+import { providerReadsAttributionHeader } from './attributionProviders.js'
 
 const DEFAULT_PREFIX = `You are Tau, a multi-provider AI coding CLI.`
 const AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX = `You are Tau, a multi-provider AI coding CLI, running within the Claude Agent SDK.`
@@ -56,6 +57,7 @@ function isAttributionHeaderEnabled(): boolean {
   return getFeatureValue_CACHED_MAY_BE_STALE('tengu_attribution_header', true)
 }
 
+
 /**
  * Get attribution header for API requests.
  * Returns a header string with cc_version (including fingerprint) and cc_entrypoint.
@@ -72,6 +74,11 @@ function isAttributionHeaderEnabled(): boolean {
  */
 export function getAttributionHeader(fingerprint: string): string {
   if (!isAttributionHeaderEnabled()) {
+    return ''
+  }
+  // See ATTRIBUTION_HEADER_PROVIDERS: everywhere else this is inert text at the
+  // head of the cached prefix that moves on resume and on cron-tagged turns.
+  if (!providerReadsAttributionHeader(getAPIProvider())) {
     return ''
   }
 

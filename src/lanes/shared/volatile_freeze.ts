@@ -88,6 +88,24 @@ function hashText(text: string): string {
   return String(hash >>> 0)
 }
 
-export function _resetSessionVolatileFreezeForTest(): void {
+/**
+ * Drop every frozen snapshot so the next request re-freezes from the freshly
+ * built prompt.
+ *
+ * Called from `clearSystemPromptSections()` — the one place that says "the
+ * system prompt was deliberately rebuilt" (/mode, /team-mode, post-compact
+ * cleanup, setup). Without this the freeze outlives the rebuild: `/team-mode`
+ * clears the section cache so its orchestrator addendum recomputes, then the
+ * lane replays the pre-toggle bytes and the change never reaches the model.
+ * The invariant this restores: a frozen block is never staler than the section
+ * cache it was derived from.
+ *
+ * Costs one prefix re-warm, which a genuine prompt change costs anyway.
+ */
+export function resetSessionVolatileFreeze(): void {
   _volatileBySession.clear()
+}
+
+export function _resetSessionVolatileFreezeForTest(): void {
+  resetSessionVolatileFreeze()
 }

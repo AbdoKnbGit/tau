@@ -4,6 +4,9 @@ import {
   getSystemPromptSectionCache,
   setSystemPromptSectionCacheEntry,
 } from '../bootstrap/state.js'
+// Dependency-light by construction: volatile_freeze has no runtime imports
+// (its only import is a type), so this cannot introduce an import cycle.
+import { resetSessionVolatileFreeze } from '../lanes/shared/volatile_freeze.js'
 
 type ComputeFn = () => string | null | Promise<string | null>
 
@@ -65,4 +68,10 @@ export async function resolveSystemPromptSections(
 export function clearSystemPromptSections(): void {
   clearSystemPromptSectionState()
   clearBetaHeaderLatches()
+  // The cache-aware lanes (Gemini/Antigravity, OpenRouter, DeepSeek) freeze the
+  // volatile system tail to its first value per session so an implicit prefix
+  // cache stays byte-stable. That snapshot has to die with the section cache it
+  // came from — otherwise a deliberate rebuild (/mode, /team-mode, post-compact)
+  // recomputes the section and the lane still replays the pre-change bytes.
+  resetSessionVolatileFreeze()
 }

@@ -515,6 +515,13 @@ export class OpenAICompatLane implements Lane {
       : rawSystemText
 
     // History conversion → OpenAI Chat Completions messages.
+    //
+    // OpenRouter and DeepSeek split the system prompt on
+    // SYSTEM_PROMPT_DYNAMIC_BOUNDARY and relocate the volatile tail so their
+    // implicit prefix caches keep a byte-stable head. Every other provider
+    // gets the marker stripped: shouldEmitSystemPromptBoundary() is keyed to
+    // the SESSION provider, so a request routed to a different compat provider
+    // mid-session would otherwise ship the literal marker text to the model.
     const chatMessages = provider === 'openrouter'
       ? convertHistoryToOpenAIForOpenRouter(
           messages,
@@ -522,7 +529,19 @@ export class OpenAICompatLane implements Lane {
           model,
           cacheSessionId,
         )
-      : convertHistoryToOpenAI(messages, systemText, provider, model)
+      : provider === 'deepseek'
+        ? buildDeepSeekCacheStableMessages(
+            messages,
+            systemText,
+            model,
+            cacheSessionId,
+          )
+        : convertHistoryToOpenAI(
+            messages,
+            stripSystemDynamicBoundary(systemText),
+            provider,
+            model,
+          )
 
     // Build request body with per-provider quirks applied.
     const body = applyProviderRequestQuirks(
@@ -3055,7 +3074,7 @@ function convertHistoryToOpenAIForOpenRouter(
   model: string,
   cacheSessionId?: string,
 ): OpenAIChatMessage[] {
-  const { stable, volatile } = splitOpenRouterSystemForCache(systemText)
+  const { stable, volatile } = splitSystemPromptForCache(systemText)
   const out = convertHistoryToOpenAI(messages, stable, 'openrouter', model)
   // Freeze the volatile block to its first non-empty value for the session.
   // OpenRouter's upstreams cache on the exact prompt prefix (DeepSeek
@@ -3068,6 +3087,64 @@ function convertHistoryToOpenAIForOpenRouter(
     volatile,
   )
   if (frozen) insertOpenRouterVolatileContext(out, frozen)
+  return out
+}
+
+/**
+ * DeepSeek direct: same stable-prefix discipline OpenRouter gets, because
+ * DeepSeek's automatic context caching hits ONLY on a byte-identical prefix and
+ * the system message is its head.
+ *
+ * The dynamic system sections (git status, env info, memory, MCP server
+ * instructions) are recomputed per turn. Most are memoized for the session, but
+ * `mcp_instructions` is deliberately uncached (servers connect and disconnect
+ * between turns), so an MCP server that comes up on turn 3 rewrites the system
+ * message and cold-starts the ENTIRE conversation — not just the new bytes.
+ * Splitting the block out, freezing it to its first value for the session and
+ * pinning it at a fixed leading position makes it part of the stable prefix
+ * instead of churn inside it. Fresh state still reaches the model through the
+ * conversation tail (tool results, the user's message).
+ *
+ * Unlike the OpenRouter block this uses STRING content: DeepSeek's
+ * chat-completions route takes plain strings for text-only user turns, and the
+ * DeepSeek history converter only ever emits array content when a message
+ * actually carries images.
+ */
+function buildDeepSeekCacheStableMessages(
+  messages: ProviderMessage[],
+  systemText: string,
+  model: string,
+  cacheSessionId?: string,
+): OpenAIChatMessage[] {
+  // deepseek-reasoner enforces stricter message-alternation rules than the V4
+  // rows and already takes its own history path (see convertHistoryToOpenAI).
+  // The relocation below was measured on deepseek-v4-flash only, so reasoner
+  // keeps today's exact shape — marker stripped, nothing moved.
+  if (model.toLowerCase() === 'deepseek-reasoner') {
+    return convertHistoryToOpenAI(
+      messages,
+      stripSystemDynamicBoundary(systemText),
+      'deepseek',
+      model,
+    )
+  }
+
+  const { stable, volatile } = splitSystemPromptForCache(systemText)
+  const out = convertHistoryToOpenAI(messages, stable, 'deepseek', model)
+  const frozen = freezeSessionVolatileText(
+    volatileFreezeKey('deepseek', model, cacheSessionId, messages),
+    volatile,
+  ).trim()
+  if (!frozen) return out
+
+  // FIXED leading position, right after the system message. Spliced in before
+  // the LAST user message instead, the block would move one slot later every
+  // turn and the prefix would diverge at its old position on every single call.
+  const insertAt = out[0]?.role === 'system' ? 1 : 0
+  out.splice(insertAt, 0, {
+    role: 'user',
+    content: `<dynamic_context>\n${frozen}\n</dynamic_context>`,
+  })
   return out
 }
 
@@ -3204,9 +3281,9 @@ function convertHistoryToOpenAIDefault(
   return out
 }
 
-const OPENROUTER_DYNAMIC_BOUNDARY = '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
+const SYSTEM_DYNAMIC_BOUNDARY = '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
-const OPENROUTER_VOLATILE_SYSTEM_PATTERNS: readonly RegExp[] = [
+const VOLATILE_SYSTEM_PATTERNS: readonly RegExp[] = [
   /# Session-specific guidance\b[\s\S]*?(?=\n#|$)/,
   /<env>[\s\S]*?<\/env>/,
   /# Environment\b[\s\S]*?(?=\n#|$)/,
@@ -3219,23 +3296,37 @@ const OPENROUTER_VOLATILE_SYSTEM_PATTERNS: readonly RegExp[] = [
   /Primary working directory:[\s\S]*?(?=\n\n|\n#|$)/,
 ]
 
-function splitOpenRouterSystemForCache(text: string): {
+/** Remove the boundary marker (and the blank line it leaves) from a system
+ *  prompt the caller is NOT going to split on. */
+function stripSystemDynamicBoundary(text: string): string {
+  if (!text.includes(SYSTEM_DYNAMIC_BOUNDARY)) return text
+  return text.split(SYSTEM_DYNAMIC_BOUNDARY).join('').replace(/\n{3,}/g, '\n\n')
+}
+
+/**
+ * Split the flat system prompt into the part that must stay byte-identical for
+ * the life of the session (cached prefix) and the per-turn dynamic tail. Used
+ * by every implicit-cache provider the lane serves — OpenRouter and DeepSeek
+ * today. Prefers the explicit SYSTEM_PROMPT_DYNAMIC_BOUNDARY marker and falls
+ * back to locating the first known volatile section by regex.
+ */
+function splitSystemPromptForCache(text: string): {
   stable: string
   volatile: string
 } {
   if (!text) return { stable: '', volatile: '' }
 
-  const markerIdx = text.indexOf(OPENROUTER_DYNAMIC_BOUNDARY)
+  const markerIdx = text.indexOf(SYSTEM_DYNAMIC_BOUNDARY)
   if (markerIdx >= 0) {
     return {
       stable: text.slice(0, markerIdx).replace(/\s+$/, ''),
-      volatile: text.slice(markerIdx + OPENROUTER_DYNAMIC_BOUNDARY.length).replace(/^\s+/, ''),
+      volatile: text.slice(markerIdx + SYSTEM_DYNAMIC_BOUNDARY.length).replace(/^\s+/, ''),
     }
   }
 
   const cutoff = Math.floor(text.length * 0.3)
   const matches: Array<{ start: number; end: number }> = []
-  for (const pattern of OPENROUTER_VOLATILE_SYSTEM_PATTERNS) {
+  for (const pattern of VOLATILE_SYSTEM_PATTERNS) {
     const match = text.match(pattern)
     if (match && match.index != null && match.index >= cutoff) {
       matches.push({ start: match.index, end: match.index + match[0].length })

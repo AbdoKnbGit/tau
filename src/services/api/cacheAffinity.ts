@@ -17,6 +17,11 @@ const STABLE_REQUEST_SESSION_PROVIDERS = new Set<string>([
   // key the request can land on a different replica each turn and the
   // implicit prefix cache never warms.
   'lxd',
+  // DeepSeek's automatic prefix cache needs no session header, but the lane
+  // keys its session-frozen volatile context block (and the TAU_CACHE_DEBUG
+  // prefix diff) off this id. Without it both fall back to hashing the first
+  // user message, which a leading context reminder can rewrite.
+  'deepseek',
   'moonshot',
   'mistral',
   'fireworks',
