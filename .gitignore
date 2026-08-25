@@ -13,3 +13,7 @@ tmp/
 # Local-only tests / scratch
 src/utils/fallback/detect.test.ts
 proxy.mjs
+
+# Generated install-lifecycle marker (local state, goes stale against the
+# current version) — never committed.
+.tau-lifecycle-complete.json
