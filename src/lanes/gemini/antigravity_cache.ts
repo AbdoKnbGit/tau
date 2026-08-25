@@ -442,6 +442,13 @@ interface DebugSnapshot {
   blocks: string[]
   /** Per-block part descriptors (kind, length, hash, head) for forensics. */
   previews?: string[][]
+  /**
+   * Per-function-declaration hash, keyed by tool name. `tools` above is one
+   * hash of the whole block, so a BREAK: tools cannot say WHICH declaration
+   * moved — and the tool block sits at the FRONT of the cached prefix, so a
+   * single added tool voids the entire conversation cache. This names it.
+   */
+  toolsByName?: Record<string, string>
 }
 
 /**
@@ -482,6 +489,17 @@ export function diagnoseAntigravityCacheBreak(
     : 'BREAK: history truncated'
 }
 
+// A request this small cannot participate in the implicit cache at all: the
+// backend commits nothing under ~16,384 tokens, and 16,384 x 4 chars/token is
+// the most optimistic conversion, so anything below this is definitively a
+// non-participant. Startup quota probes (~633 bytes), session titles and other
+// side-queries land here. They are still LOGGED — seeing the probe fire is
+// useful — but they must never seed the snapshot slot, or the next real turn
+// diffs against a 2-token ping and reports a BREAK that never happened. The
+// model key alone cannot separate them once the small-fast model and the main
+// loop model are the same id.
+const DEBUG_MIN_CACHEABLE_CHARS = 65_536
+
 const _lastDebugSnapshot = new Map<string, DebugSnapshot>()
 let _lastUsageSig = ''
 
@@ -498,7 +516,7 @@ export function writeAntigravityCacheDebugEntry(
   model: string,
   request: Record<string, unknown>,
   sessionId: string | undefined,
-): void {
+): string | undefined {
   try {
     const h = (value: unknown): string =>
       createHash('sha256')
@@ -524,13 +542,55 @@ export function writeAntigravityCacheDebugEntry(
         return `part h=${h(p)}`
       })
     }
+    // Gemini nests declarations: tools[] -> { functionDeclarations: [...] }.
+    // Flatten across entries so a rename/move between groups still resolves
+    // to one name -> schema-hash map.
+    const toolsByName: Record<string, string> = {}
+    for (const entry of Array.isArray(request.tools) ? request.tools : []) {
+      const decls = Array.isArray((entry as any)?.functionDeclarations)
+        ? ((entry as any).functionDeclarations as Array<Record<string, any>>)
+        : []
+      for (const decl of decls) {
+        const name = typeof decl?.name === 'string' ? decl.name : '<unnamed>'
+        toolsByName[name] = h(decl)
+      }
+    }
+
     const snapshot: DebugSnapshot = {
       system: h(request.systemInstruction),
       tools: h(request.tools),
       blocks: contents.map(h),
       previews: contents.map(partsOf),
+      toolsByName,
     }
-    const key = sessionId ?? '<no-session>'
+    const bytes = JSON.stringify(request).length
+
+    // Non-participants are recorded but never seed the slot (see
+    // DEBUG_MIN_CACHEABLE_CHARS).
+    if (bytes < DEBUG_MIN_CACHEABLE_CHARS) {
+      const verdict = 'n/a: below cache minimum'
+      appendFileSync(
+        join(tmpdir(), 'tau-cache-debug.jsonl'),
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          model,
+          sessionId,
+          break: verdict,
+          system: snapshot.system,
+          tools: snapshot.tools,
+          genCfg: h(request.generationConfig),
+          nContents: contents.length,
+          nTools: Object.keys(toolsByName).length,
+          bytes,
+        }) + '\n',
+      )
+      return verdict
+    }
+
+    // Keyed by model too: background side-queries that ARE large enough to
+    // cache still run their own system prompt and tools, and different models
+    // are different cache entries upstream.
+    const key = `${sessionId ?? '<no-session>'}::${model}`
     const prev = _lastDebugSnapshot.get(key)
     const verdict = diagnoseAntigravityCacheBreak(prev, snapshot)
     _lastDebugSnapshot.set(key, snapshot)
@@ -543,8 +603,19 @@ export function writeAntigravityCacheDebugEntry(
       tools: snapshot.tools,
       genCfg: h(request.generationConfig),
       nContents: contents.length,
+      nTools: Object.keys(toolsByName).length,
       blocks: snapshot.blocks,
-      bytes: JSON.stringify(request).length,
+      bytes,
+    }
+    if (verdict === 'BREAK: tools' && prev?.toolsByName) {
+      const before = prev.toolsByName
+      const after = toolsByName
+      const added = Object.keys(after).filter(name => !(name in before))
+      const removed = Object.keys(before).filter(name => !(name in after))
+      const changed = Object.keys(after).filter(
+        name => name in before && before[name] !== after[name],
+      )
+      entry.toolsDiff = { added, removed, changed, nBefore: Object.keys(before).length, nAfter: Object.keys(after).length }
     }
     if (prev && verdict.startsWith('BREAK')) {
       const shared = Math.min(prev.blocks.length, snapshot.blocks.length)
@@ -563,8 +634,10 @@ export function writeAntigravityCacheDebugEntry(
       join(tmpdir(), 'tau-cache-debug.jsonl'),
       JSON.stringify(entry) + '\n',
     )
+    return verdict
   } catch {
     // Diagnostics must never break the request path.
+    return undefined
   }
 }
 

@@ -10,10 +10,14 @@ import {
   guardAntigravityCommitWindow,
   paceAntigravityAgentRequest,
   recordAntigravityCacheRead,
+  writeAntigravityCacheDebugEntry,
   _getAntigravityPaceStateForTest,
   _resetAntigravityCacheStateForTest,
   _setAntigravityCommitWindowForTest,
 } from './antigravity_cache.js'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir as realTmpdir } from 'node:os'
 
 let passed = 0
 let failed = 0
@@ -409,6 +413,117 @@ async function main(): Promise<void> {
     const cur = { system: 's', tools: 't', blocks: ['vol-v2', 'task', 'more'] }
     assert(diagnoseAntigravityCacheBreak(prev, cur) === 'BREAK: history block 0/2 rewritten', 'leading')
   })
+
+
+  console.log('antigravity debug-snapshot keying:')
+  // writeAntigravityCacheDebugEntry() appends to os.tmpdir(). Point tmpdir at a
+  // throwaway directory for this suite so running the tests never touches (or
+  // truncates) a real session's tau-cache-debug.jsonl.
+  const _realTemp = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR }
+  const _sandbox = mkdtempSync(join(realTmpdir(), 'tau-cache-test-'))
+  process.env.TEMP = _sandbox
+  process.env.TMP = _sandbox
+  process.env.TMPDIR = _sandbox
+  process.env.TAU_CACHE_DEBUG = '1'
+
+
+  // Regression: background side-queries (quota check, session title, memory
+  // extraction) reuse the ROOT sessionId but run on the cheap-tier model with
+  // their own system prompt and tools. Keyed on session alone they occupied
+  // the snapshot slot, so the next REAL turn diffed against a 2-token probe
+  // and reported "BREAK: systemInstruction" for a cache that never broke.
+  const probe = {
+    systemInstruction: { parts: [{ text: 'quota-check system' }] },
+    tools: [{ functionDeclarations: [] }],
+    generationConfig: { maxOutputTokens: 1 },
+    contents: [{ role: 'user', parts: [{ text: 'quota' }] }],
+  }
+  // Must clear DEBUG_MIN_CACHEABLE_CHARS (65,536) or the entry is recorded as a
+  // non-participant and never diffed. 3,000 x 28 chars puts the system prompt
+  // alone at ~84k, matching a real main-loop request.
+  const realSystem = { parts: [{ text: '# Session-specific guidance '.repeat(3000) }] }
+  const realTools = [{ functionDeclarations: [{ name: 'Read' }, { name: 'Bash' }] }]
+  const turn = (n: number) => ({
+    systemInstruction: realSystem,
+    tools: realTools,
+    generationConfig: { maxOutputTokens: 8192 },
+    contents: Array.from({ length: n }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'model',
+      parts: [{ text: `msg${i}` }],
+    })),
+  })
+
+  await test('a side-query on another model does not break the next real turn', () => {
+    _resetAntigravityCacheStateForTest()
+    const SID = 'root-session'
+    writeAntigravityCacheDebugEntry('gemini-3.5-flash-low', probe, SID)
+    const v = writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', turn(1), SID)
+    assert(v === 'cold', `first real turn should be cold, got: ${v}`)
+  })
+
+  await test('the real turns still extend cleanly after a side-query', () => {
+    _resetAntigravityCacheStateForTest()
+    const SID = 'root-session'
+    writeAntigravityCacheDebugEntry('gemini-3.5-flash-low', probe, SID)
+    writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', turn(1), SID)
+    const v = writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', turn(3), SID)
+    assert(v === 'ok: clean prefix extension', `got: ${v}`)
+  })
+
+  await test('a sub-minimum side-query is logged but never seeds the slot', () => {
+    _resetAntigravityCacheStateForTest()
+    const SID = 'root-session'
+    // Same model as the main loop — the case the model key alone cannot fix.
+    const v1 = writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', probe, SID)
+    assert(v1 === 'n/a: below cache minimum', `probe verdict: ${v1}`)
+    const v2 = writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', turn(1), SID)
+    assert(v2 === 'cold', `real turn after same-model probe: ${v2}`)
+  })
+
+  await test('a tools break names the declaration that entered the block', () => {
+    _resetAntigravityCacheStateForTest()
+    const SID = 'root-session'
+    const logPath = join(_sandbox, 'tau-cache-debug.jsonl')
+    if (existsSync(logPath)) rmSync(logPath)
+    const withTools = (names: string[]) => ({
+      ...turn(1),
+      tools: [{ functionDeclarations: names.map(name => ({ name, parameters: {} })) }],
+    })
+    writeAntigravityCacheDebugEntry('gemini-3.7-flash-high', withTools(['Read', 'Bash']), SID)
+    const v = writeAntigravityCacheDebugEntry(
+      'gemini-3.7-flash-high',
+      withTools(['Read', 'Bash', 'WebFetch']),
+      SID,
+    )
+    assert(v === 'BREAK: tools', `verdict: ${v}`)
+    const rows = readFileSync(logPath, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    const last = rows[rows.length - 1]
+    assert(last.nTools === 3, `nTools=${last.nTools}`)
+    assert(last.toolsDiff?.added?.join(',') === 'WebFetch', `added=${JSON.stringify(last.toolsDiff)}`)
+    assert(last.toolsDiff.removed.length === 0, `removed=${JSON.stringify(last.toolsDiff.removed)}`)
+    assert(last.toolsDiff.changed.length === 0, `changed=${JSON.stringify(last.toolsDiff.changed)}`)
+  })
+  await test('a genuine prefix break on the same model is still reported', () => {
+    _resetAntigravityCacheStateForTest()
+    const SID = 'root-session'
+    writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', turn(1), SID)
+    // Still well over DEBUG_MIN_CACHEABLE_CHARS — only the CONTENT differs, so
+    // this is a real byte-0 prefix break rather than a non-participant.
+    const churned = {
+      ...turn(3),
+      systemInstruction: { parts: [{ text: 'DIFFERENT SYSTEM PROMPT '.repeat(4000) }] },
+    }
+    const v = writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', churned, SID)
+    assert(v === 'BREAK: systemInstruction', `got: ${v}`)
+  })
+
+
+  delete process.env.TAU_CACHE_DEBUG
+  for (const [k, v] of Object.entries(_realTemp)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  rmSync(_sandbox, { recursive: true, force: true })
 
   _resetAntigravityCacheStateForTest()
   console.log(`\n${passed} passed, ${failed} failed`)

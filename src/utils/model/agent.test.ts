@@ -69,7 +69,7 @@ function main(): void {
     }
   })
 
-  test('Antigravity aliases always use its Flash-low agent model', () => {
+  test('Antigravity aliases always use its fast agent model', () => {
     for (const parent of ['claude-opus-4-6-thinking', 'gemini-3.1-pro-high']) {
       for (const alias of ROUTED_ALIASES) {
         const resolved = resolveAntigravityOpus46AgentModel(
@@ -77,7 +77,7 @@ function main(): void {
           parent,
           'antigravity',
         )
-        assert(resolved === 'gemini-3.5-flash-low', `${parent}/${alias}=${resolved}`)
+        assert(resolved === 'gemini-3.6-flash-medium', `${parent}/${alias}=${resolved}`)
       }
     }
   })
@@ -198,7 +198,7 @@ function main(): void {
     }
   })
 
-  test('Antigravity always uses its Flash-low agent model for aliases', () => {
+  test('Antigravity always uses its fast agent model for aliases', () => {
     for (const parent of [
       'claude-opus-4-6-thinking',
       'claude-sonnet-4-6',
@@ -207,7 +207,7 @@ function main(): void {
     ]) {
       for (const alias of ROUTED_ALIASES) {
         const resolved = resolveAgentAliasPolicy(alias, parent, 'antigravity')
-        assert(resolved === 'gemini-3.5-flash-low', `${parent}/${alias}=${resolved}`)
+        assert(resolved === 'gemini-3.6-flash-medium', `${parent}/${alias}=${resolved}`)
       }
     }
   })
