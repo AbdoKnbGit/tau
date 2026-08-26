@@ -86,8 +86,17 @@ jobs:
       - name: Test installer, release gate, lifecycle bridge, and production lock
         run: node --test packages/tau-installer/test/installer.test.mjs test/lifecycle-bridge.test.mjs test/platform-support.test.mjs test/production-shrinkwrap.test.mjs test/release-gate.test.mjs test/rust-lsp-setup.test.mjs test/update-routing.test.mjs
 
+      # The production shrinkwrap is canonical for npm >= 11. npm 10, which
+      # Node 20 and 22 bundle, keeps the transitive tree of the optional peer
+      # @computer-use/nut-js under --omit=dev --include=optional and so reports
+      # a correct artifact as stale. Pin the tool that defines the artifact
+      # instead of upgrading the job's npm — the install-lifecycle steps below
+      # deliberately exercise whichever npm the Node runtime ships.
       - name: Verify production shrinkwrap is current
-        run: npm run shrinkwrap:check
+        shell: bash
+        run: |
+          npm install npm@11 --prefix "$RUNNER_TEMP/npm-canonical" --no-save --no-audit --no-fund --loglevel=error
+          npm_execpath="$RUNNER_TEMP/npm-canonical/node_modules/npm/bin/npm-cli.js" node release/production-shrinkwrap.mjs --check
 
       - name: Verify Tau installer package contents
         shell: bash
