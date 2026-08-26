@@ -110,7 +110,7 @@
           "optional": true
         }
       },
-      "version": "0.92.25"
+      "version": "0.92.26"
     },
     "node_modules/@agentclientprotocol/sdk": {
       "integrity": "sha512-ialrcI+RzKOYe+fw+TfpyTdRmEoqIkXLlwbTi6XgaXXfdhNcdod7TmE1VsTnG3yTlox8TMTSMQgWbLLbz3r86Q==",
@@ -6840,5 +6840,5 @@
     }
   },
   "requires": true,
-  "version": "0.92.25"
+  "version": "0.92.26"
 }
