@@ -302,13 +302,13 @@ async function captureFireworksRequest(
       {
         id: 'chatcmpl-fireworks',
         object: 'chat.completion.chunk',
-        model: 'accounts/fireworks/models/minimax-m2p7',
+        model: 'accounts/fireworks/models/minimax-m3',
         choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }],
       },
       {
         id: 'chatcmpl-fireworks',
         object: 'chat.completion.chunk',
-        model: 'accounts/fireworks/models/minimax-m2p7',
+        model: 'accounts/fireworks/models/minimax-m3',
         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
         usage: { prompt_tokens: 200, completion_tokens: 5, total_tokens: 205 },
         // Fireworks reports cache hits only via perf_metrics for streaming.
@@ -326,7 +326,7 @@ async function captureFireworksRequest(
     const events: AnthropicStreamEvent[] = []
     const stream = throughBridge
       ? await new LaneBackedProvider(lane, 'fireworks').stream({
-          model: 'accounts/fireworks/models/minimax-m2p7',
+          model: 'accounts/fireworks/models/minimax-m3',
           messages: [{ role: 'user', content: 'hello' }],
           system: 'stable system prompt',
           tools: [],
@@ -334,7 +334,7 @@ async function captureFireworksRequest(
           ...(sessionId ? { sessionId } : {}),
         } as any)
       : lane.streamAsProvider({
-          model: 'accounts/fireworks/models/minimax-m2p7',
+          model: 'accounts/fireworks/models/minimax-m3',
           messages: [{ role: 'user', content: 'hello' }],
           system: 'stable system prompt',
           tools: [],

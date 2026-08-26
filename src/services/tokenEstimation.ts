@@ -5,6 +5,7 @@ import type { BetaMessageParam as MessageParam } from '@anthropic-ai/sdk/resourc
 import type { CountTokensCommandInput } from '@aws-sdk/client-bedrock-runtime'
 import { getAPIProvider } from 'src/utils/model/providers.js'
 import { VERTEX_COUNT_TOKENS_ALLOWED_BETAS } from '../constants/betas.js'
+import { isMediaBlock } from '../lanes/shared/media_blocks.js'
 import type { Attachment } from '../utils/attachments.js'
 import { getModelBetas } from '../utils/betas.js'
 import { getVertexRegionForModel, isEnvTruthy } from '../utils/envUtils.js'
@@ -208,6 +209,27 @@ export function roughTokenCountEstimation(
 }
 
 /**
+ * Flat estimate for a block whose payload is base64 media rather than text.
+ * Matches microCompact's IMAGE_MAX_TOKEN_SIZE.
+ *
+ * The API charges by pixels — (w * h) / 750, resized to at most 2000x2000 —
+ * so the base64 length says nothing about the cost. Counting those chars
+ * instead reads a 2.6MB screenshot as ~900k tokens against a 1M window.
+ */
+export const MEDIA_BLOCK_TOKEN_ESTIMATE = 2000
+
+/**
+ * Token estimate for one raw content block, for callers that walk blocks
+ * themselves (the context analyzers) rather than going through
+ * {@link roughTokenCountEstimationForMessages}. Keeps the media special-case
+ * in one place so a new caller can't reintroduce the base64 blow-up.
+ */
+export function roughTokenCountEstimationForRawBlock(block: unknown): number {
+  if (isMediaBlock(block)) return MEDIA_BLOCK_TOKEN_ESTIMATE
+  return roughTokenCountEstimation(jsonStringify(block))
+}
+
+/**
  * Returns an estimated bytes-per-token ratio for a given file extension.
  * Dense JSON has many single-character tokens (`{`, `}`, `:`, `,`, `"`)
  * which makes the real ratio closer to 2 rather than the default 4.
@@ -408,7 +430,7 @@ function roughTokenCountEstimationForBlock(
     // jsonStringify catch-all — a 1MB PDF is ~1.33M base64 chars →
     // ~325k estimated tokens, vs the ~2000 the API actually charges.
     // Same constant as microCompact's calculateToolResultTokens.
-    return 2000
+    return MEDIA_BLOCK_TOKEN_ESTIMATE
   }
   if (block.type === 'tool_result') {
     return roughTokenCountEstimationForContent(block.content)

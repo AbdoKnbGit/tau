@@ -42,6 +42,10 @@ import {
   OPENAI_COMPAT_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
 import {
+  createRetryableConnectionError,
+  isAbortError,
+} from '../../services/api/transport_error.js'
+import {
   applyClineReasoningToRequest,
   getClineRequestEffort,
   isClineThinkingModel,
@@ -439,9 +443,8 @@ export class ClineLane implements Lane {
     try {
       response = await this._sendRequestWithSchemaFallback(auth, params, requestMessages)
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      yield* emitErrorTurn(`cline API connection error: ${message}`)
-      return blankUsage()
+      if (isAbortError(error, params.signal)) throw error
+      throw createRetryableConnectionError('cline API connection error', error)
     }
 
     if (!response.ok) {
@@ -472,9 +475,11 @@ export class ClineLane implements Lane {
       try {
         response = await this._sendRequestWithSchemaFallback(auth, params, requestMessages)
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error)
-        yield* emitErrorTurn(`cline API connection error after tool-arg repair retry: ${message}`)
-        return blankUsage()
+        if (isAbortError(error, params.signal)) throw error
+        throw createRetryableConnectionError(
+          'cline API connection error after tool-arg repair retry',
+          error,
+        )
       }
 
       if (!response.ok) {

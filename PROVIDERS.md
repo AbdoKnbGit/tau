@@ -17,7 +17,7 @@ Tau ships **24 native provider adapters**. Each speaks the provider's API direct
 | Moonshot AI | Direct Kimi models through Moonshot's OpenAI-compatible API, including Kimi K2.6 for coding work |
 | MiniMax AI | Direct MiniMax M2 models through MiniMax's OpenAI-compatible API, with saved API-key login, live model browsing, and Token Plan usage checks |
 | NVIDIA NIM | Gets slow under server load, especially for newest models like Kimi K2 |
-| DeepSeek | Solid |
+| DeepSeek | Solid. V4 only — flash, pro and flash-vision-exp, all 1M context. Thinking effort is a per-model chip in `/models` |
 | GLM / BigModel | Works with your BigModel plan or the small amount of free credit they give you |
 | LM Studio | Local OpenAI-compatible server. Start it with `lms server start`; Tau uses `http://localhost:1234/v1` by default |
 | Ollama | Local and private, but you knew that already |
@@ -38,6 +38,32 @@ lms server start
 ```
 
 LM Studio defaults to `http://localhost:1234/v1` in Tau. Make sure LM Studio is running and a model is loaded before you select it in `/login`.
+
+## DeepSeek thinking effort
+
+DeepSeek V4 splits thinking across two body fields — `thinking.type` toggles it
+and `reasoning_effort` sets how hard. Tau folds both onto one chip in
+`/models`; use `←` / `→` on a row to cycle it:
+
+```
+deepseek-v4-pro - DeepSeek V4 Pro                        ◀ Max ▶
+deepseek-v4-flash - DeepSeek V4 Flash                    ◀ Low ▶
+deepseek-v4-flash-vision-exp - V4 Flash Vision (exp)     ◀ None ▶
+```
+
+`None` sends `thinking: {"type": "disabled"}` and no effort; `Low` / `High` /
+`Max` send `thinking: {"type": "enabled"}` plus the matching
+`reasoning_effort`. DeepSeek collapses `medium` and `xhigh` onto `high`, so
+only the three distinct stops are offered.
+
+The chip starts on `None`, which is exactly what Tau sent before it existed.
+DeepSeek's own default is thinking-on at high effort — one press of `→` twice
+gets you there. The pick is per model and persists in
+`~/.claude/deepseek-thinking.json`.
+
+A custom id pointed at by `DEEPSEEK_BASE_URL` shows no chip and keeps the old
+behavior: the caller's thinking budget drives it, and no `reasoning_effort`
+field is sent.
 
 ## LXD thinking effort
 

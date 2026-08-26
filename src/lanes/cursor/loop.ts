@@ -52,6 +52,10 @@ import {
   resolveCursorToolCall,
 } from './tools.js'
 import { OPENAI_COMPAT_TOOL_USAGE_RULES } from '../shared/mcp_bridge.js'
+import {
+  createRetryableConnectionError,
+  isAbortError,
+} from '../../services/api/transport_error.js'
 
 const CURSOR_ENDPOINT = 'https://api2.cursor.sh/aiserver.v1.InferenceService/Stream'
 const CURSOR_HTTP_TIMEOUT_MS = 60_000
@@ -580,13 +584,8 @@ async function* _streamCursorAttempt(params: {
       signal: params.signal,
     })
   } catch (err: unknown) {
-    const mst = emitMessageStart()
-    if (mst) yield mst
-    const message = err instanceof Error ? err.message : String(err)
-    yield* _emitErrorText(`cursor API connection error: ${message}`)
-    yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
-    yield { type: 'message_stop' }
-    return { usage: _blankUsage(), retry: false }
+    if (isAbortError(err, params.signal)) throw err
+    throw createRetryableConnectionError('cursor API connection error', err)
   }
 
   if (response.status < 200 || response.status >= 300) {

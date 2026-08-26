@@ -46,6 +46,10 @@ import {
 import { randomUUID } from 'crypto'
 import { getSessionId } from '../../bootstrap/state.js'
 import { loadProviderKey } from '../../services/api/auth/api_key_manager.js'
+import {
+  createRetryableConnectionError,
+  isAbortError,
+} from '../../services/api/transport_error.js'
 
 const KIRO_ENDPOINT = 'https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse'
 const KIRO_MODELS_ENDPOINT = 'https://codewhisperer.us-east-1.amazonaws.com'
@@ -559,13 +563,8 @@ export class KiroLane implements Lane {
         break
       }
     } catch (err: unknown) {
-      const mst = emitMessageStart()
-      if (mst) yield mst
-      const message = err instanceof Error ? err.message : String(err)
-      yield* _emitErrorText(`kiro API connection error: ${message}`)
-      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
-      yield { type: 'message_stop' }
-      return _blankUsage()
+      if (isAbortError(err, signal)) throw err
+      throw createRetryableConnectionError('kiro API connection error', err)
     }
 
     if (!response?.ok) {

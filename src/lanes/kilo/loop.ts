@@ -46,6 +46,10 @@ import type {
   NormalizedUsage,
 } from '../types.js'
 import {
+  createRetryableConnectionError,
+  isAbortError,
+} from '../../services/api/transport_error.js'
+import {
   anthropicMessagesToOpenAI,
   anthropicToolsToOpenAI,
   type OpenAIMessage,
@@ -308,9 +312,8 @@ export class KiloLane implements Lane {
         signal: params.signal,
       })
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      yield* emitErrorTurn(`kilo API connection error: ${message}`)
-      return blankUsage()
+      if (isAbortError(error, params.signal)) throw error
+      throw createRetryableConnectionError('kilo API connection error', error)
     }
 
     if (!response.ok) {

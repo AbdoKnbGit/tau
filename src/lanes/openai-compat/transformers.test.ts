@@ -35,7 +35,16 @@ import type { Transformer, TransformContext } from './transformers/base.js'
 import type { OpenAIChatMessage, OpenAIChatRequest } from './transformers/shared_types.js'
 import { selectEditToolSet, OPENAI_COMPAT_TOOL_REGISTRY } from './tools.js'
 import { resolveEditFormat, resolveCapabilities } from './capabilities.js'
-import { setDeepSeekV4Thinking } from '../../utils/model/deepseekThinking.js'
+import {
+  _resetDeepSeekThinkingForTests,
+  cycleDeepSeekEffort,
+  DEEPSEEK_EFFORT_LEVELS,
+  getDeepSeekEffort,
+  getDeepSeekEffortLabel,
+  isDeepSeekV4ThinkingModel,
+  resolveDeepSeekRequestEffort,
+  supportsDeepSeekEffortSelection,
+} from '../../utils/model/deepseekThinking.js'
 import { setGlmThinking } from '../../utils/model/glmThinking.js'
 import {
   _resetOpencodeThinkingForTests,
@@ -457,17 +466,17 @@ function main(): void {
     })
   })
 
-  test('deepseek clamps max_tokens at 8192', () => {
-    assert(TRANSFORMERS.deepseek.clampMaxTokens(16000) === 8192, 'no clamp')
-    assert(TRANSFORMERS.deepseek.clampMaxTokens(4096) === 4096, 'unnecessary clamp')
+  test('deepseek clamps max_tokens at the published V4 384K ceiling', () => {
+    assert(TRANSFORMERS.deepseek.clampMaxTokens(500_000) === 384_000, 'no clamp')
+    assert(TRANSFORMERS.deepseek.clampMaxTokens(16_000) === 16_000, 'unnecessary clamp')
   })
-  test('deepseek sets thinking: enabled when reasoning requested', () => {
-    const body = mkBody('deepseek-reasoner')
-    TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-reasoner', true))
+  test('deepseek sets thinking: enabled for a non-V4 id when reasoning requested', () => {
+    const body = mkBody('deepseek-proxy-custom')
+    TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-proxy-custom', true))
     assert(body.thinking?.type === 'enabled', `thinking not set; body.thinking=${JSON.stringify(body.thinking)}`)
   })
-  test('deepseek disables V4 thinking when picker toggle is OFF', () => {
-    setDeepSeekV4Thinking(false)
+  test('deepseek disables V4 thinking on the None stop', () => {
+    _resetDeepSeekThinkingForTests()
     try {
       for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
         const body = mkBody(model, {
@@ -484,14 +493,15 @@ function main(): void {
         // picker toggle is authoritative — /thinking does not drive V4.
         TRANSFORMERS.deepseek.transformRequest(body, mkCtx(model, true))
         assert(body.thinking?.type === 'disabled', `${model} thinking=${JSON.stringify(body.thinking)}`)
+        assert(body.reasoning_effort === undefined, `${model} sent an effort while off`)
         assert(!('reasoning_content' in body.messages[1]!), `${model} leaked reasoning_content`)
       }
     } finally {
-      setDeepSeekV4Thinking(false)
+      _resetDeepSeekThinkingForTests()
     }
   })
   test('deepseek trims tool_calls to immediately answered tool messages', () => {
-    const body = mkBody('deepseek-chat', {
+    const body = mkBody('deepseek-v4-flash', {
       messages: [
         { role: 'user', content: 'start' },
         {
@@ -507,7 +517,7 @@ function main(): void {
       ],
     })
 
-    TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-chat'))
+    TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-v4-flash'))
 
     const assistant = body.messages[1]
     assert(assistant?.role === 'assistant', `assistant role=${assistant?.role}`)
@@ -519,7 +529,7 @@ function main(): void {
     assert(body.messages[3]?.role === 'user', `expected next user message, got ${body.messages[3]?.role}`)
   })
   test('deepseek removes unanswered tool_calls and orphan tool messages', () => {
-    const body = mkBody('deepseek-chat', {
+    const body = mkBody('deepseek-v4-flash', {
       messages: [
         { role: 'user', content: 'start' },
         {
@@ -535,7 +545,7 @@ function main(): void {
       ],
     })
 
-    TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-chat'))
+    TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-v4-flash'))
 
     const assistant = body.messages[1]
     assert(body.messages.length === 3, `messages=${JSON.stringify(body.messages)}`)
@@ -545,7 +555,7 @@ function main(): void {
     assert(!body.messages.some(message => message.role === 'tool'), 'orphan tool message was kept')
   })
   test('deepseek repairs tool-call adjacency without stripping enabled reasoning_content', () => {
-    setDeepSeekV4Thinking(true)
+    _resetDeepSeekThinkingForTests({ 'deepseek-v4-pro': 'high' })
     try {
       const body = mkBody('deepseek-v4-pro', {
         messages: [
@@ -572,21 +582,65 @@ function main(): void {
       assert(assistant?.tool_calls?.length === 1,
         `tool_calls=${JSON.stringify(assistant?.tool_calls)}`)
     } finally {
-      setDeepSeekV4Thinking(false)
+      _resetDeepSeekThinkingForTests()
     }
   })
-  test('deepseek enables V4 thinking when picker toggle is ON', () => {
-    setDeepSeekV4Thinking(true)
-    try {
-      for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
+
+  // ── V4 thinking-effort ladder (picker chip) ─────────────────────
+  test('deepseek enables V4 thinking and sends the picked effort', () => {
+    for (const effort of ['low', 'high', 'max'] as const) {
+      for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']) {
+        _resetDeepSeekThinkingForTests({ [model]: effort })
         const body = mkBody(model)
-        // Toggle ON wins regardless of ctx.isReasoning.
+        // The chip wins regardless of ctx.isReasoning.
         TRANSFORMERS.deepseek.transformRequest(body, mkCtx(model, false))
         assert(body.thinking?.type === 'enabled', `${model} thinking=${JSON.stringify(body.thinking)}`)
+        assert(body.reasoning_effort === effort,
+          `${model} effort=${JSON.stringify(body.reasoning_effort)} want ${effort}`)
       }
-    } finally {
-      setDeepSeekV4Thinking(false)
     }
+    _resetDeepSeekThinkingForTests()
+  })
+  test('deepseek ladder is None/Low/High/Max and defaults to None', () => {
+    _resetDeepSeekThinkingForTests()
+    assert(DEEPSEEK_EFFORT_LEVELS.join(',') === 'none,low,high,max',
+      `ladder=${DEEPSEEK_EFFORT_LEVELS.join(',')}`)
+    assert(getDeepSeekEffort('deepseek-v4-pro') === 'none', 'default stop must be None')
+    assert(resolveDeepSeekRequestEffort('deepseek-v4-pro') === null, 'None must resolve to no effort')
+    assert(getDeepSeekEffortLabel('max') === 'Max', 'label should be title-cased')
+  })
+  test('deepseek effort chip shows only on V4 rows', () => {
+    for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']) {
+      assert(isDeepSeekV4ThinkingModel(model), `${model} should be a V4 row`)
+      assert(supportsDeepSeekEffortSelection(model), `${model} should expose the chip`)
+    }
+    for (const model of ['deepseek-proxy-custom', 'deepseek-v3.2', 'gpt-oss-120b']) {
+      assert(!supportsDeepSeekEffortSelection(model), `${model} must not expose the chip`)
+    }
+  })
+  test('deepseek effort cycles both ways and wraps', () => {
+    _resetDeepSeekThinkingForTests()
+    const m = 'deepseek-v4-flash'
+    assert(cycleDeepSeekEffort(m, 'right') === 'low', 'none -> low')
+    assert(cycleDeepSeekEffort(m, 'right') === 'high', 'low -> high')
+    assert(cycleDeepSeekEffort(m, 'right') === 'max', 'high -> max')
+    assert(cycleDeepSeekEffort(m, 'right') === 'none', 'max wraps to none')
+    assert(cycleDeepSeekEffort(m, 'left') === 'max', 'none wraps back to max')
+    _resetDeepSeekThinkingForTests()
+  })
+  test('deepseek effort is per model, not global', () => {
+    _resetDeepSeekThinkingForTests({ 'deepseek-v4-pro': 'max' })
+    assert(getDeepSeekEffort('deepseek-v4-pro') === 'max', 'pro keeps its own pick')
+    assert(getDeepSeekEffort('deepseek-v4-flash') === 'none', 'flash must not inherit it')
+    _resetDeepSeekThinkingForTests()
+  })
+  test('a custom id behind DEEPSEEK_BASE_URL never gets an effort field', () => {
+    _resetDeepSeekThinkingForTests({ 'deepseek-proxy-custom': 'max' })
+    const body = mkBody('deepseek-proxy-custom')
+    TRANSFORMERS.deepseek.transformRequest(body, mkCtx('deepseek-proxy-custom', true))
+    assert(body.thinking?.type === 'enabled', 'caller budget still drives a custom id')
+    assert(body.reasoning_effort === undefined, 'custom id must not get reasoning_effort')
+    _resetDeepSeekThinkingForTests()
   })
 
   // ── Groq quirks ─────────────────────────────────────────────────

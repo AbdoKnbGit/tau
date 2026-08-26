@@ -33,6 +33,7 @@ import {
 } from '../../utils/fastMode.js'
 import { isNonCustomOpusModel } from '../../utils/model/model.js'
 import { disableKeepAlive } from '../../utils/proxy.js'
+import { isRetryableNetworkError } from './transport_error.js'
 import { sleep } from '../../utils/sleep.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
@@ -430,9 +431,16 @@ export async function* withRetry<T>(
       // message (e.g. "openai API error 429: ..."). Treat 429/5xx from
       // third-party providers as retryable.
       const isThirdPartyRetryable = isThirdPartyRetryableError(error)
+      // Legacy/raw-fetch providers (notably Command Code, plus native-lane
+      // opt-outs) surface Node's TypeError("fetch failed") instead of an SDK
+      // APIConnectionError. Treat the same transient codes/messages as a
+      // connection retry so every provider path preserves the original turn.
+      const isRawRetryableNetwork =
+        !(error instanceof APIError) && isRetryableNetworkError(error)
       if (
         !handledCloudAuthError &&
         !isThirdPartyRetryable &&
+        !isRawRetryableNetwork &&
         (!(error instanceof APIError) || !shouldRetry(error))
       ) {
         throw new CannotRetryError(error, retryContext)

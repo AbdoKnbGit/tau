@@ -31,9 +31,10 @@ import {
   toggleFavoriteModel,
 } from '../utils/model/favoriteModels.js'
 import {
-  getDeepSeekV4Thinking,
-  isDeepSeekV4ThinkingModel,
-  toggleDeepSeekV4Thinking,
+  cycleDeepSeekEffort,
+  getDeepSeekEffort,
+  getDeepSeekEffortLabel,
+  supportsDeepSeekEffortSelection,
 } from '../utils/model/deepseekThinking.js'
 import {
   getGlmThinking,
@@ -272,7 +273,6 @@ export function ProviderModelPicker({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [sections, setSections] = useState<ProviderModelSection[]>([])
   const [, setReasoningTick] = useState(0)
-  const [deepseekV4Thinking, setDeepseekV4Thinking] = useState(getDeepSeekV4Thinking)
   const [glmThinking, setGlmThinking] = useState(getGlmThinking)
   // Bumped to force a re-render after toggling provider-owned per-model effort.
   // The actual effort state lives in the provider utility modules.
@@ -280,6 +280,7 @@ export function ProviderModelPicker({
   const [, setOpencodeEffortTick] = useState(0)
   const [, setCommandCodeEffortTick] = useState(0)
   const [, setCloudflareEffortTick] = useState(0)
+  const [, setDeepseekEffortTick] = useState(0)
   const [, setLxdEffortTick] = useState(0)
   const [, setMimoEffortTick] = useState(0)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
@@ -547,9 +548,10 @@ export function ProviderModelPicker({
       if (
         row?.kind === 'model'
         && selectedProvider === 'deepseek'
-        && isDeepSeekV4ThinkingModel(row.model.id)
+        && supportsDeepSeekEffortSelection(row.model.id)
       ) {
-        setDeepseekV4Thinking(toggleDeepSeekV4Thinking())
+        cycleDeepSeekEffort(row.model.id, key.leftArrow ? 'left' : 'right')
+        setDeepseekEffortTick(tick => tick + 1)
         return
       }
 
@@ -760,7 +762,10 @@ export function ProviderModelPicker({
                   getSelectedModelId(selectedProvider, model, variantSelections),
                 )
               const isReasoning = selectedProvider === 'openai' && modelSupportsReasoning(model.id)
-              const isDeepseekV4 = selectedProvider === 'deepseek' && isDeepSeekV4ThinkingModel(model.id)
+              // Every V4 row carries the same None/Low/High/Max ladder.
+              const isDeepseekV4 =
+                selectedProvider === 'deepseek' && supportsDeepSeekEffortSelection(model.id)
+              const deepseekEffort = isDeepseekV4 ? getDeepSeekEffort(model.id) : undefined
               const isGlmThinking = selectedProvider === 'glm' && isGlmThinkingModel(model.id)
               const isClineThinking = selectedProvider === 'cline' && supportsClineThinkingSelection(model.id, model.tags)
               const clineEffort = isClineThinking ? getClineEffort(model.id) : undefined
@@ -820,9 +825,9 @@ export function ProviderModelPicker({
                       {' '}◀ {getReasoningLabel(getOpenAIReasoningLevel(model.id))} ▶
                     </Text>
                   )}
-                  {isDeepseekV4 && (
+                  {isDeepseekV4 && deepseekEffort && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ Thinking {deepseekV4Thinking ? 'ON' : 'OFF'} ▶
+                      {' '}◀ {getDeepSeekEffortLabel(deepseekEffort)} ▶
                     </Text>
                   )}
                   {isGlmThinking && (

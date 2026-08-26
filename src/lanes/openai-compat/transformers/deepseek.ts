@@ -1,24 +1,32 @@
 /**
  * DeepSeek transformer.
  *
- * - Hard-caps `max_tokens` at 8192 (upstream 400s past that).
+ * - Caps `max_tokens` at DeepSeek's published 384K V4 ceiling.
  * - Supports `function.strict: true` for reasoner-compatible tool calls.
  * - Emits `reasoning_content` on stream deltas — pass through as-is;
  *   loop.ts surfaces it as a thinking_delta.
- * - `thinking: { type: 'enabled' }` only when user/model requested reasoning.
- *   DeepSeek V4 defaults thinking on, so non-reasoning turns must send an
- *   explicit disabled toggle or later tool turns can 400 on missing
- *   `reasoning_content`. The V4 toggle lives in the model picker (see
- *   `utils/model/deepseekThinking.ts`); the hidden `/thinking` command
- *   does not drive V4 — picker is authoritative.
+ * - V4 thinking is a four-stop effort chip in the model picker (see
+ *   `utils/model/deepseekThinking.ts`): None sends `thinking: disabled`,
+ *   Low/High/Max send `thinking: enabled` plus `reasoning_effort`. The
+ *   picker is authoritative — the hidden `/thinking` command does not drive
+ *   V4. DeepSeek defaults thinking on, so the None stop must send an explicit
+ *   disabled toggle or later tool turns 400 on missing `reasoning_content`.
  */
 
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest, OpenAIChatMessage } from './shared_types.js'
 import {
-  getDeepSeekV4Thinking,
   isDeepSeekV4ThinkingModel,
+  resolveDeepSeekRequestEffort,
 } from '../../../utils/model/deepseekThinking.js'
+
+/**
+ * Per-request output ceiling published for every live V4 row
+ * (flash / pro / flash-vision-exp): "MAX OUTPUT -- MAXIMUM: 384K".
+ * The old 8192 cap was the V3 chat/reasoner limit and throttled V4 to
+ * ~2% of what it can emit.
+ */
+const DEEPSEEK_MAX_OUTPUT_TOKENS = 384_000
 
 export const deepseekTransformer: Transformer = {
   id: 'deepseek',
@@ -28,19 +36,26 @@ export const deepseekTransformer: Transformer = {
   supportsStrictMode: () => true,
 
   clampMaxTokens(requested: number): number {
-    return requested > 8192 ? 8192 : requested
+    return requested > DEEPSEEK_MAX_OUTPUT_TOKENS ? DEEPSEEK_MAX_OUTPUT_TOKENS : requested
   },
 
   transformRequest(body: OpenAIChatRequest, ctx: TransformContext): OpenAIChatRequest {
-    const thinkingEnabled = resolveDeepSeekThinking(ctx.model, ctx.isReasoning)
+    // V4 rows are driven by the picker's effort chip. Any other id behind
+    // DEEPSEEK_BASE_URL is a custom/proxied model: it keeps the caller's
+    // thinking budget and never gets an effort field it may not understand.
+    const isV4 = isDeepSeekV4ThinkingModel(ctx.model)
+    const effort = isV4 ? resolveDeepSeekRequestEffort(ctx.model) : null
+    const thinkingEnabled = isV4 ? effort !== null : ctx.isReasoning
 
     if (thinkingEnabled) {
       body.thinking = { type: 'enabled' }
+      if (effort) body.reasoning_effort = effort
       body.messages = sanitizeDeepSeekToolCallAdjacency(body.messages)
       return body
     }
 
     body.thinking = { type: 'disabled' }
+    delete body.reasoning_effort
     body.messages = sanitizeDeepSeekToolCallAdjacency(
       body.messages.map(stripDeepSeekReasoningContent),
     )
@@ -67,7 +82,9 @@ export const deepseekTransformer: Transformer = {
   },
 
   smallFastModel(_model: string): string | null {
-    return 'deepseek-chat'
+    // Flash is the cheap row of the live V4 family; the bare alias resolves
+    // to the newest checkpoint (-0731 today) without pinning a dead id.
+    return 'deepseek-v4-flash'
   },
 
   cacheControlMode(): 'none' | 'passthrough' | 'last-only' {
@@ -75,17 +92,6 @@ export const deepseekTransformer: Transformer = {
     // cache_control; strip rather than let it 400 on unknown fields.
     return 'none'
   },
-}
-
-function isDeepSeekReasoningModel(model: string): boolean {
-  return /\bdeepseek-reasoner\b/i.test(model)
-}
-
-function resolveDeepSeekThinking(model: string, isReasoning: boolean): boolean {
-  // V4 picker toggle is authoritative — the hidden /thinking command and
-  // the global thinkingConfig do not drive deepseek-v4-flash / -pro.
-  if (isDeepSeekV4ThinkingModel(model)) return getDeepSeekV4Thinking()
-  return isReasoning || isDeepSeekReasoningModel(model)
 }
 
 function stripDeepSeekReasoningContent(message: OpenAIChatMessage): OpenAIChatMessage {

@@ -18,7 +18,9 @@ import {
  * param — no crash, no error.
  */
 const THIRD_PARTY_THINKING_MODELS: Record<string, string[]> = {
-  deepseek: ['deepseek-reasoner'],
+  // V4 thinking is owned by the model picker (utils/model/deepseekThinking.ts),
+  // not this command, and deepseek-reasoner was retired on 2026-07-24.
+  deepseek: [],
   moonshot: ['kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking', 'kimi-k2-thinking-turbo'],
   nim: ['moonshotai/kimi-k2-thinking', 'kimi-k2-thinking'],
   openrouter: [
@@ -26,7 +28,6 @@ const THIRD_PARTY_THINKING_MODELS: Record<string, string[]> = {
     'anthropic/claude-sonnet-4-6',
     'anthropic/claude-sonnet-4-5',
     'deepseek/deepseek-r1',
-    'deepseek/deepseek-reasoner',
   ],
   groq: ['deepseek-r1-distill-llama-70b', 'deepseek-r1-distill-qwen-32b'],
 }

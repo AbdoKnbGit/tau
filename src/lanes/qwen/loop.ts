@@ -36,6 +36,11 @@ import { qwenApi, type QwenChatMessage, type QwenStreamChunk, type QwenTool } fr
 import { isMediaBlock } from '../shared/media_blocks.js'
 import { renderMediaForTextLane } from '../shared/media_extract.js'
 import {
+  createRetryableConnectionError,
+  isAbortError,
+  isRetryableNetworkError,
+} from '../../services/api/transport_error.js'
+import {
   sanitizeSchemaForLane,
   appendStrictParamsHint,
   QWEN_TOOL_USAGE_RULES,
@@ -262,6 +267,13 @@ export class QwenLane implements Lane {
         }
       }
     } catch (err: any) {
+      if (
+        !messageStartEmitted
+        && !isAbortError(err, signal)
+        && isRetryableNetworkError(err)
+      ) {
+        throw createRetryableConnectionError('Qwen API connection error', err)
+      }
       if (!messageStartEmitted) {
         const ev = emitMessageStart()
         if (ev) yield ev

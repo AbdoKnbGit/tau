@@ -298,53 +298,5 @@ await test('a non-splitting compat provider never sees the literal marker', asyn
   assert(wire.includes('gitStatus'), 'non-splitting providers must keep the full system prompt')
 })
 
-await test('deepseek-reasoner keeps its current shape (no relocation, no marker)', async () => {
-  _resetSessionVolatileFreezeForTest()
-  const lane = new OpenAICompatLane()
-  lane.registerProvider('deepseek', 'sk-test', 'https://api.deepseek.com/v1')
-  const oldFetch = globalThis.fetch
-  let body: Record<string, any> | null = null
-  globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
-    body = JSON.parse(String(init?.body ?? '{}')) as Record<string, any>
-    const sse =
-      [
-        { choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] },
-        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
-      ]
-        .map(c => `data: ${JSON.stringify(c)}\n\n`)
-        .join('') + 'data: [DONE]\n\n'
-    return new Response(sse, {
-      status: 200,
-      headers: { 'content-type': 'text/event-stream' },
-    })
-  }) as typeof fetch
-  try {
-    const stream = lane.streamAsProvider({
-      model: 'deepseek-reasoner',
-      messages: [{ role: 'user', content: 'hi' }],
-      system: `${STABLE}\n${MARKER}\n${VOLATILE}`,
-      tools: [],
-      max_tokens: 64,
-      signal: new AbortController().signal,
-      providerHint: 'deepseek',
-    })
-    for await (const _ of stream) void _
-  } finally {
-    globalThis.fetch = oldFetch
-    lane.unregisterProvider('deepseek')
-  }
-  assert(body !== null, 'request body was not captured')
-  const msgs = (body as any).messages as any[]
-  assert(!JSON.stringify(body).includes(MARKER), 'marker leaked to deepseek-reasoner')
-  assert(
-    messageText(msgs[0]).includes('gitStatus'),
-    'reasoner must keep the volatile tail in its system message (unchanged shape)',
-  )
-  assert(
-    !msgs.some((m: any) => messageText(m).includes('<dynamic_context>')),
-    'reasoner must not get the relocated block',
-  )
-})
-
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

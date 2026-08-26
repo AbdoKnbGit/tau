@@ -19,6 +19,7 @@ import {
   countTokensViaHaikuFallback,
   roughTokenCountEstimation,
   roughTokenCountEstimationForMessages,
+  roughTokenCountEstimationForRawBlock,
 } from '../services/tokenEstimation.js'
 import { estimateSkillFrontmatterTokens } from '../skills/loadSkillsDir.js'
 import {
@@ -821,8 +822,7 @@ function processAssistantMessage(
 ): void {
   // Process each content block individually
   for (const block of msg.message.content) {
-    const blockStr = jsonStringify(block)
-    const blockTokens = roughTokenCountEstimation(blockStr)
+    const blockTokens = roughTokenCountEstimationForRawBlock(block)
 
     if ('type' in block && block.type === 'tool_use') {
       breakdown.toolCallTokens += blockTokens
@@ -853,8 +853,7 @@ function processUserMessage(
 
   // Process each content block individually
   for (const block of msg.message.content) {
-    const blockStr = jsonStringify(block)
-    const blockTokens = roughTokenCountEstimation(blockStr)
+    const blockTokens = roughTokenCountEstimationForRawBlock(block)
 
     if ('type' in block && block.type === 'tool_result') {
       breakdown.toolResultTokens += blockTokens

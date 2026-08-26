@@ -2,8 +2,8 @@
  * Fireworks AI transformer (https://fireworks.ai).
  *
  * OpenAI Chat Completions endpoint at https://api.fireworks.ai/inference/v1,
- * Bearer FIREWORKS_API_KEY. Serves open-weight models (DeepSeek V4, Kimi K2.6,
- * GLM 5.1, MiniMax M2, Qwen3.6, GPT-OSS, …) with ids like
+ * Bearer FIREWORKS_API_KEY. Serves open-weight models (DeepSeek V4, Kimi K3,
+ * GLM 5.2, MiniMax M3, Qwen 3.8, …) with ids like
  * `accounts/fireworks/models/<name>` (note Fireworks' `p`-for-decimal ids,
  * e.g. `kimi-k2p6`).
  *
@@ -60,24 +60,22 @@ interface FireworksCatalogEntry {
   supportsToolCalling?: boolean
 }
 
-// Verified against the account's live serverless roster (each id returns 200
-// on a real /chat/completions request; ctx/tools come from the public model
-// registry). Ids use Fireworks' `p`-for-decimal convention (kimi-k2p6 =
-// Kimi K2.6). Grouped high-capability first, then fast/low-latency.
+// Ids use Fireworks' `p`-for-decimal convention (kimi-k2p7 = Kimi K2.7,
+// qwen3p8-2p4t-a95b = Qwen 3.8, 2.4T total / 95B active). Grouped
+// high-capability first, then fast/low-latency.
+//
+// contextWindow is informational only — the picker renders it, the gateway is
+// authoritative — so it is set only where the figure is actually published.
+// The rows without one simply render no context chip rather than a guess.
 const FIREWORKS_CODING_MODELS: readonly FireworksCatalogEntry[] = [
   // ── High capability ──
-  { id: 'deepseek-v4-pro',  name: 'DeepSeek V4 Pro', contextWindow: 1048576, tags: ['tools', 'recommended'] },
-  { id: 'kimi-k2p6',        name: 'Kimi K2.6', contextWindow: 262144, tags: ['tools'] },
-  { id: 'glm-5p1',          name: 'GLM 5.1', contextWindow: 202752, tags: ['tools'] },
-  { id: 'minimax-m2p7',     name: 'MiniMax M2.7', contextWindow: 196608, tags: ['tools'] },
-  { id: 'qwen3p6-plus',     name: 'Qwen3.6 Plus', tags: ['tools'] },
+  { id: 'kimi-k3',              name: 'Kimi K3', tags: ['tools', 'recommended'] },
+  { id: 'qwen3p8-2p4t-a95b',    name: 'Qwen 3.8 2.4T-A95B', tags: ['tools'] },
+  { id: 'glm-5p2',              name: 'GLM 5.2', tags: ['tools'] },
+  { id: 'kimi-k2p7-code',       name: 'Kimi K2.7 Code', tags: ['tools'] },
   // ── Fast / low latency ──
-  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', contextWindow: 1048576, tags: ['tools', 'fast'] },
-  { id: 'minimax-m2p5',      name: 'MiniMax M2.5', contextWindow: 196608, tags: ['tools', 'fast'] },
-  { id: 'gpt-oss-120b',      name: 'GPT-OSS 120B', contextWindow: 131072, tags: ['tools'] },
-  // gpt-oss-20b is chat-only (no function calling) — surfaced for quick
-  // non-agentic use, but left untagged for tools so the picker is honest.
-  { id: 'gpt-oss-20b',       name: 'GPT-OSS 20B', contextWindow: 131072, tags: ['fast'], supportsToolCalling: false },
+  { id: 'minimax-m3',           name: 'MiniMax M3', tags: ['tools', 'fast'] },
+  { id: 'deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash', contextWindow: 1048576, tags: ['tools', 'fast'] },
 ]
 
 function qualifyFireworksId(id: string): string {

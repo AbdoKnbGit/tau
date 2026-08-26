@@ -45,6 +45,11 @@ import {
 } from '../shared/mcp_bridge.js'
 import { describeUnsendableMedia } from '../shared/media_blocks.js'
 import {
+  createRetryableConnectionError,
+  isAbortError,
+  isRetryableNetworkError,
+} from '../../services/api/transport_error.js'
+import {
   codexApi,
   type CodexInputItem,
   type CodexContentPart,
@@ -482,6 +487,13 @@ export class CodexLane implements Lane {
         }
       }
     } catch (err: any) {
+      if (
+        !messageStartEmitted
+        && !isAbortError(err, signal)
+        && isRetryableNetworkError(err)
+      ) {
+        throw createRetryableConnectionError('Codex API connection error', err)
+      }
       if (err?.name === 'AbortError' || signal.aborted) {
         if (!messageStartEmitted) {
           const mst = emitMessageStart()

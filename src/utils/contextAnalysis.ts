@@ -3,14 +3,16 @@ import type {
   ContentBlock,
   ContentBlockParam,
 } from '@anthropic-ai/sdk/resources/index.mjs'
-import { roughTokenCountEstimation as countTokens } from '../services/tokenEstimation.js'
+import {
+  roughTokenCountEstimation as countTokens,
+  roughTokenCountEstimationForRawBlock,
+} from '../services/tokenEstimation.js'
 import type {
   AssistantMessage,
   Message,
   UserMessage,
 } from '../types/message.js'
 import { normalizeMessagesForAPI } from './messages.js'
-import { jsonStringify } from './slowOperations.js'
 
 type TokenStats = {
   toolRequests: Map<string, number>
@@ -104,7 +106,9 @@ function processBlock(
   readToolPaths: Map<string, string>,
   fileReads: Map<string, { count: number; totalTokens: number }>,
 ): void {
-  const tokens = countTokens(jsonStringify(block))
+  // Media blocks are billed by pixel count, not by the length of their
+  // base64 payload — roughTokenCountEstimationForRawBlock handles that.
+  const tokens = roughTokenCountEstimationForRawBlock(block)
   stats.total += tokens
 
   switch (block.type) {

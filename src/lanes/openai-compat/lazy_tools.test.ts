@@ -61,13 +61,13 @@ async function captureBody(
       {
         id: 'x',
         object: 'chat.completion.chunk',
-        model: 'deepseek-chat',
+        model: 'deepseek-v4-flash',
         choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }],
       },
       {
         id: 'x',
         object: 'chat.completion.chunk',
-        model: 'deepseek-chat',
+        model: 'deepseek-v4-flash',
         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
         usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
       },
@@ -81,7 +81,7 @@ async function captureBody(
   try {
     const events: AnthropicStreamEvent[] = []
     const stream = lane.streamAsProvider({
-      model: 'deepseek-chat',
+      model: 'deepseek-v4-flash',
       messages,
       system: 'stable system',
       tools,

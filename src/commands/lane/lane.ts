@@ -101,7 +101,7 @@ function sampleSupportedModels(lane: Lane): string {
     gemini: ['gemini-3.1-pro-high', 'gemini-2.5-flash', 'gemma-2-9b'],
     codex: ['gpt-5-codex', 'o3-mini', 'codex-turbo'],
     qwen: ['qwen3-coder-plus', 'qwen-max', 'coder-model'],
-    'openai-compat': ['deepseek-reasoner', 'llama-3.3-70b', 'mistral-large'],
+    'openai-compat': ['deepseek-v4-flash', 'llama-3.3-70b', 'mistral-large'],
   }
   const hints = CANDIDATES[lane.name] ?? []
   return hints.filter(m => lane.supportsModel(m)).join(', ')

@@ -8,10 +8,13 @@
  * Auth: Bearer token (sk-...)
  * API: OpenAI-compatible
  *
- * Available models (April 2026):
- *   - deepseek-chat            — Latest chat model (V3)
- *   - deepseek-reasoner        — Reasoning model (R1)
- *   - deepseek-coder           — Code-specialized model
+ * Available models (August 2026):
+ *   - deepseek-v4-pro               — 1.6T MoE flagship (thinking by default)
+ *   - deepseek-v4-flash             — 284B MoE cheap/fast row
+ *   - deepseek-v4-flash-vision-exp  — experimental, accepts image input
+ *
+ * deepseek-chat / deepseek-reasoner / deepseek-coder were retired on
+ * 2026-07-24 and now error. Send the bare alias, never a dated checkpoint.
  *
  * DeepSeek R1 reasoning:
  *   - Returns reasoning_content in the response

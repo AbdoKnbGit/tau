@@ -57,7 +57,7 @@ type Captured = {
 }
 
 /**
- * Boot the lane via initOpenAICompatLane, run one deepseek-chat turn against
+ * Boot the lane via initOpenAICompatLane, run one deepseek-v4-flash turn against
  * a mocked fetch, and return the captured /chat/completions request + events.
  */
 async function captureDeepSeek(params: {
@@ -82,8 +82,8 @@ async function captureDeepSeek(params: {
     const usage = params.finalUsage ?? { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 }
     const sse =
       [
-        { id: 'x', object: 'chat.completion.chunk', model: 'deepseek-chat', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] },
-        { id: 'x', object: 'chat.completion.chunk', model: 'deepseek-chat', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage },
+        { id: 'x', object: 'chat.completion.chunk', model: 'deepseek-v4-flash', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] },
+        { id: 'x', object: 'chat.completion.chunk', model: 'deepseek-v4-flash', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage },
       ]
         .map(c => `data: ${JSON.stringify(c)}\n\n`)
         .join('') + 'data: [DONE]\n\n'
@@ -93,7 +93,7 @@ async function captureDeepSeek(params: {
   try {
     const events: AnthropicStreamEvent[] = []
     const stream = openaiCompatLane.streamAsProvider({
-      model: 'deepseek-chat',
+      model: 'deepseek-v4-flash',
       messages: [{ role: 'user', content: 'hello' }],
       system: 'stable system prompt',
       tools: params.tools ?? [],

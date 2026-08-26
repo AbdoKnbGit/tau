@@ -63,7 +63,7 @@ test('keys separate model and session; both survive a reset independently', () =
   resetSessionVolatileFreeze()
   const a = volatileFreezeKey('deepseek', 'deepseek-v4-flash', 'sess-1', [])
   const b = volatileFreezeKey('deepseek', 'deepseek-v4-flash', 'sess-2', [])
-  const c = volatileFreezeKey('deepseek', 'deepseek-reasoner', 'sess-1', [])
+  const c = volatileFreezeKey('deepseek', 'deepseek-v4-pro', 'sess-1', [])
   assert(a !== b, 'different sessions must not share a snapshot')
   assert(a !== c, 'different models must not share a snapshot')
   freezeSessionVolatileText(a, 'A')

@@ -84,6 +84,10 @@ import { mimoReasoningContentReplayRequired } from '../../utils/model/mimoThinki
 import { recordProviderModelContextWindows } from '../../utils/model/contextWindows.js'
 import { providerUsesStableRequestSession } from '../../services/api/cacheAffinity.js'
 import {
+  createRetryableConnectionError,
+  isAbortError,
+} from '../../services/api/transport_error.js'
+import {
   AFT_AST_SEARCH_TOOL_NAME,
   AFT_DIAGNOSTICS_TOOL_NAME,
   AFT_OUTLINE_TOOL_NAME,
@@ -664,26 +668,11 @@ export class OpenAICompatLane implements Lane {
         signal,
       })
     } catch (err: any) {
-      if (provider === 'opencode' || provider === 'opencodego') {
-        // Do not turn a transient OpenCode transport failure into a completed
-        // assistant turn. The provider shim's retry controller can only retry
-        // thrown errors; emitting an error message here made every subsequent
-        // user "continue" a new turn and shifted the rolling cache prefix.
-        if (signal?.aborted && err instanceof Error) throw err
-        throw createOpenCodeConnectionError(provider, err)
-      }
-      if (!messageStartEmitted) {
-        const mst = emitMessageStart()
-        if (mst) yield mst
-      }
-      const message = err?.message ?? String(err)
-      const detail = provider === 'lmstudio'
-        ? `LM Studio server unreachable at ${normalizeBaseUrl(cfg.baseUrl)} (${message}). Start the LM Studio local server and retry.`
-        : message
-      yield* emitErrorText(`${provider} API connection error: ${detail}`)
-      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
-      yield { type: 'message_stop' }
-      return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
+      // A request that never received a response produced nothing durable.
+      // Throw into the shared retry controller instead of persisting an
+      // assistant error turn, which would shift every provider's cache prefix.
+      if (isAbortError(err, signal)) throw err
+      throw createProviderConnectionError(provider, err)
     }
 
     if (!response.ok) {
@@ -1495,15 +1484,11 @@ function blankUsage(i: number, o: number, c: number, r: number): NormalizedUsage
   }
 }
 
-function createOpenCodeConnectionError(
-  provider: 'opencode' | 'opencodego',
+function createProviderConnectionError(
+  provider: ProviderType,
   error: unknown,
 ): APIConnectionError {
-  const cause = error instanceof Error ? error : new Error(String(error))
-  return new APIConnectionError({
-    message: `${provider} API connection error: ${cause.message}`,
-    cause,
-  })
+  return createRetryableConnectionError(`${provider} API connection error`, error)
 }
 
 function* emitErrorText(text: string): Generator<AnthropicStreamEvent> {
@@ -1690,8 +1675,8 @@ async function* streamOpenCodeAnthropicRoute(
   }
 
   if (!response) {
-    if (params.signal?.aborted && connectionError instanceof Error) throw connectionError
-    throw createOpenCodeConnectionError(provider, connectionError)
+    if (isAbortError(connectionError, params.signal)) throw connectionError
+    throw createProviderConnectionError(provider, connectionError)
   }
 
   if (!response.ok) {
@@ -2730,12 +2715,8 @@ async function* streamOllamaNative(
       signal,
     })
   } catch (err: any) {
-    const mst = emitMessageStart()
-    if (mst) yield mst
-    yield* emitErrorText(`ollama API connection error: ${err?.message ?? String(err)}`)
-    yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
-    yield { type: 'message_stop' }
-    return blankUsage(0, 0, 0, 0)
+    if (isAbortError(err, signal)) throw err
+    throw createProviderConnectionError('ollama', err)
   }
 
   if (!response.ok) {
@@ -3023,7 +3004,7 @@ function convertHistoryToOpenAI(
   provider: ProviderType = 'generic',
   model = '',
 ): OpenAIChatMessage[] {
-  if (provider === 'deepseek' && model.toLowerCase() !== 'deepseek-reasoner') {
+  if (provider === 'deepseek') {
     return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
   }
   if (provider === 'moonshot' && isMoonshotThinkingModel(model)) {
@@ -3116,19 +3097,6 @@ function buildDeepSeekCacheStableMessages(
   model: string,
   cacheSessionId?: string,
 ): OpenAIChatMessage[] {
-  // deepseek-reasoner enforces stricter message-alternation rules than the V4
-  // rows and already takes its own history path (see convertHistoryToOpenAI).
-  // The relocation below was measured on deepseek-v4-flash only, so reasoner
-  // keeps today's exact shape — marker stripped, nothing moved.
-  if (model.toLowerCase() === 'deepseek-reasoner') {
-    return convertHistoryToOpenAI(
-      messages,
-      stripSystemDynamicBoundary(systemText),
-      'deepseek',
-      model,
-    )
-  }
-
   const { stable, volatile } = splitSystemPromptForCache(systemText)
   const out = convertHistoryToOpenAI(messages, stable, 'deepseek', model)
   const frozen = freezeSessionVolatileText(
@@ -3249,6 +3217,14 @@ function convertHistoryToOpenAIDefault(
       }
     }
 
+    // A tool result answers the PREVIOUS assistant turn, so it has to sit
+    // immediately after that turn tool_calls. Text riding in this same
+    // message -- a system-reminder, an attachment, the user typing while the
+    // result lands -- must queue behind it, or the wire order interposes a
+    // user turn between a call and its answer. Assistant turns keep today
+    // order: their own results follow their own tool_calls.
+    const resultsAnswerPriorTurn = msg.role !== 'assistant'
+    if (resultsAnswerPriorTurn) out.push(...toolResults)
     if (texts.length > 0 || toolCalls.length > 0 || imageParts.length > 0) {
       const role = msg.role === 'assistant' ? 'assistant' : 'user'
       // Assistant turns can't carry image parts; only user input does.
@@ -3266,7 +3242,7 @@ function convertHistoryToOpenAIDefault(
         ...(toolCalls.length > 0 && { tool_calls: toolCalls }),
       })
     }
-    out.push(...toolResults)
+    if (!resultsAnswerPriorTurn) out.push(...toolResults)
     if (toolResultImageParts.length > 0) {
       out.push({
         role: 'user',
@@ -3499,6 +3475,13 @@ function convertHistoryToOpenAIForDeepSeek(
     }
 
     flushPendingAssistantText()
+    // Tool results first -- see the note in convertHistoryToOpenAI. Here the
+    // stakes are higher: sanitizeDeepSeekToolCallAdjacency drops a tool_call
+    // whose result is not adjacent, AND drops the orphaned result, so a user
+    // turn interposed between them erases both from history. The model then
+    // sees its own narration with no evidence it ever called anything and
+    // repeats it -- a silent loop rather than a visible error.
+    out.push(...toolResults)
     if (texts.length > 0 || imageParts.length > 0) {
       out.push({
         role: 'user',
@@ -3512,7 +3495,6 @@ function convertHistoryToOpenAIForDeepSeek(
           : texts.join('\n'),
       })
     }
-    out.push(...toolResults)
     if (toolResultImageParts.length > 0) {
       out.push({
         role: 'user',

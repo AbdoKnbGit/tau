@@ -590,23 +590,24 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     supportsToolCalling: true,
     defaultTier: 'pro',
     tiers: {
-      // All ids verified against the live serverless roster (each returns 200)
-      // and tool-capable, so subagent/tier spawns don't 404. Override per-tier
-      // via FIREWORKS_MODEL_* env vars.
+      // Every tier resolves to a row in the curated catalog (see
+      // transformers/fireworks.ts) so a subagent/tier spawn can't land on a
+      // model the picker doesn't list. Flash anchors haiku everywhere as the
+      // cheap/fast row. Override per-tier via FIREWORKS_MODEL_* env vars.
       free: {
-        opus:   process.env.FIREWORKS_MODEL_OPUS_FREE   ?? 'accounts/fireworks/models/glm-5p1',
-        sonnet: process.env.FIREWORKS_MODEL_SONNET_FREE ?? 'accounts/fireworks/models/minimax-m2p5',
-        haiku:  process.env.FIREWORKS_MODEL_HAIKU_FREE  ?? 'accounts/fireworks/models/deepseek-v4-flash',
+        opus:   process.env.FIREWORKS_MODEL_OPUS_FREE   ?? 'accounts/fireworks/models/glm-5p2',
+        sonnet: process.env.FIREWORKS_MODEL_SONNET_FREE ?? 'accounts/fireworks/models/minimax-m3',
+        haiku:  process.env.FIREWORKS_MODEL_HAIKU_FREE  ?? 'accounts/fireworks/models/deepseek-v4-flash-0731',
       },
       pro: {
-        opus:   process.env.FIREWORKS_MODEL_OPUS   ?? 'accounts/fireworks/models/deepseek-v4-pro',
-        sonnet: process.env.FIREWORKS_MODEL_SONNET ?? 'accounts/fireworks/models/kimi-k2p6',
-        haiku:  process.env.FIREWORKS_MODEL_HAIKU  ?? 'accounts/fireworks/models/deepseek-v4-flash',
+        opus:   process.env.FIREWORKS_MODEL_OPUS   ?? 'accounts/fireworks/models/kimi-k3',
+        sonnet: process.env.FIREWORKS_MODEL_SONNET ?? 'accounts/fireworks/models/kimi-k2p7-code',
+        haiku:  process.env.FIREWORKS_MODEL_HAIKU  ?? 'accounts/fireworks/models/deepseek-v4-flash-0731',
       },
       plus: {
-        opus:   process.env.FIREWORKS_MODEL_OPUS   ?? 'accounts/fireworks/models/deepseek-v4-pro',
-        sonnet: process.env.FIREWORKS_MODEL_SONNET ?? 'accounts/fireworks/models/kimi-k2p6',
-        haiku:  process.env.FIREWORKS_MODEL_HAIKU  ?? 'accounts/fireworks/models/deepseek-v4-flash',
+        opus:   process.env.FIREWORKS_MODEL_OPUS   ?? 'accounts/fireworks/models/qwen3p8-2p4t-a95b',
+        sonnet: process.env.FIREWORKS_MODEL_SONNET ?? 'accounts/fireworks/models/kimi-k3',
+        haiku:  process.env.FIREWORKS_MODEL_HAIKU  ?? 'accounts/fireworks/models/deepseek-v4-flash-0731',
       },
     },
   },
@@ -753,6 +754,12 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     },
   },
 
+  // DeepSeek. The legacy deepseek-chat / deepseek-reasoner names were retired
+  // on 2026-07-24 15:59 UTC and now error out -- V4 is the only live family.
+  // Always send the bare alias: deepseek-v4-flash / deepseek-v4-pro track the
+  // newest checkpoint server-side (currently -0731 / -0813). Those dated
+  // strings are pricing-table labels, not callable ids -- GET /models returns
+  // only the two aliases, so pinning one would 400.
   deepseek: {
     displayName: 'DeepSeek',
     baseUrl: process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1',
@@ -763,19 +770,19 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     defaultTier: 'pro',
     tiers: {
       free: {
-        opus:   'deepseek-chat',
-        sonnet: 'deepseek-chat',
-        haiku:  'deepseek-chat',
+        opus:   'deepseek-v4-flash',
+        sonnet: 'deepseek-v4-flash',
+        haiku:  'deepseek-v4-flash',
       },
       pro: {
-        opus:   process.env.DEEPSEEK_MODEL_OPUS   ?? 'deepseek-reasoner',
-        sonnet: process.env.DEEPSEEK_MODEL_SONNET ?? 'deepseek-chat',
-        haiku:  process.env.DEEPSEEK_MODEL_HAIKU  ?? 'deepseek-chat',
+        opus:   process.env.DEEPSEEK_MODEL_OPUS   ?? 'deepseek-v4-pro',
+        sonnet: process.env.DEEPSEEK_MODEL_SONNET ?? 'deepseek-v4-flash',
+        haiku:  process.env.DEEPSEEK_MODEL_HAIKU  ?? 'deepseek-v4-flash',
       },
       plus: {
-        opus:   process.env.DEEPSEEK_MODEL_OPUS   ?? 'deepseek-reasoner',
-        sonnet: process.env.DEEPSEEK_MODEL_SONNET ?? 'deepseek-reasoner',
-        haiku:  process.env.DEEPSEEK_MODEL_HAIKU  ?? 'deepseek-chat',
+        opus:   process.env.DEEPSEEK_MODEL_OPUS   ?? 'deepseek-v4-pro',
+        sonnet: process.env.DEEPSEEK_MODEL_SONNET ?? 'deepseek-v4-pro',
+        haiku:  process.env.DEEPSEEK_MODEL_HAIKU  ?? 'deepseek-v4-flash',
       },
     },
   },

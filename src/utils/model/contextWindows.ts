@@ -30,6 +30,13 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     'claude-4-sonnet-1m': 1_000_000,
     'claude-4-sonnet-1m-thinking': 1_000_000,
   },
+  // DeepSeek V4: 1M context, per the published pricing table. Scoped because
+  // other hosts (Fireworks, OpenCode Zen, LXD) serve their own v4 rows.
+  deepseek: {
+    'deepseek-v4-pro': 1_000_000,
+    'deepseek-v4-flash': 1_000_000,
+    'deepseek-v4-flash-vision-exp': 1_000_000,
+  },
   glm: {
     'glm-5.1': 200_000,
     'glm-5-turbo': 200_000,
@@ -128,9 +135,6 @@ const KNOWN_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
   'gemini-1.5-flash': GEMINI_LONG_CONTEXT_WINDOW,
 
   // Provider-owned and OpenAI-compatible catalogs.
-  'deepseek-chat': 128_000,
-  'deepseek-reasoner': 128_000,
-  'deepseek-coder': 128_000,
   'minimax-m2.7': 204_800,
   'minimax-m2.7-highspeed': 204_800,
   'deepseek-3.2': 164_000,
@@ -184,9 +188,6 @@ const PREFIX_CONTEXT_WINDOWS: ContextWindowMap = {
   'gemini-2.0': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-1.5-pro': GEMINI_15_PRO_CONTEXT_WINDOW,
   'gemini-1.5-flash': GEMINI_LONG_CONTEXT_WINDOW,
-  'deepseek-chat': 128_000,
-  'deepseek-reasoner': 128_000,
-  'deepseek-coder': 128_000,
   'minimax-m2.7': 204_800,
   'minimax-m2.7-highspeed': 204_800,
   'minimax-m2.5': 196_000,

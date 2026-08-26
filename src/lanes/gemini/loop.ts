@@ -25,7 +25,6 @@
  */
 
 import { randomUUID } from 'crypto'
-import { APIConnectionError } from '@anthropic-ai/sdk'
 import type {
   AnthropicStreamEvent,
 } from '../../services/api/providers/base_provider.js'
@@ -52,6 +51,10 @@ import {
   freezeSessionVolatileText,
   volatileFreezeKey,
 } from '../shared/volatile_freeze.js'
+import {
+  createRetryableConnectionError,
+  isAbortError,
+} from '../../services/api/transport_error.js'
 import {
   geminiApi,
   isGeminiRetryableNetworkError,
@@ -625,20 +628,20 @@ export class GeminiLane implements Lane {
         invalidateCache(cacheName)
       }
       if (
-        isAntigravityRequest
-        && !signal.aborted
+        !messageStartEmitted
+        && !isAbortError(err, signal)
         && isGeminiRetryableNetworkError(err)
       ) {
         // The API client has exhausted its bounded same-request backoff. Do
         // not persist that transport failure as an assistant turn: the shared
         // retry controller can repeat the identical request while preserving
-        // Antigravity's prompt bytes and stable body session affinity.
+        // prompt bytes and any provider-specific stable session affinity.
         currentCall = null
-        const cause = err instanceof Error ? err : new Error(String(err))
-        throw new APIConnectionError({
-          message: `Antigravity API connection error (model: ${model}): ${cause.message}`,
-          cause,
-        })
+        const providerName = isAntigravityRequest ? 'Antigravity' : 'Gemini'
+        throw createRetryableConnectionError(
+          `${providerName} API connection error (model: ${model})`,
+          err,
+        )
       }
       // Make sure message_start is emitted so downstream assembly works.
       if (!messageStartEmitted) {
