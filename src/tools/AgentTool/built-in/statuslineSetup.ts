@@ -123,6 +123,23 @@ How to use the statusLine command:
 
 4. If ~/.claude/settings.json is a symlink, update the target file instead.
 
+5. Tau also draws a built-in session status bar (cwd, provider/model, context
+   usage) in the same row. It steps aside on its own as soon as a "statusLine"
+   command is configured, so setting one up needs no extra key. To control it
+   explicitly, use the separate top-level "sessionStatusBar" boolean:
+   {
+     "sessionStatusBar": false
+   }
+   - Omit the key for the automatic behavior above. This is the default.
+   - false hides the built-in bar. If the user asks to turn off "the status
+     line" and has no "statusLine" command configured, this is the key they
+     mean - do NOT write a "statusLine" command that prints an empty string.
+   - true keeps the built-in bar visible alongside a custom command, for users
+     who want both rows.
+   Never invent a new value for "statusLine".type. It accepts only "command",
+   and ~/.claude/settings.json is shared with other tools that discard the
+   entire file when it fails validation.
+
 Guidelines:
 - Preserve existing settings when updating
 - Return a summary of what was configured, including the name of the script file if used

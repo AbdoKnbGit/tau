@@ -555,6 +555,20 @@ export const SettingsSchema = lazySchema(() =>
         })
         .optional()
         .describe('Custom status line display configuration'),
+      // Built-in session status bar (cwd, provider/model, context usage).
+      // Deliberately a separate key rather than another statusLine.type value:
+      // ~/.claude/settings.json is shared with upstream Claude Code, whose
+      // schema pins statusLine.type to "command" and returns null for the WHOLE
+      // file on a validation error. An unknown key is stripped harmlessly over
+      // there; a new type value would silently drop every other setting.
+      sessionStatusBar: z
+        .boolean()
+        .optional()
+        .describe(
+          'Show the built-in session status bar (cwd, provider/model, context usage). ' +
+            'Omit for automatic - shown unless a custom statusLine command is ' +
+            'configured and able to run. true always shows it, false turns it off.',
+        ),
       // Enabled plugins using marketplace-first format
       enabledPlugins: z
         .record(

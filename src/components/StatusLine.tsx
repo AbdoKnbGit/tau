@@ -20,7 +20,10 @@ import { calculateContextPercentages, getContextWindowForModel } from '../utils/
 import { getCwd } from '../utils/cwd.js';
 import { logForDebugging } from '../utils/debug.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
-import { createBaseHookInput, executeStatusLineCommand } from '../utils/hooks.js';
+import { createBaseHookInput, executeStatusLineCommand, shouldSkipHookDueToTrust } from '../utils/hooks.js';
+import { shouldAllowManagedHooksOnly, shouldDisableAllHooksIncludingManaged } from '../utils/hooks/hooksConfigSnapshot.js';
+import { getSettingsForSource } from '../utils/settings/settings.js';
+import { resolveStatusLineDisplay, type StatusLineDisplay } from './statusLineDisplay.js';
 import { getLastAssistantMessage } from '../utils/messages.js';
 import { getRuntimeMainLoopModel, type ModelName, renderModelName } from '../utils/model/model.js';
 import { getCurrentSessionTitle } from '../utils/sessionStorage.js';
@@ -37,11 +40,46 @@ function _getProviderDisplayLabel(): string {
   if (p === 'modelrouter') return ''
   return PROVIDER_DISPLAY_NAMES[p]
 }
+/**
+ * The statusLine command that applies to this session, or undefined.
+ *
+ * Mirrors the source resolution in executeStatusLineCommand: when
+ * disableAllHooks is set outside managed settings only a managed command
+ * survives, so that is the one the UI has to reflect.
+ */
+function customStatusLineCommand(settings: ReadonlySettings) {
+  if (shouldAllowManagedHooksOnly()) {
+    return getSettingsForSource('policySettings')?.statusLine;
+  }
+  return settings?.statusLine;
+}
+
+/**
+ * Resolve both status rows together. Assistant mode: every field on either row
+ * (model, permission mode, cwd) reflects the REPL/daemon process, not what the
+ * agent child is actually running, so neither row is honest - hide both.
+ */
+function resolveDisplay(settings: ReadonlySettings): StatusLineDisplay {
+  const configured = customStatusLineCommand(settings)?.type === 'command';
+  return resolveStatusLineDisplay({
+    customCommandConfigured: configured,
+    customCommandWillRun: configured && !shouldDisableAllHooksIncludingManaged() && !shouldSkipHookDueToTrust(),
+    sessionStatusBar: settings?.sessionStatusBar,
+    suppressAll: feature('KAIROS') && getKairosActive()
+  });
+}
+
+/** Render the user's statusLine command row (StatusLine, below). */
 export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
-  // Assistant mode: statusline fields (model, permission mode, cwd) reflect the
-  // REPL/daemon process, not what the agent child is actually running. Hide it.
-  if (feature('KAIROS') && getKairosActive()) return false;
-  return settings?.statusLine !== undefined;
+  return resolveDisplay(settings).custom;
+}
+
+/**
+ * Render the built-in session bar (PromptInputStatusBar). Mutually exclusive
+ * with the custom row unless sessionStatusBar: true asks for both.
+ */
+export function sessionStatusBarShouldDisplay(settings: ReadonlySettings): boolean {
+  return resolveDisplay(settings).builtin;
 }
 function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, vimMode?: VimMode): StatusLineCommandInput {
   const agentType = getMainThreadAgentType();

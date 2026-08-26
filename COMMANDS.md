@@ -136,3 +136,20 @@ Save a sentence (or two) and Tau quietly appends it to the end of every message 
 
 **`/learned` - Self-learning control hub**
 Tau learns as you work: after a substantial task (or on demand) it proposes one critical, general, reusable lesson - a framework gotcha, a whole class of bug to avoid, a hard-won constraint, or your own preference - for you to Approve / Edit / Skip, then carries approved ones into future sessions and projects. Approve and it's saved and used from the next session, no extra step; lessons are always a single portable principle, never project-specific trivia. Open `/learned` for a navigable menu: view what it has learned, learn from this session, edit or delete a lesson, or toggle self-learning on/off.
+
+**`/statusline` - Configure the status row under the prompt**
+Tau draws one status row beneath the prompt. By default it is the built-in session bar: current directory, provider/model, and a context-usage meter. `/statusline` hands the job to the `statusline-setup` agent, which writes a `statusLine` command into `~/.claude/settings.json` for you.
+
+```
+/statusline                              import your shell PS1 (bash/zsh only)
+/statusline show git branch and model    describe the row you want instead
+```
+
+With no argument it reads `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, and `~/.profile` to convert an existing PS1. On Windows none of those exist, so pass a description instead.
+
+The row is controlled by two settings keys:
+
+- `statusLine` - `{ "type": "command", "command": "..." }`. The command receives a JSON blob on stdin (session, model, workspace, `context_window`, `rate_limits`, vim mode, agent, worktree) and its stdout becomes the row. Configuring one automatically hides the built-in bar, so the two never stack.
+- `sessionStatusBar` - a boolean controlling the built-in bar alone. Omit it for the automatic behavior above, `false` to turn the bar off entirely, `true` to keep it visible alongside a custom `statusLine` command.
+
+Set `sessionStatusBar: false` with no `statusLine` command and the row disappears. A `statusLine` command that cannot run - workspace trust not yet accepted, or `disableAllHooks` set - leaves the built-in bar in place rather than an empty row.
