@@ -47,6 +47,55 @@ export function providerSupportsClientSideToolDiscovery(
 }
 
 /**
+ * Providers whose prompt cache is an EXACT PREFIX cache that Tau cannot
+ * re-anchor once it breaks.
+ *
+ * Client-side discovery rewrites the tool array mid-session: every ToolSearch
+ * load appends schemas to the front of the request. On these providers the
+ * tool block sits inside the cached prefix, so one load voids the whole
+ * conversation cache and the next N turns re-send it uncached -- then the
+ * following load does it again. Measured on real sessions: 79-87% of all
+ * uncached input on deepseek/mimo/fireworks was re-sent prefix, not new
+ * content, with the collapses landing within three turns of a ToolSearch
+ * call (mimo 75%, fireworks 50%, deepseek 44%).
+ *
+ * Two shapes qualify, and neither gives Tau a breakpoint to re-anchor on:
+ *   - automatic/implicit prefix caching (deepseek, mimo)
+ *   - a session-pinned `prompt_cache_key` reusing one backend's KV cache
+ *     (fireworks, moonshot, cloudflare, mistral, lxd)
+ *
+ * Deliberately NOT here:
+ *   - openrouter / opencode / vercel / requesty / copilot / iflow — these pass
+ *     `cache_control` through and place breakpoints themselves, so the lane
+ *     re-warms on its own terms.
+ *   - minimax, glm, groq, nim — no prefix-cache pin at all (minimax actively
+ *     deletes `prompt_cache_key`), so deferral costs them nothing.
+ *   - ollama / lmstudio — local, where the scarce resource is context window
+ *     rather than a billed cache; schema savings are worth the re-prefill.
+ *   - gemini — already excluded via isAntigravityModelId, whose comment
+ *     describes this same failure mode.
+ */
+const EXACT_PREFIX_CACHE_PROVIDERS: ReadonlySet<APIProvider> = new Set([
+  'deepseek',
+  'mimo',
+  'fireworks',
+  'moonshot',
+  'cloudflare',
+  'mistral',
+  'lxd',
+])
+
+/**
+ * True when rewriting the tool array mid-session would void this provider's
+ * prompt cache with no way to re-anchor it. Consulted by BOTH tool-deferral
+ * gates so they cannot drift apart -- the exact failure the Antigravity
+ * opt-out comment in utils/toolSearch.ts documents.
+ */
+export function providerUsesExactPrefixCache(provider: APIProvider): boolean {
+  return EXACT_PREFIX_CACHE_PROVIDERS.has(provider)
+}
+
+/**
  * Model-aware companion to the provider allowlist. A provider may normally
  * use client-side discovery while a model-specific request transformer or
  * route cannot. Those requests must stay eager so the execution guard agrees
@@ -57,6 +106,8 @@ export function providerModelSupportsClientSideToolDiscovery(
   model?: string,
 ): boolean {
   if (!providerSupportsClientSideToolDiscovery(provider)) return false
+  // Rewriting the tool array would void a prefix cache Tau cannot re-anchor.
+  if (providerUsesExactPrefixCache(provider)) return false
   // NIM prunes to a fixed fast subset before the lazy selector. Keeping
   // ToolSearch active there would advertise/select schemas the transformer
   // can never send. Full-tools / no-optimize mode bypasses the prune and may
@@ -106,6 +157,9 @@ export function shouldDisableToolDeferralForProvider(
   // array never gets rewritten mid-session on client-side lanes, and no turn
   // is ever spent recovering a call whose schema was hidden.
   if (powerMode === 'cheap') return true
+  // Same reasoning as cheap mode's third clause, for providers where the
+  // front-of-request rewrite is not merely wasteful but cache-fatal.
+  if (providerUsesExactPrefixCache(provider)) return true
   if (provider === 'nim' && isNimFastToolFilterActive()) return true
   return !providerSupportsSafeToolDiscovery(provider)
 }
