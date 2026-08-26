@@ -55,17 +55,27 @@ function customStatusLineCommand(settings: ReadonlySettings) {
 }
 
 /**
- * Resolve both status rows together. Assistant mode: every field on either row
- * (model, permission mode, cwd) reflects the REPL/daemon process, not what the
- * agent child is actually running, so neither row is honest - hide both.
+ * Assistant mode: every field on either row (model, permission mode, cwd)
+ * reflects the REPL/daemon process, not what the agent child is actually
+ * running, so neither row is honest - hide both.
+ *
+ * The feature() call has to sit directly in an if or ternary for the Bun
+ * bundler to fold it away, so it cannot be inlined into the object literal in
+ * resolveDisplay.
  */
+function statusRowsAreDishonest(): boolean {
+  if (feature('KAIROS')) return getKairosActive();
+  return false;
+}
+
+/** Resolve both status rows together. */
 function resolveDisplay(settings: ReadonlySettings): StatusLineDisplay {
   const configured = customStatusLineCommand(settings)?.type === 'command';
   return resolveStatusLineDisplay({
     customCommandConfigured: configured,
     customCommandWillRun: configured && !shouldDisableAllHooksIncludingManaged() && !shouldSkipHookDueToTrust(),
     sessionStatusBar: settings?.sessionStatusBar,
-    suppressAll: feature('KAIROS') && getKairosActive()
+    suppressAll: statusRowsAreDishonest()
   });
 }
 
