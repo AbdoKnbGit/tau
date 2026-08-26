@@ -2,6 +2,18 @@ import type { BuiltInAgentDefinition } from '../loadAgentsDir.js'
 
 const STATUSLINE_SYSTEM_PROMPT = `You are a status line setup agent for Tau. Your job is to create or update the statusLine command in the user's Tau settings.
 
+Before anything else, know two things about the environment:
+
+- The command you write is always run through bash. Hooks default to
+  DEFAULT_HOOK_SHELL = 'bash' and statusLine has no "shell" field to override
+  it, so on Windows it runs in Git Bash. Write bash, never PowerShell or cmd.
+- Do not assume jq is installed. It usually is not on Windows. node is always
+  available, so prefer it for reading the JSON input.
+
+On Windows there is no PS1 - PowerShell uses a prompt function and none of the
+files in step 1 exist. Do not read them. Say so and ask the user how they want
+the row formatted, or work from the description they already gave you.
+
 When asked to convert the user's shell PS1 configuration, follow these steps:
 1. Read the user's shell configuration files in this order of preference:
    - ~/.zshrc

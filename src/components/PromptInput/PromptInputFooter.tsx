@@ -20,6 +20,7 @@ import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { isUndercover } from '../../utils/undercover.js';
 import { CoordinatorTaskPanel, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
 import { getLastAssistantMessageId, StatusLine, statusLineShouldDisplay } from '../StatusLine.js';
+import { statusRowFits } from '../statusLineDisplay.js';
 import { Notifications } from './Notifications.js';
 import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
 import { PromptInputFooterSuggestions, type SuggestionItem } from './PromptInputFooterSuggestions.js';
@@ -104,11 +105,11 @@ function PromptInputFooter({
   messagesRef.current = messages;
   const lastAssistantMessageId = useMemo(() => getLastAssistantMessageId(messages), [messages]);
   const isNarrow = columns < 80;
-  // In fullscreen the bottom slot is flexShrink:0, so every row here is a row
-  // stolen from the ScrollBox. Drop the optional StatusLine first. Non-fullscreen
-  // has terminal scrollback to absorb overflow, so we never hide StatusLine there.
+  // Below a certain height fullscreen cannot spare a row for either status
+  // row — see statusRowFits in statusLineDisplay.ts for why, and so that this
+  // row and the built-in session bar always drop together.
   const isFullscreen = isFullscreenEnvEnabled();
-  const isShort = isFullscreen && rows < 24;
+  const isShort = !statusRowFits(isFullscreen, rows);
 
   // Pill highlights when tasks is the active footer item AND no specific
   // agent row is selected. When coordinatorTaskIndex >= 0 the pointer has

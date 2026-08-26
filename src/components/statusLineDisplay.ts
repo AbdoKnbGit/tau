@@ -13,6 +13,25 @@
  * mode, workspace trust, hook policy) is resolved by the callers.
  */
 
+/**
+ * Terminal height below which fullscreen cannot spare a status row.
+ * Matches the historical threshold in PromptInputFooter.
+ */
+export const MIN_FULLSCREEN_ROWS_FOR_STATUS = 24
+
+/**
+ * Does the terminal have room for a status row?
+ *
+ * Fullscreen pins the prompt into a flexShrink:0 bottom slot (BottomSlot in
+ * FullscreenLayout.tsx), so under that height every optional row is one taken
+ * from the ScrollBox. Both rows answer to this, so they drop together instead
+ * of one quietly keeping the row the other just gave up. Outside fullscreen
+ * the terminal has scrollback to absorb overflow and nothing is hidden.
+ */
+export function statusRowFits(isFullscreen: boolean, rows: number): boolean {
+  return !isFullscreen || rows >= MIN_FULLSCREEN_ROWS_FOR_STATUS
+}
+
 export type StatusLineDisplayInput = {
   /**
    * A `statusLine` command is present in the settings that apply to this

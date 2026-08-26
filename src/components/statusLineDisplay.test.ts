@@ -5,8 +5,10 @@
  */
 
 import {
+  MIN_FULLSCREEN_ROWS_FOR_STATUS,
   resolveStatusLineDisplay,
   type StatusLineDisplayInput,
+  statusRowFits,
 } from './statusLineDisplay.js'
 
 let passed = 0
@@ -121,6 +123,29 @@ test('assistant mode hides both rows whatever is configured', () => {
       false,
       false,
       `assistant mode (sessionStatusBar=${String(sessionStatusBar)})`,
+    )
+  }
+})
+
+test('a short fullscreen terminal has no room for a status row', () => {
+  assert(
+    !statusRowFits(true, MIN_FULLSCREEN_ROWS_FOR_STATUS - 1),
+    'one row below the threshold should not fit',
+  )
+  assert(
+    statusRowFits(true, MIN_FULLSCREEN_ROWS_FOR_STATUS),
+    'the threshold itself should fit',
+  )
+  assert(statusRowFits(true, 80), 'a tall fullscreen terminal should fit')
+})
+
+test('outside fullscreen a status row always fits', () => {
+  // Non-fullscreen has terminal scrollback to absorb overflow, so height
+  // never hides a row there - however short the terminal gets.
+  for (const rows of [0, 1, 5, 23, 200]) {
+    assert(
+      statusRowFits(false, rows),
+      'rows=' + rows + ' should still fit outside fullscreen',
     )
   }
 })

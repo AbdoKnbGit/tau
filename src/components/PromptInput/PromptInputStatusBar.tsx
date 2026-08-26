@@ -2,6 +2,9 @@ import * as React from 'react'
 import { Box, Text } from 'src/ink.js'
 import { getSdkBetas } from '../../bootstrap/state.js'
 import { useSettings } from '../../hooks/useSettings.js'
+import { useTerminalSize } from '../../hooks/useTerminalSize.js'
+import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
+import { statusRowFits } from '../statusLineDisplay.js'
 import { sessionStatusBarShouldDisplay } from '../StatusLine.js'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
 import { analyzeContext } from '../../utils/contextAnalysis.js'
@@ -30,7 +33,10 @@ export function PromptInputStatusBar({
   // Hidden when the user runs a custom statusLine command instead, or turns
   // the bar off with sessionStatusBar: false. See statusLineDisplay.ts.
   const settings = useSettings()
-  const visible = sessionStatusBarShouldDisplay(settings)
+  const { rows } = useTerminalSize()
+  const visible =
+    sessionStatusBarShouldDisplay(settings) &&
+    statusRowFits(isFullscreenEnvEnabled(), rows)
   const mainLoopModel = useMainLoopModel()
   const provider = getAPIProvider()
   const contextWindow = getContextWindowForModel(mainLoopModel, getSdkBetas())
