@@ -9,8 +9,14 @@ import type {
 } from '../../types/command.js'
 import type { LogOption } from '../../types/logs.js'
 import { logError } from '../../utils/log.js'
-import { isLiteLog, loadFullLog } from '../../utils/sessionStorage.js'
+import {
+  isLiteLog,
+  loadFullLog,
+  saveAgentName,
+  saveCustomTitle,
+} from '../../utils/sessionStorage.js'
 import { buildSessionForest } from '../../utils/sessionTree.js'
+import { isTeammate } from '../../utils/teammate.js'
 
 export async function call(
   onDone: LocalJSXCommandOnDone,
@@ -42,6 +48,45 @@ export async function call(
     }
   }
 
+  // Ctrl+R on a row. Titles are appended to the target session's own JSONL,
+  // so renaming a session you're not in works exactly like /rename does for
+  // the one you are in — no resume, no rebuild of the forest.
+  const handleRename = async (
+    sessionId: UUID,
+    log: LogOption,
+    title: string,
+  ) => {
+    const isActiveSession = sessionId === getSessionId()
+    // Same refusal as /rename — a teammate's name belongs to the team leader.
+    if (isActiveSession && isTeammate()) {
+      throw new Error(
+        'This session is a swarm teammate; its name is set by the team leader.',
+      )
+    }
+    // save* falls back to a path guessed from the current project dir when
+    // fullPath is missing, which would append (and mkdir) somewhere else
+    // entirely for a session that lives under a sibling worktree. Refuse
+    // instead of writing a stray transcript.
+    if (!log.fullPath) {
+      throw new Error(
+        'No transcript path for this session — open it and use /rename.',
+      )
+    }
+    await saveCustomTitle(sessionId, title, log.fullPath)
+    if (isActiveSession) {
+      // Same follow-through as /rename: the agent name is what the prompt bar
+      // shows, and appState carries it for the rest of this session.
+      await saveAgentName(sessionId, title, log.fullPath)
+      context.setAppState(prev => ({
+        ...prev,
+        standaloneAgentContext: {
+          ...prev.standaloneAgentContext,
+          name: title,
+        },
+      }))
+    }
+  }
+
   const handleCancel = () => {
     onDone(undefined, { display: 'skip' })
   }
@@ -51,6 +96,7 @@ export async function call(
       forest={forest}
       activeSessionId={getSessionId()}
       onSelect={handleSelect}
+      onRename={handleRename}
       onCancel={handleCancel}
     />
   )

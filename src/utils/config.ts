@@ -23,6 +23,10 @@ import { writeFileSyncAndFlush_DEPRECATED } from './file.js'
 import { getFsImplementation } from './fsOperations.js'
 import { findCanonicalGitRoot } from './git.js'
 import { safeParseJSON } from './json.js'
+import {
+  type MessageHeaderMode,
+  normalizeMessageHeaderMode,
+} from './messageHeader.js'
 import { stripBOM } from './jsonRead.js'
 import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
@@ -252,6 +256,14 @@ export type GlobalConfig = {
   hasUsedBackslashReturn?: boolean
   autoCompactEnabled: boolean // Controls whether auto-compact is enabled
   showTurnDuration: boolean // Controls whether to show turn duration message (e.g., "Cooked for 1m 6s")
+  /**
+   * Where the per-response header renders and what it contains — one of
+   * 'off' | 'transcript' (default, ctrl+O only) | 'always:time' |
+   * 'always:time+model' | 'always:date+time' | 'always:date+time+model'.
+   * The always:* modes keep the date/model on screen during a normal session
+   * without a UserPromptSubmit/Stop hook injecting them. See messageHeader.ts.
+   */
+  messageHeaderMode?: MessageHeaderMode
   /**
    * @deprecated Use settings.env instead.
    */
@@ -690,6 +702,7 @@ function createDefaultGlobalConfig(): GlobalConfig {
     editorMode: 'normal',
     autoCompactEnabled: true,
     showTurnDuration: true,
+    messageHeaderMode: 'transcript',
     hasSeenTasksHint: false,
     hasUsedStash: false,
     hasUsedBackgroundTask: false,
@@ -735,6 +748,7 @@ export const GLOBAL_CONFIG_KEYS = [
   'hasUsedBackslashReturn',
   'autoCompactEnabled',
   'showTurnDuration',
+  'messageHeaderMode',
   'diffTool',
   'env',
   'tipsHistory',
@@ -1204,6 +1218,15 @@ export function getRemoteControlAtStartup(): boolean {
     if (ccrAutoConnect?.getCcrAutoConnectDefault()) return true
   }
   return false
+}
+
+/**
+ * Where the timestamp/model header renders and what it contains. See
+ * utils/messageHeader.ts — 'transcript' (the default) is upstream's
+ * ctrl+O-only behaviour.
+ */
+export function getMessageHeaderMode(): MessageHeaderMode {
+  return normalizeMessageHeaderMode(getGlobalConfig().messageHeaderMode)
 }
 
 export function getCustomApiKeyStatus(

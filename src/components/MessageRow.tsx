@@ -7,6 +7,8 @@ import type { Tools } from '../Tool.js';
 import type { RenderableMessage } from '../types/message.js';
 import { getDisplayMessageFromCollapsed, getToolSearchOrReadInfo, getToolUseIdsFromCollapsedGroup, hasAnyToolInProgress } from '../utils/collapseReadSearch.js';
 import { type buildMessageLookups, EMPTY_STRING_SET, getProgressMessagesFromLookup, getSiblingToolUseIDsFromLookup, getToolUseID } from '../utils/messages.js';
+import { getMessageHeaderMode } from '../utils/config.js';
+import { messageHeaderShowsDate, messageHeaderShowsModel, shouldShowMessageHeader } from '../utils/messageHeader.js';
 import { hasThinkingContent, Message } from './Message.js';
 import { MessageModel } from './MessageModel.js';
 import { shouldRenderStatically } from './Messages.js';
@@ -111,6 +113,15 @@ function MessageRowImpl(t0) {
     lookups
   } = t0;
   const isTranscriptMode = screen === "transcript";
+  // The timestamp/model header is transcript-only by default; the always:*
+  // modes render it in the normal scrollback too. headerVariant collapses
+  // "where" and "what" into one value so the memo blocks below have a single
+  // dep that fully describes the rendered header.
+  const headerMode = getMessageHeaderMode();
+  const showHeader = shouldShowMessageHeader(headerMode, isTranscriptMode);
+  const headerVariant = showHeader ? headerMode : "off";
+  const headerShowsDate = messageHeaderShowsDate(headerMode);
+  const headerShowsModel = showHeader && messageHeaderShowsModel(headerMode);
   const isGrouped = msg.type === "grouped_tool_use";
   const isCollapsed = msg.type === "collapsed_read_search";
   let t1;
@@ -217,10 +228,10 @@ function MessageRowImpl(t0) {
     }
   }
   let t5;
-  if ($[34] !== displayMsg || $[35] !== isTranscriptMode) {
-    t5 = isTranscriptMode && displayMsg.type === "assistant" && displayMsg.message.content.some(_temp) && (displayMsg.timestamp || displayMsg.message.model);
+  if ($[34] !== displayMsg || $[35] !== headerVariant) {
+    t5 = headerVariant !== "off" && displayMsg.type === "assistant" && displayMsg.message.content.some(_temp) && (displayMsg.timestamp || displayMsg.message.model);
     $[34] = displayMsg;
-    $[35] = isTranscriptMode;
+    $[35] = headerVariant;
     $[36] = t5;
   } else {
     t5 = $[36];
@@ -265,10 +276,10 @@ function MessageRowImpl(t0) {
     return t9;
   }
   let t9;
-  if ($[57] !== displayMsg || $[58] !== isTranscriptMode) {
-    t9 = <Box flexDirection="row" justifyContent="flex-end" gap={1} marginTop={1}><MessageTimestamp message={displayMsg} isTranscriptMode={isTranscriptMode} /><MessageModel message={displayMsg} isTranscriptMode={isTranscriptMode} /></Box>;
+  if ($[57] !== displayMsg || $[58] !== headerVariant) {
+    t9 = <Box flexDirection="row" justifyContent="flex-end" gap={1} marginTop={1}><MessageTimestamp message={displayMsg} showHeader={showHeader} showDate={headerShowsDate} /><MessageModel message={displayMsg} showHeader={headerShowsModel} /></Box>;
     $[57] = displayMsg;
-    $[58] = isTranscriptMode;
+    $[58] = headerVariant;
     $[59] = t9;
   } else {
     t9 = $[59];

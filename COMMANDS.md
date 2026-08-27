@@ -42,7 +42,7 @@ Turns voice conversation mode off and stops any spoken reply that is still playi
 ## Session
 
 **`/tree` - Navigate the session graph**
-Move through your conversation history like nodes, so branches and forks stay understandable.
+Move through your conversation history like nodes, so branches and forks stay understandable. Arrows move, Enter resumes, typing filters, and **Ctrl+R renames the highlighted session** - any session in the tree, not just the one you are in. The new name is written to that session's own transcript, so it shows up in `/tree` and `/resume` from then on; renaming the active session also updates the name under the prompt, exactly like `/rename`.
 
 **`/clone` - Clone the session**
 Create a copy of the current session when you want a backup or a clean duplicate to continue from.
@@ -136,6 +136,20 @@ Save a sentence (or two) and Tau quietly appends it to the end of every message 
 
 **`/learned` - Self-learning control hub**
 Tau learns as you work: after a substantial task (or on demand) it proposes one critical, general, reusable lesson - a framework gotcha, a whole class of bug to avoid, a hard-won constraint, or your own preference - for you to Approve / Edit / Skip, then carries approved ones into future sessions and projects. Approve and it's saved and used from the next session, no extra step; lessons are always a single portable principle, never project-specific trivia. Open `/learned` for a navigable menu: view what it has learned, learn from this session, edit or delete a lesson, or toggle self-learning on/off.
+
+**Message header - keep the date, time, and model on screen**
+Every assistant reply can carry a dim right-aligned header. Upstream only draws it inside the detailed transcript (Ctrl+O), so the usual way to keep the date or model visible while working was a `UserPromptSubmit`/`Stop` hook that injected the text into the conversation. One setting in `/config` - **Message header above replies** - does it as pure display instead; nothing is added to the prompt or the model's context. Highlight the row and press **Space** to cycle it:
+
+```
+off                      never drawn
+transcript               Ctrl+O only, time + model          (default, upstream)
+always:time              10:00 AM
+always:time+model        10:00 AM   claude-opus-5
+always:date+time         27 Aug 2026 10:00 AM
+always:date+time+model   27 Aug 2026 10:00 AM   claude-opus-5
+```
+
+Leave `/config` with **Enter** to save - Escape reverts every change you made in the panel (that applies to every row in `/config`, not just this one). The setting is stored in the global config (`~/.claude.json`) as `messageHeaderMode`, so you can also set it by hand. It applies to the next reply: lines already printed in the scrollback keep the look they were drawn with, while the Ctrl+O transcript redraws in full and always reflects the current setting.
 
 **`/statusline` - Configure the status row under the prompt**
 Tau draws one status row beneath the prompt. By default it is the built-in session bar: current directory, provider/model, and a context-usage meter. `/statusline` hands the job to the `statusline-setup` agent, which writes a `statusLine` command into `~/.claude/settings.json` for you.

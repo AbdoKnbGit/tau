@@ -5,6 +5,7 @@ import type { ExitState } from '../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- this dialog owns its own arrow + typing search loop
 import { Box, Text, useInput } from '../ink.js'
+import { useKeybinding } from '../keybindings/useKeybinding.js'
 import type { LogOption } from '../types/logs.js'
 import { formatRelativeTimeAgo } from '../utils/format.js'
 import {
@@ -17,16 +18,26 @@ import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js'
 import { Byline } from './design-system/Byline.js'
 import { Dialog } from './design-system/Dialog.js'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js'
+import TextInput from './TextInput.js'
 
 type Props = {
   forest: SessionTreeNode[]
   /** Session ID currently active in the REPL — gets a "← active" marker. */
   activeSessionId?: string
   onSelect: (sessionId: UUID, log: LogOption) => void
+  /**
+   * Persist a new title for one session (ctrl+R). Left out ⇒ no rename
+   * affordance is shown.
+   */
+  onRename?: (sessionId: UUID, log: LogOption, title: string) => Promise<void>
   onCancel: () => void
 }
 
 const MAX_VISIBLE_ROWS = 14
+
+// Some terminals deliver ctrl+R as the raw control character rather than
+// input='r' + key.ctrl, so both forms are accepted.
+const CTRL_R_RAW = String.fromCharCode(18)
 
 /**
  * A title is "garbage" if it leads with junk that the user wouldn't
@@ -64,10 +75,13 @@ function displayTitle(log: {
   return custom || first || '(untitled)'
 }
 
-function rowText(row: FlatTreeNode): string {
-  const log = row.node.log
-  const tag = log.tag ?? ''
-  return `${displayTitle(log)} ${tag} ${row.node.sessionId}`.toLowerCase()
+function rowText(row: FlatTreeNode, title: string): string {
+  const tag = row.node.log.tag ?? ''
+  return `${title} ${tag} ${row.node.sessionId}`.toLowerCase()
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, Math.max(1, max - 1))}…` : text
 }
 
 function isPrintable(ch: string): boolean {
@@ -80,10 +94,25 @@ export function SessionTreeDialog({
   forest,
   activeSessionId,
   onSelect,
+  onRename,
   onCancel,
 }: Props): React.ReactNode {
   const { columns } = useTerminalSize()
   const [query, setQuery] = useState('')
+  // sessionId → title renamed during this dialog. The forest is built once
+  // from disk, so renamed rows would otherwise keep showing the old title.
+  const [renamedTitles, setRenamedTitles] = useState<Record<string, string>>({})
+  const [renameTarget, setRenameTarget] = useState<FlatTreeNode | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameCursorOffset, setRenameCursorOffset] = useState(0)
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const isRenaming = renameTarget !== null
+
+  const titleFor = useCallback(
+    (node: SessionTreeNode): string =>
+      renamedTitles[node.sessionId] ?? displayTitle(node.log),
+    [renamedTitles],
+  )
 
   const allRows = useMemo(() => flattenForest(forest), [forest])
 
@@ -94,7 +123,9 @@ export function SessionTreeDialog({
     const needle = query.trim().toLowerCase()
     const keepIds = new Set<string>()
     for (const row of allRows) {
-      if (rowText(row).includes(needle)) keepIds.add(row.node.sessionId)
+      if (rowText(row, titleFor(row.node)).includes(needle)) {
+        keepIds.add(row.node.sessionId)
+      }
     }
     const ancestors = new Set<string>()
     for (let i = 0; i < allRows.length; i++) {
@@ -112,7 +143,7 @@ export function SessionTreeDialog({
     return allRows.filter(
       r => keepIds.has(r.node.sessionId) || ancestors.has(r.node.sessionId),
     )
-  }, [allRows, query])
+  }, [allRows, query, titleFor])
 
   const initialIndex = useMemo(() => {
     if (!activeSessionId) return 0
@@ -130,7 +161,66 @@ export function SessionTreeDialog({
     onSelect(row.node.sessionId as UUID, row.node.log)
   }, [filteredRows, safeCursor, onSelect])
 
+  const cancelRename = useCallback(() => {
+    setRenameTarget(null)
+    setRenameValue('')
+    setRenameCursorOffset(0)
+    setRenameError(null)
+  }, [])
+
+  const startRename = useCallback(() => {
+    const row = filteredRows[safeCursor]
+    if (!row) return
+    // Seed with the existing custom title so a tweak doesn't mean retyping,
+    // but never with a first-prompt fallback or a junk `<tag>` title — those
+    // stay as the placeholder instead.
+    const saved = row.node.log.customTitle?.trim()
+    const seed =
+      renamedTitles[row.node.sessionId] ??
+      (saved && !looksLikeJunkTitle(saved) ? saved : '')
+    setRenameTarget(row)
+    setRenameValue(seed)
+    setRenameCursorOffset(seed.length)
+    setRenameError(null)
+  }, [filteredRows, safeCursor, renamedTitles])
+
+  const submitRename = useCallback(
+    async (value: string) => {
+      if (!renameTarget || !onRename) return
+      const title = value.trim()
+      if (!title) {
+        cancelRename()
+        return
+      }
+      const { sessionId, log } = renameTarget.node
+      try {
+        await onRename(sessionId as UUID, log, title)
+        setRenamedTitles(prev => ({ ...prev, [sessionId]: title }))
+        cancelRename()
+      } catch (error) {
+        setRenameError(
+          error instanceof Error ? error.message : String(error ?? 'failed'),
+        )
+      }
+    },
+    [renameTarget, onRename, cancelRename],
+  )
+
+  // Esc leaves the rename field without closing the whole dialog. Dialog's own
+  // confirm:no is disabled below (isCancelActive) while this one is live.
+  useKeybinding('confirm:no', cancelRename, {
+    context: 'Settings',
+    isActive: isRenaming,
+  })
+
   useInput((input, key) => {
+    if (
+      onRename &&
+      ((key.ctrl && input.toLowerCase() === 'r') || input === CTRL_R_RAW)
+    ) {
+      startRename()
+      return
+    }
     if (key.upArrow) {
       setCursor(c => (c <= 0 ? filteredRows.length - 1 : c - 1))
       return
@@ -165,7 +255,7 @@ export function SessionTreeDialog({
       setQuery(q => q + printable)
       setCursor(0)
     }
-  })
+  }, { isActive: !isRenaming })
 
   const startRow = Math.max(
     0,
@@ -178,7 +268,7 @@ export function SessionTreeDialog({
 
   const renderRow = (row: FlatTreeNode, isCursor: boolean): React.ReactNode => {
     const log = row.node.log
-    const title = displayTitle(log)
+    const title = titleFor(row.node)
     const meta = `${log.messageCount} msgs · ${formatRelativeTimeAgo(log.modified, { style: 'short' })}`
     const isActive = row.node.sessionId === activeSessionId
     const prefix = renderTreePrefix(row)
@@ -187,8 +277,7 @@ export function SessionTreeDialog({
     const overhead =
       cursorMark.length + prefix.length + meta.length + activeMark.length + 5
     const maxTitle = Math.max(10, columns - overhead)
-    const safeTitle =
-      title.length > maxTitle ? `${title.slice(0, maxTitle - 1)}…` : title
+    const safeTitle = truncate(title, maxTitle)
     return (
       <Box key={row.node.sessionId}>
         <Text color={isCursor ? 'cyan' : undefined}>{cursorMark}</Text>
@@ -206,10 +295,26 @@ export function SessionTreeDialog({
     if (exitState.pending) {
       return <Text>Press {exitState.keyName} again to exit</Text>
     }
+    if (isRenaming) {
+      return (
+        <Byline>
+          <KeyboardShortcutHint shortcut="Enter" action="save" />
+          <ConfigurableShortcutHint
+            action="confirm:no"
+            context="Settings"
+            fallback="Esc"
+            description="cancel"
+          />
+        </Byline>
+      )
+    }
     return (
       <Byline>
         <KeyboardShortcutHint shortcut="↑/↓" action="navigate" />
         <KeyboardShortcutHint shortcut="Enter" action="resume" />
+        {onRename && (
+          <KeyboardShortcutHint shortcut="Ctrl+R" action="rename" />
+        )}
         <KeyboardShortcutHint shortcut="type" action="search" />
         <ConfigurableShortcutHint
           action="confirm:no"
@@ -221,8 +326,9 @@ export function SessionTreeDialog({
     )
   }
 
-  const subtitle =
-    filteredRows.length === allRows.length
+  const subtitle = isRenaming
+    ? 'Rename session'
+    : filteredRows.length === allRows.length
       ? `${allRows.length} session${allRows.length === 1 ? '' : 's'} in this project`
       : `${filteredRows.length} of ${allRows.length} sessions match "${query}"`
 
@@ -233,6 +339,7 @@ export function SessionTreeDialog({
       color="permission"
       onCancel={onCancel}
       inputGuide={renderInputGuide}
+      isCancelActive={!isRenaming}
     >
       {filteredRows.length === 0 ? (
         <Text dimColor>No sessions match "{query}"</Text>
@@ -247,6 +354,27 @@ export function SessionTreeDialog({
               ({safeCursor + 1}/{filteredRows.length})
             </Text>
           )}
+        </Box>
+      )}
+      {renameTarget && (
+        <Box flexDirection="column">
+          <Text bold>Rename session:</Text>
+          <Box paddingTop={1}>
+            <TextInput
+              value={renameValue}
+              onChange={setRenameValue}
+              onSubmit={value => void submitRename(value)}
+              placeholder={truncate(
+                titleFor(renameTarget.node),
+                Math.max(20, columns - 12),
+              )}
+              columns={columns}
+              cursorOffset={renameCursorOffset}
+              onChangeCursorOffset={setRenameCursorOffset}
+              showCursor
+            />
+          </Box>
+          {renameError && <Text color="error">{renameError}</Text>}
         </Box>
       )}
     </Dialog>

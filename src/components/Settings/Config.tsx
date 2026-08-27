@@ -8,6 +8,7 @@ import { useState, useCallback } from 'react';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import figures from 'figures';
 import { type GlobalConfig, saveGlobalConfig, getCurrentProjectConfig, type OutputStyle } from '../../utils/config.js';
+import { MESSAGE_HEADER_MODES, type MessageHeaderMode, normalizeMessageHeaderMode } from '../../utils/messageHeader.js';
 import { normalizeApiKeyForConfig } from '../../utils/authPortable.js';
 import { getGlobalConfig, getAutoUpdaterDisabledReason, formatAutoUpdaterDisabledReason, getRemoteControlAtStartup } from '../../utils/config.js';
 import chalk from 'chalk';
@@ -489,6 +490,23 @@ export function Config({
       });
       logEvent('tengu_show_turn_duration_setting_changed', {
         enabled: showTurnDuration
+      });
+    }
+  }, {
+    id: 'messageHeaderMode',
+    label: 'Message header above replies',
+    value: normalizeMessageHeaderMode(globalConfig.messageHeaderMode),
+    options: [...MESSAGE_HEADER_MODES],
+    type: 'enum' as const,
+    onChange(value: string) {
+      const messageHeaderMode = value as MessageHeaderMode;
+      saveGlobalConfig(current_5a => ({
+        ...current_5a,
+        messageHeaderMode
+      }));
+      setGlobalConfig({
+        ...getGlobalConfig(),
+        messageHeaderMode
       });
     }
   }, {
@@ -1156,6 +1174,9 @@ export function Config({
     }
     if (globalConfig.showTurnDuration !== initialConfig.current.showTurnDuration) {
       formattedChanges.push(`${globalConfig.showTurnDuration ? 'Enabled' : 'Disabled'} turn duration`);
+    }
+    if (globalConfig.messageHeaderMode !== initialConfig.current.messageHeaderMode) {
+      formattedChanges.push(`Set message header to ${chalk.bold(normalizeMessageHeaderMode(globalConfig.messageHeaderMode))}`);
     }
     if (globalConfig.remoteControlAtStartup !== initialConfig.current.remoteControlAtStartup) {
       const remoteLabel = globalConfig.remoteControlAtStartup === undefined ? 'Reset Remote Control to default' : `${globalConfig.remoteControlAtStartup ? 'Enabled' : 'Disabled'} Remote Control for all sessions`;
