@@ -309,21 +309,12 @@ export function ensureModelPricesFresh(): void {
   if (isModelPricingDisabled()) return
   if (refreshInFlight) return
 
-  let current = loadTable()
-  if (!current) {
-    // Another session may have written the table since this one first looked.
-    // Re-reading a local file beats re-downloading four megabytes.
-    loadAttempted = false
-    current = loadTable()
-  }
-
+  // Checked before touching disk: while a failure streak is backing off there
+  // is nothing to decide, and this runs on the cost path once per unpriced
+  // message. Without it, a table that cannot be fetched - offline, or the
+  // service down - would restart a 4MB download every time, because a null
+  // table can never satisfy the freshness check below.
   const now = Date.now()
-  const age = current ? now - current.fetchedAt : -1
-  if (current && age >= 0 && age < TTL_MS) return
-
-  // Without this, a table that cannot be fetched - offline, or the service
-  // down - restarts a 4MB download on every unpriced message, because a null
-  // table can never satisfy the freshness check above.
   const sinceFailure = now - lastRefreshFailureAt
   if (
     refreshFailures > 0 &&
@@ -332,6 +323,17 @@ export function ensureModelPricesFresh(): void {
   ) {
     return
   }
+
+  let current = loadTable()
+  if (!current) {
+    // Another session may have written the table since this one first looked.
+    // Re-reading a local file beats re-downloading four megabytes.
+    loadAttempted = false
+    current = loadTable()
+  }
+
+  const age = current ? now - current.fetchedAt : -1
+  if (current && age >= 0 && age < TTL_MS) return
 
   refreshInFlight = true
   void (async () => {

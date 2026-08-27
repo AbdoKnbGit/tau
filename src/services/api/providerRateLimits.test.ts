@@ -70,6 +70,24 @@ test('a response with no rate limit headers does not erase a good snapshot', () 
   )
 })
 
+test('a hostile headers object cannot break the request it rode in on', () => {
+  // Two call sites sit on the live streaming path in the openai-compat lane.
+  // A throw there would fail the user's actual API turn, not just the bar.
+  const exploding = {
+    get() {
+      throw new Error('header access failed')
+    },
+  } as unknown as Headers
+
+  let result: unknown = 'not-called'
+  try {
+    result = recordProviderRateLimits('deepseek', exploding)
+  } catch {
+    throw new Error('recordProviderRateLimits must never throw at a call site')
+  }
+  assert(result === null, 'an unreadable response reports nothing parsed')
+})
+
 test('a partial response records only the fields it carried', () => {
   const snapshot = recordProviderRateLimits(
     'deepseek',

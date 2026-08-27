@@ -106,21 +106,29 @@ export function recordProviderRateLimits(
   provider: string,
   headers: Headers,
 ): ProviderRateLimitSnapshot | null {
-  const requests = readWindow(headers, 'requests')
-  const tokens = readWindow(headers, 'tokens')
-  if (!requests && !tokens) {
-    providersWithoutQuota.add(provider)
+  // Guarded at the source rather than at each call site, because two of those
+  // sit on the live streaming path in the openai-compat lane. Nothing about a
+  // status readout is worth risking an API request over: if reading a header
+  // ever throws, the turn must continue as though no headers arrived.
+  try {
+    const requests = readWindow(headers, 'requests')
+    const tokens = readWindow(headers, 'tokens')
+    if (!requests && !tokens) {
+      providersWithoutQuota.add(provider)
+      return null
+    }
+    providersWithoutQuota.delete(provider)
+
+    snapshot = {
+      provider,
+      capturedAt: Date.now(),
+      ...(requests && { requests }),
+      ...(tokens && { tokens }),
+    }
+    return snapshot
+  } catch {
     return null
   }
-  providersWithoutQuota.delete(provider)
-
-  snapshot = {
-    provider,
-    capturedAt: Date.now(),
-    ...(requests && { requests }),
-    ...(tokens && { tokens }),
-  }
-  return snapshot
 }
 
 function readWindow(
