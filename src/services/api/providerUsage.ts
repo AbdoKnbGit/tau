@@ -9,11 +9,14 @@ import {
 } from './auth/oauth_services.js'
 import { getGeminiOAuthToken } from './auth/google_oauth.js'
 import { loadProviderKey } from './auth/api_key_manager.js'
+import { ANTIGRAVITY_OAUTH_STORAGE_KEY } from './auth/google_oauth.js'
+import { readStoredGoogleToken } from './auth/googleTokenPeek.js'
 import {
   antigravityApiHeaders,
   ensureCodeAssistReady,
   fetchGeminiCliQuotaBuckets,
   getGeminiTier,
+  peekCodeAssistProject,
   type GeminiQuotaBucket,
 } from './providers/gemini_code_assist.js'
 import {
@@ -34,9 +37,12 @@ import {
   type LxdCatalogRow,
 } from '../../utils/model/lxdCatalog.js'
 import {
+  ANTIGRAVITY_TOKEN_MARGIN_MS,
   loadStore,
+  peekAntigravityAccount,
   refreshAccessToken,
   saveStore,
+  selectActiveAntigravityAccount,
   type AntigravityAccount,
 } from '../../lanes/shared/antigravity_auth.js'
 import {
@@ -49,6 +55,7 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type APIProvider,
 } from '../../utils/model/providers.js'
+import type { ProviderWithUsageReporter } from './providerUsageCoverage.js'
 
 const TIMEOUT_MS = 8_000
 const CLINE_OAUTH_STORAGE = 'cline_oauth'
@@ -156,27 +163,66 @@ export async function fetchAllProviderUsage(): Promise<ProviderUsageSnapshot> {
   }
 }
 
-const REPORTERS: Reporter[] = [
-  reportAnthropic,
-  reportOpenAI,
-  reportAntigravity,
-  reportOpenRouter,
-  reportVercel,
-  reportRequesty,
-  reportFireworks,
-  reportDeepSeek,
-  reportMistral,
-  reportGLM,
-  reportLXD,
-  reportMimo,
-  reportMoonshot,
-  reportMiniMax,
-  reportOllama,
-  reportCline,
-  reportCopilot,
-  reportKiloCode,
-  reportKiro,
-]
+/**
+ * Keyed so a single provider can be refreshed on its own. /usage still runs
+ * every reporter, but the status bar only ever cares about the provider the
+ * session is actually on, and fetching the other eighteen to render one number
+ * would be pure waste.
+ */
+const REPORTERS_BY_PROVIDER: Record<ProviderWithUsageReporter, Reporter> = {
+  firstParty: reportAnthropic,
+  openai: reportOpenAI,
+  antigravity: reportAntigravity,
+  openrouter: reportOpenRouter,
+  vercel: reportVercel,
+  requesty: reportRequesty,
+  fireworks: reportFireworks,
+  deepseek: reportDeepSeek,
+  mistral: reportMistral,
+  glm: reportGLM,
+  lxd: reportLXD,
+  mimo: reportMimo,
+  moonshot: reportMoonshot,
+  minimax: reportMiniMax,
+  ollama: reportOllama,
+  cline: reportCline,
+  copilot: reportCopilot,
+  kilocode: reportKiloCode,
+  kiro: reportKiro,
+}
+
+// Insertion order is the /usage display order, so the map stays the single
+// source of truth rather than a second list that can drift.
+const REPORTERS: Reporter[] = Object.values(REPORTERS_BY_PROVIDER)
+
+/**
+ * Usage for one provider, or null when no reporter covers it. Errors surface
+ * as a report with status 'error' exactly as they do in /usage, rather than
+ * throwing into a caller that only wants a number.
+ */
+/**
+ * Reporters that must not be reused behind a status bar repaint, and the
+ * read-only stand-ins that replace them there.
+ *
+ * A /usage reporter may write credentials, chase extra round trips, or blur a
+ * recoverable failure into a settled state. That is acceptable for a dialog a
+ * person opened on purpose, and not for something a keystroke can trigger.
+ */
+const STATUS_BAR_REPORTERS: Partial<Record<ProviderWithUsageReporter, Reporter>> = {
+  antigravity: reportAntigravityForStatusBar,
+}
+
+export async function fetchProviderUsageFor(
+  provider: ProviderUsageId,
+  options: { statusBar?: boolean } = {},
+): Promise<ProviderUsageReport | null> {
+  const key = provider as ProviderWithUsageReporter
+  const reporter =
+    (options.statusBar ? STATUS_BAR_REPORTERS[key] : undefined) ??
+    REPORTERS_BY_PROVIDER[key]
+  if (!reporter) return null
+  return runReporter(reporter)
+}
 
 async function runReporter(reporter: Reporter): Promise<ProviderUsageReport> {
   try {
@@ -556,6 +602,179 @@ async function reportAntigravity(): Promise<ProviderUsageReport> {
     ),
     detail: `Account: ${accountLabel}. Usage is calculated per model from Antigravity quotaInfo.remainingFraction.`,
     metrics,
+  }
+}
+
+/**
+ * A usable Antigravity token from either credential store, without renewing
+ * or writing anything, or null when neither can be read as-is.
+ *
+ * Both stores must be consulted: an account can live in the multi-account
+ * file, or as a plain OAuth blob from `/login antigravity`, and reportAntigravity
+ * falls back between them for exactly this reason. Checking only one and
+ * concluding "not connected" is how a connected account gets reported as
+ * having no quota.
+ *
+ * A project is required, not optional. Asked without one, the backend answers
+ * with the generic model list where every quota reads 100% remaining - so an
+ * unscoped call does not fail, it succeeds with zeros. Reporting a confident
+ * "0% used" against a nearly-spent account is worse than reporting nothing, so
+ * a missing project means wait rather than ask.
+ */
+function peekAntigravityCredential(): {
+  accessToken: string
+  projectId: string
+} | null {
+  const stored = peekAntigravityAccount()
+
+  let accessToken: string
+  let storedProjectId: string | null = null
+  if (stored.kind === 'ready') {
+    accessToken = stored.account.accessToken
+    storedProjectId = stored.account.projectId || null
+  } else {
+    const oauth = readStoredGoogleToken(
+      loadProviderKey(ANTIGRAVITY_OAUTH_STORAGE_KEY),
+    )
+    if (oauth.kind !== 'ready') return null
+    accessToken = oauth.accessToken
+  }
+
+  // The multi-account store carries its own project; an OAuth-blob session
+  // relies on the one discovery already cached.
+  const projectId = storedProjectId ?? peekCodeAssistProject('antigravity')
+  if (!projectId) return null
+
+  return { accessToken, projectId }
+}
+
+/**
+ * Base that last returned usable Antigravity quota, remembered for the
+ * session. fetchAntigravityAvailableModels tries four bases against two
+ * payload shapes and only stops early on one particular response, so a status
+ * refresh can cost eight requests. Once a base is known to answer, one is
+ * enough - and cheap refreshes are what let the readout track a quota that
+ * moves while you work.
+ */
+let _antigravityQuotaBase: string | null = null
+
+const ANTIGRAVITY_QUOTA_BASES = [
+  ANTIGRAVITY_ENDPOINT_PROD,
+  ANTIGRAVITY_APP_DAILY_ENDPOINT,
+  ANTIGRAVITY_ENDPOINT_DAILY,
+  ANTIGRAVITY_ENDPOINT_AUTOPUSH,
+]
+
+async function fetchAntigravityQuotaCheaply(
+  accessToken: string,
+  projectId: string,
+): Promise<unknown> {
+  const remembered = _antigravityQuotaBase
+  if (remembered) {
+    try {
+      const data = await fetchJson(
+        `${remembered}/v1internal:fetchAvailableModels`,
+        {
+          method: 'POST',
+          headers: antigravityApiHeaders(accessToken),
+          body: JSON.stringify({ project: projectId }),
+        },
+      )
+      if (extractAntigravityModels(data)) return data
+    } catch {
+      // Fall through and re-probe; the endpoint may have moved.
+    }
+    _antigravityQuotaBase = null
+  }
+
+  for (const base of ANTIGRAVITY_QUOTA_BASES) {
+    try {
+      const data = await fetchJson(
+        `${base}/v1internal:fetchAvailableModels`,
+        {
+          method: 'POST',
+          headers: antigravityApiHeaders(accessToken),
+          body: JSON.stringify({ project: projectId }),
+        },
+      )
+      if (extractAntigravityModels(data)) {
+        _antigravityQuotaBase = base
+        return data
+      }
+    } catch {
+      // Try the next base.
+    }
+  }
+  throw new Error('no Antigravity quota response')
+}
+
+/**
+ * Antigravity quota for the status bar: the same numbers, as a strict reader.
+ *
+ * reportAntigravity above is built for the /usage dialog and cannot be reused
+ * behind a repaint. It refreshes the OAuth token and rewrites the shared
+ * credential store, discovers the Code Assist project, and spends an extra
+ * round trip on an email address purely to label a dialog this caller is not
+ * drawing.
+ *
+ * This path does none of that. It reads a token that is already valid, makes
+ * the quota call, and stops. A spent token is reported as an error rather than
+ * as "not configured", because it is recoverable: the next real request
+ * refreshes it, and the bar picks the quota up on its following attempt. That
+ * distinction is what keeps a momentary gap from being cached as an absence.
+ */
+async function reportAntigravityForStatusBar(): Promise<ProviderUsageReport> {
+  const credential = peekAntigravityCredential()
+  if (!credential) {
+    // Never 'not_configured'. Antigravity keeps credentials in two places and
+    // a reader that refuses to refresh cannot prove either is truly empty, so
+    // claiming "no account" from what it can see risks telling a connected
+    // user they have no quota. An error keeps the segment silent and retries.
+    return baseReport(
+      'antigravity',
+      'error',
+      'oauth',
+      'Google Code Assist',
+      'No readable Antigravity credential; waiting for a request to refresh one.',
+    )
+  }
+
+  try {
+    const data = await fetchAntigravityQuotaCheaply(
+      credential.accessToken,
+      credential.projectId,
+    )
+    const metrics = parseAntigravityUsage(data)
+    if (metrics.length === 0) {
+      // Antigravity does have a quota API, so an empty answer is far more
+      // likely a hiccup than a permanent property. Retrying beats claiming
+      // this account has no quota.
+      return baseReport(
+        'antigravity',
+        'error',
+        'oauth',
+        'Google Code Assist',
+        'Antigravity returned no model quota.',
+      )
+    }
+    return {
+      ...baseReport(
+        'antigravity',
+        'ok',
+        'oauth',
+        'Google Code Assist',
+        'Model quota from Antigravity.',
+      ),
+      metrics,
+    }
+  } catch (error) {
+    return baseReport(
+      'antigravity',
+      'error',
+      'oauth',
+      'Google Code Assist',
+      messageFromError(error),
+    )
   }
 }
 
@@ -2582,14 +2801,12 @@ function parseKiroUsage(data: unknown): UsageMetric[] {
 
 async function getAntigravityAccount(): Promise<AntigravityAccount | null> {
   const store = loadStore()
-  if (store.accounts.length === 0) return null
-  const preferredIndex = store.activeIndexByFamily['gemini-flash']
-    ?? store.activeIndexByFamily['gemini-pro']
-    ?? store.activeIndexByFamily.claude
-    ?? store.activeIndex
-  const active = store.accounts[preferredIndex] ?? store.accounts.find(account => account.enabled)
+  // Shared with peekAntigravityAccount so the reader and the refresher can
+  // never pick different accounts. `active` stays a reference into `store`,
+  // which is what lets the refresh below persist through saveStore(store).
+  const active = selectActiveAntigravityAccount(store)
   if (!active) return null
-  if (active.expires > Date.now() + 5 * 60 * 1000) return active
+  if (active.expires > Date.now() + ANTIGRAVITY_TOKEN_MARGIN_MS) return active
   try {
     const refreshed = await refreshAccessToken(active.refreshToken)
     active.accessToken = refreshed.access_token

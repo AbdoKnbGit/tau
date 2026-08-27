@@ -21,6 +21,8 @@ import {
   getTotalToolDuration,
   getTotalWebSearchRequests,
   getUsageForModel,
+  getUnpricedModels,
+  getUnpricedTokens,
   hasUnknownModelCost,
   resetCostState,
   resetStateForTests,
@@ -271,12 +273,36 @@ function formatCacheHit(usage: ModelUsage): string {
   return `${percent >= 10 ? percent.toFixed(0) : percent.toFixed(1)}%`
 }
 
+/**
+ * Names the models left out of the total.
+ *
+ * Unpriced usage contributes $0, so the figure beside this note is a floor,
+ * not an estimate. Saying which models were skipped is the difference between
+ * a total the user can reason about and one that quietly under-reports.
+ */
+function formatUnpricedNote(): string {
+  const tokens = getUnpricedTokens()
+  if (tokens <= 0) return ''
+
+  const unpriced = getUnpricedModels()
+  if (unpriced.length === 0) {
+    return ` (excludes ${formatTokenTotal(tokens)} unpriced tokens)`
+  }
+  const shown = unpriced.slice(0, 3).join(', ')
+  const rest = unpriced.length - 3
+  const names = rest > 0 ? `${shown} +${rest} more` : shown
+  return ` (excludes ${formatTokenTotal(tokens)} unpriced tokens: ${names})`
+}
+
+/** `840`, `12K`, `1.4M` — compact enough for a summary line. */
+function formatTokenTotal(tokens: number): string {
+  if (tokens < 1_000) return String(Math.round(tokens))
+  if (tokens < 1_000_000) return `${Math.round(tokens / 1_000)}K`
+  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
+}
+
 export function formatTotalCost(): string {
-  const costDisplay =
-    formatCost(getTotalCostUSD()) +
-    (hasUnknownModelCost()
-      ? ' (costs may be inaccurate due to usage of unknown models)'
-      : '')
+  const costDisplay = formatCost(getTotalCostUSD()) + formatUnpricedNote()
 
   const modelUsageDisplay = formatModelUsage()
 

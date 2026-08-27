@@ -39,6 +39,7 @@ const baseInfo: SessionStatusInfo = {
   usedContextTokens: 36_000,
   contextWindowTokens: 200_000,
   consumedContextPercentage: 18,
+  quota: null,
 }
 
 console.log('session status:')
@@ -163,6 +164,120 @@ test('measures only supplied conversation tokens against the full window', () =>
   )
 })
 
+const quotaInfo: SessionStatusInfo = {
+  ...baseInfo,
+  quota: { state: 'used', percentage: 80 },
+}
+
+test('shows the quota beside the context readout when the row is wide', () => {
+  const status = formatSessionStatus(quotaInfo, 120)
+  assert(status.includes('Quota 80%'), `quota should be shown: ${status}`)
+  assert(status.includes('Context'), `context should still be shown: ${status}`)
+  assert(
+    status.indexOf('Context') < status.indexOf('Quota'),
+    'quota should follow the context readout',
+  )
+})
+
+test('omits the quota while it is still being determined', () => {
+  const status = formatSessionStatus(baseInfo, 120)
+  assert(!status.includes('Quota'), `no quota segment expected: ${status}`)
+})
+
+test('shows a balance that has no percentage', () => {
+  const status = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'text', text: '$12.34 remaining' } },
+    120,
+  )
+  assert(
+    status.includes('Quota $12.34 remaining'),
+    `a balance should be shown verbatim: ${status}`,
+  )
+})
+
+test('shows spend where the provider publishes no quota at all', () => {
+  const status = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'spend', usd: 0.42, estimated: false } },
+    120,
+  )
+  assert(status.includes('Spend $0.42'), `expected spend: ${status}`)
+})
+
+test('marks a flat-fee provider as an estimate, not an amount billed', () => {
+  const status = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'spend', usd: 1.5, estimated: true } },
+    120,
+  )
+  assert(status.includes('Est $1.50'), `expected an estimate: ${status}`)
+  assert(!status.includes('Spend'), 'a subscription was not "spent" per token')
+})
+
+test('never rounds real spend down to $0.00', () => {
+  const status = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'spend', usd: 0.004, estimated: false } },
+    120,
+  )
+  assert(status.includes('<$0.01'), `sub-cent work is not free: ${status}`)
+
+  const zero = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'spend', usd: 0, estimated: false } },
+    120,
+  )
+  assert(!zero.includes('Spend'), 'nothing spent means no segment')
+})
+
+test('states n/a once no provider source has a number to give', () => {
+  const status = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'unavailable' } },
+    120,
+  )
+  assert(
+    status.includes('Quota n/a'),
+    `a settled absence should be stated: ${status}`,
+  )
+})
+
+test('drops the quota before sacrificing the context readout', () => {
+  const wide = formatSessionStatus(quotaInfo, 120)
+  const narrow = formatSessionStatus(quotaInfo, stringWidth(wide) + 2)
+
+  assert(!narrow.includes('Quota'), `quota should be dropped first: ${narrow}`)
+  assert(narrow.includes('Context'), `context must survive: ${narrow}`)
+  assert(narrow.includes('~/work/tau'), `cwd must survive: ${narrow}`)
+})
+
+test('rounds and clamps the quota rather than printing a float tail', () => {
+  const status = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'used', percentage: 66.66666666666667 } },
+    120,
+  )
+  assert(status.includes('Quota 67%'), `quota should round: ${status}`)
+
+  const over = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'used', percentage: 140 } },
+    120,
+  )
+  assert(over.includes('Quota 100%'), `quota should clamp to 100: ${over}`)
+})
+
+test('never lets the quota push the row past the terminal width', () => {
+  const wideCjk: SessionStatusInfo = {
+    ...quotaInfo,
+    cwd: '~/项目/非常长的目录名称',
+    provider: '提供商',
+    model: '模型-超长名称',
+  }
+  for (const info of [quotaInfo, wideCjk]) {
+    for (const columns of [5, 12, 16, 24, 40, 56, 72, 88, 120, 160]) {
+      const status = formatSessionStatus(info, columns)
+      assert(
+        stringWidth(status) <= Math.max(0, columns - 4),
+        `status exceeds width at ${columns} columns: ${status}`,
+      )
+    }
+  }
+})
+
 test('is display-width safe for unicode and pathological widths', () => {
   const unicodeInfo: SessionStatusInfo = {
     cwd: '~/项目/非常长的目录名称',
@@ -171,6 +286,7 @@ test('is display-width safe for unicode and pathological widths', () => {
     usedContextTokens: 202_000,
     contextWindowTokens: 200_000,
     consumedContextPercentage: 101.4,
+    quota: null,
   }
 
   for (const columns of [5, 12, 16, 24, 40, 56]) {

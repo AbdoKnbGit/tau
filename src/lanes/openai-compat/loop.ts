@@ -33,6 +33,7 @@ import type {
 import { OPENAI_COMPAT_TOOL_REGISTRY, selectEditToolSet } from './tools.js'
 import { getCompatShellDescription } from './shell_descriptions.js'
 import { filterToSingleShell } from './single_shell.js'
+import { recordProviderRateLimits } from '../../services/api/providerRateLimits.js'
 import { selectOpenAICompatToolsForRequest } from './lazy_tools.js'
 import {
   isOpenCodeAnthropicRouteModel,
@@ -674,6 +675,11 @@ export class OpenAICompatLane implements Lane {
       if (isAbortError(err, signal)) throw err
       throw createProviderConnectionError(provider, err)
     }
+
+    // Harvested before the ok check on purpose: a 429 carries the most useful
+    // rate limit headers of any response, and this is the path real traffic
+    // takes. The legacy openai_provider shim harvests separately.
+    recordProviderRateLimits(provider, response.headers)
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
@@ -1678,6 +1684,8 @@ async function* streamOpenCodeAnthropicRoute(
     if (isAbortError(connectionError, params.signal)) throw connectionError
     throw createProviderConnectionError(provider, connectionError)
   }
+
+  recordProviderRateLimits(provider, response.headers)
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '')

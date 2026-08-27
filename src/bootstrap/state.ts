@@ -77,6 +77,10 @@ type State = {
   totalLinesAdded: number
   totalLinesRemoved: number
   hasUnknownModelCost: boolean
+  /** Distinct models seen with no known price; their usage contributed $0. */
+  unpricedModels: Set<string>
+  /** Tokens actually excluded from the dollar total, across those models. */
+  unpricedTokens: number
   cwd: string
   modelUsage: { [modelName: string]: ModelUsage }
   mainLoopModelOverride: ModelSetting | undefined
@@ -307,6 +311,8 @@ function getInitialState(): State {
     totalLinesAdded: 0,
     totalLinesRemoved: 0,
     hasUnknownModelCost: false,
+    unpricedModels: new Set<string>(),
+    unpricedTokens: 0,
     cwd: resolvedCwd,
     modelUsage: {},
     mainLoopModelOverride: undefined,
@@ -786,6 +792,36 @@ export function setHasUnknownModelCost(): void {
   STATE.hasUnknownModelCost = true
 }
 
+/**
+ * Record a model whose price is unknown.
+ *
+ * Its tokens contribute nothing to the dollar total rather than being valued
+ * at some other model's rate, so the total stays a floor rather than a guess.
+ * Naming the models is what keeps that honest: a total only means something
+ * next to what it had to leave out.
+ */
+export function recordUnpricedModel(model: string, tokens: number): void {
+  STATE.hasUnknownModelCost = true
+  STATE.unpricedModels.add(model)
+  if (Number.isFinite(tokens) && tokens > 0) STATE.unpricedTokens += tokens
+}
+
+export function getUnpricedModels(): string[] {
+  return [...STATE.unpricedModels].sort()
+}
+
+/**
+ * Tokens left out of the dollar total.
+ *
+ * Naming the models alone was misleading: prices for a model often arrive
+ * mid-session, after which its usage is costed normally, yet the name stayed
+ * listed as though everything it did was excluded. A token count says exactly
+ * how much went unpriced and stops growing the moment prices land.
+ */
+export function getUnpricedTokens(): number {
+  return STATE.unpricedTokens
+}
+
 export function hasUnknownModelCost(): boolean {
   return STATE.hasUnknownModelCost
 }
@@ -910,6 +946,8 @@ export function resetCostState(): void {
   STATE.totalLinesAdded = 0
   STATE.totalLinesRemoved = 0
   STATE.hasUnknownModelCost = false
+  STATE.unpricedModels.clear()
+  STATE.unpricedTokens = 0
   STATE.modelUsage = {}
   STATE.promptId = null
 }

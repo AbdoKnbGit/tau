@@ -340,6 +340,64 @@ export function clearAllAntigravityAccounts(): void {
   saveStore({ version: 1, accounts: [], activeIndex: 0, activeIndexByFamily: {} })
 }
 
+/** Margin before expiry at which an access token is treated as spent. */
+export const ANTIGRAVITY_TOKEN_MARGIN_MS = 5 * 60 * 1000
+
+/**
+ * The account a read should use, by the same preference the refresh path
+ * applies. Shared so a reader and a refresher can never disagree about which
+ * account they are talking about.
+ */
+export function selectActiveAntigravityAccount(
+  store: AntigravityStore,
+): AntigravityAccount | null {
+  if (store.accounts.length === 0) return null
+  const preferredIndex =
+    store.activeIndexByFamily['gemini-flash'] ??
+    store.activeIndexByFamily['gemini-pro'] ??
+    store.activeIndexByFamily.claude ??
+    store.activeIndex
+  return (
+    store.accounts[preferredIndex] ??
+    store.accounts.find(account => account.enabled) ??
+    null
+  )
+}
+
+export type AntigravityPeek =
+  /** A token good for long enough to make a request with. */
+  | { kind: 'ready'; account: AntigravityAccount }
+  /** An account exists but its token is spent. Recoverable, not an absence. */
+  | { kind: 'stale' }
+  /** No Antigravity account is connected at all. */
+  | { kind: 'none' }
+
+/**
+ * Read the active account WITHOUT refreshing or persisting anything.
+ *
+ * getAntigravityAccount below will refresh an expiring token and write the
+ * whole store back. That is correct for a request that must succeed, and
+ * wrong for anything a repaint can trigger: the write is a read-modify-write
+ * of a file every session shares, and saveStore falls back to a non-atomic
+ * overwrite when rename fails on Windows. A status readout is not worth that
+ * risk, and does not need it - the request path refreshes the token as a side
+ * effect of real work, so a reader can simply wait for the next turn.
+ *
+ * `store` is injectable so the selection rules can be tested without touching
+ * the real credential file.
+ */
+export function peekAntigravityAccount(
+  now: number = Date.now(),
+  store: AntigravityStore = loadStore(),
+): AntigravityPeek {
+  const account = selectActiveAntigravityAccount(store)
+  if (!account) return { kind: 'none' }
+  if (account.expires > now + ANTIGRAVITY_TOKEN_MARGIN_MS) {
+    return { kind: 'ready', account }
+  }
+  return { kind: 'stale' }
+}
+
 // ─── Multi-account rotation ──────────────────────────────────────
 
 export type ModelFamily = 'gemini' | 'claude'

@@ -86,6 +86,39 @@ How to use the statusLine command:
          "resets_at": number          // Unix epoch seconds when this window resets
        }
      },
+     "provider_quota": {          // Optional: the active provider's quota, Anthropic included. Absent
+                                  // until the session has established one, either from the last
+                                  // API response's headers or from the provider's account
+                                  // endpoint (credits / balance / utilization).
+       "provider": "string",      // Provider these numbers came from (e.g. "openrouter", "groq")
+       "status": "available" | "unavailable",
+                                  // "unavailable" is a settled answer: both the response headers
+                                  // and the provider's account endpoint were consulted and neither
+                                  // publishes a number (MiMo is one such provider). The built-in
+                                  // bar renders this as "Quota n/a".
+       "source": "headers" | "account",
+                                  // Which produced used_percentage: per-call rate limit headers,
+                                  // or the provider's own balance / utilization endpoint.
+       "used_percentage": number, // The headline number - what the built-in bar shows. Prefer it
+                                  // over digging into the per-window objects below. ABSENT when
+                                  // the provider reports an amount rather than a proportion.
+       "summary": "string",       // Present INSTEAD of used_percentage for prepaid balances, e.g.
+                                  // "$12.34 remaining". A balance has no denominator until a
+                                  // budget env var supplies the total, so read both fields:
+                                  // used_percentage ?? summary.
+       "label": "string",         // Optional: what an account reading measures, e.g. "Credits"
+       "captured_at": number,     // Unix epoch seconds the headers were read. These numbers are
+                                  // exactly this old — there is no background refresh.
+       "requests": {              // Optional: per-request quota window (may be absent)
+         "limit": number,             // Optional: requests allowed in the window
+         "remaining": number,         // Optional: requests left in the window
+         "used_percentage": number,   // Optional: % of the window used (0-100); needs limit+remaining
+         "resets_in_seconds": number, // Optional: seconds from captured_at until the window refills
+         "resets_at": number          // Optional: unix epoch seconds, same convention as rate_limits
+       },
+       "tokens": {                // Optional: per-token quota window, same fields as "requests"
+       }
+     },
      "vim": {                     // Optional, only present when vim mode is enabled
        "mode": "INSERT" | "NORMAL"  // Current vim editor mode
      },
@@ -119,6 +152,9 @@ How to use the statusLine command:
    To display Claude.ai subscription rate limit usage (5-hour session limit):
    - input=$(cat); pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty'); [ -n "$pct" ] && printf "5h: %.0f%%" "$pct"
 
+   To display the active non-Anthropic provider's remaining quota:
+   - input=$(cat); pct=$(echo "$input" | jq -r '.provider_quota.requests.used_percentage // empty'); [ -n "$pct" ] && printf "quota: %.0f%% used" "$pct"
+
    To display both 5-hour and 7-day limits when available:
    - input=$(cat); five=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty'); week=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty'); out=""; [ -n "$five" ] && out="5h:$(printf '%.0f' "$five")%"; [ -n "$week" ] && out="$out 7d:$(printf '%.0f' "$week")%"; echo "$out"
 
@@ -135,8 +171,18 @@ How to use the statusLine command:
 
 4. If ~/.claude/settings.json is a symlink, update the target file instead.
 
-5. Tau also draws a built-in session status bar (cwd, provider/model, context
-   usage) in the same row. It steps aside on its own as soon as a "statusLine"
+5. Tau also draws a built-in session status bar in the same row, with no
+   configuration required. It renders:
+
+     ~/work/tau · Anthropic / Claude Sonnet 4.6 · Context ██░░░░░░░░ 36K/200K (18%) · Quota 80%
+
+   The "Quota" segment shows the active provider's rate limit usage - from
+   provider_quota when the session has called a non-Anthropic provider that
+   returns x-ratelimit-* headers, otherwise the Anthropic 5-hour window. It is
+   omitted when neither is available, and it is the first segment dropped as
+   the terminal narrows.
+
+   It steps aside on its own as soon as a "statusLine"
    command is configured, so setting one up needs no extra key. To control it
    explicitly, use the separate top-level "sessionStatusBar" boolean:
    {
@@ -148,6 +194,52 @@ How to use the statusLine command:
      mean - do NOT write a "statusLine" command that prints an empty string.
    - true keeps the built-in bar visible alongside a custom command, for users
      who want both rows.
+
+6. To rebuild the built-in bar as a custom command - when the user has replaced
+   their statusLine and asks for "the default one back", but wants to keep
+   customizing it - save this to ~/.claude/statusline.mjs and set
+   "command": "node \"$HOME/.claude/statusline.mjs\"".
+
+   import { readFileSync } from 'fs'
+   const j = JSON.parse(readFileSync(0, 'utf8'))
+   const c = j.context_window ?? {}
+   const bar = (p, w) => {
+     const f = p == null ? 0 : Math.round((Math.min(100, Math.max(0, p)) / 100) * w)
+     return '█'.repeat(f) + '░'.repeat(w - f)
+   }
+   const K = n => n == null ? null
+     : n < 1000 ? String(Math.round(n))
+     : n < 999500 ? \`\${Math.round(n / 1000)}K\`
+     : \`\${(n / 1e6).toFixed(1).replace(/\\.0$/, '')}M\`
+   const used = c.used_percentage
+   const u = c.current_usage
+   const tok = u && (u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens)
+   const ratio = tok != null && c.context_window_size ? \`\${K(tok)}/\${K(c.context_window_size)} \` : ''
+   const q = j.provider_quota
+   const thirdParty = Boolean(j.model.provider)
+   const quota = q?.status === 'available' ? (q.used_percentage ?? q.summary)
+     : q?.status === 'unavailable' ? 'n/a'
+     : thirdParty ? null
+     : j.rate_limits?.five_hour?.used_percentage
+   process.stdout.write([
+     j.cwd,
+     \`\${j.model.provider || 'Anthropic'} / \${j.model.display_name}\`,
+     \`Context \${bar(used, 10)} \${ratio}(\${used == null ? '--' : Math.round(used) + '%'})\`,
+     ...(quota == null ? []
+       : [typeof quota === 'string' ? \`Quota \${quota}\`
+         : \`Quota \${Math.round(quota)}%\`]),
+   ].join(' · ') + '\\n')
+
+   One caveat to pass on if the user compares the two: the context percentage
+   will differ slightly from the built-in bar. The bar counts conversation
+   tokens only, deliberately excluding the system prompt and tool schemas,
+   while context_window.used_percentage includes them. A statusLine command
+   cannot see the conversation-only figure.
+
+   This script also does not reproduce the bar's width handling. The built-in
+   bar truncates the cwd and provider/model columns and drops the token counts
+   and the quota as the terminal narrows; the recipe above always prints every
+   field. Add truncation only if the user asks for it.
    Never invent a new value for "statusLine".type. It accepts only "command",
    and ~/.claude/settings.json is shared with other tools that discard the
    entire file when it fails validation.

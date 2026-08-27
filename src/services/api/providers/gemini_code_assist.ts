@@ -724,6 +724,20 @@ async function _rediscoverAntigravityProject(accessToken: string): Promise<strin
  * different onboarding headers/metadata so the server associates the
  * project with the right quota pool.
  */
+/**
+ * The already-discovered Code Assist project, or null if discovery has not
+ * run yet. Pure read - no network, no onboarding, no cache write.
+ *
+ * ensureCodeAssistReady below will discover and persist one, which is right
+ * for a request that must succeed and wrong for a status readout. Callers that
+ * only want to scope a read should wait for a project rather than create one.
+ */
+export function peekCodeAssistProject(
+  executor: GeminiExecutor = 'antigravity',
+): string | null {
+  return _readCache(executor)?.projectId ?? null
+}
+
 export async function ensureCodeAssistReady(
   accessToken: string,
   executor: GeminiExecutor = 'antigravity',

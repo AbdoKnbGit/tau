@@ -34,6 +34,12 @@ export interface GoogleOAuthTokens {
   scope: string
 }
 
+/**
+ * Key under which the Antigravity OAuth blob is stored. Exported so a
+ * read-only consumer can find it without duplicating the literal.
+ */
+export const ANTIGRAVITY_OAUTH_STORAGE_KEY = 'gemini_oauth_antigravity'
+
 export interface StoredGoogleTokens {
   accessToken: string
   refreshToken: string
@@ -113,7 +119,7 @@ function _configFor(type: GeminiOAuthType): OAuthClientConfig {
       'https://www.googleapis.com/auth/cclog',
       'https://www.googleapis.com/auth/experimentsandconfigs',
     ].join(' '),
-    storageKey: 'gemini_oauth_antigravity',
+    storageKey: ANTIGRAVITY_OAUTH_STORAGE_KEY,
   }
 }
 

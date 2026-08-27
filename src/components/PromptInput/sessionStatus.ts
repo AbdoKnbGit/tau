@@ -17,7 +17,38 @@ export type SessionStatusInfo = {
   usedContextTokens: number | null
   contextWindowTokens: number | null
   consumedContextPercentage: number | null
+  /**
+   * Quota standing for the active provider, or null while it is still being
+   * determined - no turn taken yet, or an account lookup still in flight.
+   *
+   * Null renders as no segment. 'unavailable' renders as `Quota n/a`, and is
+   * a conclusion rather than a gap: both the response headers and the
+   * provider's own account endpoint were consulted and neither publishes a
+   * number (MiMo is one such provider; see reportMimo in providerUsage.ts).
+   */
+  quota: SessionQuotaStatus | null
 }
+
+/**
+ * Percent used rather than remaining, so this reads the same direction as the
+ * context bar beside it - two gauges on one row pointing opposite ways is a
+ * misreading waiting to happen.
+ */
+export type SessionQuotaStatus =
+  | { state: 'used'; percentage: number }
+  /**
+   * A standing with no denominator, e.g. `$12.34 remaining`. A prepaid
+   * balance has no total to measure against unless a budget is configured,
+   * and the amount still answers the question the row is asking.
+   */
+  | { state: 'text'; text: string }
+  /**
+   * What the session has spent, for providers that publish no quota at all.
+   * `estimated` marks a flat-fee provider, where the figure is what the same
+   * usage would cost on an API rather than an amount actually billed.
+   */
+  | { state: 'spend'; usd: number; estimated: boolean }
+  | { state: 'unavailable' }
 
 function normalizePercentage(value: number | null): number | null {
   if (value === null || !Number.isFinite(value)) return null
@@ -87,6 +118,40 @@ function contextValueLabel(
   return ratio === null ? percentage : `${ratio} (${percentage})`
 }
 
+/**
+ * `Quota 80%`, or null when there is no reading to show.
+ *
+ * The provider is deliberately not repeated here - the row already names it
+ * two columns to the left, and this segment only ever renders on the widest
+ * layout where that column is present in full.
+ */
+function quotaSegment(info: SessionStatusInfo): string | null {
+  if (info.quota === null) return null
+  if (info.quota.state === 'unavailable') return 'Quota n/a'
+  if (info.quota.state === 'spend') {
+    const amount = formatUsd(info.quota.usd)
+    return amount === null
+      ? null
+      : `${info.quota.estimated ? 'Est' : 'Spend'} ${amount}`
+  }
+  if (info.quota.state === 'text') {
+    const text = info.quota.text.trim()
+    return text === '' ? null : `Quota ${text}`
+  }
+  const used = normalizePercentage(info.quota.percentage)
+  return used === null ? null : `Quota ${used}%`
+}
+
+/**
+ * Money for a one-line row. Sub-cent amounts collapse to `<$0.01` rather than
+ * rounding to `$0.00`, which would read as "free" for work that was not.
+ */
+function formatUsd(usd: number): string | null {
+  if (!Number.isFinite(usd) || usd <= 0) return null
+  if (usd < 0.01) return '<$0.01'
+  return `$${usd.toFixed(2)}`
+}
+
 function contextBar(percentage: number | null, width: number): string {
   const safeWidth = Math.max(0, Math.floor(width))
   if (safeWidth === 0) return ''
@@ -152,6 +217,16 @@ export function formatSessionStatus(
 
   const fullContext = `Context ${contextBar(consumed, FULL_BAR_WIDTH)} ${detailedLabel}`
   const full = `${cwd}${SEPARATOR}${provider} / ${model}${SEPARATOR}${fullContext}`
+
+  // Quota rides along only when the row is already showing everything else,
+  // and is the first thing dropped. Context changes with every keystroke and
+  // has to stay legible at any width; a quota moves on a scale of minutes, so
+  // losing it to a narrow terminal costs the reader nothing.
+  const quota = quotaSegment(info)
+  if (quota !== null) {
+    const withQuota = `${full}${SEPARATOR}${quota}`
+    if (stringWidth(withQuota) <= availableWidth) return withQuota
+  }
   if (stringWidth(full) <= availableWidth) return full
 
   const providerModel = `${provider}/${model}`

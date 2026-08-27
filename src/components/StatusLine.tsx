@@ -12,6 +12,11 @@ import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import { type ReadonlySettings, useSettings } from '../hooks/useSettings.js';
 import { Ansi, Box, Text } from '../ink.js';
 import { getRawUtilization } from '../services/claudeAiLimits.js';
+import {
+  getUnpricedModels,
+  getUnpricedTokens,
+} from '../bootstrap/state.js';
+import { buildStatusLineProviderQuota } from '../services/api/providerQuotaCache.js';
 import type { Message } from '../types/message.js';
 import type { StatusLineCommandInput } from '../types/statusLine.js';
 import type { VimMode } from '../types/textInputTypes.js';
@@ -105,17 +110,30 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
   const contextPercentages = calculateContextPercentages(currentUsage, contextWindowSize);
   const sessionId = getSessionId();
   const sessionName = getCurrentSessionTitle(sessionId);
+  const unpricedModels = getUnpricedModels();
+  const unpricedTokens = getUnpricedTokens();
   const rawUtil = getRawUtilization();
+  // Third-party quota, harvested from the last response this session got from
+  // the provider it is currently on. A synchronous read of already-collected
+  // headers, so it adds no latency to the 5s statusLine budget and issues no
+  // request of its own. Undefined until the session has actually called the
+  // active provider, and after a /provider switch until the first call on the
+  // new one - the snapshot is provider-stamped so pre-switch numbers can never
+  // be shown under a provider they did not come from.
+  const providerQuota = buildStatusLineProviderQuota(getAPIProvider());
+  // Rounded to whole percent, matching context_window.used_percentage. A raw
+  // utilization fraction times 100 lands on values like 14.000000000000004,
+  // and statusline scripts print what they are given.
   const rateLimits: StatusLineCommandInput['rate_limits'] = {
     ...(rawUtil.five_hour && {
       five_hour: {
-        used_percentage: rawUtil.five_hour.utilization * 100,
+        used_percentage: Math.round(rawUtil.five_hour.utilization * 100),
         resets_at: rawUtil.five_hour.resets_at
       }
     }),
     ...(rawUtil.seven_day && {
       seven_day: {
-        used_percentage: rawUtil.seven_day.utilization * 100,
+        used_percentage: Math.round(rawUtil.seven_day.utilization * 100),
         resets_at: rawUtil.seven_day.resets_at
       }
     })
@@ -141,6 +159,13 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
     },
     cost: {
       total_cost_usd: getTotalCost(),
+      // Models whose price is unknown contribute $0, so total_cost_usd is a
+      // floor rather than an estimate. Present, and non-empty, exactly when
+      // some usage had to be left out of it.
+      ...(unpricedTokens > 0 && {
+        unpriced_models: unpricedModels,
+        unpriced_tokens: unpricedTokens,
+      }),
       total_duration_ms: getTotalDuration(),
       total_api_duration_ms: getTotalAPIDuration(),
       total_lines_added: getTotalLinesAdded(),
@@ -157,6 +182,9 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
     exceeds_200k_tokens: exceeds200kTokens,
     ...((rateLimits.five_hour || rateLimits.seven_day) && {
       rate_limits: rateLimits
+    }),
+    ...(providerQuota && {
+      provider_quota: providerQuota
     }),
     ...(isVimModeEnabled() && {
       vim: {

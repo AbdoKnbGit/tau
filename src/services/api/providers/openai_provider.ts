@@ -58,6 +58,7 @@ import {
   type ResponsesApiResponse,
 } from '../adapters/openai_responses.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
+import { recordProviderRateLimits } from '../providerRateLimits.js'
 import {
   getOpenAIReasoningLevel,
   isReasoningLevelExplicit,
@@ -550,21 +551,29 @@ export class OpenAIProvider extends BaseProvider {
   /**
    * Extract rate limit information from provider response headers.
    * Supports standard X-RateLimit-* headers used by OpenAI, Groq, etc.
+   *
+   * Parsing lives in providerRateLimits so the statusline and this field
+   * cannot drift apart. The raw `*Reset` strings are still kept verbatim
+   * here: they are a provider-supplied duration (`6m0s`), and existing
+   * readers of lastRateLimits expect the string they were given.
    */
   protected _extractRateLimits(headers: Headers): void {
+    // Fields are only overwritten when this response carried them, so a
+    // response missing one family leaves the previous value in place.
     const rl = this.lastRateLimits
-    const reqLimit = headers.get('x-ratelimit-limit-requests')
-    const reqRemaining = headers.get('x-ratelimit-remaining-requests')
+    // Captured ahead of the parse so a reset header this module declines to
+    // interpret still reaches readers of lastRateLimits unchanged.
     const reqReset = headers.get('x-ratelimit-reset-requests')
-    const tokLimit = headers.get('x-ratelimit-limit-tokens')
-    const tokRemaining = headers.get('x-ratelimit-remaining-tokens')
     const tokReset = headers.get('x-ratelimit-reset-tokens')
-    if (reqLimit) rl.requestsLimit = parseInt(reqLimit, 10)
-    if (reqRemaining) rl.requestsRemaining = parseInt(reqRemaining, 10)
     if (reqReset) rl.requestsReset = reqReset
-    if (tokLimit) rl.tokensLimit = parseInt(tokLimit, 10)
-    if (tokRemaining) rl.tokensRemaining = parseInt(tokRemaining, 10)
     if (tokReset) rl.tokensReset = tokReset
+
+    const parsed = recordProviderRateLimits(this.name, headers)
+    if (!parsed) return
+    if (parsed.requests?.limit !== undefined) rl.requestsLimit = parsed.requests.limit
+    if (parsed.requests?.remaining !== undefined) rl.requestsRemaining = parsed.requests.remaining
+    if (parsed.tokens?.limit !== undefined) rl.tokensLimit = parsed.tokens.limit
+    if (parsed.tokens?.remaining !== undefined) rl.tokensRemaining = parsed.tokens.remaining
   }
 
   protected _headers(_model?: string): Record<string, string> {

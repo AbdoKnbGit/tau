@@ -1,7 +1,7 @@
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js'
 import { logEvent } from 'src/services/analytics/index.js'
-import { setHasUnknownModelCost } from '../bootstrap/state.js'
+import { recordUnpricedModel } from '../bootstrap/state.js'
 import { isFastModeEnabled } from './fastMode.js'
 import {
   CLAUDE_3_5_HAIKU_CONFIG,
@@ -22,10 +22,13 @@ import {
 import {
   firstPartyNameToCanonical,
   getCanonicalName,
-  getDefaultMainLoopModelSetting,
   type ModelShortName,
 } from './model/model.js'
 import { getAPIProvider } from './model/providers.js'
+import {
+  ensureModelPricesFresh,
+  lookupCatalogPrice,
+} from './modelPricingCatalog.js'
 import { getProviderModelSet } from './model/configs.js'
 
 // @see https://platform.claude.com/docs/en/about-claude/pricing
@@ -90,8 +93,6 @@ export const COST_HAIKU_45 = {
   promptCacheReadTokens: 0.1,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
-
-const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 // ─── Gemini cost tiers ──────────────────────────────────────────────
 // Google Gemini pricing (per Mtok). Cache reads are 25% of input cost,
@@ -235,7 +236,17 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
   )
 }
 
-export function getModelCosts(model: string, usage: Usage): ModelCosts {
+/**
+ * Published per-token prices for a model, or null when none are known.
+ *
+ * Null is deliberate and load-bearing. This table covers Claude and Gemini;
+ * a third-party model such as `deepseek-v4-flash` or `glm-4` appears in
+ * neither, and this previously returned the DEFAULT MODEL's prices for those -
+ * quietly billing DeepSeek tokens at Claude rates, off by an order of
+ * magnitude in the direction that alarms people. A missing price is not a
+ * reason to substitute someone else's.
+ */
+export function getModelCosts(model: string, usage: Usage): ModelCosts | null {
   // Check Gemini models first — they use prefix matching, not canonical names.
   const geminiCosts = getGeminiModelCosts(model)
   if (geminiCosts) return geminiCosts
@@ -253,29 +264,53 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
   }
 
   const costs = MODEL_COSTS[shortName]
-  if (!costs) {
-    trackUnknownModelCost(model, shortName)
-    return (
-      MODEL_COSTS[getCanonicalName(getDefaultMainLoopModelSetting())] ??
-      DEFAULT_UNKNOWN_MODEL_COST
-    )
-  }
-  return costs
+  if (costs) return costs
+
+  // Not a model this build ships prices for. The models.dev catalogue keys
+  // entries by provider and by the provider's own model id, so a hit here is
+  // an exact match for what this session is actually running.
+  const published = lookupCatalogPrice(getAPIProvider(), model)
+  if (published) return published
+
+  trackUnknownModelCost(model, shortName, usage)
+  return null
 }
 
-function trackUnknownModelCost(model: string, shortName: ModelShortName): void {
+/** Every token that went unpriced, so the note can quantify the shortfall. */
+function totalTokens(usage: Usage): number {
+  return (
+    (usage.input_tokens ?? 0) +
+    (usage.output_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0)
+  )
+}
+
+function trackUnknownModelCost(
+  model: string,
+  shortName: ModelShortName,
+  usage: Usage,
+): void {
   logEvent('tengu_unknown_model_cost', {
     model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     shortName:
       shortName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
-  setHasUnknownModelCost()
+  recordUnpricedModel(model, totalTokens(usage))
+  // Meeting a model we cannot price is the only reason to want the catalogue,
+  // so the download is triggered here rather than at startup. A session that
+  // only runs models we already price never fetches anything.
+  ensureModelPricesFresh()
 }
 
 // Calculate the cost of a query in US dollars.
 // If the model's costs are not found, use the default model's costs.
 export function calculateUSDCost(resolvedModel: string, usage: Usage): number {
   const modelCosts = getModelCosts(resolvedModel, usage)
+  // Unpriced usage contributes nothing, so the running total is a floor made
+  // only of usage we can actually price. getUnpricedModels() names what was
+  // left out - a total presented without that is the misleading half.
+  if (!modelCosts) return 0
   return tokensToUSDCost(modelCosts, usage)
 }
 
