@@ -233,9 +233,20 @@ export function getCatalogFetchedAt(): number | null {
 }
 
 /** Test seam. */
+function noteRefreshFailure(): void {
+  refreshFailures += 1
+  lastRefreshFailureAt = Date.now()
+}
+
+/** Exported so the retry policy can be tested without a network. */
+export const _refreshRetryDelay = refreshRetryDelay
+
 export function resetCatalogForTests(next?: CatalogTable | null): void {
   table = next ?? null
   loadAttempted = next !== undefined
+  refreshFailures = 0
+  lastRefreshFailureAt = 0
+  refreshInFlight = false
 }
 
 /**
@@ -275,6 +286,16 @@ function writeTableAtomically(derived: CatalogTable): void {
 }
 
 let refreshInFlight = false
+let refreshFailures = 0
+let lastRefreshFailureAt = 0
+
+/** 5min, 10min, 20min, 40min, then hourly. The payload is ~4MB. */
+const RETRY_BASE_MS = 5 * 60_000
+const RETRY_CAP_MS = 60 * 60_000
+
+function refreshRetryDelay(failures: number): number {
+  return Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** Math.max(0, failures - 1))
+}
 
 /**
  * Refresh the stored table if it is missing or a day old. Fire-and-forget:
@@ -287,8 +308,30 @@ let refreshInFlight = false
 export function ensureModelPricesFresh(): void {
   if (isModelPricingDisabled()) return
   if (refreshInFlight) return
-  const current = loadTable()
-  if (current && Date.now() - current.fetchedAt < TTL_MS) return
+
+  let current = loadTable()
+  if (!current) {
+    // Another session may have written the table since this one first looked.
+    // Re-reading a local file beats re-downloading four megabytes.
+    loadAttempted = false
+    current = loadTable()
+  }
+
+  const now = Date.now()
+  const age = current ? now - current.fetchedAt : -1
+  if (current && age >= 0 && age < TTL_MS) return
+
+  // Without this, a table that cannot be fetched - offline, or the service
+  // down - restarts a 4MB download on every unpriced message, because a null
+  // table can never satisfy the freshness check above.
+  const sinceFailure = now - lastRefreshFailureAt
+  if (
+    refreshFailures > 0 &&
+    sinceFailure >= 0 &&
+    sinceFailure < refreshRetryDelay(refreshFailures)
+  ) {
+    return
+  }
 
   refreshInFlight = true
   void (async () => {
@@ -297,14 +340,22 @@ export function ensureModelPricesFresh(): void {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         headers: { Accept: 'application/json' },
       })
-      if (!response.ok) return
+      if (!response.ok) {
+        noteRefreshFailure()
+        return
+      }
       const derived = deriveTable(await response.json(), Date.now())
-      if (Object.keys(derived.providers).length === 0) return
+      if (Object.keys(derived.providers).length === 0) {
+        noteRefreshFailure()
+        return
+      }
 
+      refreshFailures = 0
       table = derived
       loadAttempted = true
       writeTableAtomically(derived)
     } catch {
+      noteRefreshFailure()
       // Keep whatever is already stored. A refresh that fails must not turn
       // priced models into unpriced ones.
     } finally {

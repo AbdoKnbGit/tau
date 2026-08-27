@@ -225,10 +225,20 @@ export function ensureProviderQuotaFresh(provider: string): void {
 function shouldFetch(provider: string, now: number): boolean {
   const entry = entries.get(provider)
   if (!entry) return true
-  if (entry.settled && now - entry.settledAt < ttlFor(provider)) return false
+
+  // A clock that jumps backwards - NTP correction, a resumed VM - makes an
+  // age negative. Reading that as "not old enough yet" would freeze refreshes
+  // until real time caught up, so an impossible age counts as due.
+  const settledAge = now - entry.settledAt
+  if (entry.settled && settledAge >= 0 && settledAge < ttlFor(provider)) {
+    return false
+  }
+
+  const attemptAge = now - entry.lastAttemptAt
   if (
     entry.consecutiveFailures > 0 &&
-    now - entry.lastAttemptAt < retryDelay(entry.consecutiveFailures)
+    attemptAge >= 0 &&
+    attemptAge < retryDelay(entry.consecutiveFailures)
   ) {
     return false
   }
@@ -269,7 +279,15 @@ function noteOutcome(
     consecutiveFailures: 0,
     lastAttemptAt: at,
   })
-  for (const listener of listeners) listener()
+  for (const listener of listeners) {
+    try {
+      listener()
+    } catch {
+      // A subscriber that throws must not skip the remaining listeners, and
+      // must not propagate: the caller would treat a stored reading as a
+      // failed lookup and delay the next refresh for no reason.
+    }
+  }
 }
 
 /**

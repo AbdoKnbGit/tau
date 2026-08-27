@@ -322,6 +322,25 @@ test('a fresh settled outcome suppresses fetching entirely', () => {
   assert(_shouldFetch('deepseek', now + 6 * MINUTE) === true, 'stale, refetch')
 })
 
+test('a clock jumping backwards does not freeze refreshes', () => {
+  // NTP correction or a resumed VM can make "now" earlier than when the
+  // reading was stored. Reading that as "not old enough yet" would stall
+  // refreshes until real time caught up.
+  const now = Date.now()
+  const reading = { kind: 'reading', usedPercent: 40, summary: null, label: null } as const
+  _noteOutcome('deepseek', reading, now)
+
+  assert(_shouldFetch('deepseek', now - 60 * 60_000) === true, 'negative age is due')
+  assert(_shouldFetch('deepseek', now + 1_000) === false, 'a normal age still holds')
+})
+
+test('a backwards clock does not stall the failure backoff either', () => {
+  const now = Date.now()
+  _noteOutcome('deepseek', null, now)
+  assert(_shouldFetch('deepseek', now - 60_000) === true, 'negative age retries')
+  assert(_shouldFetch('deepseek', now + 1_000) === false, 'backoff still applies')
+})
+
 test('fetches when nothing is known yet', () => {
   assert(_shouldFetch('deepseek', Date.now()) === true, 'first look should fetch')
 })

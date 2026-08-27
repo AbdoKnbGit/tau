@@ -9,6 +9,7 @@ import {
   lookupCatalogPrice,
   resetCatalogForTests,
   isLocalProvider,
+  _refreshRetryDelay,
   isModelPricingDisabled,
   resolveCatalogProvider,
   rowToPrice,
@@ -244,6 +245,17 @@ test('only explicit opt-out values disable the catalogue', () => {
   }
   delete process.env.CLAUDEX_DISABLE_MODEL_PRICING
   assert(!isModelPricingDisabled(), 'unset means enabled')
+})
+
+test('backs off failed refreshes instead of re-downloading 4MB each time', () => {
+  // A null table can never satisfy the freshness check, so without a failure
+  // backoff an offline session restarts the download on every unpriced
+  // message. The delay grows and is capped.
+  assert(_refreshRetryDelay(1) === 5 * 60_000, '1st retry after 5min')
+  assert(_refreshRetryDelay(2) === 10 * 60_000, '2nd after 10min')
+  assert(_refreshRetryDelay(3) === 20 * 60_000, '3rd after 20min')
+  assert(_refreshRetryDelay(9) === 60 * 60_000, 'capped at an hour')
+  assert(_refreshRetryDelay(0) === 5 * 60_000, 'a zero count still delays')
 })
 
 test('returns null when no table has been loaded', () => {
