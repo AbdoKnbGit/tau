@@ -232,6 +232,74 @@ test('matches model ids to labels across punctuation and case', () => {
   )
 })
 
+// ─── a balance is not a window ───────────────────────────────────────
+
+test('a balance shows what is left, not a lifetime-spent percentage', () => {
+  // OpenRouter's used/total measures lifetime credit consumed against lifetime
+  // credit granted. It climbs toward 100% and does not recover on top-up, so
+  // it answers a different question than "can I keep working".
+  const outcome = _classifyReport(
+    report('ok', [
+      {
+        label: 'Credits',
+        usedPercent: 100,
+        remaining: '$4.20 remaining',
+        summary: '$95.80 / $100.00 used',
+      },
+    ]),
+  )
+  assert(outcome?.kind === 'reading', 'should be a reading')
+  assert(outcome.usedPercent === null, 'the percentage must not be shown')
+  assert(
+    outcome.summary === '$4.20 remaining',
+    `expected the balance, got ${outcome.summary}`,
+  )
+})
+
+test('a rate-limit window still reports its percentage', () => {
+  const outcome = _classifyReport(
+    report('ok', [{ label: 'Current session', usedPercent: 12 }]),
+  )
+  assert(
+    outcome?.kind === 'reading' && outcome.usedPercent === 12,
+    'a window without a balance keeps its percentage',
+  )
+})
+
+// ─── a turn is a better invalidation signal than a timer ─────────────
+
+test('a completed turn refreshes without waiting out the TTL', () => {
+  const now = Date.now()
+  const reading = { kind: 'reading', usedPercent: 40, summary: null, label: null } as const
+  _noteOutcome('deepseek', reading, now)
+
+  assert(_shouldFetch('deepseek', now + 60_000) === false, 'a bare tick holds')
+  assert(
+    _shouldFetch('deepseek', now + 60_000, true) === true,
+    'a finished turn refreshes, which is when the quota actually moved',
+  )
+})
+
+test('the turn floor stops a burst of tool-call turns hammering an endpoint', () => {
+  const now = Date.now()
+  const reading = { kind: 'reading', usedPercent: 40, summary: null, label: null } as const
+  _noteOutcome('deepseek', reading, now)
+
+  assert(_shouldFetch('deepseek', now + 5_000, true) === false, 'inside the floor')
+  assert(_shouldFetch('deepseek', now + 21_000, true) === true, 'past the floor')
+})
+
+test('a turn cannot bypass the failure backoff', () => {
+  const now = Date.now()
+  _noteOutcome('deepseek', null, now)
+
+  assert(
+    _shouldFetch('deepseek', now + 1_000, true) === false,
+    'a failing endpoint must not be hammered, turn or no turn',
+  )
+  assert(_shouldFetch('deepseek', now + 31_000, true) === true, 'released normally')
+})
+
 // ─── the cache problem this module exists to avoid ───────────────────
 
 test('a transient failure never overwrites a good reading', () => {

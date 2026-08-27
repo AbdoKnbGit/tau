@@ -38,7 +38,9 @@ import { join } from 'path'
 const CONFIG_DIR = join(homedir(), '.config', 'claude-code')
 const CACHE_FILE = join(CONFIG_DIR, 'model-prices.json')
 const CATALOG_URL = 'https://models.dev/api.json'
-const CACHE_VERSION = 1
+// 2: rows carry long-context tiers. A v1 file has no tier data, so it is
+// discarded rather than read as though the model had none.
+const CACHE_VERSION = 2
 
 /**
  * Opt out of the catalogue entirely: no request to models.dev, and any table
@@ -60,8 +62,88 @@ export function isModelPricingDisabled(): boolean {
 const TTL_MS = 24 * 60 * 60 * 1000
 const FETCH_TIMEOUT_MS = 20_000
 
-/** [input, output, cacheRead, cacheWrite] in USD per million tokens. */
-export type CatalogPriceRow = [number, number, number | null, number | null]
+/**
+ * A price that applies above a prompt-size threshold, in USD per million
+ * tokens: [minContextTokens, input, output, cacheRead, cacheWrite].
+ */
+export type CatalogTierRow = [
+  number,
+  number,
+  number,
+  number | null,
+  number | null,
+]
+
+/**
+ * [input, output, cacheRead, cacheWrite] in USD per million tokens, plus the
+ * long-context tiers when a model prices large prompts differently. 790 of the
+ * catalogue's ~6900 priced models do - gpt-5.5 goes from $5/$30 to $10/$45 -
+ * so ignoring them under-reports a long session by up to half.
+ */
+export type CatalogPriceRow = [
+  input: number,
+  output: number,
+  cacheRead: number | null,
+  cacheWrite: number | null,
+  tiers?: CatalogTierRow[],
+]
+
+/** The threshold models.dev's older `context_over_200k` field describes. */
+const OVER_200K = 200_000
+
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * Long-context tiers for one model, cheapest threshold first.
+ *
+ * models.dev spells this two ways, and a model can carry both at different
+ * thresholds: gpt-5.5 lists a `tiers` entry at 272k and a `context_over_200k`
+ * block at 200k. Keeping both - so the lower threshold applies first - matches
+ * opencode's effective behaviour and errs toward charging the premium rather
+ * than silently under-reporting it.
+ */
+function readTiers(cost: Record<string, unknown>): CatalogTierRow[] | undefined {
+  const rows: CatalogTierRow[] = []
+
+  const listed = Array.isArray(cost.tiers) ? cost.tiers : []
+  for (const raw of listed) {
+    const entry = raw as Record<string, unknown> | null
+    const tier = (entry?.tier ?? null) as Record<string, unknown> | null
+    if (!entry || !tier || tier.type !== 'context') continue
+    const size = finiteOrNull(tier.size)
+    const input = finiteOrNull(entry.input)
+    const output = finiteOrNull(entry.output)
+    if (size === null || size <= 0 || input === null || output === null) continue
+    rows.push([
+      size,
+      input,
+      output,
+      finiteOrNull(entry.cache_read),
+      finiteOrNull(entry.cache_write),
+    ])
+  }
+
+  const over = cost.context_over_200k
+  if (over && typeof over === 'object' && !rows.some(row => row[0] === OVER_200K)) {
+    const block = over as Record<string, unknown>
+    const input = finiteOrNull(block.input)
+    const output = finiteOrNull(block.output)
+    if (input !== null && output !== null) {
+      rows.push([
+        OVER_200K,
+        input,
+        output,
+        finiteOrNull(block.cache_read),
+        finiteOrNull(block.cache_write),
+      ])
+    }
+  }
+
+  if (rows.length === 0) return undefined
+  return rows.sort((a, b) => a[0] - b[0])
+}
 
 export type CatalogTable = {
   version: number
@@ -156,12 +238,14 @@ export function deriveTable(payload: unknown, fetchedAt: number): CatalogTable {
         const output = cost.output
         if (typeof input !== 'number' || typeof output !== 'number') continue
         if (!Number.isFinite(input) || !Number.isFinite(output)) continue
-        rows[modelId] = [
+        const base: CatalogPriceRow = [
           input,
           output,
-          typeof cost.cache_read === 'number' ? cost.cache_read : null,
-          typeof cost.cache_write === 'number' ? cost.cache_write : null,
+          finiteOrNull(cost.cache_read),
+          finiteOrNull(cost.cache_write),
         ]
+        const tiers = readTiers(cost)
+        rows[modelId] = tiers ? [...base, tiers] : base
       }
       if (Object.keys(rows).length > 0) providers[providerId] = rows
     }
@@ -169,9 +253,32 @@ export function deriveTable(payload: unknown, fetchedAt: number): CatalogTable {
   return { version: CACHE_VERSION, fetchedAt, providers }
 }
 
-/** Convert a stored row into the cost shape modelCost.ts expects. */
-export function rowToPrice(row: CatalogPriceRow): CatalogPrice {
-  const [input, output, cacheRead, cacheWrite] = row
+/**
+ * Convert a stored row into the cost shape modelCost.ts expects, applying the
+ * long-context tier this request qualifies for.
+ *
+ * `contextTokens` is the whole prompt the provider metered. The highest
+ * threshold it strictly exceeds wins, matching how the providers document it.
+ */
+export function rowToPrice(
+  row: CatalogPriceRow,
+  contextTokens = 0,
+): CatalogPrice {
+  let [input, output, cacheRead, cacheWrite] = row
+  const tiers = row[4]
+  if (tiers && Number.isFinite(contextTokens) && contextTokens > 0) {
+    // Sorted cheapest-first, so scanning back finds the highest match first.
+    for (let index = tiers.length - 1; index >= 0; index -= 1) {
+      const tier = tiers[index]!
+      if (contextTokens > tier[0]) {
+        input = tier[1]
+        output = tier[2]
+        cacheRead = tier[3]
+        cacheWrite = tier[4]
+        break
+      }
+    }
+  }
   return {
     inputTokens: input,
     outputTokens: output,
@@ -214,6 +321,7 @@ function loadTable(): CatalogTable | null {
 export function lookupCatalogPrice(
   tauProvider: string,
   model: string,
+  contextTokens = 0,
 ): CatalogPrice | null {
   if (isModelPricingDisabled()) return null
   const providerId = resolveCatalogProvider(tauProvider)
@@ -224,7 +332,7 @@ export function lookupCatalogPrice(
   if (!rows) return null
 
   const row = rows[model] ?? rows[model.toLowerCase()]
-  return row ? rowToPrice(row) : null
+  return row ? rowToPrice(row, contextTokens) : null
 }
 
 /** When the stored table was fetched, or null when there is none. */

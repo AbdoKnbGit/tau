@@ -61,6 +61,16 @@ const MAX_STALE_MS = 30 * 60_000
 /** First retry delay after a failure; doubles per consecutive failure. */
 const RETRY_BASE_MS = 30_000
 
+/**
+ * Shortest gap between turn-triggered refreshes.
+ *
+ * A completed turn is the moment quota actually changed, which makes it a far
+ * better invalidation signal than any interval - waiting out a five-minute TTL
+ * is what makes the readout feel like batch statistics. The floor exists so a
+ * burst of quick tool-call turns cannot hammer an account endpoint.
+ */
+const TURN_REFRESH_FLOOR_MS = 20_000
+
 export type ProviderQuotaReading = {
   /**
    * Percent of the account's allowance consumed, or null when the provider
@@ -84,6 +94,7 @@ export type ProviderQuotaMetric = {
   label: string
   usedPercent: number | null
   summary: string | null
+  remaining: string | null
 }
 
 /**
@@ -160,10 +171,12 @@ export function getProviderQuotaOutcome(
         metricMatchesModel(metric.label, activeModel),
     )
     if (match) {
+      // Same balance-over-percentage rule as readHeadlineMetric, so a
+      // re-selection at render time cannot disagree with the fetch-time pick.
       return {
         kind: 'reading',
-        usedPercent: match.usedPercent,
-        summary: match.summary,
+        usedPercent: match.remaining ? null : match.usedPercent,
+        summary: match.remaining ?? match.summary,
         label: match.label,
         metrics: settled.metrics,
       }
@@ -192,10 +205,13 @@ export function providerHasAccountQuota(provider: string): boolean {
  * caller renders whatever is settled now, and the next frame picks up the
  * result.
  */
-export function ensureProviderQuotaFresh(provider: string): void {
+export function ensureProviderQuotaFresh(
+  provider: string,
+  options: { afterTurn?: boolean } = {},
+): void {
   if (!providerHasAccountQuota(provider)) return
   if (inFlight.has(provider)) return
-  if (!shouldFetch(provider, Date.now())) return
+  if (!shouldFetch(provider, Date.now(), options.afterTurn === true)) return
 
   inFlight.add(provider)
   // Imported here rather than at module scope: providerUsage pulls in every
@@ -222,24 +238,37 @@ export function ensureProviderQuotaFresh(provider: string): void {
  * renders, which happen on every keystroke, so a provider that is failing
  * would otherwise be retried continuously.
  */
-function shouldFetch(provider: string, now: number): boolean {
+function shouldFetch(
+  provider: string,
+  now: number,
+  afterTurn = false,
+): boolean {
   const entry = entries.get(provider)
   if (!entry) return true
 
   // A clock that jumps backwards - NTP correction, a resumed VM - makes an
   // age negative. Reading that as "not old enough yet" would freeze refreshes
   // until real time caught up, so an impossible age counts as due.
-  const settledAge = now - entry.settledAt
-  if (entry.settled && settledAge >= 0 && settledAge < ttlFor(provider)) {
-    return false
-  }
-
   const attemptAge = now - entry.lastAttemptAt
+
+  // Backoff outranks everything below it: a failing endpoint must not be
+  // hammered, turn or no turn.
   if (
     entry.consecutiveFailures > 0 &&
     attemptAge >= 0 &&
     attemptAge < retryDelay(entry.consecutiveFailures)
   ) {
+    return false
+  }
+
+  // A completed turn is when the quota actually moved, so it may bypass the
+  // TTL. Only the floor limits it.
+  if (afterTurn && (attemptAge < 0 || attemptAge >= TURN_REFRESH_FLOOR_MS)) {
+    return true
+  }
+
+  const settledAge = now - entry.settledAt
+  if (entry.settled && settledAge >= 0 && settledAge < ttlFor(provider)) {
     return false
   }
   return true
@@ -369,6 +398,7 @@ function collectMetrics(report: ProviderUsageReport): ProviderQuotaMetric[] {
         ? Math.round(Math.min(100, Math.max(0, metric.usedPercent)))
         : null,
     summary: metric.summary ?? null,
+    remaining: metric.remaining ?? null,
   }))
 }
 
@@ -385,6 +415,12 @@ function readHeadlineMetric(report: ProviderUsageReport): ProviderQuotaReading {
     const chosen =
       scored.find(metric => SESSION_METRIC.test(metric.label)) ??
       scored.reduce((a, b) => (b.usedPercent > a.usedPercent ? b : a))
+    // A balance reports what is left rather than a fraction spent. Its
+    // percentage measures lifetime consumption against lifetime credit, which
+    // climbs to 100% and stays there, so the amount is the useful reading.
+    if (chosen.remaining) {
+      return { usedPercent: null, summary: chosen.remaining, label: chosen.label }
+    }
     return {
       // Whole percent, like every other percentage in the statusline payload.
       // Antigravity's remainingFraction arithmetic lands on values such as
@@ -395,13 +431,15 @@ function readHeadlineMetric(report: ProviderUsageReport): ProviderQuotaReading {
     }
   }
 
-  const described = metrics.find(
-    metric => typeof metric.summary === 'string' && metric.summary.trim() !== '',
+  const described = metrics.find(metric =>
+    [metric.remaining, metric.summary].some(
+      text => typeof text === 'string' && text.trim() !== '',
+    ),
   )
   if (!described) return nothing
   return {
     usedPercent: null,
-    summary: described.summary!.trim(),
+    summary: (described.remaining ?? described.summary)!.trim(),
     label: described.label,
   }
 }

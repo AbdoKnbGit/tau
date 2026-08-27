@@ -171,9 +171,15 @@ export function PromptInputStatusBar({
     return () => clearInterval(id)
   }, [visible])
 
+  // A new message means a turn completed, which is exactly when quota moved.
+  // Only that refresh may bypass the TTL; a bare tick may not, so an idle
+  // session settles back into the slow cadence on its own.
+  const seenMessageCountRef = React.useRef(lastMessageCount)
   React.useEffect(() => {
     if (!visible) return
-    ensureProviderQuotaFresh(provider)
+    const afterTurn = lastMessageCount !== seenMessageCountRef.current
+    seenMessageCountRef.current = lastMessageCount
+    ensureProviderQuotaFresh(provider, { afterTurn })
   }, [visible, provider, lastMessageCount, tick])
 
   // The lookup resolves well after the render that started it, and a

@@ -161,6 +161,105 @@ test('falls back to the input rate when a cache rate is unquoted', () => {
   assert(price.promptCacheWriteTokens === 2, 'cache write falls back to input')
 })
 
+// ─── long-context tiers ──────────────────────────────────────────────
+
+// gpt-5.5's real shape: a `tiers` entry at 272k AND a `context_over_200k`
+// block at 200k, both describing the same premium.
+const TIERED_PAYLOAD = {
+  'hpc-ai': {
+    id: 'hpc-ai',
+    models: {
+      'openai/gpt-5.5': {
+        id: 'openai/gpt-5.5',
+        cost: {
+          input: 5,
+          output: 30,
+          cache_read: 0.5,
+          tiers: [
+            {
+              input: 10,
+              output: 45,
+              cache_read: 1,
+              tier: { type: 'context', size: 272_000 },
+            },
+          ],
+          context_over_200k: { input: 10, output: 45, cache_read: 1 },
+        },
+      },
+    },
+  },
+}
+
+function gpt55Row() {
+  return deriveTable(TIERED_PAYLOAD, NOW).providers['hpc-ai']!['openai/gpt-5.5']!
+}
+
+test('keeps both spellings of a long-context threshold', () => {
+  const tiers = gpt55Row()[4]
+  assert(tiers !== undefined, 'tiers should be stored')
+  assert(tiers.length === 2, `expected 200k and 272k, got ${tiers.length}`)
+  assert(tiers[0]![0] === 200_000, 'cheapest threshold first')
+  assert(tiers[1]![0] === 272_000, 'then the higher one')
+})
+
+test('charges base rates below every threshold', () => {
+  const price = rowToPrice(gpt55Row(), 150_000)
+  assert(price.inputTokens === 5, `expected base input, got ${price.inputTokens}`)
+  assert(price.outputTokens === 30, `expected base output, got ${price.outputTokens}`)
+})
+
+test('charges the premium above a threshold', () => {
+  // The whole point: this was billed at base rates before, halving the figure.
+  const price = rowToPrice(gpt55Row(), 300_000)
+  assert(price.inputTokens === 10, `expected tier input, got ${price.inputTokens}`)
+  assert(price.outputTokens === 45, `expected tier output, got ${price.outputTokens}`)
+  assert(price.promptCacheReadTokens === 1, 'the tier cache rate applies too')
+})
+
+test('applies the lower threshold in the band between two of them', () => {
+  // 250k exceeds 200k but not 272k. Charging the premium there matches
+  // opencode and errs toward reporting the cost rather than hiding it.
+  const price = rowToPrice(gpt55Row(), 250_000)
+  assert(price.inputTokens === 10, `expected the 200k tier, got ${price.inputTokens}`)
+})
+
+test('treats a threshold as strictly exceeded, never merely reached', () => {
+  assert(rowToPrice(gpt55Row(), 200_000).inputTokens === 5, 'exactly 200k is base')
+  assert(rowToPrice(gpt55Row(), 200_001).inputTokens === 10, 'one over is premium')
+})
+
+test('an unknown context falls back to base rates rather than guessing', () => {
+  assert(rowToPrice(gpt55Row()).inputTokens === 5, 'no context given')
+  assert(rowToPrice(gpt55Row(), 0).inputTokens === 5, 'zero context')
+  assert(rowToPrice(gpt55Row(), Number.NaN).inputTokens === 5, 'unusable context')
+})
+
+test('ignores malformed tiers instead of dropping the model', () => {
+  const table = deriveTable(
+    {
+      p: {
+        models: {
+          m: {
+            cost: {
+              input: 1,
+              output: 2,
+              tiers: [
+                { input: 9, output: 9, tier: { type: 'output', size: 100 } },
+                { input: 9, output: 9, tier: { type: 'context' } },
+                { input: 'x', output: 9, tier: { type: 'context', size: 100 } },
+              ],
+            },
+          },
+        },
+      },
+    },
+    NOW,
+  )
+  const row = table.providers.p!.m!
+  assert(row[0] === 1 && row[1] === 2, 'the model is still priced')
+  assert(row[4] === undefined, 'no usable tier survived')
+})
+
 // ─── lookup ──────────────────────────────────────────────────────────
 
 const TABLE: CatalogTable = {

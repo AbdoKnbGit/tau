@@ -98,6 +98,14 @@ export type ProviderUsageId = APIProvider | 'codex'
 export type UsageMetric = {
   label: string
   usedPercent?: number
+  /**
+   * What is actually left, e.g. `$4.20 remaining`, for readings that measure
+   * a balance rather than a window. The status bar shows this in place of a
+   * percentage: a credit balance's used/granted ratio only ever climbs toward
+   * 100% and does not recover when the account is topped up, so it answers a
+   * different question than "can I keep working". /usage keeps its bar.
+   */
+  remaining?: string
   summary?: string
   detail?: string
   resetsAt?: string | null
@@ -824,6 +832,7 @@ async function reportOpenRouter(): Promise<ProviderUsageReport> {
     metrics: [{
       label: 'Credits',
       usedPercent: credits.total > 0 ? clampPercent(credits.used / credits.total * 100) : undefined,
+      remaining: `${formatCurrency(credits.remaining, 'USD')} remaining`,
       summary: `${formatCurrency(credits.used, 'USD')} / ${formatCurrency(credits.total, 'USD')} used`,
     }],
     docsUrl: DOCS.openrouter,

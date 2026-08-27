@@ -269,7 +269,14 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts | null {
   // Not a model this build ships prices for. The models.dev catalogue keys
   // entries by provider and by the provider's own model id, so a hit here is
   // an exact match for what this session is actually running.
-  const published = lookupCatalogPrice(getAPIProvider(), model)
+  // Which long-context tier applies is decided by the whole prompt the
+  // provider metered. Tau's buckets are additive - input_tokens excludes the
+  // cached ones - so the context this request occupied is their sum.
+  const contextTokens =
+    (usage.input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0)
+  const published = lookupCatalogPrice(getAPIProvider(), model, contextTokens)
   if (published) return published
 
   trackUnknownModelCost(model, shortName, usage)
