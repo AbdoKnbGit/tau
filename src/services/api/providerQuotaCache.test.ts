@@ -12,7 +12,12 @@ import {
   getProviderQuotaOutcome,
   providerHasAccountQuota,
   resetProviderQuotaCache,
+  buildStatusLineProviderQuota,
 } from './providerQuotaCache.js'
+import {
+  recordProviderRateLimits,
+  resetProviderRateLimits,
+} from './providerRateLimits.js'
 import { hasProviderUsageReporter } from './providerUsageCoverage.js'
 
 let passed = 0
@@ -266,6 +271,54 @@ test('a rate-limit window still reports its percentage', () => {
   )
 })
 
+test('a balance outranks a header rate-limit window', () => {
+  // OpenRouter publishes both. A rate-limit bucket refills in seconds and says
+  // nothing about whether work can continue; credits are what run out. Without
+  // this ordering the balance would never surface.
+  resetProviderRateLimits()
+  recordProviderRateLimits(
+    'openrouter',
+    new Headers({
+      'x-ratelimit-limit-requests': '100',
+      'x-ratelimit-remaining-requests': '60',
+    }),
+  )
+  _noteOutcome(
+    'openrouter',
+    _classifyReport(
+      report('ok', [
+        { label: 'Credits', usedPercent: 100, remaining: '$4.20 remaining' },
+      ]),
+    )!,
+  )
+
+  const field = buildStatusLineProviderQuota('openrouter')
+  assert(field?.status === 'available', 'should report a reading')
+  assert(field.source === 'account', `expected the balance, got ${field.source}`)
+  assert(field.summary === '$4.20 remaining', 'the amount is the headline')
+  assert(field.used_percentage === undefined, 'no percentage alongside it')
+  resetProviderRateLimits()
+})
+
+test('a header window still wins when the account has only a percentage', () => {
+  resetProviderRateLimits()
+  recordProviderRateLimits(
+    'groq',
+    new Headers({
+      'x-ratelimit-limit-requests': '100',
+      'x-ratelimit-remaining-requests': '60',
+    }),
+  )
+  _noteOutcome('groq', { kind: 'reading', usedPercent: 10, summary: null, label: 'Credits' })
+
+  const field = buildStatusLineProviderQuota('groq')
+  assert(
+    field?.source === 'headers' && field.used_percentage === 40,
+    'a percentage reading does not displace the fresher header window',
+  )
+  resetProviderRateLimits()
+})
+
 // ─── a turn is a better invalidation signal than a timer ─────────────
 
 test('a completed turn refreshes without waiting out the TTL', () => {
@@ -287,6 +340,24 @@ test('the turn floor stops a burst of tool-call turns hammering an endpoint', ()
 
   assert(_shouldFetch('deepseek', now + 5_000, true) === false, 'inside the floor')
   assert(_shouldFetch('deepseek', now + 21_000, true) === true, 'past the floor')
+})
+
+test('a turn does not re-fetch a settled absence', () => {
+  // A turn moves the quota. It cannot change whether the provider publishes
+  // one at all, so re-asking every turn would be waste - and it would
+  // contradict the rule that an absence never goes stale.
+  const now = Date.now()
+  _noteOutcome('mimo', { kind: 'absent' }, now)
+  assert(
+    _shouldFetch('mimo', now + 60_000, true) === false,
+    'an absence is settled; a turn does not reopen it',
+  )
+
+  _noteOutcome('groq', { kind: 'unconfigured' }, now)
+  assert(
+    _shouldFetch('groq', now + 60_000, true) === false,
+    'a missing credential is not something a turn changes either',
+  )
 })
 
 test('a turn cannot bypass the failure backoff', () => {

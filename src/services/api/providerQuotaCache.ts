@@ -144,6 +144,22 @@ export function subscribeProviderQuota(listener: () => void): () => void {
 }
 
 /**
+ * Whether a reading measures a balance - an amount left - rather than a
+ * fraction of a window consumed. Balances have no percentage by construction:
+ * readHeadlineMetric drops it in favour of the amount.
+ */
+export function hasBalance(
+  outcome: ProviderQuotaOutcome | undefined,
+): outcome is ProviderQuotaOutcome & { kind: 'reading' } {
+  return (
+    outcome?.kind === 'reading' &&
+    outcome.usedPercent === null &&
+    typeof outcome.summary === 'string' &&
+    outcome.summary !== ''
+  )
+}
+
+/**
  * The settled outcome for a provider, or undefined when there is nothing to
  * act on yet - never fetched, still in flight, or a reading too old to stand
  * behind. Callers render undefined as no segment at all.
@@ -262,8 +278,16 @@ function shouldFetch(
   }
 
   // A completed turn is when the quota actually moved, so it may bypass the
-  // TTL. Only the floor limits it.
-  if (afterTurn && (attemptAge < 0 || attemptAge >= TURN_REFRESH_FLOOR_MS)) {
+  // TTL. Only a reading moves, though: "absent" and "unconfigured" describe
+  // the provider's configuration, which no turn can change - re-fetching those
+  // every turn would be pure waste, and it would contradict the rule that they
+  // never go stale.
+  const settledMoves = !entry.settled || entry.settled.kind === 'reading'
+  if (
+    afterTurn &&
+    settledMoves &&
+    (attemptAge < 0 || attemptAge >= TURN_REFRESH_FLOOR_MS)
+  ) {
     return true
   }
 
@@ -455,11 +479,17 @@ function readHeadlineMetric(report: ProviderUsageReport): ProviderQuotaReading {
 export function buildStatusLineProviderQuota(
   provider: string,
 ): ProviderQuotaInput | undefined {
+  const outcome = getProviderQuotaOutcome(provider)
   const harvested = buildProviderQuotaInput(provider)
   const windows = [harvested?.requests, harvested?.tokens]
     .map(window => window?.used_percentage)
     .filter((value): value is number => value !== undefined)
-  if (windows.length > 0 && harvested) {
+
+  // A balance outranks the header windows. A rate-limit bucket refills in
+  // seconds and says nothing about whether work can continue; credits are what
+  // actually run out. OpenRouter publishes both, so without this the balance
+  // would never surface.
+  if (!hasBalance(outcome) && windows.length > 0 && harvested) {
     return {
       ...harvested,
       source: 'headers',
@@ -467,7 +497,6 @@ export function buildStatusLineProviderQuota(
     }
   }
 
-  const outcome = getProviderQuotaOutcome(provider)
   if (outcome?.kind === 'reading') {
     const entry = entries.get(provider)
     return {

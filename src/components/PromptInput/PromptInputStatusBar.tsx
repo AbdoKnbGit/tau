@@ -30,6 +30,7 @@ import {
 import {
   ensureProviderQuotaFresh,
   getProviderQuotaOutcome,
+  hasBalance,
   providerHasAccountQuota,
   subscribeProviderQuota,
 } from '../../services/api/providerQuotaCache.js'
@@ -58,7 +59,16 @@ function resolveQuota(
   provider: APIProvider,
   activeModel: string,
 ): SessionQuotaStatus | null {
-  // 1. Response headers. Free, already collected, and the freshest thing
+  const outcome = getProviderQuotaOutcome(provider, activeModel)
+
+  // 1. A balance, where the provider publishes one. It outranks the header
+  //    windows below: a rate-limit bucket refills in seconds, while credits
+  //    are what actually run out. OpenRouter reports both.
+  if (hasBalance(outcome)) {
+    return { state: 'text', text: outcome.summary! }
+  }
+
+  // 2. Response headers. Free, already collected, and the freshest thing
   //    available - it came off the last call this session made.
   const harvested = buildProviderQuotaInput(provider)
   const windows = [harvested?.requests, harvested?.tokens]
@@ -68,7 +78,7 @@ function resolveQuota(
     return { state: 'used', percentage: Math.max(...windows) }
   }
 
-  // 2. Anthropic's 5-hour session window, which arrives the same free way.
+  // 3. Anthropic's 5-hour session window, which arrives the same free way.
   //    It describes the Claude.ai subscription, so it applies only when the
   //    session really is on Anthropic - never as a stand-in for a third party.
   //
@@ -80,9 +90,8 @@ function resolveQuota(
     if (fiveHour) return { state: 'used', percentage: fiveHour.utilization * 100 }
   }
 
-  // 3. The provider's own account endpoint - credits, balance, utilization.
+  // 4. The provider's own account endpoint - credits, balance, utilization.
   //    Already refreshed off the render path by the effect below.
-  const outcome = getProviderQuotaOutcome(provider, activeModel)
   if (outcome?.kind === 'reading') {
     if (outcome.usedPercent !== null) {
       return { state: 'used', percentage: outcome.usedPercent }
@@ -91,7 +100,7 @@ function resolveQuota(
     // but the amount left is exactly what the row is being asked for.
     if (outcome.summary) return { state: 'text', text: outcome.summary }
   }
-  // 4. No quota anywhere. Several providers publish none at all, and for
+  // 5. No quota anywhere. Several providers publish none at all, and for
   //    those the useful question is not "how much is left?" but "what has
   //    this cost?" - which token prices can answer even when the platform
   //    shows nothing.
@@ -106,7 +115,7 @@ function resolveQuota(
   // 'absent' or 'unconfigured': the lookup settled with no number to give.
   if (outcome) return { state: 'unavailable' }
 
-  // 5. A provider with no account source at all, whose responses carried no
+  // 6. A provider with no account source at all, whose responses carried no
   //    rate limit headers either. Nothing further will arrive.
   if (
     !providerHasAccountQuota(provider) &&
