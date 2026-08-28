@@ -8,6 +8,11 @@ import {
   parseAntigravityQuotaBuckets,
   parseAntigravityUsage,
 } from './antigravityUsageParser.js'
+import {
+  fireworksSummaryRange,
+  parseFireworksBillingSummary,
+  sumFireworksSpendSince,
+} from './fireworksBillingParser.js'
 
 let passed = 0
 let failed = 0
@@ -163,6 +168,95 @@ function main(): void {
     assert(
       metricSummary(metrics, 'Claude Sonnet 4.6') === '65% remaining',
       'Claude should stay on its own bucket',
+    )
+  })
+
+
+  // Fireworks: the card reports dollars because the API has no balance to
+  // report. Fixtures are trimmed captures of a real billing/summary response.
+  const fireworksMonth = {
+    lineItems: [
+      { category: 'LLM input tokens (cached)', totalCost: { currencyCode: 'USD', units: '0', nanos: 369756920 } },
+      { category: 'LLM output tokens', totalCost: { currencyCode: 'USD', units: '0', nanos: 220646080 } },
+      { category: 'LLM input tokens (uncached)', totalCost: { currencyCode: 'USD', units: '0', nanos: 17494000 } },
+    ],
+    usageBuckets: [
+      {
+        startTime: '2026-08-26T00:00:00Z',
+        endTime: '2026-08-27T00:00:00Z',
+        lineItems: [{ totalCost: { units: '0', nanos: 230948000 } }],
+      },
+      { startTime: '2026-08-27T00:00:00Z', endTime: '2026-08-28T00:00:00Z', lineItems: [] },
+      {
+        startTime: '2026-08-28T00:00:00Z',
+        endTime: '2026-08-28T00:08:12Z',
+        lineItems: [{ totalCost: { units: '0', nanos: 1493000 } }],
+      },
+      {
+        startTime: '2026-08-28T00:08:12Z',
+        endTime: '2026-08-29T00:00:00Z',
+        lineItems: [{ totalCost: { units: '0', nanos: 16000000 } }],
+      },
+    ],
+  }
+
+  test('totals a Fireworks billing summary from its flat line items', () => {
+    const spend = parseFireworksBillingSummary(fireworksMonth)
+    assert(
+      spend.total.toFixed(6) === '0.607897',
+      `month spend should sum units and nanos, got ${spend.total}`,
+    )
+    assert(spend.buckets.length === 4, 'every dated bucket should survive parsing')
+  })
+
+  test('carves today out of the month by bucket start, not by bucket count', () => {
+    const spend = parseFireworksBillingSummary(fireworksMonth)
+    const today = sumFireworksSpendSince(spend, '2026-08-28T00:00:00.000Z')
+    assert(
+      today.toFixed(6) === '0.017493',
+      `both of today's split buckets should count, got ${today}`,
+    )
+  })
+
+  test('reads an empty or malformed Fireworks summary as zero, not NaN', () => {
+    for (const payload of [null, {}, { lineItems: 'nope' }, { lineItems: [{}] }]) {
+      const spend = parseFireworksBillingSummary(payload)
+      assert(spend.total === 0, `unusable payload should total 0, got ${spend.total}`)
+      assert(spend.buckets.length === 0, 'unusable payload should yield no buckets')
+    }
+  })
+
+  test('ends the Fireworks window on tomorrow so today is billed', () => {
+    const range = fireworksSummaryRange(
+      new Date('2026-08-28T11:26:03Z'),
+      '2026-06-26T17:04:13.539509Z',
+    )
+    // Fireworks excludes costs dated on the end date, so a window ending today
+    // would silently drop today.
+    assert(range.end === '2026-08-29T00:00:00.000Z', `end should be tomorrow UTC, got ${range.end}`)
+    assert(range.dayStart === '2026-08-28T00:00:00.000Z', 'today starts at UTC midnight')
+    assert(range.monthStart === '2026-08-01T00:00:00.000Z', 'the month starts on the 1st UTC')
+    assert(
+      range.lifetimeStart === '2026-06-26T17:04:13.539Z',
+      `a young account should measure from creation, got ${range.lifetimeStart}`,
+    )
+    assert(range.lifetimeIsComplete, 'an account inside the year is a true lifetime total')
+  })
+
+  test('clamps the Fireworks lifetime window to the 364 days the gateway serves', () => {
+    // 365 days answers 503 "billing data is temporarily unavailable" every
+    // time, so an older account gets a year and the row is labelled as one.
+    const range = fireworksSummaryRange(new Date('2026-08-28T11:26:03Z'), '2024-01-01T00:00:00Z')
+    assert(
+      range.lifetimeStart === '2025-08-30T00:00:00.000Z',
+      `lifetime should clamp to 364 days before the end, got ${range.lifetimeStart}`,
+    )
+    assert(!range.lifetimeIsComplete, 'a clamped window is not a lifetime total')
+
+    const unknown = fireworksSummaryRange(new Date('2026-08-28T11:26:03Z'), null)
+    assert(
+      !unknown.lifetimeIsComplete,
+      'an account id from the environment carries no create time to trust',
     )
   })
 

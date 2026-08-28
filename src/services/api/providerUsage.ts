@@ -25,6 +25,12 @@ import {
   parseAntigravityUsage,
 } from './antigravityUsageParser.js'
 import {
+  fireworksSummaryRange,
+  parseFireworksBillingSummary,
+  sumFireworksSpendSince,
+  type FireworksSpend,
+} from './fireworksBillingParser.js'
+import {
   ANTIGRAVITY_ENDPOINT_AUTOPUSH,
   ANTIGRAVITY_ENDPOINT_DAILY,
   ANTIGRAVITY_ENDPOINT_PROD,
@@ -1055,59 +1061,86 @@ async function reportRequesty(): Promise<ProviderUsageReport> {
   }
 }
 
-// Cached once resolved — the account id is stable for a key. Only successful
-// lookups are cached so a transient failure can be retried on the next /usage.
-let _fireworksAccountId: string | null = null
+type FireworksAccount = { id: string; createTime: string | null }
 
-async function resolveFireworksAccountId(
+// Cached once resolved — the account is stable for a key, and its create time
+// is what separates a true lifetime total from a clamped year. Only successful
+// lookups are cached so a transient failure can be retried on the next /usage.
+let _fireworksAccount: FireworksAccount | null = null
+
+async function resolveFireworksAccount(
   headers: Record<string, string>,
-): Promise<string | null> {
+): Promise<FireworksAccount | null> {
   const explicit = process.env.FIREWORKS_ACCOUNT_ID?.trim()
-  if (explicit) return explicit.replace(/^accounts\//, '')
-  if (_fireworksAccountId) return _fireworksAccountId
+  if (explicit) return { id: explicit.replace(/^accounts\//, ''), createTime: null }
+  if (_fireworksAccount) return _fireworksAccount
   try {
     // AIP-style List Accounts — returns the accounts this key can access.
     const data = await fetchJson('https://api.fireworks.ai/v1/accounts', { headers })
-    const accounts = (data as { accounts?: Array<{ name?: unknown }> })?.accounts
-    const name =
-      Array.isArray(accounts) && typeof accounts[0]?.name === 'string'
-        ? accounts[0].name
-        : null
-    if (name) _fireworksAccountId = name.replace(/^accounts\//, '')
+    const accounts = (data as {
+      accounts?: Array<{ name?: unknown; createTime?: unknown }>
+    })?.accounts
+    const account = Array.isArray(accounts) ? accounts[0] : undefined
+    if (typeof account?.name === 'string') {
+      _fireworksAccount = {
+        id: account.name.replace(/^accounts\//, ''),
+        createTime: typeof account.createTime === 'string' ? account.createTime : null,
+      }
+    }
   } catch {
     // Leave unresolved so the next refresh retries.
   }
-  return _fireworksAccountId
+  return _fireworksAccount
 }
 
-function parseFireworksQuotas(
-  data: unknown,
-): Array<{ label: string; usage: number; limit: number | null }> {
-  const arr = (data as { quotas?: unknown })?.quotas
-  if (!Array.isArray(arr)) return []
-  const toNum = (v: unknown): number | null => {
-    if (typeof v === 'number') return v
-    if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return Number(v)
-    return null
-  }
-  return arr.map(raw => {
-    const q = raw as { name?: unknown; usage?: unknown; value?: unknown; maxValue?: unknown }
-    const fullName = typeof q.name === 'string' ? q.name : ''
-    const label = fullName.split('/').filter(Boolean).pop() ?? 'quota'
-    return {
-      label,
-      usage: typeof q.usage === 'number' ? q.usage : 0,
-      limit: toNum(q.value) ?? toNum(q.maxValue),
-    }
-  })
+function fireworksSummaryUrl(
+  accountId: string,
+  startTime: string,
+  endTime: string,
+  granularity?: 'DAILY',
+): string {
+  const params = new URLSearchParams({ startTime, endTime })
+  if (granularity) params.set('granularity', granularity)
+  return `https://api.fireworks.ai/v1/accounts/${encodeURIComponent(accountId)}/billing/summary?${params}`
 }
 
+/**
+ * This month's spend to one decimal, from the quota list.
+ *
+ * `monthly-spend-usd` carries the same dollars the billing summary does, just
+ * rounded, and a key that billing refuses can still read quotas — an org
+ * member without the billing role, say. Worth the extra request only once the
+ * precise source has already failed.
+ */
+async function fireworksQuotaSpend(
+  accountId: string,
+  headers: Record<string, string>,
+): Promise<number | null> {
+  const data = await fetchJson(
+    `https://api.fireworks.ai/v1/accounts/${encodeURIComponent(accountId)}/quotas/monthly-spend-usd`,
+    { headers },
+  )
+  const usage = (data as { usage?: unknown })?.usage
+  return typeof usage === 'number' && Number.isFinite(usage) ? usage : null
+}
+
+/**
+ * Fireworks reports spend, never the prepaid balance.
+ *
+ * The quota list is what this card used to show, and on a serverless key it is
+ * eighteen rows of zeroes — deployed-model-count, every accelerator family,
+ * training slots — none of which a caller who only sends chat completions will
+ * ever move. `billing/summary` is where the money is, so the card carries
+ * dollars instead and the balance itself stays one click away; see
+ * fireworksBillingParser.ts for why the balance cannot be fetched.
+ */
 async function reportFireworks(): Promise<ProviderUsageReport> {
   const apiKey = getProviderApiKey('fireworks')
-  const source = 'Fireworks Gateway API'
+  const source = 'Fireworks billing'
   const links: UsageLink[] = [{
     label: 'Fireworks billing',
     url: 'https://fireworks.ai/account/billing',
+    note: 'prepaid credit balance',
   }]
 
   if (!apiKey) {
@@ -1122,34 +1155,59 @@ async function reportFireworks(): Promise<ProviderUsageReport> {
     Accept: 'application/json',
   }
 
-  const accountId = await resolveFireworksAccountId(headers)
-  if (!accountId) {
+  const account = await resolveFireworksAccount(headers)
+  if (!account) {
     return {
       ...baseReport(
         'fireworks',
         'connected',
         'api_key',
         source,
-        'Authenticated — could not resolve account id (set FIREWORKS_ACCOUNT_ID to surface quota usage).',
+        'Authenticated — could not resolve account id (set FIREWORKS_ACCOUNT_ID to surface spend).',
       ),
       links,
     }
   }
 
-  const data = await fetchJson(
-    `https://api.fireworks.ai/v1/accounts/${encodeURIComponent(accountId)}/quotas`,
-    { headers },
-  )
-  const quotas = parseFireworksQuotas(data)
-  const metrics: UsageMetric[] = quotas.map(quota => ({
-    label: quota.label,
-    usedPercent: quota.limit && quota.limit > 0
-      ? clampPercent((quota.usage / quota.limit) * 100)
-      : undefined,
-    summary: quota.limit && quota.limit > 0
-      ? `${formatNumber(quota.usage)} / ${formatNumber(quota.limit)}`
-      : `${formatNumber(quota.usage)} used`,
-  }))
+  const range = fireworksSummaryRange(new Date(), account.createTime)
+  const caveat = 'Fireworks publishes spend, not the prepaid credit balance.'
+
+  let month: FireworksSpend
+  let lifetime: number
+  try {
+    const [monthData, lifetimeData] = await Promise.all([
+      fetchJson(
+        fireworksSummaryUrl(account.id, range.monthStart, range.end, 'DAILY'),
+        { headers },
+      ),
+      fetchJson(
+        fireworksSummaryUrl(account.id, range.lifetimeStart, range.end),
+        { headers },
+      ),
+    ])
+    month = parseFireworksBillingSummary(monthData)
+    lifetime = parseFireworksBillingSummary(lifetimeData).total
+  } catch (error) {
+    const rounded = await fireworksQuotaSpend(account.id, headers).catch(() => null)
+    if (rounded === null) throw error
+    return {
+      ...baseReport(
+        'fireworks',
+        'ok',
+        'api_key',
+        'Fireworks quotas',
+        `${formatCurrency(rounded, 'USD')} spent this month.`,
+      ),
+      detail: `${caveat} Billing detail unavailable: ${messageFromError(error)}.`,
+      metrics: [{
+        label: 'This month',
+        summary: `${formatCurrency(rounded, 'USD')} spent`,
+      }],
+      links,
+    }
+  }
+
+  const today = sumFireworksSpendSince(month, range.dayStart)
 
   return {
     ...baseReport(
@@ -1157,10 +1215,21 @@ async function reportFireworks(): Promise<ProviderUsageReport> {
       'ok',
       'api_key',
       source,
-      `Account ${accountId}: ${quotas.length} quota${quotas.length === 1 ? '' : 's'} tracked.`,
+      `${formatCurrency(month.total, 'USD')} spent this month.`,
     ),
-    detail: metrics.length === 0 ? 'No quota usage reported for this account.' : undefined,
-    metrics: metrics.length > 0 ? metrics : undefined,
+    detail: caveat,
+    metrics: [
+      { label: 'This month', summary: `${formatCurrency(month.total, 'USD')} spent` },
+      {
+        label: 'Today',
+        summary: `${formatCurrency(today, 'USD')} spent`,
+        detail: 'UTC day — Fireworks bills the summary in UTC.',
+      },
+      {
+        label: range.lifetimeIsComplete ? 'All time' : 'Last 12 months',
+        summary: `${formatCurrency(lifetime, 'USD')} spent`,
+      },
+    ],
     links,
   }
 }
