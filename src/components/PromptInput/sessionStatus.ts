@@ -35,7 +35,11 @@ export type SessionStatusInfo = {
  * misreading waiting to happen.
  */
 export type SessionQuotaStatus =
-  | { state: 'used'; percentage: number }
+  /**
+   * A window's consumption. `window` names it when the reading is the rolling
+   * session limit, so a bare "12%" cannot be read as a weekly cap or a balance.
+   */
+  | { state: 'used'; percentage: number; window?: string }
   /**
    * A standing with no denominator, e.g. `$12.34 remaining`. A prepaid
    * balance has no total to measure against unless a budget is configured,
@@ -139,7 +143,10 @@ function quotaSegment(info: SessionStatusInfo): string | null {
     return text === '' ? null : `Quota ${text}`
   }
   const used = normalizePercentage(info.quota.percentage)
-  return used === null ? null : `Quota ${used}%`
+  if (used === null) return null
+  return info.quota.window
+    ? `Quota ${info.quota.window} ${used}%`
+    : `Quota ${used}%`
 }
 
 /**

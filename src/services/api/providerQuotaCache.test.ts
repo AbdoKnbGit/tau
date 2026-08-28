@@ -13,6 +13,7 @@ import {
   providerHasAccountQuota,
   resetProviderQuotaCache,
   buildStatusLineProviderQuota,
+  isSessionWindowLabel,
 } from './providerQuotaCache.js'
 import {
   recordProviderRateLimits,
@@ -147,6 +148,33 @@ test('prefers the session window over the larger weekly one', () => {
     outcome.usedPercent === 12,
     `expected the session window, got ${outcome.usedPercent}`,
   )
+})
+
+test('prefers the session window whatever the reporter calls it', () => {
+  // Anthropic spells it "Current session", OpenAI's Codex "Codex session
+  // (plus)". Matching only Anthropic's spelling let OpenAI's weekly cap - the
+  // larger and less urgent number - outrank its session window.
+  const codex = _classifyReport(
+    report('ok', [
+      { label: 'Codex weekly', usedPercent: 71 },
+      { label: 'Codex session (plus)', usedPercent: 12 },
+    ]),
+  )
+  assert(codex?.kind === 'reading', 'should be a reading')
+  assert(
+    codex.usedPercent === 12,
+    `expected the Codex session, got ${codex.usedPercent}`,
+  )
+})
+
+test('tells a session window apart from a longer cap', () => {
+  for (const label of ['Current session', 'Codex session', 'Codex session (plus)']) {
+    assert(isSessionWindowLabel(label), `${label} names a session`)
+  }
+  for (const label of ['Current week (all models)', 'Codex weekly', 'Credits']) {
+    assert(!isSessionWindowLabel(label), `${label} is not a session`)
+  }
+  assert(!isSessionWindowLabel(null), 'an unlabelled reading names no window')
 })
 
 test('falls back to the metric nearest its ceiling', () => {

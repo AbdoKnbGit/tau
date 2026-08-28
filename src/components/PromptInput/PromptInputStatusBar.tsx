@@ -31,6 +31,7 @@ import {
   ensureProviderQuotaFresh,
   getProviderQuotaOutcome,
   hasBalance,
+  isSessionWindowLabel,
   providerHasAccountQuota,
   subscribeProviderQuota,
 } from '../../services/api/providerQuotaCache.js'
@@ -40,6 +41,12 @@ import {
   isFlatFeeProvider,
   isLocalProvider,
 } from '../../utils/modelPricingCatalog.js'
+
+/**
+ * Both Anthropic and OpenAI meter their rolling session over five hours, so a
+ * single label covers every provider that reports one.
+ */
+const SESSION_WINDOW_LABEL = '5h'
 
 /**
  * Quota standing for the active provider.
@@ -87,14 +94,28 @@ function resolveQuota(
   //    account lookup below like every other provider.
   if (!isThirdPartyProvider(provider)) {
     const fiveHour = getRawUtilization().five_hour
-    if (fiveHour) return { state: 'used', percentage: fiveHour.utilization * 100 }
+    if (fiveHour) {
+      return {
+        state: 'used',
+        percentage: fiveHour.utilization * 100,
+        window: SESSION_WINDOW_LABEL,
+      }
+    }
   }
 
   // 4. The provider's own account endpoint - credits, balance, utilization.
   //    Already refreshed off the render path by the effect below.
   if (outcome?.kind === 'reading') {
     if (outcome.usedPercent !== null) {
-      return { state: 'used', percentage: outcome.usedPercent }
+      return {
+        state: 'used',
+        percentage: outcome.usedPercent,
+        // Anthropic and OpenAI both meter a rolling session alongside a weekly
+        // cap. Naming the window is what tells them apart at a glance.
+        ...(isSessionWindowLabel(outcome.label) && {
+          window: SESSION_WINDOW_LABEL,
+        }),
+      }
     }
     // A prepaid balance has no percentage until a budget supplies the total,
     // but the amount left is exactly what the row is being asked for.

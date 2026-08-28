@@ -184,6 +184,23 @@ test('omits the quota while it is still being determined', () => {
   assert(!status.includes('Quota'), `no quota segment expected: ${status}`)
 })
 
+test('names the session window so a percentage is not read as a weekly cap', () => {
+  const status = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'used', percentage: 12, window: '5h' } },
+    120,
+  )
+  assert(status.includes('Quota 5h 12%'), `expected a named window: ${status}`)
+})
+
+test('leaves an unnamed window as a bare percentage', () => {
+  const status = formatSessionStatus(
+    { ...baseInfo, quota: { state: 'used', percentage: 40 } },
+    120,
+  )
+  assert(status.includes('Quota 40%'), `expected a bare percentage: ${status}`)
+  assert(!status.includes('5h'), 'nothing invents a window that was not reported')
+})
+
 test('shows a balance that has no percentage', () => {
   const status = formatSessionStatus(
     { ...baseInfo, quota: { state: 'text', text: '$12.34 remaining' } },

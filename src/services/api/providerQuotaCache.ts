@@ -375,8 +375,18 @@ function classifyReport(
   }
 }
 
-/** Reporters label the rolling session window this way (see reportAnthropic). */
-const SESSION_METRIC = /current session/i
+/**
+ * The rolling session window, however a reporter spells it: Anthropic emits
+ * "Current session", OpenAI's Codex emits "Codex session" or "Codex session
+ * (plus)". Matching only Anthropic's spelling let OpenAI's weekly cap outrank
+ * its session window, which is the shorter and more urgent of the two.
+ */
+const SESSION_METRIC = /\bsession\b/i
+
+/** Whether a reading names the rolling session window rather than a longer cap. */
+export function isSessionWindowLabel(label: string | null): boolean {
+  return label !== null && SESSION_METRIC.test(label)
+}
 
 /** Strip case, spaces and punctuation so `Gemini 3 Flash` meets `gemini-3-flash`. */
 function normalizeForMatch(value: string): string {
