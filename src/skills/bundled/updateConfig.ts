@@ -100,7 +100,7 @@ Plugin syntax: \`plugin-name@source\` where source is \`claude-code-marketplace\
 - \`spinnerTipsEnabled\`: Show tips in spinner
 - \`spinnerVerbs\`: Customize spinner verbs (\`{ "mode": "append" | "replace", "verbs": [...] }\`)
 - \`spinnerTipsOverride\`: Override spinner tips (\`{ "excludeDefault": true, "tips": ["Custom tip"] }\`)
-- \`syntaxHighlightingDisabled\`: Disable diff highlighting
+- \`inlineImagesEnabled\`: Render images inline in the transcript (default: true)\n- \`syntaxHighlightingDisabled\`: Disable diff highlighting
 `
 
 // Note: We keep hand-written examples for common patterns since they're more

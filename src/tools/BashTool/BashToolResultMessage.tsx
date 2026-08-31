@@ -2,11 +2,13 @@ import { c as _c } from "react/compiler-runtime";
 import React from 'react';
 import { removeSandboxViolationTags } from 'src/utils/sandbox/sandbox-ui-utils.js';
 import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js';
+import { InlineImage } from '../../components/InlineImage.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { OutputLine } from '../../components/shell/OutputLine.js';
 import { ShellTimeDisplay } from '../../components/shell/ShellTimeDisplay.js';
 import { Box, Text } from '../../ink.js';
 import type { Out as BashOut } from './BashTool.js';
+import { parseDataUri } from './utils.js';
 type Props = {
   content: Omit<BashOut, 'interrupted'>;
   verbose: boolean;
@@ -98,14 +100,16 @@ export default function BashToolResultMessage(t0) {
         cwdResetWarning
       } = extractCwdResetWarning(stderrWithoutViolations));
       if (isImage) {
-        let t8;
-        if ($[11] === Symbol.for("react.memo_cache_sentinel")) {
-          t8 = <MessageResponse height={1}><Text dimColor={true}>[Image data detected and sent to Claude]</Text></MessageResponse>;
-          $[11] = t8;
-        } else {
-          t8 = $[11];
-        }
-        t7 = t8;
+        // Built inline rather than memoized into $[11]: the preview depends on
+        // stdout, which the enclosing guard already tracks, so the element is
+        // rebuilt exactly when the payload changes. InlineImage falls back to
+        // the label on its own when the terminal cannot render a preview, and
+        // height is left unset so the block is not clipped to one row.
+        const imageLabel = <Text dimColor={true}>[Image data detected and sent to Claude]</Text>;
+        const parsedImage = parseDataUri(stdout);
+        t7 = <MessageResponse>
+          {parsedImage ? <InlineImage base64={parsedImage.data}>{imageLabel}</InlineImage> : imageLabel}
+        </MessageResponse>;
         break bb0;
       }
       T0 = Box;

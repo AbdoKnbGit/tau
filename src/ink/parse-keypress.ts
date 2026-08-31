@@ -49,6 +49,13 @@ const KITTY_FLAGS_RE = /^\x1b\[\?(\d+)u$/
 // Ctrl+F3 = CSI 1;5 R, etc.) — plain CSI row;col R is genuinely ambiguous.
 // eslint-disable-next-line no-control-regex
 const CURSOR_POSITION_RE = /^\x1b\[\?(\d+);(\d+)R$/
+// XTWINOPS size report: CSI 4 ; height ; width t (window size in pixels, the
+// answer to CSI 14 t) and CSI 6 ; height ; width t (cell size in pixels, the
+// answer to CSI 16 t). Needed to size inline graphics: a sixel is measured in
+// pixels but must occupy an exact number of cell rows.
+// No key produces CSI Ps;Ps;Ps t, so this cannot swallow input.
+// eslint-disable-next-line no-control-regex
+const PIXEL_SIZE_RE = /^\x1b\[([46]);(\d+);(\d+)t$/
 // OSC response: OSC code ; data (BEL|ST)
 // eslint-disable-next-line no-control-regex
 const OSC_RESPONSE_RE = /^\x1b\](\d+);(.*?)(?:\x07|\x1b\\)$/s
@@ -106,6 +113,13 @@ export type TerminalResponse =
   | { type: 'cursorPosition'; row: number; col: number }
   /** OSC response: generic operating-system-command reply (e.g. OSC 11 bg color) */
   | { type: 'osc'; code: number; data: string }
+  /** XTWINOPS pixel size report: window (answer to CSI 14 t) or cell (CSI 16 t) */
+  | {
+      type: 'pixelSize'
+      kind: 'window' | 'cell'
+      height: number
+      width: number
+    }
   /** XTVERSION: terminal name/version string (answer to CSI > 0 q).
    *  Example values: "xterm.js(5.5.0)", "ghostty 1.2.0", "iTerm2 3.6". */
   | { type: 'xtversion'; name: string }
@@ -142,6 +156,15 @@ function parseTerminalResponse(s: string): TerminalResponse | null {
 
     if ((m = KITTY_FLAGS_RE.exec(s))) {
       return { type: 'kittyKeyboard', flags: parseInt(m[1]!, 10) }
+    }
+
+    if ((m = PIXEL_SIZE_RE.exec(s))) {
+      return {
+        type: 'pixelSize',
+        kind: m[1] === '6' ? 'cell' : 'window',
+        height: parseInt(m[2]!, 10),
+        width: parseInt(m[3]!, 10),
+      }
     }
 
     if ((m = CURSOR_POSITION_RE.exec(s))) {

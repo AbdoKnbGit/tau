@@ -301,6 +301,34 @@ export function Config({
       });
     }
   }, {
+    id: 'inlineImagesEnabled',
+    label: 'Display images',
+    value: settingsData?.inlineImagesEnabled ?? true,
+    type: 'boolean' as const,
+    onChange(inlineImagesEnabled: boolean) {
+      updateSettingsForSource('localSettings', {
+        inlineImagesEnabled
+      });
+      setSettingsData(prev_img => ({
+        ...prev_img,
+        inlineImagesEnabled
+      }));
+      // Mirror into AppState so the transcript reacts on the next frame rather
+      // than at the next settings-file poll: InlineImage reads this through
+      // useSettings(), and a graphic already on screen has to be taken down by
+      // the placement it unregisters, not left as pixels nothing owns.
+      setAppState(prev_img_state => ({
+        ...prev_img_state,
+        settings: {
+          ...prev_img_state.settings,
+          inlineImagesEnabled
+        }
+      }));
+      logEvent('tengu_inline_images_setting_changed', {
+        enabled: inlineImagesEnabled
+      });
+    }
+  }, {
     id: 'prefersReducedMotion',
     label: 'Reduce motion',
     value: settingsData?.prefersReducedMotion ?? false,

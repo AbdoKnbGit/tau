@@ -66,8 +66,10 @@
         "react": "~19.1.0",
         "react-reconciler": "~0.32.0",
         "semver": "^7.6.3",
+        "sharp": "^0.34.5",
         "shell-quote": "^1.8.2",
         "signal-exit": "^4.1.0",
+        "sixel": "^0.16.0",
         "stack-utils": "^2.0.6",
         "strip-ansi": "^7.1.0",
         "supports-hyperlinks": "^3.1.0",
@@ -1082,7 +1084,6 @@
       "integrity": "sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA==",
       "license": "MIT",
       "optional": true,
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@emnapi/runtime/-/runtime-1.10.0.tgz",
       "version": "1.10.0"
     },
@@ -1131,7 +1132,6 @@
       },
       "integrity": "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==",
       "license": "MIT",
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/colour/-/colour-1.1.0.tgz",
       "version": "1.1.0"
     },
@@ -1154,7 +1154,6 @@
       "os": [
         "darwin"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-darwin-arm64/-/sharp-darwin-arm64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1177,7 +1176,6 @@
       "os": [
         "darwin"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-darwin-x64/-/sharp-darwin-x64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1194,7 +1192,6 @@
       "os": [
         "darwin"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-darwin-arm64/-/sharp-libvips-darwin-arm64-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1211,7 +1208,6 @@
       "os": [
         "darwin"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-darwin-x64/-/sharp-libvips-darwin-x64-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1228,7 +1224,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-arm/-/sharp-libvips-linux-arm-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1245,7 +1240,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-arm64/-/sharp-libvips-linux-arm64-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1262,7 +1256,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-ppc64/-/sharp-libvips-linux-ppc64-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1279,7 +1272,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-riscv64/-/sharp-libvips-linux-riscv64-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1296,7 +1288,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-s390x/-/sharp-libvips-linux-s390x-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1313,7 +1304,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-x64/-/sharp-libvips-linux-x64-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1330,7 +1320,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linuxmusl-arm64/-/sharp-libvips-linuxmusl-arm64-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1347,7 +1336,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linuxmusl-x64/-/sharp-libvips-linuxmusl-x64-1.2.4.tgz",
       "version": "1.2.4"
     },
@@ -1370,7 +1358,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-arm/-/sharp-linux-arm-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1393,7 +1380,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-arm64/-/sharp-linux-arm64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1416,7 +1402,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-ppc64/-/sharp-linux-ppc64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1439,7 +1424,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-riscv64/-/sharp-linux-riscv64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1462,7 +1446,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-s390x/-/sharp-linux-s390x-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1485,7 +1468,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-x64/-/sharp-linux-x64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1508,7 +1490,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-linuxmusl-arm64/-/sharp-linuxmusl-arm64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1531,7 +1512,6 @@
       "os": [
         "linux"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-linuxmusl-x64/-/sharp-linuxmusl-x64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1551,7 +1531,6 @@
       "integrity": "sha512-OdWTEiVkY2PHwqkbBI8frFxQQFekHaSSkUIJkwzclWZe64O1X4UlUjqqqLaPbUpMOQk6FBu/HtlGXNblIs0huw==",
       "license": "Apache-2.0 AND LGPL-3.0-or-later AND MIT",
       "optional": true,
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-wasm32/-/sharp-wasm32-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1571,7 +1550,6 @@
       "os": [
         "win32"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-win32-arm64/-/sharp-win32-arm64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1591,7 +1569,6 @@
       "os": [
         "win32"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-win32-ia32/-/sharp-win32-ia32-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -1611,7 +1588,6 @@
       "os": [
         "win32"
       ],
-      "peer": true,
       "resolved": "https://registry.npmjs.org/@img/sharp-win32-x64/-/sharp-win32-x64-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -3534,7 +3510,6 @@
       },
       "integrity": "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==",
       "license": "Apache-2.0",
-      "peer": true,
       "resolved": "https://registry.npmjs.org/detect-libc/-/detect-libc-2.1.2.tgz",
       "version": "2.1.2"
     },
@@ -5788,7 +5763,6 @@
         "@img/sharp-win32-ia32": "0.34.5",
         "@img/sharp-win32-x64": "0.34.5"
       },
-      "peer": true,
       "resolved": "https://registry.npmjs.org/sharp/-/sharp-0.34.5.tgz",
       "version": "0.34.5"
     },
@@ -5908,6 +5882,12 @@
       "license": "ISC",
       "resolved": "https://registry.npmjs.org/signal-exit/-/signal-exit-4.1.0.tgz",
       "version": "4.1.0"
+    },
+    "node_modules/sixel": {
+      "integrity": "sha512-xicu6Y6Cyhmv5rjyHxq2r5RnKerlL/nyZEGjOU5bLCshXkZryc9JFJThTCKPOAtWXCfeWquEKFVFfMPcTD25PA==",
+      "license": "MIT",
+      "resolved": "https://registry.npmjs.org/sixel/-/sixel-0.16.0.tgz",
+      "version": "0.16.0"
     },
     "node_modules/sonic-boom": {
       "dependencies": {

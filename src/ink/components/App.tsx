@@ -13,7 +13,8 @@ import reconciler from '../reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js';
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js';
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js';
-import { TerminalQuerier, xtversion } from '../terminal-querier.js';
+import { cellPixelSize, da1, TerminalQuerier, windowPixelSize, xtversion } from '../terminal-querier.js';
+import { clearCellGeometryStale, hasMeasuredCellSize, isCellGeometryCurrent, markCellGeometryStale, setCellPixelSize, setDeviceAttributes } from '../../utils/terminalGraphics.js';
 import { DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, FOCUS_IN, FOCUS_OUT } from '../termio/csi.js';
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, HIDE_CURSOR, SHOW_CURSOR } from '../termio/dec.js';
 import AppContext from './AppContext.js';
@@ -33,6 +34,22 @@ const SUPPORTS_SUSPEND = process.platform !== 'win32';
 // but no signal reaches us. 5s is well above normal inter-keystroke gaps
 // but short enough that the first scroll after reattach works.
 const STDIN_RESUME_GAP_MS = 5000;
+
+// Longest an inline image may be held back waiting for a cell-geometry reply.
+// Comfortably past the 150ms debounce plus a terminal round trip, and short
+// enough that a lost reply reads as a flicker rather than a broken image.
+const CELL_GEOMETRY_WATCHDOG_MS = 400;
+
+// How many times a probe may go unanswered in the burst that follows a resize
+// before backing off to the slow recheck below.
+const MAX_CELL_GEOMETRY_ATTEMPTS = 3;
+
+// Cadence of the slow recheck that runs while the measurement on record does
+// not describe the grid we are actually on. A probe is a dozen bytes, and this
+// is the only thing standing between a dropped reply and a session whose images
+// are all sized against the wrong font — so it never gives up, it just slows
+// down. Bounded to terminals that have answered at least once.
+const CELL_GEOMETRY_RECHECK_MS = 2000;
 type Props = {
   readonly children: ReactNode;
   readonly stdin: NodeJS.ReadStream;
@@ -183,10 +200,205 @@ export default class App extends PureComponent<Props, State> {
     if (this.props.stdout.isTTY && !isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY)) {
       this.props.stdout.write(HIDE_CURSOR);
     }
+    // Cell geometry is not a constant. Zooming changes the font size, so a cell
+    // becomes a different number of pixels while the grid keeps its shape —
+    // and inline graphics are encoded in pixels against a box measured in
+    // cells. Measured once at startup, a later zoom leaves every image sized
+    // against stale geometry: too tall, spilling past the cells that would
+    // otherwise erase it, which is what leaves a half-scaled ghost behind.
+    this.props.stdout.on('resize', this.probeCellGeometry);
+  }
+
+  /** Pending debounce for {@link probeCellGeometry}. */
+  private cellGeometryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Safety net that lifts the stale mark even if no reply ever arrives. */
+  private cellGeometryWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Re-measure cell geometry after the window settles.
+   *
+   * Debounced because terminals emit several resize events per user action, and
+   * skipped unless raw mode is on — without it nothing parses the reply, so the
+   * query would sit unresolved in the querier's queue and accumulate one entry
+   * per resize.
+   */
+  private probeCellGeometry = () => {
+    // Synchronously, ahead of the debounce: frames keep rendering while the
+    // query is in flight, and until it answers the pixels-per-cell on record
+    // belongs to the old font size. Marking it stale takes the already-encoded
+    // images down for those frames rather than drawing them at a size the
+    // reserved box no longer matches — which on zoom out means overflowing it,
+    // leaving pixels outside every rectangle an erase can reach.
+    markCellGeometryStale();
+    // A fresh user action gets a fresh retry budget: this is a new geometry to
+    // find, not a continuation of whatever the last one failed to measure.
+    this.cellGeometryAttempts = 0;
+    this.armCellGeometryWatchdog();
+    // Ask immediately, not only after the debounce. The window is held back
+    // from drawing graphics until an answer arrives, and a drag-resize does not
+    // change the cell size at all — waiting out the debounce there would drop
+    // every image to block glyphs for 150ms for no reason. A local round trip
+    // is a millisecond or two, so asking on the leading edge makes the gap
+    // imperceptible. `inFlight` keeps a drag, which fires continuously, to one
+    // outstanding query rather than dozens.
+    this.sendCellGeometryQuery();
+    // And again once the window settles: the leading-edge answer describes the
+    // size mid-drag, which is not where the user let go.
+    if (this.cellGeometryTimer) clearTimeout(this.cellGeometryTimer);
+    this.cellGeometryTimer = setTimeout(() => {
+      this.cellGeometryTimer = null;
+      this.sendCellGeometryQuery();
+    }, 150);
+  };
+
+  /** Whether a cell-geometry query is awaiting its reply. */
+  private cellGeometryInFlight = false;
+
+  /** A probe was wanted while one was in flight, and still has to go out. */
+  private cellGeometryRequeried = false;
+
+  /** Unanswered probes since the last resize; bounds the fast retry below. */
+  private cellGeometryAttempts = 0;
+
+  /** Pending slow recheck; see {@link CELL_GEOMETRY_RECHECK_MS}. */
+  private cellGeometryRecheck: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Keep asking until the measurement describes the grid we are on.
+   *
+   * Only for a terminal that has answered before — one that never has is not
+   * going to start, and polling it forever would be noise. Self-cancelling: the
+   * moment a reply lands for the current grid there is nothing left to ask.
+   */
+  private scheduleCellGeometryRecheck(): void {
+    if (this.cellGeometryRecheck !== null) return;
+    if (!hasMeasuredCellSize() || isCellGeometryCurrent()) return;
+    this.cellGeometryRecheck = setTimeout(() => {
+      this.cellGeometryRecheck = null;
+      if (isCellGeometryCurrent()) return;
+      this.sendCellGeometryQuery();
+      this.scheduleCellGeometryRecheck();
+    }, CELL_GEOMETRY_RECHECK_MS);
+  }
+
+  /**
+   * Re-ask, or give up, if the outstanding query never answers.
+   *
+   * `TerminalQuerier` never times out — a batch settles only when its DA1
+   * sentinel returns — so a reply lost during a resize leaves the promise
+   * unsettled for good, with the in-flight latch set and no later zoom ever
+   * measured. Releasing the latch was not enough on its own: nothing re-sent,
+   * so the geometry stayed frozen at whatever the last answered probe found.
+   */
+  private armCellGeometryWatchdog(): void {
+    if (this.cellGeometryWatchdog) clearTimeout(this.cellGeometryWatchdog);
+    this.cellGeometryWatchdog = setTimeout(() => {
+      this.cellGeometryWatchdog = null;
+      this.cellGeometryInFlight = false;
+      if (this.cellGeometryAttempts < MAX_CELL_GEOMETRY_ATTEMPTS) {
+        this.sendCellGeometryQuery();
+        return;
+      }
+      // Out of fast attempts. The last measurement stands so images keep their
+      // pixels, and the slow recheck carries on until one is confirmed.
+      clearCellGeometryStale(this.terminalGrid());
+      this.scheduleCellGeometryRecheck();
+    }, CELL_GEOMETRY_WATCHDOG_MS);
+  }
+
+  /**
+   * Character grid the terminal has right now.
+   *
+   * Passed alongside every geometry result so terminalGraphics can tell what a
+   * later resize did to the cell size when the re-measure goes unanswered — the
+   * grid is the only local evidence there is. See its `measuredCell`.
+   */
+  private terminalGrid(): {
+    columns: number;
+    rows: number;
+  } {
+    return {
+      columns: this.props.stdout.columns,
+      rows: this.props.stdout.rows
+    };
+  }
+
+  /** Ask the terminal for its cell geometry and record whatever comes back. */
+  private sendCellGeometryQuery(): void {
+    if (this.cellGeometryInFlight) {
+      // Coalesced into the query already out. That answer describes the
+      // terminal as it was when the query left, which during a resize burst —
+      // a drag, a maximise, a zoom that emits several events — is not where the
+      // user ended up. Dropping the request left the geometry describing a
+      // moment mid-resize with nothing scheduled to correct it, so remember it
+      // and ask again the moment the outstanding one lands.
+      this.cellGeometryRequeried = true;
+      return;
+    }
+    if (this.rawModeEnabledCount === 0 || !this.props.stdout.isTTY) {
+      // Nothing would parse a reply, so no query goes out. Leaving the mark set
+      // would withhold graphics until the watchdog lifts it.
+      clearCellGeometryStale(this.terminalGrid());
+      return;
+    }
+    this.cellGeometryInFlight = true;
+    this.cellGeometryAttempts++;
+    this.armCellGeometryWatchdog();
+    const settle = () => {
+      this.cellGeometryInFlight = false;
+      // Answered, so the watchdog has nothing left to rescue — leaving it armed
+      // would fire a redundant probe 400ms later.
+      if (this.cellGeometryWatchdog) {
+        clearTimeout(this.cellGeometryWatchdog);
+        this.cellGeometryWatchdog = null;
+      }
+      // Whether or not anything answered: a terminal that replied once and then
+      // went quiet should fall back to a bound derived from its last known
+      // geometry rather than lose graphics entirely.
+      clearCellGeometryStale(this.terminalGrid());
+      if (this.cellGeometryRequeried) {
+        this.cellGeometryRequeried = false;
+        this.sendCellGeometryQuery();
+        return;
+      }
+      this.scheduleCellGeometryRecheck();
+    };
+    void Promise.all([this.querier.send(cellPixelSize()), this.querier.send(windowPixelSize()), this.querier.flush()]).then(([cell, window]) => {
+      if (cell) {
+        setCellPixelSize({
+          width: cell.width,
+          height: cell.height
+        }, this.terminalGrid());
+      } else if (window) {
+        const columns = this.props.stdout.columns;
+        const rows = this.props.stdout.rows;
+        if (columns > 0 && rows > 0) {
+          setCellPixelSize({
+            width: window.width / columns,
+            height: window.height / rows
+          }, this.terminalGrid());
+        }
+      }
+      settle();
+    }, settle);
   }
   override componentWillUnmount() {
     if (this.props.stdout.isTTY) {
       this.props.stdout.write(SHOW_CURSOR);
+    }
+    this.props.stdout.off('resize', this.probeCellGeometry);
+    if (this.cellGeometryRecheck) {
+      clearTimeout(this.cellGeometryRecheck);
+      this.cellGeometryRecheck = null;
+    }
+    if (this.cellGeometryTimer) {
+      clearTimeout(this.cellGeometryTimer);
+      this.cellGeometryTimer = null;
+    }
+    if (this.cellGeometryWatchdog) {
+      clearTimeout(this.cellGeometryWatchdog);
+      this.cellGeometryWatchdog = null;
     }
 
     // Clear any pending timers
@@ -254,12 +466,38 @@ export default class App extends PureComponent<Props, State> {
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {
-          void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
+          // Batched with the identity probe: inline graphics need DA1 (whose
+          // parameter 4 is the only trustworthy sixel signal — TERM says
+          // nothing about it) and the cell geometry, since every graphics
+          // protocol measures in pixels while the layout reserves whole rows.
+          // CSI 16 t answers cell size directly; CSI 14 t gives the window and
+          // divides down, for terminals that implement only the latter. All are
+          // fire-and-forget — the DA1 sentinel bounds the round-trip and a
+          // terminal that ignores them simply leaves graphics disabled.
+          void Promise.all([this.querier.send(xtversion()), this.querier.send(da1()), this.querier.send(cellPixelSize()), this.querier.send(windowPixelSize()), this.querier.flush()]).then(([r, attrs, cell, window]) => {
             if (r) {
               setXtversionName(r.name);
               logForDebugging(`XTVERSION: terminal identified as "${r.name}"`);
             } else {
               logForDebugging('XTVERSION: no reply (terminal ignored query)');
+            }
+            if (attrs) {
+              setDeviceAttributes(attrs.params);
+            }
+            if (cell) {
+              setCellPixelSize({
+                width: cell.width,
+                height: cell.height
+              }, this.terminalGrid());
+            } else if (window) {
+              const columns = this.props.stdout.columns;
+              const rows = this.props.stdout.rows;
+              if (columns > 0 && rows > 0) {
+                setCellPixelSize({
+                  width: window.width / columns,
+                  height: window.height / rows
+                }, this.terminalGrid());
+              }
             }
           });
         });

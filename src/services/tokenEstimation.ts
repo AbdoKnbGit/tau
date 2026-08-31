@@ -5,7 +5,6 @@ import type { BetaMessageParam as MessageParam } from '@anthropic-ai/sdk/resourc
 import type { CountTokensCommandInput } from '@aws-sdk/client-bedrock-runtime'
 import { getAPIProvider } from 'src/utils/model/providers.js'
 import { VERTEX_COUNT_TOKENS_ALLOWED_BETAS } from '../constants/betas.js'
-import { isMediaBlock } from '../lanes/shared/media_blocks.js'
 import type { Attachment } from '../utils/attachments.js'
 import { getModelBetas } from '../utils/betas.js'
 import { getVertexRegionForModel, isEnvTruthy } from '../utils/envUtils.js'
@@ -205,6 +204,9 @@ export function roughTokenCountEstimation(
   content: string,
   bytesPerToken: number = 4,
 ): number {
+  // Reachable from raw transcript blocks, which are not type-checked: a
+  // `{type:'text'}` with no `text` must estimate as nothing, not throw.
+  if (typeof content !== 'string') return 0
   return Math.round(content.length / bytesPerToken)
 }
 
@@ -225,8 +227,16 @@ export const MEDIA_BLOCK_TOKEN_ESTIMATE = 2000
  * in one place so a new caller can't reintroduce the base64 blow-up.
  */
 export function roughTokenCountEstimationForRawBlock(block: unknown): number {
-  if (isMediaBlock(block)) return MEDIA_BLOCK_TOKEN_ESTIMATE
-  return roughTokenCountEstimation(jsonStringify(block))
+  if (typeof block === 'string') return roughTokenCountEstimation(block)
+  if (block === null || typeof block !== 'object') return 0
+  // Delegate rather than re-deciding. A `tool_result` carrying an image — what
+  // FileReadTool returns for a PNG — is not itself a media block, so a local
+  // `isMediaBlock` check misses it and the catch-all stringifies the base64:
+  // a 124KB payload reads as ~31k tokens against a window where the API
+  // charges ~2k. That is the whole reason this indirection exists.
+  return roughTokenCountEstimationForBlock(
+    block as Anthropic.ContentBlock | Anthropic.ContentBlockParam,
+  )
 }
 
 /**

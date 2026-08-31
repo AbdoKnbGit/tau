@@ -36,7 +36,7 @@ export function renderPromptTemplate(
 - Reads at most ${MAX_LINES_TO_READ} lines by default${maxSizeInstruction}
 ${offsetInstruction}
 ${lineFormat}
-- Images are returned visually.${
+- Images are returned visually, and are also rendered inline in the user's terminal. To *show* the user a chart, plot or diagram, save it as a PNG and read it here — do not print ASCII art. Terminals without color support fall back to a one-line summary.${
     isPDFSupported()
       ? '\n- PDFs support `pages`; PDFs over 10 pages require a range, with at most 20 pages per call.'
       : ''

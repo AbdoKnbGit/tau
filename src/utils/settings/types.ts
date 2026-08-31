@@ -697,6 +697,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Override spinner tips. tips: array of tip strings. excludeDefault: if true, only show custom tips (default: false).',
         ),
+      inlineImagesEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether to render images inline in the transcript (defaults to true). Set to false to show only the summary line.',
+        ),
       syntaxHighlightingDisabled: z
         .boolean()
         .optional()

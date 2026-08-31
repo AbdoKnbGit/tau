@@ -3,6 +3,7 @@ import * as React from 'react';
 import { extractTag } from 'src/utils/messages.js';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { FilePathLink } from '../../components/FilePathLink.js';
+import { InlineImage, NotebookImages } from '../../components/InlineImage.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
 import { Text } from '../../ink.js';
 import { FILE_NOT_FOUND_CWD_NOTE, getDisplayPath } from '../../utils/file.js';
@@ -87,11 +88,17 @@ export function renderToolResultMessage(output: Output): React.ReactNode {
     case 'image':
       {
         const {
-          originalSize
+          originalSize,
+          base64
         } = output.file;
         const formattedSize = formatFileSize(originalSize);
-        return <MessageResponse height={1}>
-          <Text>Read image ({formattedSize})</Text>
+        // InlineImage renders the summary alone until (and unless) it can
+        // decode a preview, so this stays a one-line result on terminals
+        // without the color depth for it.
+        return <MessageResponse>
+          <InlineImage base64={base64}>
+            <Text>Read image ({formattedSize})</Text>
+          </InlineImage>
         </MessageResponse>;
       }
     case 'notebook':
@@ -102,10 +109,14 @@ export function renderToolResultMessage(output: Output): React.ReactNode {
         if (!cells || cells.length < 1) {
           return <Text color="error">No cells found in notebook</Text>;
         }
-        return <MessageResponse height={1}>
-          <Text>
-            Read <Text bold>{cells.length}</Text> cells
-          </Text>
+        // NotebookImages renders the summary alone when no cell carries a
+        // figure, so a text-only notebook still reads as one line.
+        return <MessageResponse>
+          <NotebookImages cells={cells}>
+            <Text>
+              Read <Text bold>{cells.length}</Text> cells
+            </Text>
+          </NotebookImages>
         </MessageResponse>;
       }
     case 'pdf':

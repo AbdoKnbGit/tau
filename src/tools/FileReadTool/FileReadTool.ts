@@ -207,6 +207,25 @@ export class MaxFileReadTokenExceededError extends Error {
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
 
 /**
+ * Whether a path names an image this tool renders visually.
+ *
+ * Extension-based on purpose: this runs during transcript grouping, where only
+ * the tool input is available — the file is not read and may not exist.
+ */
+export function isImageFilePath(filePath: unknown): boolean {
+  if (typeof filePath !== 'string') return false
+  const ext = filePath.split('.').pop()?.toLowerCase()
+  return ext !== undefined && IMAGE_EXTENSIONS.has(ext)
+}
+
+/** Whether a path names a Jupyter notebook, whose cells may carry figures. */
+export function isNotebookFilePath(filePath: unknown): boolean {
+  return (
+    typeof filePath === 'string' && filePath.toLowerCase().endsWith('.ipynb')
+  )
+}
+
+/**
  * Detects if a file path is a session-related file for analytics logging.
  * Only matches files within the Claude config directory (e.g., ~/.claude).
  * Returns the type of session file or null if not a session file.
@@ -435,7 +454,19 @@ export const FileReadTool = buildTool({
   toAutoClassifierInput(input) {
     return input.file_path
   },
-  isSearchOrReadCommand() {
+  isSearchOrReadCommand(input) {
+    // Image reads render a visual preview in the transcript. Marking them
+    // collapsible would fold the result into a "Read N files" summary line,
+    // which replaces the per-result renderer outright — the preview would
+    // never mount and the user would see only the count.
+    // Notebooks join images here: their cells can carry executed figures, which
+    // render as previews and would be swallowed by the same summary line.
+    if (
+      isImageFilePath(input?.file_path) ||
+      isNotebookFilePath(input?.file_path)
+    ) {
+      return { isSearch: false, isRead: false }
+    }
     return { isSearch: false, isRead: true }
   },
   getPath({ file_path }): string {

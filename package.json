@@ -36,6 +36,7 @@
     "access": "public"
   },
   "scripts": {
+    "graphics-doctor": "node scripts/graphics-doctor.mjs",
     "build": "node build.mjs",
     "build:bun": "bun run build.ts",
     "build:native-shell": "node scripts/build-native-shell-parser.mjs",
@@ -127,6 +128,8 @@
     "semver": "^7.6.3",
     "shell-quote": "^1.8.2",
     "signal-exit": "^4.1.0",
+    "sharp": "^0.34.5",
+    "sixel": "^0.16.0",
     "stack-utils": "^2.0.6",
     "strip-ansi": "^7.1.0",
     "supports-hyperlinks": "^3.1.0",

@@ -259,6 +259,7 @@ export function getSimplePrompt(): string {
     'Quote paths containing spaces and shell expansions unless splitting/globbing is intended.',
     'Run normal Bash commands directly. Use `plan_only: true` only when the user explicitly asks for a dry-run plan; do not use it as a routine preflight for Python, package-manager, build, test, or cleanup commands.',
     `\`timeout\` is milliseconds; default ${getDefaultTimeoutMs()}, maximum ${getMaxTimeoutMs()}.`,
+    'To show the user a chart, plot, or rendered image, print a single `data:image/png;base64,...` URI as the entire stdout — Tau renders it inline in the terminal and sends it to you as an image. Prefer this over ASCII-art plotting libraries such as plotext. For matplotlib, use the Agg backend and savefig to an in-memory buffer.',
     ...(backgroundNote !== null ? [backgroundNote] : []),
     'Shell correctness rules:',
     commandBestPractices,

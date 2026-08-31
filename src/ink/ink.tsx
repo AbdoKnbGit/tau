@@ -33,6 +33,8 @@ import createRenderer, { type Renderer } from './renderer.js';
 import { CellWidth, CharPool, cellAt, createScreen, HyperlinkPool, isEmptyCellAt, migrateScreenPools, StylePool } from './screen.js';
 import { applySearchHighlight } from './searchHighlight.js';
 import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, hasSelection, moveFocus, type SelectionState, selectLineAt, selectWordAt, shiftAnchor, shiftSelection, shiftSelectionForFollow, startSelection, updateSelection } from './selection.js';
+import { buildGraphicsSequence, forceGraphicsRedraw, hasGraphicsPlacements, invalidateGraphicsPlacements } from './graphicsPlacement.js';
+import { getCellPixelSize } from '../utils/terminalGraphics.js';
 import { SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
@@ -316,6 +318,21 @@ export default class Ink {
     this.terminalColumns = cols;
     this.terminalRows = rows;
     this.altScreenParkPatch = makeAltScreenParkPatch(this.terminalRows);
+
+    // Inline graphics are the terminal's pixels, not cells in these buffers, so
+    // a resize is always a reason to redraw them, in either screen mode. The
+    // main screen — the default — resets nothing on its own: it just
+    // re-renders, and the diff then skips an image that has not moved as
+    // "already on screen" while the terminal has in fact reflowed under it.
+    //
+    // Forcing the redraw is not the same as invalidating. Nothing has cleared
+    // the terminal at this point — log-update decides that afterwards, from the
+    // diff, and onRender invalidates for real when the result carries a
+    // clearTerminal patch. Discarding the recorded rectangles here instead left
+    // the copy already on screen with nothing able to erase it: a resize that
+    // did not trigger a full reset (rows grew, width unchanged) stranded it for
+    // the rest of the session.
+    forceGraphicsRedraw();
 
     // Alt screen: reset frame buffers so the next render repaints from
     // scratch (prevFrameContaminated → every cell written, wrapped in
@@ -650,6 +667,59 @@ export default class Ink {
       optimized.push(this.altScreenParkPatch);
     }
 
+    // Inline graphics: draw any registered sixel/Kitty/iTerm2 payloads over the
+    // cells their components reserved. Emitted after the frame's text patches
+    // so the pixels land on top rather than being painted over, and before the
+    // cursor parking below so the declared position still wins. The helper
+    // brackets each payload in DECSC/DECRC, leaving the cursor at frame.cursor.
+    if (hasGraphicsPlacements()) {
+      // A screen clear drops the pixels but not the origins, so the helper's
+      // "did anything move" test would wrongly conclude there is nothing to do.
+      if (optimized.some(patch => patch.type === 'clearTerminal')) {
+        invalidateGraphicsPlacements();
+      }
+      // Where the terminal cursor physically is when this patch runs — the
+      // origin every row move in the sequence is measured from.
+      //
+      // A written frame ends with the cursor at the frame's own position (the
+      // bottom row in alt-screen, where altScreenParkPatch above put it). An
+      // EMPTY diff writes nothing, so the cursor is still parked wherever the
+      // previous frame left it: at the caret declared by the prompt input,
+      // several rows above and a few columns right of frame.cursor. Assuming
+      // frame.cursor regardless drew and erased every image at that offset —
+      // the misplaced copy with an unerasable ghost below it, appearing only
+      // once a turn ended. While a turn runs the input is unfocused, so nothing
+      // is parked and every frame has a diff; both branches agreed and the
+      // mismatch stayed invisible.
+      const restingCursor = this.altScreenActive ? {
+        x: 0,
+        y: terminalRows - 1
+      } : frame.cursor;
+      const graphicsCursor = hasDiff ? restingCursor : this.displayCursor ?? restingCursor;
+      const graphics = buildGraphicsSequence({
+        cursor: graphicsCursor,
+        // nodeCache uses logical screen rows on the main screen. Once content
+        // has filled the terminal, the physical viewport follows the logical
+        // cursor and begins above it by rows - 1. Alt-screen coordinates are
+        // already viewport-relative.
+        viewportTop: this.altScreenActive ? 0 : Math.max(0, frame.cursor.y - terminalRows + 1),
+        viewportRows: terminalRows,
+        viewportColumns: terminalWidth,
+        damage: frame.screen.damage,
+        cell: getCellPixelSize(),
+        // Erasing a moved graphic means rewriting the cells it used to cover,
+        // read from the frame that is being written right now.
+        screen: frame.screen,
+        stylePool: this.stylePool
+      });
+      if (graphics !== '') {
+        optimized.push({
+          type: 'stdout',
+          content: graphics
+        });
+      }
+    }
+
     // Native cursor positioning: park the terminal cursor at the declared
     // position so IME preedit text renders inline and screen readers /
     // magnifiers can follow the input. nodeCache holds the absolute screen
@@ -808,6 +878,12 @@ export default class Ink {
     this.frontFrame = emptyFrame(this.frontFrame.viewport.height, this.frontFrame.viewport.width, this.stylePool, this.charPool, this.hyperlinkPool);
     this.backFrame = emptyFrame(this.backFrame.viewport.height, this.backFrame.viewport.width, this.stylePool, this.charPool, this.hyperlinkPool);
     this.log.reset();
+    // Inline graphics live in the terminal, not in these buffers, so resetting
+    // the buffers is exactly when the recorded pixel rectangles stop being
+    // true. Every caller here has either erased the screen or found it
+    // corrupted by another process; either way the images are gone and the
+    // rectangles would otherwise suppress the redraw as "already on screen".
+    invalidateGraphicsPlacements();
     // Physical cursor position is unknown after external terminal corruption.
     // Clear displayCursor so the cursor preamble doesn't emit a stale
     // relative move from where we last parked it.
@@ -999,6 +1075,12 @@ export default class Ink {
     this.frontFrame = blank();
     this.backFrame = blank();
     this.log.reset();
+    // See repaint(): the pixels are the terminal's, and this is the moment they
+    // stop matching what was recorded. Resize reaches here through
+    // handleResize, ctrl+L through forceRedraw, and SIGCONT / sleep-wake /
+    // external-TUI handoff through reenterAltScreen — each of which writes
+    // ERASE_SCREEN, which drops sixels along with the text.
+    invalidateGraphicsPlacements();
     // Defense-in-depth: alt-screen skips the cursor preamble anyway (CSI H
     // resets), but a stale displayCursor would be misleading if we later
     // exit to main-screen without an intervening render.
