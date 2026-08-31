@@ -7,7 +7,11 @@
 import assert from 'node:assert/strict'
 import { APIConnectionError } from '@anthropic-ai/sdk'
 import { ANTIGRAVITY_MODEL_IDS } from '../../services/api/providers/gemini_code_assist.js'
-import { geminiApi, TAU_STABLE_SESSION_ID_FIELD } from './api.js'
+import {
+  GeminiApiError,
+  geminiApi,
+  TAU_STABLE_SESSION_ID_FIELD,
+} from './api.js'
 import { GeminiLane } from './loop.js'
 
 async function main(): Promise<void> {
@@ -56,6 +60,46 @@ async function main(): Promise<void> {
       assert.equal(stableSessionIds[0], stableSessionIds[1], `${model}: retry changed session affinity`)
       assert.equal(typeof stableSessionIds[0], 'string', `${model}: stable session affinity missing`)
     }
+
+    // Regression for #29: after the Antigravity client's bounded inner retry
+    // is exhausted, a pre-content 429 must reach the shared retry controller.
+    // It must not become a successful assistant text block.
+    geminiApi.streamGenerateContent = (async function* () {
+      throw new GeminiApiError(
+        429,
+        JSON.stringify({
+          error: {
+            code: 429,
+            message: 'Resource has been exhausted (e.g. check quota).',
+            status: 'RESOURCE_EXHAUSTED',
+          },
+        }),
+      )
+    }) as typeof geminiApi.streamGenerateContent
+
+    const events = []
+    let throttled: unknown
+    try {
+      const stream = new GeminiLane().streamAsProvider({
+        model: 'gemini-3.7-flash-high',
+        messages: [{ role: 'user', content: 'large cached report transcript' }],
+        system: 'Write a report.',
+        tools: [],
+        max_tokens: 4096,
+        thinking: { type: 'disabled' },
+        signal: new AbortController().signal,
+        sessionId: 'report-session-fixed',
+        providerHint: 'antigravity',
+        querySource: 'report',
+      })
+      for await (const event of stream) events.push(event)
+    } catch (error) {
+      throttled = error
+    }
+
+    assert(throttled instanceof GeminiApiError, '429 did not escape the Gemini lane')
+    assert.equal(throttled.status, 429)
+    assert.equal(events.length, 0, '429 leaked a synthetic assistant error turn')
 
     console.log('Antigravity network retry tests passed')
   } finally {

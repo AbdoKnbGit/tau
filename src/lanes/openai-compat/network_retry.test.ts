@@ -12,7 +12,10 @@ import type {
 } from '../../services/api/providers/base_provider.js'
 import { CommandCodeProvider } from '../../services/api/providers/commandcode_provider.js'
 import { OpenAIProvider } from '../../services/api/providers/openai_provider.js'
-import { isRetryableNetworkError } from '../../services/api/transport_error.js'
+import {
+  isRetryableNetworkError,
+  ProviderHttpError,
+} from '../../services/api/transport_error.js'
 import { OpenAICompatLane } from './loop.js'
 import { TRANSFORMERS, type ProviderId } from './transformers/index.js'
 
@@ -167,6 +170,46 @@ async function main(): Promise<void> {
       }),
       'moonshotai/Kimi-K2.6',
     )
+
+    // Pre-response HTTP throttling follows the same boundary as a connection
+    // failure: no assistant events, numeric status preserved for withRetry.
+    const throttledLane = new OpenAICompatLane()
+    throttledLane.registerProvider('fireworks', 'test-key', 'https://fireworks.example/v1')
+    globalThis.fetch = (async (): Promise<Response> => new Response(
+      JSON.stringify({ error: { message: 'rate limit reached' } }),
+      {
+        status: 429,
+        headers: { 'retry-after': '2', 'content-type': 'application/json' },
+      },
+    )) as typeof fetch
+    const throttled = await runFailedAttempt(throttledLane, 'fireworks')
+    assert(throttled.error instanceof ProviderHttpError)
+    assert.equal(throttled.error.status, 429)
+    assert.equal(throttled.error.headers?.get('retry-after'), '2')
+    assert.equal(throttled.events.length, 0, '429 leaked an assistant error turn')
+    throttledLane.unregisterProvider('fireworks')
+
+    let legacyThrottle: unknown
+    try {
+      await new OpenAIProvider({
+        apiKey: 'test-key',
+        baseUrl: 'https://openai.example/v1',
+      }).stream({
+        model: 'gpt-4.1',
+        messages: [{ role: 'user', content: 'large cached report transcript' }],
+        system: 'Write a report.',
+        tools: [],
+        max_tokens: 4096,
+        thinking: { type: 'disabled' },
+        sessionId: 'report-session-fixed',
+        querySource: 'report',
+      })
+    } catch (error) {
+      legacyThrottle = error
+    }
+    assert(legacyThrottle instanceof ProviderHttpError)
+    assert.equal(legacyThrottle.status, 429)
+    assert.equal(legacyThrottle.headers?.get('retry-after'), '2')
 
     console.log('OpenAI-compatible network retry tests passed')
   } finally {

@@ -48,6 +48,7 @@ import type {
 import {
   createRetryableConnectionError,
   isAbortError,
+  throwRetryableProviderHttpError,
 } from '../../services/api/transport_error.js'
 import {
   anthropicMessagesToOpenAI,
@@ -318,6 +319,7 @@ export class KiloLane implements Lane {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
+      throwRetryableProviderHttpError('kilo', response, errText)
       const lowered = errText.toLowerCase()
       const isPromptTooLong = KILO_CONTEXT_EXCEEDED_MARKERS.some((marker) => lowered.includes(marker))
       const headline = isPromptTooLong

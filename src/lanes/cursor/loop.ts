@@ -55,6 +55,7 @@ import { OPENAI_COMPAT_TOOL_USAGE_RULES } from '../shared/mcp_bridge.js'
 import {
   createRetryableConnectionError,
   isAbortError,
+  throwRetryableProviderHttpError,
 } from '../../services/api/transport_error.js'
 
 const CURSOR_ENDPOINT = 'https://api2.cursor.sh/aiserver.v1.InferenceService/Stream'
@@ -590,6 +591,7 @@ async function* _streamCursorAttempt(params: {
 
   if (response.status < 200 || response.status >= 300) {
     const errText = await _collectStreamText(response.body).catch(() => '')
+    throwRetryableProviderHttpError('Cursor', response, errText)
     const mst = emitMessageStart()
     if (mst) yield mst
     yield* _emitErrorText(formatCursorApiError(response.status, errText, params.cursorModel))

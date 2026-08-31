@@ -54,6 +54,7 @@ import {
 import {
   createRetryableConnectionError,
   isAbortError,
+  isRetryableProviderError,
 } from '../../services/api/transport_error.js'
 import {
   geminiApi,
@@ -626,6 +627,13 @@ export class GeminiLane implements Lane {
         && (err.status === 404 || /cachedContent/i.test(err.body))
       ) {
         invalidateCache(cacheName)
+      }
+      // The API client already exhausted its bounded same-provider retry and
+      // account rotation. No output has been committed at this point, so the
+      // shared controller can safely retry the identical cached request.
+      if (!messageStartEmitted && isRetryableProviderError(err)) {
+        currentCall = null
+        throw err
       }
       if (
         !messageStartEmitted

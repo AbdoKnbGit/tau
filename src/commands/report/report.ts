@@ -2,40 +2,45 @@ import PDFDocument from 'pdfkit'
 import { createWriteStream } from 'fs'
 import { mkdir, writeFile } from 'fs/promises'
 import { dirname, extname, isAbsolute, resolve } from 'path'
-import { marked } from 'marked'
-import { queryWithModel } from '../../services/api/claude.js'
 import type { LocalCommandCall } from '../../types/command.js'
 import type { Message } from '../../types/message.js'
 import { getCwd } from '../../utils/cwd.js'
 import {
+  createUserMessage,
   extractTextContent,
   getMessagesAfterCompactBoundary,
 } from '../../utils/messages.js'
-import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import {
+  getLastCacheSafeParams,
+  runForkedAgent,
+} from '../../utils/forkedAgent.js'
+import { buildSideQuestionFallbackParams } from '../../utils/queryContext.js'
+import {
+  assertValidGeneratedReport,
+  buildReportPrompt,
+  extractReportTitle,
+  renderHtml,
+} from './presentation.js'
 
 type ReportFormat = 'markdown' | 'html' | 'pdf'
 
 type ReportSkill = {
-  label: string
   extension: string
   instruction: string
 }
 
 const REPORT_SKILLS: Record<ReportFormat, ReportSkill> = {
   markdown: {
-    label: 'Markdown report skill',
     extension: '.md',
     instruction:
       'Write clean Markdown with short sections, direct headings, and no decorative formatting.',
   },
   html: {
-    label: 'HTML report skill',
     extension: '.html',
     instruction:
       'Write source Markdown that converts well to HTML: clear hierarchy, compact paragraphs, and no tables unless essential.',
   },
   pdf: {
-    label: 'PDF report skill',
     extension: '.pdf',
     instruction:
       'Write source Markdown that reads well in paged PDF form: short paragraphs, concise lists, and stable heading structure.',
@@ -49,9 +54,6 @@ const FORMAT_ALIASES: Record<string, ReportFormat> = {
   pdf: 'pdf',
 }
 
-const MAX_TRANSCRIPT_CHARS = 90_000
-const TRANSCRIPT_HEAD_CHARS = 18_000
-
 export const call: LocalCommandCall = async (args, context) => {
   const parsed = parseReportArgs(args)
   if (parsed.kind === 'help') {
@@ -59,8 +61,7 @@ export const call: LocalCommandCall = async (args, context) => {
   }
 
   const skill = REPORT_SKILLS[parsed.format]
-  const transcript = buildTranscript(context.messages ?? [])
-  if (!transcript.trim()) {
+  if (!hasReportableSessionContent(context.messages ?? [])) {
     return {
       type: 'text',
       value: 'No session content found to report on.',
@@ -68,11 +69,9 @@ export const call: LocalCommandCall = async (args, context) => {
   }
 
   const markdown = await generateReportMarkdown({
-    transcript,
     format: parsed.format,
     skill,
-    model: context.options.mainLoopModel,
-    signal: context.abortController.signal,
+    context,
   })
 
   const outputPath = resolveOutputPath(parsed.filename, parsed.format)
@@ -95,9 +94,8 @@ export const call: LocalCommandCall = async (args, context) => {
   return {
     type: 'text',
     value: [
-      `Report written to: ${outputPath}`,
+      `Report ready: ${outputPath}`,
       `Format: ${parsed.format}`,
-      `Skill: ${skill.label}`,
     ].join('\n'),
   }
 }
@@ -228,26 +226,25 @@ function formatTimestamp(date: Date): string {
   return `${year}-${month}-${day}-${hours}${minutes}${seconds}`
 }
 
-function buildTranscript(messages: Message[]): string {
+function hasReportableSessionContent(messages: Message[]): boolean {
   const visibleMessages = getMessagesAfterCompactBoundary(messages)
-  const parts: string[] = []
 
   for (const message of visibleMessages) {
     if (message.type === 'user') {
       const text = userMessageText(message)
-      if (text) parts.push(`User:\n${text}`)
+      if (text) return true
       continue
     }
 
     if (message.type === 'assistant') {
       const text = extractTextContent(message.message.content, '\n').trim()
       if (text && text !== '[No content]') {
-        parts.push(`Assistant:\n${text}`)
+        return true
       }
     }
   }
 
-  return trimTranscript(parts.join('\n\n---\n\n'))
+  return false
 }
 
 function userMessageText(message: Extract<Message, { type: 'user' }>): string {
@@ -287,93 +284,80 @@ function userMessageText(message: Extract<Message, { type: 'user' }>): string {
   return trimmed
 }
 
-function trimTranscript(transcript: string): string {
-  if (transcript.length <= MAX_TRANSCRIPT_CHARS) return transcript
-
-  const head = transcript.slice(0, TRANSCRIPT_HEAD_CHARS)
-  const tail = transcript.slice(-(MAX_TRANSCRIPT_CHARS - TRANSCRIPT_HEAD_CHARS))
-  return [
-    head,
-    '[Middle of transcript omitted for report generation context size.]',
-    tail,
-  ].join('\n\n---\n\n')
-}
-
 async function generateReportMarkdown({
-  transcript,
   format,
   skill,
-  model,
-  signal,
+  context,
 }: {
-  transcript: string
   format: ReportFormat
   skill: ReportSkill
-  model: string
-  signal: AbortSignal
+  context: Parameters<LocalCommandCall>[1]
 }): Promise<string> {
-  const result = await queryWithModel({
-    systemPrompt: asSystemPrompt([
-      'You write final session reports for a user after an AI coding/research session.',
-      'Your priority is high content quality, clarity, and faithful reconstruction from the transcript.',
-    ]),
-    userPrompt: buildReportPrompt({ transcript, format, skill }),
-    signal,
-    options: {
-      model,
-      querySource: 'report',
-      agents: [],
-      isNonInteractiveSession: true,
-      hasAppendSystemPrompt: false,
-      mcpTools: [],
-      maxOutputTokensOverride: 4096,
-      temperatureOverride: 0.2,
+  // Reuse the exact live-conversation prefix instead of serializing the
+  // transcript into a separate cold request. This keeps the current provider,
+  // model, Antigravity OAuth identity, root provider session, system prompt,
+  // tools schema, thinking configuration, and prompt-cache prefix intact.
+  const savedCacheSafeParams = getLastCacheSafeParams()
+  const cacheSafeParams =
+    savedCacheSafeParams?.toolUseContext.options.mainLoopModel ===
+    context.options.mainLoopModel
+      ? savedCacheSafeParams
+      : await buildSideQuestionFallbackParams({
+          tools: context.options.tools,
+          commands: context.options.commands,
+          mcpClients: context.options.mcpClients,
+          messages: context.messages,
+          readFileState: context.readFileState,
+          getAppState: context.getAppState,
+          setAppState: context.setAppState,
+          customSystemPrompt: context.options.customSystemPrompt,
+          appendSystemPrompt: context.options.appendSystemPrompt,
+          thinkingConfig: context.options.thinkingConfig,
+          agents: context.options.agentDefinitions.activeAgents,
+        })
+
+  const result = await runForkedAgent({
+    promptMessages: [
+      createUserMessage({ content: buildReportPrompt({ format, skill }) }),
+    ],
+    cacheSafeParams,
+    canUseTool: async () => ({
+      behavior: 'deny' as const,
+      message: 'Report generation does not run tools.',
+      decisionReason: {
+        type: 'other' as const,
+        reason: 'report generation is read-only',
+      },
+    }),
+    querySource: 'report',
+    forkLabel: 'report',
+    maxTurns: 1,
+    skipTranscript: true,
+    skipCacheWrite: true,
+    overrides: {
+      abortController: context.abortController,
+      // This is a side read of the current conversation, not a new agent.
+      // Keeping the root identity is what makes Antigravity reuse the current
+      // user's provider session instead of deriving a separate agent route.
+      preserveParentAgentId: true,
     },
   })
 
-  const text = extractTextContent(result.message.content, '\n').trim()
-  return stripMarkdownFence(text)
-}
-
-function buildReportPrompt({
-  transcript,
-  format,
-  skill,
-}: {
-  transcript: string
-  format: ReportFormat
-  skill: ReportSkill
-}): string {
-  return `Create the final session report.
-
-Selected output format: ${format}
-Active prebuilt report skill: ${skill.label}
-Format skill instruction: ${skill.instruction}
-
-Content rules:
-- Return only Markdown content. Do not wrap it in a code fence.
-- No statistics: no token usage, costs, percentages, charts, timing, tool-call counts, or numerical summaries.
-- Do not include a "Statistics" section.
-- Do not mention tool names or internal implementation details unless the user needs that detail to understand the result.
-- Prefer plain language over developer jargon.
-- Keep it readable for a non-specialist while preserving the real substance of the session.
-- Be concise, but do not omit important work, decisions, constraints, blockers, or next actions.
-- Use concrete details from the transcript. Do not invent outcomes or decisions.
-- Do not praise the assistant. Write as a neutral session report.
-
-Use these exact sections:
-# Session Report
-## What This Session Was About
-## What Was Handled
-## Important Choices
-## Current State
-## What Still Needs Attention
-## Suggested Next Steps
-
-If a section has no real content, write "Nothing specific came up." for that section.
-
-Transcript:
-${transcript}`
+  const assistantMessages = result.messages.filter(
+    (message): message is Extract<Message, { type: 'assistant' }> =>
+      message.type === 'assistant',
+  )
+  const text = extractTextContent(
+    assistantMessages.flatMap(message => message.message.content),
+    '\n',
+  ).trim()
+  const markdown = stripMarkdownFence(text)
+  assertValidGeneratedReport(markdown, {
+    isApiErrorMessage: assistantMessages.some(
+      message => message.isApiErrorMessage === true,
+    ),
+  })
+  return markdown
 }
 
 function stripMarkdownFence(value: string): string {
@@ -382,87 +366,13 @@ function stripMarkdownFence(value: string): string {
   return match ? match[1]!.trim() : trimmed
 }
 
-function renderHtml(markdown: string): string {
-  const body = marked.parse(markdown, { async: false }) as string
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Session Report</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --bg: #f6f5f2;
-      --text: #1f2933;
-      --muted: #5c6670;
-      --border: #d9d6cf;
-      --accent: #215c5c;
-      --paper: #ffffff;
-    }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    main {
-      max-width: 860px;
-      margin: 32px auto;
-      padding: 44px 52px;
-      background: var(--paper);
-      border: 1px solid var(--border);
-    }
-    h1, h2 {
-      line-height: 1.25;
-      letter-spacing: 0;
-    }
-    h1 {
-      margin: 0 0 28px;
-      font-size: 32px;
-      color: var(--accent);
-    }
-    h2 {
-      margin: 28px 0 10px;
-      padding-top: 18px;
-      border-top: 1px solid var(--border);
-      font-size: 20px;
-    }
-    p, ul {
-      margin: 0 0 14px;
-    }
-    li {
-      margin: 5px 0;
-    }
-    code {
-      font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 0.92em;
-    }
-    @media (max-width: 720px) {
-      main {
-        margin: 0;
-        padding: 28px 22px;
-        border: 0;
-      }
-    }
-  </style>
-</head>
-<body>
-  <main>
-${body}
-  </main>
-</body>
-</html>
-`
-}
-
 async function writePdf(markdown: string, path: string): Promise<void> {
   await new Promise<void>((resolvePromise, reject) => {
     const doc = new PDFDocument({
       size: 'A4',
-      margin: 54,
+      margin: 62,
       info: {
-        Title: 'Session Report',
+        Title: extractReportTitle(markdown),
       },
     })
     const stream = createWriteStream(path)
@@ -478,7 +388,7 @@ async function writePdf(markdown: string, path: string): Promise<void> {
 }
 
 function renderMarkdownToPdf(doc: PDFKit.PDFDocument, markdown: string): void {
-  doc.fillColor('#1f2933')
+  doc.fillColor('#202925')
 
   for (const rawLine of markdown.split(/\r?\n/)) {
     const line = rawLine.trim()
@@ -489,19 +399,21 @@ function renderMarkdownToPdf(doc: PDFKit.PDFDocument, markdown: string): void {
 
     if (line.startsWith('# ')) {
       doc.moveDown(0.2)
-      doc.font('Helvetica-Bold').fontSize(22).fillColor('#215c5c')
-      doc.text(stripInlineMarkdown(line.slice(2)), { lineGap: 4 })
-      doc.moveDown(0.8)
-      doc.fillColor('#1f2933')
+      doc.font('Times-Bold').fontSize(27).fillColor('#202925')
+      doc.text(stripInlineMarkdown(line.slice(2)), { lineGap: 5 })
+      doc.moveDown(0.35)
+      doc.strokeColor('#276353').lineWidth(2)
+      doc.moveTo(doc.x, doc.y).lineTo(doc.x + 72, doc.y).stroke()
+      doc.moveDown(1.1)
       continue
     }
 
     if (line.startsWith('## ')) {
       doc.moveDown(0.8)
-      doc.font('Helvetica-Bold').fontSize(14).fillColor('#215c5c')
+      doc.font('Times-Bold').fontSize(15).fillColor('#276353')
       doc.text(stripInlineMarkdown(line.slice(3)), { lineGap: 2 })
       doc.moveDown(0.35)
-      doc.fillColor('#1f2933')
+      doc.fillColor('#202925')
       continue
     }
 
@@ -515,17 +427,17 @@ function renderMarkdownToPdf(doc: PDFKit.PDFDocument, markdown: string): void {
 
     const listMatch = line.match(/^[-*]\s+(.*)$/)
     if (listMatch) {
-      doc.font('Helvetica').fontSize(10.5).fillColor('#1f2933')
-      doc.text(`- ${stripInlineMarkdown(listMatch[1]!)}`, {
+      doc.font('Helvetica').fontSize(10.5).fillColor('#202925')
+      doc.text(`•  ${stripInlineMarkdown(listMatch[1]!)}`, {
         indent: 14,
-        hangingIndent: 8,
+        hangingIndent: 10,
         lineGap: 2,
       })
       continue
     }
 
-    doc.font('Helvetica').fontSize(10.5).fillColor('#1f2933')
-    doc.text(stripInlineMarkdown(line), { lineGap: 2 })
+    doc.font('Helvetica').fontSize(10.5).fillColor('#202925')
+    doc.text(stripInlineMarkdown(line), { lineGap: 3 })
   }
 }
 

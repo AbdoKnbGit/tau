@@ -2,19 +2,16 @@ import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 
 import { isEnvTruthy } from '../envUtils.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { getForcedProvider } from '../forcedProvider.js'
+import {
+  API_PROVIDERS,
+  SELECTABLE_PROVIDERS,
+  type APIProvider,
+} from './providerRegistry.js'
 
-export type APIProvider =
-  | 'firstParty' | 'bedrock' | 'vertex' | 'foundry'
-  | 'openai' | 'gemini' | 'antigravity'
-  | 'openrouter' | 'agentrouter' | 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'opencodego' | 'commandcode' | 'lxd' | 'mimo' | 'fireworks' | 'cloudflare' | 'groq' | 'mistral' | 'nim' | 'deepseek' | 'glm' | 'moonshot' | 'minimax' | 'ollama' | 'lmstudio'
-  | 'cline' | 'clinepass' | 'copilot' | 'cursor' | 'iflow' | 'kilocode' | 'kiro'
+export type { APIProvider } from './providerRegistry.js'
+export { API_PROVIDERS, SELECTABLE_PROVIDERS } from './providerRegistry.js'
 
-const VALID_PROVIDERS: readonly APIProvider[] = [
-  'firstParty', 'bedrock', 'vertex', 'foundry',
-  'openai', 'gemini', 'antigravity',
-  'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'commandcode', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
-  'cline', 'clinepass', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
-]
+const VALID_PROVIDERS: readonly APIProvider[] = API_PROVIDERS
 
 export function isAPIProvider(value: string): value is APIProvider {
   return VALID_PROVIDERS.includes(value as APIProvider)
@@ -230,16 +227,13 @@ export function listAPIProviderNames(): readonly APIProvider[] {
   return VALID_PROVIDERS
 }
 
-/** Providers available for user selection in /provider and /login */
-// `iflow` is hidden from the user-facing pickers after its CLI shutdown announcement.
-// `modelrouter` is also hidden from /login and /models; backend support stays
-// intact for compatibility and env-driven use.
-// APIProvider union, env detection, auth flow, transformer, and routing are
-// all kept intact for compatibility.
-export const SELECTABLE_PROVIDERS: readonly APIProvider[] = [
-  'firstParty', 'openai', 'commandcode', 'antigravity', 'openrouter', 'agentrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
-  'cline', 'clinepass', 'copilot', 'kilocode', 'kiro',
-]
+/** Providers available for user selection in /provider and /login.
+ *
+ * `iflow` is hidden from the user-facing pickers after its CLI shutdown
+ * announcement. `modelrouter` is also hidden from /login and /models; backend
+ * support stays intact for compatibility. The canonical picker list lives in
+ * providerRegistry.ts so provider-wide contract tests can import it safely.
+ */
 
 /** Providers that use OpenAI-compatible chat completions API */
 export function isOpenAICompatibleProvider(p: APIProvider): boolean {

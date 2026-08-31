@@ -151,7 +151,7 @@ export class CommandCodeProvider extends OpenAIProvider {
     return models.sonnet
   }
 
-  protected formatAPIError(status: number, body: string): Error {
+  protected formatAPIError(status: number, body: string, headers?: Headers): Error {
     const detail = extractErrorDetail(body)
     if (status === 403 && /upgrade_required|pro plan|pro or higher/i.test(detail)) {
       return new Error(
@@ -165,7 +165,7 @@ export class CommandCodeProvider extends OpenAIProvider {
         + `${detail || 'Claude models use /provider/v1/messages; GPT models use /provider/v1/chat/completions; Command Code pool models use /alpha/generate.'}`,
       )
     }
-    return super.formatAPIError(status, body)
+    return super.formatAPIError(status, body, headers)
   }
 
   private async _streamAlphaGenerate(
@@ -183,7 +183,7 @@ export class CommandCodeProvider extends OpenAIProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw this.formatAPIError(response.status, errText)
+      throw this.formatAPIError(response.status, errText, response.headers)
     }
 
     if (!response.body) {
@@ -207,7 +207,7 @@ export class CommandCodeProvider extends OpenAIProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw this.formatAPIError(response.status, errText)
+      throw this.formatAPIError(response.status, errText, response.headers)
     }
 
     if (!response.body) {
@@ -441,7 +441,7 @@ export class CommandCodeProvider extends OpenAIProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw this.formatAPIError(response.status, errText)
+      throw this.formatAPIError(response.status, errText, response.headers)
     }
 
     if (!response.body) {
@@ -464,7 +464,7 @@ export class CommandCodeProvider extends OpenAIProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw this.formatAPIError(response.status, errText)
+      throw this.formatAPIError(response.status, errText, response.headers)
     }
 
     this._extractRateLimits(response.headers)

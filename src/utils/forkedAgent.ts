@@ -262,6 +262,9 @@ export type SubagentContextOverrides = {
   options?: ToolUseContext['options']
   /** Override the agentId (for subagents with their own ID) */
   agentId?: AgentId
+  /** Keep the parent's agent identity. Root-thread cache-sharing side reads
+   * use this to avoid deriving a separate provider session. */
+  preserveParentAgentId?: boolean
   /** Override the agentType (for subagents with a specific type) */
   agentType?: string
   /** Override the messages array */
@@ -445,7 +448,9 @@ export function createSubagentContext(
     options: overrides?.options ?? parentContext.options,
     messages: overrides?.messages ?? parentContext.messages,
     // Generate new agentId for subagents (each subagent should have its own ID)
-    agentId: overrides?.agentId ?? createAgentId(),
+    agentId: overrides?.preserveParentAgentId
+      ? parentContext.agentId
+      : (overrides?.agentId ?? createAgentId()),
     agentType: overrides?.agentType,
 
     // Create new query tracking chain for subagent with incremented depth

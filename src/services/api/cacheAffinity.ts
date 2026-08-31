@@ -44,6 +44,11 @@ function usesRootProviderSession(querySource: QuerySource): boolean {
   return (
     querySource.startsWith('repl_main_thread') ||
     querySource === 'sdk' ||
+    // /report is a read-only suffix on the live conversation and explicitly
+    // skips writing its suffix into the shared cache. Keep it on the root
+    // provider session so sticky gateways (especially OpenRouter) land on the
+    // same cache shard as the chat request they are summarizing.
+    querySource === 'report' ||
     querySource === FORK_AGENT_QUERY_SOURCE
   )
 }

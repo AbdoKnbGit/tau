@@ -87,6 +87,7 @@ import { providerUsesStableRequestSession } from '../../services/api/cacheAffini
 import {
   createRetryableConnectionError,
   isAbortError,
+  throwRetryableProviderHttpError,
 } from '../../services/api/transport_error.js'
 import {
   AFT_AST_SEARCH_TOOL_NAME,
@@ -683,6 +684,7 @@ export class OpenAICompatLane implements Lane {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
+      throwRetryableProviderHttpError(provider, response, errText)
       if (!messageStartEmitted) {
         const mst = emitMessageStart()
         if (mst) yield mst
@@ -1689,6 +1691,7 @@ async function* streamOpenCodeAnthropicRoute(
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '')
+    throwRetryableProviderHttpError(provider, response, errText)
     yield emitSyntheticStart()
     yield* emitErrorText(formatProviderHttpError(provider, response.status, errText, false))
     yield {
@@ -2729,6 +2732,7 @@ async function* streamOllamaNative(
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '')
+    throwRetryableProviderHttpError('ollama', response, errText)
     const mst = emitMessageStart()
     if (mst) yield mst
     const lowered = errText.toLowerCase()

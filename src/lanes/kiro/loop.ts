@@ -49,6 +49,7 @@ import { loadProviderKey } from '../../services/api/auth/api_key_manager.js'
 import {
   createRetryableConnectionError,
   isAbortError,
+  throwRetryableProviderHttpError,
 } from '../../services/api/transport_error.js'
 
 const KIRO_ENDPOINT = 'https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse'
@@ -569,6 +570,9 @@ export class KiroLane implements Lane {
 
     if (!response?.ok) {
       const errText = responseErrorText
+      if (response) {
+        throwRetryableProviderHttpError('kiro', response, errText)
+      }
       const mst = emitMessageStart()
       if (mst) yield mst
       const lowered = errText.toLowerCase()

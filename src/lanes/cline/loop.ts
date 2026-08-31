@@ -44,6 +44,7 @@ import {
 import {
   createRetryableConnectionError,
   isAbortError,
+  throwRetryableProviderHttpError,
 } from '../../services/api/transport_error.js'
 import {
   applyClineReasoningToRequest,
@@ -449,6 +450,7 @@ export class ClineLane implements Lane {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
+      throwRetryableProviderHttpError('cline', response, errText)
       const headline = clineErrorHeadline(response.status, errText)
       yield* emitErrorTurn(`${headline}: ${errText.slice(0, 500)}`)
       return blankUsage()
@@ -484,6 +486,7 @@ export class ClineLane implements Lane {
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '')
+        throwRetryableProviderHttpError('cline', response, errText)
         const headline = clineErrorHeadline(response.status, errText)
         yield* emitErrorTurn(`${headline}: ${errText.slice(0, 500)}`)
         return blankUsage()

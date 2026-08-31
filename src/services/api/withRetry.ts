@@ -33,7 +33,11 @@ import {
 } from '../../utils/fastMode.js'
 import { isNonCustomOpusModel } from '../../utils/model/model.js'
 import { disableKeepAlive } from '../../utils/proxy.js'
-import { isRetryableNetworkError } from './transport_error.js'
+import {
+  getProviderHttpStatus,
+  isRetryableNetworkError,
+  isRetryableProviderHttpStatus,
+} from './transport_error.js'
 import { sleep } from '../../utils/sleep.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
@@ -74,6 +78,7 @@ const FOREGROUND_529_RETRY_SOURCES = new Set<QuerySource>([
   'hook_prompt',
   'verification_agent',
   'side_question',
+  'report',
   // Security classifiers — must complete for auto-mode correctness.
   // yoloClassifier.ts uses 'auto_mode' (not 'yolo_classifier' — that's
   // type-only). bash_classifier is ant-only; feature-gate so the string
@@ -123,12 +128,10 @@ function isThirdPartyRetryableError(error: unknown): boolean {
   // Retrying just wastes requests. Fail immediately with a clear message.
   // FreeUsageLimitError = OpenCode Zen's daily per-IP cap on free models;
   // the limit only resets at midnight UTC so retries are pure waste.
-  if (/quota exhausted|exhausted your capacity|quota will reset after \d+h|FreeUsageLimitError/i.test(msg)) return false
-  // Match patterns like "openai API error 429: ..." or "Gemini API error 503: ..."
-  const statusMatch = msg.match(/API error (\d{3})/)
-  if (!statusMatch) return false
-  const status = parseInt(statusMatch[1]!, 10)
-  return status === 429 || status === 500 || status === 502 || status === 503 || status === 529
+  if (/quota (?:exhausted|exceeded)|exceeded (?:its|your) (?:usage |current )?quota|insufficient_quota|exhausted your capacity|quota will reset after \d+h|FreeUsageLimitError/i.test(msg)) return false
+  const status = getProviderHttpStatus(error)
+  if (status === null) return false
+  return isRetryableProviderHttpStatus(status)
 }
 
 /**
@@ -137,9 +140,7 @@ function isThirdPartyRetryableError(error: unknown): boolean {
  */
 function getThirdPartyErrorStatus(error: unknown): number | null {
   if (error instanceof APIError) return null
-  if (!(error instanceof Error)) return null
-  const match = error.message.match(/API error (\d{3})/)
-  return match ? parseInt(match[1]!, 10) : null
+  return getProviderHttpStatus(error)
 }
 
 /**

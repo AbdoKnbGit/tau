@@ -1,5 +1,7 @@
 import { APIConnectionError } from '@anthropic-ai/sdk'
 
+const RETRYABLE_HTTP_STATUSES = new Set([408, 409, 429, 499])
+
 const RETRYABLE_NETWORK_CODES = new Set([
   'ECONNRESET',
   'ETIMEDOUT',
@@ -49,4 +51,58 @@ export function createRetryableConnectionError(
     message: `${messagePrefix}: ${cause.message}`,
     cause,
   })
+}
+
+/**
+ * HTTP failure raised by a non-Anthropic provider before it produced model
+ * output. Keeping the numeric status and response headers on the error lets
+ * the shared retry controller honor Retry-After without parsing display text.
+ */
+export class ProviderHttpError extends Error {
+  constructor(
+    public readonly provider: string,
+    public readonly status: number,
+    public readonly body: string,
+    public readonly headers?: Headers,
+    message?: string,
+  ) {
+    super(message ?? `${provider} API error ${status}${body ? `: ${body.slice(0, 500)}` : ''}`)
+    this.name = 'ProviderHttpError'
+  }
+}
+
+export function getProviderHttpStatus(error: unknown): number | null {
+  if (!(error instanceof Error)) return null
+  const status = (error as Error & { status?: unknown }).status
+  if (typeof status === 'number' && Number.isInteger(status)) return status
+
+  const match = error.message.match(/API error\s+(\d{3})/i)
+  return match ? Number.parseInt(match[1]!, 10) : null
+}
+
+export function isRetryableProviderHttpStatus(status: number): boolean {
+  return RETRYABLE_HTTP_STATUSES.has(status) || (status >= 500 && status < 600)
+}
+
+/**
+ * Provider SDK errors (GeminiApiError, QwenApiError, CodexApiError) expose an
+ * isRetryable getter. Prefer that classification so terminal quota failures
+ * are not retried merely because they use HTTP 429.
+ */
+export function isRetryableProviderError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const classified = (error as Error & { isRetryable?: unknown }).isRetryable
+  const status = getProviderHttpStatus(error)
+  if (classified === false) return false
+  return status !== null && isRetryableProviderHttpStatus(status)
+}
+
+/** Throw a retryable pre-response HTTP failure without creating an assistant turn. */
+export function throwRetryableProviderHttpError(
+  provider: string,
+  response: Pick<Response, 'status' | 'headers'>,
+  body: string,
+): void {
+  if (!isRetryableProviderHttpStatus(response.status)) return
+  throw new ProviderHttpError(provider, response.status, body, response.headers)
 }

@@ -2,7 +2,14 @@
  * Run: bun run src/services/api/cacheAffinity.test.ts
  */
 
-import { resolveProviderRequestSessionId } from './cacheAffinity.js'
+import {
+  providerUsesStableRequestSession,
+  resolveProviderRequestSessionId,
+} from './cacheAffinity.js'
+import {
+  API_PROVIDERS,
+  SELECTABLE_PROVIDERS,
+} from '../../utils/model/providerRegistry.js'
 import type { AgentId } from '../../types/ids.js'
 import type { QuerySource } from '../../constants/querySource.js'
 
@@ -156,6 +163,49 @@ async function main(): Promise<void> {
     assert(sessionId === 'root-session', `sessionId=${sessionId}`)
   })
 
+  await test('keeps report retry affinity stable on cache-aware providers', () => {
+    for (const provider of ['antigravity', 'openrouter', 'fireworks'] as const) {
+      const first = resolveProviderRequestSessionId({
+        provider,
+        rootSessionId: 'root-session',
+        querySource: 'report' as QuerySource,
+      })
+      const retry = resolveProviderRequestSessionId({
+        provider,
+        rootSessionId: 'root-session',
+        querySource: 'report' as QuerySource,
+      })
+
+      assert(typeof first === 'string' && first.length > 0, `${provider} affinity missing`)
+      assert(first === retry, `${provider} report retry changed affinity`)
+    }
+  })
+
+  await test('routes report through the current root provider session', () => {
+    for (const provider of [
+      'antigravity',
+      'openrouter',
+      'openai',
+      'fireworks',
+    ] as const) {
+      const chat = resolveProviderRequestSessionId({
+        provider,
+        rootSessionId: 'current-provider-session',
+        querySource: 'repl_main_thread' as QuerySource,
+      })
+      const report = resolveProviderRequestSessionId({
+        provider,
+        rootSessionId: 'current-provider-session',
+        querySource: 'report' as QuerySource,
+      })
+
+      assert(
+        report === chat,
+        `${provider} report session ${report} did not match chat ${chat}`,
+      )
+    }
+  })
+
   await test('does not add affinity keys for providers that do not use them', () => {
     const sessionId = resolveProviderRequestSessionId({
       provider: 'gemini',
@@ -165,6 +215,48 @@ async function main(): Promise<void> {
     })
 
     assert(sessionId === undefined, `sessionId=${sessionId}`)
+  })
+
+  await test('keeps report routing and cache affinity correct for every provider', () => {
+    const rootSessionId = 'provider-contract-root'
+    const allProviders = new Set(API_PROVIDERS)
+
+    assert(allProviders.size === API_PROVIDERS.length, 'provider registry contains duplicates')
+    assert(
+      SELECTABLE_PROVIDERS.every(provider => allProviders.has(provider)),
+      'selectable provider is missing from the canonical registry',
+    )
+
+    for (const provider of API_PROVIDERS) {
+      const chat = resolveProviderRequestSessionId({
+        provider,
+        rootSessionId,
+        querySource: 'repl_main_thread' as QuerySource,
+      })
+      const report = resolveProviderRequestSessionId({
+        provider,
+        rootSessionId,
+        querySource: 'report' as QuerySource,
+      })
+      const retry = resolveProviderRequestSessionId({
+        provider,
+        rootSessionId,
+        querySource: 'report' as QuerySource,
+      })
+
+      assert(report === chat, `${provider}: report route ${report} != chat route ${chat}`)
+      assert(retry === report, `${provider}: report retry changed route affinity`)
+
+      if (providerUsesStableRequestSession(provider)) {
+        assert(report === rootSessionId, `${provider}: root cache affinity was not preserved`)
+      } else {
+        assert(report === undefined, `${provider}: unsupported affinity key was injected`)
+      }
+    }
+
+    console.log(
+      `      verified ${API_PROVIDERS.length} total providers (${SELECTABLE_PROVIDERS.length} selectable)`,
+    )
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

@@ -47,6 +47,7 @@ import { describeUnsendableMedia } from '../shared/media_blocks.js'
 import {
   createRetryableConnectionError,
   isAbortError,
+  isRetryableProviderError,
   isRetryableNetworkError,
 } from '../../services/api/transport_error.js'
 import {
@@ -487,6 +488,9 @@ export class CodexLane implements Lane {
         }
       }
     } catch (err: any) {
+      if (!messageStartEmitted && isRetryableProviderError(err)) {
+        throw err
+      }
       if (
         !messageStartEmitted
         && !isAbortError(err, signal)

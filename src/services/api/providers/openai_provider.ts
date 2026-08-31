@@ -59,6 +59,7 @@ import {
 } from '../adapters/openai_responses.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
 import { recordProviderRateLimits } from '../providerRateLimits.js'
+import { ProviderHttpError } from '../transport_error.js'
 import {
   getOpenAIReasoningLevel,
   isReasoningLevelExplicit,
@@ -354,7 +355,7 @@ export class OpenAIProvider extends BaseProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw this.formatAPIError(response.status, errText)
+      throw this.formatAPIError(response.status, errText, response.headers)
     }
 
     if (!response.body) {
@@ -422,7 +423,7 @@ export class OpenAIProvider extends BaseProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw this.formatAPIError(response.status, errText)
+      throw this.formatAPIError(response.status, errText, response.headers)
     }
 
     this._extractRateLimits(response.headers)
@@ -477,7 +478,7 @@ export class OpenAIProvider extends BaseProvider {
    * Format API errors with user-friendly messages for common billing/quota issues.
    * Detects 402 (payment required), 429 (quota exceeded), and other billing errors.
    */
-  protected formatAPIError(status: number, body: string): Error {
+  protected formatAPIError(status: number, body: string, headers?: Headers): Error {
     // Try to extract the error message from JSON response
     let errorDetail = ''
     try {
@@ -489,7 +490,7 @@ export class OpenAIProvider extends BaseProvider {
 
     // 402 — Insufficient balance (DeepSeek, etc.)
     if (status === 402 || errorDetail.toLowerCase().includes('insufficient balance')) {
-      return new Error(
+      return new ProviderHttpError(this.name, status, body, headers,
         `${this.name} API error: Insufficient account balance.\n` +
         `Your ${this.name} account has no remaining credits.\n` +
         `Please add funds at your provider's billing page and try again.`,
@@ -500,14 +501,14 @@ export class OpenAIProvider extends BaseProvider {
     if (status === 429) {
       if (errorDetail.toLowerCase().includes('insufficient_quota') ||
           errorDetail.toLowerCase().includes('exceeded your current quota')) {
-        return new Error(
+        return new ProviderHttpError(this.name, status, body, headers,
           `${this.name} API error: Quota exceeded.\n` +
           `Your ${this.name} API key has exceeded its usage quota.\n` +
           `Check your plan and billing details at your provider's dashboard.`,
         )
       }
       // Rate limit (TPM/RPM) — include the original message for limit details
-      return new Error(
+      return new ProviderHttpError(this.name, status, body, headers,
         `${this.name} API error: Rate limit exceeded.\n` +
         `${errorDetail}\n` +
         `Tip: Wait a moment and retry, or use a model with higher rate limits.`,
@@ -516,7 +517,7 @@ export class OpenAIProvider extends BaseProvider {
 
     // 401 — Invalid auth
     if (status === 401) {
-      return new Error(
+      return new ProviderHttpError(this.name, status, body, headers,
         `${this.name} API error: Authentication failed.\n` +
         `${errorDetail ? errorDetail + '\n' : ''}` +
         `Your API key may be invalid or expired. Run /login to reconfigure.`,
@@ -525,7 +526,7 @@ export class OpenAIProvider extends BaseProvider {
 
     // 413 — Request too large (Groq TPM, etc.)
     if (status === 413) {
-      return new Error(
+      return new ProviderHttpError(this.name, status, body, headers,
         `${this.name} API error: Request too large.\n` +
         `${errorDetail}\n` +
         `The message + tools exceeded the model's token limit.\n` +
@@ -535,7 +536,7 @@ export class OpenAIProvider extends BaseProvider {
 
     // 500 — Server error (often means model ID doesn't exist)
     if (status === 500) {
-      return new Error(
+      return new ProviderHttpError(this.name, status, body, headers,
         `${this.name} API error ${status}: Server error.\n` +
         `${errorDetail || 'The model may not exist or is unavailable.'}\n` +
         `Try a different model with /model or /models.`,
@@ -543,7 +544,7 @@ export class OpenAIProvider extends BaseProvider {
     }
 
     // Default — include status and body
-    return new Error(`${this.name} API error ${status}: ${body}`)
+    return new ProviderHttpError(this.name, status, body, headers)
   }
 
   // ─── Internal helpers ──────────────────────────────────────────
@@ -706,7 +707,7 @@ export class OpenAIProvider extends BaseProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw this.formatAPIError(response.status, errText)
+      throw this.formatAPIError(response.status, errText, response.headers)
     }
 
     if (!response.body) {
@@ -756,7 +757,7 @@ export class OpenAIProvider extends BaseProvider {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
-      throw this.formatAPIError(response.status, errText)
+      throw this.formatAPIError(response.status, errText, response.headers)
     }
 
     this._extractRateLimits(response.headers)
