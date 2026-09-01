@@ -103,13 +103,15 @@ test('canonical shrinkwrap retains optional packages for every supported platfor
     );
   }
 
+  // The property under test is that optional packages for platforms OTHER
+  // than the generating host survive the prune — otherwise a shrinkwrap built
+  // on Windows would starve a macOS install of its native binary. sharp is
+  // the multi-platform native dependency that proves it; the @cortexkit/aft-*
+  // trio that used to be asserted here went with the AFT tools.
   assert.ok(shrinkwrap.packages['node_modules/fsevents']);
   assert.ok(shrinkwrap.packages['node_modules/@img/sharp-win32-x64']);
   assert.ok(shrinkwrap.packages['node_modules/@img/sharp-darwin-arm64']);
   assert.ok(shrinkwrap.packages['node_modules/@img/sharp-linux-x64']);
-  assert.ok(shrinkwrap.packages['node_modules/@cortexkit/aft-win32-x64']);
-  assert.ok(shrinkwrap.packages['node_modules/@cortexkit/aft-darwin-arm64']);
-  assert.ok(shrinkwrap.packages['node_modules/@cortexkit/aft-linux-x64']);
 });
 
 test('staging inputs remove development and workspace metadata before pruning', () => {
