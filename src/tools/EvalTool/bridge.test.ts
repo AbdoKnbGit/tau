@@ -56,6 +56,11 @@ function fakeTool(name: string, run: (input: Record<string, unknown>) => string)
   }
 }
 
+/** A tool that declares it needs the user — excluded by predicate, not name. */
+function interactiveFakeTool(name: string) {
+  return { ...fakeTool(name, () => 'never'), requiresUserInteraction: () => true }
+}
+
 type Decision = { behavior: 'allow' | 'deny'; message?: string }
 
 async function withBridge(
@@ -158,15 +163,53 @@ async function main(): Promise<void> {
     )
   })
 
-  await asyncTest('a tool outside the allowlist is refused', async () => {
+  await asyncTest('a session-mode tool is refused', async () => {
+    // Blocked because it cannot work, not because it is unsafe: plan mode is
+    // applied by the main loop from the tool result, so a bridged call would
+    // report success and change nothing.
     await withBridge(
-      { tools: [fakeTool('Checkpoint', () => 'nope')] },
+      { tools: [fakeTool('EnterPlanMode', () => 'nope')] },
       async kernel => {
         const outcome = await kernel.execute(
-          'try:\n    tool.Checkpoint(file_path="x")\nexcept ToolBridgeError as e:\n    print("blocked:", e)',
+          'try:\n    tool.EnterPlanMode(file_path="x")\nexcept ToolBridgeError as e:\n    print("blocked:", e)',
           { timeoutMs: 20_000 },
         )
         assert(outcome.stdout.includes('blocked:'), `not blocked: ${outcome.stdout}`)
+        assert(
+          !outcome.stdout.includes('Available:'),
+          'the error still pastes the whole tool inventory',
+        )
+      },
+    )
+  })
+
+  await asyncTest('a tool needing the user is refused by predicate', async () => {
+    await withBridge(
+      { tools: [interactiveFakeTool('AskUserQuestion')] },
+      async kernel => {
+        const outcome = await kernel.execute(
+          'try:\n    tool.AskUserQuestion(file_path="x")\nexcept ToolBridgeError as e:\n    print("blocked:", e)',
+          { timeoutMs: 20_000 },
+        )
+        assert(outcome.stdout.includes('blocked:'), `not blocked: ${outcome.stdout}`)
+      },
+    )
+  })
+
+  await asyncTest('an ordinary workspace tool is reachable', async () => {
+    // Regression: a hand-written allowlist refused ArtifactCanvas purely
+    // because nobody had added it to the list.
+    await withBridge(
+      { tools: [fakeTool('ArtifactCanvas', () => 'canvas built')] },
+      async kernel => {
+        const outcome = await kernel.execute(
+          'print(tool.ArtifactCanvas(file_path="x"))',
+          { timeoutMs: 20_000 },
+        )
+        assert(
+          outcome.stdout.includes('canvas built'),
+          `an ordinary tool was withheld: ${outcome.stdout}`,
+        )
       },
     )
   })
@@ -201,7 +244,9 @@ async function main(): Promise<void> {
         tools: [
           fakeTool('Read', () => 'a'),
           fakeTool('Grep', () => 'b'),
-          fakeTool('Checkpoint', () => 'c'),
+          fakeTool('ArtifactCanvas', () => 'c'),
+          fakeTool('EnterPlanMode', () => 'd'),
+          interactiveFakeTool('AskUserQuestion'),
         ],
       },
       async kernel => {
@@ -212,8 +257,16 @@ async function main(): Promise<void> {
         assert(outcome.stdout.includes('Grep'), 'Grep missing from tool.list()')
         assert(outcome.stdout.includes('Read'), 'Read missing from tool.list()')
         assert(
-          !outcome.stdout.includes('Checkpoint'),
-          'a non-bridgeable tool was advertised',
+          outcome.stdout.includes('ArtifactCanvas'),
+          'an ordinary workspace tool was withheld from the bridge',
+        )
+        assert(
+          !outcome.stdout.includes('EnterPlanMode'),
+          'a session-mode tool was advertised',
+        )
+        assert(
+          !outcome.stdout.includes('AskUserQuestion'),
+          'a tool declaring requiresUserInteraction was advertised',
         )
       },
     )

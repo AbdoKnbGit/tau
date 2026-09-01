@@ -16,12 +16,16 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
 import {
-  EVAL_BRIDGE_ALLOWED_TOOLS,
-  EVAL_BRIDGE_FORBIDDEN_TOOLS,
+  EVAL_BRIDGE_BLOCKED_TOOLS,
   EVAL_TOOL_NAME,
   MAX_RESULT_CHARS,
 } from './constants.js'
-import { clampOutput, resolveTimeoutMs, summarizeBridgeCalls } from './format.js'
+import {
+  clampOutput,
+  resolveTimeoutMs,
+  splitFailure,
+  summarizeBridgeCalls,
+} from './format.js'
 import { PYTHON_KERNEL_SOURCE } from './kernelSource.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
 
@@ -29,7 +33,9 @@ let passed = 0
 let failed = 0
 const failures: string[] = []
 
-function assert(cond: unknown, hint: string): void {
+// An assertion function, so a passing check narrows the value: otherwise every
+// `assert(x !== null)` is followed by a possibly-null dereference.
+function assert(cond: unknown, hint: string): asserts cond {
   if (!cond) throw new Error(hint)
 }
 
@@ -340,27 +346,126 @@ test('no output produces no bridge section', () => {
   assert(summarizeBridgeCalls([]) === '', 'empty call list produced a section')
 })
 
+test('a bridge error is capped so it cannot fill the screen', () => {
+  // A mistyped tool name once printed the same 400-character paragraph twice —
+  // in the traceback and again here.
+  const summary = summarizeBridgeCalls([
+    { name: 'ArtifactCanvas', detail: '', ms: 2, error: 'x'.repeat(4000) },
+  ])
+  assert(summary.length < 400, `bridge error not capped: ${summary.length} chars`)
+  assert(summary.includes('ArtifactCanvas'), 'the failing tool must still be named')
+})
+
+test('the display collapses a traceback to one line', () => {
+  const text = [
+    'partial output before the failure',
+    'Traceback (most recent call last):',
+    '  File "<cell>", line 34, in <module>',
+    '    print(f"{bad)}")',
+    '        ^',
+    "SyntaxError: f-string: unmatched ')'",
+    '',
+    '[tool bridge]',
+    '  Read src/a.ts',
+  ].join('\n')
+
+  const failure = splitFailure(text)
+  assert(failure !== null, 'a traceback was not recognised')
+  assert(
+    failure.headline === "SyntaxError: f-string: unmatched ')' · line 34",
+    `wrong headline: ${failure.headline}`,
+  )
+  assert(failure.hiddenLines >= 4, `expected the frames to be hidden: ${failure.hiddenLines}`)
+  // Output printed before the crash is kept — it is usually why the error
+  // makes sense.
+  assert(failure.rest.includes('partial output'), 'pre-crash output was dropped')
+  // The bridge section lives AFTER the traceback, so cutting to the end of the
+  // text would have swallowed it.
+  assert(failure.rest.includes('[tool bridge]'), 'the bridge summary was swallowed')
+  assert(!failure.rest.includes('SyntaxError'), 'the traceback was not removed')
+})
+
+test('the display leaves a result with no traceback alone', () => {
+  assert(splitFailure('just some output\nand more') === null, 'nothing to collapse')
+  assert(splitFailure('') === null, 'empty text')
+})
+
+test('the display survives a truncated traceback', () => {
+  // clampOutput can cut a result mid-traceback; the collapse must not throw or
+  // invent a headline from half a frame.
+  const cut = 'Traceback (most recent call last):\n  File "<cell>", line 3, in <module>'
+  const failure = splitFailure(cut)
+  assert(failure === null, 'a headerless, exception-less block should not collapse')
+})
+
 test('Eval cannot be called from inside a cell', () => {
   assert(
-    EVAL_BRIDGE_FORBIDDEN_TOOLS.has(EVAL_TOOL_NAME),
+    EVAL_BRIDGE_BLOCKED_TOOLS.has(EVAL_TOOL_NAME),
     'recursion would deadlock: the tool is exclusive, so the inner call could never be scheduled',
   )
 })
 
-test('the allowlist and the forbidden list do not overlap', () => {
-  for (const name of EVAL_BRIDGE_FORBIDDEN_TOOLS) {
+test('the blocked set stays small and justified', () => {
+  // This was a 28-name allowlist, which silently refused ArtifactCanvas, every
+  // MCP tool, and anything written later. The bridge is a correctness
+  // boundary, not a security one — canUseTool does the gating — so only tools
+  // that cannot work belong here. If this set grows, something is wrong.
+  assert(
+    EVAL_BRIDGE_BLOCKED_TOOLS.size <= 8,
+    `the blocked set has grown to ${EVAL_BRIDGE_BLOCKED_TOOLS.size}; it should list only tools that act on the session`,
+  )
+  for (const name of ['Snapshot', 'ArtifactCanvas', 'MermaidRender', 'Skill', 'LSP']) {
     assert(
-      !EVAL_BRIDGE_ALLOWED_TOOLS.has(name),
-      `${name} is both allowed and forbidden — the forbidden check must win, but the lists should not disagree`,
+      !EVAL_BRIDGE_BLOCKED_TOOLS.has(name),
+      `${name} acts on the workspace and works fine from a cell`,
     )
   }
 })
 
-test('interactive tools are not reachable from a cell', () => {
-  // A bridged AskUserQuestion would block a cell on a dialog the cell cannot
-  // render, and ExitPlanMode only takes effect as a direct tool result.
-  for (const name of ['AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode']) {
-    assert(EVAL_BRIDGE_FORBIDDEN_TOOLS.has(name), `${name} must be forbidden`)
+await asyncTest('blocked names match the real tool constants', async () => {
+  // The set holds string literals so this module stays a zero-import leaf.
+  // That is only safe if a rename fails here rather than silently unblocking
+  // a tool that cannot work.
+  const [enterPlan, exitPlan, enterWorktree, exitWorktree] = await Promise.all([
+    import('../EnterPlanModeTool/constants.js'),
+    import('../ExitPlanModeTool/constants.js'),
+    import('../EnterWorktreeTool/constants.js'),
+    import('../ExitWorktreeTool/constants.js'),
+  ])
+  const expected = [
+    enterPlan.ENTER_PLAN_MODE_TOOL_NAME,
+    exitPlan.EXIT_PLAN_MODE_V2_TOOL_NAME,
+    enterWorktree.ENTER_WORKTREE_TOOL_NAME,
+    exitWorktree.EXIT_WORKTREE_TOOL_NAME,
+  ]
+  for (const name of expected) {
+    assert(
+      EVAL_BRIDGE_BLOCKED_TOOLS.has(name),
+      `${name} was renamed and is no longer blocked from the bridge`,
+    )
+  }
+})
+
+test('interactive tools are excluded by predicate, not by name', () => {
+  // AskUserQuestion, Computer and ExitPlanMode declare requiresUserInteraction.
+  // The bridge asks each tool rather than keeping a list, so a new interactive
+  // tool is covered the day it is written — but only while the declarations
+  // exist, which is what this checks.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const bridge = readFileSync(join(here, 'toolBridge.ts'), 'utf8')
+  assert(
+    bridge.includes('requiresUserInteraction?.()'),
+    'the bridge no longer asks tools whether they need the user',
+  )
+  for (const file of [
+    '../AskUserQuestionTool/AskUserQuestionTool.tsx',
+    '../ComputerTool/ComputerTool.tsx',
+  ]) {
+    const source = readFileSync(join(here, file), 'utf8')
+    assert(
+      source.includes('requiresUserInteraction()'),
+      `${file} stopped declaring requiresUserInteraction, so the bridge would now accept it`,
+    )
   }
 })
 
@@ -665,6 +770,47 @@ async function live(): Promise<void> {
       kernel.closeStdinForTests()
       const exited = await kernel.waitForExit(8_000)
       assert(exited, 'the kernel stayed alive after its control pipe closed')
+    } finally {
+      await kernel.shutdown()
+    }
+  })
+
+  await asyncTest('a traceback contains only the user\'s own frames', async () => {
+    // Regression: frames were dropped by function name (_run_cell,
+    // _exec_compiled), so anything else on the stack leaked — Lib/ast.py for a
+    // SyntaxError, two tau_kernel.py frames for a bridge failure. Filtering on
+    // the filename covers every such case, including ones not yet written.
+    const kernel = make()
+    try {
+      const syntax = await kernel.execute('x = 1\nprint(f"{\'a\'):>9s}")', {
+        timeoutMs: 15_000,
+      })
+      const trace = syntax.error?.traceback ?? ''
+      assert(syntax.error?.ename === 'SyntaxError', `got ${syntax.error?.ename}`)
+      assert(!trace.includes('ast.py'), `interpreter frame leaked:\n${trace}`)
+      assert(!trace.includes('tau_kernel'), `kernel frame leaked:\n${trace}`)
+      // The caret is the most useful part of a SyntaxError and lives in list
+      // elements that do not name the file, so a naive filter drops it.
+      assert(trace.includes('^'), `the caret was lost:\n${trace}`)
+      assert(trace.includes('<cell>'), `the cell location was lost:\n${trace}`)
+
+      const bridge = await kernel.execute('tool.Read(file_path="x")', {
+        timeoutMs: 15_000,
+      })
+      const bridgeTrace = bridge.error?.traceback ?? ''
+      assert(
+        !bridgeTrace.includes('tau_kernel'),
+        `bridge helper frames leaked:\n${bridgeTrace}`,
+      )
+      assert(bridgeTrace.includes('<cell>'), 'the calling line should still show')
+
+      const runtime = await kernel.execute('1 + "a"', { timeoutMs: 15_000 })
+      const runtimeTrace = runtime.error?.traceback ?? ''
+      assert(runtime.error?.ename === 'TypeError', `got ${runtime.error?.ename}`)
+      assert(
+        !runtimeTrace.includes('tau_kernel') && !runtimeTrace.includes('ast.py'),
+        `internals leaked:\n${runtimeTrace}`,
+      )
     } finally {
       await kernel.shutdown()
     }

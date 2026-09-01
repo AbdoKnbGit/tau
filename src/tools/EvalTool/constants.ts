@@ -53,62 +53,40 @@ export const MAX_RESULT_CHARS = 30_000
 export const MAX_BRIDGE_LINES = 12
 
 /**
- * Tools the kernel may call through `tool.<name>(...)`.
+ * Tools the kernel may NOT call through `tool.<name>(...)`.
  *
- * Deliberately an allowlist, not a denylist. The bridge runs a tool without
- * the main loop's PreToolUse/PostToolUse hooks (the cell as a whole passes
- * through them as one `Eval` call), so anything reachable from here must be
- * safe under permission checks alone. Interactive tools, plan-mode
- * transitions, worktree switches, checkpointing and Eval itself are excluded
- * because a bridged call would either deadlock on a prompt or silently fail
- * to take effect.
+ * This started as an allowlist of 28 hand-picked names, which was the wrong
+ * shape: it silently refused `ArtifactCanvas`, every MCP tool, and anything
+ * added later, for no reason other than that I had not thought of them. The
+ * bridge is not a security boundary — every bridged call still goes through
+ * `canUseTool`, so deny rules and prompts apply exactly as they do to a direct
+ * call. It is a *correctness* boundary, so the only entries that belong here
+ * are tools that genuinely cannot work through it.
  *
- * Names are string literals rather than imports on purpose: this module is a
- * leaf so it stays importable from tests and from `tools.ts` without dragging
- * the tool registry into a cycle.
+ * The principle: a tool whose effect is on the SESSION rather than the
+ * workspace is applied by the main loop when it sees the tool result. Bridged,
+ * it would report success and do nothing. Everything else is fair game.
+ *
+ * Interactive tools are excluded separately and generically, via each tool's
+ * own `requiresUserInteraction()` — no names needed, so a new interactive tool
+ * is covered the day it is written.
+ *
+ * Snapshot is deliberately NOT here: it manages a shadow git repo, which is
+ * workspace state, so it works fine from a cell.
+ *
+ * Names stay string literals so this module remains a zero-import leaf,
+ * importable from `tools.ts`, `cheapModeTools.ts` and the guards without
+ * dragging in the tool registry. `evalTool.test.ts` asserts each literal still
+ * equals the real constant, so a rename fails the build rather than silently
+ * unblocking a tool.
  */
-export const EVAL_BRIDGE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
-  'Read',
-  'Glob',
-  'Grep',
-  'Bash',
-  'PowerShell',
-  'Write',
-  'Edit',
-  'WebFetch',
-  'WebSearch',
-  'LSP',
-  'NotebookEdit',
-  'TodoWrite',
-  'Task',
-  'TaskCreate',
-  'TaskGet',
-  'TaskList',
-  'TaskUpdate',
-  'FileDiff',
-  'TestSearch',
-  'CodebaseRetrieval',
-  'GitHistorySearch',
-  'NativeGitSummary',
-  'NativeSysInfo',
-  'AFTOutline',
-  'AFTZoom',
-  'AFTAstSearch',
-  'AFTNavigate',
-  'AFTDiagnostics',
-])
-
-/**
- * Never bridgeable, even if an allowlist entry above ever collides with one.
- * Recursion (Eval calling Eval) would deadlock: the tool is exclusive, so the
- * inner call could never be scheduled while the outer one holds the slot.
- */
-export const EVAL_BRIDGE_FORBIDDEN_TOOLS: ReadonlySet<string> = new Set([
+export const EVAL_BRIDGE_BLOCKED_TOOLS: ReadonlySet<string> = new Set([
+  // Recursion would deadlock: Eval is exclusive, so an inner call could never
+  // be scheduled while the outer one holds the slot.
   EVAL_TOOL_NAME,
-  'AskUserQuestion',
+  // Session mode and session cwd. Applied by the loop from the tool result.
   'EnterPlanMode',
   'ExitPlanMode',
   'EnterWorktree',
   'ExitWorktree',
-  'Snapshot',
 ])

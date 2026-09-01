@@ -33,7 +33,7 @@ still in memory for the next cell.
 | `EvalTool.ts` | The tool definition |
 | `UI.tsx` | Transcript rendering: cell source, output, figures, bridged calls |
 
-Tests: `evalTool.test.ts` (42), `lanes.test.ts` (7), `bridge.test.ts` (12),
+Tests: `evalTool.test.ts` (48), `lanes.test.ts` (7), `bridge.test.ts` (14),
 `figure.test.ts` (4), plus `services/tools/redundantScanGuard.test.ts` (15).
 Run them with `bun run src/tools/EvalTool/<name>.test.ts`. The live groups skip
 themselves when no interpreter (or no matplotlib) is present.
@@ -144,6 +144,33 @@ Two things keep it from being fitted to the one transcript that prompted it:
   of all. `fnmatch` and comprehensions are deliberately not matched: they
   filter a list that already exists, which means the search *was* used.
 
+## Errors: what the model gets vs what you see
+
+Two separate concerns, deliberately handled in two places.
+
+**The traceback the model receives is the user's frames only.** Frames are
+filtered by FILE — user code compiles with the filename `<cell>`, so anything
+from another file is plumbing. An earlier version filtered by function name
+(`_run_cell`, `_exec_compiled`) and therefore leaked whatever else happened to
+be on the stack: `Lib/ast.py` for a SyntaxError, because the raise happens
+inside `ast.parse`, and two `tau_kernel.py` frames for a bridge failure. Note
+that a frame is not always one list element — a SyntaxError splits the
+location, the source line and the caret across three, and only the first names
+the file, so continuation lines inherit the decision. Dropping them is how the
+caret went missing on the first attempt.
+
+A cell that fails to parse also gets an explicit note: nothing in it ran and
+the namespace is unchanged, so fix the syntax and re-send only that cell rather
+than repeating setup.
+
+**What you see is one line.** `splitFailure` in `format.ts` excises the
+traceback block for display and shows
+`SyntaxError: f-string: unmatched ')' · line 34`, with the frames behind
+Ctrl+O. The block is excised rather than truncated from, because the
+`[tool bridge]` summary comes *after* the traceback and cutting to the end
+would swallow it. Anything the cell printed before dying is kept. The model's
+copy is untouched — it is the one that has to debug the cell.
+
 ## The cache contract
 
 This is the part to read before editing anything here.
@@ -208,6 +235,17 @@ as `crashed` and the model is told its state is gone.
 The permission unit is the **cell**, not the individual bridged call. That is
 already how `permissions.ts` reasons about kernel code: *"REPL code can contain
 VM escapes between inner tool calls; the classifier must see the glue."*
+
+The bridge itself is deny-based. It began as a 28-name allowlist, which
+silently refused `ArtifactCanvas`, every MCP tool, and anything written later —
+not because those are unsafe, but because they were not on a list typed by
+hand. The bridge is a *correctness* boundary, not a security one, so the only
+entries in `EVAL_BRIDGE_BLOCKED_TOOLS` are tools whose effect is on the SESSION
+rather than the workspace (plan mode, worktree switches) plus Eval itself,
+which would deadlock. Interactive tools are excluded generically by asking each
+tool's own `requiresUserInteraction()`, so a new one is covered the day it is
+written. `Snapshot` is deliberately not blocked: it manages a shadow git repo,
+which is workspace state.
 
 - `checkPermissions` returns `passthrough`, which becomes `ask` — the same
   treatment an unrecognized Bash command gets. The default (`allow`) would

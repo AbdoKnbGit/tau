@@ -5,6 +5,7 @@ import { InlineImage } from '../../components/InlineImage.js'
 import { MessageResponse } from '../../components/MessageResponse.js'
 import { Box, Text } from '../../ink.js'
 import type { EvalOutput } from './EvalTool.js'
+import { splitFailure } from './format.js'
 
 /**
  * Transcript rendering for a Python cell.
@@ -157,6 +158,18 @@ function BridgeCalls({
   )
 }
 
+/**
+ * Collapse a Python traceback to the one line that matters.
+ *
+ * A raw traceback is five to ten lines of machinery for one mistyped
+ * character, and the reader almost never needs the frames — they need the
+ * exception and where it landed. So collapsed shows `SyntaxError: f-string:
+ * unmatched ')' · line 34`, and Ctrl+O still shows every line.
+ *
+ * Only the DISPLAY is trimmed. The model's copy of the result is built in
+ * `mapToolResultToToolResultBlockParam` and still carries the whole
+ * traceback — it is the one that has to debug the cell.
+ */
 export function renderToolResultMessage(
   output: EvalOutput,
   _progress: unknown[],
@@ -164,7 +177,12 @@ export function renderToolResultMessage(
 ): React.ReactNode {
   const expanded = verbose || isTranscriptMode === true
   const code = codeFromInput(input)
-  const text = output.text ?? ''
+  const rawText = output.text ?? ''
+
+  // A failed cell's text is mostly traceback. Collapsed, show one line for it
+  // and keep the rest behind Ctrl+O; expanded, show it verbatim.
+  const failure = output.ok || expanded ? null : splitFailure(rawText)
+  const text = failure ? failure.rest : rawText
 
   const codeView = clampLines(code, expanded ? Number.MAX_SAFE_INTEGER : COLLAPSED_CODE_LINES)
   const outputView = clampLines(
@@ -202,6 +220,19 @@ export function renderToolResultMessage(
               {'… +'}
               {outputView.hidden} more line{outputView.hidden === 1 ? '' : 's'}
               {' (ctrl+o to expand)'}
+            </Text>
+          ) : null}
+        </Box>
+      ) : null}
+
+      {failure ? (
+        <Box flexDirection="column" marginTop={code ? 1 : 0}>
+          <Text color="error">{failure.headline}</Text>
+          {failure.hiddenLines > 0 ? (
+            <Text dimColor>
+              {'  '}
+              {failure.hiddenLines} more traceback line
+              {failure.hiddenLines === 1 ? '' : 's'} (ctrl+o to expand)
             </Text>
           ) : null}
         </Box>

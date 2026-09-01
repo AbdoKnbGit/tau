@@ -5,10 +5,7 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 
 import { findToolByName, type Tool, type Tools, type ToolUseContext } from '../../Tool.js'
 import { logForDebugging } from '../../utils/debug.js'
-import {
-  EVAL_BRIDGE_ALLOWED_TOOLS,
-  EVAL_BRIDGE_FORBIDDEN_TOOLS,
-} from './constants.js'
+import { EVAL_BRIDGE_BLOCKED_TOOLS } from './constants.js'
 import type { BridgeCallRecord } from './format.js'
 
 /**
@@ -33,7 +30,8 @@ type ParentMessage = Parameters<CanUseToolFn>[3]
  *     settings.json deny/ask rules and the interactive prompt still apply.
  *   - Per-call PreToolUse hooks do NOT run. Reimplementing `runToolUseInner`'s
  *     generator here would duplicate ~700 lines of permission semantics with
- *     its own drift; the allowlist below is the compensating control.
+ *     its own drift. `canUseTool` is the compensating control: it carries the
+ *     deny/ask rules, which is the part that actually gates access.
  *
  * Everything is bound to 127.0.0.1 and gated on a per-process bearer token
  * that never leaves this machine.
@@ -90,12 +88,23 @@ const registrations = new Map<string, BridgeRegistration>()
 let serverPromise: Promise<{ server: Server; info: BridgeInfo }> | null = null
 const bridgeToken = randomUUID()
 
+/**
+ * Everything the session offers, minus what cannot work through the bridge.
+ *
+ * Deny-based on purpose. The previous allowlist refused `ArtifactCanvas`,
+ * every MCP tool, and anything added after it was written — not because those
+ * are unsafe, but because they were not on a list I typed by hand. Permission
+ * is enforced per call by `canUseTool` either way.
+ */
 function bridgeableTools(tools: Tools): Tool[] {
-  return tools.filter(
-    tool =>
-      EVAL_BRIDGE_ALLOWED_TOOLS.has(tool.name) &&
-      !EVAL_BRIDGE_FORBIDDEN_TOOLS.has(tool.name),
-  )
+  return tools.filter(tool => !isBlockedFromBridge(tool))
+}
+
+function isBlockedFromBridge(tool: Tool): boolean {
+  // Generic: a tool that needs the user to answer something cannot be driven
+  // from inside a cell. Asking each tool beats maintaining a list of names.
+  if (tool.requiresUserInteraction?.()) return true
+  return EVAL_BRIDGE_BLOCKED_TOOLS.has(tool.name)
 }
 
 function textFromContent(content: unknown): { text: string; images: Array<{ mime: string; data: string }> } {
@@ -133,23 +142,21 @@ async function invoke(
   name: string,
   rawArgs: unknown,
 ): Promise<unknown> {
-  if (EVAL_BRIDGE_FORBIDDEN_TOOLS.has(name)) {
+  // Errors here are short on purpose. The old message pasted the whole
+  // available-tool list, which then appeared twice in the transcript — once in
+  // the Python traceback and again in the bridge summary — for one typo.
+  // `tool.list()` is one call away if the model needs the inventory.
+  const known = findToolByName(entry.tools, name)
+  if (known && isBlockedFromBridge(known)) {
     throw new Error(
-      `${name} cannot be called from a kernel cell. Call it directly as a tool instead.`,
+      `${name} cannot run from inside a cell: it acts on the session (or needs an answer from the user), not the workspace. Call it directly as a tool instead.`,
     )
   }
-  if (!EVAL_BRIDGE_ALLOWED_TOOLS.has(name)) {
-    const available = bridgeableTools(entry.tools)
-      .map(tool => tool.name)
-      .sort()
-      .join(', ')
-    throw new Error(
-      `${name} is not available through the tool bridge. Available: ${available}`,
-    )
-  }
-  const tool = findToolByName(bridgeableTools(entry.tools), name)
+  const tool = known ? findToolByName(bridgeableTools(entry.tools), name) : undefined
   if (!tool) {
-    throw new Error(`No such tool in this session: ${name}`)
+    throw new Error(
+      `${name} is not a tool in this session. Call tool.list() to see what is available.`,
+    )
   }
   if (entry.signal.aborted) {
     throw new Error(`tool.${name}(...) aborted: the cell was interrupted.`)

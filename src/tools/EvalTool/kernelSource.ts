@@ -560,6 +560,50 @@ def _run_cell(code):
     return None
 
 
+CELL_FILE_MARKER = 'File "<cell>"'
+
+
+def _user_traceback(exc):
+    """Render a traceback containing only the user's own frames.
+
+    The rule is positional, not name-based: user code is compiled with the
+    filename "<cell>", so any frame from another file is kernel plumbing and
+    means nothing to whoever reads the error.
+
+    An earlier version dropped frames by function name (_run_cell,
+    _exec_compiled) and therefore leaked whatever else happened to be on the
+    stack -- Lib/ast.py for a SyntaxError, because the raise happens inside
+    ast.parse, and two tau_kernel.py frames for a ToolBridgeError, because the
+    raise happens inside the bridge helper. Filtering on the filename covers
+    every such case, including ones not yet written.
+    """
+    frames = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    if not frames:
+        return ""
+    header, message = frames[0], frames[-1]
+
+    # A frame is not always one list element. An ordinary frame carries its
+    # source inline, but a SyntaxError splits the location, the offending line
+    # and the caret across three elements, and only the first names the file.
+    # So track the last file seen and let continuation lines inherit it --
+    # dropping them is how the caret, the single most useful part of a
+    # SyntaxError, went missing.
+    body = []
+    keeping = False
+    for frame in frames[1:-1]:
+        if frame.lstrip().startswith('File "'):
+            keeping = CELL_FILE_MARKER in frame
+        if keeping:
+            body.append(frame)
+
+    if not body:
+        # Nothing of the user's is on the stack: raised entirely inside the
+        # prelude, or before any frame existed. The message alone is the whole
+        # story, and a "Traceback:" header above nothing is just noise.
+        return message
+    return "".join([header, *body, message])
+
+
 def _handle_exec(request):
     global _current_id, _exec_count
     _current_id = str(request.get("id", ""))
@@ -614,16 +658,13 @@ def _handle_exec(request):
             )
         except BaseException as exc:
             ok = False
-            frames = traceback.format_exception(type(exc), exc, exc.__traceback__)
-            # Drop the kernel's own frames so the traceback starts at the cell.
-            body = [f for f in frames if "_exec_compiled" not in f and "_run_cell" not in f]
             _emit(
                 {
                     "type": "error",
                     "id": _current_id,
                     "ename": type(exc).__name__,
                     "evalue": str(exc),
-                    "traceback": "".join(body),
+                    "traceback": _user_traceback(exc),
                 }
             )
         try:

@@ -64,6 +64,7 @@ const outputSchema = lazySchema(() =>
     timedOut: z.boolean(),
     kernelRestarted: z.boolean(),
     truncated: z.boolean(),
+    syntaxError: z.boolean(),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -222,6 +223,8 @@ export const EvalTool = buildTool({
           timedOut: outcome.timedOut,
           kernelRestarted: restarted || outcome.crashed,
           truncated: clamped.truncated,
+          syntaxError: outcome.error?.ename === 'SyntaxError' ||
+            outcome.error?.ename === 'IndentationError',
         } satisfies EvalOutput,
       }
     } finally {
@@ -240,6 +243,14 @@ export const EvalTool = buildTool({
     if (output.kernelRestarted) {
       notes.push(
         'The kernel was restarted, so the namespace is empty. Re-run your setup before continuing.',
+      )
+    }
+    if (output.syntaxError) {
+      // A cell is parsed in full before any of it runs, so a single stray
+      // character aborts the whole thing. Without saying so, the model tends
+      // to re-send its setup along with the fix, paying for it twice.
+      notes.push(
+        'The cell failed to parse, so NOTHING in it ran and the kernel namespace is unchanged. Fix the syntax and re-send only this cell — do not repeat setup from earlier cells.',
       )
     }
 
