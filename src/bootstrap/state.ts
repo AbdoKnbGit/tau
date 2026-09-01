@@ -9,6 +9,7 @@ import sumBy from 'lodash-es/sumBy.js'
 import { cwd } from 'process'
 import type { HookEvent, ModelUsage } from 'src/entrypoints/agentSdkTypes.js'
 import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js'
+import type { AgentResolvedModel } from 'src/tools/AgentTool/agentModelManager.js'
 import type { HookCallbackMatcher } from 'src/types/hooks.js'
 // Indirection for browser-sdk build (package.json "browser" field swaps
 // crypto.ts for crypto.browser.ts). Pure leaf re-export of node:crypto —
@@ -128,6 +129,9 @@ type State = {
   // Agent color state
   agentColorMap: Map<string, AgentColorName>
   agentColorIndex: number
+  // Model each agent type actually resolved to at spawn, so the UI can show
+  // what a subagent really runs on instead of what the caller asked for.
+  agentModelMap: Map<string, AgentResolvedModel>
   // Last API request for bug reports
   lastAPIRequest: Omit<BetaMessageStreamParams, 'messages'> | null
   // Messages from the last API request (ant-only; reference, not clone).
@@ -360,6 +364,7 @@ function getInitialState(): State {
     // Agent color state
     agentColorMap: new Map(),
     agentColorIndex: 0,
+    agentModelMap: new Map(),
     // Last API request for bug reports
     lastAPIRequest: null,
     lastAPIRequestMessages: null,
@@ -1205,6 +1210,10 @@ export function setQuestionPreviewFormat(format: 'markdown' | 'html'): void {
 
 export function getAgentColorMap(): Map<string, AgentColorName> {
   return STATE.agentColorMap
+}
+
+export function getAgentModelMap(): Map<string, AgentResolvedModel> {
+  return STATE.agentModelMap
 }
 
 export function getFlagSettingsPath(): string | undefined {

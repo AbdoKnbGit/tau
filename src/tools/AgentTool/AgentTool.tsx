@@ -45,6 +45,7 @@ import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
+import { setAgentResolvedModel } from './agentModelManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from './constants.js';
@@ -585,6 +586,13 @@ export const AgentTool = buildTool({
     // session provider — which would hand a pinned agent a model its provider
     // does not serve (and put that wrong name in its env-details prompt).
     const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () => getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, (isForkPath ? undefined : model) as ModelAlias | undefined, permissionMode, selectedAgent.provider));
+    // Record what this agent actually resolved to so the tool tag can show the
+    // real model rather than the alias the caller passed. A pinned agent keeps
+    // its own model, so the request and the result can differ.
+    setAgentResolvedModel(selectedAgent.agentType, {
+      model: resolvedAgentModel,
+      ...(selectedAgent.provider ? { provider: selectedAgent.provider } : {})
+    });
     logEvent('tengu_agent_tool_selected', {
       agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       model: resolvedAgentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

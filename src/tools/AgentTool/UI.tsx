@@ -29,6 +29,7 @@ import type { Theme, ThemeName } from '../../utils/theme.js';
 import type { outputSchema, Progress, RemoteLaunchedOutput } from './AgentTool.js';
 import { inputSchema } from './AgentTool.js';
 import { getAgentColor } from './agentColorManager.js';
+import { getAgentResolvedModel } from './agentModelManager.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
 
@@ -427,7 +428,26 @@ export function renderToolUseTag(input: Partial<{
   model?: ModelAlias;
 }>): React.ReactNode {
   const tags: React.ReactNode[] = [];
-  if (input.model) {
+
+  // What the agent actually resolved to at spawn beats what the caller asked
+  // for. A provider-pinned agent keeps its own model, so `input.model` can name
+  // a tier that never ran -- showing it would tell the user the subagent is on
+  // Haiku while it is really on a pinned Fireworks model.
+  const resolved = getAgentResolvedModel(input.subagent_type);
+  if (resolved) {
+    // A pinned agent shows its lane too: the model id alone is often
+    // unrecognisable, and the lane is the thing the user pinned.
+    tags.push(<Box key="model" flexWrap="nowrap" marginLeft={1}>
+        <Text dimColor>
+          {resolved.provider
+            ? `${resolved.provider}/${renderModelName(resolved.model)}`
+            : renderModelName(resolved.model)}
+        </Text>
+      </Box>);
+  } else if (input.model) {
+    // First frame only: the tool use renders before AgentTool resolves it.
+    // This is the request, not the result, so keep the old "only when it
+    // differs" rule rather than asserting a model we have not confirmed.
     const mainModel = getMainLoopModel();
     const agentModel = parseUserSpecifiedModel(input.model);
     if (agentModel !== mainModel) {

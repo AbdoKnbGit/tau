@@ -45,6 +45,10 @@ import {
   getAntigravityRotation,
   familyForAntigravityModel,
 } from './rotation.js'
+import {
+  loadStore as loadAntigravityStore,
+  selectActiveAntigravityAccount,
+} from '../shared/antigravity_auth.js'
 import { parseGeminiApiSSE as parseGeminiApiSSEEvent } from './api_sse.js'
 
 // Duplicated from services/api/errors.ts to avoid pulling in its
@@ -336,25 +340,30 @@ class GeminiApiClient {
   ): { token: string; executor: 'cli' | 'antigravity'; accountEmail?: string } | null {
     const executor = executorForModel(model)
 
-    // Antigravity path: consult rotation first when available.
+    // Antigravity path: always the account the user authenticated.
+    //
+    // Multi-account rotation is deliberately NOT consulted for routing. Picking
+    // a health-ranked account means a quota event silently changes which Google
+    // identity is serving the request: the account whose quota the user is
+    // watching stops being the one in use, and `pickForFamily` used to persist
+    // that switch, so requests never came back. A 429 is surfaced instead.
+    //
+    // Do not borrow the Gemini CLI token either: the CLI Google account is
+    // allowed to be a different account, and may have no Antigravity
+    // enrollment.
     if (executor === 'antigravity') {
-      const rotation = getAntigravityRotation()
-      if (rotation.hasAccounts()) {
-        const account = rotation.pickForModel(model)
-        if (account) {
-          return {
-            token: account.accessToken,
-            executor: 'antigravity',
-            accountEmail: account.email,
-          }
-        }
-        // All accounts disabled/cooling — fall through to the single-token
-        // Antigravity path. Do not borrow the Gemini CLI token: the CLI
-        // Google account is allowed to be a different account, and it may
-        // have no Antigravity enrollment.
-      }
       const t = this.antigravityOAuthToken
-      return t ? { token: t, executor: 'antigravity' } : null
+      if (t) return { token: t, executor: 'antigravity' }
+      // No single-token credential stored. Fall back to the store's ACTIVE
+      // account — the one authentication selected — never a health-ranked pick.
+      const active = selectActiveAntigravityAccount(loadAntigravityStore())
+      return active
+        ? {
+            token: active.accessToken,
+            executor: 'antigravity',
+            accountEmail: active.email,
+          }
+        : null
     }
 
     const t = this.cliOAuthToken
@@ -477,9 +486,9 @@ class GeminiApiClient {
       const response = await retryWithBackoff(
         async () => {
           attemptNo++
-          // Re-pick the token each attempt so rate-limit rotation applies
-          // across retries — a 429 on account A gets the next call onto
-          // account B. `_tokenForModel` consults rotation.pickForModel().
+          // Re-pick the token each attempt so a refreshed access token is
+          // picked up mid-retry. The account itself never changes: routing is
+          // pinned to the authenticated account (see _tokenForModel).
           const routing = this._tokenForModel(model)
           if (!routing) {
             throw new GeminiApiError(0, 'No OAuth credentials available', undefined, {

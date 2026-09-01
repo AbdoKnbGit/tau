@@ -25,6 +25,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { parseUserSpecifiedModel } from '../../utils/model/model.js'
+import { pinnedAgentModelOutranksAlias } from '../../utils/model/agentAliasFallback.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { isTmuxAvailable } from '../../utils/swarm/backends/detection.js'
 import {
@@ -897,7 +898,16 @@ async function handleSpawnInProcess(
     input.model === undefined && agentDefinition?.model
       ? undefined
       : fallbackModel
-  const displayModel = model ?? agentDefinition?.model
+  // Label the teammate with what will actually run. When the caller passed a
+  // tier alias but the agent pins its own lane, getAgentModel() keeps the pin,
+  // so showing the alias here would contradict the agent's real model.
+  const displayModel = pinnedAgentModelOutranksAlias(
+    model,
+    agentDefinition?.model,
+    agentDefinition?.provider,
+  )
+    ? agentDefinition?.model
+    : (model ?? agentDefinition?.model)
 
   // Spawn in-process teammate
   const config: InProcessSpawnConfig = {
