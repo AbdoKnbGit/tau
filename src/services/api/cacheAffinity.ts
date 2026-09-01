@@ -84,18 +84,23 @@ export function resolveProviderRequestSessionId({
   const root = rootSessionId.trim()
   if (!root) return undefined
 
+  // Root-policy calls are continuations or read-only views of the live
+  // conversation. Apply this before provider-specific branching so no
+  // special provider can accidentally derive a cold side-session for one.
+  if (usesRootProviderSession(querySource)) return root
+
   if (provider === 'openrouter') {
-    if (usesRootProviderSession(querySource)) return root
     if (agentId) return derivedProviderSessionId(root, 'agent', agentId)
     return derivedProviderSessionId(root, 'query', querySource)
   }
 
   // Other cache-aware providers use the root Tau session as their stable
   // affinity/cache key. Antigravity is the exception: fresh subagents need
-  // distinct derived sessions, while forks intentionally reuse the root.
+  // distinct derived sessions. Root-policy calls returned above already
+  // reuse the live conversation even if their context carries an agentId.
   if (provider !== 'antigravity') return root
 
-  if (!agentId || querySource === FORK_AGENT_QUERY_SOURCE) {
+  if (!agentId) {
     return root
   }
 

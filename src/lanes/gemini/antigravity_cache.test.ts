@@ -18,6 +18,8 @@ import {
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir as realTmpdir } from 'node:os'
+import { resolveProviderRequestSessionId } from '../../services/api/cacheAffinity.js'
+import type { AgentId } from '../../types/ids.js'
 
 let passed = 0
 let failed = 0
@@ -272,6 +274,32 @@ async function main(): Promise<void> {
     } finally {
       process.env.TAU_ANTIGRAVITY_MAX_CACHE = '1'
     }
+  })
+
+  await test('report joins the live Antigravity commit window with a parent agent id', async () => {
+    _resetAntigravityCacheStateForTest()
+    _setAntigravityCommitWindowForTest(60)
+
+    const chatSession = resolveProviderRequestSessionId({
+      provider: 'antigravity',
+      rootSessionId: 'live-root-session',
+      querySource: 'repl_main_thread',
+    })
+    const reportSession = resolveProviderRequestSessionId({
+      provider: 'antigravity',
+      rootSessionId: 'live-root-session',
+      agentId: 'preserved-parent-agent' as AgentId,
+      querySource: 'report',
+    })
+
+    assert(chatSession === 'live-root-session', `chat session=${chatSession}`)
+    assert(reportSession === chatSession, `report session=${reportSession}`)
+
+    await guardAntigravityCommitWindow(chatSession, undefined, BIG_PROMPT_CHARS)
+    const start = Date.now()
+    await guardAntigravityCommitWindow(reportSession, undefined, BIG_PROMPT_CHARS)
+    const waited = Date.now() - start
+    assert(waited >= 40, `report bypassed the live commit window, waited=${waited}ms`)
   })
 
   await test('guard never holds sub-minimum prompts', async () => {

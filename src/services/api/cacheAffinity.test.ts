@@ -163,6 +163,27 @@ async function main(): Promise<void> {
     assert(sessionId === 'root-session', `sessionId=${sessionId}`)
   })
 
+  await test('keeps root-policy Antigravity calls on the live session even with an agent id', () => {
+    for (const querySource of [
+      'repl_main_thread',
+      'sdk',
+      'report',
+      'agent:builtin:fork',
+    ] as const) {
+      const sessionId = resolveProviderRequestSessionId({
+        provider: 'antigravity',
+        rootSessionId: 'root-session',
+        agentId: 'preserved-parent-agent' as AgentId,
+        querySource: querySource as QuerySource,
+      })
+
+      assert(
+        sessionId === 'root-session',
+        `${querySource} derived a separate Antigravity session: ${sessionId}`,
+      )
+    }
+  })
+
   await test('keeps report retry affinity stable on cache-aware providers', () => {
     for (const provider of ['antigravity', 'openrouter', 'fireworks'] as const) {
       const first = resolveProviderRequestSessionId({
@@ -236,11 +257,13 @@ async function main(): Promise<void> {
       const report = resolveProviderRequestSessionId({
         provider,
         rootSessionId,
+        agentId: 'preserved-parent-agent' as AgentId,
         querySource: 'report' as QuerySource,
       })
       const retry = resolveProviderRequestSessionId({
         provider,
         rootSessionId,
+        agentId: 'preserved-parent-agent' as AgentId,
         querySource: 'report' as QuerySource,
       })
 
