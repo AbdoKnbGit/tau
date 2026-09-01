@@ -10,6 +10,10 @@
  * silence cases matter as much as the firing one.
  */
 
+import { readFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+
 import {
   __resetAllScanGuards,
   noteToolCallForScanGuard,
@@ -67,12 +71,22 @@ test('fires for Grep too', () => {
   assert(reminder.includes('Grep'), 'the reminder should name Grep')
 })
 
-test('catches the bridged forms of the same waste', () => {
+test('catches every spelling of "scan the filesystem myself"', () => {
+  // Written from the idea, not from one transcript. The first version of the
+  // pattern was built around the `os.walk` it happened to see and silently
+  // missed `Path(x).glob(...)`, which is the most common spelling of all.
   for (const code of [
     'paths = tool.Glob(pattern="**/*.ts")',
     'hits = tool.Grep(pattern="TODO", path="src")',
+    'from pathlib import Path\nfiles = list(Path("src").glob("*.tsx"))',
     'from pathlib import Path\nfiles = list(Path("src").rglob("*.tsx"))',
+    'import glob\nfiles = glob.glob("**/*.ts", recursive=True)',
+    'import glob\nfor f in glob.iglob("**/*.ts"): pass',
     'import os\nnames = os.listdir("src")',
+    'import os\nfor e in os.scandir("src"): pass',
+    'from pathlib import Path\nfor p in Path(".").iterdir(): pass',
+    'import os\nfor r, d, f in os.walk("."): pass',
+    'for r, d, f in os.walk( "." ): pass',
   ]) {
     __resetAllScanGuards()
     noteToolCallForScanGuard(A, 'Glob', { pattern: '**/*' })
@@ -81,6 +95,58 @@ test('catches the bridged forms of the same waste', () => {
       `self-scan not detected: ${code.split('\n').pop()}`,
     )
   }
+})
+
+test('does not fire on work that only filters an existing list', () => {
+  // fnmatch and comprehensions operate on paths the model already has, so the
+  // earlier search was used, not wasted.
+  for (const code of [
+    'import fnmatch\nkeep = fnmatch.filter(paths, "*.tsx")',
+    'keep = [p for p in paths if p.endswith(".tsx")]',
+    'total = sum(len(tool.Read(file_path=p)) for p in paths)',
+    'import json\nlock = json.load(open("package-lock.json"))',
+    'df = pandas.read_csv("data.csv")',
+  ]) {
+    __resetAllScanGuards()
+    noteToolCallForScanGuard(A, 'Glob', { pattern: '**/*' })
+    assert(
+      noteToolCallForScanGuard(A, 'Eval', { code }) === null,
+      `false positive on: ${code.split('\n').pop()}`,
+    )
+  }
+})
+
+test('tool names come from the real constants, not string literals', () => {
+  // A rename would otherwise silently disable the guard: the strings would
+  // stop matching and nothing would fail.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, 'redundantScanGuard.ts'), 'utf8')
+  for (const constant of [
+    'GLOB_TOOL_NAME',
+    'GREP_TOOL_NAME',
+    'TODO_WRITE_TOOL_NAME',
+    'EVAL_TOOL_NAME',
+  ]) {
+    assert(source.includes(constant), `${constant} is not imported`)
+  }
+  assert(
+    !/new Set\(\[\s*'Glob'/.test(source),
+    'tool names are hardcoded as string literals again',
+  )
+})
+
+test('transparency stays in step with repeatToolGuard', () => {
+  // If one guard treats a call as transparent and the other does not,
+  // interleaving it launders one pattern but not the other.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const sibling = readFileSync(join(here, 'repeatToolGuard.ts'), 'utf8')
+  const at = sibling.indexOf('TRANSPARENT_TOOLS')
+  assert(at !== -1, 'repeatToolGuard no longer has a transparent set')
+  const line = sibling.slice(at, sibling.indexOf('\n', at))
+  assert(
+    line.includes('TodoWrite'),
+    `repeatToolGuard's transparent set changed; mirror it here: ${line}`,
+  )
 })
 
 test('stays silent when the cell consumes the search result', () => {

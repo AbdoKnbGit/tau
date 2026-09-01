@@ -1,3 +1,8 @@
+import { EVAL_TOOL_NAME } from '../../tools/EvalTool/constants.js'
+import { GLOB_TOOL_NAME } from '../../tools/GlobTool/prompt.js'
+import { GREP_TOOL_NAME } from '../../tools/GrepTool/prompt.js'
+import { TODO_WRITE_TOOL_NAME } from '../../tools/TodoWriteTool/constants.js'
+
 /**
  * Redundant-scan guard.
  *
@@ -28,13 +33,27 @@
  *   - Fires at most once per pending search.
  */
 
-/** Search tools whose whole output is a file list the cell can reproduce. */
-const SEARCH_TOOLS: ReadonlySet<string> = new Set(['Glob', 'Grep'])
+/**
+ * Search tools whose ENTIRE output is a path or match list a cell can
+ * regenerate for free. That is the principle; it is not a list of the tools
+ * that happened to appear in one transcript.
+ *
+ * Deliberately excluded, because a cell cannot reproduce them and the earlier
+ * call was therefore not wasted: CodebaseRetrieval (semantic), AFTAstSearch
+ * (AST-aware), GitHistorySearch, TestSearch.
+ */
+const SEARCH_TOOLS: ReadonlySet<string> = new Set([
+  GLOB_TOOL_NAME,
+  GREP_TOOL_NAME,
+])
 
-/** Bookkeeping calls that neither arm nor clear the pending search. */
-const TRANSPARENT_TOOLS: ReadonlySet<string> = new Set(['TodoWrite'])
-
-const EVAL_TOOL = 'Eval'
+/**
+ * Bookkeeping calls that neither arm nor clear the pending search. Mirrors
+ * `repeatToolGuard`'s set on purpose: if one guard treats a call as
+ * transparent and the other does not, interleaving it launders one pattern but
+ * not the other. The test file asserts the two stay in step.
+ */
+const TRANSPARENT_TOOLS: ReadonlySet<string> = new Set([TODO_WRITE_TOOL_NAME])
 
 /** Bound on tracked agents, mirroring repeatToolGuard. */
 const MAX_TRACKED_AGENTS = 100
@@ -42,9 +61,20 @@ const MAX_TRACKED_AGENTS = 100
 /**
  * Cell code that goes looking for files on its own. If a cell does any of
  * this, whatever the preceding search returned was not needed.
+ *
+ * Matched on the METHOD rather than the receiver, so every spelling of the
+ * same idea is covered: `glob.glob(...)`, `Path(x).glob(...)`,
+ * `Path(x).rglob(...)` and `p.iglob(...)` all trip the same branch. The first
+ * version of this listed `glob.glob` and `.rglob` explicitly and silently
+ * missed `Path(x).glob(...)` — the most common spelling of all — because it
+ * was written from one transcript instead of from the idea.
+ *
+ * Not matched, on purpose: `fnmatch` and comprehensions filter a list that
+ * already exists rather than scanning, and `tool.Bash("find ...")` is too
+ * often legitimate shell work to warn about.
  */
 const SELF_SCAN =
-  /\bos\.walk\s*\(|\bos\.listdir\s*\(|\bos\.scandir\s*\(|\bglob\.glob\s*\(|\bglob\.iglob\s*\(|\.rglob\s*\(|\.iterdir\s*\(|\btool\.Glob\s*\(|\btool\.Grep\s*\(/
+  /\b(?:os\.walk|os\.listdir|os\.scandir)\s*\(|\.(?:r?glob|iglob|iterdir|walk)\s*\(|\btool\.(?:Glob|Grep)\s*\(/
 
 const pending = new Map<string, string>()
 
@@ -91,7 +121,7 @@ export function noteToolCallForScanGuard(
   const searchTool = pending.get(agentKey)
   pending.delete(agentKey)
 
-  if (toolName !== EVAL_TOOL || searchTool === undefined) return null
+  if (toolName !== EVAL_TOOL_NAME || searchTool === undefined) return null
 
   const code =
     input && typeof input === 'object'

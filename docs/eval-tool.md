@@ -34,7 +34,7 @@ still in memory for the next cell.
 | `UI.tsx` | Transcript rendering: cell source, output, figures, bridged calls |
 
 Tests: `evalTool.test.ts` (42), `lanes.test.ts` (7), `bridge.test.ts` (12),
-`figure.test.ts` (4), plus `services/tools/redundantScanGuard.test.ts` (12).
+`figure.test.ts` (4), plus `services/tools/redundantScanGuard.test.ts` (15).
 Run them with `bun run src/tools/EvalTool/<name>.test.ts`. The live groups skip
 themselves when no interpreter (or no matplotlib) is present.
 
@@ -128,6 +128,21 @@ never touches the cached prefix — same contract as the neighbouring
 `repeatToolGuard`, which it deliberately mirrors. It is narrow on purpose: a
 cell that *consumes* the search result does not self-scan and is left alone, an
 intervening tool call clears the pending search, and it fires at most once.
+
+Two things keep it from being fitted to the one transcript that prompted it:
+
+- **The tool set is a principle, not a list.** Only searches whose entire
+  output is a path or match list a cell can regenerate for free — Glob and
+  Grep. CodebaseRetrieval, AFTAstSearch, GitHistorySearch and TestSearch are
+  excluded because a cell cannot reproduce them, so calling one first is not
+  waste. Names come from the real constants, so a rename cannot silently
+  disable the guard.
+- **The pattern matches the method, not the receiver.** `glob.glob(...)`,
+  `Path(x).glob(...)`, `Path(x).rglob(...)` and `p.iglob(...)` all trip the
+  same branch. The first version was written around the `os.walk` it happened
+  to observe and missed `Path(x).glob(...)` entirely — the commonest spelling
+  of all. `fnmatch` and comprehensions are deliberately not matched: they
+  filter a list that already exists, which means the search *was* used.
 
 ## The cache contract
 
