@@ -34,7 +34,7 @@ still in memory for the next cell.
 | `UI.tsx` | Transcript rendering: cell source, output, figures, bridged calls |
 
 Tests: `evalTool.test.ts` (42), `lanes.test.ts` (7), `bridge.test.ts` (12),
-`figure.test.ts` (4).
+`figure.test.ts` (4), plus `services/tools/redundantScanGuard.test.ts` (12).
 Run them with `bun run src/tools/EvalTool/<name>.test.ts`. The live groups skip
 themselves when no interpreter (or no matplotlib) is present.
 
@@ -107,6 +107,27 @@ and ~190K tokens of file bodies costs one turn and a printed table. Cheap mode
 also turns subagents off, which normally leaves nothing to keep bulk output out
 of context; the kernel is now the only remaining route, so the mode's
 capability section says so explicitly.
+
+## The redundant-scan guard
+
+Observed in a live session, answering "how many .tsx files are here":
+
+    Glob for every .tsx   ->  1,737 paths into context
+    Eval  os.walk('.')    ->  walked the tree again, ignored the paths
+
+The search was not a stepping stone — the cell never referenced its result. Its
+output was paid for in context and thrown away.
+
+`services/tools/redundantScanGuard.ts` catches exactly that: a Glob or Grep
+immediately followed by a cell whose code scans the filesystem itself
+(`os.walk`, `glob.glob`, `Path.rglob`, `os.listdir`, `tool.Glob`, `tool.Grep`).
+It returns an advisory line appended to that cell's own tool result.
+
+It costs **zero tokens** on every turn where the pattern does not occur, and it
+never touches the cached prefix — same contract as the neighbouring
+`repeatToolGuard`, which it deliberately mirrors. It is narrow on purpose: a
+cell that *consumes* the search result does not self-scan and is left alone, an
+intervening tool call clears the pending search, and it fires at most once.
 
 ## The cache contract
 

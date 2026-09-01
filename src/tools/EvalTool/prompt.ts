@@ -48,9 +48,11 @@ The test is simple: **if the intermediate data is much bigger than the answer,
 the work belongs in a cell.** Pulling forty files into the conversation to
 count something is the mistake this tool exists to prevent.
 
-Do the gathering **inside** the cell. Calling Grep directly and then feeding its
-result to a cell wastes the round trip and puts the raw matches in context
-anyway — call \`tool.Grep(...)\` from the code instead.
+Do the gathering **inside** the cell — never run a search first and then open a
+cell. A separate Grep or Glob pays for its entire result in context, and the
+cell can find the same files for nothing with \`tool.Grep(...)\`,
+\`tool.Glob(...)\`, \`os.walk\` or \`Path.rglob\`. "Let me scope it first" is the
+most common way to waste a turn here: the cell scopes it for free.
 
 Do **not** use it for a single file read, one shell command, or an edit you
 already know how to make. Read, Bash and Edit are clearer for those.
