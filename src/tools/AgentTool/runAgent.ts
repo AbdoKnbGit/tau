@@ -415,6 +415,9 @@ async function* runAgentWithoutProviderOverride({
         toolUseContext.options.mainLoopModel,
         model,
         permissionMode,
+        // Pinned agents keep their own model when the caller passes a bare
+        // tier alias — the alias has no meaning on the pinned lane.
+        agentDefinition.provider,
       )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()

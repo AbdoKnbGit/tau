@@ -82,6 +82,37 @@ export function resolveAgentAliasPolicy(
 }
 
 /**
+ * Whether a pinned agent's own model outranks a tier alias passed at spawn.
+ *
+ * An agent that names a provider also names a concrete model for that lane —
+ * loadAgentsDir enforces the pairing, and already refuses `provider:` plus a
+ * tier alias on every provider that cannot resolve a tier by itself. The same
+ * reasoning applies to an alias that arrives at spawn time instead of in the
+ * frontmatter: the spawning model picks `haiku` off the Agent tool schema
+ * without being told the agent is pinned, and a tier says nothing about which
+ * model on that lane to run. Resolving it anyway either sends the parent
+ * session's model id down a lane that never served it (a 404) or substitutes
+ * the provider's own fixed agent model. Both drop the pin, so the pin wins.
+ *
+ * Only tier aliases lose. A concrete model id from the caller — what
+ * /team-mode sends — is deliberate and still overrides the agent file.
+ */
+export function pinnedAgentModelOutranksAlias(
+  toolSpecifiedModel: string | undefined,
+  agentModel: string | undefined,
+  agentProvider: APIProvider | undefined,
+): boolean {
+  if (agentProvider === undefined) return false
+  if (toolSpecifiedModel === undefined) return false
+  // `inherit` is not a pin; loadAgentsDir already rejects it alongside a
+  // provider, but a programmatically built definition could still carry it.
+  if (agentModel === undefined || normalize(agentModel) === 'inherit') {
+    return false
+  }
+  return isModelAlias(normalize(toolSpecifiedModel))
+}
+
+/**
  * Whether a tier alias resolves to a fixed model for this provider, without
  * consulting the session's model.
  *

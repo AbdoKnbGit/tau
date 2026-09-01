@@ -8,7 +8,6 @@ import {
   useAnimationFrame,
 } from '../../ink.js'
 import {
-  getPowerModeThemeMode,
   getPowerModeWordmarkPalette,
   initializePowerModeTheme,
   subscribePowerModeTheme,
@@ -16,7 +15,6 @@ import {
 } from '../../utils/modeTheme.js'
 import {
   getPowerModeFromSettings,
-  type PowerMode,
 } from '../../utils/powerMode.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { interpolateColor, toRGBColor } from '../Spinner/utils.js'
@@ -49,11 +47,9 @@ const BUILD_STEP_MS = 26
 const BUILD_POP_MS = 260
 
 type Letter = readonly [string, string, string, string]
-type WordmarkIdentity = 'taucode' | 'rustcode'
+type WordmarkIdentity = 'taucode'
 
-// One block font for both identities. Normal/cheap/full spell TAUCODE; Rust
-// mode swaps only the glyph sequence, preserving the same geometry, tracing,
-// launch reveal, idle ripple, and click animation algorithms.
+// One block font: every mode spells TAUCODE.
 const LETTERS = {
   t: ['     ', '▀▀█▀▀', '  █_ ', '  ▀~ '],
   a: ['     ', '█▀▀█ ', '█__█ ', '▀~~▀ '],
@@ -297,21 +293,6 @@ const TAUCODE_WORDMARK = createWordmark('taucode', [
   LETTERS.e,
 ])
 
-const RUSTCODE_WORDMARK = createWordmark('rustcode', [
-  LETTERS.r,
-  LETTERS.u,
-  LETTERS.s,
-  LETTERS.t,
-  LETTERS.c,
-  LETTERS.o,
-  LETTERS.d,
-  LETTERS.e,
-])
-
-function wordmarkForMode(mode: PowerMode): WordmarkDefinition {
-  return mode === 'rust' ? RUSTCODE_WORDMARK : TAUCODE_WORDMARK
-}
-
 function select(
   wordmark: WordmarkDefinition,
   x: number,
@@ -518,18 +499,16 @@ export function TauWordmark(): React.ReactNode {
   const [buildStartedAt] = useState(() => (animatable && !launchPlayed ? time : null))
   const [bursts, setBursts] = useState<readonly Burst[]>([])
 
-  // Mode identity and palette. Rust swaps TAUCODE for RUSTCODE while reusing
-  // this component's exact font, reveal path, idle ripple, and click behavior.
-  // The palette continues to sample the shared /mode cross-fade.
-  const wordmark = wordmarkForMode(getPowerModeThemeMode())
+  // The palette samples the shared /mode cross-fade.
+  const wordmark = TAUCODE_WORDMARK
   const palette = getPowerModeWordmarkPalette({ snap: !animatable })
   const [, bumpModeRepaint] = useState(0)
   useEffect(() => {
     return subscribePowerModeTheme(() => bumpModeRepaint(n => n + 1))
   }, [])
 
-  // A click burst belongs to the glyph map that created it. Discard bursts
-  // when the identity changes so TAUCODE glyph ids never leak into RUSTCODE.
+  // A click burst belongs to the glyph map that created it; discard bursts
+  // when the glyph map changes.
   useEffect(() => {
     setBursts(list => (list.length === 0 ? list : []))
   }, [wordmark])

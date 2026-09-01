@@ -33,11 +33,10 @@ describe('power mode', () => {
     expect(normalizePowerMode(' ECO ')).toBe('cheap')
     expect(normalizePowerMode('normal')).toBe('normal')
     expect(normalizePowerMode('default')).toBe('normal')
-    expect(normalizePowerMode('rust')).toBe('rust')
-    expect(normalizePowerMode('RustCode')).toBe('rust')
     expect(normalizePowerMode('full')).toBe('full')
     expect(normalizePowerMode('FullPower')).toBe('full')
     expect(normalizePowerMode('max')).toBe('full')
+    expect(normalizePowerMode('rust')).toBeNull()
     expect(normalizePowerMode('bogus')).toBeNull()
     expect(normalizePowerMode('')).toBeNull()
   })
@@ -46,14 +45,17 @@ describe('power mode', () => {
     expect(getPowerModeFromSettings(undefined)).toBe('normal')
     expect(getPowerModeFromSettings({})).toBe('normal')
     expect(getPowerModeFromSettings({ powerMode: 'cheap' })).toBe('cheap')
-    expect(getPowerModeFromSettings({ powerMode: 'rust' })).toBe('rust')
+    // A settings.json written before rust mode was removed must degrade to
+    // normal rather than resolving a mode that no longer exists.
+    expect(getPowerModeFromSettings({ powerMode: 'rust' as never })).toBe(
+      'normal',
+    )
     expect(getPowerModeFromSettings({ powerMode: 'full' })).toBe('full')
     expect(getPowerModeFromSettings({ powerMode: 'normal' })).toBe('normal')
   })
 
-  test('rust deliberately inherits normal tool behavior', () => {
+  test('only normal mode keeps the user tool toggles', () => {
     expect(isNormalToolingMode('normal')).toBe(true)
-    expect(isNormalToolingMode('rust')).toBe(true)
     expect(isNormalToolingMode('cheap')).toBe(false)
     expect(isNormalToolingMode('full')).toBe(false)
   })
@@ -77,16 +79,6 @@ describe('power mode', () => {
   test('normal mode preserves saved toggles', () => {
     const first = PREBUILT_TOOL_TOGGLE_ITEMS[0]!
     const disabled = getDisabledPrebuiltToolIds({
-      disabledPrebuiltTools: [first.id],
-    })
-    expect(disabled.has(first.id)).toBe(true)
-    expect(disabled.size).toBe(1)
-  })
-
-  test('rust mode preserves normal tool toggles', () => {
-    const first = PREBUILT_TOOL_TOGGLE_ITEMS[0]!
-    const disabled = getDisabledPrebuiltToolIds({
-      powerMode: 'rust',
       disabledPrebuiltTools: [first.id],
     })
     expect(disabled.has(first.id)).toBe(true)
@@ -174,7 +166,7 @@ describe('power mode theme overlay', () => {
     expect(getTheme('dark')).toBe(theme)
   })
 
-  test('cheap/rust/full tint accent slots but keep text and semantics', () => {
+  test('cheap/full tint accent slots but keep text and semantics', () => {
     setPowerModeTheme('normal', { animate: false })
     const base = getTheme('dark')
 
@@ -185,14 +177,6 @@ describe('power mode theme overlay', () => {
     expect(bronze.text).toBe(base.text)
     expect(bronze.error).toBe(base.error)
     expect(bronze.background).toBe(base.background)
-
-    setPowerModeTheme('rust', { animate: false })
-    const green = getTheme('dark')
-    expect(green.brand).not.toBe(base.brand)
-    expect(green.brand).not.toBe(bronze.brand)
-    expect(green.text).toBe(base.text)
-    expect(green.error).toBe(base.error)
-    expect(green.background).toBe(base.background)
 
     setPowerModeTheme('full', { animate: false })
     const gold = getTheme('dark')
@@ -236,12 +220,6 @@ describe('power mode theme overlay', () => {
     const bronze = getPowerModeWordmarkPalette()
     expect(bronze.bodyLeft).not.toEqual(normal.bodyLeft)
     expect(bronze.bodyRight).not.toEqual(normal.bodyRight)
-
-    setPowerModeTheme('rust', { animate: false })
-    const green = getPowerModeWordmarkPalette()
-    expect(green.bodyLeft).not.toEqual(normal.bodyLeft)
-    expect(green.bodyLeft).not.toEqual(bronze.bodyLeft)
-    expect(green.bodyRight.g).toBeGreaterThan(green.bodyRight.r)
 
     setPowerModeTheme('full', { animate: false })
     const gold = getPowerModeWordmarkPalette()

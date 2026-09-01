@@ -2,16 +2,21 @@
  * Optional prebuilt tool toggle unit tests.
  *
  * Run: bun run src/utils/prebuiltToolToggles.test.ts
+ *
+ * NOTE ON COVERAGE. These tests used to exercise `aliases` and multi-entry
+ * `toolNames` through the AFT toggle, which bundled five tools under one id.
+ * AFT has been removed, and no toggle in the registry has aliases or more than
+ * one tool name any more — so those two branches of
+ * `getPrebuiltToolToggleItem` are now supported by the types but unexercised.
+ * They are deliberately not faked here: the registry is the input, and
+ * inventing a fixture group would test a shape nothing ships. If a future
+ * toggle bundles tools again, restore that coverage with it.
  */
 
-import {
-  AFT_OUTLINE_TOOL_NAME,
-  AFT_ZOOM_TOOL_NAME,
-} from '../tools/AFTTool/constants.js'
 import { ARTIFACT_CANVAS_TOOL_NAME } from '../tools/ArtifactCanvasTool/constants.js'
-import { DIFF_ARTIFACT_TOOL_NAME } from '../tools/DiffArtifactTool/constants.js'
+import { BROWSER_TOOL_NAME } from '../tools/BrowserTool/constants.js'
 import { LSP_TOOL_NAME } from '../tools/LSPTool/prompt.js'
-import { TEST_SEARCH_TOOL_NAME } from '../tools/TestSearchTool/constants.js'
+import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
 import { WEB_BROWSER_TOOL_NAME } from '../tools/WebBrowserTool/constants.js'
 import {
   filterDisabledPrebuiltTools,
@@ -29,112 +34,106 @@ function test(name: string, fn: () => void): void {
     fn()
     passed++
     console.log(`  ok  ${name}`)
-  } catch (error: unknown) {
+  } catch (e: unknown) {
     failed++
-    console.log(
-      `  FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`,
-    )
+    console.log(`  FAIL ${name}: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
 
-function assert(cond: unknown, hint: string): void {
+function assert(cond: unknown, hint: string): asserts cond {
   if (!cond) throw new Error(hint)
 }
 
-function assertJsonEqual(actual: unknown, expected: unknown, hint: string): void {
-  const actualJson = JSON.stringify(actual)
-  const expectedJson = JSON.stringify(expected)
-  if (actualJson !== expectedJson) {
-    throw new Error(`${hint}: expected ${expectedJson}, got ${actualJson}`)
-  }
+function assertJsonEqual(a: unknown, b: unknown, hint: string): void {
+  const left = JSON.stringify(a)
+  const right = JSON.stringify(b)
+  if (left !== right) throw new Error(`${hint}: ${left} !== ${right}`)
 }
 
 console.log('prebuilt tool toggles:')
 
-test('normalizes ids, aliases, unknown values, and duplicates', () => {
+test('normalizes ids, casing, unknown values, and duplicates', () => {
   assertJsonEqual(
     normalizeDisabledPrebuiltToolIds([
       'unknown-tool',
-      AFT_OUTLINE_TOOL_NAME,
-      'AFT',
+      MERMAID_RENDER_TOOL_NAME,
       LSP_TOOL_NAME.toUpperCase(),
       LSP_TOOL_NAME,
     ]),
-    ['AFT', LSP_TOOL_NAME],
+    // Input order is preserved here; canonical ordering is
+    // setPrebuiltToolToggleEnabled's job, asserted separately below.
+    [MERMAID_RENDER_TOOL_NAME, LSP_TOOL_NAME],
     'normalized disabled tools',
   )
 })
 
-test('filters every tool name in a disabled toggle group', () => {
+test('filters the tool named by a disabled toggle', () => {
   const tools = [
-    { name: AFT_OUTLINE_TOOL_NAME },
-    { name: AFT_ZOOM_TOOL_NAME },
+    { name: MERMAID_RENDER_TOOL_NAME },
     { name: LSP_TOOL_NAME },
     { name: 'Read' },
   ]
 
   assertJsonEqual(
-    filterDisabledPrebuiltTools(tools, { disabledPrebuiltTools: ['AFT'] }).map(
-      tool => tool.name,
-    ),
+    filterDisabledPrebuiltTools(tools, {
+      disabledPrebuiltTools: [MERMAID_RENDER_TOOL_NAME],
+    }).map(tool => tool.name),
     [LSP_TOOL_NAME, 'Read'],
     'filtered tools',
   )
 })
 
 test('checks disabled state by concrete tool name', () => {
-  const settings = { disabledPrebuiltTools: ['AFT'] }
+  const settings = { disabledPrebuiltTools: [MERMAID_RENDER_TOOL_NAME] }
   assert(
-    isPrebuiltToolDisabledByToolName(AFT_ZOOM_TOOL_NAME, settings),
-    'AFT alias should be disabled',
+    isPrebuiltToolDisabledByToolName(MERMAID_RENDER_TOOL_NAME, settings),
+    'MermaidRender should be disabled',
   )
   assert(
     !isPrebuiltToolDisabledByToolName(LSP_TOOL_NAME, settings),
     'LSP should stay enabled',
   )
-  assert(isOptionalPrebuiltToolName(AFT_OUTLINE_TOOL_NAME), 'AFT is optional')
+  assert(isOptionalPrebuiltToolName(LSP_TOOL_NAME), 'LSP is optional')
   assert(!isOptionalPrebuiltToolName('Read'), 'basic tools are not optional')
 })
 
-test('recognizes new browser and artifact tools as optional', () => {
+test('recognizes browser and artifact tools as optional', () => {
   const settings = {
     disabledPrebuiltTools: [
       WEB_BROWSER_TOOL_NAME,
       ARTIFACT_CANVAS_TOOL_NAME,
-      DIFF_ARTIFACT_TOOL_NAME,
+      BROWSER_TOOL_NAME,
     ],
   }
 
-  assert(
-    isPrebuiltToolDisabledByToolName(WEB_BROWSER_TOOL_NAME, settings),
-    'WebBrowser should be optional',
-  )
-  assert(
-    isPrebuiltToolDisabledByToolName(ARTIFACT_CANVAS_TOOL_NAME, settings),
-    'ArtifactCanvas should be optional',
-  )
-  assert(
-    isPrebuiltToolDisabledByToolName(DIFF_ARTIFACT_TOOL_NAME, settings),
-    'DiffArtifact should be optional',
-  )
+  for (const name of [
+    WEB_BROWSER_TOOL_NAME,
+    ARTIFACT_CANVAS_TOOL_NAME,
+    BROWSER_TOOL_NAME,
+  ]) {
+    assert(
+      isPrebuiltToolDisabledByToolName(name, settings),
+      `${name} should be optional`,
+    )
+  }
 })
 
 test('sets toggles with canonical ordering and rejects unknown ids', () => {
   const disabled = setPrebuiltToolToggleEnabled(
-    [TEST_SEARCH_TOOL_NAME, 'unknown-tool'],
-    AFT_ZOOM_TOOL_NAME,
+    [MERMAID_RENDER_TOOL_NAME, 'unknown-tool'],
+    LSP_TOOL_NAME,
     false,
   )
 
   assertJsonEqual(
     disabled,
-    ['AFT', TEST_SEARCH_TOOL_NAME],
+    [LSP_TOOL_NAME, MERMAID_RENDER_TOOL_NAME],
     'disabled tool order',
   )
   assertJsonEqual(
-    setPrebuiltToolToggleEnabled(disabled ?? [], AFT_OUTLINE_TOOL_NAME, true),
-    [TEST_SEARCH_TOOL_NAME],
-    're-enabled AFT',
+    setPrebuiltToolToggleEnabled(disabled ?? [], LSP_TOOL_NAME, true),
+    [MERMAID_RENDER_TOOL_NAME],
+    're-enabled LSP',
   )
   assert(
     setPrebuiltToolToggleEnabled(disabled ?? [], 'Read', false) === null,

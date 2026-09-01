@@ -21,4 +21,4 @@ For symbol operations (goToDefinition, findReferences, hover, goToImplementation
 
 documentSymbol lists every symbol in a file (filePath only). workspaceSymbol searches the whole project — pass the symbol name as the query.
 
-Works for languages with a running language server (TS/JS, Python, HTML, CSS, JSON, etc.). If none supports the file's language, it says so and you should fall back to AFT or Grep.`
+Works for languages with a running language server (TS/JS, Python, HTML, CSS, JSON, etc.). If none supports the file's language, it says so and you should fall back to Grep.`

@@ -547,16 +547,3 @@ const nativeToolsBuild = spawnSync(
 if (nativeToolsBuild.status !== 0) {
   process.exit(nativeToolsBuild.status ?? 1)
 }
-
-const nativeRustToolsBuild = spawnSync(
-  process.execPath,
-  ['scripts/build-native-rust-tools.mjs'],
-  {
-    stdio: 'inherit',
-    windowsHide: true,
-    env: { ...process.env, TAU_REQUIRE_NATIVE_RUST_TOOLS: '1' },
-  },
-)
-if (nativeRustToolsBuild.status !== 0) {
-  process.exit(nativeRustToolsBuild.status ?? 1)
-}

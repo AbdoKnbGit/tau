@@ -39,10 +39,21 @@ function getToolsDescription(agent: AgentDefinition): string {
 /**
  * Format one agent line for the agent_listing_delta attachment message:
  * `- type: whenToUse (Tools: ...)`.
+ *
+ * An agent that pins a provider announces it. Without this the listing shows
+ * no model at all, so the spawning model reads the tool schema's `model`
+ * parameter as an open invitation and passes a tier alias — which on a pinned
+ * lane is meaningless and gets discarded (see pinnedAgentModelOutranksAlias).
+ * Naming the pin stops the pointless override at the source. Only pinned
+ * agents pay the extra tokens; every other line is unchanged.
  */
 export function formatAgentLine(agent: AgentDefinition): string {
   const toolsDescription = getToolsDescription(agent)
-  return `- ${agent.agentType}: ${agent.whenToUse} (Tools: ${toolsDescription})`
+  const pinned =
+    agent.provider !== undefined && agent.model !== undefined
+      ? ` (Pinned to ${agent.provider} / ${agent.model} — do not pass \`model\`)`
+      : ''
+  return `- ${agent.agentType}: ${agent.whenToUse}${pinned} (Tools: ${toolsDescription})`
 }
 
 /**

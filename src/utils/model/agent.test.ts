@@ -18,6 +18,7 @@ import {
   OPENAI_FAST_AGENT_MODEL,
   OPENROUTER_AGENT_MODEL,
   isDirectOpenAIFastAgentParent,
+  pinnedAgentModelOutranksAlias,
   resolveAgentAliasPolicy,
 } from './agentAliasFallback.js'
 import type { APIProvider } from './providers.js'
@@ -281,6 +282,86 @@ function main(): void {
     assert(first === OPENROUTER_AGENT_MODEL, `first=${first}`)
     assert(second === 'glm-4.7', `second=${second}`)
     assert(third === OPENROUTER_AGENT_MODEL, `third=${third}`)
+  })
+
+  // A pinned agent keeps its own model when the spawning model guesses a tier.
+  // Regression: the Agent tool schema offers `model` for every agent, so an
+  // LLM passes `haiku` to a provider-pinned agent without knowing it is
+  // pinned. The alias then resolved either to the parent session model (a 404
+  // on the pinned lane) or to the provider's own fixed agent model. Either
+  // way the user's pin was discarded.
+  const PINNED: Array<[APIProvider, string]> = [
+    ['fireworks', 'accounts/fireworks/models/deepseek-v4-flash-0731'],
+    ['ollama', 'llama4:70b'],
+    ['moonshot', 'kimi-k2.6'],
+    ['openai', 'gpt-5.6'],
+    ['openrouter', 'qwen/qwen3-max'],
+    ['antigravity', 'gemini-3-pro-high'],
+    ['firstParty', 'claude-opus-4-6'],
+  ]
+
+  test('a tier alias never displaces a pinned agent model', () => {
+    for (const [provider, model] of PINNED) {
+      for (const alias of ROUTED_ALIASES) {
+        assert(
+          pinnedAgentModelOutranksAlias(alias, model, provider),
+          `${provider}/${model} lost the pin to ${alias}`,
+        )
+      }
+    }
+  })
+
+  test('a concrete model id from the caller still overrides the pin', () => {
+    for (const [provider, model] of PINNED) {
+      assert(
+        !pinnedAgentModelOutranksAlias('kimi-k2.6', model, provider),
+        `${provider} refused a concrete override`,
+      )
+      assert(
+        !pinnedAgentModelOutranksAlias(
+          'accounts/fireworks/models/glm-5',
+          model,
+          provider,
+        ),
+        `${provider} refused a fully-qualified override`,
+      )
+    }
+  })
+
+  test('an unpinned agent is untouched, so subagents still inherit', () => {
+    for (const alias of ROUTED_ALIASES) {
+      assert(
+        !pinnedAgentModelOutranksAlias(alias, undefined, undefined),
+        `bare agent suppressed ${alias}`,
+      )
+      assert(
+        !pinnedAgentModelOutranksAlias(alias, 'sonnet', undefined),
+        `agent with a model but no provider suppressed ${alias}`,
+      )
+      // A provider with no model, or with `inherit`, is not a pin. Agent
+      // loading rejects both, but a built definition could still carry them.
+      assert(
+        !pinnedAgentModelOutranksAlias(alias, undefined, 'fireworks'),
+        `provider without a model suppressed ${alias}`,
+      )
+      assert(
+        !pinnedAgentModelOutranksAlias(alias, 'inherit', 'fireworks'),
+        `inherit was treated as a pin for ${alias}`,
+      )
+      assert(
+        !pinnedAgentModelOutranksAlias(alias, 'Inherit', 'fireworks'),
+        `cased inherit was treated as a pin for ${alias}`,
+      )
+    }
+  })
+
+  test('no tool-specified model leaves the pin resolution alone', () => {
+    for (const [provider, model] of PINNED) {
+      assert(
+        !pinnedAgentModelOutranksAlias(undefined, model, provider),
+        `${provider} short-circuited with no override`,
+      )
+    }
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

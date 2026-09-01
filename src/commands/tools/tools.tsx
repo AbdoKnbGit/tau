@@ -482,7 +482,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   const powerMode = getPowerModeFromSettings(getInitialSettings())
   if (!isNormalToolingMode(powerMode)) {
     onDone(
-      `Mode '${powerMode}' forces all optional tools ${powerMode === 'cheap' ? 'OFF' : 'ON'} — /tools applies in normal and Rust modes. Switch with /mode normal or /mode rust.`,
+      `Mode '${powerMode}' forces all optional tools ${powerMode === 'cheap' ? 'OFF' : 'ON'} — /tools applies in normal mode. Switch with /mode normal.`,
       { display: 'system' },
     )
     return

@@ -506,17 +506,17 @@ test('cheap mode is eager on every transport and normal keeps discovery', () => 
     shouldDisableToolDeferralForProvider('deepseek', 'cheap'),
     'cheap client-native discovery must be eager/cache-stable',
   )
-  for (const mode of ['normal', 'rust', 'full'] as const) {
+  for (const mode of ['normal', 'full'] as const) {
     assert(!shouldDisableToolDeferralForProvider('deepseek', mode), `deepseek/${mode}`)
   }
-  for (const mode of ['cheap', 'normal', 'rust', 'full'] as const) {
+  for (const mode of ['cheap', 'normal', 'full'] as const) {
     assert(shouldDisableToolDeferralForProvider('cursor', mode), `cursor/${mode}`)
   }
   assert(
     shouldDisableToolDeferralForProvider('firstParty', 'cheap'),
     'cheap mode deferred a schema on the server-native transport',
   )
-  for (const mode of ['normal', 'rust', 'full'] as const) {
+  for (const mode of ['normal', 'full'] as const) {
     assert(
       !shouldDisableToolDeferralForProvider('firstParty', mode),
       `firstParty/${mode} lost server-native discovery`,

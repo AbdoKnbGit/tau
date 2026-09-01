@@ -3784,14 +3784,11 @@ Read the team config to discover your teammates' names. Check the task list peri
         case 'cheap':
           content = `Mode is now 'cheap': only core file, shell, search, and task tools are available. Skills, subagents (the Agent tool), MCP servers and their tools, plugins, and optional tools are all unavailable. Any skills, agent types, or MCP server instructions listed earlier in this conversation no longer apply — do not reference, offer, or attempt to use them.`
           break
-        case 'rust':
-          content = `Mode is now 'rust': normal Tau capabilities remain available with Rust-focused routing. Use a dedicated Rust capability only when it is actually present in the current tool list and the task needs Cargo-aware or Rust-specific structured analysis. Continue using symbol navigation for definitions/references, file tools for reads and edits, text search for literal searches, and the shell for command execution. Never invent a missing Rust tool or use it as a shell, editor, search, or LSP replacement.`
-          break
         case 'full':
-          content = `Mode is now 'full': all optional tools are enabled. Rust-mode-specific routing no longer applies; follow the current tool list and standard dedicated-tool boundaries.`
+          content = `Mode is now 'full': all optional tools are enabled. Follow the current tool list and standard dedicated-tool boundaries.`
           break
         case 'normal':
-          content = `Mode is now 'normal': standard Tau tool routing applies. Rust-mode-specific routing and mode-gated capabilities no longer apply; follow the current tool list.`
+          content = `Mode is now 'normal': standard Tau tool routing applies. Follow the current tool list.`
           break
       }
       return wrapMessagesInSystemReminder([

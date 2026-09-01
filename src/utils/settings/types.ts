@@ -761,11 +761,11 @@ export const SettingsSchema = lazySchema(() =>
           'Optional Tau prebuilt tool toggles disabled by /tools. Only the allowlisted optional tools are honored; basic agent tools are ignored.',
         ),
       powerMode: z
-        .enum(['cheap', 'normal', 'rust', 'full'])
+        .enum(['cheap', 'normal', 'full'])
         .optional()
         .catch(undefined)
         .describe(
-          'Mode set by /mode. cheap = core tools only; normal = default behavior; rust = normal behavior plus Rust-focused capabilities and guidance; full = every optional tool forced on. Absent means normal.',
+          'Mode set by /mode. cheap = core tools only; normal = default behavior; full = every optional tool forced on. Absent means normal.',
         ),
       promptSuggestionEnabled: z
         .boolean()

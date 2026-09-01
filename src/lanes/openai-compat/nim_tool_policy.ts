@@ -5,7 +5,7 @@ const NIM_FAST_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
   'Grep', 'Glob',
   'WebSearch', 'WebFetch',
   // Planning / delegation / discovery.
-  'TodoWrite', 'Agent', 'Task', 'Skill', 'ToolSearch', 'Rust',
+  'TodoWrite', 'Agent', 'Task', 'Skill', 'ToolSearch',
   // In-kernel computation. The fast subset exists to cut round trips, which is
   // exactly what a cell does: one call replaces a read-per-file loop.
   'Eval',

@@ -117,20 +117,6 @@ test('Bedrock keeps existing Anthropic deferral policy', () => {
     !shouldDisableToolDeferralForProvider('bedrock', 'full'),
     'bedrock full mode should keep existing deferral',
   )
-  assert(
-    !shouldDisableToolDeferralForProvider('bedrock', 'rust'),
-    'bedrock rust mode should keep existing deferral',
-  )
-})
-
-test('Rust mode preserves normal deferral behavior on every provider', () => {
-  for (const provider of Object.keys(PROVIDER_DISPLAY_NAMES) as APIProvider[]) {
-    assert(
-      shouldDisableToolDeferralForProvider(provider, 'rust') ===
-        shouldDisableToolDeferralForProvider(provider, 'normal'),
-      `${provider} changed schema-deferral behavior in rust mode`,
-    )
-  }
 })
 
 test('every provider is eager in cheap and lazy only in normal/full modes', () => {
@@ -147,7 +133,7 @@ test('every provider is eager in cheap and lazy only in normal/full modes', () =
       shouldDisableToolDeferralForProvider(provider, 'cheap'),
       `${provider}/cheap must keep a stable eager prefix`,
     )
-    for (const mode of ['normal', 'rust', 'full'] as const) {
+    for (const mode of ['normal', 'full'] as const) {
       assert(
         !shouldDisableToolDeferralForProvider(provider, mode),
         `${provider}/${mode} unexpectedly disabled`,
@@ -158,7 +144,7 @@ test('every provider is eager in cheap and lazy only in normal/full modes', () =
 
 test('AgentRouter bypass path does not opt into client-side discovery', () => {
   assert(!providerSupportsClientSideToolDiscovery('agentrouter'), 'agentrouter')
-  for (const mode of ['cheap', 'normal', 'rust', 'full'] as const) {
+  for (const mode of ['cheap', 'normal', 'full'] as const) {
     assert(
       shouldDisableToolDeferralForProvider('agentrouter', mode),
       `agentrouter/${mode} must stay eager`,
@@ -169,7 +155,7 @@ test('AgentRouter bypass path does not opt into client-side discovery', () => {
 test('unknown or dedicated lanes fall back to eager schemas', () => {
   for (const provider of ['cursor', 'openai', 'commandcode', 'kiro'] as const) {
     assert(!providerSupportsSafeToolDiscovery(provider), provider)
-    for (const mode of ['cheap', 'normal', 'rust', 'full'] as const) {
+    for (const mode of ['cheap', 'normal', 'full'] as const) {
       assert(
         shouldDisableToolDeferralForProvider(provider, mode),
         `${provider}/${mode} must stay eager`,

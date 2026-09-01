@@ -349,7 +349,6 @@ function buildOptionalNativeTools() {
 
   runOptionalNativeBuild('build-native-shell-parser.mjs', 'TAU_REQUIRE_NATIVE_SHELL_PARSER');
   runOptionalNativeBuild('build-native-tools.mjs', 'TAU_REQUIRE_NATIVE_TOOLS');
-  runOptionalNativeBuild('build-native-rust-tools.mjs', 'TAU_REQUIRE_NATIVE_RUST_TOOLS');
 }
 
 async function runPostinstall() {

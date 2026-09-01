@@ -72,15 +72,11 @@ const getSendMessageTool = () =>
     .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
-import { AFT_READ_ONLY_TOOLS } from './tools/AFTTool/AFTTools.js'
 import { NATIVE_READ_ONLY_TOOLS } from './tools/NativeTools/NativeTools.js'
-import { RUST_MODE_TOOLS } from './tools/RustTool/RustTool.js'
 import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { SnapshotTool } from './tools/SnapshotTool/SnapshotTool.js'
 import { FileDiffTool } from './tools/FileDiffTool/FileDiffTool.js'
-import { ToolGuideTool } from './tools/ToolGuideTool/ToolGuideTool.js'
 import { ProjectWorkflowTool } from './tools/ProjectWorkflowTool/ProjectWorkflowTool.js'
-import { TestSearchTool } from './tools/TestSearchTool/TestSearchTool.js'
 import { CodebaseRetrievalTool } from './tools/CodebaseRetrievalTool/CodebaseRetrievalTool.js'
 import { RepoContextScoutTool } from './tools/RepoContextScoutTool/RepoContextScoutTool.js'
 import { WorkflowRecipeTool } from './tools/WorkflowRecipeTool/WorkflowRecipeTool.js'
@@ -91,12 +87,8 @@ import { InspectSiteTool } from './tools/InspectSiteTool/InspectSiteTool.js'
 import { WebBrowserTool } from './tools/WebBrowserTool/WebBrowserTool.js'
 import { BrowserTool } from './tools/BrowserTool/BrowserTool.js'
 import { ArtifactCanvasTool } from './tools/ArtifactCanvasTool/ArtifactCanvasTool.js'
-import { DiffArtifactTool } from './tools/DiffArtifactTool/DiffArtifactTool.js'
 import { PackageManagerTool } from './tools/PackageManagerTool/PackageManagerTool.js'
-import { SpecQuestTool } from './tools/SpecQuestTool/SpecQuestTool.js'
 import { MermaidRenderTool } from './tools/MermaidRenderTool/MermaidRenderTool.js'
-import { IntegrationHubTool } from './tools/IntegrationHubTool/IntegrationHubTool.js'
-import { DeployPreviewTool } from './tools/DeployPreviewTool/DeployPreviewTool.js'
 import { VisualDesignAuditTool } from './tools/VisualDesignAuditTool/VisualDesignAuditTool.js'
 import { PtyTool } from './tools/PtyTool/PtyTool.js'
 import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
@@ -255,10 +247,7 @@ export function getAllBaseTools(): Tools {
     // SnapshotTool defaults ON. Opt out: TAU_SNAPSHOT_DISABLE=1.
     ...(isEnvTruthy(process.env.TAU_SNAPSHOT_DISABLE) ? [] : [SnapshotTool]),
     FileDiffTool,
-    DiffArtifactTool,
-    ToolGuideTool,
     ProjectWorkflowTool,
-    TestSearchTool,
     CodebaseRetrievalTool,
     RepoContextScoutTool,
     WorkflowRecipeTool,
@@ -268,19 +257,14 @@ export function getAllBaseTools(): Tools {
     InspectSiteTool,
     ArtifactCanvasTool,
     PackageManagerTool,
-    SpecQuestTool,
     MermaidRenderTool,
-    IntegrationHubTool,
-    DeployPreviewTool,
     VisualDesignAuditTool,
     // PtyTool defaults OFF — interactive TTY rendering is still rough.
     // Opt in: TAU_PTY_ENABLE=1. The tool also self-checks node-pty
     // availability in isEnabled() so it stays hidden where the optional
     // native module didn't install.
     ...(isEnvTruthy(process.env.TAU_PTY_ENABLE) ? [PtyTool] : []),
-    ...AFT_READ_ONLY_TOOLS,
     ...NATIVE_READ_ONLY_TOOLS,
-    ...RUST_MODE_TOOLS,
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
     ...(ListPeersTool ? [ListPeersTool] : []),

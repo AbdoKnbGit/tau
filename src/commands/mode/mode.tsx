@@ -42,8 +42,6 @@ const MODE_SUMMARY: Record<PowerMode, string> = {
   cheap:
     'core tools only — optional tools, skills, agents, plugins, MCP, and LSP are off and hidden from the model',
   normal: 'default behavior — your /tools toggles, MCP, skills, and LSP apply',
-  rust:
-    'normal behavior plus Rust-focused guidance and native Rust capabilities when available',
   full: 'everything on — all optional tools enabled (/tools hidden; saved toggles return in normal mode)',
 }
 
@@ -140,7 +138,7 @@ function PowerModePicker({
   const [initialMode] = useState<PowerMode>(currentPowerMode)
   const [focused, setFocused] = useState<PowerMode>(initialMode)
 
-  // Cheap/normal/rust are offered; 'full' is retired from the UI. If the
+  // Cheap/normal are offered; 'full' is retired from the UI. If the
   // session is somehow still on 'full' (persisted setting), surface it as the
   // current option so the user can move off it — but never present it as a new
   // choice.
@@ -230,7 +228,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     const mode = normalizePowerMode(trimmed)
     if (!mode) {
       onDone(
-        `Unknown mode '${trimmed}'. Use cheap, normal, or rust.`,
+        `Unknown mode '${trimmed}'. Use cheap or normal.`,
         { display: 'system' },
       )
       return null

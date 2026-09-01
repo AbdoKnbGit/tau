@@ -11,7 +11,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { CODEBASE_RETRIEVAL_TOOL_NAME } from './constants.js'
 
 const DESCRIPTION =
-  'Retrieve likely relevant repository files and snippets for a natural-language codebase question. Read-only.'
+  'Find where behavior lives in this repo from a plain-language question — "where is X handled", "what should I change to do Y", "how does Z work". Ranks files by intent instead of matching text. Read-only.'
 
 const PROMPT = `Search the local repository by intent using lightweight lexical scoring and return ranked files with snippets. This is read-only.
 
@@ -360,7 +360,6 @@ export const CodebaseRetrievalTool = buildTool({
   name: CODEBASE_RETRIEVAL_TOOL_NAME,
   searchHint: 'semantic repository retrieval',
   maxResultSizeChars: 200_000,
-  shouldDefer: true,
   async description() {
     return DESCRIPTION
   },

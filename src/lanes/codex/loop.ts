@@ -63,12 +63,6 @@ import {
   getOpenAIReasoningLevel,
   isReasoningLevelExplicit,
 } from '../../utils/model/openaiReasoning.js'
-import {
-  AFT_AST_SEARCH_TOOL_NAME,
-  AFT_DIAGNOSTICS_TOOL_NAME,
-  AFT_OUTLINE_TOOL_NAME,
-  AFT_ZOOM_TOOL_NAME,
-} from '../../tools/AFTTool/constants.js'
 
 // ─── Lane Implementation ─────────────────────────────────────────
 
@@ -1126,57 +1120,7 @@ export function repairCodexToolCall(
   toolName: string,
   input: Record<string, unknown>,
 ): RepairedCodexToolCall {
-  if (toolName === AFT_AST_SEARCH_TOOL_NAME) {
-    return repairAftAstSearchCall(input)
-  }
-  if (toolName === AFT_ZOOM_TOOL_NAME) {
-    return { toolName, input: repairAftZoomInput(input) }
-  }
-  if (toolName === AFT_DIAGNOSTICS_TOOL_NAME) {
-    return { toolName, input: repairAftDiagnosticsInput(input) }
-  }
   return { toolName, input }
-}
-
-function repairAftAstSearchCall(input: Record<string, unknown>): RepairedCodexToolCall {
-  if (hasMeaningfulValue(input.pattern)) {
-    return { toolName: AFT_AST_SEARCH_TOOL_NAME, input }
-  }
-
-  const paths = Array.isArray(input.paths)
-    ? input.paths.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
-    : []
-  const target = paths.length === 0
-    ? '.'
-    : paths.length === 1
-      ? paths[0]
-      : paths
-
-  return {
-    toolName: AFT_OUTLINE_TOOL_NAME,
-    input: { target },
-  }
-}
-
-function repairAftZoomInput(input: Record<string, unknown>): Record<string, unknown> {
-  if (!hasMeaningfulValue(input.targets)) return input
-  if (!hasMeaningfulValue(input.filePath) && !hasMeaningfulValue(input.symbols)) return input
-
-  const out = { ...input }
-  if (targetsContainFilePath(input.targets)) {
-    delete out.filePath
-    delete out.symbols
-  } else {
-    delete out.targets
-  }
-  return out
-}
-
-function repairAftDiagnosticsInput(input: Record<string, unknown>): Record<string, unknown> {
-  if (!hasMeaningfulValue(input.filePath) || !hasMeaningfulValue(input.directory)) return input
-  const out = { ...input }
-  delete out.directory
-  return out
 }
 
 function hasMeaningfulValue(value: unknown): boolean {

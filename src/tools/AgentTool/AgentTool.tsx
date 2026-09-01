@@ -88,7 +88,7 @@ const baseInputSchema = lazySchema(() => z.object({
   description: z.string().describe('A short (3-5 word) description of the task'),
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
-  model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe("Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent."),
+  model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe("Optional model override for this agent. Takes precedence over the agent definition's model frontmatter, except on an agent pinned to a provider, which keeps its own model. If omitted, uses the agent definition's model, or inherits from the parent."),
   model_id: z.string().optional().describe('Optional fully-qualified model id (e.g. "gemini-3-flash", "kimi-k2.6", "deepseek-v3.1"). Used when the model is not Anthropic Sonnet/Opus/Haiku. Takes priority over the `model` enum when both are set. Pair with `provider` to pin the lane.'),
   provider: z.string().optional().describe('Optional APIProvider name (e.g. "kiro", "antigravity", "moonshot") that this agent must route through, regardless of the session-global provider. Use this when /team-mode needs to pin one role to a specific provider while other agents run elsewhere.'),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
@@ -584,7 +584,7 @@ export const AgentTool = buildTool({
     // active provider's alias policy, and outside this scope that is the
     // session provider — which would hand a pinned agent a model its provider
     // does not serve (and put that wrong name in its env-details prompt).
-    const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () => getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, (isForkPath ? undefined : model) as ModelAlias | undefined, permissionMode));
+    const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () => getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, (isForkPath ? undefined : model) as ModelAlias | undefined, permissionMode, selectedAgent.provider));
     logEvent('tengu_agent_tool_selected', {
       agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       model: resolvedAgentModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

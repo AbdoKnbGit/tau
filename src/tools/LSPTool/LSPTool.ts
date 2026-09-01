@@ -69,37 +69,6 @@ import {
   renderToolUseMessage,
   userFacingName,
 } from './UI.js'
-import {
-  AFT_AST_SEARCH_TOOL_NAME,
-  AFT_DIAGNOSTICS_TOOL_NAME,
-  AFT_NAVIGATE_TOOL_NAME,
-  AFT_OUTLINE_TOOL_NAME,
-  AFT_ZOOM_TOOL_NAME,
-} from '../AFTTool/constants.js'
-
-const AFT_TOOL_NAMES = [
-  AFT_OUTLINE_TOOL_NAME,
-  AFT_ZOOM_TOOL_NAME,
-  AFT_AST_SEARCH_TOOL_NAME,
-  AFT_NAVIGATE_TOOL_NAME,
-  AFT_DIAGNOSTICS_TOOL_NAME,
-]
-
-function hasAftTool(tools: Tools): boolean {
-  return tools.some(tool =>
-    AFT_TOOL_NAMES.some(name => toolMatchesName(tool, name)),
-  )
-}
-
-function lspDescription(tools: Tools): string {
-  return hasAftTool(tools)
-    ? DESCRIPTION
-    : DESCRIPTION.replace('fall back to AFT or Grep', 'fall back to Grep')
-}
-
-function unsupportedFallbackText(tools: Tools): string {
-  return hasAftTool(tools) ? 'AFT or Grep' : 'Grep'
-}
 
 const MAX_LSP_FILE_SIZE_BYTES = 10_000_000
 
@@ -203,7 +172,7 @@ export const LSPTool = buildTool({
   // mid-task (it just uses Grep/Read instead). Startup safety is already handled
   // dynamically by shouldDeferLspTool() (claude.ts), which defers LSP only while
   // the language servers are still initializing. Once they're ready, LSP loads
-  // inline with its full schema like Read/Grep/AFT so the model uses it directly.
+  // inline with its full schema like Read/Grep so the model uses it directly.
   isEnabled() {
     return isLspConnected()
   },
@@ -293,7 +262,7 @@ export const LSPTool = buildTool({
     )
   },
   async prompt(options) {
-    return lspDescription(options.tools)
+    return DESCRIPTION
   },
   renderToolUseMessage,
   renderToolUseErrorMessage,
@@ -455,7 +424,7 @@ export const LSPTool = buildTool({
           } else {
             const output: Output = {
               operation: input.operation,
-              result: `The language server for this file does not support ${input.operation}. Use ${unsupportedFallbackText(context.options.tools)} for this instead.`,
+              result: `The language server for this file does not support ${input.operation}. Use Grep for this instead.`,
               filePath: input.filePath,
             }
             return { data: output }
@@ -596,7 +565,7 @@ export const LSPTool = buildTool({
           errorMessage,
         )
       const result = unsupported
-        ? `The language server for this file does not support ${input.operation}. Use a different LSP operation, or fall back to ${unsupportedFallbackText(context.options.tools)}.`
+        ? `The language server for this file does not support ${input.operation}. Use a different LSP operation, or fall back to Grep.`
         : `Error performing ${input.operation}: ${errorMessage}`
 
       const output: Output = {

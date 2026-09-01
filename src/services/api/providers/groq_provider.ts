@@ -21,7 +21,6 @@
  */
 
 import { OpenAIProvider } from './openai_provider.js'
-import { RUST_TOOL_NAME } from '../../../tools/RustTool/constants.js'
 import type {
   ProviderConfig,
   ProviderRequestParams,
@@ -49,7 +48,6 @@ const GROQ_TOOLS = new Set([
   'Grep',
   'WebSearch',
   'WebFetch',
-  RUST_TOOL_NAME,
 ])
 
 export class GroqProvider extends OpenAIProvider {

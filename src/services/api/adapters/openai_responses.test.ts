@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   await test('emits strict Responses tools for failure-prone schemas', () => {
     const tools = anthropicToolsToResponsesTools([
       {
-        name: 'AFTAstSearch',
+        name: 'SampleAstSearch',
         description: 'AST search',
         input_schema: {
           type: 'object',
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
       assert(!deepContainsKey(tool.parameters, 'propertyNames'), `${tool.name} propertyNames leaked`)
     }
 
-    const ast = tools.find(tool => tool.name === 'AFTAstSearch')!
+    const ast = tools.find(tool => tool.name === 'SampleAstSearch')!
     const astProps = ast.parameters.properties as Record<string, any>
     assert(astProps.pattern.type === 'string', 'pattern must stay required string')
     assert(Array.isArray(astProps.paths.type) && astProps.paths.type.includes('null'),

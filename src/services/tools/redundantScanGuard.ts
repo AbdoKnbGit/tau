@@ -39,8 +39,8 @@ import { TODO_WRITE_TOOL_NAME } from '../../tools/TodoWriteTool/constants.js'
  * that happened to appear in one transcript.
  *
  * Deliberately excluded, because a cell cannot reproduce them and the earlier
- * call was therefore not wasted: CodebaseRetrieval (semantic), AFTAstSearch
- * (AST-aware), GitHistorySearch, TestSearch.
+ * call was therefore not wasted: CodebaseRetrieval (semantic search) and
+ * GitHistorySearch.
  */
 const SEARCH_TOOLS: ReadonlySet<string> = new Set([
   GLOB_TOOL_NAME,

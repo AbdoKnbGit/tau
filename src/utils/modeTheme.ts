@@ -5,8 +5,8 @@ import type { Theme, ThemeName } from './theme.js'
  * Power-mode theme accents.
  *
  * Cheap mode softly bronzes the signature surfaces (wordmark, prompt bar,
- * Claude accents), Rust mode uses a readable forest-to-mint green, and
- * full-power mode gilds them; normal mode leaves the user's theme untouched.
+ * Claude accents) and full-power mode gilds them; normal mode leaves the
+ * user's theme untouched.
  * Only accent slots are overridden — text, borders, backgrounds, and semantic
  * colors keep full readability in every theme.
  *
@@ -78,50 +78,6 @@ const BRONZE_OVERLAYS: Record<OverlayFamily, ModeAccentOverlay> = {
   },
 }
 
-/** Rust mode — forest/mint greens tuned independently for dark and light UI. */
-const RUST_GREEN_OVERLAYS: Record<OverlayFamily, ModeAccentOverlay> = {
-  dark: {
-    brand: 'rgb(88,190,125)',
-    brandDim: 'rgb(58,126,84)',
-    brandBright: 'rgb(132,224,161)',
-    claude: 'rgb(101,201,136)',
-    claudeShimmer: 'rgb(151,232,176)',
-    primary: 'rgb(101,201,136)',
-    secondary: 'rgb(75,158,106)',
-    accent: 'rgb(132,224,161)',
-  },
-  light: {
-    brand: 'rgb(30,118,67)',
-    brandDim: 'rgb(74,145,99)',
-    brandBright: 'rgb(20,96,54)',
-    claude: 'rgb(35,128,73)',
-    claudeShimmer: 'rgb(64,154,96)',
-    primary: 'rgb(35,128,73)',
-    secondary: 'rgb(52,137,84)',
-    accent: 'rgb(24,108,61)',
-  },
-  darkAnsi: {
-    brand: 'ansi:green',
-    brandDim: 'ansi:green',
-    brandBright: 'ansi:greenBright',
-    claude: 'ansi:green',
-    claudeShimmer: 'ansi:greenBright',
-    primary: 'ansi:green',
-    secondary: 'ansi:green',
-    accent: 'ansi:greenBright',
-  },
-  lightAnsi: {
-    brand: 'ansi:green',
-    brandDim: 'ansi:green',
-    brandBright: 'ansi:green',
-    claude: 'ansi:green',
-    claudeShimmer: 'ansi:green',
-    primary: 'ansi:green',
-    secondary: 'ansi:green',
-    accent: 'ansi:green',
-  },
-}
-
 /** Soft gold — warm champagne golds, gentle on dark and light bases. */
 const GOLD_OVERLAYS: Record<OverlayFamily, ModeAccentOverlay> = {
   dark: {
@@ -178,7 +134,6 @@ function overlayFor(
   themeName: ThemeName,
 ): ModeAccentOverlay | null {
   if (mode === 'cheap') return BRONZE_OVERLAYS[overlayFamilyFor(themeName)]
-  if (mode === 'rust') return RUST_GREEN_OVERLAYS[overlayFamilyFor(themeName)]
   if (mode === 'full') return GOLD_OVERLAYS[overlayFamilyFor(themeName)]
   return null
 }
@@ -376,15 +331,6 @@ const WORDMARK_BRONZE: WordmarkPalette = {
   peak: { r: 255, g: 240, b: 216 },
 }
 
-/** Rust mode — forest-to-mint gradient with the original luminance ramp. */
-const WORDMARK_RUST_GREEN: WordmarkPalette = {
-  bodyLeft: { r: 39, g: 105, b: 65 },
-  bodyRight: { r: 143, g: 230, b: 169 },
-  shadow: { r: 21, g: 42, b: 29 },
-  primary: { r: 167, g: 239, b: 188 },
-  peak: { r: 224, g: 255, b: 232 },
-}
-
 /** Full-power mode — soft gold, same luminance ramp as the grey original. */
 const WORDMARK_GOLD: WordmarkPalette = {
   bodyLeft: { r: 138, g: 112, b: 60 },
@@ -396,7 +342,6 @@ const WORDMARK_GOLD: WordmarkPalette = {
 
 function wordmarkFor(mode: PowerMode): WordmarkPalette {
   if (mode === 'cheap') return WORDMARK_BRONZE
-  if (mode === 'rust') return WORDMARK_RUST_GREEN
   if (mode === 'full') return WORDMARK_GOLD
   return WORDMARK_NORMAL
 }

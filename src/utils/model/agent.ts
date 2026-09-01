@@ -1,7 +1,10 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
-import { resolveAgentAliasPolicy } from './agentAliasFallback.js'
+import {
+  pinnedAgentModelOutranksAlias,
+  resolveAgentAliasPolicy,
+} from './agentAliasFallback.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
 import {
   getCanonicalName,
@@ -45,6 +48,7 @@ export function getAgentModel(
   parentModel: string,
   toolSpecifiedModel?: ModelAlias,
   permissionMode?: PermissionMode,
+  agentProvider?: APIProvider,
 ): string {
   // Extract Bedrock region prefix from parent model to inherit for subagents.
   // This ensures subagents use the same cross-region inference profile (e.g., "eu.", "us.")
@@ -71,7 +75,15 @@ export function getAgentModel(
   // A tool-level selection wins over CLAUDE_CODE_SUBAGENT_MODEL and other
   // session-wide defaults. Concrete IDs pass through unchanged; tier aliases
   // are translated by the active provider's agent policy below.
-  if (toolSpecifiedModel) {
+  //
+  // The one exception is an agent that pinned its own provider: a tier alias
+  // means nothing on that lane, so the agent's concrete model stands instead
+  // of being resolved into the session's model or the provider's fixed agent
+  // model. See pinnedAgentModelOutranksAlias().
+  if (
+    toolSpecifiedModel &&
+    !pinnedAgentModelOutranksAlias(toolSpecifiedModel, agentModel, agentProvider)
+  ) {
     const policyModel = resolveAgentAliasPolicy(
       toolSpecifiedModel,
       parentModel,

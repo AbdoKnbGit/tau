@@ -5,8 +5,8 @@ const mode = {
   name: 'mode',
   aliases: ['power', 'powermode'],
   description:
-    'Switch Tau mode: cheap, normal, or Rust',
-  argumentHint: '[cheap|normal|rust]',
+    'Switch Tau mode: cheap or normal',
+  argumentHint: '[cheap|normal]',
   isEnabled: () => true,
   isHidden: false,
   load: () => import('./mode.js'),

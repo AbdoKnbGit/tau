@@ -52,7 +52,7 @@ function main(): void {
 
   const sampleProviderTools = () => ([
     {
-      name: 'AFTAstSearch',
+      name: 'SampleAstSearch',
       description: 'AST search',
       input_schema: {
         type: 'object',
@@ -138,16 +138,16 @@ function main(): void {
       }
     }
 
-    const ast = tools.find(tool => tool.function.name === 'AFTAstSearch')!
+    const ast = tools.find(tool => tool.function.name === 'SampleAstSearch')!
     const astProps = ast.function.parameters.properties as Record<string, any>
     const astRequired = ast.function.parameters.required as string[] | undefined
     assert(JSON.stringify(astRequired) === JSON.stringify(['pattern', 'lang']),
-      `AFTAstSearch required should stay ['pattern','lang'], got ${JSON.stringify(astRequired)}`)
+      `SampleAstSearch required should stay ['pattern','lang'], got ${JSON.stringify(astRequired)}`)
     assert(astProps.paths.type === 'array',
       `optional paths must stay a plain array (not nullable), got ${JSON.stringify(astProps.paths.type)}`)
     // The hint must mark ONLY the two truly-required fields, never the optionals.
     assert(countRequiredMarkers(ast.function.description) === 2,
-      `AFTAstSearch hint should mark 2 required fields, got ${countRequiredMarkers(ast.function.description)}: ${ast.function.description}`)
+      `SampleAstSearch hint should mark 2 required fields, got ${countRequiredMarkers(ast.function.description)}: ${ast.function.description}`)
 
     const task = tools.find(tool => tool.function.name === 'TaskUpdate')!
     const taskRequired = task.function.parameters.required as string[] | undefined
@@ -180,7 +180,7 @@ function main(): void {
         `${tool.function.name} additionalProperties=${JSON.stringify(parameters.additionalProperties)}`)
     }
 
-    const ast = tools.find(tool => tool.function.name === 'AFTAstSearch')!
+    const ast = tools.find(tool => tool.function.name === 'SampleAstSearch')!
     const astProps = ast.function.parameters.properties as Record<string, any>
     assert(astProps.pattern.type === 'string', 'pattern must stay required string')
     assert(Array.isArray(astProps.paths.type) && astProps.paths.type.includes('array') && astProps.paths.type.includes('null'),
@@ -188,7 +188,7 @@ function main(): void {
     // Hint honesty: even though the wire schema was strict-shaped to all-required,
     // the description must still mark only pattern + lang (the real required set).
     assert(countRequiredMarkers(ast.function.description) === 2,
-      `strict AFTAstSearch hint must still mark only 2 real required fields, got ${countRequiredMarkers(ast.function.description)}: ${ast.function.description}`)
+      `strict SampleAstSearch hint must still mark only 2 real required fields, got ${countRequiredMarkers(ast.function.description)}: ${ast.function.description}`)
 
     const task = tools.find(tool => tool.function.name === 'TaskUpdate')!
     const taskProps = task.function.parameters.properties as Record<string, any>
@@ -322,7 +322,7 @@ function main(): void {
         content_block: {
           type: 'tool_use',
           id: 'call_1',
-          name: 'AFTNavigate',
+          name: 'SampleNavigate',
           input: {},
         },
       },
@@ -343,7 +343,7 @@ function main(): void {
     })
 
     assert(invalid.length === 1, `invalid length=${invalid.length}`)
-    assert(invalid[0]?.toolName === 'AFTNavigate', `tool=${invalid[0]?.toolName}`)
+    assert(invalid[0]?.toolName === 'SampleNavigate', `tool=${invalid[0]?.toolName}`)
     assert(invalid[0]?.reason === 'schema_not_sent', `reason=${invalid[0]?.reason}`)
     assert(invalid[0]?.missing.length === 0,
       `schema-not-sent calls should not fake missing args: ${invalid[0]?.missing.join(',')}`)
@@ -368,7 +368,7 @@ function main(): void {
   test('normalizes JSON-string structured Cline args before local validation', () => {
     const providerTools = [
       {
-        name: 'AFTZoom',
+        name: 'SampleZoom',
         description: 'Zoom symbols',
         input_schema: {
           type: 'object',
@@ -415,7 +415,7 @@ function main(): void {
         content_block: {
           type: 'tool_use',
           id: 'call_1',
-          name: 'AFTZoom',
+          name: 'SampleZoom',
           input: {},
         },
       },
@@ -452,7 +452,7 @@ function main(): void {
   test('rejects wrong typed Cline args internally before local validation', () => {
     const providerTools = [
       {
-        name: 'AFTZoom',
+        name: 'SampleZoom',
         description: 'Zoom symbols',
         input_schema: {
           type: 'object',
@@ -492,7 +492,7 @@ function main(): void {
         content_block: {
           type: 'tool_use',
           id: 'call_1',
-          name: 'AFTZoom',
+          name: 'SampleZoom',
           input: {},
         },
       },

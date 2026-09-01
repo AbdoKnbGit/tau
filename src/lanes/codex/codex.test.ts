@@ -10,7 +10,6 @@ import {
   codexLane,
   convertHistoryToCodex,
   extractCodexUsageMetrics,
-  repairCodexToolCall,
   repairCodexToolInput,
   resolveReasoning,
   sanitizeCodexToolParametersForOpenAI,
@@ -279,7 +278,7 @@ async function main(): Promise<void> {
     assert(out.required.includes('command') && out.required.includes('target'), 'required preserved')
   })
 
-  await test('OpenAI strict tool schema helper makes optional AFTAstSearch fields nullable', () => {
+  await test('OpenAI strict tool schema helper makes optional SampleAstSearch fields nullable', () => {
     const out = toOpenAIStrictToolParameters({
       type: 'object',
       properties: {
@@ -340,43 +339,6 @@ async function main(): Promise<void> {
     assert(!('contextLines' in out), 'null optional contextLines removed')
     assert(out.globs.length === 1 && out.globs[0] === '*.py', 'null array item removed')
     assert(out.nested.keep === 'yes' && !('drop' in out.nested), 'nested null removed')
-  })
-
-  await test('Codex repairs AFTZoom targets vs filePath/symbols conflict', () => {
-    const out = repairCodexToolInput('AFTZoom', {
-      filePath: 'moteur_pipeline/run_pipeline.py',
-      symbols: ['run_pipeline'],
-      targets: [{ filePath: 'moteur_pipeline/run_pipeline.py', symbol: 'run_pipeline' }],
-      contextLines: 3,
-    }) as any
-    assert(!('filePath' in out), 'filePath should be removed when targets is present')
-    assert(!('symbols' in out), 'symbols should be removed when targets is present')
-    assert(Array.isArray(out.targets) && out.targets.length === 1, 'targets should be preserved')
-    assert(out.contextLines === 3, 'contextLines preserved')
-  })
-
-  await test('Codex repairs AFTDiagnostics filePath vs directory conflict', () => {
-    const out = repairCodexToolInput('AFTDiagnostics', {
-      filePath: 'moteur_pipeline/run_pipeline.py',
-      directory: 'moteur_pipeline',
-    }) as any
-    assert(out.filePath === 'moteur_pipeline/run_pipeline.py', 'filePath preserved')
-    assert(!('directory' in out), 'directory should be removed when filePath is present')
-  })
-
-  await test('Codex reroutes patternless AFTAstSearch to AFTOutline', () => {
-    const repaired = repairCodexToolCall('AFTAstSearch', {
-      lang: 'go',
-      paths: ['C:\\Users\\ok\\Desktop\\CLIProxyAPI-main\\internal\\api'],
-      globs: ['**/*.go'],
-      contextLines: 1,
-    })
-
-    assert(repaired.toolName === 'AFTOutline',
-      `toolName=${repaired.toolName}`)
-    assert(repaired.input.target === 'C:\\Users\\ok\\Desktop\\CLIProxyAPI-main\\internal\\api',
-      `target=${repaired.input.target}`)
-    assert(!('pattern' in repaired.input), 'pattern must not be invented')
   })
 
   await test('Codex OpenAI sanitizer strips unsupported schema metadata recursively', () => {
@@ -460,7 +422,7 @@ async function main(): Promise<void> {
         },
       },
       {
-        name: 'AFTAstSearch',
+        name: 'SampleAstSearch',
         description: 'ast search',
         input_schema: {
           type: 'object',
@@ -476,7 +438,7 @@ async function main(): Promise<void> {
         },
       },
       {
-        name: 'AFTZoom',
+        name: 'SampleZoom',
         description: 'zoom',
         input_schema: {
           type: 'object',
@@ -530,11 +492,11 @@ async function main(): Promise<void> {
       assert(!deepContainsKey(tool.parameters, 'propertyNames'), `${tool.name} propertyNames leaked`)
       assert(!deepContainsKey(tool.parameters, 'default'), `${tool.name} default leaked`)
     }
-    const ast = tools.find(tool => tool.type === 'function' && tool.name === 'AFTAstSearch') as any
+    const ast = tools.find(tool => tool.type === 'function' && tool.name === 'SampleAstSearch') as any
     assert(ast?.parameters?.properties?.pattern?.type === 'string',
-      'AFTAstSearch pattern property must survive schema sanitization')
+      'SampleAstSearch pattern property must survive schema sanitization')
     assert(ast.parameters.required.includes('pattern'),
-      'AFTAstSearch required must include pattern')
+      'SampleAstSearch required must include pattern')
   })
 
   await test('Codex strict schema compiler handles common tool schema shapes', () => {

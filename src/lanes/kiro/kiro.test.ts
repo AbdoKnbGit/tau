@@ -739,7 +739,7 @@ function main(): void {
       tools: [],
       messages: [
         { role: 'user', content: 'inspect the repo' },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'AFT', input: { pattern: 'main', lang: 'go' } }] },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'SampleSearch', input: { pattern: 'main', lang: 'go' } }] },
         { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tooluse_wrong', content: 'actual search result' }] },
       ],
     })
@@ -777,7 +777,7 @@ function main(): void {
       tools: [],
       messages: [
         { role: 'user', content: 'inspect the repo' },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'AFTOutline', input: { path: 'src' } }] },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'SampleOutline', input: { path: 'src' } }] },
         { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tooluse_wrong', content: 'Permission denied by user', is_error: true }] },
       ],
     })
@@ -796,7 +796,7 @@ function main(): void {
       tools: [],
       messages: [
         { role: 'user', content: 'inspect the repo' },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'AFT', input: { pattern: 'main', lang: 'go' } }] },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'SampleSearch', input: { pattern: 'main', lang: 'go' } }] },
         { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tooluse_wrong', content: 'historical search result' }] },
         { role: 'assistant', content: 'I found the file.' },
         { role: 'user', content: 'continue' },
@@ -825,7 +825,7 @@ function main(): void {
       tools: [],
       messages: [
         { role: 'user', content: 'inspect the repo' },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'AFT', input: { pattern: 'main', lang: 'go' } }] },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tooluse_expected', name: 'SampleSearch', input: { pattern: 'main', lang: 'go' } }] },
         { role: 'assistant', content: 'I will continue after the tool.' },
         { role: 'user', content: 'continue' },
       ],

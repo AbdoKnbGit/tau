@@ -39,27 +39,15 @@ import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
 import { hasEmbeddedSearchTools } from 'src/utils/embeddedTools.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
-import {
-  AFT_AST_SEARCH_TOOL_NAME,
-  AFT_DIAGNOSTICS_TOOL_NAME,
-  AFT_NAVIGATE_TOOL_NAME,
-  AFT_OUTLINE_TOOL_NAME,
-  AFT_ZOOM_TOOL_NAME,
-} from '../tools/AFTTool/constants.js'
 import { LSP_TOOL_NAME } from '../tools/LSPTool/prompt.js'
-import { TOOL_GUIDE_TOOL_NAME } from '../tools/ToolGuideTool/constants.js'
 import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
-import { TEST_SEARCH_TOOL_NAME } from '../tools/TestSearchTool/constants.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
 import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/constants.js'
 import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
 import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
-import { SPEC_QUEST_TOOL_NAME } from '../tools/SpecQuestTool/constants.js'
 import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
 import { EVAL_TOOL_NAME } from '../tools/EvalTool/constants.js'
-import { INTEGRATION_HUB_TOOL_NAME } from '../tools/IntegrationHubTool/constants.js'
-import { DEPLOY_PREVIEW_TOOL_NAME } from '../tools/DeployPreviewTool/constants.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
 import { WEB_BROWSER_TOOL_NAME } from '../tools/WebBrowserTool/constants.js'
 import { BROWSER_TOOL_NAME } from '../tools/BrowserTool/constants.js'
@@ -78,7 +66,6 @@ import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { shouldEmitSystemPromptBoundary } from '../utils/betas.js'
 import { isForkSubagentEnabled } from '../tools/AgentTool/forkSubagent.js'
-import { RUST_REQUEST_EFFICIENCY_GUIDANCE } from '../tools/RustTool/constants.js'
 import {
   systemPromptSection,
   DANGEROUS_uncachedSystemPromptSection,
@@ -306,29 +293,16 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const taskToolName = [TASK_CREATE_TOOL_NAME, TODO_WRITE_TOOL_NAME].find(n =>
     enabledTools.has(n),
   )
-  const aftToolNames = [
-    AFT_OUTLINE_TOOL_NAME,
-    AFT_ZOOM_TOOL_NAME,
-    AFT_AST_SEARCH_TOOL_NAME,
-    AFT_NAVIGATE_TOOL_NAME,
-    AFT_DIAGNOSTICS_TOOL_NAME,
-  ]
-  const hasAftTools = aftToolNames.some(name => enabledTools.has(name))
   const hasLspTool = enabledTools.has(LSP_TOOL_NAME)
-  const hasToolGuideTool = enabledTools.has(TOOL_GUIDE_TOOL_NAME)
   const hasProjectWorkflowTool = enabledTools.has(PROJECT_WORKFLOW_TOOL_NAME)
-  const hasTestSearchTool = enabledTools.has(TEST_SEARCH_TOOL_NAME)
   const hasCodebaseRetrievalTool = enabledTools.has(CODEBASE_RETRIEVAL_TOOL_NAME)
   const hasGitHistorySearchTool = enabledTools.has(GIT_HISTORY_SEARCH_TOOL_NAME)
   const hasInspectSiteTool = enabledTools.has(INSPECT_SITE_TOOL_NAME)
   const hasWebBrowserTool = enabledTools.has(WEB_BROWSER_TOOL_NAME)
   const hasBrowserTool = enabledTools.has(BROWSER_TOOL_NAME)
   const hasPackageManagerTool = enabledTools.has(PACKAGE_MANAGER_TOOL_NAME)
-  const hasSpecQuestTool = enabledTools.has(SPEC_QUEST_TOOL_NAME)
   const hasMermaidRenderTool = enabledTools.has(MERMAID_RENDER_TOOL_NAME)
   const hasEvalTool = enabledTools.has(EVAL_TOOL_NAME)
-  const hasIntegrationHubTool = enabledTools.has(INTEGRATION_HUB_TOOL_NAME)
-  const hasDeployPreviewTool = enabledTools.has(DEPLOY_PREVIEW_TOOL_NAME)
   const hasVisualDesignAuditTool = enabledTools.has(VISUAL_DESIGN_AUDIT_TOOL_NAME)
 
   // In REPL mode, Read/Write/Edit/Glob/Grep/Bash/Agent are hidden from direct
@@ -349,20 +323,14 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const embedded = hasEmbeddedSearchTools()
 
   const workflowToolOrientationItems = [
-    hasToolGuideTool
-      ? `${TOOL_GUIDE_TOOL_NAME}: use first for ambiguous, multi-step, or cross-domain work to choose the workflow before acting.`
-      : null,
     hasCodebaseRetrievalTool
-      ? `${CODEBASE_RETRIEVAL_TOOL_NAME}: use before broad ${GREP_TOOL_NAME}/${GLOB_TOOL_NAME}/${FILE_READ_TOOL_NAME} exploration when the question is about intent, behavior, architecture, or "where should I change this?".`
+      ? `${CODEBASE_RETRIEVAL_TOOL_NAME}: when the question is "where is X handled", "how does Y work", or "what do I change to do Z", call this FIRST — before ${GREP_TOOL_NAME}, ${GLOB_TOOL_NAME} or ${FILE_READ_TOOL_NAME}. Text search needs you to already know the name to search for; this does not. Use its ranked files as the starting point, then confirm with exact tools before editing.`
       : null,
     hasGitHistorySearchTool
       ? `${GIT_HISTORY_SEARCH_TOOL_NAME}: use before editing when prior fixes, regressions, blame, or "how was this solved before?" could matter.`
       : null,
     hasProjectWorkflowTool
       ? `${PROJECT_WORKFLOW_TOOL_NAME}: use before guessing build, lint, test, dev-server, package, preview, or deploy commands.`
-      : null,
-    hasTestSearchTool
-      ? `${TEST_SEARCH_TOOL_NAME}: use after choosing or editing a source/test file to find the verification counterpart.`
       : null,
     hasInspectSiteTool
       ? `${INSPECT_SITE_TOOL_NAME}: use after a dev server or URL is available for HTTP/page checks before relying on code inspection alone.`
@@ -372,15 +340,6 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
       : null,
     hasPackageManagerTool
       ? `${PACKAGE_MANAGER_TOOL_NAME}: use before dependency or package-script work.`
-      : null,
-    hasIntegrationHubTool
-      ? `${INTEGRATION_HUB_TOOL_NAME}: use before database, auth, storage, payment, email, migration, or secret-related work.`
-      : null,
-    hasDeployPreviewTool
-      ? `${DEPLOY_PREVIEW_TOOL_NAME}: use before preview, expose, deploy, hosting, CI/CD, or port-publication work.`
-      : null,
-    hasSpecQuestTool
-      ? `${SPEC_QUEST_TOOL_NAME}: use for large features, explicit /spec or /quest requests, or persistent requirements/design/task artifacts.`
       : null,
     hasMermaidRenderTool
       ? `${MERMAID_RENDER_TOOL_NAME}: use when a Mermaid diagram needs a visual browser-reviewable artifact, not just chat text.`
@@ -409,19 +368,9 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
           `To search for files use ${GLOB_TOOL_NAME} instead of find or ls`,
           `To search the content of files, use ${GREP_TOOL_NAME} instead of grep or rg`,
         ]),
-    ...(hasAftTools
-      ? [
-          `For code-shape and exploration tasks, use the read-only AFT tools (${aftToolNames.join(', ')}) as the first pass instead of reading whole files or running broad text searches: repository or directory orientation and architecture questions (AFTOutline), reading a known function or class body (AFTZoom), and syntax-shaped or framework-pattern search such as every fetch(), route, or addEventListener (AFTAstSearch).${hasLspTool ? ` For exact symbol semantics — where something is defined, who references it, its inferred type, and call hierarchy — prefer the ${LSP_TOOL_NAME} tool instead; reach for AFTNavigate or AFTDiagnostics when no language server covers the file's language or as a quick structural cross-check. ${LSP_TOOL_NAME} has no diagnostics operation: type-checked diagnostics from the language server are delivered to you automatically after files open or change, and AFTDiagnostics is the tool to pull diagnostics on demand.` : ` Use AFTNavigate for callers, impact, and traces after a symbol is known, and AFTDiagnostics for static diagnostics.`} Do not use AFT when the user names an exact file to read or edit, when a simple literal text search is enough, when the target is not code, or when AFT is unavailable or insufficient; in those cases use Read, Grep, Glob, Edit, or Bash normally.`,
-        ]
-      : []),
     ...(hasLspTool
       ? [
-          `When the question is "where / who / what-type" about a specific code symbol — where is X defined, who calls or references X, what is X's type or signature, what implements X, what does X call — reach for the ${LSP_TOOL_NAME} tool FIRST, before ${GREP_TOOL_NAME} or reading files. Pass the symbol name and its file (for example symbol "LogoV2"); the tool locates the position itself, so do NOT read the file to compute line and character. ${LSP_TOOL_NAME} returns ground truth that text search cannot: real inferred types, and exact cross-file definitions and references — for example it can prove an import is unused because the reference count is 1. Type-checked diagnostics also come from the language server, but they arrive on their own after files open or change: ${LSP_TOOL_NAME} has no diagnostics operation, so never call it to fetch them (use AFTDiagnostics if you need to pull diagnostics on demand). Conversely, when a ${GREP_TOOL_NAME} search turns up a code symbol whose complete or accurate set of usages matters — before renaming it, deleting it, or deciding whether it is dead — confirm the real perimeter with ${LSP_TOOL_NAME} (findReferences or goToDefinition): it drops false positives in comments and strings and catches re-exports and aliases that text search misses. Use it for any language with a running server (TS/JS, Python, HTML, CSS, JSON, and more). Only when it reports no server for the file's language, or returns nothing useful, ${hasAftTools ? 'fall back to AFT, then ' : 'fall back to '}${GREP_TOOL_NAME}.`,
-        ]
-      : []),
-    ...(hasToolGuideTool
-      ? [
-          `When a task could follow several workflows and you are unsure which tool sequence is best, load ${TOOL_GUIDE_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} and use it to choose Tau-native behavior before acting. It is read-only and should guide browser/app verification, codebase search, git-history investigation, planning, workflow detection, package work, database/integration work, deploy/expose work, design review, test selection, memory/skill work, and multi-agent delegation. Do not use Cursor-specific tools or behavior.`,
+          `When the question is "where / who / what-type" about a specific code symbol — where is X defined, who calls or references X, what is X's type or signature, what implements X, what does X call — reach for the ${LSP_TOOL_NAME} tool FIRST, before ${GREP_TOOL_NAME} or reading files. Pass the symbol name and its file (for example symbol "LogoV2"); the tool locates the position itself, so do NOT read the file to compute line and character. ${LSP_TOOL_NAME} returns ground truth that text search cannot: real inferred types, and exact cross-file definitions and references — for example it can prove an import is unused because the reference count is 1. Type-checked diagnostics also come from the language server, but they arrive on their own after files open or change: ${LSP_TOOL_NAME} has no diagnostics operation, so never call it to fetch them. Conversely, when a ${GREP_TOOL_NAME} search turns up a code symbol whose complete or accurate set of usages matters — before renaming it, deleting it, or deciding whether it is dead — confirm the real perimeter with ${LSP_TOOL_NAME} (findReferences or goToDefinition): it drops false positives in comments and strings and catches re-exports and aliases that text search misses. Use it for any language with a running server (TS/JS, Python, HTML, CSS, JSON, and more). Only when it reports no server for the file's language, or returns nothing useful, fall back to ${GREP_TOOL_NAME}.`,
         ]
       : []),
     ...(hasProjectWorkflowTool
@@ -429,14 +378,9 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
           `Before guessing build, lint, test, dev-server, package, or deploy commands in an unfamiliar project, load ${PROJECT_WORKFLOW_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME}. It reads local manifests and returns repo-native commands without running them.`,
         ]
       : []),
-    ...(hasTestSearchTool
-      ? [
-          `When changing a source file or triaging a failing test, load ${TEST_SEARCH_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to find likely source/test counterparts, then ${hasProjectWorkflowTool ? `pair it with ${PROJECT_WORKFLOW_TOOL_NAME} or repo scripts` : 'use repo scripts'} for focused verification.`,
-        ]
-      : []),
     ...(hasCodebaseRetrievalTool
       ? [
-          `For broad "where is this behavior / what should I change / how does this feature work" repo questions, load ${CODEBASE_RETRIEVAL_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} for intent-ranked files and snippets, then use ${[
+          `For broad "where is this behavior / what should I change / how does this feature work" repo questions, call ${CODEBASE_RETRIEVAL_TOOL_NAME} before text search: it ranks files by intent, so it answers the questions where you do not yet know the identifier to grep for. Then use ${[
             hasLspTool ? LSP_TOOL_NAME : null,
             GREP_TOOL_NAME,
             FILE_READ_TOOL_NAME,
@@ -468,24 +412,9 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
           `Before dependency changes or package scripts, load ${PACKAGE_MANAGER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to detect the package manager and produce safe commands. Ask before major upgrades, removals, or registry/auth changes.`,
         ]
       : []),
-    ...(hasSpecQuestTool
-      ? [
-          `For large features or explicit /spec or /quest requests, load ${SPEC_QUEST_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to create persistent repo-local requirements, design, and task files under .tau/specs/.`,
-        ]
-      : []),
     ...(hasMermaidRenderTool
       ? [
           `When a diagram should be reviewed visually or attached to a spec/report, load ${MERMAID_RENDER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to write a Mermaid source file and browser-renderable HTML preview.`,
-        ]
-      : []),
-    ...(hasIntegrationHubTool
-      ? [
-          `For full-stack integrations, databases, migrations, secrets, auth, storage, payments, or email, load ${INTEGRATION_HUB_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to scan local signals and check whether required environment variables are present without revealing values. Ask before requesting secrets or mutating shared data.`,
-        ]
-      : []),
-    ...(hasDeployPreviewTool
-      ? [
-          `Before deploy, expose, preview URL, or hosting work, load ${DEPLOY_PREVIEW_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to inspect deploy configs, scripts, and likely ports. Ask before publishing, pushing, or exposing local services.`,
         ]
       : []),
     ...(hasVisualDesignAuditTool
@@ -532,33 +461,6 @@ function getCheapModeToolsSection(force = false): string | null {
       `Only the tools listed in this request exist. Subagents/delegation, skills, plugins, MCP, and LSP are off; do not attempt them or ask the user to enable them.`,
       `When their matching tools are listed, core capabilities may include file read/write/edit, notebooks, shell, file/content search, tasks, plan mode, snapshots, web fetch, web search, and running Python in a persistent kernel that can call the other listed tools from inside the code. Provider names may differ; trust the actual list, never invent a missing capability, and never claim a listed one is unavailable.`,
       `Delegation is off, so the kernel is the only way left to keep bulk output out of this conversation. Any question that would otherwise mean reading many files, re-running a command, or parsing a large log belongs in a cell that prints only the answer.`,
-    ]),
-  ].join(`\n`)
-}
-
-/**
- * Provider-neutral routing for Rust mode. The guidance is capability-based so
- * it remains correct when a provider renames built-in tools. It also handles
- * the rollout interval before the native Rust tool is registered: the model is
- * told explicitly not to invent it.
- */
-function getRustModeToolsSection(
-  enabledTools?: ReadonlySet<string>,
-): string | null {
-  if (getPowerModeFromSettings(getInitialSettings()) !== 'rust') return null
-
-  const hasRustTool = enabledTools?.has('Rust')
-  return [
-    `# Mode: rust`,
-    ...prependBullets([
-      `Rust mode keeps the normal Tau toolset and adds bounded, read-only native Rust analysis. Do not route every .rs task through it: continue to use symbol navigation for definitions/references, file tools for reading and editing, text search for literal searches, and the shell for command execution.`,
-      hasRustTool === true
-        ? `The dedicated Rust capability exposes exactly these actions: workspace_context for Cargo ownership and metadata; focused_command for argv-safe Cargo planning; test_map for syntax-aware test scopes; diagnostics for parsing existing rustc/Clippy output; dependency_cost for an existing Cargo.lock graph; artifact_size for existing target outputs; profile_advice for evidence-based Cargo profile tradeoffs; unsafe_audit for syntax-aware unsafe/FFI/export inventory; generated_code_map for build-script, OUT_DIR, include-macro, generator-input, and generated-file ownership; build_environment for workspace-scoped toolchain/target/linker/rustflags/wrapper resolution; and change_impact for caller-supplied changed paths, reverse local dependencies, and focused validation argv. Use only actions declared in its current schema.`
-        : hasRustTool === false
-          ? `No dedicated Rust capability is present in the current tool list yet. Use the available normal tools and never invent or claim to have a Rust-specific tool that is not listed.`
-          : `Use a dedicated Rust capability only if it appears in your current tool list; otherwise use the available normal tools. Never invent or claim to have a Rust-specific tool that is not listed.`,
-      `Routing boundary: when the user supplies changed paths and asks about impact or validation, call change_impact directly; it resolves ownership, so do not pre-call workspace_context or focused_command. workspace_context only orients. focused_command preserves the most specific named path and only plans; the normal shell executes. diagnostics only parses existing output, so request Cargo/Clippy --message-format=json for fresh diagnostics and pass captured stdout as input. Keep every other action within its read-only purpose above. Treat returned Cargo program+args as OS-neutral argv: preserve every argument, never rewrite selectors with shell substitutions, brace expansion, globs, loops, or platform-specific shorthand, and recognize --workspace plus --exclude as exact focused coverage. Skip redundant actions and continue using normal tools for source reading, navigation, search, editing, and execution.`,
-      RUST_REQUEST_EFFICIENCY_GUIDANCE,
     ]),
   ].join(`\n`)
 }
@@ -831,7 +733,6 @@ export async function getSystemPrompt(
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return [
       `You are Tau, a multi-provider AI coding CLI.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
-      getRustModeToolsSection(enabledTools),
     ].filter((section): section is string => section !== null)
   }
 
@@ -859,7 +760,6 @@ ${CYBER_RISK_INSTRUCTION}`,
       await loadMemoryPrompt({ compact: isCheapMode }),
       envInfo,
       getLanguageSection(settings.language),
-      getRustModeToolsSection(enabledTools),
       // When delta enabled, instructions are announced via persisted
       // mcp_instructions_delta attachments (attachments.ts) instead.
       isMcpInstructionsDeltaEnabled()
@@ -975,7 +875,6 @@ ${CYBER_RISK_INSTRUCTION}`,
           getActionsSection(),
           getUsingYourToolsSection(enabledTools),
           getCheapModeToolsSection(),
-          getRustModeToolsSection(enabledTools),
           getSimpleToneAndStyleSection(),
           getOutputEfficiencySection(),
         ]),
@@ -1227,12 +1126,10 @@ export async function enhanceSystemPromptWithEnvDetails(
       ? getDiscoverSkillsGuidance()
       : null
   const envInfo = await computeEnvInfo(model, additionalWorkingDirectories)
-  const rustModeGuidance = getRustModeToolsSection(enabledToolNames)
   return [
     ...existingSystemPrompt,
     notes,
     ...(discoverSkillsGuidance !== null ? [discoverSkillsGuidance] : []),
-    ...(rustModeGuidance !== null ? [rustModeGuidance] : []),
     envInfo,
   ]
 }

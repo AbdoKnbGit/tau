@@ -544,9 +544,8 @@ export type Attachment =
        * Announces power-mode transitions that change what the model may use.
        * Emitted when the effective mode diverges from the last announced one
        * (reconstructed from the transcript, default 'normal') and the
-       * transition involves 'cheap' or 'rust'. Cheap retracts capabilities;
-       * Rust adds/removes a routing contract that must remain explicit in an
-       * append-only conversation.
+       * transition involves 'cheap', which retracts capabilities in a way
+       * that must remain explicit in an append-only conversation.
        */
       type: 'power_mode_change'
       mode: PowerMode
@@ -1671,9 +1670,9 @@ export function getMcpInstructionsDeltaAttachment(
  * power_mode_change attachments, so it survives resume and re-fires after
  * compaction eats it — which is desirable, the constraint gets restated).
  *
- * Transitions involving 'cheap' or 'rust' are announced. normal↔full differ
+ * Transitions involving 'cheap' are announced. normal↔full differ
  * only in optional-tool toggles, which the tool list itself communicates. A
- * fresh session that starts in either special mode announces on turn 0.
+ * fresh session that starts in cheap mode announces on turn 0.
  */
 export function getPowerModeChangeAttachment(
   messages: Message[] | undefined,
@@ -1688,9 +1687,7 @@ export function getPowerModeChangeAttachment(
   if (current === announced) return []
   if (
     current !== 'cheap' &&
-    announced !== 'cheap' &&
-    current !== 'rust' &&
-    announced !== 'rust'
+    announced !== 'cheap'
   ) {
     return []
   }

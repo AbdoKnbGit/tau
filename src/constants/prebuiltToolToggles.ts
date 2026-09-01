@@ -1,23 +1,11 @@
-import {
-  AFT_AST_SEARCH_TOOL_NAME,
-  AFT_DIAGNOSTICS_TOOL_NAME,
-  AFT_NAVIGATE_TOOL_NAME,
-  AFT_OUTLINE_TOOL_NAME,
-  AFT_ZOOM_TOOL_NAME,
-} from '../tools/AFTTool/constants.js'
 import { ARTIFACT_CANVAS_TOOL_NAME } from '../tools/ArtifactCanvasTool/constants.js'
-import { DEPLOY_PREVIEW_TOOL_NAME } from '../tools/DeployPreviewTool/constants.js'
-import { DIFF_ARTIFACT_TOOL_NAME } from '../tools/DiffArtifactTool/constants.js'
 import { BROWSER_TOOL_NAME } from '../tools/BrowserTool/constants.js'
 import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
-import { INTEGRATION_HUB_TOOL_NAME } from '../tools/IntegrationHubTool/constants.js'
 import { LSP_TOOL_NAME } from '../tools/LSPTool/prompt.js'
 import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
 import { NATIVE_SYSINFO_TOOL_NAME } from '../tools/NativeTools/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
 import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
-import { TEST_SEARCH_TOOL_NAME } from '../tools/TestSearchTool/constants.js'
-import { TOOL_GUIDE_TOOL_NAME } from '../tools/ToolGuideTool/constants.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
 import { WEB_BROWSER_TOOL_NAME } from '../tools/WebBrowserTool/constants.js'
 
@@ -38,25 +26,6 @@ export const PREBUILT_TOOL_TOGGLE_GROUPS = [
     label: 'Code Intelligence',
     items: [
       {
-        id: 'AFT',
-        aliases: [
-          AFT_OUTLINE_TOOL_NAME,
-          AFT_ZOOM_TOOL_NAME,
-          AFT_AST_SEARCH_TOOL_NAME,
-          AFT_NAVIGATE_TOOL_NAME,
-          AFT_DIAGNOSTICS_TOOL_NAME,
-        ],
-        purpose:
-          'Read-only code outline, symbol zoom, AST search, navigation, and diagnostics.',
-        toolNames: [
-          AFT_OUTLINE_TOOL_NAME,
-          AFT_ZOOM_TOOL_NAME,
-          AFT_AST_SEARCH_TOOL_NAME,
-          AFT_NAVIGATE_TOOL_NAME,
-          AFT_DIAGNOSTICS_TOOL_NAME,
-        ],
-      },
-      {
         id: LSP_TOOL_NAME,
         purpose:
           'Language-server code intelligence for definitions, references, hover, symbols, and call hierarchy.',
@@ -73,29 +42,9 @@ export const PREBUILT_TOOL_TOGGLE_GROUPS = [
         toolNames: [PROJECT_WORKFLOW_TOOL_NAME],
       },
       {
-        id: TEST_SEARCH_TOOL_NAME,
-        purpose: 'Find likely source and test counterparts.',
-        toolNames: [TEST_SEARCH_TOOL_NAME],
-      },
-      {
         id: PACKAGE_MANAGER_TOOL_NAME,
         purpose: 'Detect the package manager and suggest safe package commands.',
         toolNames: [PACKAGE_MANAGER_TOOL_NAME],
-      },
-      {
-        id: INTEGRATION_HUB_TOOL_NAME,
-        purpose: 'Scan database, auth, storage, integration, and secret signals.',
-        toolNames: [INTEGRATION_HUB_TOOL_NAME],
-      },
-      {
-        id: DEPLOY_PREVIEW_TOOL_NAME,
-        purpose: 'Inspect deploy, preview, tunnel, hosting, and port readiness.',
-        toolNames: [DEPLOY_PREVIEW_TOOL_NAME],
-      },
-      {
-        id: TOOL_GUIDE_TOOL_NAME,
-        purpose: 'Choose the right Tau-native workflow and tool sequence.',
-        toolNames: [TOOL_GUIDE_TOOL_NAME],
       },
     ],
   },
@@ -140,12 +89,6 @@ export const PREBUILT_TOOL_TOGGLE_GROUPS = [
           'Create browser-reviewable HTML artifacts for reports, previews, mockups, and canvases.',
         toolNames: [ARTIFACT_CANVAS_TOOL_NAME],
       },
-      {
-        id: DIFF_ARTIFACT_TOOL_NAME,
-        purpose:
-          'Create shareable browser diff artifacts and unified patch files.',
-        toolNames: [DIFF_ARTIFACT_TOOL_NAME],
-      },
     ],
   },
   {
@@ -160,8 +103,13 @@ export const PREBUILT_TOOL_TOGGLE_GROUPS = [
   },
 ] as const satisfies readonly PrebuiltToolToggleGroup[]
 
+// `[...group.items]` rather than `group.items`: `as const` makes each group's
+// items a readonly tuple, and flatMap cannot resolve its overload against a
+// union of tuples of differing length once a group holds a single item.
+// Spreading yields a plain array while preserving the literal `id` types that
+// `PrebuiltToolToggleId` is derived from.
 export const PREBUILT_TOOL_TOGGLE_ITEMS = PREBUILT_TOOL_TOGGLE_GROUPS.flatMap(
-  group => group.items,
+  group => [...group.items],
 )
 
 export type PrebuiltToolToggleId =
@@ -173,7 +121,15 @@ export function getPrebuiltToolToggleItem(
   const normalized = value.trim().toLowerCase()
   if (!normalized) return undefined
 
-  return PREBUILT_TOOL_TOGGLE_ITEMS.find(item => {
+  return PREBUILT_TOOL_TOGGLE_ITEMS.find(entry => {
+    // Widened deliberately. `as const` narrows the union to the shapes that
+    // actually ship, and since AFT was removed no toggle declares `aliases`
+    // any more — so the literal union no longer carries the property even
+    // though `PrebuiltToolToggleItem` still allows it. Reading through the
+    // declared type keeps the alias branch working for the next toggle that
+    // bundles tools, rather than deleting a supported feature to satisfy
+    // inference.
+    const item: PrebuiltToolToggleItem = entry
     if (item.id.toLowerCase() === normalized) return true
     if (item.toolNames.some(name => name.toLowerCase() === normalized)) {
       return true

@@ -13,7 +13,6 @@
         "@anthropic-ai/sdk": "^0.50.1",
         "@aws-sdk/client-bedrock-runtime": "^3.700.0",
         "@commander-js/extra-typings": "^12.1.0",
-        "@cortexkit/aft-bridge": "0.31.1",
         "@growthbook/growthbook": "^1.4.3",
         "@modelcontextprotocol/sdk": "^1.12.1",
         "@opentelemetry/api": "^1.9.0",
@@ -96,12 +95,6 @@
       "license": "MIT",
       "name": "@abdoknbgit/tau",
       "optionalDependencies": {
-        "@cortexkit/aft-darwin-arm64": "0.31.1",
-        "@cortexkit/aft-darwin-x64": "0.31.1",
-        "@cortexkit/aft-linux-arm64": "0.31.1",
-        "@cortexkit/aft-linux-x64": "0.31.1",
-        "@cortexkit/aft-win32-arm64": "0.31.1",
-        "@cortexkit/aft-win32-x64": "0.31.1",
         "node-pty": "^1.1.0"
       },
       "peerDependencies": {
@@ -971,111 +964,6 @@
       },
       "resolved": "https://registry.npmjs.org/@commander-js/extra-typings/-/extra-typings-12.1.0.tgz",
       "version": "12.1.0"
-    },
-    "node_modules/@cortexkit/aft-bridge": {
-      "dependencies": {
-        "undici": "^7.25.0"
-      },
-      "integrity": "sha512-FwOXDu7QKda++5/Wur30DKeJeLXpTfmVaUMCw/keLiDcpOMhp5Rt3lAF4O0tyE41bqT5fqx6WU7mYYLGVR4jzQ==",
-      "license": "MIT",
-      "resolved": "https://registry.npmjs.org/@cortexkit/aft-bridge/-/aft-bridge-0.31.1.tgz",
-      "version": "0.31.1"
-    },
-    "node_modules/@cortexkit/aft-darwin-arm64": {
-      "bin": {
-        "aft": "bin/aft"
-      },
-      "cpu": [
-        "arm64"
-      ],
-      "integrity": "sha512-6ylSPbg60Up/sZwwnyKUTbJy6d6CCFJOtBy879Ex1GXTBV0lA12dDWqs+chDaFtXhu6GjuUjPW34tYaPsMHaPw==",
-      "license": "MIT",
-      "optional": true,
-      "os": [
-        "darwin"
-      ],
-      "resolved": "https://registry.npmjs.org/@cortexkit/aft-darwin-arm64/-/aft-darwin-arm64-0.31.1.tgz",
-      "version": "0.31.1"
-    },
-    "node_modules/@cortexkit/aft-darwin-x64": {
-      "bin": {
-        "aft": "bin/aft"
-      },
-      "cpu": [
-        "x64"
-      ],
-      "integrity": "sha512-ZozWw09pa++V0/aj+TbZ5bfRNQ8EBK3f8XnMajxr/oq8godsQtrVPJxO+VzmHtaN0flAl6Mf93tOhMoAlxGFGg==",
-      "license": "MIT",
-      "optional": true,
-      "os": [
-        "darwin"
-      ],
-      "resolved": "https://registry.npmjs.org/@cortexkit/aft-darwin-x64/-/aft-darwin-x64-0.31.1.tgz",
-      "version": "0.31.1"
-    },
-    "node_modules/@cortexkit/aft-linux-arm64": {
-      "bin": {
-        "aft": "bin/aft"
-      },
-      "cpu": [
-        "arm64"
-      ],
-      "integrity": "sha512-Kgg+7UsyyW0pwm2+mDAFUGvaOLr8+oBEx2I0TyolRdOUn69oLJOXlSFUv5IqMpoJ7WsE88YZBHMfcRn5y1JqwA==",
-      "license": "MIT",
-      "optional": true,
-      "os": [
-        "linux"
-      ],
-      "resolved": "https://registry.npmjs.org/@cortexkit/aft-linux-arm64/-/aft-linux-arm64-0.31.1.tgz",
-      "version": "0.31.1"
-    },
-    "node_modules/@cortexkit/aft-linux-x64": {
-      "bin": {
-        "aft": "bin/aft"
-      },
-      "cpu": [
-        "x64"
-      ],
-      "integrity": "sha512-6uUH7Fs7qD3LI25xzefkg5gmNJZU66TZ8k1dg6v6qQEeisHpFmEtOQYzs3m6Ig/wKr+a9njSywa4dnZFAy+aYw==",
-      "license": "MIT",
-      "optional": true,
-      "os": [
-        "linux"
-      ],
-      "resolved": "https://registry.npmjs.org/@cortexkit/aft-linux-x64/-/aft-linux-x64-0.31.1.tgz",
-      "version": "0.31.1"
-    },
-    "node_modules/@cortexkit/aft-win32-arm64": {
-      "bin": {
-        "aft": "bin/aft.exe"
-      },
-      "cpu": [
-        "arm64"
-      ],
-      "integrity": "sha512-RLW/xfVhrpI4zIwlmsu+4eGWDq99kBFJ+PPwxhYIDmW7m+Arb+bWhLOVjib8dHWunorHFcGzjP3kj1ZiMfc/EA==",
-      "license": "MIT",
-      "optional": true,
-      "os": [
-        "win32"
-      ],
-      "resolved": "https://registry.npmjs.org/@cortexkit/aft-win32-arm64/-/aft-win32-arm64-0.31.1.tgz",
-      "version": "0.31.1"
-    },
-    "node_modules/@cortexkit/aft-win32-x64": {
-      "bin": {
-        "aft": "bin/aft.exe"
-      },
-      "cpu": [
-        "x64"
-      ],
-      "integrity": "sha512-5qZCwJXHMOeNonah6xoh+YTfCEoUE1MeDCMgT0EkcAzPomWc5G6zXlKCIWrDWk9Oakj5ua15ihAzXM1XDUT2Lg==",
-      "license": "MIT",
-      "optional": true,
-      "os": [
-        "win32"
-      ],
-      "resolved": "https://registry.npmjs.org/@cortexkit/aft-win32-x64/-/aft-win32-x64-0.31.1.tgz",
-      "version": "0.31.1"
     },
     "node_modules/@emnapi/runtime": {
       "dependencies": {

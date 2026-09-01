@@ -47,7 +47,6 @@ import {
   type OpenAIChatCompletion,
   type OpenAIChatCompletionChunk,
 } from '../adapters/openai_to_anthropic.js'
-import { RUST_TOOL_NAME } from '../../../tools/RustTool/constants.js'
 import {
   anthropicToResponsesInput,
   anthropicToolsToResponsesTools,
@@ -156,7 +155,6 @@ const CORE_TOOL_NAMES = new Set([
   'TodoRead',
   'TodoWrite',
   'ToolSearch',
-  RUST_TOOL_NAME,
 ])
 
 const DEFAULT_3P_MAX_TOKENS = 4096

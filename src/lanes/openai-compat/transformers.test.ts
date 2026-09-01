@@ -688,7 +688,6 @@ function main(): void {
       { name: 'Bash' }, { name: 'Read' }, { name: 'Edit' }, { name: 'Write' },
       { name: 'Grep' }, { name: 'Glob' }, { name: 'WebSearch' }, { name: 'WebFetch' },
       { name: 'Agent' }, { name: 'Skill' },
-      { name: 'Rust' },
       { name: 'ToolSearch' },
       { name: 'TaskCreate' }, { name: 'CronCreate' }, { name: 'NotebookEdit' }, { name: 'Snapshot' },
       { name: 'PushNotification' }, { name: 'RemoteTrigger' }, { name: 'ScheduleWakeup' },
@@ -702,7 +701,6 @@ function main(): void {
       'expected FS tools kept')
     assert(names.includes('WebSearch') && names.includes('WebFetch'), 'expected web tools kept')
     assert(names.includes('Agent'), 'expected Agent kept for sub-agent spawning')
-    assert(names.includes('Rust'), 'expected Rust capability kept in small-tier routing')
     assert(names.includes('mcp__github__list_issues') && names.includes('mcp__slack__send'),
       'expected MCP tools to pass through')
     assert(!names.includes('TaskCreate'), 'TaskCreate should be dropped')
@@ -952,7 +950,7 @@ function main(): void {
         { name: 'Agent' }, { name: 'Skill' }, { name: 'WebSearch' }, { name: 'WebFetch' },
         { name: 'ToolSearch' }, { name: 'NotebookEdit' }, { name: 'Snapshot' },
         { name: 'TaskCreate' }, { name: 'CronCreate' }, { name: 'RemoteTrigger' },
-        { name: 'mcp__github__list_issues' }, { name: 'Rust' },
+        { name: 'mcp__github__list_issues' },
       ]
       const kept = TRANSFORMERS.nim.filterTools?.('moonshotai/kimi-k2-instruct', raw) ?? raw
       const names = kept.map(t => t.name)
@@ -961,8 +959,8 @@ function main(): void {
       assert(names.includes('Grep') && names.includes('Glob') && names.includes('TodoWrite'),
         'expected core search/planning tools kept')
       assert(names.includes('Agent') && names.includes('Skill'), 'expected delegation helpers kept')
-      assert(names.includes('ToolSearch') && names.includes('Rust'),
-        'expected discovery/Rust helpers kept by the raw transformer policy')
+      assert(names.includes('ToolSearch'),
+        'expected discovery helpers kept by the raw transformer policy')
       assert(!names.includes('NotebookEdit'), 'NotebookEdit should be dropped in NIM fast mode')
       assert(!names.includes('Snapshot'), 'Snapshot should be dropped in NIM fast mode')
       assert(!names.includes('CronCreate'), 'CronCreate should be dropped in NIM fast mode')

@@ -15,7 +15,7 @@ const GROQ_SMALL_TIER_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
   'Read', 'Write', 'Edit',
   'Grep', 'Glob',
   'WebSearch', 'WebFetch',
-  'Agent', 'Skill', 'Rust',
+  'Agent', 'Skill',
   // Eval. Small-tier models are the ones that can least afford to spend a
   // context window re-reading files to count something, so the tool that keeps
   // bulk output out of the conversation belongs here even though it costs ~1K

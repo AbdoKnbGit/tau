@@ -11,7 +11,7 @@ const tools = {
   description:
     'Interactively turn optional prebuilt tools on or off',
   argumentHint: '[on|off|status|reset] [name]',
-  // Meaningful in normal-compatible modes (normal and Rust). Cheap forces
+  // Meaningful in normal mode. Cheap forces
   // every optional tool off and full forces every optional tool on, so the
   // command is hidden there (/mode re-fetches the command list on switch).
   isEnabled: () =>
