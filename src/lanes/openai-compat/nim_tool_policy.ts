@@ -6,6 +6,9 @@ const NIM_FAST_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
   'WebSearch', 'WebFetch',
   // Planning / delegation / discovery.
   'TodoWrite', 'Agent', 'Task', 'Skill', 'ToolSearch', 'Rust',
+  // In-kernel computation. The fast subset exists to cut round trips, which is
+  // exactly what a cell does: one call replaces a read-per-file loop.
+  'Eval',
   // OpenAI-compat lane native names.
   'execute_command', 'read_file', 'write_file',
   'str_replace', 'edit_block', 'edit_file',

@@ -38,6 +38,7 @@ import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
 import { SPEC_QUEST_TOOL_NAME } from '../tools/SpecQuestTool/constants.js'
 import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
+import { EVAL_TOOL_NAME } from '../tools/EvalTool/constants.js'
 import { INTEGRATION_HUB_TOOL_NAME } from '../tools/IntegrationHubTool/constants.js'
 import { DEPLOY_PREVIEW_TOOL_NAME } from '../tools/DeployPreviewTool/constants.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
@@ -96,6 +97,9 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   EXIT_WORKTREE_TOOL_NAME,
   ...NATIVE_TOOL_NAMES,
   RUST_TOOL_NAME,
+  // Subagents get their own kernel: registry.ts keys by agentId, so a worker
+  // can never see or clobber the main thread's namespace.
+  EVAL_TOOL_NAME,
 ])
 /**
  * Tools allowed only for in-process teammates (not general async agents).

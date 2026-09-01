@@ -20,6 +20,7 @@ import { TASK_LIST_TOOL_NAME } from '../tools/TaskListTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
 import { TOOL_OUTPUT_RETRIEVE_TOOL_NAME } from '../tools/ToolOutputRetrieveTool/constants.js'
+import { EVAL_TOOL_NAME } from '../tools/EvalTool/constants.js'
 
 /**
  * Core tool names kept in cheap power mode. Everything else — optional
@@ -59,4 +60,12 @@ export const CHEAP_MODE_CORE_TOOL_NAME_SET: ReadonlySet<string> = new Set([
   EXIT_PLAN_MODE_V2_TOOL_NAME,
   TOOL_OUTPUT_RETRIEVE_TOOL_NAME,
   TOOL_SEARCH_TOOL_NAME,
+  // Cheap mode is about spending fewer tokens, and this is the tool that
+  // spends the fewest: a scan that costs six turns and 190K tokens of file
+  // bodies through Read/Grep costs one turn and a printed table through a
+  // cell, because the intermediate data never enters the conversation. Its
+  // ~1K-token prompt is a single cache write at session start, repaid by the
+  // first multi-file question. Subagents are off in cheap mode, so this is
+  // also the only remaining way to keep bulk output out of context.
+  EVAL_TOOL_NAME,
 ])

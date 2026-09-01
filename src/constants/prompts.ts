@@ -57,6 +57,7 @@ import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
 import { SPEC_QUEST_TOOL_NAME } from '../tools/SpecQuestTool/constants.js'
 import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
+import { EVAL_TOOL_NAME } from '../tools/EvalTool/constants.js'
 import { INTEGRATION_HUB_TOOL_NAME } from '../tools/IntegrationHubTool/constants.js'
 import { DEPLOY_PREVIEW_TOOL_NAME } from '../tools/DeployPreviewTool/constants.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
@@ -325,6 +326,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const hasPackageManagerTool = enabledTools.has(PACKAGE_MANAGER_TOOL_NAME)
   const hasSpecQuestTool = enabledTools.has(SPEC_QUEST_TOOL_NAME)
   const hasMermaidRenderTool = enabledTools.has(MERMAID_RENDER_TOOL_NAME)
+  const hasEvalTool = enabledTools.has(EVAL_TOOL_NAME)
   const hasIntegrationHubTool = enabledTools.has(INTEGRATION_HUB_TOOL_NAME)
   const hasDeployPreviewTool = enabledTools.has(DEPLOY_PREVIEW_TOOL_NAME)
   const hasVisualDesignAuditTool = enabledTools.has(VISUAL_DESIGN_AUDIT_TOOL_NAME)
@@ -382,6 +384,12 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
       : null,
     hasMermaidRenderTool
       ? `${MERMAID_RENDER_TOOL_NAME}: use when a Mermaid diagram needs a visual browser-reviewable artifact, not just chat text.`
+      : null,
+    // Static string, gated on a session-stable tool set: safe for the cached
+    // prefix. Without this line the model reliably waited to be told "use
+    // Eval" instead of reaching for it on a question that plainly needed it.
+    hasEvalTool
+      ? `${EVAL_TOOL_NAME}: use when answering means looking at many files or a lot of data and computing a result — counts, rankings, distributions, cross-checking two sources, parsing large logs or JSON, repeating a command and aggregating it, or drawing a chart. Gather inside the cell with tool.${GREP_TOOL_NAME}/tool.${GLOB_TOOL_NAME}/tool.${FILE_READ_TOOL_NAME}/tool.${BASH_TOOL_NAME} rather than pulling the raw material into the conversation first, and reach for it without being asked whenever the intermediate data is much larger than the answer. Skip it for a single file read, one command, or a known edit.`
       : null,
   ].filter((item): item is string => item !== null)
 
@@ -522,7 +530,8 @@ function getCheapModeToolsSection(force = false): string | null {
     `# Power mode: cheap`,
     ...prependBullets([
       `Only the tools listed in this request exist. Subagents/delegation, skills, plugins, MCP, and LSP are off; do not attempt them or ask the user to enable them.`,
-      `When their matching tools are listed, core capabilities may include file read/write/edit, notebooks, shell, file/content search, tasks, plan mode, snapshots, web fetch, and web search. Provider names may differ; trust the actual list, never invent a missing capability, and never claim a listed one is unavailable.`,
+      `When their matching tools are listed, core capabilities may include file read/write/edit, notebooks, shell, file/content search, tasks, plan mode, snapshots, web fetch, web search, and running Python in a persistent kernel that can call the other listed tools from inside the code. Provider names may differ; trust the actual list, never invent a missing capability, and never claim a listed one is unavailable.`,
+      `Delegation is off, so the kernel is the only way left to keep bulk output out of this conversation. Any question that would otherwise mean reading many files, re-running a command, or parsing a large log belongs in a cell that prints only the answer.`,
     ]),
   ].join(`\n`)
 }

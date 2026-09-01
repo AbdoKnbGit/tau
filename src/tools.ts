@@ -8,6 +8,7 @@ import { FileReadTool } from './tools/FileReadTool/FileReadTool.js'
 import { FileWriteTool } from './tools/FileWriteTool/FileWriteTool.js'
 import { GlobTool } from './tools/GlobTool/GlobTool.js'
 import { NotebookEditTool } from './tools/NotebookEditTool/NotebookEditTool.js'
+import { EvalTool } from './tools/EvalTool/EvalTool.js'
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
@@ -305,6 +306,12 @@ export function getAllBaseTools(): Tools {
     // Include ToolSearchTool when tool search might be enabled (optimistic check)
     // The actual decision to defer tools happens at request time in claude.ts
     ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
+    // Eval registers LAST, unconditionally. Tool order is the cache prefix
+    // (lanes/gemini/lazy_tools.test.ts), so a tool appended at the end can
+    // never shift an already-cached schema. Availability is decided inside
+    // EvalTool.isEnabled(), which latches its answer for the process — a tool
+    // that appeared or vanished mid-session would be a `+/-1 tools` break.
+    EvalTool,
   ]
 }
 
