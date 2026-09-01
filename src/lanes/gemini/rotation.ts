@@ -17,6 +17,15 @@
  *   4. Disables accounts that burn through N consecutive hard failures
  *      (likely the token expired or the account was suspended).
  *
+ * NOTE: request routing no longer consults this. `_tokenForModel` in api.ts
+ * pins Antigravity to the account the user authenticated, because a
+ * health-ranked pick silently changes which Google identity serves a request
+ * -- and `pickForFamily` persisted that switch, so requests never came back.
+ * What remains live is the bookkeeping: `add` (token refresh), `list`,
+ * `recordSuccess` / `recordRateLimit` / `recordHardFailure`, and `health`.
+ * The selection methods below have no callers; they are kept as the read side
+ * of the health data rather than deleted, but nothing routes through them.
+ *
  * Reference: reference/opencode-antigravity-auth-main/src/plugin/rotation.ts
  *            reference/opencode-antigravity-auth-main/src/plugin/accounts.ts
  */
@@ -116,7 +125,14 @@ export class AntigravityRotation {
   // ── Selection ──────────────────────────────────────────────────
 
   /**
-   * Pick the best account for a given model family. Rotation strategy:
+   * Pick the best account for a given model family.
+   *
+   * NOT USED FOR ROUTING -- see the module note above. Routing is pinned to
+   * the authenticated account. Step 3 below also persists its choice into
+   * `activeIndexByFamily`, which is why a rotated-away account never came
+   * back; do not reintroduce this into the request path without fixing that.
+   *
+   * Rotation strategy:
    *   1. Consider only enabled accounts not in cooldown.
    *   2. Prefer the per-family active account if it's healthy.
    *   3. Otherwise fall back to highest-score available.

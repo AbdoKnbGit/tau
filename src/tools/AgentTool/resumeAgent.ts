@@ -33,6 +33,7 @@ import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runWithAgentProvider } from '../../utils/forcedProvider.js'
+import { setAgentResolvedModel } from './agentModelManager.js'
 import { runAgent } from './runAgent.js'
 
 export type ResumeAgentResult = {
@@ -157,8 +158,17 @@ export async function resumeAgentBackground({
       toolUseContext.options.mainLoopModel,
       undefined,
       permissionMode,
+      selectedAgent.provider,
     ),
   )
+
+  // Resuming re-renders the agent's tool use, so the tag needs the resolved
+  // model here too. Without this a resumed pinned agent shows no model at all,
+  // or a stale one left by whichever agent last spawned under this type.
+  setAgentResolvedModel(selectedAgent.agentType, {
+    model: resolvedAgentModel,
+    ...(selectedAgent.provider ? { provider: selectedAgent.provider } : {}),
+  })
 
   const workerPermissionContext = {
     ...appState.toolPermissionContext,
