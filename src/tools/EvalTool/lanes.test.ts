@@ -95,13 +95,13 @@ test('every lane keeps Eval in its shared tool list', () => {
 test('Cursor does not exclude Eval', () => {
   // Cursor is the one lane with a hardcoded exclusion set. It strips the
   // Tau-addition tools; Eval is core capability, not an addition.
-  const tools = [{ name: EVAL_TOOL_NAME }, { name: 'MermaidRender' }] as never as Parameters<
+  const tools = [{ name: EVAL_TOOL_NAME }, { name: 'ArtifactCanvas' }] as never as Parameters<
     typeof filterProviderToolsForLane
   >[1]
   const kept = filterProviderToolsForLane('cursor', tools).map(tool => tool.name)
   assert(kept.includes(EVAL_TOOL_NAME), 'cursor dropped Eval')
   assert(
-    !kept.includes('MermaidRender'),
+    !kept.includes('ArtifactCanvas'),
     'the cursor exclusion set stopped working, so this test proves nothing',
   )
 })
@@ -129,7 +129,7 @@ test("NIM's fast subset keeps Eval", () => {
     'the NIM fast subset dropped Eval',
   )
   assert(
-    !isToolKeptByNimFastFilter('MermaidRender'),
+    !isToolKeptByNimFastFilter('ArtifactCanvas'),
     'the NIM filter stopped filtering, so this test proves nothing',
   )
 })

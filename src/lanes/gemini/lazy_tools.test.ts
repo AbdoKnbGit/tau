@@ -162,7 +162,7 @@ test('undiscovered deferred additions do not change the cacheable tool set', () 
       tool('Read'),
       tool('ToolSearch'),
       tool('InspectSite', true),
-      tool('DeployPreview', true),
+      tool('SampleDeferred', true),
     ],
     [],
     { model: 'gemini-2.5-pro', providerHint: 'gemini' },

@@ -445,7 +445,7 @@ test('the blocked set stays small and justified', () => {
     EVAL_BRIDGE_BLOCKED_TOOLS.size <= 8,
     `the blocked set has grown to ${EVAL_BRIDGE_BLOCKED_TOOLS.size}; it should list only tools that act on the session`,
   )
-  for (const name of ['Snapshot', 'ArtifactCanvas', 'MermaidRender', 'Skill', 'LSP']) {
+  for (const name of ['Snapshot', 'ArtifactCanvas', 'Skill', 'Grep', 'Bash']) {
     assert(
       !EVAL_BRIDGE_BLOCKED_TOOLS.has(name),
       `${name} acts on the workspace and works fine from a cell`,

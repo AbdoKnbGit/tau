@@ -206,7 +206,7 @@ await test('undiscovered deferred additions do not change request schemas', asyn
     tool('Read'),
     tool('ToolSearch'),
     tool('InspectSite', true),
-    tool('DeployPreview', true),
+    tool('SampleDeferred', true),
   ])
 
   assert(

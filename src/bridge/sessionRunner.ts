@@ -85,7 +85,6 @@ const TOOL_VERBS: Record<string, string> = {
   GrepTool: 'Searching',
   BashTool: 'Running',
   NotebookEditTool: 'Editing notebook',
-  LSP: 'LSP',
 }
 
 function toolSummary(name: string, input: Record<string, unknown>): string {

@@ -108,12 +108,12 @@ function recipeFor(
         recipe,
         title: 'Implement Feature',
         goal: 'Add behavior with preflight context, scoped edits, and proportional verification.',
-        suggestedTools: ['RepoContextScout', 'Read', 'LSP', 'Grep', 'Edit', 'TestSearch', 'ProjectWorkflow', 'ChangeRisk'],
+        suggestedTools: ['RepoContextScout', 'Read', 'Grep', 'Edit', 'ProjectWorkflow', 'ChangeRisk'],
         steps: [
           'Call RepoContextScout with the feature request and target root.',
           'Read only the top context files and exact symbols needed for the change.',
           'Implement in the smallest existing ownership boundary that fits the repo.',
-          'Use TestSearch and ProjectWorkflow to choose focused checks.',
+          'Use ProjectWorkflow to choose focused checks.',
           'Run ChangeRisk before final response and scale review/verify from its result.',
         ],
         costControls: [
@@ -133,10 +133,10 @@ function recipeFor(
         recipe,
         title: 'Fix Bug',
         goal: 'Reproduce or localize the failure, patch the narrow cause, and verify the failing path.',
-        suggestedTools: ['RepoContextScout', 'TestSearch', 'ProjectWorkflow', 'Read', 'Grep', 'LSP', 'ChangeRisk'],
+        suggestedTools: ['RepoContextScout', 'ProjectWorkflow', 'Read', 'Grep', 'ChangeRisk'],
         steps: [
           'Scout the bug report, stack trace, or failing behavior with RepoContextScout.',
-          'Find the closest failing test or source/test counterpart with TestSearch.',
+          'Find the closest failing test or source/test counterpart with Grep.',
           'Trace the minimal failing path before editing.',
           'Patch the root cause without unrelated cleanup.',
           'Verify the failing path first, then run broader checks only if risk requires it.',
@@ -156,7 +156,7 @@ function recipeFor(
         recipe,
         title: 'Review Diff',
         goal: 'Assess changed behavior, risk, and missing verification before shipping.',
-        suggestedTools: ['ChangeRisk', 'Read', 'FileDiff', 'TestSearch', 'ProjectWorkflow'],
+        suggestedTools: ['ChangeRisk', 'Read', 'FileDiff', 'ProjectWorkflow'],
         steps: [
           'Run ChangeRisk to classify the current diff.',
           'Review changed files and nearby tests or call paths.',
@@ -178,10 +178,10 @@ function recipeFor(
         recipe,
         title: 'Verify Change',
         goal: 'Choose and run checks that prove the changed behavior without wasting tokens or time.',
-        suggestedTools: ['ProjectWorkflow', 'TestSearch', 'ChangeRisk', 'Bash'],
+        suggestedTools: ['ProjectWorkflow', 'ChangeRisk', 'Bash'],
         steps: [
           'Use ProjectWorkflow to identify repo-native build/test/lint commands.',
-          'Use TestSearch for focused tests around changed files.',
+          'Use Grep to find focused tests around changed files.',
           'Use ChangeRisk to decide whether focused checks are enough.',
           'Run focused checks first; widen only for medium/high risk or shared contracts.',
         ],
@@ -200,7 +200,7 @@ function recipeFor(
         recipe,
         title: 'Multi-Agent Team',
         goal: 'Split independent work across roles while keeping final ownership in the main thread.',
-        suggestedTools: ['RepoContextScout', 'Agent', 'ChangeRisk', 'ProjectWorkflow', 'TestSearch'],
+        suggestedTools: ['RepoContextScout', 'Agent', 'ChangeRisk', 'ProjectWorkflow'],
         steps: [
           'Run RepoContextScout first so spawned agents receive focused context.',
           'Spawn agents only for independent research, review, verification, or implementation deliverables.',
@@ -249,7 +249,7 @@ function recipeFor(
         recipe: 'repo-context-scout',
         title: 'Repo Context Scout',
         goal: 'Build the smallest useful map of files, commands, and risk before acting.',
-        suggestedTools: ['RepoContextScout', 'CodebaseRetrieval', 'LSP', 'Grep', 'Read', 'ProjectWorkflow', 'ChangeRisk'],
+        suggestedTools: ['RepoContextScout', 'CodebaseRetrieval', 'Grep', 'Read', 'ProjectWorkflow', 'ChangeRisk'],
         steps: [
           'Call RepoContextScout with the task and root.',
           'Use CodeGraph first when available; otherwise read the top retrieved files.',

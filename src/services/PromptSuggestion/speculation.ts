@@ -64,7 +64,6 @@ const SAFE_READ_ONLY_TOOLS = new Set([
   'Glob',
   'Grep',
   'ToolSearch',
-  'LSP',
   'TaskGet',
   'TaskList',
 ])

@@ -873,7 +873,6 @@ const CURSOR_TOOL_ENUMS_BY_NAME: Record<string, readonly number[]> = {
   list_mcp_resources: [CT.LIST_MCP_RESOURCES],
   ReadMcpResourceTool: [CT.READ_MCP_RESOURCE],
   read_mcp_resource: [CT.READ_MCP_RESOURCE],
-  LSP: [CT.SEARCH_SYMBOLS, CT.GO_TO_DEFINITION],
   TodoWrite: [CT.TODO_READ, CT.TODO_WRITE],
 }
 

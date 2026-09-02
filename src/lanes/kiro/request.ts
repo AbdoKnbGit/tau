@@ -352,10 +352,6 @@ function _buildKiroToolSelectionGuide(
     pick('NotebookEdit', 'edit Jupyter notebook cells'),
   ))
 
-  addCategory('Code', collect(
-    pick('LSP', 'semantic code operations like definitions, references, and symbols'),
-  ))
-
   const shellEntries: string[] = []
   if (preferredShellToolName && toolNames.has(preferredShellToolName)) {
     const shellDescription = preferredShellToolName === 'PowerShell'

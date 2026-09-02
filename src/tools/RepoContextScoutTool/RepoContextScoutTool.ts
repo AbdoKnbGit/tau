@@ -156,11 +156,9 @@ function buildContextPlan(output: Omit<Output, 'contextPlan'>): string[] {
 function recommendedTools(hasCodeGraph: boolean, riskLevel: string): string[] {
   return [
     ...(hasCodeGraph ? ['CodeGraph'] : ['CodebaseRetrieval']),
-    'LSP',
     'Grep',
     'Read',
     'ProjectWorkflow',
-    'TestSearch',
     ...(riskLevel === 'low' ? [] : ['ChangeRisk']),
     'WorkflowRecipe',
     'ToolOutputRetrieve',
