@@ -1,5 +1,6 @@
 import { ARTIFACT_CANVAS_TOOL_NAME } from '../tools/ArtifactCanvasTool/constants.js'
 import { BROWSER_TOOL_NAME } from '../tools/BrowserTool/constants.js'
+import { CHANGE_RISK_TOOL_NAME } from '../tools/ChangeRiskTool/constants.js'
 import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
 import { NATIVE_SYSINFO_TOOL_NAME } from '../tools/NativeTools/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
@@ -38,6 +39,15 @@ export const PREBUILT_TOOL_TOGGLE_GROUPS = [
   {
     label: 'Testing & Verification',
     items: [
+      {
+        // Deferred, so it costs a name rather than a schema until loaded — but
+        // it was previously the only optional tool with no way to turn it off.
+        // Cheap mode already drops it: CHEAP_MODE_CORE_TOOL_NAME_SET does not
+        // list it, and that filter runs before this one.
+        id: CHANGE_RISK_TOOL_NAME,
+        purpose: 'Analyze diffs to determine risk levels.',
+        toolNames: [CHANGE_RISK_TOOL_NAME],
+      },
       {
         id: INSPECT_SITE_TOOL_NAME,
         purpose: 'Verify HTTP pages, expected text, assets, and simple forms.',

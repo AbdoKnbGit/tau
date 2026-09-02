@@ -1148,6 +1148,16 @@ export interface RepairedCodexToolCall {
   input: Record<string, unknown>
 }
 
+/**
+ * Intentional pass-through. This once rewrote AFT tool calls, whose native
+ * Codex shape differed from the Anthropic-format one the loop emits. Those
+ * tools were pruned, and nothing else needs repairing, so the hook stays as an
+ * identity function rather than being deleted: the seam is where a future
+ * native-name mismatch would be fixed, and removing it would only move that
+ * work to whoever hits the next one. It is NOT a validation or safety net --
+ * schema conformance on this lane comes from OpenAI strict mode and the
+ * STRICT PARAMETERS hint, not from here.
+ */
 export function repairCodexToolCall(
   toolName: string,
   input: Record<string, unknown>,

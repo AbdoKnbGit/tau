@@ -488,10 +488,7 @@ test('interactive tools are excluded by predicate, not by name', () => {
     bridge.includes('requiresUserInteraction?.()'),
     'the bridge no longer asks tools whether they need the user',
   )
-  for (const file of [
-    '../AskUserQuestionTool/AskUserQuestionTool.tsx',
-    '../ComputerTool/ComputerTool.tsx',
-  ]) {
+  for (const file of ['../AskUserQuestionTool/AskUserQuestionTool.tsx']) {
     const source = readFileSync(join(here, file), 'utf8')
     assert(
       source.includes('requiresUserInteraction()'),

@@ -388,7 +388,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
       : []),
     ...(hasBrowserTool
       ? [
-          `When a task needs a page's rendered (post-JavaScript) content, reading live pages, clicking, typing, forms, multi-step web flows, file uploads, tabs, screenshots, or debugging a web app via its console/network activity, load ${BROWSER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME}. It drives a real Chrome/Edge browser: open once, observe for numbered element refs, read for page content as markdown, then click/fill/type/hover/drag by ref; console/network expose the tab's logs and requests when verifying frontend changes. Prefer it over ${WEB_BROWSER_TOOL_NAME}/${INSPECT_SITE_TOOL_NAME} (static HTML only) for interactive or SPA pages, and over the desktop Computer tool for anything inside a web page.`,
+          `When a task needs a page's rendered (post-JavaScript) content, reading live pages, clicking, typing, forms, multi-step web flows, file uploads, tabs, screenshots, or debugging a web app via its console/network activity, load ${BROWSER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME}. It drives a real Chrome/Edge browser: open once, observe for numbered element refs, read for page content as markdown, then click/fill/type/hover/drag by ref; console/network expose the tab's logs and requests when verifying frontend changes. Prefer it over ${WEB_BROWSER_TOOL_NAME}/${INSPECT_SITE_TOOL_NAME} (static HTML only) for interactive or SPA pages.`,
         ]
       : []),
     ...(hasPackageManagerTool
