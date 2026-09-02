@@ -50,6 +50,7 @@ import ast
 import base64
 import io
 import json
+import linecache
 import os
 import re
 import socket
@@ -542,10 +543,50 @@ def _exec_compiled(code_object, evaluate=False):
     return result
 
 
+# Every cell compiles under its own filename, and its source is registered in
+# linecache so a traceback can show the offending line -- with the column caret
+# Python 3.11+ draws under the exact subexpression -- and name the cell the
+# frame came from.
+#
+# The filename MUST be unique per cell. linecache keys on the filename and
+# keeps one source per key, so a shared "<cell>" would hand back the NEWEST
+# cell's text for an OLDER cell's frame: a confident, wrong source line with a
+# caret under innocent code. That is worse than no source line, and it is the
+# common case rather than an edge one, because the prompt tells the model to
+# define helpers in one cell and call them from later cells.
+#
+# Monotonic and never reset. A reset clears the namespace, but reusing a
+# number would resurrect exactly the collision this exists to prevent.
+_cell_seq = 0
+
+# Retained cell sources. Evicting the oldest degrades its frames back to "no
+# source line", which is the previous behaviour -- never a wrong one.
+_MAX_CACHED_CELLS = 50
+_cached_cells = []
+
+
+def _register_cell(name, code):
+    """Make this cell's source retrievable by the traceback machinery.
+
+    mtime None is deliberate: linecache.checkcache() skips entries whose mtime
+    is None instead of dropping them, which is how a synthetic file survives a
+    cache sweep.
+    """
+    linecache.cache[name] = (len(code), None, code.splitlines(keepends=True), name)
+    _cached_cells.append(name)
+    while len(_cached_cells) > _MAX_CACHED_CELLS:
+        linecache.cache.pop(_cached_cells.pop(0), None)
+
+
 def _run_cell(code):
     """Compile and run one cell; return the last expression value, if any."""
+    global _cell_seq
+    _cell_seq += 1
+    name = "<cell-" + str(_cell_seq) + ">"
+    _register_cell(name, code)
+
     flags = getattr(ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT", 0)
-    tree = ast.parse(code, filename="<cell>", mode="exec")
+    tree = ast.parse(code, filename=name, mode="exec")
     if not tree.body:
         return None
 
@@ -554,21 +595,23 @@ def _run_cell(code):
         head = ast.Module(body=tree.body[:-1], type_ignores=[])
         tail = ast.Expression(body=last.value)
         if head.body:
-            _exec_compiled(compile(head, "<cell>", "exec", flags))
-        return _exec_compiled(compile(tail, "<cell>", "eval", flags), evaluate=True)
-    _exec_compiled(compile(tree, "<cell>", "exec", flags))
+            _exec_compiled(compile(head, name, "exec", flags))
+        return _exec_compiled(compile(tail, name, "eval", flags), evaluate=True)
+    _exec_compiled(compile(tree, name, "exec", flags))
     return None
 
 
-CELL_FILE_MARKER = 'File "<cell>"'
+# A PREFIX, because each cell compiles under "<cell-N>". Matching the whole
+# "<cell>" would drop every user frame and leave the bare exception message.
+CELL_FILE_MARKER = 'File "<cell-'
 
 
 def _user_traceback(exc):
     """Render a traceback containing only the user's own frames.
 
-    The rule is positional, not name-based: user code is compiled with the
-    filename "<cell>", so any frame from another file is kernel plumbing and
-    means nothing to whoever reads the error.
+    The rule is positional, not name-based: user code is compiled with a
+    filename of the form "<cell-N>", so any frame from another file is kernel
+    plumbing and means nothing to whoever reads the error.
 
     An earlier version dropped frames by function name (_run_cell,
     _exec_compiled) and therefore leaked whatever else happened to be on the

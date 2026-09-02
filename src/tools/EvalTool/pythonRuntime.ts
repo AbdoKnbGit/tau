@@ -44,9 +44,9 @@ function probe(candidate: string): boolean {
     const result = spawnSync(candidate, ['-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'], {
       timeout: PROBE_TIMEOUT_MS,
       stdio: 'ignore',
-      // Never inherit the host console handle here. omp hit a case where an
-      // inherited stdin handle kept a probe subprocess alive indefinitely on
-      // native Windows even though the script never reads stdin.
+      // Never inherit the host console handle here: an inherited stdin handle
+      // has been observed keeping a probe subprocess alive indefinitely on
+      // native Windows, even though the script never reads stdin.
       windowsHide: true,
     })
     return result.status === 0

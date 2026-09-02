@@ -180,6 +180,37 @@ test('the prompt tells the model to gather inside the cell', () => {
   )
 })
 
+test('the output cap quoted to the model matches the real constant', () => {
+  // The prompt must stay a literal, so it cannot interpolate MAX_RESULT_CHARS.
+  // That leaves the number hand-copied, and a hand-copied number goes stale
+  // silently: the model would budget its printing against a cap that no longer
+  // exists. This test is the only thing keeping the two in step.
+  const grouped = MAX_RESULT_CHARS.toString().replace(
+    /\B(?=(\d{3})+(?!\d))/g,
+    ',',
+  )
+  assert(
+    PROMPT.includes(grouped) || PROMPT.includes(MAX_RESULT_CHARS.toString()),
+    `prompt quotes an output cap that is not ${grouped}; MAX_RESULT_CHARS moved`,
+  )
+})
+
+test('the tool-choice rule does not put Bash on the read rung', () => {
+  // Shipped once with Bash listed as a reading tool. Asked for the ten largest
+  // files in src/ — a ranking, which this same prompt calls computing — the
+  // model followed the rule into `find | xargs wc -l | sort | head`, took three
+  // attempts around xargs batching, and silently ranked by lines not bytes.
+  const flat = PROMPT.replace(/\s+/g, ' ')
+  assert(
+    !/Will read it[^.]*\bBash\b/.test(flat),
+    'Bash is back on the read rung; aggregating pipelines will be blessed again',
+  )
+  assert(
+    flat.includes('is **computing** → cell'),
+    'the prompt no longer routes aggregating pipelines to a cell',
+  )
+})
+
 test('Eval is registered last in getAllBaseTools', () => {
   // Tool order IS the cache prefix. A tool inserted in the middle shifts every
   // schema after it and invalidates the cached prefix for the whole session —
@@ -360,7 +391,7 @@ test('the display collapses a traceback to one line', () => {
   const text = [
     'partial output before the failure',
     'Traceback (most recent call last):',
-    '  File "<cell>", line 34, in <module>',
+    '  File "<cell-7>", line 34, in <module>',
     '    print(f"{bad)}")',
     '        ^',
     "SyntaxError: f-string: unmatched ')'",
@@ -372,7 +403,7 @@ test('the display collapses a traceback to one line', () => {
   const failure = splitFailure(text)
   assert(failure !== null, 'a traceback was not recognised')
   assert(
-    failure.headline === "SyntaxError: f-string: unmatched ')' · line 34",
+    failure.headline === "SyntaxError: f-string: unmatched ')' · cell 7, line 34",
     `wrong headline: ${failure.headline}`,
   )
   assert(failure.hiddenLines >= 4, `expected the frames to be hidden: ${failure.hiddenLines}`)
@@ -393,7 +424,7 @@ test('the display leaves a result with no traceback alone', () => {
 test('the display survives a truncated traceback', () => {
   // clampOutput can cut a result mid-traceback; the collapse must not throw or
   // invent a headline from half a frame.
-  const cut = 'Traceback (most recent call last):\n  File "<cell>", line 3, in <module>'
+  const cut = 'Traceback (most recent call last):\n  File "<cell-3>", line 3, in <module>'
   const failure = splitFailure(cut)
   assert(failure === null, 'a headerless, exception-less block should not collapse')
 })
@@ -792,7 +823,7 @@ async function live(): Promise<void> {
       // The caret is the most useful part of a SyntaxError and lives in list
       // elements that do not name the file, so a naive filter drops it.
       assert(trace.includes('^'), `the caret was lost:\n${trace}`)
-      assert(trace.includes('<cell>'), `the cell location was lost:\n${trace}`)
+      assert(trace.includes('<cell-'), `the cell location was lost:\n${trace}`)
 
       const bridge = await kernel.execute('tool.Read(file_path="x")', {
         timeoutMs: 15_000,
@@ -802,7 +833,7 @@ async function live(): Promise<void> {
         !bridgeTrace.includes('tau_kernel'),
         `bridge helper frames leaked:\n${bridgeTrace}`,
       )
-      assert(bridgeTrace.includes('<cell>'), 'the calling line should still show')
+      assert(bridgeTrace.includes('<cell-'), 'the calling line should still show')
 
       const runtime = await kernel.execute('1 + "a"', { timeoutMs: 15_000 })
       const runtimeTrace = runtime.error?.traceback ?? ''
@@ -810,6 +841,61 @@ async function live(): Promise<void> {
       assert(
         !runtimeTrace.includes('tau_kernel') && !runtimeTrace.includes('ast.py'),
         `internals leaked:\n${runtimeTrace}`,
+      )
+    } finally {
+      await kernel.shutdown()
+    }
+  })
+
+  await asyncTest('a traceback shows the offending source line', async () => {
+    const kernel = make()
+    try {
+      const outcome = await kernel.execute('value = 1\nvalue["nope"]', {
+        timeoutMs: 15_000,
+      })
+      const trace = outcome.error?.traceback ?? ''
+      assert(
+        trace.includes('value["nope"]'),
+        `the source line was not shown:\n${trace}`,
+      )
+    } finally {
+      await kernel.shutdown()
+    }
+  })
+
+  await asyncTest('an older cell\'s frame shows ITS OWN source, not the newest', async () => {
+    // The whole reason each cell needs a unique filename. linecache keeps one
+    // source per filename, so a shared "<cell>" hands the newest cell's text to
+    // an older cell's frame — a confident, wrong line with a caret under
+    // innocent code. Worse than showing nothing, and the common case, because
+    // the prompt tells the model to define helpers in one cell and call them
+    // from later ones.
+    const kernel = make()
+    try {
+      const setup = await kernel.execute(
+        'def helper(d):\n    return d["missing_key"]',
+        { timeoutMs: 15_000 },
+      )
+      assert(setup.ok, `setup cell failed: ${setup.error?.evalue}`)
+
+      const call = await kernel.execute(
+        'data = {}\nprint("an innocent line")\nhelper(data)',
+        { timeoutMs: 15_000 },
+      )
+      const trace = call.error?.traceback ?? ''
+      assert(call.error?.ename === 'KeyError', `got ${call.error?.ename}`)
+      assert(
+        trace.includes('d["missing_key"]'),
+        `the helper's own source was not shown:\n${trace}`,
+      )
+      assert(
+        !trace.includes('an innocent line'),
+        `the newest cell's source was pasted into an older frame:\n${trace}`,
+      )
+      // Two different cells, and the traceback must say which is which.
+      assert(
+        /<cell-\d+>/.test(trace) && !trace.includes('"<cell>"'),
+        `frames are not attributed to a specific cell:\n${trace}`,
       )
     } finally {
       await kernel.shutdown()

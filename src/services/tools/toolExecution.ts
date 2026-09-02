@@ -82,6 +82,7 @@ import { logError } from '../../utils/log.js'
 import { getSessionId } from '../../bootstrap/state.js'
 import { noteToolCall } from './repeatToolGuard.js'
 import { noteToolCallForScanGuard } from './redundantScanGuard.js'
+import { noteToolCallForEvalGuard } from './evalOpportunityGuard.js'
 import {
   CANCEL_MESSAGE,
   createProgressMessage,
@@ -433,6 +434,21 @@ export async function* runToolUse(
     )
     if (scanReminder) {
       reminder = reminder ? `${reminder}\n\n${scanReminder}` : scanReminder
+    }
+  } catch (error) {
+    logError(error)
+  }
+  try {
+    // Third advisory guard: work that was computation done by a read-shaped
+    // tool - a shell pipeline that enumerates files then aggregates them, or a
+    // run of edits across different files. Same contract as the two above.
+    const evalReminder = noteToolCallForEvalGuard(
+      agentKey,
+      toolUse.name,
+      toolUse.input,
+    )
+    if (evalReminder) {
+      reminder = reminder ? `${reminder}\n\n${evalReminder}` : evalReminder
     }
   } catch (error) {
     logError(error)

@@ -60,10 +60,17 @@ export function splitFailure(
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
-  const location = /File "<cell>", line (\d+)/.exec(text)
+  // Cells compile as "<cell-N>"; the bare "<cell>" form is still accepted so a
+  // host running ahead of its kernel does not silently lose the line number.
+  const location = /File "<cell(?:-(\d+))?>", line (\d+)/.exec(text)
+  const where = location
+    ? location[1]
+      ? `cell ${location[1]}, line ${location[2]}`
+      : `line ${location[2]}`
+    : null
   return {
     rest,
-    headline: location ? `${exception} · line ${location[1]}` : exception,
+    headline: where ? `${exception} · ${where}` : exception,
     hiddenLines: end - start,
   }
 }

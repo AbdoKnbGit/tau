@@ -64,7 +64,7 @@ export const CHEAP_MODE_CORE_TOOL_NAME_SET: ReadonlySet<string> = new Set([
   // spends the fewest: a scan that costs six turns and 190K tokens of file
   // bodies through Read/Grep costs one turn and a printed table through a
   // cell, because the intermediate data never enters the conversation. Its
-  // ~1K-token prompt is a single cache write at session start, repaid by the
+  // ~1.2K-token prompt is a single cache write at session start, repaid by the
   // first multi-file question. Subagents are off in cheap mode, so this is
   // also the only remaining way to keep bulk output out of context.
   EVAL_TOOL_NAME,

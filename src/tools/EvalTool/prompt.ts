@@ -9,6 +9,11 @@ import { EVAL_TOOL_NAME } from './constants.js'
  * moves invalidates the entire cached prefix. If the model needs to know
  * something session-specific, let it discover that at runtime from inside a
  * cell (`tool.list()`, `sys.version`) — never from this file.
+ *
+ * A prompt that interpolates backend availability, a discovered agent list or
+ * any other live registry state is the same defect wearing a different costume,
+ * however tempting the conditionality looks. Conditional text is only safe
+ * AFTER the cache boundary — a tool result, never a tool schema.
  */
 
 /**
@@ -18,102 +23,137 @@ import { EVAL_TOOL_NAME } from './constants.js'
  * and in practice the model only reached for it when a user said "use Eval".
  */
 export const DESCRIPTION =
-  'Answer questions about many files, large data, or repeated commands by computing the answer in Python instead of reading everything into the conversation. Persistent kernel; can call your other tools from inside the code; renders charts inline.'
+  'Compute an answer in Python instead of reading the raw material into the conversation — counts, rankings and audits over many files or large data, cross-checks, the same edit applied across many files, charts. Persistent kernel; can call your other tools from inside the code; renders figures inline.'
 
-export const PROMPT = `Run one cell of Python in a kernel that stays alive for the whole session.
+/**
+ * WHY THIS PROMPT IS SHAPED THE WAY IT IS.
+ *
+ * Behaviour used to be gated on two literal lists: triggers ("counting,
+ * ranking, correlating...") and prohibitions ("do not use it for ... an edit
+ * you already know how to make"). Anything off either list fell through, so one
+ * session concluded it could write files from a cell and another concluded it
+ * could not. Both lists are gone. One question decides it now, and it gives the
+ * same answer every time it is asked.
+ *
+ * That question shipped once with Bash on the READ rung. A live test then asked
+ * for the ten largest files in src/ — a ranking, which the prompt calls
+ * computing — and the model correctly followed the rule to `find | xargs wc -l
+ * | sort -rn | head`. It took three attempts (xargs batching injected `total`
+ * rows into the sort, worked around with `sed -n '5,14p'`) and silently ranked
+ * by lines rather than bytes, burying the largest file at #6. Bash is a compute
+ * tool; only its command-running half belongs on the read rung.
+ *
+ * Each correctness section prevents an observed failure, not a hypothetical
+ * one: `len()` on a result string reported 4,249 files when it was a character
+ * count; a hand-written POSIX root matched nothing, silently, on Windows; an
+ * unscoped walk counted one source tree three times and reported 1,736 where
+ * the answer was 590; and a helper was written to disk and re-imported every
+ * cell, in a kernel that already keeps it.
+ *
+ * Register is deliberately telegraphic: fragments, arrows, capitals for the
+ * imperative. It says more than the prose version it replaced in fewer bytes,
+ * which matters because this text sits in the cached prefix of every request
+ * and in cheap mode's core tool set.
+ */
+export const PROMPT = `Run one cell of Python in a kernel alive for the whole session.
 
-Two things make this different from running \`python\` through Bash:
+Two differences from \`python\` through Bash:
 
-1. **State persists.** Variables, imports, parsed data and open connections
-   survive from one ${EVAL_TOOL_NAME} call to the next. Parse something big
-   once, then query it across many cells for free.
-2. **Your tools are callable from inside the code.** \`tool.Read({...})\`,
-   \`tool.Grep({...})\`, \`tool.Bash({...})\` and friends run the real tool and
-   return its result as Python data. That output goes into your variables,
-   **not into the conversation** — only what you \`print\` comes back to you.
+1. **State persists.** Variables, imports, parsed data survive to the next
+   ${EVAL_TOOL_NAME} call. Parse once, query across many cells for free.
+2. **Your tools are callable.** \`tool.Read({...})\`, \`tool.Grep({...})\`,
+   \`tool.Bash({...})\` run the real tool; output lands in your variables,
+   **not in the conversation** — only what you \`print\` comes back.
 
-## Reach for this without being asked
+<critical>
+Before any search or read, one question: **will you READ that output, or
+COMPUTE on it?**
 
-Use it whenever the work is "look at many things and compute an answer":
+- Don't know what to search for yet → CodebaseRetrieval.
+- Will read it — one file, one known edit, hits you open next → Read, Grep,
+  Glob, Edit.
+- Will compute on it — count, rank, audit every X, cross-check two sources,
+  same edit across many files → **this tool**, unasked.
 
-- counting, ranking, or correlating anything across more than a handful of files
-- "which files…", "how many…", "what's the distribution of…", "find every X that also Y"
-- parsing large logs, CSVs, JSON, lockfiles, or coverage reports
-- running a command several times and aggregating the results
-- comparing two sources of truth (package.json vs imports, routes vs handlers,
-  translation keys vs usages)
-- any chart, plot, or distribution the user would find easier to see
+One known edit is reading; thirty patterned edits are computing.
 
-The test is simple: **if the intermediate data is much bigger than the answer,
-the work belongs in a cell.** Pulling forty files into the conversation to
-count something is the mistake this tool exists to prevent.
+Bash **runs commands** — build, test, git — and you read their output. But a
+pipeline that enumerates files then reduces them
+(\`find … | xargs wc -l | sort | head\`) is **computing** → cell. \`xargs\`
+batching silently corrupts totals, and a pipeline leaves you no variables to
+refine.
+</critical>
 
-Do the gathering **inside** the cell — never run a search first and then open a
-cell. A separate Grep or Glob pays for its entire result in context, and the
-cell can find the same files for nothing with \`tool.Grep(...)\`,
-\`tool.Glob(...)\`, \`os.walk\` or \`Path.rglob\`. "Let me scope it first" is the
-most common way to waste a turn here: the cell scopes it for free.
+Read and Edit are not more capable than a cell — cheaper for one known change.
+Anything Python can do, a cell can do, writing files included.
 
-Do **not** use it for a single file read, one shell command, or an edit you
-already know how to make. Read, Bash and Edit are clearer for those.
+Do the gathering **inside** the cell: a separate Grep or Glob pays for its
+whole result in context; \`tool.Grep(...)\` or \`Path.rglob\` finds the same
+files for nothing.
 
-## The prelude
+## What a call returns
 
-Available in every cell without importing anything:
+\`tool.<Name>(...)\` returns the tool's output **as text** — what you would have
+seen in the conversation. A string, not a list:
+
+- \`len(result)\` counts **characters**. Matches → \`len(result.splitlines())\`.
+- Images produced → a dict with \`text\`/\`images\` keys instead; check
+  \`isinstance(result, str)\` first.
+- Failure raises \`ToolBridgeError\`; wrap risky calls, keep going.
+
+Your own output is capped at 30,000 characters. Print aggregates, not lists.
+
+## Walking the filesystem
+
+- **Never type an absolute root.** \`root = Path(os.getcwd())\`. A hand-written
+  path in the wrong form for this OS matches nothing, silently.
+- **Exclude before walking:** dependency, build and VCS dirs (\`node_modules\`,
+  \`.git\`, \`dist\`, \`build\`) and any worktree, backup or stale-branch copy of
+  the source. A repo often holds several copies of its own tree; a blind walk
+  multiplies every count, and the inflated figure looks plausible.
+- Say which scope you used when you report a number.
+
+## Prelude
 
 \`\`\`
-tool.<Name>(args_dict_or_kwargs)  -> the tool's result (usually its text)
-tool.list()                       -> names of the tools this kernel may call
-read(path, offset=1, limit=None)  -> str            write(path, content) -> path
-display(value)                    -> render a figure, image, table or object
-env(key=None, value=None)         -> read or set an environment variable
-log(message)                      -> a progress line for the user
+tool.<Name>(args_dict_or_kwargs)  -> the tool's output, as text
+tool.list()                       -> tools this kernel may call
+read(path, offset=1, limit=None)  -> str      write(path, content) -> path
+display(value)    env(key=None, value=None)    log(message)
 \`\`\`
 
-\`tool.Read({"file_path": "/abs/path.py"})\` — arguments are exactly the tool's
-own parameters. \`tool.Grep(pattern="TODO", path="src", output_mode="content")\`
-works too. A failing tool raises \`ToolBridgeError\`, so wrap risky calls in
-try/except and keep going.
+Arguments are the tool's own parameters, dict or kwargs:
+\`tool.Grep(pattern="TODO", path="src", output_mode="content")\`.
 
 ## Writing a cell
 
-- One logical step per cell: set up, then use. Re-running setup is wasted work.
-- **Never re-import or re-define something an earlier cell already created.**
-- \`print()\` what you want to see; the last expression is also returned.
-  Everything else stays in the kernel.
-- Top-level \`await\` works. Do not call \`asyncio.run()\`.
-- Matplotlib figures are captured automatically and rendered inline — do not
-  save a PNG and read it back.
-- Reading files: skip or ignore-decode binaries (\`errors="replace"\`), or a
-  stray asset aborts the whole cell.
-- \`input()\` is not supported. Install packages with \`%pip install <pkg>\`;
-  \`%cd\`, \`%pwd\`, \`%ls\` and \`!command\` also work. \`names = %who\` lists what
-  you have defined (\`%whos\` adds types and sizes) — use it to check what
-  survived a restart instead of guessing. Magics only fire at the start of a
-  line, so bind the result before printing it.
+- One logical step per cell: set up, then use. Re-running setup is waste.
+- \`print()\` what you want to see; the last expression is returned too.
+- Top-level \`await\` works; never \`asyncio.run()\`.
+- Matplotlib figures render inline — never save a PNG and read it back.
+- Ignore-decode binaries (\`errors="replace"\`), or a stray asset aborts the cell.
+- \`input()\` unsupported. \`%pip install\`, \`%cd\`, \`%pwd\`, \`%ls\` and \`!cmd\`
+  work; magics fire only at line start, so bind before printing.
 
-## Long, looping, and failed cells are safe
+## Long, looping and failed cells are safe
 
-Every cell is bounded and interruptible, so do not refuse work for fear of
-hanging the session:
+Bounded and interruptible — do not refuse work for fear of hanging the session.
 
-- \`timeout\` is in seconds (default 60); pass \`0\` for genuinely long work.
-  When it fires, only the cell stops — **the kernel and all your variables
-  survive**.
-- The user can interrupt a running cell at any time with the same result.
-- Time spent inside a \`tool.*\` call does not count against the deadline.
-- If a cell raises, the names it defined before the error still exist. Fix the
-  failing step and re-run only that step.
-- \`reset: true\` restarts the kernel with an empty namespace. It is cheap and
-  safe — just re-run your setup afterwards. Run it when asked; do not describe
-  what it would do instead of doing it.
+- \`timeout\` in seconds, default 60, \`0\` for genuinely long work. When it
+  fires only that cell stops; **the kernel and your variables survive**. A user
+  interrupt does the same.
+- Time inside \`tool.*\` does not count against the deadline.
+- After a raise, names defined before it still exist. Fix that step, re-run it.
+- \`reset: true\` restarts empty. Cheap and safe — re-run setup afterwards. Run
+  it when asked; do not describe what it would do instead of doing it.
 
-## Worked example
+## Reuse what you defined
+
+Definitions survive between cells: gather once, refine for free.
 
 \`\`\`python
 # cell 1 — gather with the real Grep tool, straight into memory
 hits = tool.Grep(pattern="TODO", path="src", output_mode="content")
-
 from collections import Counter
 counts = Counter(l.split(":")[0] for l in hits.splitlines() if ":" in l)
 for path, n in counts.most_common(5):
@@ -121,9 +161,11 @@ for path, n in counts.most_common(5):
 \`\`\`
 
 \`\`\`python
-# cell 2 — refine. counts is still here; nothing is re-read.
+# cell 2 — counts is still here; nothing was re-read
 print(sum(n for p, n in counts.items() if p.startswith("src/lanes/")))
 \`\`\`
 
-The 412 matched lines never entered the conversation. Only the five printed
-rows did.`
+The 412 matched lines never entered the conversation; only the five printed
+rows did. Never write a helper to a file and re-import it — the kernel already
+keeps it. Never re-import or re-define what an earlier cell created.
+\`names = %who\` lists what survived.`
