@@ -2,7 +2,6 @@ import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/con
 import { ARTIFACT_CANVAS_TOOL_NAME } from '../tools/ArtifactCanvasTool/constants.js'
 import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
 import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
-import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
 import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
@@ -20,7 +19,6 @@ const CURSOR_EXCLUDED_ADDITION_TOOLS = new Set([
   BROWSER_TOOL_NAME,
   ARTIFACT_CANVAS_TOOL_NAME,
   PACKAGE_MANAGER_TOOL_NAME,
-  MERMAID_RENDER_TOOL_NAME,
   VISUAL_DESIGN_AUDIT_TOOL_NAME,
 ])
 

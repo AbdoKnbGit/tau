@@ -436,7 +436,6 @@ export type Tool<
   isOpenWorld?(input: z.infer<Input>): boolean
   requiresUserInteraction?(): boolean
   isMcp?: boolean
-  isLsp?: boolean
   /**
    * When true, this tool is deferred (sent with defer_loading: true) and requires
    * ToolSearch to be used before it can be called.

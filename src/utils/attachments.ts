@@ -26,7 +26,6 @@ import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
-import { LSP_TOOL_NAME } from '../tools/LSPTool/prompt.js'
 import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
 import type { TodoList } from './todo/types.js'
 import {
@@ -2997,11 +2996,12 @@ async function getDiagnosticAttachments(
 async function getLSPDiagnosticAttachments(
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
-  // LSP diagnostics are only useful when LSP is visible and Bash can act on them.
-  if (
-    !toolUseContext.options.tools.some(t => toolMatchesName(t, BASH_TOOL_NAME)) ||
-    !toolUseContext.options.tools.some(t => toolMatchesName(t, LSP_TOOL_NAME))
-  ) {
+  // Gated on Bash alone. This used to also require the LSP tool to be visible,
+  // which coupled two unrelated features: diagnostics arrive on their own from
+  // the language server after files open or change, and the LSP tool never had
+  // a diagnostics operation to fetch them with. When that tool was removed the
+  // gate would have silently taken diagnostics with it.
+  if (!toolUseContext.options.tools.some(t => toolMatchesName(t, BASH_TOOL_NAME))) {
     return []
   }
 

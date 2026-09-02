@@ -33,7 +33,6 @@ import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/con
 import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
 import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
-import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
 import { EVAL_TOOL_NAME } from '../tools/EvalTool/constants.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
 import {
@@ -80,7 +79,6 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   GIT_HISTORY_SEARCH_TOOL_NAME,
   INSPECT_SITE_TOOL_NAME,
   PACKAGE_MANAGER_TOOL_NAME,
-  MERMAID_RENDER_TOOL_NAME,
   VISUAL_DESIGN_AUDIT_TOOL_NAME,
   ENTER_WORKTREE_TOOL_NAME,
   EXIT_WORKTREE_TOOL_NAME,

@@ -238,7 +238,6 @@ import {
   markToolsSentToAPIState,
   pinCacheEdits,
 } from '../compact/microCompact.js'
-import { getInitializationStatus } from '../lsp/manager.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
@@ -896,19 +895,6 @@ export async function* queryModelWithStreaming({
       options,
     )
   })
-}
-
-/**
- * Determines if an LSP tool should be deferred (tool appears with defer_loading: true)
- * because LSP initialization is not yet complete.
- */
-function shouldDeferLspTool(tool: Tool): boolean {
-  if (!('isLsp' in tool) || !tool.isLsp) {
-    return false
-  }
-  const status = getInitializationStatus()
-  // Defer when pending or not started
-  return status.status === 'pending' || status.status === 'not-started'
 }
 
 /**
@@ -1703,8 +1689,7 @@ async function* queryModel(
   }
 
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
-  const willDefer = (t: Tool) =>
-    useToolSearch && (deferredToolNames.has(t.name) || shouldDeferLspTool(t))
+  const willDefer = (t: Tool) => useToolSearch && deferredToolNames.has(t.name)
   // Tool definitions render before system blocks. If any tool is emitted, a
   // globally scoped system block is no longer a true prefix and the Anthropic
   // API rejects it unless every preceding tool block is also global-scoped.

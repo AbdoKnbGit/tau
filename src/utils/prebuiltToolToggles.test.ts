@@ -15,8 +15,8 @@
 
 import { ARTIFACT_CANVAS_TOOL_NAME } from '../tools/ArtifactCanvasTool/constants.js'
 import { BROWSER_TOOL_NAME } from '../tools/BrowserTool/constants.js'
-import { LSP_TOOL_NAME } from '../tools/LSPTool/prompt.js'
-import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
+import { ARTIFACT_CANVAS_TOOL_NAME } from '../tools/ArtifactCanvasTool/constants.js'
+import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
 import { WEB_BROWSER_TOOL_NAME } from '../tools/WebBrowserTool/constants.js'
 import {
   filterDisabledPrebuiltTools,
@@ -56,44 +56,44 @@ test('normalizes ids, casing, unknown values, and duplicates', () => {
   assertJsonEqual(
     normalizeDisabledPrebuiltToolIds([
       'unknown-tool',
-      MERMAID_RENDER_TOOL_NAME,
-      LSP_TOOL_NAME.toUpperCase(),
-      LSP_TOOL_NAME,
+      PROJECT_WORKFLOW_TOOL_NAME,
+      ARTIFACT_CANVAS_TOOL_NAME.toUpperCase(),
+      ARTIFACT_CANVAS_TOOL_NAME,
     ]),
     // Input order is preserved here; canonical ordering is
     // setPrebuiltToolToggleEnabled's job, asserted separately below.
-    [MERMAID_RENDER_TOOL_NAME, LSP_TOOL_NAME],
+    [PROJECT_WORKFLOW_TOOL_NAME, ARTIFACT_CANVAS_TOOL_NAME],
     'normalized disabled tools',
   )
 })
 
 test('filters the tool named by a disabled toggle', () => {
   const tools = [
-    { name: MERMAID_RENDER_TOOL_NAME },
-    { name: LSP_TOOL_NAME },
+    { name: PROJECT_WORKFLOW_TOOL_NAME },
+    { name: ARTIFACT_CANVAS_TOOL_NAME },
     { name: 'Read' },
   ]
 
   assertJsonEqual(
     filterDisabledPrebuiltTools(tools, {
-      disabledPrebuiltTools: [MERMAID_RENDER_TOOL_NAME],
+      disabledPrebuiltTools: [PROJECT_WORKFLOW_TOOL_NAME],
     }).map(tool => tool.name),
-    [LSP_TOOL_NAME, 'Read'],
+    [ARTIFACT_CANVAS_TOOL_NAME, 'Read'],
     'filtered tools',
   )
 })
 
 test('checks disabled state by concrete tool name', () => {
-  const settings = { disabledPrebuiltTools: [MERMAID_RENDER_TOOL_NAME] }
+  const settings = { disabledPrebuiltTools: [PROJECT_WORKFLOW_TOOL_NAME] }
   assert(
-    isPrebuiltToolDisabledByToolName(MERMAID_RENDER_TOOL_NAME, settings),
-    'MermaidRender should be disabled',
+    isPrebuiltToolDisabledByToolName(PROJECT_WORKFLOW_TOOL_NAME, settings),
+    'ProjectWorkflow should be disabled',
   )
   assert(
-    !isPrebuiltToolDisabledByToolName(LSP_TOOL_NAME, settings),
-    'LSP should stay enabled',
+    !isPrebuiltToolDisabledByToolName(ARTIFACT_CANVAS_TOOL_NAME, settings),
+    'ArtifactCanvas should stay enabled',
   )
-  assert(isOptionalPrebuiltToolName(LSP_TOOL_NAME), 'LSP is optional')
+  assert(isOptionalPrebuiltToolName(ARTIFACT_CANVAS_TOOL_NAME), 'ArtifactCanvas is optional')
   assert(!isOptionalPrebuiltToolName('Read'), 'basic tools are not optional')
 })
 
@@ -120,20 +120,23 @@ test('recognizes browser and artifact tools as optional', () => {
 
 test('sets toggles with canonical ordering and rejects unknown ids', () => {
   const disabled = setPrebuiltToolToggleEnabled(
-    [MERMAID_RENDER_TOOL_NAME, 'unknown-tool'],
-    LSP_TOOL_NAME,
+    [PROJECT_WORKFLOW_TOOL_NAME, 'unknown-tool'],
+    ARTIFACT_CANVAS_TOOL_NAME,
     false,
   )
 
+  // Canonical order follows declaration order in PREBUILT_TOOL_TOGGLE_GROUPS,
+  // where ProjectWorkflow's group precedes ArtifactCanvas's — not the order the
+  // ids were passed in above. That is the whole property under test.
   assertJsonEqual(
     disabled,
-    [LSP_TOOL_NAME, MERMAID_RENDER_TOOL_NAME],
+    [PROJECT_WORKFLOW_TOOL_NAME, ARTIFACT_CANVAS_TOOL_NAME],
     'disabled tool order',
   )
   assertJsonEqual(
-    setPrebuiltToolToggleEnabled(disabled ?? [], LSP_TOOL_NAME, true),
-    [MERMAID_RENDER_TOOL_NAME],
-    're-enabled LSP',
+    setPrebuiltToolToggleEnabled(disabled ?? [], ARTIFACT_CANVAS_TOOL_NAME, true),
+    [PROJECT_WORKFLOW_TOOL_NAME],
+    're-enabled ArtifactCanvas',
   )
   assert(
     setPrebuiltToolToggleEnabled(disabled ?? [], 'Read', false) === null,

@@ -16,7 +16,6 @@ import { filterToSingleShell, pickPreferredShell } from './single_shell.js'
 import { moonshotTransformer } from './transformers/moonshot.js'
 import { openrouterTransformer } from './transformers/openrouter.js'
 import { minimaxTransformer } from './transformers/minimax.js'
-import { lspToolInputSchema } from '../../tools/LSPTool/schemas.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { z } from 'zod/v4'
 
@@ -348,7 +347,7 @@ test('OpenRouter GPT sanitizer stays scoped away from non-GPT models', () => {
   assert(out.additionalProperties === undefined, 'non-GPT OpenRouter schema must not gain additionalProperties')
 })
 
-test('OpenRouter GPT sanitizer accepts task, LSP, AFT, and native-style schemas', () => {
+test('OpenRouter GPT sanitizer accepts task, discriminated-union, nested, and native-style schemas', () => {
   const schemas: Record<string, Record<string, unknown>> = {
     TaskCreate: zodToJsonSchema(z.strictObject({
       subject: z.string(),
@@ -356,7 +355,35 @@ test('OpenRouter GPT sanitizer accepts task, LSP, AFT, and native-style schemas'
       activeForm: z.string().optional(),
       metadata: z.record(z.string(), z.unknown()).optional(),
     })),
-    LSP: zodToJsonSchema(lspToolInputSchema()),
+    // Was the LSP tool's own schema. That tool is gone, but the property under
+    // test is the sanitizer's handling of a discriminated union of strict
+    // objects, so the shape is kept here as a self-contained fixture and can
+    // never again break because a tool retired.
+    SampleUnion: zodToJsonSchema(
+      z.discriminatedUnion('operation', [
+        z.strictObject({
+          operation: z.literal('goToDefinition'),
+          filePath: z.string(),
+          symbol: z.string().optional(),
+          line: z.number().int().positive().optional(),
+          character: z.number().int().positive().optional(),
+        }),
+        z.strictObject({
+          operation: z.literal('findReferences'),
+          filePath: z.string(),
+          symbol: z.string().optional(),
+          line: z.number().int().positive().optional(),
+          character: z.number().int().positive().optional(),
+        }),
+        z.strictObject({
+          operation: z.literal('documentSymbol'),
+          filePath: z.string(),
+          symbol: z.string().optional(),
+          line: z.number().int().positive().optional(),
+          character: z.number().int().positive().optional(),
+        }),
+      ]),
+    ),
     AFT: {
       type: 'object',
       properties: {

@@ -73,7 +73,6 @@ const getSendMessageTool = () =>
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { AskUserQuestionTool } from './tools/AskUserQuestionTool/AskUserQuestionTool.js'
 import { NATIVE_READ_ONLY_TOOLS } from './tools/NativeTools/NativeTools.js'
-import { LSPTool } from './tools/LSPTool/LSPTool.js'
 import { SnapshotTool } from './tools/SnapshotTool/SnapshotTool.js'
 import { FileDiffTool } from './tools/FileDiffTool/FileDiffTool.js'
 import { ProjectWorkflowTool } from './tools/ProjectWorkflowTool/ProjectWorkflowTool.js'
@@ -88,7 +87,6 @@ import { WebBrowserTool } from './tools/WebBrowserTool/WebBrowserTool.js'
 import { BrowserTool } from './tools/BrowserTool/BrowserTool.js'
 import { ArtifactCanvasTool } from './tools/ArtifactCanvasTool/ArtifactCanvasTool.js'
 import { PackageManagerTool } from './tools/PackageManagerTool/PackageManagerTool.js'
-import { MermaidRenderTool } from './tools/MermaidRenderTool/MermaidRenderTool.js'
 import { VisualDesignAuditTool } from './tools/VisualDesignAuditTool/VisualDesignAuditTool.js'
 import { PtyTool } from './tools/PtyTool/PtyTool.js'
 import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
@@ -242,8 +240,6 @@ export function getAllBaseTools(): Tools {
     ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
     ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),
-    // LSPTool defaults ON. Opt out: TAU_LSP_DISABLE=1.
-    ...(isEnvTruthy(process.env.TAU_LSP_DISABLE) ? [] : [LSPTool]),
     // SnapshotTool defaults ON. Opt out: TAU_SNAPSHOT_DISABLE=1.
     ...(isEnvTruthy(process.env.TAU_SNAPSHOT_DISABLE) ? [] : [SnapshotTool]),
     FileDiffTool,
@@ -257,7 +253,6 @@ export function getAllBaseTools(): Tools {
     InspectSiteTool,
     ArtifactCanvasTool,
     PackageManagerTool,
-    MermaidRenderTool,
     VisualDesignAuditTool,
     // PtyTool defaults OFF — interactive TTY rendering is still rough.
     // Opt in: TAU_PTY_ENABLE=1. The tool also self-checks node-pty

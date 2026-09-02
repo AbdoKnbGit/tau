@@ -1,8 +1,6 @@
 import { ARTIFACT_CANVAS_TOOL_NAME } from '../tools/ArtifactCanvasTool/constants.js'
 import { BROWSER_TOOL_NAME } from '../tools/BrowserTool/constants.js'
 import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
-import { LSP_TOOL_NAME } from '../tools/LSPTool/prompt.js'
-import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
 import { NATIVE_SYSINFO_TOOL_NAME } from '../tools/NativeTools/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
 import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
@@ -22,17 +20,6 @@ export type PrebuiltToolToggleGroup = {
 }
 
 export const PREBUILT_TOOL_TOGGLE_GROUPS = [
-  {
-    label: 'Code Intelligence',
-    items: [
-      {
-        id: LSP_TOOL_NAME,
-        purpose:
-          'Language-server code intelligence for definitions, references, hover, symbols, and call hierarchy.',
-        toolNames: [LSP_TOOL_NAME],
-      },
-    ],
-  },
   {
     label: 'Project & Workflow',
     items: [
@@ -88,16 +75,6 @@ export const PREBUILT_TOOL_TOGGLE_GROUPS = [
         purpose:
           'Create browser-reviewable HTML artifacts for reports, previews, mockups, and canvases.',
         toolNames: [ARTIFACT_CANVAS_TOOL_NAME],
-      },
-    ],
-  },
-  {
-    label: 'Diagrams',
-    items: [
-      {
-        id: MERMAID_RENDER_TOOL_NAME,
-        purpose: 'Create Mermaid diagrams and browser-reviewable HTML previews.',
-        toolNames: [MERMAID_RENDER_TOOL_NAME],
       },
     ],
   },

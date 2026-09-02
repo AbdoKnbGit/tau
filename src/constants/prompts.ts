@@ -39,14 +39,12 @@ import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
 import { hasEmbeddedSearchTools } from 'src/utils/embeddedTools.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
-import { LSP_TOOL_NAME } from '../tools/LSPTool/prompt.js'
 import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
 import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/constants.js'
 import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
 import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
-import { MERMAID_RENDER_TOOL_NAME } from '../tools/MermaidRenderTool/constants.js'
 import { EVAL_TOOL_NAME } from '../tools/EvalTool/constants.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
 import { WEB_BROWSER_TOOL_NAME } from '../tools/WebBrowserTool/constants.js'
@@ -293,7 +291,6 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const taskToolName = [TASK_CREATE_TOOL_NAME, TODO_WRITE_TOOL_NAME].find(n =>
     enabledTools.has(n),
   )
-  const hasLspTool = enabledTools.has(LSP_TOOL_NAME)
   const hasProjectWorkflowTool = enabledTools.has(PROJECT_WORKFLOW_TOOL_NAME)
   const hasCodebaseRetrievalTool = enabledTools.has(CODEBASE_RETRIEVAL_TOOL_NAME)
   const hasGitHistorySearchTool = enabledTools.has(GIT_HISTORY_SEARCH_TOOL_NAME)
@@ -301,7 +298,6 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const hasWebBrowserTool = enabledTools.has(WEB_BROWSER_TOOL_NAME)
   const hasBrowserTool = enabledTools.has(BROWSER_TOOL_NAME)
   const hasPackageManagerTool = enabledTools.has(PACKAGE_MANAGER_TOOL_NAME)
-  const hasMermaidRenderTool = enabledTools.has(MERMAID_RENDER_TOOL_NAME)
   const hasEvalTool = enabledTools.has(EVAL_TOOL_NAME)
   const hasVisualDesignAuditTool = enabledTools.has(VISUAL_DESIGN_AUDIT_TOOL_NAME)
 
@@ -341,9 +337,6 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
     hasPackageManagerTool
       ? `${PACKAGE_MANAGER_TOOL_NAME}: use before dependency or package-script work.`
       : null,
-    hasMermaidRenderTool
-      ? `${MERMAID_RENDER_TOOL_NAME}: use when a Mermaid diagram needs a visual browser-reviewable artifact, not just chat text.`
-      : null,
     // Static string, gated on a session-stable tool set: safe for the cached
     // prefix. Without this line the model reliably waited to be told "use
     // Eval" instead of reaching for it on a question that plainly needed it.
@@ -368,11 +361,6 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
           `To search for files use ${GLOB_TOOL_NAME} instead of find or ls`,
           `To search the content of files, use ${GREP_TOOL_NAME} instead of grep or rg`,
         ]),
-    ...(hasLspTool
-      ? [
-          `When the question is "where / who / what-type" about a specific code symbol — where is X defined, who calls or references X, what is X's type or signature, what implements X, what does X call — reach for the ${LSP_TOOL_NAME} tool FIRST, before ${GREP_TOOL_NAME} or reading files. Pass the symbol name and its file (for example symbol "LogoV2"); the tool locates the position itself, so do NOT read the file to compute line and character. ${LSP_TOOL_NAME} returns ground truth that text search cannot: real inferred types, and exact cross-file definitions and references — for example it can prove an import is unused because the reference count is 1. Type-checked diagnostics also come from the language server, but they arrive on their own after files open or change: ${LSP_TOOL_NAME} has no diagnostics operation, so never call it to fetch them. Conversely, when a ${GREP_TOOL_NAME} search turns up a code symbol whose complete or accurate set of usages matters — before renaming it, deleting it, or deciding whether it is dead — confirm the real perimeter with ${LSP_TOOL_NAME} (findReferences or goToDefinition): it drops false positives in comments and strings and catches re-exports and aliases that text search misses. Use it for any language with a running server (TS/JS, Python, HTML, CSS, JSON, and more). Only when it reports no server for the file's language, or returns nothing useful, fall back to ${GREP_TOOL_NAME}.`,
-        ]
-      : []),
     ...(hasProjectWorkflowTool
       ? [
           `Before guessing build, lint, test, dev-server, package, or deploy commands in an unfamiliar project, load ${PROJECT_WORKFLOW_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME}. It reads local manifests and returns repo-native commands without running them.`,
@@ -380,11 +368,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
       : []),
     ...(hasCodebaseRetrievalTool
       ? [
-          `For broad "where is this behavior / what should I change / how does this feature work" repo questions, call ${CODEBASE_RETRIEVAL_TOOL_NAME} before text search: it ranks files by intent, so it answers the questions where you do not yet know the identifier to grep for. Then use ${[
-            hasLspTool ? LSP_TOOL_NAME : null,
-            GREP_TOOL_NAME,
-            FILE_READ_TOOL_NAME,
-          ].filter(Boolean).join(', ')} for exact evidence before editing.`,
+          `For broad "where is this behavior / what should I change / how does this feature work" repo questions, call ${CODEBASE_RETRIEVAL_TOOL_NAME} before text search: it ranks files by intent, so it answers the questions where you do not yet know the identifier to grep for. Then use ${GREP_TOOL_NAME}, ${FILE_READ_TOOL_NAME} for exact evidence before editing.`,
         ]
       : []),
     ...(hasGitHistorySearchTool
@@ -410,11 +394,6 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
     ...(hasPackageManagerTool
       ? [
           `Before dependency changes or package scripts, load ${PACKAGE_MANAGER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to detect the package manager and produce safe commands. Ask before major upgrades, removals, or registry/auth changes.`,
-        ]
-      : []),
-    ...(hasMermaidRenderTool
-      ? [
-          `When a diagram should be reviewed visually or attached to a spec/report, load ${MERMAID_RENDER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to write a Mermaid source file and browser-renderable HTML preview.`,
         ]
       : []),
     ...(hasVisualDesignAuditTool

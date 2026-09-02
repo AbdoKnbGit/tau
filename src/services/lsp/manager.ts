@@ -110,7 +110,11 @@ export function getInitializationStatus():
 
 /**
  * Check whether at least one language server is connected and healthy.
- * Backs LSPTool.isEnabled().
+ *
+ * Currently unused: this backed the LSP tool's isEnabled(), and that tool was
+ * removed after 14 calls across 323 transcripts, 12 of them from sessions that
+ * swept 40-51 distinct tools apiece. The language servers themselves stay --
+ * they still drive diagnostics attachments and the indexing indicator.
  */
 export function isLspConnected(): boolean {
   if (initializationState === 'failed') return false
