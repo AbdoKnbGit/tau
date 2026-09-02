@@ -112,10 +112,8 @@ import {
   startToolSpan,
 } from '../../utils/telemetry/sessionTracing.js'
 import { coerceToolInput } from '../../utils/coerceToolInput.js'
-import {
-  formatError,
-  formatZodValidationError,
-} from '../../utils/toolErrors.js'
+import { formatError, formatZodValidationError } from '../../utils/toolErrors.js'
+import { TOOL_INPUT_VALIDATION_ERROR_PREFIX } from '../../utils/toolValidationError.js'
 import {
   processPreMappedToolResultBlock,
   processToolResultBlock,
@@ -968,7 +966,7 @@ async function checkPermissionsAndCallTool(
       toolUseID,
       messageId,
       input,
-      `InputValidationError: ${errorContent}`,
+      `${TOOL_INPUT_VALIDATION_ERROR_PREFIX}${errorContent}`,
       false,
       requestId,
       mcpServerType,
@@ -982,12 +980,12 @@ async function checkPermissionsAndCallTool(
           content: [
             {
               type: 'tool_result',
-              content: `<tool_use_error>InputValidationError: ${errorContent}</tool_use_error>`,
+              content: `<tool_use_error>${TOOL_INPUT_VALIDATION_ERROR_PREFIX}${errorContent}</tool_use_error>`,
               is_error: true,
               tool_use_id: toolUseID,
             },
           ],
-          toolUseResult: `InputValidationError: ${errorContent}`,
+          toolUseResult: `${TOOL_INPUT_VALIDATION_ERROR_PREFIX}${errorContent}`,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
       },

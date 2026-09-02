@@ -2,16 +2,25 @@ import { c as _c } from "react/compiler-runtime";
 import { feature } from 'bun:bundle';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
-import { BULLET_OPERATOR } from '../../../constants/figures.js';
+import { BULLET_OPERATOR, REFRESH_ARROW } from '../../../constants/figures.js';
 import { Text } from '../../../ink.js';
 import { filterToolProgressMessages, type Tool, type Tools } from '../../../Tool.js';
 import type { ProgressMessage } from '../../../types/message.js';
+import { isToolInputValidationError } from '../../../utils/toolValidationError.js';
 import { INTERRUPT_MESSAGE_FOR_TOOL_USE, isClassifierDenial, PLAN_REJECTION_PREFIX, REJECT_MESSAGE_WITH_REASON_PREFIX } from '../../../utils/messages.js';
 import { FallbackToolUseErrorMessage } from '../../FallbackToolUseErrorMessage.js';
 import { InterruptedByUser } from '../../InterruptedByUser.js';
 import { MessageResponse } from '../../MessageResponse.js';
 import { RejectedPlanMessage } from './RejectedPlanMessage.js';
 import { RejectedToolUseMessage } from './RejectedToolUseMessage.js';
+/**
+ * Shown in place of a schema-validation error. Amber, not red: red is a tool
+ * that ran and failed, green is one that ran and worked, and this one never
+ * ran at all — the arguments never matched the schema, so nothing was written
+ * and nothing was executed. The model receives the full error and reissues
+ * the call, which is what the word describes.
+ */
+const RETRYING_NOTICE = <MessageResponse height={1}><Text color="warning">{REFRESH_ARROW} retrying</Text></MessageResponse>;
 type Props = {
   progressMessagesForMessage: ProgressMessage[];
   tool?: Tool; // undefined when resuming an old conversation that uses an old tool
@@ -79,6 +88,16 @@ export function UserToolErrorMessage(t0) {
       t1 = $[6];
     }
     return t1;
+  }
+  // A call rejected by schema validation is not a failure the user can act
+  // on, so it does not get a red row. It has to be caught here rather than in
+  // FallbackToolUseErrorMessage: a tool with its own renderToolUseErrorMessage
+  // never reaches the fallback, and FileWriteTool's renders "Error writing
+  // file" in red for any tool_use_error — misleading for a call where no write
+  // was ever attempted. Returns a shared element and touches no `$` slot, so
+  // the compiler cache above is unaffected. ctrl+o still shows the real error.
+  if (isTranscriptMode !== true && isToolInputValidationError(param.content)) {
+    return RETRYING_NOTICE;
   }
   let t1;
   if ($[7] !== isTranscriptMode || $[8] !== param.content || $[9] !== progressMessagesForMessage || $[10] !== tool || $[11] !== tools || $[12] !== verbose) {

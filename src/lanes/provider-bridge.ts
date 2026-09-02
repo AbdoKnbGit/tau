@@ -261,6 +261,7 @@ async function assembleFinalMessage(
             }
           }
           delete (currentBlock as any)._partialJson
+          ;(currentBlock as any)._finalized = true
         }
         currentBlock = null
         break
@@ -289,11 +290,22 @@ async function assembleFinalMessage(
     }
   }
 
+  // A tool_use block that never got its content_block_stop was dropped by the
+  // lane mid-flight — the output cap cut the model off while it was still
+  // writing the arguments (see lanes/shared/truncation.ts). claude.ts turns a
+  // block into a message at content_block_stop and nowhere else, so this
+  // assembler has to apply the same rule or the non-streaming create() path
+  // would hand back a tool call the streaming path deliberately discarded.
+  const finalized = blocks.filter(
+    b => b.type !== 'tool_use' || (b as any)._finalized === true,
+  )
+  for (const b of finalized) delete (b as any)._finalized
+
   return {
     id: messageId,
     type: 'message',
     role: 'assistant',
-    content: blocks,
+    content: finalized,
     model,
     stop_reason: stopReason,
     stop_sequence: null,

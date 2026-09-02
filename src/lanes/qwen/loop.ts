@@ -46,6 +46,11 @@ import {
   appendStrictParamsHint,
   QWEN_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
+import {
+  InFlightToolCall,
+  isOutputCapTruncation,
+  laneStopReason,
+} from '../shared/truncation.js'
 
 const MAX_TURNS = 100
 
@@ -115,6 +120,9 @@ export class QwenLane implements Lane {
       emitted: boolean
     }
     const toolCallsByIndex = new Map<number, ToolCallBuf>()
+    // Output-cap truncation: see ../shared/truncation.ts.
+    let outputCapTruncated = false
+    const inFlightToolCall = new InFlightToolCall<number>()
 
     const emitMessageStart = (): AnthropicStreamEvent | undefined => {
       if (messageStartEmitted) return undefined
@@ -160,6 +168,7 @@ export class QwenLane implements Lane {
 
           // Reasoning-content delta → thinking block.
           if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+            inFlightToolCall.noteOtherOutput()
             if (inBlock === 'text') {
               yield { type: 'content_block_stop', index: blockIndex }
               blockIndex++
@@ -182,6 +191,7 @@ export class QwenLane implements Lane {
 
           // Text content delta.
           if (typeof delta.content === 'string' && delta.content.length > 0) {
+            inFlightToolCall.noteOtherOutput()
             if (inBlock === 'thinking') {
               yield { type: 'content_block_stop', index: blockIndex }
               blockIndex++
@@ -217,7 +227,10 @@ export class QwenLane implements Lane {
               toolCallsByIndex.set(idx, buf)
             }
             if (tc.function?.name) buf.nativeName = tc.function.name
-            if (tc.function?.arguments) buf.args += tc.function.arguments
+            if (tc.function?.arguments) {
+              buf.args += tc.function.arguments
+              inFlightToolCall.noteArgs(idx)
+            }
           }
 
           if (choice.finish_reason) {
@@ -227,6 +240,15 @@ export class QwenLane implements Lane {
               blockIndex++
               inBlock = null
             }
+            // Cut off at the output cap — discard the call that was still
+            // taking argument fragments rather than emit a half-written one.
+            // See ../shared/truncation.ts.
+            if (isOutputCapTruncation(choice.finish_reason)) {
+              outputCapTruncated = true
+              const dropKey = inFlightToolCall.toDrop(true)
+              if (dropKey !== null) toolCallsByIndex.delete(dropKey)
+            }
+            inFlightToolCall.noteOtherOutput()
             // Emit atomic tool_use blocks for any buffered calls.
             for (const buf of toolCallsByIndex.values()) {
               if (buf.emitted) continue
@@ -339,9 +361,10 @@ export class QwenLane implements Lane {
     if (inBlock !== null) yield { type: 'content_block_stop', index: blockIndex }
 
     const hadToolUse = Array.from(toolCallsByIndex.values()).some(b => b.emitted)
+    const stopReason = laneStopReason({ truncated: outputCapTruncated, hadToolUse })
     yield {
       type: 'message_delta',
-      delta: { stop_reason: hadToolUse ? 'tool_use' : 'end_turn' },
+      delta: { stop_reason: stopReason },
       usage: { output_tokens: outputTokens },
     }
     yield { type: 'message_stop' }

@@ -435,9 +435,12 @@ export async function* responsesStreamToAnthropicEvents(
 
       case 'response.incomplete': {
         yield* closeTextBlock()
-        for (const [, tool] of activeTools) {
-          yield { type: 'content_block_stop', index: tool.blockIndex }
-        }
+        // Incomplete means the model was cut off at the output cap, so a tool
+        // call still open here was never finished — its arguments are a
+        // fragment. Leave it unclosed rather than emitting content_block_stop:
+        // a tool_use block becomes a message at the stop event and nowhere
+        // else, so this drops the half-written call before anything can run
+        // it. Same rule the native lanes follow — see lanes/shared/truncation.
         activeTools.clear()
 
         const resp2 = event.response as { usage?: { output_tokens?: number } } | undefined

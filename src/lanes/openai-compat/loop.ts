@@ -45,6 +45,11 @@ import {
   volatileFreezeKey,
 } from '../shared/volatile_freeze.js'
 import { isMediaBlock } from '../shared/media_blocks.js'
+import {
+  InFlightToolCall,
+  isOutputCapTruncation,
+  laneStopReason,
+} from '../shared/truncation.js'
 import { renderMediaForTextLane } from '../shared/media_extract.js'
 import { decideImageSupport, recordModelVision } from '../shared/vision_capability.js'
 import { recordOpenRouterServedProvider } from './transformers/openrouter.js'
@@ -619,6 +624,11 @@ export class OpenAICompatLane implements Lane {
     const toolCallBuffers = new Map<number, { id: string; name: string; args: string; anthropicIndex: number }>()
     let emittedAnyToolUse = false
     let emittedAnyAssistantOutput = false
+    // Output-cap truncation state. `inFlightToolCall` names the buffer that
+    // was still taking argument fragments when the stream ended — the only
+    // one that can be half-written. See ../shared/truncation.ts.
+    let outputCapTruncated = false
+    const inFlightToolCall = new InFlightToolCall<number>()
 
     const emitMessageStart = () => {
       if (messageStartEmitted) return undefined
@@ -831,6 +841,7 @@ export class OpenAICompatLane implements Lane {
             delta.thinking ?? delta.reasoning_content ?? delta.reasoning
           if (typeof thinkingDelta === 'string' && thinkingDelta.length > 0) {
             emittedAnyAssistantOutput = true
+            inFlightToolCall.noteOtherOutput()
             if (inTextBlock) {
               yield { type: 'content_block_stop', index: currentBlockIndex }
               currentBlockIndex++
@@ -854,6 +865,7 @@ export class OpenAICompatLane implements Lane {
           // Text content.
           if (typeof delta.content === 'string' && delta.content.length > 0) {
             emittedAnyAssistantOutput = true
+            inFlightToolCall.noteOtherOutput()
             if (inThinkingBlock) {
               yield { type: 'content_block_stop', index: currentBlockIndex }
               currentBlockIndex++
@@ -902,7 +914,10 @@ export class OpenAICompatLane implements Lane {
               }
               if (tc.id) buf.id = tc.id
               if (tc.function?.name) buf.name = tc.function.name
-              if (typeof tc.function?.arguments === 'string') buf.args += tc.function.arguments
+              if (typeof tc.function?.arguments === 'string') {
+                buf.args += tc.function.arguments
+                inFlightToolCall.noteArgs(idx)
+              }
             }
           }
 
@@ -914,6 +929,27 @@ export class OpenAICompatLane implements Lane {
               yield { type: 'content_block_stop', index: currentBlockIndex }
               inTextBlock = false
               inThinkingBlock = false
+            }
+
+            // `length` means the model was cut off at the output cap, so the
+            // call still taking argument fragments is half-written. Drop it
+            // instead of emitting it: its arguments may still parse (some
+            // routers close the JSON object for us), in which case the tool
+            // layer cannot tell a truncated call from a finished one and
+            // either rejects it with a misleading "required parameter is
+            // missing" or, worse, runs it and writes a truncated file.
+            // Dropping before any event is emitted means nothing downstream
+            // ever sees the block, so no tool_result is owed for it.
+            if (isOutputCapTruncation(finishReason)) {
+              outputCapTruncated = true
+              const dropKey = inFlightToolCall.toDrop(true)
+              const dropped = dropKey === null ? undefined : toolCallBuffers.get(dropKey)
+              // Only ever the last-opened block, so the emitted indices stay
+              // contiguous and claude.ts is never left holding a gap.
+              const isLastBlock =
+                dropped !== undefined &&
+                [...toolCallBuffers.values()].every(b => b.anthropicIndex <= dropped.anthropicIndex)
+              if (dropKey !== null && isLastBlock) toolCallBuffers.delete(dropKey)
             }
 
             // Emit final tool_use blocks with the accumulated arguments.
@@ -953,6 +989,7 @@ export class OpenAICompatLane implements Lane {
               yield { type: 'content_block_stop', index: buf.anthropicIndex }
             }
             toolCallBuffers.clear()
+            inFlightToolCall.noteOtherOutput()
           }
         }
 
@@ -1101,7 +1138,10 @@ export class OpenAICompatLane implements Lane {
       if (mst) yield mst
     }
 
-    const stopReason: 'tool_use' | 'end_turn' = emittedAnyToolUse ? 'tool_use' : 'end_turn'
+    const stopReason = laneStopReason({
+      truncated: outputCapTruncated,
+      hadToolUse: emittedAnyToolUse,
+    })
     yield {
       type: 'message_delta',
       delta: { stop_reason: stopReason },
@@ -2642,6 +2682,7 @@ async function* streamOllamaNative(
   let inThinkingBlock = false
   const toolCallBuffers: Array<{ id: string; name: string; args: string; anthropicIndex: number }> = []
   let emittedAnyToolUse = false
+  let outputCapTruncated = false
 
   const emitMessageStart = (): AnthropicStreamEvent | undefined => {
     if (messageStartEmitted) return undefined
@@ -2714,6 +2755,9 @@ async function* streamOllamaNative(
 
         const message = chunk.message ?? {}
         const isDone = chunk.done === true
+        // Ollama reports why it stopped on the terminal chunk: "stop",
+        // "length" (num_predict reached), "load".
+        if (isDone && isOutputCapTruncation(chunk.done_reason)) outputCapTruncated = true
 
         if (typeof chunk.prompt_eval_count === 'number') inputTokens = chunk.prompt_eval_count
         if (typeof chunk.eval_count === 'number') outputTokens = chunk.eval_count
@@ -2778,6 +2822,10 @@ async function* streamOllamaNative(
             inTextBlock = false
             inThinkingBlock = false
           }
+          // Cut off at num_predict: the last call in the list is the one the
+          // model was still writing. Drop it rather than run a half-built
+          // call — see ../shared/truncation.ts.
+          if (outputCapTruncated) toolCallBuffers.pop()
           for (const buf of toolCallBuffers) {
             const implId = normalizeToolName(buf.name)
             let input: Record<string, unknown>
@@ -2811,7 +2859,10 @@ async function* streamOllamaNative(
     if (mst) yield mst
   }
 
-  const stopReason: 'tool_use' | 'end_turn' = emittedAnyToolUse ? 'tool_use' : 'end_turn'
+  const stopReason = laneStopReason({
+    truncated: outputCapTruncated,
+    hadToolUse: emittedAnyToolUse,
+  })
   yield {
     type: 'message_delta',
     delta: { stop_reason: stopReason },

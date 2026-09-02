@@ -12,6 +12,10 @@ import type {
   AnthropicContentBlock,
 } from '../providers/base_provider.js'
 import { coerceToolCallArgs } from './tool_schema_cache.js'
+import {
+  InFlightToolCall,
+  isOutputCapTruncation,
+} from '../../../lanes/shared/truncation.js'
 
 // ─── OpenAI response types (minimal) ───────────────────────────────
 
@@ -192,6 +196,8 @@ export async function* openAIStreamToAnthropicEvents(
   let totalOutputTokens = 0
   let totalCachedTokens = 0
   let finishedCleanly = false
+  // Output-cap truncation: see lanes/shared/truncation.ts.
+  const inFlightToolCall = new InFlightToolCall<number>()
 
   for await (const chunk of openAIStream) {
     if (!chunk.choices || chunk.choices.length === 0) {
@@ -245,6 +251,7 @@ export async function* openAIStreamToAnthropicEvents(
 
     // Handle text content
     if (choice.delta.content != null && choice.delta.content !== '') {
+      inFlightToolCall.noteOtherOutput()
       // Close thinking block before text starts
       if (hasThinkingBlock) {
         yield { type: 'content_block_stop', index: blockIndex }
@@ -317,6 +324,7 @@ export async function* openAIStreamToAnthropicEvents(
         // Stream argument chunks
         if (tc.function?.arguments) {
           state.argBuffer += tc.function.arguments
+          inFlightToolCall.noteArgs(tcIndex)
           yield {
             type: 'content_block_delta',
             index: state.blockIndex,
@@ -343,9 +351,17 @@ export async function* openAIStreamToAnthropicEvents(
         hasTextBlock = false
       }
 
-      // Close any open tool call blocks
-      for (const [, state] of toolCallState) {
-        if (state.started) {
+      // Close any open tool call blocks. A call still taking argument
+      // fragments when the output cap was hit is half-written, so leave it
+      // unclosed: claude.ts materializes a tool_use block into a message at
+      // content_block_stop and nowhere else, so skipping the stop drops the
+      // call before anything can execute it, and no tool_result is owed for
+      // a block that never became a message. See lanes/shared/truncation.ts.
+      const dropBlock = inFlightToolCall.toDrop(
+        isOutputCapTruncation(choice.finish_reason),
+      )
+      for (const [tcIndex, state] of toolCallState) {
+        if (state.started && tcIndex !== dropBlock) {
           yield { type: 'content_block_stop', index: state.blockIndex }
         }
       }

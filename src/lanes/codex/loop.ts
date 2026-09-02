@@ -44,6 +44,7 @@ import {
   CODEX_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
 import { describeUnsendableMedia } from '../shared/media_blocks.js'
+import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
 import {
   createRetryableConnectionError,
   isAbortError,
@@ -260,6 +261,8 @@ export class CodexLane implements Lane {
     const openBlocks = new Map<number, { anthropicIndex: number; kind: 'text' | 'thinking' | 'tool_use' }>()
     let nextBlockIndex = 0
     let emittedAnyToolUse = false
+    // Output-cap truncation: see ../shared/truncation.ts.
+    let outputCapTruncated = false
 
     // Tool-call assembly state. Codex streams arguments as deltas, so we
     // accumulate them until output_item.done fires with the full item.
@@ -459,6 +462,32 @@ export class CodexLane implements Lane {
           break
         }
 
+        // The Responses API ends a capped generation with `response.incomplete`
+        // (incomplete_details.reason === 'max_output_tokens') rather than
+        // `response.completed`. Without this the turn looked like a clean
+        // finish. Any tool call still buffered here was never emitted — this
+        // lane only flushes a call on `output_item.done` — so there is
+        // nothing half-built to drop, just a stop reason to report.
+        if (ev.type === 'response.incomplete') {
+          const resp = (ev as any).response
+          const usage = resp?.usage
+          if (usage) {
+            const metrics = extractCodexUsageMetrics(usage)
+            inputTokens = metrics.inputTokens ?? inputTokens
+            outputTokens = metrics.outputTokens ?? outputTokens
+            cachedInputTokens = metrics.cacheReadTokens || cachedInputTokens
+            cacheWriteTokens = metrics.cacheWriteTokens || cacheWriteTokens
+            reasoningTokens = metrics.reasoningTokens || reasoningTokens
+          }
+          // Trust the event itself: a reason we do not recognize (a content
+          // filter, say) is still an incomplete response, but only an output
+          // cap should drive the max_tokens recovery path.
+          outputCapTruncated = isOutputCapTruncation(
+            resp?.incomplete_details?.reason ?? 'max_output_tokens',
+          )
+          break
+        }
+
         if (ev.type === 'response.failed') {
           const errMessage = (ev as any).response?.error?.message ?? 'Responses API failed'
           if (!messageStartEmitted) {
@@ -584,7 +613,10 @@ export class CodexLane implements Lane {
       }
     }
 
-    const stopReason: 'tool_use' | 'end_turn' = emittedAnyToolUse ? 'tool_use' : 'end_turn'
+    const stopReason = laneStopReason({
+      truncated: outputCapTruncated,
+      hadToolUse: emittedAnyToolUse,
+    })
 
     yield {
       type: 'message_delta',

@@ -72,6 +72,7 @@ import {
   appendStrictParamsHint,
   GEMINI_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
+import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
 import { selectGeminiToolsForRequest } from './lazy_tools.js'
 import {
   resolveThinkingBudget as resolveGeminiThinkingBudget,
@@ -298,6 +299,8 @@ export class GeminiLane implements Lane {
     let thinkingText = ''
     let responseText = ''
     let blockIndex = 0
+    // Output-cap truncation: see ../shared/truncation.ts.
+    let outputCapTruncated = false
     let inBlock: 'thinking' | 'text' | null = null
     let messageStartEmitted = false
     const toolCalls: Array<{
@@ -481,6 +484,10 @@ export class GeminiLane implements Lane {
         }
 
         for (const candidate of chunk.candidates ?? []) {
+          // Gemini reports MAX_TOKENS here when the response hit the output
+          // ceiling. The legacy gemini_to_anthropic adapter mapped it to
+          // stop_reason 'max_tokens'; the native lane must too.
+          if (isOutputCapTruncation(candidate.finishReason)) outputCapTruncated = true
           for (const part of (candidate.content?.parts ?? []) as any[]) {
             // ── Thinking part ──
             if (part.thought === true && typeof part.text === 'string') {
@@ -768,7 +775,13 @@ export class GeminiLane implements Lane {
     // response is just one tool call: all the chunks are functionCall
     // parts and the only trigger to commit is end-of-stream.
     if (currentCall) {
-      yield* commitCurrentCall()
+      // A call still uncommitted at MAX_TOKENS was being written when the
+      // response was cut off, so its args are a fragment. Discard it instead
+      // of committing a half-built call — see ../shared/truncation.ts. Any
+      // call followed by more output was already committed above, so this
+      // only ever drops the one that was genuinely in flight.
+      if (outputCapTruncated) currentCall = null
+      else yield* commitCurrentCall()
     }
 
     // Close final open block.
@@ -776,10 +789,12 @@ export class GeminiLane implements Lane {
       yield { type: 'content_block_stop', index: blockIndex }
     }
 
-    // Decide stop reason: if we emitted tool_use blocks, the model wants to
-    // run tools; otherwise it finished its turn.
-    const stopReason: 'tool_use' | 'end_turn' =
-      toolCalls.length > 0 ? 'tool_use' : 'end_turn'
+    // Decide stop reason: truncation first, then whether we emitted tool_use
+    // blocks (the model wants to run tools) or the model finished its turn.
+    const stopReason = laneStopReason({
+      truncated: outputCapTruncated,
+      hadToolUse: toolCalls.length > 0,
+    })
 
     yield {
       type: 'message_delta',
