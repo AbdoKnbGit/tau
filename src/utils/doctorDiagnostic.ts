@@ -12,6 +12,7 @@ import {
 } from './config.js'
 import { getCwd } from './cwd.js'
 import { isEnvTruthy } from './envUtils.js'
+import { getInstallHealthWarning } from './installHealth.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import {
@@ -368,6 +369,16 @@ async function detectConfigurationIssues(
   // Skip most warnings for development mode
   if (type === 'development') {
     return warnings
+  }
+
+  // Did postinstall actually complete? A direct `npm install -g` honours the
+  // user's npm config, so `ignore-scripts=true` skips it and leaves the install
+  // without vendored ripgrep or native helpers. The marker is the only evidence
+  // either way, and nothing in the app read it before. Deliberately after the
+  // development early return: a source checkout is not an install.
+  const installHealthWarning = getInstallHealthWarning()
+  if (installHealthWarning) {
+    warnings.push(installHealthWarning)
   }
 
   // Check if ~/.local/bin is in PATH for native installations
