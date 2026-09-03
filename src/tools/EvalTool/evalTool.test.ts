@@ -215,8 +215,11 @@ test('Eval is registered last in getAllBaseTools', () => {
   // Tool order IS the cache prefix. A tool inserted in the middle shifts every
   // schema after it and invalidates the cached prefix for the whole session —
   // the exact failure lanes/gemini/lazy_tools.test.ts guards on the lane side.
-  // The registry cannot be imported in this tree (src/tools/TungstenTool is
-  // absent; see docs/inline-images-handoff.md §1), so assert on the source.
+  // The registry cannot be imported in this tree — `import('../../tools.js')`
+  // fails on the optional `@anthropic-ai/sandbox-runtime` dependency, which is
+  // not installed here — so assert on the source text instead. This used to
+  // name a missing TungstenTool module as the blocker; that import was removed,
+  // and sandbox-runtime is what actually stops it now.
   const here = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(here, '..', '..', 'tools.ts'), 'utf8')
   const start = source.indexOf('export function getAllBaseTools')
