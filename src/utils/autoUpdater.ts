@@ -278,7 +278,12 @@ export async function checkGlobalInstallPermissions(): Promise<{
 export async function getLatestVersion(
   channel: ReleaseChannel,
 ): Promise<string | null> {
-  const npmTag = channel === 'stable' ? 'stable' : 'latest'
+  // Always 'latest'. No `stable` dist-tag is published, and asking npm for a tag
+  // that does not exist exits non-zero, which getLatestVersion reports as null --
+  // a value every caller reads as "already up to date". The channel parameter
+  // stays so restoring a real stable track is a change here, not a signature
+  // change across its call sites.
+  const npmTag = 'latest'
 
   // Run from home directory to avoid reading project-level .npmrc
   // which could be maliciously crafted to redirect to an attacker's registry

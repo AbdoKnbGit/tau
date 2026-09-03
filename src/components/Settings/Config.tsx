@@ -1385,9 +1385,13 @@ export function Config({
       }
       const currentChannel = settingsData?.autoUpdatesChannel ?? 'latest';
       if (currentChannel === 'latest') {
-        // Switching to stable - show downgrade dialog
-        setShowSubmenu('ChannelDowngrade');
-        setTabsHidden(true);
+        // Was: open ChannelDowngradeDialog and store 'stable'. There is no
+        // `stable` dist-tag on the registry, so that setting only ever made
+        // `npm view` fail, which reads as "already up to date" everywhere and
+        // stopped updates silently. Nothing to switch to, so this is a no-op.
+        // The branch below is deliberately kept: anyone whose settings still
+        // say 'stable' can toggle back out of it.
+        return;
       } else {
         // Switching to latest - just do it and clear minimumVersion
         isDirty.current = true;
@@ -1642,11 +1646,8 @@ export function Config({
                   auto-updates.
                 </Text>}
             </> : <Select options={[{
-        label: 'Enable with latest channel',
+        label: 'Enable auto-updates',
         value: 'latest'
-      }, {
-        label: 'Enable with stable channel',
-        value: 'stable'
       }]} onChange={(channel: string) => {
         isDirty.current = true;
         setShowSubmenu(null);

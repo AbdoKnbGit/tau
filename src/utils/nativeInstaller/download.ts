@@ -140,7 +140,8 @@ export async function getLatestVersion(
   // Route to appropriate source
   if (process.env.USER_TYPE === 'ant') {
     // Use Artifactory for ant users
-    const npmTag = channel === 'stable' ? 'stable' : 'latest'
+    // See autoUpdater.getLatestVersion: no `stable` dist-tag is published.
+    const npmTag = 'latest'
     return getLatestVersionFromArtifactory(npmTag)
   }
 

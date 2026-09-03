@@ -47,8 +47,10 @@ export async function update() {
   logEvent('tengu_update_check', {})
   writeToStdout(`Current version: ${MACRO.VERSION}\n`)
 
-  const channel: ReleaseChannel =
-    getInitialSettings()?.autoUpdatesChannel ?? 'latest'
+  // Settings written before the stable option was removed can still say
+  // 'stable'. Normalised here so the line printed below, and the tag derived
+  // from it, both describe what will actually be fetched.
+  const channel: ReleaseChannel = 'latest'
   writeToStdout(`Checking for updates to ${channel} version...\n`)
 
   logForDebugging('update: Starting update check')
@@ -295,7 +297,7 @@ export async function update() {
   // Fallback to existing JS/npm-based update logic
   logForDebugging('update: Checking npm registry for latest version')
   logForDebugging(`update: Package URL: ${MACRO.PACKAGE_URL}`)
-  const npmTag = channel === 'stable' ? 'stable' : 'latest'
+  const npmTag = 'latest'
   const npmCommand = `npm view ${MACRO.PACKAGE_URL}@${npmTag} version`
   logForDebugging(`update: Running: ${npmCommand}`)
   const latestVersion = await getLatestVersion(channel)

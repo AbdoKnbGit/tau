@@ -225,12 +225,11 @@ export async function installOrUpdateTauPackage(
         return 'install_failed'
       }
 
-      // Use specific version if provided, otherwise use channel tag
-      const versionSpec = specificVersion
-        ? specificVersion
-        : channel === 'stable'
-          ? 'stable'
-          : 'latest'
+      // An explicit version still wins. The channel resolves to 'latest'
+      // because no `stable` dist-tag is published -- see
+      // autoUpdater.getLatestVersion. Truthiness is preserved from the previous
+      // form, so an empty string still falls through to the tag.
+      const versionSpec = specificVersion ? specificVersion : 'latest'
       const npmEnv = {
         ...createNpmInstallEnvironment(),
         ...createUpdateLockHandoffEnvironment(
