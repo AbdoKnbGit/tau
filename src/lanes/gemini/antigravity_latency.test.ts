@@ -42,11 +42,16 @@ function main(): void {
     assert(cfg.includeThoughts === true, `includeThoughts=${String(cfg.includeThoughts)}`)
   })
 
-  test('Gemini 3.7 Flash variants preserve their Antigravity thinking level', () => {
-    for (const level of ['low', 'medium', 'high'] as const) {
-      const cfg = resolveThinkingConfig(`gemini-3.7-flash-${level}`, -1)
-      assert(cfg.thinkingLevel === level, `${level} thinkingLevel=${String(cfg.thinkingLevel)}`)
-      assert(cfg.includeThoughts === false, `${level} includeThoughts=${String(cfg.includeThoughts)}`)
+  test('level-based Flash variants preserve their Antigravity thinking level', () => {
+    // The tiered wire model is shared by all three levels, so thinkingLevel
+    // is the ONLY thing that carries the picker choice upstream.
+    for (const generation of ['3.6', '3.7', '3.8'] as const) {
+      for (const level of ['low', 'medium', 'high'] as const) {
+        const id = `gemini-${generation}-flash-${level}`
+        const cfg = resolveThinkingConfig(id, -1)
+        assert(cfg.thinkingLevel === level, `${id} thinkingLevel=${String(cfg.thinkingLevel)}`)
+        assert(cfg.includeThoughts === false, `${id} includeThoughts=${String(cfg.includeThoughts)}`)
+      }
     }
   })
 

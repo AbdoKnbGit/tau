@@ -134,31 +134,26 @@ async function main(): Promise<void> {
     )
   })
 
-  await test('routes Gemini 3.6 Flash picker variants through the tiered Antigravity model', async () => {
-    const variants = new Map([
-      ['gemini-3.6-flash-high', 'Gemini 3.6 Flash (High)'],
-      ['gemini-3.6-flash-medium', 'Gemini 3.6 Flash (Medium)'],
-      ['gemini-3.6-flash-low', 'Gemini 3.6 Flash (Low)'],
-    ])
-    for (const [id, name] of variants) {
-      const pickerModel = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
-      assert(pickerModel?.name === name, `missing ${name} from Antigravity picker`)
-      assert(executorForModel(id) === 'antigravity', `${id} must use Antigravity`)
-      assert(resolveAntigravityWireModel(id) === 'gemini-3.6-flash-tiered', `${id} must use the tiered wire model`)
-    }
-  })
-
-  await test('routes Gemini 3.7 Flash picker variants through the tiered Antigravity model', async () => {
-    const variants = new Map([
-      ['gemini-3.7-flash-high', 'Gemini 3.7 Flash (High)'],
-      ['gemini-3.7-flash-medium', 'Gemini 3.7 Flash (Medium)'],
-      ['gemini-3.7-flash-low', 'Gemini 3.7 Flash (Low)'],
-    ])
-    for (const [id, name] of variants) {
-      const pickerModel = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
-      assert(pickerModel?.name === name, `missing ${name} from Antigravity picker`)
-      assert(executorForModel(id) === 'antigravity', `${id} must use Antigravity`)
-      assert(resolveAntigravityWireModel(id) === 'gemini-3.7-flash-tiered', `${id} must use the tiered wire model`)
+  await test('routes level-based Flash picker variants through the tiered Antigravity model', async () => {
+    // 3.6 / 3.7 / 3.8 each offer Low/Medium/High in the picker and ride one
+    // tiered wire model per generation, so switching level keeps the
+    // session's implicit-cache entry (one upstream id, not three).
+    for (const generation of ['3.6', '3.7', '3.8'] as const) {
+      for (const [level, label] of [['high', 'High'], ['medium', 'Medium'], ['low', 'Low']] as const) {
+        const id = `gemini-${generation}-flash-${level}`
+        const name = `Gemini ${generation} Flash (${label})`
+        const pickerModel = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
+        assert(pickerModel?.name === name, `missing ${name} from Antigravity picker`)
+        assert(executorForModel(id) === 'antigravity', `${id} must use Antigravity`)
+        assert(
+          resolveAntigravityWireModel(id) === `gemini-${generation}-flash-tiered`,
+          `${id} must use the tiered wire model`,
+        )
+        // Membership in the Antigravity Gemini set is what turns on the
+        // implicit-cache discipline (prefix pad, commit-window pacing,
+        // per-session endpoint affinity) for these ids.
+        assert(isAntigravityGeminiModel(id), `${id} must get the Antigravity cache discipline`)
+      }
     }
   })
 

@@ -311,6 +311,9 @@ export function codeAssistGenerationBasesForModel(
 // Code Assist proxy (cloudcode-pa). They share the `userAgent: "antigravity"`
 // envelope but need small content-level fixes (see wrapForCodeAssist).
 export const ANTIGRAVITY_MODELS: readonly ModelInfo[] = [
+  { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', contextWindow: 1048576 },
+  { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)', contextWindow: 1048576 },
+  { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)', contextWindow: 1048576 },
   { id: 'gemini-3.7-flash-high', name: 'Gemini 3.7 Flash (High)', contextWindow: 1048576 },
   { id: 'gemini-3.7-flash-medium', name: 'Gemini 3.7 Flash (Medium)', contextWindow: 1048576 },
   { id: 'gemini-3.7-flash-low', name: 'Gemini 3.7 Flash (Low)', contextWindow: 1048576 },
@@ -392,11 +395,20 @@ export function getAntigravityModelDisplayName(model: string): string | null {
 
 export function resolveAntigravityWireModel(model: string): string {
   const normalized = model.toLowerCase()
-  if (/^gemini-3\.7-flash-(?:high|medium|low)$/.test(normalized)) {
-    return 'gemini-3.7-flash-tiered'
-  }
-  if (/^gemini-3\.6-flash-(?:high|medium|low)$/.test(normalized)) {
-    return 'gemini-3.6-flash-tiered'
+  // 3.6/3.7/3.8 Flash each expose ONE tiered wire model per generation; the
+  // picker's Low/Medium/High rides in generationConfig.thinkingConfig
+  // .thinkingLevel (see lanes/gemini/thinking.ts). Keeping all three levels
+  // on a single upstream id also keeps the implicit cache warm when the user
+  // switches level mid-session — the backend entry is keyed on the prompt
+  // prefix under that model, so per-level ids would split it three ways.
+  // The backend also serves per-level ids (`gemini-3.8-flash-high`, ...) for
+  // these generations; if a tiered id is ever rejected with a 404, returning
+  // `normalized` here is the whole fix.
+  // Enumerated on purpose: 3.5 and older Flash use different wire keys
+  // entirely (below), so a generic `gemini-3.\d+` match would break them.
+  const tiered = normalized.match(/^gemini-(3\.[6-8])-flash-(?:high|medium|low)$/)
+  if (tiered) {
+    return `gemini-${tiered[1]}-flash-tiered`
   }
   if (normalized === 'gemini-3.1-pro-high') {
     return 'gemini-pro-agent'
