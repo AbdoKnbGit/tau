@@ -30,6 +30,7 @@ import {
 } from '../services/api/auth/oauth_services.js'
 import { openBrowser } from '../utils/browser.js'
 import TextInput from './TextInput.js'
+import { alibabaBaseUrl } from '../utils/model/alibabaCatalog.js'
 
 // ─── Provider metadata ───────────────────────────────────────────
 
@@ -112,6 +113,11 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
   mimo: {
     envVar: 'MIMO_API_KEY',
     getKeyUrl: 'https://xiaomimimo.com',
+    supportsOAuth: false,
+  },
+  alibaba: {
+    envVar: 'DASHSCOPE_API_KEY',
+    getKeyUrl: 'https://modelstudio.console.alibabacloud.com/?tab=playground#/api-key',
     supportsOAuth: false,
   },
   fireworks: {
@@ -318,6 +324,15 @@ async function _testApiKey(
         url = `${process.env.MIMO_BASE_URL ?? 'https://api.xiaomimimo.com/v1'}/models`
         headers = { 'api-key': key }
         break
+      case 'alibaba':
+        // Model Studio gates /models behind auth, so a plain GET is a real
+        // credential check. It also catches the most common Model Studio
+        // mistake: a key is bound to the region that issued it, so a Beijing
+        // key against the international host answers 401 here rather than on
+        // the user's first message.
+        url = `${alibabaBaseUrl()}/models`
+        headers = { Authorization: `Bearer ${key}` }
+        break
       case 'fireworks':
         url = 'https://api.fireworks.ai/inference/v1/models'
         headers = { Authorization: `Bearer ${key}` }
@@ -405,6 +420,7 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
     provider === 'opencodego' ||
     provider === 'lxd' ||
     provider === 'mimo' ||
+    provider === 'alibaba' ||
     provider === 'commandcode' ||
     provider === 'fireworks' ||
     provider === 'cloudflare' ||

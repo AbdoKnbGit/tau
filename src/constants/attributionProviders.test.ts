@@ -37,7 +37,7 @@ const ANTHROPIC_TERMINATED = ['firstParty', 'bedrock', 'vertex', 'foundry']
 // Everything else: the header is inert text at the head of the cached prefix.
 const THIRD_PARTY = [
   'deepseek', 'openrouter', 'glm', 'moonshot', 'minimax', 'mistral', 'groq',
-  'fireworks', 'cloudflare', 'mimo', 'lxd', 'nim', 'openai', 'gemini',
+  'fireworks', 'cloudflare', 'mimo', 'alibaba', 'lxd', 'nim', 'openai', 'gemini',
   'antigravity', 'copilot', 'opencode', 'opencodego', 'agentrouter',
   'modelrouter', 'kilocode', 'kiro', 'cline', 'clinepass', 'cursor', 'iflow',
   'requesty', 'vercel', 'commandcode', 'ollama', 'lmstudio',

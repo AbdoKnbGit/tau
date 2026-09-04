@@ -41,6 +41,39 @@ console.log('model pricing catalogue:')
 
 // ─── provider mapping ────────────────────────────────────────────────
 
+test('prices a dotted provider id against a dashed catalogue id', () => {
+  // models.dev lists DashScope's `qwen2.5-72b-instruct` as
+  // `qwen2-5-72b-instruct`. Without the fallback the model runs unpriced.
+  resetCatalogForTests({
+    version: 2,
+    fetchedAt: NOW,
+    providers: { alibaba: { 'qwen2-5-72b-instruct': [1.4, 5.6, null, null] } },
+  })
+  const price = lookupCatalogPrice('alibaba', 'qwen2.5-72b-instruct')
+  assert(price?.inputTokens === 1.4, 'dotted id found the dashed row')
+})
+
+test('keeps the two Alibaba regions on separate price tables', () => {
+  // Beijing bills roughly a third of the international rate for the same id,
+  // so borrowing one table for the other would be off by 3x.
+  resetCatalogForTests({
+    version: 2,
+    fetchedAt: NOW,
+    providers: {
+      alibaba: { 'qwen3-coder-flash': [0.3, 1.5, null, null] },
+      'alibaba-cn': { 'qwen3-coder-flash': [0.144, 0.574, null, null] },
+    },
+  })
+  assert(
+    lookupCatalogPrice('alibaba', 'qwen3-coder-flash')?.inputTokens === 0.3,
+    'international rate',
+  )
+  assert(
+    lookupCatalogPrice('alibaba-cn', 'qwen3-coder-flash')?.inputTokens === 0.144,
+    'Beijing rate',
+  )
+})
+
 test('maps Tau provider ids onto models.dev ids', () => {
   const cases: [string, string][] = [
     ['deepseek', 'deepseek'],

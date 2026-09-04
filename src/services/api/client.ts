@@ -20,7 +20,6 @@ import {
   isFirstPartyAnthropicBaseUrl,
   isThirdPartyProvider,
 } from 'src/utils/model/providers.js'
-import { getForcedProvider } from 'src/utils/forcedProvider.js'
 import { createProviderShim } from './providers/providerShim.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import {
@@ -34,7 +33,7 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
-import { ANTIGRAVITY_MODEL_IDS } from './providers/gemini_code_assist.js'
+import { resolveEffectiveAPIProvider } from './providerRouting.js'
 
 /**
  * Environment variables for different client types:
@@ -76,92 +75,6 @@ import { ANTIGRAVITY_MODEL_IDS } from './providers/gemini_code_assist.js'
  * 3. Default region from config
  * 4. Fallback region (us-east5)
  */
-
-/**
- * Auto-correct the provider when the selected model clearly belongs
- * to a different provider. Prevents routing Gemini models to OpenAI,
- * or OpenAI models to Gemini, etc.
- */
-function _autoCorrectProvider(
-  current: import('../../utils/model/providers.js').APIProvider,
-  model: string,
-): import('../../utils/model/providers.js').APIProvider {
-  // If a caller explicitly pinned a provider via runWithForcedProvider
-  // (team-mode roles, per-agent provider overrides), never rewrite the
-  // choice. The whole point of forcing is to bypass session-level routing.
-  if (getForcedProvider() !== undefined) {
-    return current
-  }
-
-  // Explicitly-selected third-party providers are authoritative. The user
-  // (or /team-mode roster) picked this provider for this model — don't
-  // second-guess it just because some sibling provider also lists the
-  // model id. Without this guard, claude-sonnet-4-6 on Kiro silently
-  // re-routed to Antigravity, gemini-3-flash on OpenRouter silently
-  // re-routed to Antigravity, etc. — exactly the cross-provider
-  // contamination users hit when picking flash via opencode.
-  if (
-    current === 'kiro'
-    || current === 'antigravity'
-    || current === 'openrouter'
-    || current === 'agentrouter'
-    || current === 'modelrouter'
-    || current === 'vercel'
-    || current === 'requesty'
-    || current === 'opencode'
-    || current === 'opencodego'
-    || current === 'commandcode'
-    || current === 'lxd'
-    || current === 'mimo'
-    || current === 'groq'
-    || current === 'mistral'
-    || current === 'nim'
-    || current === 'deepseek'
-    || current === 'glm'
-    || current === 'moonshot'
-    || current === 'minimax'
-    || current === 'ollama'
-    || current === 'lmstudio'
-    || current === 'cline'
-    || current === 'iflow'
-    || current === 'kilocode'
-    || current === 'copilot'
-    || current === 'cursor'
-  ) {
-    return current
-  }
-
-  // Below here, `current` is one of {openai, gemini} — the legacy single-
-  // provider paths where users routinely mismatch model + provider. These
-  // get the cross-domain auto-correct so a Gemini model picked on the
-  // OpenAI provider still lands somewhere sane.
-
-  const m = model.toLowerCase()
-
-  // Antigravity hosts a small fixed set of Gemini 3.x + Claude 4.6 ids on
-  // cloudcode-pa. Only auto-route to it from a non-pinned provider — never
-  // from another 3P provider that may also serve the same id.
-  if (ANTIGRAVITY_MODEL_IDS.has(m)) {
-    return 'antigravity'
-  }
-
-  // Gemini models → must use the Gemini provider
-  if (
-    current === 'openai'
-    && (m.startsWith('gemini-') || m.startsWith('gemma-'))
-  ) {
-    return 'gemini'
-  }
-  // OpenAI models → must use the OpenAI provider
-  if (
-    current === 'gemini'
-    && (m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('codex-'))
-  ) {
-    return 'openai'
-  }
-  // Everything else: trust the user's /provider selection
-  return current
-}
 
 function createStderrLogger(): ClientOptions['logger'] {
   return {
@@ -239,13 +152,10 @@ export async function getAnthropicClient({
   // Auto-correct provider when the model clearly belongs to another.
   // Prevents "openai API error 404: gemini-3.1-pro-low does not exist"
   // when the user picks a Gemini model while /provider is set to openai.
-  let currentProvider = getAPIProvider()
-  if (model && isThirdPartyProvider(currentProvider)) {
-    const corrected = _autoCorrectProvider(currentProvider, model)
-    if (corrected !== currentProvider) {
-      logForDebugging(`[API:route] Auto-corrected provider ${currentProvider} → ${corrected} for model ${model}`)
-      currentProvider = corrected
-    }
+  const configuredProvider = getAPIProvider()
+  const currentProvider = resolveEffectiveAPIProvider(configuredProvider, model)
+  if (currentProvider !== configuredProvider) {
+    logForDebugging(`[API:route] Auto-corrected provider ${configuredProvider} → ${currentProvider} for model ${model}`)
   }
   if (isThirdPartyProvider(currentProvider)) {
     const authCheck = validateProviderAuth(currentProvider)

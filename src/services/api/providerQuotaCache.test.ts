@@ -265,6 +265,61 @@ test('matches model ids to labels across punctuation and case', () => {
   )
 })
 
+// Antigravity labels its rows with Google's own displayName, which is neither
+// the id a request is made with nor Tau's to keep stable. These pools carry
+// the ids alongside, which is what makes the match survive a rename.
+const ANTIGRAVITY_RENAMED_POOLS = report('ok', [
+  { label: 'Fast', usedPercent: 25, modelKeys: ['gemini-3.8-flash-high'] },
+  { label: 'Deep Think', usedPercent: 91, modelKeys: ['gemini-3.1-pro-high'] },
+  { label: 'Claude', usedPercent: 4, modelKeys: ['claude-sonnet-4-6'] },
+])
+
+test('finds the model window by id when the label was renamed', () => {
+  // Reported live: a session running one model at 25% was shown 91%. The
+  // label no longer resembled the model id, so the match missed and the bar
+  // fell back to the tightest pool across every model — a number from a pool
+  // the session was not spending.
+  _noteOutcome('antigravity', _classifyReport(ANTIGRAVITY_RENAMED_POOLS)!)
+
+  const outcome = getProviderQuotaOutcome('antigravity', 'gemini-3.8-flash-high')
+  assert(outcome?.kind === 'reading', 'should still be a reading')
+  assert(
+    outcome.usedPercent === 25,
+    `expected the active model's own 25%, got ${outcome.usedPercent}`,
+  )
+})
+
+test('an id match outranks a label that merely reads alike', () => {
+  // "Gemini 3 Flash" is a substring of "gemini-3-flash-high" under the label
+  // heuristic, so without ids the wrong pool can win on text alone.
+  _noteOutcome(
+    'antigravity',
+    _classifyReport(
+      report('ok', [
+        { label: 'Gemini 3 Flash', usedPercent: 91, modelKeys: ['gemini-3-flash'] },
+        { label: 'Nano Banana', usedPercent: 12, modelKeys: ['gemini-3-flash-high'] },
+      ]),
+    )!,
+  )
+
+  const outcome = getProviderQuotaOutcome('antigravity', 'gemini-3-flash-high')
+  assert(
+    outcome?.kind === 'reading' && outcome.usedPercent === 12,
+    `id match should win, got ${outcome?.kind === 'reading' ? outcome.usedPercent : '(none)'}`,
+  )
+})
+
+test('still matches by label when a provider publishes no ids', () => {
+  // Everything except Antigravity reports windows without model ids, and the
+  // textual match is what those rows have always relied on.
+  _noteOutcome('antigravity', _classifyReport(ANTIGRAVITY_POOLS)!)
+  const outcome = getProviderQuotaOutcome('antigravity', 'claude-sonnet-4-6')
+  assert(
+    outcome?.kind === 'reading' && outcome.usedPercent === 0,
+    'label matching must keep working without ids',
+  )
+})
+
 // ─── a balance is not a window ───────────────────────────────────────
 
 test('a balance shows what is left, not a lifetime-spent percentage', () => {

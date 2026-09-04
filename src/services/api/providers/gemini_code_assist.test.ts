@@ -4,6 +4,9 @@
  * Run: bun run src/services/api/providers/gemini_code_assist.test.ts
  */
 
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import {
   ANTIGRAVITY_MODEL_IDS,
   ANTIGRAVITY_MODELS,
@@ -15,8 +18,13 @@ import {
   codeAssistEligibilityErrorMessage,
   codeAssistGenerationBases,
   codeAssistHasEligibleTier,
+  antigravityGenerationHostCount,
+  codeAssistGenerationBasesForModel,
   codeAssistOnboardingDecision,
+  describeAntigravityEntitlementGap,
   executorForModel,
+  recordAntigravityGeminiHostExhausted,
+  _resetAntigravityGeminiHostCooldownForTest,
   getAntigravityModelDisplayName,
   isAntigravityGeminiModel,
   parseCodeAssistSSE,
@@ -233,6 +241,148 @@ async function main(): Promise<void> {
 
     const request = wrapped.request as { sessionId?: string }
     assert(request.sessionId === '-stable-real-history', `sessionId=${request.sessionId}`)
+  })
+
+  await test('forwards the legacy provider session id into Antigravity requests', async () => {
+    const wrapped = wrapForCodeAssist(
+      'gemini-3.5-flash-low',
+      'project-id',
+      { contents: [{ role: 'user', parts: [{ text: 'bounded report' }] }] },
+      'live-root-session',
+    )
+
+    const request = wrapped.request as { sessionId?: string }
+    assert(request.sessionId === 'live-root-session', `sessionId=${request.sessionId}`)
+  })
+
+  await test('an unentitled Antigravity model is not reported as exhausted quota', async () => {
+    // Code Assist answers an unentitled model with 429 RESOURCE_EXHAUSTED,
+    // identical to a real rate limit, and the picker does not filter by
+    // entitlement — so the id can be selected and then fails inscrutably.
+    const cachePath = join(
+      homedir(),
+      '.config',
+      'claude-code',
+      'gemini-code-assist.json',
+    )
+    let entitled: string[] | null = null
+    try {
+      const raw = JSON.parse(readFileSync(cachePath, 'utf-8')) as {
+        entitledModelIds?: string[]
+      }
+      entitled = raw.entitledModelIds ?? null
+    } catch {
+      entitled = null
+    }
+
+    if (!entitled || entitled.length === 0) {
+      // No entitlement lookup has run on this machine, so nothing can be
+      // asserted either way. The helper must stay silent rather than guess.
+      assert(
+        describeAntigravityEntitlementGap('gemini-3.7-flash-high') === null,
+        'helper claimed an entitlement gap with no cached entitlements',
+      )
+      return
+    }
+
+    const entitledSet = new Set(entitled.map(id => id.toLowerCase()))
+    for (const model of ANTIGRAVITY_MODELS) {
+      const wire = resolveAntigravityWireModel(model.id).toLowerCase()
+      const isEntitled = entitledSet.has(model.id) || entitledSet.has(wire)
+      const gap = describeAntigravityEntitlementGap(model.id)
+      if (isEntitled) {
+        assert(gap === null, `${model.id}: entitled model reported as a gap`)
+      } else {
+        assert(
+          gap !== null && gap.includes(model.id),
+          `${model.id}: unentitled model was not diagnosed`,
+        )
+      }
+    }
+
+    // Never claims anything about a non-Antigravity id.
+    assert(
+      describeAntigravityEntitlementGap('gpt-5.4') === null,
+      'helper diagnosed a model outside the Antigravity registry',
+    )
+  })
+
+  await test('a quota-refusing generation host is tried last next time', async () => {
+    // Measured live 2026-09-04: prod answered 429 for every request shape
+    // while daily/sandbox served the identical bodies. Default order is
+    // prod-first, so a one-shot request (/report) burned its whole retry
+    // budget re-probing the dead host while long chats hopped past it.
+    _resetAntigravityGeminiHostCooldownForTest()
+    const model = 'gemini-3.5-flash-low'
+    const before = codeAssistGenerationBasesForModel('antigravity', model)
+    assert(before.length >= 2, `expected multiple hosts, got ${before.length}`)
+
+    recordAntigravityGeminiHostExhausted(before[0]!)
+
+    // A conversation turn KEEPS its warm host. Each host runs its own
+    // implicit-cache pool, so demoting the pinned host after one 429 would
+    // re-bill the whole prompt on a cold pool — the cost the pin exists to
+    // avoid. Only the one-shot report, which has no cache equity, reorders.
+    for (const chatSource of [undefined, 'repl_main_thread', 'agent:default']) {
+      const chat = codeAssistGenerationBasesForModel(
+        'antigravity', model, undefined, chatSource,
+      )
+      assert(
+        chat[0] === before[0],
+        `${chatSource ?? 'untagged'}: chat lost its warm host to a 429 cooldown`,
+      )
+    }
+
+    const after = codeAssistGenerationBasesForModel(
+      'antigravity', model, undefined, 'report',
+    )
+    assert(
+      after[0] !== before[0],
+      `exhausted host stayed first: ${after[0]}`,
+    )
+    assert(
+      after[after.length - 1] === before[0],
+      `exhausted host was not moved last: ${after.join(' , ')}`,
+    )
+    assert(
+      after.length === before.length,
+      'a host was dropped instead of demoted',
+    )
+
+    // Every host cooling down must still produce a request rather than an
+    // empty list — stale bookkeeping cannot be allowed to fail locally.
+    for (const base of before) recordAntigravityGeminiHostExhausted(base)
+    const allCold = codeAssistGenerationBasesForModel(
+      'antigravity', model, undefined, 'report',
+    )
+    assert(
+      allCold.length === before.length && allCold[0] === before[0],
+      'all-cold fell back to something other than the original order',
+    )
+
+    // Non-Antigravity executors are untouched.
+    _resetAntigravityGeminiHostCooldownForTest()
+    const cli = codeAssistGenerationBasesForModel(
+      'cli', 'gemini-2.5-pro', undefined, 'report',
+    )
+    assert(cli.length === 1, `cli host list changed: ${cli.join(' , ')}`)
+    _resetAntigravityGeminiHostCooldownForTest()
+  })
+
+  await test('host counts are per-model, not one global number', async () => {
+    // Gemini and Claude on Antigravity have different host lists, so anything
+    // budgeting attempts per host has to ask rather than assume.
+    const gemini = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low')
+    const claude = codeAssistGenerationBasesForModel('antigravity', 'claude-sonnet-4-6')
+    assert(
+      antigravityGenerationHostCount('gemini-3.5-flash-low') === gemini.length,
+      `gemini host count ${antigravityGenerationHostCount('gemini-3.5-flash-low')} != ${gemini.length}`,
+    )
+    assert(
+      antigravityGenerationHostCount('claude-sonnet-4-6') === claude.length,
+      `claude host count ${antigravityGenerationHostCount('claude-sonnet-4-6')} != ${claude.length}`,
+    )
+    assert(antigravityGenerationHostCount(undefined) >= 1, 'unknown model got no hosts')
   })
 
   await test('keeps Antigravity generation endpoint fallbacks scoped to Antigravity', async () => {

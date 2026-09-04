@@ -150,7 +150,12 @@ export function antigravityPrefixPad(tokens: number): string {
 export function applyAntigravityPrefixPad(
   stableText: string,
   toolDeclarationChars: number,
+  querySource?: string,
 ): string {
+  // Reports are already hard-bounded and intentionally non-cacheable. Padding
+  // one to the implicit-cache minimum recreates the large cold request that
+  // /report is designed to avoid (about 17.4k inert tokens with max-cache on).
+  if (querySource === 'report') return stableText
   if (process.env.TAU_ANTIGRAVITY_NO_PREFIX_PAD === '1') return stableText
   // Default OFF — padding a small prompt to ~17.4k tokens makes simple,
   // interactive turns slow for a cache win that natural session growth
@@ -288,7 +293,9 @@ export async function guardAntigravityCommitWindow(
   sessionId: string | undefined,
   signal: AbortSignal | undefined,
   promptChars: number,
+  querySource?: string,
 ): Promise<void> {
+  if (querySource === 'report') return
   if (process.env.TAU_ANTIGRAVITY_NO_PACING === '1') return
   if (!sessionId) return
   if (promptChars < GUARD_MIN_PROMPT_CHARS) return
@@ -344,7 +351,12 @@ export function recordAntigravityCacheRead(
   sessionId: string | undefined,
   cacheReadTokens: number,
   promptTokens: number,
+  querySource?: string,
 ): void {
+  // A bounded report shares Antigravity routing affinity with its live chat,
+  // but it is not part of that conversation's prompt-cache lineage. Do not let
+  // its cold/read metrics arm, re-arm, or latch the root session's pacing.
+  if (querySource === 'report') return
   if (process.env.TAU_CACHE_DEBUG && sessionId && promptTokens > 0) {
     // Usage arrives on many SSE chunks per turn — only log when the
     // (cacheRead, prompt) pair changes so the file has one line per turn.

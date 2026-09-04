@@ -66,6 +66,7 @@ function _resolveAPIProvider(): APIProvider {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_GLM))        return 'glm'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_MOONSHOT))   return 'moonshot'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_MINIMAX))    return 'minimax'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_ALIBABA) || isEnvTruthy(process.env.CLAUDE_CODE_USE_DASHSCOPE) || isEnvTruthy(process.env.CLAUDE_CODE_USE_MODEL_STUDIO)) return 'alibaba'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OLLAMA))    return 'ollama'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_LMSTUDIO))  return 'lmstudio'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_CLINE_PASS) || isEnvTruthy(process.env.CLAUDE_CODE_USE_CLINEPASS)) return 'clinepass'
@@ -171,6 +172,11 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   glm: 'GLM',
   moonshot: 'Moonshot AI',
   minimax: 'MiniMax AI',
+  // Short on purpose: this label rides the one-line session status row, and
+  // the spend segment is the first thing dropped when the row overflows. At
+  // 20 characters "Alibaba Model Studio" pushed spend off a 100-column
+  // terminal. "Alibaba" is also what models.dev names the provider.
+  alibaba: 'Alibaba',
   ollama: 'Ollama',
   lmstudio: 'LM Studio',
   cline: 'Cline',
@@ -237,13 +243,13 @@ export function listAPIProviderNames(): readonly APIProvider[] {
 
 /** Providers that use OpenAI-compatible chat completions API */
 export function isOpenAICompatibleProvider(p: APIProvider): boolean {
-  return ['openai', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
+  return ['openai', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'ollama', 'lmstudio',
           'cline', 'clinepass', 'copilot', 'iflow', 'kilocode'].includes(p)
 }
 
 /** All non-Anthropic third-party LLM providers */
 export function isThirdPartyProvider(p: APIProvider): boolean {
-  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'commandcode', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'ollama', 'lmstudio',
+  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'commandcode', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'ollama', 'lmstudio',
           'cline', 'clinepass', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro'].includes(p)
 }
 

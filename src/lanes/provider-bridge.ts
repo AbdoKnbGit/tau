@@ -38,6 +38,9 @@ import { getSessionId } from '../bootstrap/state.js'
 import { filterProviderToolsForLane } from './tool_filter.js'
 import { prefetchMediaText } from './shared/media_extract.js'
 import { decideImageSupport } from './shared/vision_capability.js'
+import { isEnvTruthy } from '../utils/envUtils.js'
+import { createRetryableConnectionError } from '../services/api/transport_error.js'
+import { isAntigravityModelId } from '../services/api/providers/gemini_code_assist.js'
 
 /**
  * Lanes whose wire format always carries attachments natively. Their
@@ -60,6 +63,120 @@ const LANES_WITH_NATIVE_MEDIA = new Set(['gemini', 'codex'])
 import type { APIProvider } from '../utils/model/providers.js'
 import type { QuerySource } from '../constants/querySource.js'
 
+const DEFAULT_NATIVE_FIRST_EVENT_TIMEOUT_MS = 300_000
+const ITERATOR_CLEANUP_TIMEOUT_MS = 1_000
+
+async function closeIteratorBestEffort(
+  iterator: AsyncIterator<AnthropicStreamEvent>,
+): Promise<void> {
+  const close = iterator.return?.()
+  if (!close) return
+
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      Promise.resolve(close).then(
+        () => undefined,
+        () => undefined,
+      ),
+      new Promise<void>(resolve => {
+        timeout = setTimeout(resolve, ITERATOR_CLEANUP_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+  }
+}
+
+function nativeFirstEventTimeoutMs(providerHint: string | undefined): number | null {
+  const isAgentRouter = providerHint === 'agentrouter'
+  const disabled =
+    isEnvTruthy(process.env.CLAUDE_DISABLE_STREAM_WATCHDOG) ||
+    (isAgentRouter &&
+      isEnvTruthy(process.env.AGENTROUTER_DISABLE_STREAM_WATCHDOG))
+  if (disabled && !isEnvTruthy(process.env.CLAUDE_ENABLE_STREAM_WATCHDOG)) {
+    return null
+  }
+
+  const configured = Number.parseInt(
+    (isAgentRouter
+      ? process.env.AGENTROUTER_STREAM_IDLE_TIMEOUT_MS
+      : undefined) ||
+      process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS ||
+      '',
+    10,
+  )
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_NATIVE_FIRST_EVENT_TIMEOUT_MS
+}
+
+async function primeFirstProviderEvent(
+  iterator: AsyncIterator<AnthropicStreamEvent>,
+  controller: AbortController,
+  providerHint: string | undefined,
+  callerSignal?: AbortSignal,
+): Promise<IteratorResult<AnthropicStreamEvent>> {
+  const timeoutMs = nativeFirstEventTimeoutMs(providerHint)
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let abortListener: (() => void) | undefined
+  const callerAbort = new Promise<never>((_, reject) => {
+    if (!callerSignal) return
+    abortListener = () => reject(new DOMException('Aborted', 'AbortError'))
+    if (callerSignal.aborted) {
+      abortListener()
+    } else {
+      callerSignal.addEventListener('abort', abortListener, { once: true })
+    }
+  })
+  const firstEvent = iterator.next()
+  const watchdog = new Promise<never>((_, reject) => {
+    if (timeoutMs === null) return
+    timeout = setTimeout(() => {
+      const timeoutError = new Error(
+        `Stream idle timeout - no chunks received for ${timeoutMs}ms`,
+      )
+      reject(
+        createRetryableConnectionError(
+          'Native provider stream setup timed out',
+          timeoutError,
+        ),
+      )
+      controller.abort()
+    }, timeoutMs)
+  })
+  try {
+    return await Promise.race([firstEvent, callerAbort, watchdog])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+    if (callerSignal && abortListener) {
+      callerSignal.removeEventListener('abort', abortListener)
+    }
+  }
+}
+
+/**
+ * Should this request pull one provider event before `stream()` resolves?
+ *
+ * Native lanes fetch lazily, so without priming a pre-response failure is
+ * raised while the caller iterates — after the shared retry controller has
+ * already treated setup as successful. Antigravity is the lane where that
+ * matters today: its 429 became report text instead of being retried
+ * (tau#29/#30). Every other lane keeps the original lazy path, so this fix
+ * cannot change the behavior of a provider that works.
+ *
+ * Matches `GeminiLane.streamAsProvider`'s own definition of an Antigravity
+ * request, so a request routed to Antigravity by model id (rather than by an
+ * explicitly selected provider row) is primed too. Resolved from the request
+ * at call time — no machine, account, or install-specific state.
+ */
+export function laneRequestNeedsSetupPriming(
+  providerHint: string | undefined,
+  resolvedModel: string,
+): boolean {
+  return providerHint === 'antigravity' || isAntigravityModelId(resolvedModel)
+}
+
 export class LaneBackedProvider implements BaseProvider {
   readonly name: string
 
@@ -76,17 +193,22 @@ export class LaneBackedProvider implements BaseProvider {
     this.name = lane.name
   }
 
-  async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
-    const controller = new AbortController()
-    // If the caller never passed a signal, we synthesize one so the
-    // ProviderStreamResult's abort() still takes effect.
-    const callerSignal = (params as any).signal as AbortSignal | undefined
-    if (callerSignal) {
-      callerSignal.addEventListener('abort', () => controller.abort(), { once: true })
-    }
+  /** True when `stream()` will prime a first event for this model. */
+  needsSetupPriming(model: string): boolean {
+    return laneRequestNeedsSetupPriming(this.providerHint, this.lane.resolveModel(model))
+  }
 
+  async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
     const lane = this.lane
     const providerHint = this.providerHint
+    if (typeof lane.streamAsProvider !== 'function') {
+      throw new Error(
+        `Lane "${lane.name}" does not implement streamAsProvider() yet — `
+        + 'native-lane mode is not available for this provider. '
+        + 'Unset CLAUDEX_NATIVE_LANES to fall back to the legacy provider.',
+      )
+    }
+
     const resolvedModel = lane.resolveModel(params.model)
     const explicitSessionId =
       typeof params.sessionId === 'string' && params.sessionId.trim().length > 0
@@ -98,12 +220,31 @@ export class LaneBackedProvider implements BaseProvider {
       params.querySource,
     )
 
-    if (typeof lane.streamAsProvider !== 'function') {
-      throw new Error(
-        `Lane "${lane.name}" does not implement streamAsProvider() yet — `
-        + 'native-lane mode is not available for this provider. '
-        + 'Unset CLAUDEX_NATIVE_LANES to fall back to the legacy provider.',
-      )
+    const primeSetup = laneRequestNeedsSetupPriming(providerHint, resolvedModel)
+
+    const controller = new AbortController()
+    let closePrimedIterator: (() => void) | undefined
+    // If the caller never passed a signal, we synthesize one so the
+    // ProviderStreamResult's abort() still takes effect. Non-primed lanes
+    // are never handed one by the shim, so this stays inert for them.
+    const callerSignal = primeSetup ? params.signal : undefined
+    const abortFromCaller = (): void => {
+      controller.abort(callerSignal?.reason)
+      closePrimedIterator?.()
+    }
+    let callerAbortListenerAttached = false
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        abortFromCaller()
+      } else {
+        callerSignal.addEventListener('abort', abortFromCaller, { once: true })
+        callerAbortListenerAttached = true
+      }
+    }
+    const detachCallerAbortListener = (): void => {
+      if (!callerSignal || !callerAbortListenerAttached) return
+      callerSignal.removeEventListener('abort', abortFromCaller)
+      callerAbortListenerAttached = false
     }
 
     const streamAsProvider = lane.streamAsProvider.bind(lane)
@@ -152,7 +293,71 @@ export class LaneBackedProvider implements BaseProvider {
       // events the lane already emitted).
     })()
 
-    return buildProviderStreamResult(events, controller)
+    // Every lane except Antigravity keeps the original lazy path: the lane's
+    // fetch starts when the caller first iterates, exactly as before.
+    if (!primeSetup) return buildProviderStreamResult(events, controller)
+
+    // Antigravity only. Native lanes do their fetch lazily when their async
+    // generator is first advanced. Prime exactly one event before returning so
+    // a pre-response 429/network/5xx rejection happens while `.withResponse()`
+    // is still inside the shared withRetry operation. Once any event exists,
+    // replay it unchanged and leave later failures to normal stream handling;
+    // retrying after output has started could duplicate text, billing, or
+    // tool calls.
+    const eventIterator = events[Symbol.asyncIterator]()
+    let iteratorCleanupPromise: Promise<void> | undefined
+    const cleanupIterator = (): Promise<void> => {
+      detachCallerAbortListener()
+      iteratorCleanupPromise ??= closeIteratorBestEffort(eventIterator)
+      return iteratorCleanupPromise
+    }
+    closePrimedIterator = () => {
+      void cleanupIterator()
+    }
+    let firstEvent: IteratorResult<AnthropicStreamEvent>
+    try {
+      firstEvent = await primeFirstProviderEvent(
+        eventIterator,
+        controller,
+        providerHint,
+        callerSignal,
+      )
+    } catch (error) {
+      controller.abort()
+      const cleanup = cleanupIterator()
+      // A non-cooperative provider preflight must not make Escape wait for
+      // iterator cleanup. Keep cleanup best-effort in the background; other
+      // setup failures still finish it before entering the retry loop.
+      if (!callerSignal?.aborted) await cleanup
+      throw error
+    }
+
+    if (firstEvent.done) {
+      detachCallerAbortListener()
+    }
+
+    const primedEvents = (async function* (): AsyncIterable<AnthropicStreamEvent> {
+      try {
+        if (firstEvent.done) return
+        yield firstEvent.value
+
+        while (true) {
+          const nextEvent = await eventIterator.next()
+          if (nextEvent.done) return
+          yield nextEvent.value
+        }
+      } finally {
+        await cleanupIterator()
+      }
+    })()
+
+    const providerStream = buildProviderStreamResult(primedEvents, controller)
+    const abortProviderStream = providerStream.abort.bind(providerStream)
+    providerStream.abort = (): void => {
+      abortProviderStream()
+      closePrimedIterator?.()
+    }
+    return providerStream
   }
 
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {

@@ -59,11 +59,13 @@ import {
 import {
   geminiApi,
   isGeminiRetryableNetworkError,
+  TAU_QUERY_SOURCE_FIELD,
   TAU_STABLE_SESSION_ID_FIELD,
 } from './api.js'
 import { getOrCreateCacheWithUsage, invalidateCache } from '../../services/api/providers/gemini_cache.js'
 import {
   ANTIGRAVITY_MODEL_IDS,
+  describeAntigravityEntitlementGap,
   isAntigravityGeminiModel,
   resolveAntigravityWireModel,
 } from '../../services/api/providers/gemini_code_assist.js'
@@ -119,7 +121,18 @@ export class GeminiLane implements Lane {
   async *streamAsProvider(
     params: LaneProviderCallParams,
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
-    const { model, messages, system, tools, max_tokens, thinking, signal, sessionId, providerHint } = params
+    const {
+      model,
+      messages,
+      system,
+      tools,
+      max_tokens,
+      thinking,
+      signal,
+      sessionId,
+      providerHint,
+      querySource,
+    } = params
 
     // Normalize system → plain string.
     const systemText =
@@ -204,6 +217,7 @@ export class GeminiLane implements Lane {
       ? applyAntigravityPrefixPad(
         split.stableText,
         JSON.stringify(functionDeclarations).length,
+        querySource,
       )
       : split.stableText
 
@@ -267,6 +281,9 @@ export class GeminiLane implements Lane {
       // call without affecting latency, so they
       // apply to every Antigravity request — Gemini and Claude alike.
       request[TAU_STABLE_SESSION_ID_FIELD] = stableAntigravitySessionId(sessionId, messages)
+      // Lets host selection tell a one-shot /report from a conversation turn,
+      // so only the report may reorder hosts away from a warm cache pool.
+      if (querySource) request[TAU_QUERY_SOURCE_FIELD] = querySource
       if (process.env.TAU_CACHE_DEBUG) {
         writeAntigravityCacheDebugEntry(model, request, sessionId)
       }
@@ -284,6 +301,7 @@ export class GeminiLane implements Lane {
         sessionId,
         signal,
         JSON.stringify(request).length,
+        querySource,
       )
     }
 
@@ -474,7 +492,12 @@ export class GeminiLane implements Lane {
           cacheReadTokens = u.cachedContentTokenCount ?? cacheReadTokens
           inputTokens = uncachedInputTokens(promptTokens, cacheReadTokens)
           if (isAntigravityGemini) {
-            recordAntigravityCacheRead(sessionId, cacheReadTokens, promptTokens)
+            recordAntigravityCacheRead(
+              sessionId,
+              cacheReadTokens,
+              promptTokens,
+              querySource,
+            )
           }
         }
 
@@ -1598,16 +1621,34 @@ function buildQuotaErrorMessage(err: any, model?: string): string {
   const modelLine = model ? `Model attempted: ${model}` : null
   const isAntigravityModel = !!model && ANTIGRAVITY_ONLY_MODEL_IDS.has(model.toLowerCase())
 
-  const lines = [
-    '',
-    '',
-    `${isAntigravityModel ? 'Antigravity' : 'Gemini'} request was throttled or capacity-limited${status ? ` (HTTP ${status})` : ''}.`,
-    '',
-    ...(modelLine ? [modelLine, ''] : []),
-    `Server said: ${serverMessage}`,
-    ...(retryLine ? ['', retryLine] : []),
-    '',
-  ]
+  // An unentitled model returns the same 429 as real throttling, so say which
+  // one this is before offering throttling advice the user cannot act on.
+  const entitlementGap = model ? describeAntigravityEntitlementGap(model) : null
+
+  const lines = entitlementGap
+    ? [
+      '',
+      '',
+      entitlementGap,
+      '',
+      ...(modelLine ? [modelLine, ''] : []),
+      `Server said: ${serverMessage}`,
+      '',
+      'What to do: pick an entitled model with `/model`.',
+      '',
+    ]
+    : [
+      '',
+      '',
+      `${isAntigravityModel ? 'Antigravity' : 'Gemini'} request was throttled or capacity-limited${status ? ` (HTTP ${status})` : ''}.`,
+      '',
+      ...(modelLine ? [modelLine, ''] : []),
+      `Server said: ${serverMessage}`,
+      ...(retryLine ? ['', retryLine] : []),
+      '',
+    ]
+
+  if (entitlementGap) return lines.join('\n')
 
   if (isAntigravityModel) {
     lines.push(

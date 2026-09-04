@@ -759,15 +759,36 @@ async function main(): Promise<void> {
     assert(out === 'env-B', `clearChain should re-seed on next call; got ${JSON.stringify(out)}`)
   })
 
-  await test('session cache key adopts Tau session id and clears volatile anchors on change', () => {
+  await test('session cache key isolates and restores volatile anchors across side requests', () => {
     codexApi.clearChain()
     codexApi.setSessionCacheKey('tau-session-a')
     assert(codexApi.sessionCacheKey === 'tau-session-a', 'expected Tau session id as cache key')
     codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-A')
     codexApi.setSessionCacheKey('tau-session-b')
     assert(codexApi.sessionCacheKey === 'tau-session-b', 'expected cache key switch')
-    const out = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-B')
-    assert(out === 'env-B', `session switch should clear volatile anchor; got ${JSON.stringify(out)}`)
+    const side = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'report-env')
+    assert(side === 'report-env', `side session should seed independently; got ${JSON.stringify(side)}`)
+    codexApi.setSessionCacheKey('tau-session-a')
+    const restored = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'env-A-CHANGED')
+    assert(restored === 'env-A', `live session anchor was not restored; got ${JSON.stringify(restored)}`)
+  })
+
+  await test('frozen volatile anchors evict oldest sessions instead of growing', () => {
+    codexApi.clearChain()
+    codexApi.setSessionCacheKey('tau-session-oldest')
+    codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'oldest-env')
+    for (let i = 0; i < 24; i++) {
+      codexApi.setSessionCacheKey(`tau-session-${i}`)
+      codexApi.getOrSeedFrozenVolatile('gpt-5.4', `env-${i}`)
+    }
+    codexApi.setSessionCacheKey('tau-session-oldest')
+    const reseeded = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'fresh-env')
+    assert(
+      reseeded === 'fresh-env',
+      `evicted session should re-seed, got ${JSON.stringify(reseeded)}`,
+    )
+    const recent = codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'ignored')
+    assert(recent === 'fresh-env', `re-seeded anchor must now replay; got ${JSON.stringify(recent)}`)
   })
 
   await test('frozen volatile anchor: empty input is a no-op (returns empty)', () => {

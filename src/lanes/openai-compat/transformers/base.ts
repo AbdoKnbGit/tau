@@ -22,6 +22,7 @@ export type ProviderId =
   | 'glm'
   | 'moonshot'
   | 'minimax'
+  | 'alibaba'
   | 'mistral'
   | 'nim'
   | 'ollama'

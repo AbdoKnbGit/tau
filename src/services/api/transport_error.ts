@@ -1,4 +1,4 @@
-import { APIConnectionError } from '@anthropic-ai/sdk'
+import { APIConnectionError, APIUserAbortError } from '@anthropic-ai/sdk'
 
 const RETRYABLE_HTTP_STATUSES = new Set([408, 409, 429, 499])
 
@@ -16,6 +16,11 @@ const RETRYABLE_NETWORK_CODES = new Set([
   'ERR_SSL_BAD_RECORD_MAC',
 ])
 
+const TERMINAL_QUOTA_PATTERN =
+  /quota (?:exhausted|exceeded)|exceeded (?:its|your) (?:usage |current )?quota|insufficient_quota|exhausted your capacity|quota will reset after \d+h|FreeUsageLimitError/i
+
+export const MAX_TYPED_PROVIDER_RETRY_AFTER_MS = 32_000
+
 function getNetworkErrorCode(error: unknown): string | undefined {
   let current: unknown = error
   for (let depth = 0; depth < 5; depth += 1) {
@@ -30,6 +35,15 @@ function getNetworkErrorCode(error: unknown): string | undefined {
 export function isAbortError(error: unknown, signal?: AbortSignal): boolean {
   return signal?.aborted === true
     || (error instanceof Error && error.name === 'AbortError')
+}
+
+/** Normalize setup-time cancellation to the error the query loop suppresses. */
+export function getAPIUserAbortError(
+  error: unknown,
+  signal?: AbortSignal,
+): APIUserAbortError | null {
+  if (error instanceof APIUserAbortError) return error
+  return signal?.aborted ? new APIUserAbortError() : null
 }
 
 export function isRetryableNetworkError(error: unknown): boolean {
@@ -95,6 +109,48 @@ export function isRetryableProviderError(error: unknown): boolean {
   const status = getProviderHttpStatus(error)
   if (classified === false) return false
   return status !== null && isRetryableProviderHttpStatus(status)
+}
+
+/**
+ * Detect long-lived account/project quota exhaustion without overriding a
+ * provider that exposes a more specific transient quota classification.
+ */
+export function isTerminalProviderQuotaError(error: unknown): boolean {
+  if (!(error instanceof Error) || !TERMINAL_QUOTA_PATTERN.test(error.message)) {
+    return false
+  }
+  const classified = (error as Error & { isRetryable?: unknown }).isRetryable
+  const kind = (error as Error & { kind?: unknown }).kind
+  return !(
+    classified === true && (kind === 'retryable-quota' || kind === 'transient')
+  )
+}
+
+/**
+ * Keep native RetryInfo from turning a bounded outer retry into a long hang.
+ *
+ * A zero (or negative) hint is deliberately reported as "no hint". Lanes use
+ * `retryAfterMs: 0` to mean "retry immediately in the INNER loop after a side
+ * effect" (Gemini's re-onboard and thought-signature strip both do), and
+ * `Retry-After` parses to 0 for a header of `0` or an already-past date. If
+ * that reached the outer controller it would answer a 429 with a 0 ms delay
+ * and hammer the provider for the whole retry budget; falling through to
+ * exponential backoff is the only safe reading.
+ */
+export function getBoundedProviderRetryAfterMs(
+  error: unknown,
+  maxMs = MAX_TYPED_PROVIDER_RETRY_AFTER_MS,
+): number | null {
+  const retryAfterMs = (error as { retryAfterMs?: unknown } | null)
+    ?.retryAfterMs
+  if (
+    typeof retryAfterMs !== 'number' ||
+    !Number.isFinite(retryAfterMs) ||
+    retryAfterMs <= 0
+  ) {
+    return null
+  }
+  return Math.min(retryAfterMs, maxMs)
 }
 
 /** Throw a retryable pre-response HTTP failure without creating an assistant turn. */

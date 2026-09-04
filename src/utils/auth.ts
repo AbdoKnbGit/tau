@@ -20,6 +20,7 @@ import {
   shouldUseMockSubscription,
 } from '../services/mockRateLimits.js'
 import { loadProviderKey } from '../services/api/auth/api_key_manager.js'
+import { alibabaBaseUrl } from './model/alibabaCatalog.js'
 import {
   isOAuthTokenExpired,
   refreshOAuthToken,
@@ -1769,6 +1770,7 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   glm:         ['api_key'],
   moonshot:    ['api_key'],
   minimax:     ['api_key'],
+  alibaba:     ['api_key'],
   ollama:      ['api_key'],
   lmstudio:    ['api_key'],
   cline:       ['oauth'],
@@ -1866,6 +1868,9 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'glm':         return process.env.GLM_API_KEY ?? process.env.BIGMODEL_API_KEY ?? process.env.ZHIPU_API_KEY ?? process.env.ZAI_API_KEY ?? process.env.Z_AI_API_KEY ?? _loadStoredKey('glm')
     case 'moonshot':    return process.env.MOONSHOT_API_KEY ?? process.env.MOONSHOTAI_API_KEY ?? _loadStoredKey('moonshot')
     case 'minimax':     return process.env.MINIMAX_API_KEY ?? _loadStoredKey('minimax')
+    // One DashScope credential serves both pay-as-you-go regions; the
+    // Qwen-code lane reads the same env var, because it is the same key.
+    case 'alibaba':     return process.env.DASHSCOPE_API_KEY ?? process.env.ALIBABA_API_KEY ?? process.env.MODELSTUDIO_API_KEY ?? process.env.QWEN_API_KEY ?? _loadStoredKey('alibaba')
     case 'ollama':      return process.env.OLLAMA_API_KEY ?? _loadStoredKey('ollama') ?? 'ollama'
     case 'lmstudio':    return process.env.LMSTUDIO_API_KEY ?? _loadStoredKey('lmstudio') ?? 'lm-studio'
     case 'cline':       return null  // OAuth-only
@@ -1982,6 +1987,9 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'glm':         return process.env.GLM_BASE_URL ?? process.env.GLM_API_URL ?? process.env.BIGMODEL_BASE_URL ?? process.env.ZHIPU_BASE_URL ?? process.env.ZAI_BASE_URL ?? process.env.Z_AI_BASE_URL ?? 'https://open.bigmodel.cn/api/paas/v4'
     case 'moonshot':    return process.env.MOONSHOT_BASE_URL ?? process.env.MOONSHOT_API_BASE_URL ?? 'https://api.moonshot.ai/v1'
     case 'minimax':     return process.env.MINIMAX_BASE_URL ?? process.env.MINIMAX_API_BASE_URL ?? 'https://api.minimax.io/v1'
+    // DASHSCOPE_BASE_URL picks the region, and the region picks the price
+    // table too — see alibabaCatalogProviderId().
+    case 'alibaba':     return alibabaBaseUrl()
     case 'ollama':      return process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1'
     case 'lmstudio':    return normalizeLmStudioBaseUrl(process.env.LMSTUDIO_BASE_URL ?? process.env.LM_STUDIO_BASE_URL ?? _loadStoredKey('lmstudio_base_url') ?? 'http://localhost:1234/v1')
     case 'cline':       return process.env.CLINE_BASE_URL ?? 'https://api.cline.bot/v1'
@@ -2134,6 +2142,7 @@ function _getApiKeyEnvName(provider: APIProvider): string {
     case 'glm':         return 'GLM_API_KEY'
     case 'moonshot':    return 'MOONSHOT_API_KEY'
     case 'minimax':     return 'MINIMAX_API_KEY'
+    case 'alibaba':     return 'DASHSCOPE_API_KEY'
     case 'ollama':      return 'OLLAMA_API_KEY'
     case 'lmstudio':    return 'LMSTUDIO_API_KEY'
     case 'cline':       return '(OAuth only — no API key)'
@@ -2168,6 +2177,7 @@ function _validateKeyFormat(provider: APIProvider, key: string): { valid: boolea
     glm:         { minLen: 10 },
     moonshot:    { prefix: 'sk-', minLen: 20 },
     minimax:     { minLen: 10 },
+    alibaba:     { minLen: 10 },
   }
   const check = checks[provider]
   if (!check) return { valid: true }

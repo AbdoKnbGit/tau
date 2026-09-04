@@ -325,5 +325,37 @@ test('is display-width safe for unicode and pathological widths', () => {
   )
 })
 
+test('a long provider label is what costs the row its spend segment', () => {
+  // Reported live: an Alibaba session showed cwd, provider/model and context
+  // but no spend. Nothing was wrong with the money — the row simply did not
+  // fit, and quota is the first segment dropped. A 1M-context model already
+  // spends the width on `10K/1M`, so the provider label is the part a new
+  // provider actually controls.
+  //
+  // This is the budget to respect when naming one: at 100 columns, a label of
+  // about a dozen characters still leaves room for spend, and twenty does not.
+  const row: SessionStatusInfo = {
+    cwd: '~\\Desktop\\ac',
+    provider: 'Alibaba',
+    model: 'qwen3.8-flash',
+    usedContextTokens: 10_000,
+    contextWindowTokens: 1_000_000,
+    consumedContextPercentage: 1,
+    quota: { state: 'spend', usd: 0.0015, estimated: false },
+  }
+
+  assert(
+    formatSessionStatus(row, 100).includes('Spend <$0.01'),
+    `short label should keep spend: ${formatSessionStatus(row, 100)}`,
+  )
+  assert(
+    !formatSessionStatus(
+      { ...row, provider: 'Alibaba Model Studio' },
+      100,
+    ).includes('Spend'),
+    'a 20-character label pushes spend off a 100-column row',
+  )
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

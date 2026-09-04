@@ -3,6 +3,7 @@ import { loadOpenCodeApiKeyFromAuthFile } from '../opencodeAuth.js'
 import { isConcreteOpenAIGptModelForProvider } from './openaiGptModels.js'
 import type { ModelName } from './model.js'
 import type { APIProvider } from './providers.js'
+import { alibabaBaseUrl } from './alibabaCatalog.js'
 
 /** Anthropic-native provider keys only (used by Claude model configs) */
 export type AnthropicProvider = Extract<APIProvider, 'firstParty' | 'bedrock' | 'vertex' | 'foundry'>
@@ -40,6 +41,10 @@ const MOONSHOT_BASE_URL = process.env.MOONSHOT_BASE_URL
 const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL
   ?? process.env.MINIMAX_API_BASE_URL
   ?? 'https://api.minimax.io/v1'
+
+// Alibaba Model Studio. DASHSCOPE_BASE_URL selects the region, and the region
+// selects the price table too, so the one function owns both decisions.
+const ALIBABA_BASE_URL = alibabaBaseUrl()
 
 const MISTRAL_BASE_URL = process.env.MISTRAL_BASE_URL
   ?? process.env.MISTRAL_API_BASE_URL
@@ -669,6 +674,38 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.MIMO_MODEL_OPUS   ?? 'mimo-v2.5-pro',
         sonnet: process.env.MIMO_MODEL_SONNET ?? 'mimo-v2.5',
         haiku:  process.env.MIMO_MODEL_HAIKU  ?? 'mimo-v2.5',
+      },
+    },
+  },
+
+  // Alibaba Cloud Model Studio (DashScope), pay-as-you-go. Every tier points
+  // at the same rows because there is no free or subscription tier on this
+  // surface: qwen3.8-max is the flagship, qwen3.8-flash the balanced row, and
+  // qwen-flash the cheapest thing Model Studio publishes. The picker's live
+  // catalogue is what a person browses; these only resolve subagent tiers.
+  alibaba: {
+    displayName: 'Alibaba Model Studio',
+    baseUrl: ALIBABA_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'DASHSCOPE_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.ALIBABA_MODEL_OPUS_FREE   ?? 'qwen3.8-flash',
+        sonnet: process.env.ALIBABA_MODEL_SONNET_FREE ?? 'qwen3.8-flash',
+        haiku:  process.env.ALIBABA_MODEL_HAIKU_FREE  ?? 'qwen-flash',
+      },
+      pro: {
+        opus:   process.env.ALIBABA_MODEL_OPUS   ?? 'qwen3.8-max',
+        sonnet: process.env.ALIBABA_MODEL_SONNET ?? 'qwen3.8-flash',
+        haiku:  process.env.ALIBABA_MODEL_HAIKU  ?? 'qwen-flash',
+      },
+      plus: {
+        opus:   process.env.ALIBABA_MODEL_OPUS   ?? 'qwen3.8-max',
+        sonnet: process.env.ALIBABA_MODEL_SONNET ?? 'qwen3.8-flash',
+        haiku:  process.env.ALIBABA_MODEL_HAIKU  ?? 'qwen-flash',
       },
     },
   },

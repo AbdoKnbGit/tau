@@ -95,6 +95,8 @@ export type ProviderQuotaMetric = {
   usedPercent: number | null
   summary: string | null
   remaining: string | null
+  /** Model ids this window meters, when the provider bills per model. */
+  modelKeys: readonly string[]
 }
 
 /**
@@ -181,11 +183,7 @@ export function getProviderQuotaOutcome(
   // meters Claude and Gemini separately, so the tightest pool is often not
   // the one this session is spending.
   if (settled.kind === 'reading' && activeModel && settled.metrics) {
-    const match = settled.metrics.find(
-      metric =>
-        metric.usedPercent !== null &&
-        metricMatchesModel(metric.label, activeModel),
-    )
+    const match = findMetricForModel(settled.metrics, activeModel)
     if (match) {
       // Same balance-over-percentage rule as readHeadlineMetric, so a
       // re-selection at render time cannot disagree with the fetch-time pick.
@@ -408,6 +406,36 @@ function metricMatchesModel(label: string, model: string): boolean {
 }
 
 /**
+ * The window metering this model, preferring the ids the provider published
+ * over its display label.
+ *
+ * Antigravity labels its rows with Google's own `displayName`, which is not
+ * the id a request is made with and is not Tau's to keep stable. Matching on
+ * the label alone meant a row could stop being findable the moment the vendor
+ * reworded it - and a miss is not harmless here, because the caller then falls
+ * back to the fetch-time headline, which is the TIGHTEST pool across every
+ * model. That is how a session running one model at 25% came to be shown 91%
+ * from a pool it was not spending. An id match cannot drift that way.
+ */
+function findMetricForModel(
+  metrics: readonly ProviderQuotaMetric[],
+  model: string,
+): ProviderQuotaMetric | undefined {
+  const wanted = normalizeForMatch(model)
+  if (wanted === '') return undefined
+  const scored = metrics.filter(metric => metric.usedPercent !== null)
+
+  const byId = scored.find(metric =>
+    metric.modelKeys.some(key => normalizeForMatch(key) === wanted),
+  )
+  if (byId) return byId
+
+  // Nothing published an id for this row, or none of them is the active
+  // model. The label heuristic is still better than the worst-pool fallback.
+  return scored.find(metric => metricMatchesModel(metric.label, model))
+}
+
+/**
  * The one number worth putting on a single-line bar.
  *
  * A session window wins outright where one exists: Anthropic reports a 5-hour
@@ -426,6 +454,7 @@ function metricMatchesModel(label: string, model: string): boolean {
 function collectMetrics(report: ProviderUsageReport): ProviderQuotaMetric[] {
   return (report.metrics ?? []).map(metric => ({
     label: metric.label,
+    modelKeys: metric.modelKeys ?? [],
     usedPercent:
       typeof metric.usedPercent === 'number' &&
       Number.isFinite(metric.usedPercent)

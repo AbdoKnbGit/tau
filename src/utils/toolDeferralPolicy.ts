@@ -34,6 +34,7 @@ const CLIENT_SIDE_TOOL_DISCOVERY_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'glm',
   'moonshot',
   'minimax',
+  'alibaba',
   'ollama',
   'lmstudio',
   'copilot',
@@ -60,7 +61,8 @@ export function providerSupportsClientSideToolDiscovery(
  * call (mimo 75%, fireworks 50%, deepseek 44%).
  *
  * Two shapes qualify, and neither gives Tau a breakpoint to re-anchor on:
- *   - automatic/implicit prefix caching (deepseek, mimo)
+ *   - automatic/implicit prefix caching (deepseek, mimo, and alibaba, whose
+ *     Model Studio implicit cache is always on and cannot be disabled)
  *   - a session-pinned `prompt_cache_key` reusing one backend's KV cache
  *     (fireworks, moonshot, cloudflare, mistral, lxd)
  *
@@ -78,6 +80,7 @@ export function providerSupportsClientSideToolDiscovery(
 const EXACT_PREFIX_CACHE_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'deepseek',
   'mimo',
+  'alibaba',
   'fireworks',
   'moonshot',
   'cloudflare',

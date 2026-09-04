@@ -143,6 +143,8 @@ export interface ProviderRequestParams {
   temperature?: number
   stop_sequences?: string[]
   stream?: boolean
+  /** Cancels request setup as well as iteration of a streaming response. */
+  signal?: AbortSignal
   /** Provider-side cache/session affinity key. Used by native lanes that can
    * route repeated requests to the same prompt-cache backend. */
   sessionId?: string

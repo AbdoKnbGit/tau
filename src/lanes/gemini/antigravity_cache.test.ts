@@ -75,6 +75,12 @@ async function main(): Promise<void> {
     )
   })
 
+  await test('bounded reports never receive max-cache prefix padding', () => {
+    const stable = 'Write a factual report.'
+    const padded = applyAntigravityPrefixPad(stable, 2, 'report')
+    assert(padded === stable, `report unexpectedly gained ${padded.length - stable.length} chars`)
+  })
+
   await test('padding is byte-stable across turns for the same inputs', () => {
     const stable = 'agent persona text '.repeat(300)
     const a = applyAntigravityPrefixPad(stable, 42_000)
@@ -276,7 +282,7 @@ async function main(): Promise<void> {
     }
   })
 
-  await test('report joins the live Antigravity commit window with a parent agent id', async () => {
+  await test('bounded report reuses the live session without mutating its commit window', async () => {
     _resetAntigravityCacheStateForTest()
     _setAntigravityCommitWindowForTest(60)
 
@@ -296,10 +302,21 @@ async function main(): Promise<void> {
     assert(reportSession === chatSession, `report session=${reportSession}`)
 
     await guardAntigravityCommitWindow(chatSession, undefined, BIG_PROMPT_CHARS)
-    const start = Date.now()
-    await guardAntigravityCommitWindow(reportSession, undefined, BIG_PROMPT_CHARS)
-    const waited = Date.now() - start
-    assert(waited >= 40, `report bypassed the live commit window, waited=${waited}ms`)
+    recordAntigravityCacheRead(reportSession, 0, 20_000, 'report')
+
+    const reportStart = Date.now()
+    await guardAntigravityCommitWindow(
+      reportSession,
+      undefined,
+      BIG_PROMPT_CHARS,
+      'report',
+    )
+    assert(Date.now() - reportStart < 25, 'bounded report entered the cache commit wait')
+
+    const chatStart = Date.now()
+    await guardAntigravityCommitWindow(chatSession, undefined, BIG_PROMPT_CHARS)
+    const waited = Date.now() - chatStart
+    assert(waited >= 40, `report changed the live commit window, waited=${waited}ms`)
   })
 
   await test('guard never holds sub-minimum prompts', async () => {

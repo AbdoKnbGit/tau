@@ -352,6 +352,7 @@ function _envVarName(provider: APIProvider): string {
     glm: 'GLM_API_KEY',
     moonshot: 'MOONSHOT_API_KEY',
     minimax: 'MINIMAX_API_KEY',
+    alibaba: 'DASHSCOPE_API_KEY',
     kilocode: '(OAuth only)',
     cline: '(OAuth only)',
     clinepass: '(OAuth only)',

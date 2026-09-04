@@ -9,6 +9,21 @@ export type AntigravityUsageMetric = {
   summary?: string
   detail?: string
   resetsAt?: string | null
+  /**
+   * Model ids this row meters, as the request path spells them.
+   *
+   * `label` is Google's own `displayName` and is the wrong thing to identify a
+   * row by: the status bar has to find the pool for the model THIS session is
+   * running, and a label the vendor renames (or writes as "Fast" rather than
+   * "Gemini 3.5 Flash (Low)") silently stops matching. When that match fails
+   * the bar falls back to the tightest pool across every model, which reads as
+   * someone else's 91% while this session sits at 25%. Carrying the ids makes
+   * the match exact instead of textual.
+   *
+   * More than one where a pool is shared: the Gemini rows below are metered
+   * together, so every id in the pool names the same row.
+   */
+  modelKeys?: readonly string[]
 }
 
 const ANTIGRAVITY_USAGE_MODEL_KEYS = [
@@ -57,9 +72,15 @@ export function parseAntigravityQuotaBuckets(buckets: readonly unknown[]): Antig
 function finalizeAntigravityUsageRows(rows: AntigravityUsageRow[]): AntigravityUsageMetric[] {
   const sharedGeminiQuota = pickSharedAntigravityGeminiQuota(rows)
   const byLabel = new Map<string, AntigravityUsageRow>()
+  // Every model id that ended up on a given label, so collapsing two ids onto
+  // one row cannot lose the id the session is actually running.
+  const keysByLabel = new Map<string, Set<string>>()
 
   for (const row of rows) {
     setLowestRemainingRow(byLabel, row)
+    const keys = keysByLabel.get(row.label) ?? new Set<string>()
+    keys.add(row.modelKey)
+    keysByLabel.set(row.label, keys)
   }
 
   if (sharedGeminiQuota) {
@@ -74,11 +95,14 @@ function finalizeAntigravityUsageRows(rows: AntigravityUsageRow[]): AntigravityU
         modelKey,
         remainingFraction: sharedGeminiQuota.remainingFraction,
       })
+      const keys = keysByLabel.get(label) ?? new Set<string>()
+      keys.add(modelKey)
+      keysByLabel.set(label, keys)
     }
   }
 
   return Array.from(byLabel.values())
-    .map(toUsageMetric)
+    .map(row => toUsageMetric(row, keysByLabel.get(row.label)))
     .sort((a, b) => a.label.localeCompare(b.label))
 }
 
@@ -142,13 +166,19 @@ function metricFromAntigravityRemaining(
   }
 }
 
-function toUsageMetric(row: AntigravityUsageRow): AntigravityUsageMetric {
+function toUsageMetric(
+  row: AntigravityUsageRow,
+  modelKeys?: ReadonlySet<string>,
+): AntigravityUsageMetric {
+  const keys = new Set<string>(modelKeys ?? [])
+  keys.add(row.modelKey)
   return {
     label: row.label,
     usedPercent: row.usedPercent,
     summary: row.summary,
     detail: row.detail,
     resetsAt: row.resetsAt,
+    modelKeys: Array.from(keys),
   }
 }
 

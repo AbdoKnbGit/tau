@@ -1,5 +1,6 @@
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import type { APIProvider } from './providers.js'
+import { getAlibabaModelMeta } from './alibabaCatalog.js'
 
 type ContextWindowMap = Record<string, number>
 
@@ -267,6 +268,18 @@ export function getProviderCatalogContextWindow(
     const dynamicWindow = lookupMap(candidates, providerContextWindows.get(provider))
     if (dynamicWindow !== undefined) {
       return dynamicWindow
+    }
+
+    // Alibaba publishes no context window on its own /models route, so the
+    // catalogue is the only source — and it is a live one, which is why there
+    // is no static Alibaba block below. Consulted here rather than waiting for
+    // the picker to record windows, so a session that resumes straight onto a
+    // Qwen model still knows how big its window is.
+    if (provider === 'alibaba') {
+      const catalogWindow = getAlibabaModelMeta(model)?.contextWindow
+      if (catalogWindow !== undefined) {
+        return catalogWindow
+      }
     }
 
     const scopedWindow = lookupRecord(candidates, PROVIDER_SCOPED_CONTEXT_WINDOWS[provider])

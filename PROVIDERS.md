@@ -1,6 +1,6 @@
 # Supported Providers
 
-Tau ships **24 native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
+Tau ships **25 native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
 
 | Provider | Notes |
 |---|---|
@@ -16,6 +16,7 @@ Tau ships **24 native provider adapters**. Each speaks the provider's API direct
 | Mistral AI | Direct Mistral and Devstral models with a generous free-trial API that is great for testing agent work |
 | Moonshot AI | Direct Kimi models through Moonshot's OpenAI-compatible API, including Kimi K2.6 for coding work |
 | MiniMax AI | Direct MiniMax M2 models through MiniMax's OpenAI-compatible API, with saved API-key login, live model browsing, and Token Plan usage checks |
+| Alibaba | Alibaba Cloud Model Studio: Qwen plus the DeepSeek / GLM / Kimi rows it hosts, on the pay-as-you-go DashScope API. Per-model thinking ladders and context windows come from the live catalogue, not a table in Tau |
 | NVIDIA NIM | Gets slow under server load, especially for newest models like Kimi K2 |
 | DeepSeek | Solid. V4 only — flash, pro and flash-vision-exp, all 1M context. Thinking effort is a per-model chip in `/models` |
 | GLM / BigModel | Works with your BigModel plan or the small amount of free credit they give you |
@@ -82,6 +83,69 @@ llama-4-scout - LLaMA 4 Scout                            [tools]
 per model and persists in `~/.claude/lxd-thinking.json`. Rows that publish no
 ladder (llama-4-scout, minimax-m3) show no chip, and Tau never sends a level a
 model hasn't declared.
+
+## Alibaba Model Studio thinking effort
+
+Qwen has three thinking knobs, not one — `enable_thinking`, `reasoning_effort`
+and `thinking_budget` — and which ones a model accepts is per model. Sending
+one a model does not take is a 400, so Tau never guesses: each row's ladder is
+read out of the published catalogue (models.dev `reasoning_options`, the same
+document Tau prices from) and rendered verbatim. Use `←` / `→` on a row in
+`/models` to cycle it:
+
+```
+qwen3.8-max - Qwen3.8 Max                     ◀ xHigh ▶    [reasoning] [tools]
+qwen3.7-max - Qwen3.7 Max                     ◀ Off ▶      [reasoning] [tools]
+glm-5.2 - GLM 5.2                             ◀ Minimal ▶  [reasoning] [tools]
+qwen3-coder-plus - Qwen3 Coder Plus                        [tools]
+```
+
+The stops differ per row because the API does:
+
+- a **toggle + effort** row (qwen3.8-max) cycles `Default / Off` plus the
+  effort values that model publishes;
+- a **toggle-only** row (qwen3.7-max) cycles `Default / Off / On`;
+- an **effort-only** row (glm-5.2) cycles `Default` plus its own values,
+  including its own `none`;
+- a row that does not reason shows no chip at all.
+
+`Default` means no per-model override: the session's own `/thinking` setting
+drives the row, through whichever fields it published. Model Studio turns
+thinking ON by default on the hybrid rows, so a chip that sent nothing would
+quietly bill a thinking request to someone who had turned thinking off. An
+explicit pick always outranks the session budget, and the pick is per model,
+persisted in `~/.claude/alibaba-thinking.json`.
+
+`thinking_budget` is never sent: Model Studio documents it as mutually
+exclusive with `reasoning_effort`, and the ladder speaks in efforts.
+
+## Alibaba Model Studio regions
+
+A Model Studio API key is bound to the region that issued it, and the two
+pay-as-you-go regions bill differently — qwen3-coder-flash is $0.30/$1.50 per
+1M internationally and $0.144/$0.574 in Beijing. `DASHSCOPE_BASE_URL` picks
+the endpoint, and the same setting picks the price table `/cost` and `/usage`
+report against:
+
+```bash
+# international / Singapore (default, no env var needed)
+https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+
+# mainland China / Beijing
+export DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+```
+
+`/login alibaba` verifies the key against whichever endpoint is configured, so
+a Beijing key pointed at the international host fails at login rather than on
+your first message.
+
+Model Studio meters spend through Alibaba Cloud billing, which an account
+AccessKey pair can read and an API key cannot, so `/usage` reports connection
+state and links to the console rather than inventing a balance. Per-request
+cost is still computed locally from the published rates for the active region,
+with cached prompt tokens billed at the cache-read rate — Model Studio's
+implicit cache is always on, and Tau keeps the request prefix stable so it
+actually hits.
 
 ## Xiaomi MiMo endpoints
 

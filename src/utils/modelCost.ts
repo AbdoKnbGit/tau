@@ -25,6 +25,7 @@ import {
   type ModelShortName,
 } from './model/model.js'
 import { getAPIProvider } from './model/providers.js'
+import { alibabaCatalogProviderId } from './model/alibabaCatalog.js'
 import {
   ensureModelPricesFresh,
   lookupCatalogPrice,
@@ -276,7 +277,13 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts | null {
     (usage.input_tokens ?? 0) +
     (usage.cache_read_input_tokens ?? 0) +
     (usage.cache_creation_input_tokens ?? 0)
-  const published = lookupCatalogPrice(getAPIProvider(), model, contextTokens)
+  // Model Studio bills its Singapore and Beijing endpoints at different rates
+  // for the same model id, and they are separate catalogue entries, so the
+  // configured endpoint decides which table applies.
+  const provider = getAPIProvider()
+  const catalogProvider =
+    provider === 'alibaba' ? alibabaCatalogProviderId() : provider
+  const published = lookupCatalogPrice(catalogProvider, model, contextTokens)
   if (published) return published
 
   trackUnknownModelCost(model, shortName, usage)

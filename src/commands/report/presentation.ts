@@ -8,14 +8,70 @@ export interface ReportPresentationSkill {
 
 export type ReportPresentationFormat = 'markdown' | 'html' | 'pdf'
 
+export const REPORT_CONTEXT_MAX_CHARS = 24_000
+
+const REPORT_CONTEXT_SEPARATOR = '\n\n---\n\n'
+const REPORT_CONTEXT_OMISSION =
+  `${REPORT_CONTEXT_SEPARATOR}[Session context omitted to keep report generation within a safe request size.]${REPORT_CONTEXT_SEPARATOR}`
+
+/**
+ * Build a deterministic, text-only report projection. Short sessions are
+ * preserved byte-for-byte. Long sessions retain the opening goal, a middle
+ * sample, and the latest outcomes while remaining under a hard payload cap.
+ */
+export function buildBoundedReportContext(parts: readonly string[]): string {
+  const context = parts
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join(REPORT_CONTEXT_SEPARATOR)
+
+  if (context.length <= REPORT_CONTEXT_MAX_CHARS) return context
+
+  // For moderately oversized sessions, a wide tail plus the opening goal is
+  // more useful than a tiny middle sample. The ranges cannot overlap here.
+  if (context.length <= REPORT_CONTEXT_MAX_CHARS * 2) {
+    const usableChars = REPORT_CONTEXT_MAX_CHARS - REPORT_CONTEXT_OMISSION.length
+    const headChars = Math.min(6_000, Math.floor(usableChars / 3))
+    const tailChars = usableChars - headChars
+    return [
+      context.slice(0, headChars),
+      REPORT_CONTEXT_OMISSION,
+      context.slice(-tailChars),
+    ].join('')
+  }
+
+  // Very long sessions also keep a sample around the chronological midpoint,
+  // which commonly contains decisions that neither the initial goal nor the
+  // final recap repeats.
+  const usableChars =
+    REPORT_CONTEXT_MAX_CHARS - REPORT_CONTEXT_OMISSION.length * 2
+  const headChars = 4_000
+  const middleChars = 4_000
+  const tailChars = usableChars - headChars - middleChars
+  const middleStart = Math.max(
+    headChars,
+    Math.floor((context.length - middleChars) / 2),
+  )
+
+  return [
+    context.slice(0, headChars),
+    REPORT_CONTEXT_OMISSION,
+    context.slice(middleStart, middleStart + middleChars),
+    REPORT_CONTEXT_OMISSION,
+    context.slice(-tailChars),
+  ].join('')
+}
+
 export function buildReportPrompt({
   format,
   skill,
+  context,
 }: {
   format: ReportPresentationFormat
   skill: ReportPresentationSkill
+  context: string
 }): string {
-  return `Write a polished final report using the conversation context already provided.
+  return `Write a polished final report using only the session context supplied below.
 
 The report will be delivered as ${format}. ${skill.instruction}
 
@@ -30,21 +86,72 @@ Editorial direction:
 - Do not mention the assistant, the transcript, prompts, tools, token usage, costs, timing, or report-generation process.
 - Do not add statistics, percentages, charts, or numerical summaries unless a number is itself part of the work being reported.
 - Be factual. Do not invent completed work, decisions, evidence, or follow-up actions.
+
+[Report context begins]
+${context}
+[Report context ends]
 `
+}
+
+/** Provider rate-limit / quota refusal, in any provider's wording. */
+export const PROVIDER_QUOTA_SIGNATURE =
+  /\b429\b|resource[_ ]has[_ ]been[_ ]exhausted|resource_exhausted|rate.?limit|throttl|quota/i
+
+/**
+ * Did this failure come from the provider refusing on quota/rate limit?
+ *
+ * Used to decide whether retrying on another Antigravity host can help. An
+ * auth failure or a malformed response is not worth another request.
+ */
+export function isProviderQuotaFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return PROVIDER_QUOTA_SIGNATURE.test(message)
 }
 
 export function assertValidGeneratedReport(
   markdown: string,
-  options: { isApiErrorMessage?: boolean } = {},
+  options: { isApiErrorMessage?: boolean; failureHint?: string } = {},
 ): void {
   const firstLine = markdown.split(/\r?\n/).find(line => line.trim())?.trim() ?? ''
   const isProviderFailure =
     /^(?:api error\b|please run \/login\s*[·:-]\s*api error\b|failed to authenticate\b|request timed out\b|prompt is too long\b|antigravity request was\b|(?:gemini|qwen|codex|openai|kiro|kilo|cline|cursor|ollama|[\w.-]+)\s+(?:api|auth|connection)\s+error\b)/i
       .test(firstLine)
   if (!markdown || options.isApiErrorMessage === true || isProviderFailure) {
-    const detail = firstLine ? ` ${firstLine.slice(0, 240)}` : ''
-    throw new Error(`Report generation did not return report content.${detail}`)
+    throw new Error(buildReportFailureMessage(markdown, firstLine, options.failureHint))
   }
+}
+
+/**
+ * Explain a failed report in terms the reader can act on.
+ *
+ * The provider's raw text is often a JSON error body, so quoting its first
+ * line alone produced `Report generation did not return report content. API
+ * Error: Gemini API error 429: {` — which reads like a Tau defect. `/report`
+ * already sends a bounded, tool-free request, so a quota refusal is upstream
+ * and the message should say so instead of dumping the body.
+ */
+function buildReportFailureMessage(
+  markdown: string,
+  firstLine: string,
+  failureHint?: string,
+): string {
+  const lines = ['Report generation did not return report content.']
+
+  if (markdown && PROVIDER_QUOTA_SIGNATURE.test(markdown)) {
+    lines.push(
+      'The model provider refused the request with a rate-limit/quota error.',
+      'This is an upstream limit: /report sends a small, tool-free request, so there',
+      'is no oversized payload to shrink.',
+    )
+  }
+
+  if (failureHint) {
+    lines.push('', failureHint)
+  } else if (firstLine) {
+    lines.push('', `Provider said: ${firstLine.slice(0, 240)}`)
+  }
+
+  return lines.join('\n')
 }
 
 export function renderHtml(markdown: string): string {

@@ -169,6 +169,11 @@ export type CatalogPrice = {
  * Flat-fee providers ARE priced here. A subscription has no per-token bill,
  * so the figure is what the same usage would cost at published rates - an
  * API-equivalent value, not an invoice. Callers must label it as such.
+ *
+ * `alibaba` is absent on purpose: its two pay-as-you-go regions are separate
+ * catalogue entries billing ~3x apart, so which one applies is decided at the
+ * call site from the configured endpoint (see modelCost.ts) and arrives here
+ * already resolved to `alibaba` or `alibaba-cn`.
  */
 const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   firstParty: 'anthropic',
@@ -331,7 +336,15 @@ export function lookupCatalogPrice(
   const rows = current?.providers[providerId]
   if (!rows) return null
 
-  const row = rows[model] ?? rows[model.toLowerCase()]
+  const row =
+    rows[model]
+    ?? rows[model.toLowerCase()]
+    // models.dev spells a handful of ids with dashes where the provider uses
+    // dots - `qwen2-5-72b-instruct` for DashScope's `qwen2.5-72b-instruct`.
+    // Checked across all 7,523 catalogued ids: no provider publishes two that
+    // differ only by that substitution, so this cannot cross-match one model's
+    // price onto another.
+    ?? rows[model.toLowerCase().replace(/\./g, '-')]
   return row ? rowToPrice(row, contextTokens) : null
 }
 

@@ -87,6 +87,7 @@ import {
 import { cloudflareReasoningContentReplayRequired } from '../../utils/model/cloudflareThinking.js'
 import { lxdReasoningContentReplayRequired } from '../../utils/model/lxdThinking.js'
 import { mimoReasoningContentReplayRequired } from '../../utils/model/mimoThinking.js'
+import { alibabaReasoningContentReplayRequired } from '../../utils/model/alibabaThinking.js'
 import { recordProviderModelContextWindows } from '../../utils/model/contextWindows.js'
 import { providerUsesStableRequestSession } from '../../services/api/cacheAffinity.js'
 import {
@@ -103,6 +104,7 @@ type ProviderType =
   | 'glm'
   | 'moonshot'
   | 'minimax'
+  | 'alibaba'
   | 'mistral'
   | 'nim'
   | 'ollama'
@@ -127,6 +129,9 @@ type ProviderType =
 function detectProvider(model: string, baseUrl: string): ProviderType {
   const b = baseUrl.toLowerCase()
   const m = model.toLowerCase()
+  // Model Studio hosts DeepSeek, GLM and Kimi rows alongside Qwen, so the
+  // endpoint has to be matched before any model-name heuristic below.
+  if (b.includes('dashscope') || b.includes('maas.aliyuncs.com')) return 'alibaba'
   if (b.includes('deepseek')) return 'deepseek'
   if (b.includes('bigmodel') || b.includes('zhipu')) return 'glm'
   if (b.includes('moonshot') || b.includes('kimi')) return 'moonshot'
@@ -3051,6 +3056,13 @@ function convertHistoryToOpenAI(
   // requireReasoningContentOnAssistantMessages), so the carry-back is wired
   // in from the start rather than surfacing as a second-tool-turn failure.
   if (provider === 'mimo' && mimoReasoningContentReplayRequired(model)) {
+    return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
+  }
+  // Model Studio's own DeepSeek, GLM and Kimi rows 400 on the SECOND tool
+  // turn without `reasoning_content` echoed back; its Qwen rows ignore the
+  // field unless `preserve_thinking` is set. Carrying it back is free for
+  // the rows that ignore it and load-bearing for the rest.
+  if (provider === 'alibaba' && alibabaReasoningContentReplayRequired(model)) {
     return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
   }
   return convertHistoryToOpenAIDefault(messages, systemText, provider, model)

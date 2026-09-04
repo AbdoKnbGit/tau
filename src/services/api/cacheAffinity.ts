@@ -44,11 +44,6 @@ function usesRootProviderSession(querySource: QuerySource): boolean {
   return (
     querySource.startsWith('repl_main_thread') ||
     querySource === 'sdk' ||
-    // /report is a read-only suffix on the live conversation and explicitly
-    // skips writing its suffix into the shared cache. Keep it on the root
-    // provider session so sticky gateways (especially OpenRouter) land on the
-    // same cache shard as the chat request they are summarizing.
-    querySource === 'report' ||
     querySource === FORK_AGENT_QUERY_SOURCE
   )
 }
@@ -88,6 +83,18 @@ export function resolveProviderRequestSessionId({
   // conversation. Apply this before provider-specific branching so no
   // special provider can accidentally derive a cold side-session for one.
   if (usesRootProviderSession(querySource)) return root
+
+  // Antigravity uses the upstream session id for request deduplication and
+  // quota routing. A derived report session can be treated as a cold lane and
+  // receive 429s even while the live conversation remains healthy. Its prompt
+  // cache is content-addressed rather than session-keyed, so keeping a bounded
+  // report on the root session does not merge or overwrite prompt contents.
+  // Other providers keep a stable side-session because their affinity/cache
+  // behavior is independent and report isolation remains the safer default.
+  if (querySource === 'report') {
+    if (provider === 'antigravity') return root
+    return derivedProviderSessionId(root, 'query', querySource)
+  }
 
   if (provider === 'openrouter') {
     if (agentId) return derivedProviderSessionId(root, 'agent', agentId)

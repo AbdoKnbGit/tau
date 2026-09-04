@@ -695,7 +695,12 @@ export class GeminiProvider extends BaseProvider {
       const projectId = await ensureCodeAssistReady(oauthToken, executor)
 
       const wrapped = executor === 'antigravity'
-        ? wrapForCodeAssist(model, projectId, body as unknown as Record<string, unknown>)
+        ? wrapForCodeAssist(
+          model,
+          projectId,
+          body as unknown as Record<string, unknown>,
+          optimized.sessionId,
+        )
         : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
 
       const headers = executor === 'antigravity'
@@ -819,7 +824,12 @@ export class GeminiProvider extends BaseProvider {
       const projectId = await ensureCodeAssistReady(oauthToken, executor)
 
       const wrapped = executor === 'antigravity'
-        ? wrapForCodeAssist(model, projectId, body as unknown as Record<string, unknown>)
+        ? wrapForCodeAssist(
+          model,
+          projectId,
+          body as unknown as Record<string, unknown>,
+          optimized.sessionId,
+        )
         : wrapForGeminiCLI(model, projectId, body as unknown as Record<string, unknown>)
 
       const headers = executor === 'antigravity'

@@ -21,6 +21,7 @@ import {
   executorForModel,
   parseCodeAssistSSE,
   unwrapCodeAssistResponse,
+  recordAntigravityGeminiHostExhausted,
   wrapForCodeAssist,
   wrapForGeminiCLI,
   geminiCLIApiHeaders,
@@ -58,10 +59,22 @@ import { parseGeminiApiSSE as parseGeminiApiSSEEvent } from './api_sse.js'
 const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 
 export const TAU_STABLE_SESSION_ID_FIELD = '__tauStableSessionId'
+/**
+ * Internal marker the lane sets so host selection can tell a one-shot
+ * `/report` from a live conversation turn. Stripped before the request is
+ * serialized, exactly like the stable session id above.
+ */
+export const TAU_QUERY_SOURCE_FIELD = '__tauQuerySource'
 
 function takeTauStableSessionId(body: Record<string, unknown>): string | undefined {
   const value = body[TAU_STABLE_SESSION_ID_FIELD]
   delete body[TAU_STABLE_SESSION_ID_FIELD]
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function takeTauQuerySource(body: Record<string, unknown>): string | undefined {
+  const value = body[TAU_QUERY_SOURCE_FIELD]
+  delete body[TAU_QUERY_SOURCE_FIELD]
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
@@ -464,6 +477,7 @@ class GeminiApiClient {
     const body = { ...request }
     delete body.model
     const tauStableSessionId = takeTauStableSessionId(body)
+    const tauQuerySource = takeTauQuerySource(body)
 
     // OAuth path → Code Assist proxy (cloudcode-pa.googleapis.com). Uses the
     // same request envelopes and header sets that CLIProxyAPI emits so quota
@@ -477,7 +491,7 @@ class GeminiApiClient {
       let reonboardsLeft = 1
       let sigStripsLeft = 1
       const basesForExecutor = (executor: 'cli' | 'antigravity') =>
-        codeAssistGenerationBasesForModel(executor, model, tauStableSessionId)
+        codeAssistGenerationBasesForModel(executor, model, tauStableSessionId, tauQuerySource)
       const urlForBase = (base: string) => `${base}:streamGenerateContent?alt=sse`
       const _ttftStart = Date.now()
       const rotation = getAntigravityRotation()
@@ -571,6 +585,15 @@ class GeminiApiClient {
               break
             }
             errText = await resp.text().catch(() => '')
+            // Hosts meter quota separately. Remember a refusal so the next
+            // request — especially a one-shot like /report, which cannot
+            // afford to re-probe a dead host — starts somewhere that serves.
+            if (executor === 'antigravity' && resp.status === 429) {
+              recordAntigravityGeminiHostExhausted(
+                bases[i]!,
+                classifyGeminiError(resp.status, errText).retryAfterMs,
+              )
+            }
             if (shouldTryNextAntigravityGeminiEndpoint(executor, model, resp.status, i, urls.length, pinnedFirstAttempt)) {
               writeAntigravityEndpointDebugEvent(tauStableSessionId, 'hop', {
                 from: bases[i],
@@ -762,6 +785,7 @@ class GeminiApiClient {
     const body = { ...request }
     delete body.model
     const tauStableSessionId = takeTauStableSessionId(body)
+    const tauQuerySource = takeTauQuerySource(body)
 
     // OAuth → Code Assist (unwraps the `{ response: ... }` envelope).
     const oauthRouting = this._tokenForModel(model)
@@ -769,7 +793,7 @@ class GeminiApiClient {
       let reonboardsLeft = 1
       let sigStripsLeft = 1
       const basesForExecutor = (executor: 'cli' | 'antigravity') =>
-        codeAssistGenerationBasesForModel(executor, model, tauStableSessionId)
+        codeAssistGenerationBasesForModel(executor, model, tauStableSessionId, tauQuerySource)
       const urlForBase = (base: string) => `${base}:generateContent`
       const rotation = getAntigravityRotation()
       let attemptNo = 0
@@ -857,6 +881,15 @@ class GeminiApiClient {
               break
             }
             errText = await resp.text().catch(() => '')
+            // Hosts meter quota separately. Remember a refusal so the next
+            // request — especially a one-shot like /report, which cannot
+            // afford to re-probe a dead host — starts somewhere that serves.
+            if (executor === 'antigravity' && resp.status === 429) {
+              recordAntigravityGeminiHostExhausted(
+                bases[i]!,
+                classifyGeminiError(resp.status, errText).retryAfterMs,
+              )
+            }
             if (shouldTryNextAntigravityGeminiEndpoint(executor, model, resp.status, i, urls.length, pinnedFirstAttempt)) {
               writeAntigravityEndpointDebugEvent(tauStableSessionId, 'hop', {
                 from: bases[i],

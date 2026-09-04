@@ -78,6 +78,12 @@ import {
   supportsMimoEffortSelection,
 } from '../utils/model/mimoThinking.js'
 import {
+  cycleAlibabaEffort,
+  getAlibabaEffort,
+  getAlibabaEffortLabel,
+  supportsAlibabaEffortSelection,
+} from '../utils/model/alibabaThinking.js'
+import {
   getVoiceConversationStatus,
   hasVoiceConversationApiKey,
 } from '../voice/voiceConversation.js'
@@ -283,6 +289,7 @@ export function ProviderModelPicker({
   const [, setDeepseekEffortTick] = useState(0)
   const [, setLxdEffortTick] = useState(0)
   const [, setMimoEffortTick] = useState(0)
+  const [, setAlibabaEffortTick] = useState(0)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
   // Bumped when a favorite is toggled so the ★ column re-renders. The list
   // itself lives in GlobalConfig and is read fresh during render.
@@ -623,6 +630,16 @@ export function ProviderModelPicker({
         setMimoEffortTick(tick => tick + 1)
         return
       }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'alibaba'
+        && supportsAlibabaEffortSelection(row.model.id)
+      ) {
+        cycleAlibabaEffort(row.model.id, key.leftArrow ? 'left' : 'right')
+        setAlibabaEffortTick(tick => tick + 1)
+        return
+      }
       return
     }
 
@@ -791,6 +808,16 @@ export function ProviderModelPicker({
               const isMimoThinking =
                 selectedProvider === 'mimo' && supportsMimoEffortSelection(model.id)
               const mimoEffort = isMimoThinking ? getMimoEffort(model.id) : undefined
+              // Model Studio's ladder is per model, straight out of the
+              // catalogue: a toggle row cycles Default/Off/On, an effort row
+              // cycles the values that model itself publishes, and a row that
+              // does not reason shows no chip at all.
+              const isAlibabaThinking =
+                selectedProvider === 'alibaba'
+                && supportsAlibabaEffortSelection(model.id)
+              const alibabaEffort = isAlibabaThinking
+                ? getAlibabaEffort(model.id)
+                : undefined
               const selectedVariant = getSelectedVariant(
                 selectedProvider,
                 model,
@@ -863,6 +890,11 @@ export function ProviderModelPicker({
                   {isMimoThinking && mimoEffort && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ {getMimoEffortLabel(mimoEffort)} ▶
+                    </Text>
+                  )}
+                  {isAlibabaThinking && alibabaEffort && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ {getAlibabaEffortLabel(alibabaEffort)} ▶
                     </Text>
                   )}
                   {showVariant && selectedVariant && (

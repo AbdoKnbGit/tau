@@ -310,6 +310,9 @@ function isAzureResponsesBaseUrl(baseUrl: string): boolean {
   )
 }
 
+/** Frozen-volatile anchors retained across cache sessions before eviction. */
+const FROZEN_VOLATILE_SESSION_LIMIT = 16
+
 export class CodexApiClient {
   private apiKey: string | null = null
   /** Populated lazily in resolvedBaseUrl() based on which auth is active. */
@@ -335,7 +338,7 @@ export class CodexApiClient {
    */
   private cacheSessionId: string | null = null
   /**
-   * Per-model frozen copy of the system prompt's volatile tail
+   * Per-session, per-model frozen copy of the system prompt's volatile tail
    * (env / git status / memory / current date). The codex lane
    * unshifts this as a `developer` input item at position 0 every
    * turn so the input prefix stays byte-stable across turns.
@@ -353,10 +356,12 @@ export class CodexApiClient {
    * `clearChain()` (called on `/clear` and dispose paths) wipes the
    * map so a fresh conversation captures fresh env.
    *
-   * Keyed by model so a `/models` swap inside the same session
-   * doesn't re-use a different model's frozen anchor.
+   * The outer cache-affinity key is part of the map key so bounded side
+   * requests (for example `/report`) cannot erase or seed the live chat's
+   * anchor when the singleton Codex client switches between them. The inner
+   * model key keeps `/models` swaps isolated inside each session.
    */
-  private frozenVolatileByModel: Map<string, string> = new Map()
+  private frozenVolatileBySession: Map<string, Map<string, string>> = new Map()
 
   configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string; chatgptAccountId?: string; chatgptIdToken?: string }): void {
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
@@ -403,12 +408,12 @@ export class CodexApiClient {
   /**
    * Rotate the cache session id. Call when starting a fresh
    * conversation so stale KV-cache entries don't get routed to the
-   * new turn's prefix. Also wipes the per-model frozen volatile
-   * anchors so the next conversation captures fresh env data.
+   * new turn's prefix. Also wipes every session/model frozen volatile
+   * anchor so the next conversation captures fresh env data.
    */
   clearChain(): void {
     this.cacheSessionId = null
-    this.frozenVolatileByModel.clear()
+    this.frozenVolatileBySession.clear()
   }
 
   /**
@@ -421,7 +426,6 @@ export class CodexApiClient {
     const trimmed = sessionId?.trim()
     if (!trimmed || this.cacheSessionId === trimmed) return
     this.cacheSessionId = trimmed
-    this.frozenVolatileByModel.clear()
   }
 
   /**
@@ -437,9 +441,26 @@ export class CodexApiClient {
    */
   getOrSeedFrozenVolatile(model: string, currentText: string): string {
     if (!currentText) return ''
-    const cached = this.frozenVolatileByModel.get(model)
+    const sessionKey = this.sessionCacheKey
+    let frozenByModel = this.frozenVolatileBySession.get(sessionKey)
+    if (!frozenByModel) {
+      frozenByModel = new Map()
+      this.frozenVolatileBySession.set(sessionKey, frozenByModel)
+      // Keying by session removed the clear-on-switch this map used to get,
+      // and `clearChain()` now only runs on dispose. Evict oldest-first so a
+      // long-lived process that cycles through sessions cannot accumulate one
+      // env/git/memory snapshot per session forever. The live session is
+      // re-seeded on its next turn if it is ever evicted.
+      if (this.frozenVolatileBySession.size > FROZEN_VOLATILE_SESSION_LIMIT) {
+        const oldest = this.frozenVolatileBySession.keys().next().value
+        if (oldest !== undefined && oldest !== sessionKey) {
+          this.frozenVolatileBySession.delete(oldest)
+        }
+      }
+    }
+    const cached = frozenByModel.get(model)
     if (cached !== undefined) return cached
-    this.frozenVolatileByModel.set(model, currentText)
+    frozenByModel.set(model, currentText)
     return currentText
   }
 
@@ -512,7 +533,10 @@ export class CodexApiClient {
       async () => {
         const resp = await fetch(`${this.baseUrl}/responses`, {
           method: 'POST',
-          headers: this.buildHeaders(),
+          // The request captured its session before any await. Use that same
+          // key for headers so concurrent side requests cannot race the
+          // singleton client's currently selected session.
+          headers: this.buildHeaders(request.prompt_cache_key),
           body: JSON.stringify(body),
           signal,
         })
@@ -590,7 +614,7 @@ export class CodexApiClient {
       async () => {
         const resp = await fetch(`${this.baseUrl}/responses`, {
           method: 'POST',
-          headers: this.buildHeaders(),
+          headers: this.buildHeaders(request.prompt_cache_key),
           body: JSON.stringify(body),
           signal,
         })
@@ -605,8 +629,8 @@ export class CodexApiClient {
     )
   }
 
-  private buildHeaders(): Record<string, string> {
-    const sid = this.sessionCacheKey
+  private buildHeaders(requestSessionId?: string): Record<string, string> {
+    const sid = requestSessionId?.trim() || this.sessionCacheKey
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Accept': 'text/event-stream',
@@ -622,7 +646,7 @@ export class CodexApiClient {
       // `x-codex-window-id: <conv_id>:<gen>` (client.rs:569-571). The
       // backend uses it to scope cache + context window state; requests
       // without it land in an "unknown client" partition on chatgpt.com.
-      'x-codex-window-id': this.windowId,
+      'x-codex-window-id': `${sid}:0`,
       // codex-rs: default_headers() sets `originator: codex_cli_rs`
       // (login/src/auth/default_client.rs). Backend segments cache per
       // originator; native codex lands under this key.

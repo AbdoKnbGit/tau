@@ -23,6 +23,7 @@ export const PROVIDERS_WITH_USAGE_REPORTERS = [
   'glm',
   'lxd',
   'mimo',
+  'alibaba',
   'moonshot',
   'minimax',
   'ollama',

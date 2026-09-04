@@ -203,6 +203,7 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   deepseek: { prefix: 'sk-', minLength: 20, displayName: 'DeepSeek' },
   moonshot: { prefix: 'sk-', minLength: 20, displayName: 'Moonshot AI' },
   minimax: { prefix: '', minLength: 10, displayName: 'MiniMax AI' },
+  alibaba: { prefix: '', minLength: 10, displayName: 'Alibaba Model Studio' },
   firecrawl: { prefix: 'fc-', minLength: 10, displayName: 'Firecrawl' },
 }
 
@@ -348,13 +349,14 @@ export function deleteAllProviderCredentials(provider: string): void {
     provider === 'commandcode' ||
     provider === 'lxd' ||
     provider === 'mimo' ||
+    provider === 'alibaba' ||
     provider === 'fireworks' ||
     provider === 'cloudflare' ||
     provider === 'groq'
   ) {
     void import('../providers/providerShim.js')
       .then(({ reloadOpenAICompatProviderAuth }) =>
-        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'opencodego' | 'commandcode' | 'fireworks' | 'cloudflare' | 'groq'),
+        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'opencodego' | 'commandcode' | 'fireworks' | 'cloudflare' | 'groq' | 'alibaba'),
       )
       .catch(() => {})
   }

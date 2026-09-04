@@ -79,6 +79,9 @@ export function initLanes(opts?: {
   // MiniMax AI
   minimaxApiKey?: string
   minimaxBaseUrl?: string
+  // Alibaba Cloud Model Studio / DashScope (pay-as-you-go)
+  alibabaApiKey?: string
+  alibabaBaseUrl?: string
   // Groq
   groqApiKey?: string
   // Mistral
@@ -217,6 +220,7 @@ export function initLanes(opts?: {
     glm: opts?.glmApiKey ? { apiKey: opts.glmApiKey, baseUrl: opts.glmBaseUrl } : undefined,
     moonshot: opts?.moonshotApiKey ? { apiKey: opts.moonshotApiKey, baseUrl: opts.moonshotBaseUrl } : undefined,
     minimax: opts?.minimaxApiKey ? { apiKey: opts.minimaxApiKey, baseUrl: opts.minimaxBaseUrl } : undefined,
+    alibaba: opts?.alibabaApiKey ? { apiKey: opts.alibabaApiKey, baseUrl: opts.alibabaBaseUrl } : undefined,
     groq: opts?.groqApiKey ? { apiKey: opts.groqApiKey } : undefined,
     mistral: opts?.mistralApiKey ? { apiKey: opts.mistralApiKey, baseUrl: opts.mistralBaseUrl } : undefined,
     nim: opts?.nimApiKey ? { apiKey: opts.nimApiKey } : undefined,

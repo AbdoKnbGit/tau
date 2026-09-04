@@ -224,6 +224,77 @@ function antigravityGeminiAffinityKey(_sessionKey: string | undefined): string {
   return ANTIGRAVITY_GEMINI_AFFINITY_GLOBAL_KEY
 }
 
+// ── Antigravity Gemini per-host quota cooldown ───────────────────
+//
+// Each generation host meters quota SEPARATELY. Measured live 2026-09-04 on a
+// free-tier account: `cloudcode-pa` (prod) answered 429 RESOURCE_EXHAUSTED for
+// every request shape while `daily-cloudcode-pa` and the sandbox host served
+// the identical bodies with HTTP 200. The default order is prod-first, so once
+// prod is exhausted every request pays a wasted round-trip there before it can
+// fail over.
+//
+// A long chat absorbs that: it has many turns, so the first fallback serve
+// migrates the pin and the rest of the session rides the healthy host. A
+// one-shot request has no such luxury — `/report` gets two outer attempts, and
+// spending them re-probing a host that is known to be out of quota is what
+// made reports fail on an account whose chat was working (tau#29/#30).
+//
+// Remembering the refusal for a short window lets the very next request start
+// on a host that can actually serve it. The window is deliberately short: host
+// quota recovers on its own, and every hop costs a cold prompt-cache turn on
+// the sibling pool, so this must never become a permanent re-route.
+
+const ANTIGRAVITY_GEMINI_HOST_COOLDOWN_MS = 60_000
+const _antigravityGeminiHostCooldown = new Map<string, number>()
+
+/**
+ * Note that a generation host refused a request for quota reasons, so the next
+ * request prefers a sibling host until the window passes. `retryAfterMs` from
+ * the server wins when it asks for longer, capped so a pathological hint
+ * cannot exile a host for the rest of the process.
+ */
+export function recordAntigravityGeminiHostExhausted(
+  base: string,
+  retryAfterMs?: number,
+): void {
+  const hold = Math.min(
+    Math.max(retryAfterMs ?? 0, ANTIGRAVITY_GEMINI_HOST_COOLDOWN_MS),
+    5 * ANTIGRAVITY_GEMINI_HOST_COOLDOWN_MS,
+  )
+  _antigravityGeminiHostCooldown.set(base, Date.now() + hold)
+}
+
+/** Milliseconds left on a host's quota cooldown; 0 when it is usable. */
+export function antigravityGeminiHostCooldownMs(base: string): number {
+  const until = _antigravityGeminiHostCooldown.get(base)
+  if (until === undefined) return 0
+  const remaining = until - Date.now()
+  if (remaining <= 0) {
+    _antigravityGeminiHostCooldown.delete(base)
+    return 0
+  }
+  return remaining
+}
+
+/**
+ * Reorder hosts so ones that recently reported exhausted quota go last.
+ *
+ * Order is preserved among equals and nothing is ever dropped: if every host
+ * is cooling down the list comes back unchanged, so a request still goes out
+ * rather than failing locally on stale bookkeeping.
+ */
+function deprioritizeExhaustedAntigravityGeminiBases(
+  bases: readonly string[],
+): readonly string[] {
+  const usable = bases.filter(base => antigravityGeminiHostCooldownMs(base) === 0)
+  if (usable.length === 0 || usable.length === bases.length) return bases
+  return [...usable, ...bases.filter(base => !usable.includes(base))]
+}
+
+export function _resetAntigravityGeminiHostCooldownForTest(): void {
+  _antigravityGeminiHostCooldown.clear()
+}
+
 /** Host that served this session's last successful response, if any. */
 export function antigravityGeminiStickyBase(
   sessionKey: string | undefined,
@@ -294,16 +365,48 @@ export function codeAssistGenerationBasesForModel(
   executor: GeminiExecutor,
   model: string,
   sessionKey?: string,
+  querySource?: string,
 ): readonly string[] {
+  // Reordering hosts is ONLY for one-shot side requests.
+  //
+  // Each host runs its own implicit-cache pool, and prod is the documented
+  // "fast + reliable cache" host that the per-session pin deliberately keeps a
+  // conversation on. Demoting it after a single 429 would move a warm chat to
+  // a cold pool and re-bill its whole prompt — the exact cost the pin exists
+  // to avoid. A conversation can afford to wait out a transient refusal on its
+  // warm host; `/report` cannot, and has no cache equity to lose because its
+  // bounded prompt sits below the backend's cacheable minimum.
+  const avoidExhaustedHosts = querySource === 'report'
+
   if (executor === 'antigravity' && isAntigravityGeminiModel(model)) {
     const bases = antigravityGeminiGenerationBases()
     const sticky = antigravityGeminiStickyBase(sessionKey)
-    if (sticky && sticky !== bases[0] && bases.includes(sticky)) {
-      return [sticky, ...bases.filter(base => base !== sticky)]
-    }
-    return bases
+    const ordered = sticky && sticky !== bases[0] && bases.includes(sticky)
+      ? [sticky, ...bases.filter(base => base !== sticky)]
+      : bases
+    return avoidExhaustedHosts
+      ? deprioritizeExhaustedAntigravityGeminiBases(ordered)
+      : ordered
   }
-  return codeAssistGenerationBases(executor)
+  const bases = codeAssistGenerationBases(executor)
+  // Claude resold through Antigravity has no per-session pin and no in-attempt
+  // 429 hop, but it is metered by the same per-host quota.
+  return executor === 'antigravity' && avoidExhaustedHosts
+    ? deprioritizeExhaustedAntigravityGeminiBases(bases)
+    : bases
+}
+
+/**
+ * Generation hosts a request for `model` will actually try, in order.
+ *
+ * Gemini and Claude on Antigravity have different host lists, so anything
+ * budgeting attempts per host must ask rather than assume.
+ */
+export function antigravityGenerationHostCount(model: string | undefined): number {
+  const bases = model && isAntigravityGeminiModel(model)
+    ? antigravityGeminiGenerationBases()
+    : codeAssistGenerationBases('antigravity')
+  return Math.max(1, bases.length)
 }
 
 // Antigravity-specific models — everything else is Gemini CLI.
@@ -511,6 +614,46 @@ export function getGeminiEntitledModelIds(
   const cache = _readCache(executor)
   if (!cache) return null
   return cache.entitledModelIds ?? null
+}
+
+/**
+ * Explain a 429 that is really a missing entitlement, not exhausted quota.
+ *
+ * Code Assist answers a model the account is not entitled to with the same
+ * `429 RESOURCE_EXHAUSTED` it uses for genuine rate limits, and the picker
+ * does not filter by entitlement — so a model that has not rolled out to this
+ * account is selectable and then fails with a message that reads like a quota
+ * problem. The onboarding/quota lookup already caches the real list, so check
+ * it before blaming quota.
+ *
+ * A generation may be entitled under its picker id, its `-tiered` wire id, or
+ * both, so either one counts. Returns null when no entitlement lookup has run
+ * yet (nothing can be claimed) or when the model is entitled.
+ */
+export function describeAntigravityEntitlementGap(model: string): string | null {
+  const normalized = model.toLowerCase().replace(/^models\//, '')
+  if (!ANTIGRAVITY_MODEL_IDS.has(normalized)) return null
+
+  const entitled = getGeminiEntitledModelIds('antigravity')
+  if (!entitled || entitled.length === 0) return null
+
+  const entitledSet = new Set(entitled.map(id => id.toLowerCase()))
+  const wireModel = resolveAntigravityWireModel(normalized).toLowerCase()
+  if (entitledSet.has(normalized) || entitledSet.has(wireModel)) return null
+
+  const alternatives = ANTIGRAVITY_MODELS
+    .map(candidate => candidate.id)
+    .filter(id =>
+      entitledSet.has(id) || entitledSet.has(resolveAntigravityWireModel(id).toLowerCase()))
+
+  return [
+    `This Antigravity account is not entitled to ${normalized}.`,
+    'Code Assist reports an unentitled model as HTTP 429 RESOURCE_EXHAUSTED, which looks',
+    'identical to running out of quota, and the model picker does not filter by entitlement.',
+    ...(alternatives.length > 0
+      ? ['', `Models this account can use: ${alternatives.join(', ')}`]
+      : []),
+  ].join('\n')
 }
 
 /**
@@ -1245,6 +1388,7 @@ export function wrapForCodeAssist(
   model: string,
   projectId: string | null,
   innerRequest: Record<string, unknown>,
+  sessionId?: string,
 ): CodeAssistWrapperBody {
   // Strip safetySettings — the Antigravity executor always removes them.
   // Also strip maxOutputTokens for non-Claude models (Antigravity executor
@@ -1269,12 +1413,16 @@ export function wrapForCodeAssist(
     _applyClaudeContentFixes(request)
   }
 
-  // Generate a stable session ID for Antigravity dedup. Native lanes may
-  // provide one from the real message history; otherwise fall back to the
-  // CLIProxyAPI-style first-user-message hash.
-  const providedSessionId = typeof request.sessionId === 'string' && request.sessionId.length > 0
+  // Generate a stable session ID for Antigravity dedup. Legacy provider calls
+  // pass it separately because the standard Gemini request shape must not gain
+  // an unknown field on direct API-key requests. Native lanes carry it in the
+  // internal body. Only fall back to the first-user-message hash when neither
+  // transport supplied an affinity id.
+  const explicitSessionId = sessionId?.trim() || null
+  const bodySessionId = typeof request.sessionId === 'string' && request.sessionId.length > 0
     ? request.sessionId
     : null
+  const providedSessionId = explicitSessionId ?? bodySessionId
   request.sessionId = providedSessionId ?? _stableSessionId(request)
 
   return {

@@ -14,6 +14,7 @@ export { assembleOpenAICompatPrompt } from './prompt.js'
 
 import { openaiCompatLane } from './loop.js'
 import { registerLane } from '../dispatcher.js'
+import { alibabaBaseUrl } from '../../utils/model/alibabaCatalog.js'
 
 /**
  * Initialize the OpenAI-compat lane with all provider configs.
@@ -24,6 +25,7 @@ export function initOpenAICompatLane(providers?: {
   glm?: { apiKey: string; baseUrl?: string }
   moonshot?: { apiKey: string; baseUrl?: string }
   minimax?: { apiKey: string; baseUrl?: string }
+  alibaba?: { apiKey: string; baseUrl?: string }
   groq?: { apiKey: string; baseUrl?: string }
   mistral?: { apiKey: string; baseUrl?: string }
   nim?: { apiKey: string; baseUrl?: string }
@@ -97,6 +99,21 @@ export function initOpenAICompatLane(providers?: {
         ?? process.env.MINIMAX_BASE_URL
         ?? process.env.MINIMAX_API_BASE_URL
         ?? 'https://api.minimax.io/v1',
+    )
+  }
+
+  // Alibaba Cloud Model Studio (DashScope), pay-as-you-go. Registered under
+  // its own provider name, which is what routes it: the dedicated Qwen lane
+  // claims qwen-* by MODEL name for its OAuth surface, while the provider
+  // shim picks a lane by PROVIDER, so the two never contend.
+  const alibabaKey = p.alibaba?.apiKey
+    ?? process.env.DASHSCOPE_API_KEY
+    ?? process.env.ALIBABA_API_KEY
+    ?? process.env.MODELSTUDIO_API_KEY
+  if (alibabaKey) {
+    openaiCompatLane.registerProvider(
+      'alibaba', alibabaKey,
+      p.alibaba?.baseUrl ?? alibabaBaseUrl(),
     )
   }
 

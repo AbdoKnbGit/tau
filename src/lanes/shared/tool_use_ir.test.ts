@@ -21,6 +21,7 @@
 
 import { LaneBackedProvider } from '../provider-bridge.js'
 import type { AnthropicStreamEvent } from '../../services/api/providers/base_provider.js'
+import { ProviderHttpError } from '../../services/api/transport_error.js'
 import type { Lane, LaneProviderCallParams } from '../types.js'
 
 let passed = 0
@@ -75,6 +76,327 @@ function mockLane(events: AnthropicStreamEvent[]): Lane {
 
 async function main(): Promise<void> {
   console.log('tool_use IR regression:')
+
+  await test('bridge rejects a pre-event 429 during stream setup', async () => {
+    const failure = new ProviderHttpError(
+      'mock',
+      429,
+      'RESOURCE_EXHAUSTED',
+    )
+    let finalized = false
+    const lane: Lane = {
+      ...mockLane([]),
+      async *streamAsProvider() {
+        try {
+          throw failure
+        } finally {
+          finalized = true
+        }
+      },
+    }
+
+    let caught: unknown
+    try {
+      await new LaneBackedProvider(lane, 'antigravity').stream({
+        model: 'm', messages: [], max_tokens: 100,
+      })
+    } catch (error) {
+      caught = error
+    }
+
+    assert(caught === failure, `pre-event failure escaped setup as ${String(caught)}`)
+    assert(finalized, 'failed lane iterator did not finalize')
+  })
+
+  await test('bridge replays its primed event exactly once', async () => {
+    const events: AnthropicStreamEvent[] = [
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg-prime', type: 'message', role: 'assistant', content: [],
+          model: 'm', stop_reason: null, stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+      {
+        type: 'content_block_start', index: 0,
+        content_block: { type: 'text', text: '' },
+      },
+      {
+        type: 'content_block_delta', index: 0,
+        delta: { type: 'text_delta', text: 'done' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_stop' },
+    ]
+    const stream = await new LaneBackedProvider(mockLane(events), 'antigravity').stream({
+      model: 'm', messages: [], max_tokens: 100,
+    })
+    const seen: AnthropicStreamEvent[] = []
+    for await (const event of stream) seen.push(event)
+
+    assert(
+      JSON.stringify(seen) === JSON.stringify(events),
+      `primed events changed: ${JSON.stringify(seen)}`,
+    )
+  })
+
+  await test('aborting after priming closes an unconsumed lane iterator', async () => {
+    let notifyFinalized!: () => void
+    const finalized = new Promise<void>(resolve => {
+      notifyFinalized = resolve
+    })
+    const first: AnthropicStreamEvent = {
+      type: 'message_start',
+      message: {
+        id: 'msg-abort-after-prime', type: 'message', role: 'assistant', content: [],
+        model: 'm', stop_reason: null, stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    }
+    const lane: Lane = {
+      ...mockLane([]),
+      async *streamAsProvider() {
+        try {
+          yield first
+          await new Promise<never>(() => {})
+        } finally {
+          notifyFinalized()
+        }
+      },
+    }
+
+    const stream = await new LaneBackedProvider(lane, 'antigravity').stream({
+      model: 'm', messages: [], max_tokens: 100,
+    })
+    stream.abort()
+    await finalized
+  })
+
+  await test('bridge does not turn a post-event failure into a setup retry', async () => {
+    const first: AnthropicStreamEvent = {
+      type: 'message_start',
+      message: {
+        id: 'msg-started', type: 'message', role: 'assistant', content: [],
+        model: 'm', stop_reason: null, stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    }
+    const failure = new ProviderHttpError('mock', 503, 'stream interrupted')
+    const lane: Lane = {
+      ...mockLane([]),
+      async *streamAsProvider() {
+        yield first
+        throw failure
+      },
+    }
+
+    // Setup succeeds after the first provider event. The later error remains
+    // an iteration error so callers cannot replay a partially-started turn.
+    const stream = await new LaneBackedProvider(lane, 'antigravity').stream({
+      model: 'm', messages: [], max_tokens: 100,
+    })
+    const seen: AnthropicStreamEvent[] = []
+    let caught: unknown
+    try {
+      for await (const event of stream) seen.push(event)
+    } catch (error) {
+      caught = error
+    }
+
+    assert(seen.length === 1 && seen[0] === first, 'first event was not replayed')
+    assert(caught === failure, `post-event failure changed to ${String(caught)}`)
+  })
+
+  await test('caller abort reaches a lane while the first event is pending', async () => {
+    const caller = new AbortController()
+    let notifyStarted!: () => void
+    const started = new Promise<void>(resolve => {
+      notifyStarted = resolve
+    })
+    let finalized = false
+    const lane: Lane = {
+      ...mockLane([]),
+      async *streamAsProvider(params: LaneProviderCallParams) {
+        try {
+          await new Promise<never>((_, reject) => {
+            const onAbort = (): void =>
+              reject(new DOMException('Aborted', 'AbortError'))
+            if (params.signal.aborted) {
+              onAbort()
+              return
+            }
+            params.signal.addEventListener('abort', onAbort, { once: true })
+            notifyStarted()
+          })
+        } finally {
+          finalized = true
+        }
+      },
+    }
+
+    const pending = new LaneBackedProvider(lane, 'antigravity').stream({
+      model: 'm', messages: [], max_tokens: 100, signal: caller.signal,
+    })
+    await started
+    caller.abort()
+
+    let caught: unknown
+    try {
+      await pending
+    } catch (error) {
+      caught = error
+    }
+    assert(
+      caught instanceof Error && caught.name === 'AbortError',
+      `priming abort surfaced as ${String(caught)}`,
+    )
+    assert(finalized, 'aborted lane iterator did not finalize')
+  })
+
+  await test('caller abort does not wait for a non-cooperative first event', async () => {
+    const previousTimeout = process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS
+    process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS = '5000'
+    const caller = new AbortController()
+    const lane: Lane = {
+      ...mockLane([]),
+      streamAsProvider() {
+        return {
+          next: () => new Promise<never>(() => {}),
+          return: async () => ({ done: true, value: undefined }),
+          [Symbol.asyncIterator]() { return this },
+        } as any
+      },
+    }
+
+    try {
+      const startedAt = Date.now()
+      const pending = new LaneBackedProvider(lane, 'antigravity').stream({
+        model: 'm', messages: [], max_tokens: 100, signal: caller.signal,
+      })
+      caller.abort()
+
+      let caught: unknown
+      try {
+        await pending
+      } catch (error) {
+        caught = error
+      }
+      assert(
+        caught instanceof Error && caught.name === 'AbortError',
+        `non-cooperative abort surfaced as ${String(caught)}`,
+      )
+      assert(
+        Date.now() - startedAt < 1000,
+        'caller abort waited for the first-event watchdog',
+      )
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS
+      } else {
+        process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS = previousTimeout
+      }
+    }
+  })
+
+  await test('first-event watchdog bounds a silent native stream', async () => {
+    const previousTimeout = process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS
+    process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS = '20'
+    let finalized = false
+    const lane: Lane = {
+      ...mockLane([]),
+      async *streamAsProvider(params: LaneProviderCallParams) {
+        try {
+          await new Promise<never>((_, reject) => {
+            const onAbort = (): void =>
+              reject(new DOMException('Aborted', 'AbortError'))
+            if (params.signal.aborted) {
+              onAbort()
+              return
+            }
+            params.signal.addEventListener('abort', onAbort, { once: true })
+          })
+        } finally {
+          finalized = true
+        }
+      },
+    }
+
+    try {
+      let caught: unknown
+      try {
+        await new LaneBackedProvider(lane, 'antigravity').stream({
+          model: 'm', messages: [], max_tokens: 100,
+        })
+      } catch (error) {
+        caught = error
+      }
+      assert(
+        caught instanceof Error && /Stream idle timeout/.test(caught.message),
+        `silent stream surfaced as ${String(caught)}`,
+      )
+      assert(finalized, 'timed-out lane iterator did not finalize')
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS
+      } else {
+        process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS = previousTimeout
+      }
+    }
+  })
+
+  await test('a non-Antigravity lane keeps the original lazy setup path', async () => {
+    // Scope guard: priming exists for the Antigravity 429 (tau#29/#30). Every
+    // other lane must still resolve stream() without touching its generator,
+    // so a pre-event failure stays an iteration error exactly as before.
+    const failure = new ProviderHttpError('mock', 429, 'RESOURCE_EXHAUSTED')
+    let advanced = false
+    const lane: Lane = {
+      ...mockLane([]),
+      async *streamAsProvider() {
+        advanced = true
+        throw failure
+      },
+    }
+
+    for (const providerHint of [undefined, 'openrouter', 'fireworks', 'openai']) {
+      advanced = false
+      const stream = await new LaneBackedProvider(lane, providerHint).stream({
+        model: 'not-an-antigravity-model', messages: [], max_tokens: 100,
+      })
+      assert(!advanced, `${providerHint}: setup advanced the lane generator`)
+
+      let caught: unknown
+      try {
+        for await (const _ of stream) { /* drain */ }
+      } catch (error) {
+        caught = error
+      }
+      assert(caught === failure, `${providerHint}: failure changed to ${String(caught)}`)
+    }
+  })
+
+  await test('an Antigravity model id primes even without the provider row', async () => {
+    // A model auto-routed to Antigravity from the legacy openai/gemini rows
+    // still needs the fix, so the gate reads the resolved model too.
+    const failure = new ProviderHttpError('mock', 429, 'RESOURCE_EXHAUSTED')
+    const lane: Lane = {
+      ...mockLane([]),
+      async *streamAsProvider() {
+        throw failure
+      },
+    }
+
+    let caught: unknown
+    try {
+      await new LaneBackedProvider(lane, 'gemini').stream({
+        model: 'gemini-3.5-flash-low', messages: [], max_tokens: 100,
+      })
+    } catch (error) {
+      caught = error
+    }
+    assert(caught === failure, `auto-routed model was not primed: ${String(caught)}`)
+  })
 
   await test('three-event sequence accumulates args into tool_use.input', async () => {
     const events: AnthropicStreamEvent[] = [

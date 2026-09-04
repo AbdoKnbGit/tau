@@ -34,9 +34,13 @@ import {
 import { isNonCustomOpusModel } from '../../utils/model/model.js'
 import { disableKeepAlive } from '../../utils/proxy.js'
 import {
+  getAPIUserAbortError,
+  getBoundedProviderRetryAfterMs,
   getProviderHttpStatus,
   isRetryableNetworkError,
+  isRetryableProviderError,
   isRetryableProviderHttpStatus,
+  isTerminalProviderQuotaError,
 } from './transport_error.js'
 import { sleep } from '../../utils/sleep.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'
@@ -123,13 +127,18 @@ function isTransientCapacityError(error: unknown): boolean {
 function isThirdPartyRetryableError(error: unknown): boolean {
   if (error instanceof APIError) return false  // Let the normal path handle it
   if (!(error instanceof Error)) return false
-  const msg = error.message
+  // Native provider errors can classify quota responses more accurately than
+  // display-text heuristics (for example Gemini RetryInfo distinguishes a
+  // transient RESOURCE_EXHAUSTED response from a terminal daily cap).
+  const classified = (error as Error & { isRetryable?: unknown }).isRetryable
+  const status = getProviderHttpStatus(error)
+  if (classified === false) return false
   // Quota exhaustion is NOT retryable — the limit won't reset for hours/days.
   // Retrying just wastes requests. Fail immediately with a clear message.
   // FreeUsageLimitError = OpenCode Zen's daily per-IP cap on free models;
   // the limit only resets at midnight UTC so retries are pure waste.
-  if (/quota (?:exhausted|exceeded)|exceeded (?:its|your) (?:usage |current )?quota|insufficient_quota|exhausted your capacity|quota will reset after \d+h|FreeUsageLimitError/i.test(msg)) return false
-  const status = getProviderHttpStatus(error)
+  if (isTerminalProviderQuotaError(error)) return false
+  if (classified === true) return isRetryableProviderError(error)
   if (status === null) return false
   return isRetryableProviderHttpStatus(status)
 }
@@ -293,6 +302,12 @@ export async function* withRetry<T>(
 
       return await operation(client, attempt, retryContext)
     } catch (error) {
+      // Native-lane setup now runs inside this retry boundary. Normalize a
+      // caller cancellation before logging or classification so Escape never
+      // becomes a persisted assistant API error.
+      const userAbort = getAPIUserAbortError(error, options.signal)
+      if (userAbort) throw userAbort
+
       lastError = error
       logForDebugging(
         `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}`,
@@ -331,7 +346,7 @@ export async function* withRetry<T>(
 
         // First-party: try to read retry-after from headers.
         // Third-party: no headers available; use default cooldown.
-        const retryAfterMs = error instanceof APIError ? getRetryAfterMs(error) : null
+        const retryAfterMs = getRetryAfterMs(error)
         if (retryAfterMs !== null && retryAfterMs < SHORT_RETRY_THRESHOLD_MS) {
           // Short retry-after: wait and retry with fast mode still active
           // to preserve prompt cache (same model name on retry).
@@ -583,14 +598,24 @@ export async function* withRetry<T>(
 }
 
 function getRetryAfter(error: unknown): string | null {
-  return (
+  const header =
     ((error as { headers?: { 'retry-after'?: string } }).headers?.[
       'retry-after'
     ] ||
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
       ((error as APIError).headers as Headers)?.get?.('retry-after')) ??
     null
-  )
+  if (header) return header
+
+  const retryAfterMs = getBoundedProviderRetryAfterMs(error)
+  if (retryAfterMs !== null) {
+    // Native third-party RetryInfo may name a quota reset minutes or hours in
+    // the future. The outer retry loop intentionally has a short fuse because
+    // those lanes already retried internally; cap the hint at the same 32s
+    // ceiling as normal backoff instead of making `/report` appear hung.
+    return String(Math.ceil(retryAfterMs / 1000))
+  }
+  return null
 }
 
 export function getRetryDelay(
@@ -866,7 +891,18 @@ const DEFAULT_FAST_MODE_FALLBACK_HOLD_MS = 30 * 60 * 1000 // 30 minutes
 const SHORT_RETRY_THRESHOLD_MS = 20 * 1000 // 20 seconds
 const MIN_COOLDOWN_MS = 10 * 60 * 1000 // 10 minutes
 
-function getRetryAfterMs(error: APIError): number | null {
+function getRetryAfterMs(error: unknown): number | null {
+  // `> 0` on purpose — a 0 ms hint means "the lane already handled this inline",
+  // never "retry with no delay". See getBoundedProviderRetryAfterMs.
+  const typedRetryAfterMs = (error as { retryAfterMs?: unknown } | null)
+    ?.retryAfterMs
+  if (
+    typeof typedRetryAfterMs === 'number' &&
+    Number.isFinite(typedRetryAfterMs) &&
+    typedRetryAfterMs > 0
+  ) {
+    return typedRetryAfterMs
+  }
   const retryAfter = getRetryAfter(error)
   if (retryAfter) {
     const seconds = parseInt(retryAfter, 10)

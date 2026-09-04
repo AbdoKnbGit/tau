@@ -240,7 +240,11 @@ import {
 } from '../compact/microCompact.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
-import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
+import {
+  CLIENT_REQUEST_ID_HEADER,
+  getAnthropicClient,
+} from './client.js'
+import { resolveEffectiveAPIProvider } from './providerRouting.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
   CUSTOM_OFF_SWITCH_MESSAGE,
@@ -1594,7 +1598,11 @@ async function* queryModel(
     'query',
   )
   let useNativeLaneToolSearch = isNativeLaneToolSearchEnabled(options.model)
-  const requestProvider = getAPIProvider()
+  // Use the provider that client creation will actually route to. This matters
+  // for model/provider auto-correction: an Antigravity model selected while
+  // the configured row is still OpenAI must receive Antigravity session and
+  // cache policy before the provider bridge is constructed.
+  const requestProvider = resolveEffectiveAPIProvider(getAPIProvider(), options.model)
   const routedToolSearch = resolveToolSearchRequestTransports({
     useToolSearch,
     useNativeLaneToolSearch,
@@ -2202,7 +2210,7 @@ async function* queryModel(
 
     lastRequestBetas = betasParams
     const providerSessionId = resolveProviderRequestSessionId({
-      provider: getAPIProvider(),
+      provider: requestProvider,
       rootSessionId: getSessionId(),
       agentId: options.agentId,
       querySource: options.querySource,
@@ -2440,7 +2448,7 @@ async function* queryModel(
     // kill hung streams. Without this, a silently dropped connection can hang
     // the session indefinitely since the SDK's request timeout only covers the
     // initial fetch(), not the streaming body.
-    const streamProvider = getAPIProvider()
+    const streamProvider = requestProvider
     const isAgentRouterRequest = streamProvider === 'agentrouter'
     // Enable the idle watchdog by default for third-party gateway/compat
     // providers (opencode, opencodego, openrouter, …), where a silent

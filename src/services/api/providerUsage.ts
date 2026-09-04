@@ -61,6 +61,13 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type APIProvider,
 } from '../../utils/model/providers.js'
+import {
+  ALIBABA_CN_BASE_URL,
+  ALIBABA_DEFAULT_BASE_URL,
+  alibabaRegionLabel,
+  listAlibabaModelMeta,
+  recordAlibabaLiveModels,
+} from '../../utils/model/alibabaCatalog.js'
 import type { ProviderWithUsageReporter } from './providerUsageCoverage.js'
 
 const TIMEOUT_MS = 8_000
@@ -79,6 +86,7 @@ const DOCS = {
   glm: 'https://bigmodel.cn/finance/expensebill/list',
   lxd: 'https://api.lxds.org/instructions',
   mimo: 'https://xiaomimimo.com',
+  alibaba: 'https://www.alibabacloud.com/help/en/model-studio/billing-for-model-studio',
   moonshot: 'https://platform.kimi.ai/docs/api/balance',
   minimax: 'https://platform.minimax.io/docs/token-plan/faq',
   cursor: 'https://docs.cursor.com/en/account/teams/admin-api',
@@ -115,6 +123,12 @@ export type UsageMetric = {
   summary?: string
   detail?: string
   resetsAt?: string | null
+  /**
+   * Model ids this window meters, where a provider bills per model rather than
+   * per account. The status bar needs the window for the model the session is
+   * actually running, and an id survives a vendor renaming its display label.
+   */
+  modelKeys?: readonly string[]
 }
 
 export type UsageLink = {
@@ -196,6 +210,7 @@ const REPORTERS_BY_PROVIDER: Record<ProviderWithUsageReporter, Reporter> = {
   glm: reportGLM,
   lxd: reportLXD,
   mimo: reportMimo,
+  alibaba: reportAlibaba,
   moonshot: reportMoonshot,
   minimax: reportMiniMax,
   ollama: reportOllama,
@@ -273,6 +288,7 @@ function nameToProvider(name: string): ProviderUsageId {
     case 'mistral': return 'mistral'
     case 'lxd': return 'lxd'
     case 'mimo': return 'mimo'
+    case 'alibaba': return 'alibaba'
     case 'glm': return 'glm'
     case 'moonshot': return 'moonshot'
     case 'minimax': return 'minimax'
@@ -1559,6 +1575,125 @@ async function reportMimo(): Promise<ProviderUsageReport> {
       + 'visible in the MiMo console. Token Plan subscribers can point '
       + 'MIMO_BASE_URL at token-plan-sgp (or token-plan-cn) .xiaomimimo.com/v1.',
     docsUrl: DOCS.mimo,
+    links,
+  }
+}
+
+/**
+ * Alibaba Cloud Model Studio.
+ *
+ * Model Studio bills through Alibaba Cloud itself, and the billing surface —
+ * BSS OpenAPI — authenticates with an account AccessKey pair, not the
+ * DashScope key Tau holds. There is no balance or quota endpoint the API key
+ * can read, so inventing a number here would be inventing it.
+ *
+ * What the key CAN answer is `/models`, which is auth-gated. That makes this a
+ * real credential check rather than a restatement of what is in the config: it
+ * catches an expired key, and it catches the region mismatch that a Model
+ * Studio key makes easy — a key is bound to the region that issued it, so a
+ * Beijing key pointed at the international host fails here instead of on the
+ * user's first message.
+ */
+async function reportAlibaba(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('alibaba')
+  const links: UsageLink[] = [
+    {
+      label: 'Model Studio console',
+      url: 'https://modelstudio.console.alibabacloud.com/',
+    },
+    { label: 'Alibaba Cloud billing', url: 'https://billing.console.aliyun.com/' },
+  ]
+
+  if (!apiKey) {
+    return {
+      ...baseReport(
+        'alibaba',
+        'not_configured',
+        'none',
+        'Alibaba Model Studio usage',
+        'No DashScope API key is configured.',
+      ),
+      docsUrl: DOCS.alibaba,
+      links,
+    }
+  }
+
+  const baseUrl = getProviderBaseUrl('alibaba')
+  const region = alibabaRegionLabel(baseUrl)
+  let reachable = false
+  let rejected = false
+  let catalogue = ''
+
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (response.status === 401 || response.status === 403) {
+      rejected = true
+    } else if (response.ok) {
+      reachable = true
+      const data = (await response.json()) as { data?: Array<{ id?: string }> }
+      const ids = (data.data ?? [])
+        .map(row => row.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      recordAlibabaLiveModels(ids)
+      const rows = listAlibabaModelMeta()
+      const thinking = rows.filter(row => row.reasoning).length
+      // Deliberately NOT a metric. The status bar reads the first metric
+      // carrying a summary as this provider's headline quota reading, so a
+      // model count here would render as "Quota 51 chat models, 30 with
+      // selectable thinking" — a number that is not a quota, in the slot
+      // reserved for one. With no metrics the report settles as "no quota
+      // published", which is the truth, and the bar falls through to session
+      // spend.
+      catalogue =
+        ` ${rows.length} chat models are available to this key, `
+        + `${thinking} with a selectable thinking level.`
+    }
+  } catch {
+    // Offline or a slow endpoint. The key is still configured, which is the
+    // one thing this report can state without guessing.
+  }
+
+  if (rejected) {
+    return {
+      ...baseReport(
+        'alibaba',
+        'error',
+        'api_key',
+        'Alibaba Model Studio usage',
+        `DashScope rejected this key on the ${region} endpoint.`,
+      ),
+      detail:
+        'A Model Studio API key only works against the region that issued it. '
+        + 'Set DASHSCOPE_BASE_URL to the matching host — '
+        + ALIBABA_DEFAULT_BASE_URL + ' for international, '
+        + ALIBABA_CN_BASE_URL + ' for Beijing — or create a key in the '
+        + 'region you are calling.',
+      docsUrl: DOCS.alibaba,
+      links,
+    }
+  }
+
+  return {
+    ...baseReport(
+      'alibaba',
+      'connected',
+      'api_key',
+      'Alibaba Model Studio usage',
+      reachable
+        ? `DashScope key verified against the ${region} endpoint.`
+        : `DashScope key is configured for the ${region} endpoint.`,
+    ),
+    detail:
+      'Model Studio meters spend through Alibaba Cloud billing, which an API '
+      + 'key cannot read — only an account AccessKey pair can — so consumption '
+      + 'lives in the console. Per-request cost is still costed locally from '
+      + 'published pay-as-you-go rates for this region, and cached prompt '
+      + 'tokens are billed at the cache-read rate.'
+      + catalogue,
+    docsUrl: DOCS.alibaba,
     links,
   }
 }

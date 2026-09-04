@@ -58,6 +58,7 @@ import { MoonshotProvider } from './moonshot_provider.js'
 import { MiniMaxProvider } from './minimax_provider.js'
 import { LxdProvider } from './lxd_provider.js'
 import { MimoProvider } from './mimo_provider.js'
+import { AlibabaProvider } from './alibaba_provider.js'
 import { OllamaProvider } from './ollama_provider.js'
 import { sanitizeProviderMessagesForNonCursorTransport } from './sanitizeProviderMessages.js'
 import { warmupCodeAssist } from './gemini_code_assist.js'
@@ -129,6 +130,8 @@ function _ensureLanesInitialized(): void {
       moonshotBaseUrl: getProviderBaseUrl('moonshot'),
       minimaxApiKey: getProviderApiKey('minimax') ?? undefined,
       minimaxBaseUrl: getProviderBaseUrl('minimax'),
+      alibabaApiKey: getProviderApiKey('alibaba') ?? undefined,
+      alibabaBaseUrl: getProviderBaseUrl('alibaba'),
       groqApiKey: getProviderApiKey('groq') ?? undefined,
       mistralApiKey: getProviderApiKey('mistral') ?? undefined,
       mistralBaseUrl: getProviderBaseUrl('mistral'),
@@ -192,6 +195,7 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'glm':
     case 'moonshot':
     case 'minimax':
+    case 'alibaba':
     case 'groq':
     case 'mistral':
     case 'nim':
@@ -371,6 +375,8 @@ function createProvider(provider: APIProvider): BaseProvider {
       return new LxdProvider({ apiKey, baseUrl })
     case 'mimo':
       return new MimoProvider({ apiKey, baseUrl })
+    case 'alibaba':
+      return new AlibabaProvider({ apiKey, baseUrl })
     case 'commandcode':
       return new CommandCodeProvider({ apiKey, baseUrl })
     case 'groq':
@@ -487,13 +493,30 @@ function createMethod(p: BaseProvider, source?: string) {
     const externalSignal = opts?.signal as AbortSignal | undefined
     const timeoutMs = opts?.timeout as number | undefined
 
+    // Antigravity starts its fetch while p.stream() is resolving so the shared
+    // retry wrapper can catch pre-response failures. Forward the SDK signal
+    // into that setup phase; otherwise Escape only becomes effective after the
+    // first event has already arrived. Gated on the same predicate the bridge
+    // uses, so a lane that still resolves lazily receives no signal and keeps
+    // its existing behavior exactly.
+    const primesSetup =
+      p instanceof LaneBackedProvider
+      && typeof params.model === 'string'
+      && p.needsSetupPriming(params.model)
+    const requestParams =
+      primesSetup && externalSignal
+        ? { ...outboundParams, signal: externalSignal }
+        : outboundParams
+
     // Build the base promise. For non-streaming with timeout, use
     // AbortSignal.timeout() combined with any external signal.
     let basePromise: Promise<ProviderStreamResult | AnthropicMessage>
-    if (isStreaming) {
-      basePromise = p.stream(outboundParams as any)
+    if (externalSignal?.aborted) {
+      basePromise = Promise.reject(new DOMException('Aborted', 'AbortError'))
+    } else if (isStreaming) {
+      basePromise = p.stream(requestParams as any)
     } else {
-      basePromise = p.create(outboundParams as any)
+      basePromise = p.create(requestParams as any)
       // Apply timeout for non-streaming requests (claude.ts passes
       // timeout: 120000 or 300000 for the non-streaming fallback).
       if (timeoutMs && timeoutMs > 0) {
@@ -510,11 +533,6 @@ function createMethod(p: BaseProvider, source?: string) {
         ])
         clearTimeout(timer)
       }
-    }
-
-    // If an external signal is provided and already aborted, reject now.
-    if (externalSignal?.aborted) {
-      basePromise = Promise.reject(new DOMException('Aborted', 'AbortError'))
     }
 
     // Attach .withResponse() to the promise
@@ -829,6 +847,7 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     case 'opencodego':
     case 'lxd':
     case 'mimo':
+    case 'alibaba':
     case 'fireworks':
     case 'cloudflare':
     case 'groq':
