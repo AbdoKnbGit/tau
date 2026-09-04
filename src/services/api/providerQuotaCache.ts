@@ -431,8 +431,58 @@ function findMetricForModel(
   if (byId) return byId
 
   // Nothing published an id for this row, or none of them is the active
-  // model. The label heuristic is still better than the worst-pool fallback.
-  return scored.find(metric => metricMatchesModel(metric.label, model))
+  // model. The label heuristic is still better than the family fallback.
+  const byLabel = scored.find(metric => metricMatchesModel(metric.label, model))
+  if (byLabel) return byLabel
+
+  // Still nothing named this exact model. Antigravity meters by FAMILY, not by
+  // model - a live account reports one figure across every Gemini row (3 Flash
+  // through 3.8 Flash and both Pro levels, same percentage, same reset) and a
+  // separate one for Claude. So a Gemini session that could not be matched by
+  // name is still answerable: any Gemini row describes the pool it spends,
+  // while the Claude row describes one it does not.
+  //
+  // Without this the fallback is the tightest window across ALL families,
+  // which is how a Gemini session at 30% was shown Claude's 91%. The family
+  // comes off the id itself rather than a table, so a model shipped tomorrow
+  // is grouped the day it appears.
+  //
+  // Read in the direction that cannot be defeated by decoration on the active
+  // model id: take each row's OWN family token - its keys and label are clean,
+  // vendor-published strings - and ask whether the model id contains it. A
+  // prefixed `antigravity-gemini-3.8-flash-high`, a `-tiered` wire suffix and
+  // a bare `gemini-3-flash` all answer the same way, without a table of
+  // prefixes to keep current.
+  const wantedFull = normalizeForMatch(model)
+  const kin = scored.filter(metric => {
+    const family = metricFamily(metric)
+    return family !== '' && wantedFull.includes(family)
+  })
+  if (kin.length === 0) return undefined
+  // Tightest within the family, keeping the "what stops work first" rule the
+  // headline uses - just scoped to the pool this session is actually spending.
+  return kin.reduce((a, b) => (b.usedPercent! > a.usedPercent! ? b : a))
+}
+
+/**
+ * The vendor family a published id or label names: its leading run of letters.
+ *
+ * `gemini-3.8-flash-high`, `Gemini 3 Flash` and `gemini-3.8-flash-tiered` all
+ * reduce to `gemini`; `claude-sonnet-4-6` to `claude`. Read from the strings
+ * the provider itself published, so nothing needs editing when it adds a
+ * generation.
+ */
+function modelFamily(value: string): string {
+  return normalizeForMatch(value).match(/^[a-z]+/)?.[0] ?? ''
+}
+
+/** The family a quota row describes, preferring its ids over its label. */
+function metricFamily(metric: ProviderQuotaMetric): string {
+  for (const key of metric.modelKeys) {
+    const family = modelFamily(key)
+    if (family !== '') return family
+  }
+  return modelFamily(metric.label)
 }
 
 /**
@@ -514,11 +564,20 @@ function readHeadlineMetric(report: ProviderUsageReport): ProviderQuotaReading {
  * `used_percentage` is the headline number the bar shows, whatever produced
  * it. `source` says which: 'headers' is per-call rate limiting, 'account' is
  * the provider's own balance or utilization endpoint.
+ *
+ * `activeModel` is not optional in spirit: without it this resolved the
+ * account reading with no model to match, which on a per-model provider is
+ * the tightest window across every family - a Gemini session was handed
+ * Claude's 91% while /usage and the built-in bar both read 30%. That is the
+ * precise disagreement the first paragraph promises cannot happen, so the
+ * model has to reach here too. It stays optional only because a caller
+ * genuinely without one (a provider that meters per account) is well defined.
  */
 export function buildStatusLineProviderQuota(
   provider: string,
+  activeModel?: string,
 ): ProviderQuotaInput | undefined {
-  const outcome = getProviderQuotaOutcome(provider)
+  const outcome = getProviderQuotaOutcome(provider, activeModel)
   const harvested = buildProviderQuotaInput(provider)
   const windows = [harvested?.requests, harvested?.tokens]
     .map(window => window?.used_percentage)

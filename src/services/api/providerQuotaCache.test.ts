@@ -320,6 +320,121 @@ test('still matches by label when a provider publishes no ids', () => {
   )
 })
 
+// A live Antigravity account, as /usage reports it: ONE figure across every
+// Gemini row whatever the generation or level, and a separate one for Claude.
+const ANTIGRAVITY_FAMILY_POOLS = report('ok', [
+  ...[
+    'gemini-3-flash',
+    'gemini-3.1-pro-high',
+    'gemini-3.1-pro-low',
+    'gemini-3.5-flash-high',
+    'gemini-3.5-flash-medium',
+    'gemini-3.5-flash-low',
+    'gemini-3.6-flash-high',
+    'gemini-3.6-flash-medium',
+    'gemini-3.6-flash-low',
+    'gemini-3.7-flash-high',
+    'gemini-3.7-flash-medium',
+    'gemini-3.7-flash-low',
+    'gemini-3.8-flash-high',
+    'gemini-3.8-flash-medium',
+    'gemini-3.8-flash-low',
+  ].map(id => ({ label: id, usedPercent: 30, modelKeys: [id] })),
+  { label: 'Claude Sonnet 4.6', usedPercent: 91, modelKeys: ['claude-sonnet-4-6'] },
+])
+
+test('a Gemini session never reads the Claude pool, even unmatched by name', () => {
+  // Reported live: /usage showed every Gemini row at 30% used while the bar
+  // showed 91%. The bar could not name the active model's row, and its
+  // fallback was the tightest window across ALL families - which was Claude's,
+  // a pool a Gemini session cannot spend.
+  _noteOutcome('antigravity', _classifyReport(ANTIGRAVITY_FAMILY_POOLS)!)
+
+  // A wire id the quota response never lists: the family still answers it.
+  const tiered = getProviderQuotaOutcome('antigravity', 'gemini-3.8-flash-tiered')
+  assert(tiered?.kind === 'reading', 'should still be a reading')
+  assert(
+    tiered.usedPercent === 30,
+    `expected the Gemini pool /usage shows, got ${tiered.usedPercent}`,
+  )
+
+  // And a Claude session keeps reading Claude.
+  const claude = getProviderQuotaOutcome('antigravity', 'claude-opus-4-6-thinking')
+  assert(
+    claude?.kind === 'reading' && claude.usedPercent === 91,
+    `a Claude session should see Claude, got ${claude?.kind === 'reading' ? claude.usedPercent : '(none)'}`,
+  )
+})
+
+test('the family fallback still reports the tightest window inside a family', () => {
+  // Grouping by family must not become "pick a cheerful number". Where a
+  // family genuinely disagrees, the one that stops work first still wins.
+  _noteOutcome(
+    'antigravity',
+    _classifyReport(
+      report('ok', [
+        { label: 'Fast', usedPercent: 12, modelKeys: ['gemini-3.5-flash-low'] },
+        { label: 'Deep Think', usedPercent: 64, modelKeys: ['gemini-3.1-pro-high'] },
+        { label: 'Sonnet', usedPercent: 99, modelKeys: ['claude-sonnet-4-6'] },
+      ]),
+    )!,
+  )
+  const outcome = getProviderQuotaOutcome('antigravity', 'gemini-9-unreleased')
+  assert(
+    outcome?.kind === 'reading' && outcome.usedPercent === 64,
+    `expected the tightest Gemini window, got ${outcome?.kind === 'reading' ? outcome.usedPercent : '(none)'}`,
+  )
+})
+
+test('a decorated model id still finds its own family', () => {
+  // The id that reaches the bar is not always the bare catalogue id: it can
+  // carry a provider prefix or a wire suffix. Reading each row's own family
+  // token out of the response and asking whether the model id contains it
+  // survives both, with no list of prefixes to keep current.
+  _noteOutcome('antigravity', _classifyReport(ANTIGRAVITY_FAMILY_POOLS)!)
+
+  for (const model of [
+    'antigravity-gemini-3.8-flash-high',
+    'gemini-3.8-flash-tiered',
+    'models/gemini-3.8-flash-high',
+  ]) {
+    const outcome = getProviderQuotaOutcome('antigravity', model)
+    assert(
+      outcome?.kind === 'reading' && outcome.usedPercent === 30,
+      `${model} should read the Gemini pool, got ${outcome?.kind === 'reading' ? outcome.usedPercent : '(none)'}`,
+    )
+  }
+})
+
+test('the statusLine payload agrees with the built-in bar', () => {
+  // buildStatusLineProviderQuota promises a custom row and the built-in bar
+  // cannot disagree, and then resolved the account reading with no model at
+  // all - so a Gemini session read Claude's pool in the JSON while the bar
+  // read Gemini's. Same input, same answer, is the whole point of the field.
+  _noteOutcome('antigravity', _classifyReport(ANTIGRAVITY_FAMILY_POOLS)!)
+
+  for (const model of ['gemini-3.8-flash-high', 'claude-sonnet-4-6']) {
+    const bar = getProviderQuotaOutcome('antigravity', model)
+    const payload = buildStatusLineProviderQuota('antigravity', model)
+    assert(bar?.kind === 'reading', `${model} should be a reading`)
+    assert(
+      payload?.used_percentage === bar.usedPercent,
+      `${model}: statusLine said ${payload?.used_percentage}, bar said ${bar.usedPercent}`,
+    )
+  }
+})
+
+test('the statusLine payload without a model keeps the account headline', () => {
+  // A provider that meters per account has no model to scope by, and the
+  // headline is the right answer there.
+  _noteOutcome('antigravity', _classifyReport(ANTIGRAVITY_FAMILY_POOLS)!)
+  const payload = buildStatusLineProviderQuota('antigravity')
+  assert(
+    payload?.used_percentage === 91,
+    `expected the unscoped headline, got ${payload?.used_percentage}`,
+  )
+})
+
 // ─── a balance is not a window ───────────────────────────────────────
 
 test('a balance shows what is left, not a lifetime-spent percentage', () => {

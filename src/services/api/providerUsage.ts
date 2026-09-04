@@ -30,11 +30,6 @@ import {
   sumFireworksSpendSince,
   type FireworksSpend,
 } from './fireworksBillingParser.js'
-import {
-  ANTIGRAVITY_ENDPOINT_AUTOPUSH,
-  ANTIGRAVITY_ENDPOINT_DAILY,
-  ANTIGRAVITY_ENDPOINT_PROD,
-} from '../../constants/antigravity.js'
 import { fetchUtilization, type Utilization } from './usage.js'
 import {
   filterLxdModelCatalog,
@@ -44,6 +39,7 @@ import {
 } from '../../utils/model/lxdCatalog.js'
 import {
   ANTIGRAVITY_TOKEN_MARGIN_MS,
+  REQUEST_ENDPOINTS_IN_ORDER,
   loadStore,
   peekAntigravityAccount,
   refreshAccessToken,
@@ -73,7 +69,6 @@ import type { ProviderWithUsageReporter } from './providerUsageCoverage.js'
 const TIMEOUT_MS = 8_000
 const CLINE_OAUTH_STORAGE = 'cline_oauth'
 const CLINE_REFRESH_BUFFER_MS = 5 * 60_000
-const ANTIGRAVITY_APP_DAILY_ENDPOINT = 'https://daily-cloudcode-pa.googleapis.com'
 const DOCS = {
   anthropic: 'https://platform.claude.com/docs/en/build-with-claude/usage-cost-api',
   openai: 'https://platform.openai.com/docs/api-reference/usage/costs',
@@ -679,63 +674,57 @@ function peekAntigravityCredential(): {
 }
 
 /**
- * Base that last returned usable Antigravity quota, remembered for the
- * session. fetchAntigravityAvailableModels tries four bases against two
- * payload shapes and only stops early on one particular response, so a status
- * refresh can cost eight requests. Once a base is known to answer, one is
+ * Base that last returned a COMPLETE Antigravity quota document, remembered
+ * for the session. The search tries four bases against two payload shapes and
+ * only stops early on one particular response, so a cold status refresh can
+ * cost eight requests. Once a base is known to answer completely, one is
  * enough - and cheap refreshes are what let the readout track a quota that
  * moves while you work.
+ *
+ * "Completely" is load-bearing and was the bug: this used to be set by the
+ * status bar on the FIRST base that returned anything parseable, while /usage
+ * kept searching for the document carrying the real per-model rows. The two
+ * surfaces then read different documents from different endpoints and
+ * disagreed - live, /usage showed every Gemini row at 30% used while the bar
+ * showed 91%. Both paths now share the search below, so a difference between
+ * them is not expressible.
  */
 let _antigravityQuotaBase: string | null = null
 
-const ANTIGRAVITY_QUOTA_BASES = [
-  ANTIGRAVITY_ENDPOINT_PROD,
-  ANTIGRAVITY_APP_DAILY_ENDPOINT,
-  ANTIGRAVITY_ENDPOINT_DAILY,
-  ANTIGRAVITY_ENDPOINT_AUTOPUSH,
-]
+/**
+ * Where to ask for quota, in the order requests are actually served.
+ *
+ * Antigravity meters quota separately PER HOST: prod can answer 429
+ * RESOURCE_EXHAUSTED for every request shape while daily and autopush serve
+ * the same account with room to spare. So a quota readout is only about the
+ * account insofar as it names the host - ask the wrong one and the number is
+ * real, just about a host this session is not being served by.
+ *
+ * Which is why this is the request order rather than a list of its own: chat
+ * tries daily, then autopush, then prod, so the quota that describes the
+ * session is the one from the first host that answers. A separate list here
+ * had prod second and reported an exhausted host's 91% while /usage, which
+ * happened to start at daily, reported the live 30%.
+ */
+const ANTIGRAVITY_QUOTA_BASES = REQUEST_ENDPOINTS_IN_ORDER
 
 async function fetchAntigravityQuotaCheaply(
   accessToken: string,
   projectId: string,
 ): Promise<unknown> {
-  const remembered = _antigravityQuotaBase
-  if (remembered) {
-    try {
-      const data = await fetchJson(
-        `${remembered}/v1internal:fetchAvailableModels`,
-        {
-          method: 'POST',
-          headers: antigravityApiHeaders(accessToken),
-          body: JSON.stringify({ project: projectId }),
-        },
-      )
-      if (extractAntigravityModels(data)) return data
-    } catch {
-      // Fall through and re-probe; the endpoint may have moved.
-    }
-    _antigravityQuotaBase = null
+  // Same search and same acceptance test as /usage - the only thing "cheap"
+  // buys is trying the base that already answered completely first, which
+  // makes the common refresh a single request. It must never mean settling
+  // for a different, thinner document than the dialog reads.
+  const data = await fetchAntigravityAvailableModels(
+    accessToken,
+    projectId,
+    _antigravityQuotaBase ?? undefined,
+  )
+  if (!extractAntigravityModels(data)) {
+    throw new Error('no Antigravity quota response')
   }
-
-  for (const base of ANTIGRAVITY_QUOTA_BASES) {
-    try {
-      const data = await fetchJson(
-        `${base}/v1internal:fetchAvailableModels`,
-        {
-          method: 'POST',
-          headers: antigravityApiHeaders(accessToken),
-          body: JSON.stringify({ project: projectId }),
-        },
-      )
-      if (extractAntigravityModels(data)) {
-        _antigravityQuotaBase = base
-        return data
-      }
-    } catch {
-      // Try the next base.
-    }
-  }
-  throw new Error('no Antigravity quota response')
+  return data
 }
 
 /**
@@ -3053,16 +3042,24 @@ async function ensureAntigravityProject(accessToken: string): Promise<string | n
   }
 }
 
+/**
+ * The Antigravity quota document, from whichever base answers with the real
+ * per-model rows.
+ *
+ * `preferredBase` is tried first and is the status bar's whole cost saving:
+ * once a base has answered completely, a refresh is one request instead of
+ * eight. It changes the ORDER of the search, never its acceptance test - the
+ * bar and the /usage dialog must end up holding the same document, or they
+ * report different numbers for the same account.
+ */
 async function fetchAntigravityAvailableModels(
   accessToken: string,
   projectId: string | null,
+  preferredBase?: string,
 ): Promise<unknown> {
-  const bases = [
-    ANTIGRAVITY_APP_DAILY_ENDPOINT,
-    ANTIGRAVITY_ENDPOINT_DAILY,
-    ANTIGRAVITY_ENDPOINT_PROD,
-    ANTIGRAVITY_ENDPOINT_AUTOPUSH,
-  ]
+  const bases = preferredBase
+    ? [preferredBase, ...ANTIGRAVITY_QUOTA_BASES.filter(base => base !== preferredBase)]
+    : [...ANTIGRAVITY_QUOTA_BASES]
   const payloads = projectId ? [{ project: projectId }, {}] : [{}]
   const headers = antigravityApiHeaders(accessToken)
   let bestData: unknown = null
@@ -3079,7 +3076,12 @@ async function fetchAntigravityAvailableModels(
         const models = extractAntigravityModels(data)
         if (models) {
           bestData = data
-          if (hasAntigravity35FlashUsagePair(models)) return data
+          if (hasAntigravity35FlashUsagePair(models)) {
+            // Only a complete document earns the memo. Remembering a base that
+            // merely parsed is what let the bar settle on a thinner answer.
+            _antigravityQuotaBase = base
+            return data
+          }
           continue
         }
         if (bestData === null) bestData = data
@@ -3089,6 +3091,8 @@ async function fetchAntigravityAvailableModels(
     }
   }
 
+  // Nothing answered completely, so the memo is stale by definition.
+  _antigravityQuotaBase = null
   if (bestData !== null) return bestData
   throw new Error(errors.join('; ') || 'no Antigravity quota response')
 }

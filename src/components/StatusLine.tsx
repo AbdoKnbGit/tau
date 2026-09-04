@@ -120,7 +120,10 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
   // active provider, and after a /provider switch until the first call on the
   // new one - the snapshot is provider-stamped so pre-switch numbers can never
   // be shown under a provider they did not come from.
-  const providerQuota = buildStatusLineProviderQuota(getAPIProvider());
+  // Scoped to the model actually running: a per-model provider meters each
+  // family separately, so resolving this without the model reports whichever
+  // pool is tightest rather than the one this session is spending.
+  const providerQuota = buildStatusLineProviderQuota(getAPIProvider(), runtimeModel);
   // Rounded to whole percent, matching context_window.used_percentage. A raw
   // utilization fraction times 100 lands on values like 14.000000000000004,
   // and statusline scripts print what they are given.
