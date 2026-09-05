@@ -48,6 +48,7 @@ import { registerLeaderToolUseConfirmQueue, unregisterLeaderToolUseConfirmQueue,
 import { endInteractionSpan } from '../utils/telemetry/sessionTracing.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
+import { useRemoteMirror } from '../hooks/useRemoteMirror.js';
 import { useWhatsAppMirror } from '../hooks/useWhatsAppMirror.js';
 import { isOn as isWhatsAppOn } from '../services/whatsapp/lifecycle.js';
 import { onWhatsAppPermissionResponse, sendWhatsAppPermissionRequest } from '../services/whatsapp/permissions.js';
@@ -3986,6 +3987,10 @@ export function REPL({
   // WhatsApp mirror: forwards new assistant text to the WhatsApp chat that
   // most recently sent us a message. No-op when /whatsapp is off.
   useWhatsAppMirror(messages, isLoading);
+
+  // Remote mirror: streams the session to phones paired over LAN via /remote,
+  // and lets them prompt and interrupt. No-op when /remote is off.
+  useRemoteMirror(messages, isLoading, abortControllerRef, mainLoopModel, commands);
 
   useAfterFirstRender();
 

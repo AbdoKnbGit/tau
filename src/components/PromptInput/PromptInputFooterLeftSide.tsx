@@ -33,6 +33,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useTasksV2 } from '../../hooks/useTasksV2.js';
 import { formatDuration } from '../../utils/format.js';
 import { VoiceWarmupHint } from './VoiceIndicator.js';
+import { useRemoteDevices } from '../../hooks/useRemoteDevices.js';
 import { useVoiceEnabled } from '../../hooks/useVoiceEnabled.js';
 import { useVoiceState } from '../../context/voice.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
@@ -310,6 +311,9 @@ function ModeIndicator({
     }
   }, [voiceEnabled, voiceHintUnderCap]);
   const isKillAgentsConfirmShowing = useAppState(s_7 => s_7.notifications.current?.key === 'kill-agents-confirm');
+  // Must stay above the `mode === 'bash'` early return below — a hook called
+  // after it would be conditional and blow up the moment bash mode is entered.
+  const remoteDevices = useRemoteDevices();
   // Mode chip (bronze cheap / gold full); hidden in normal mode.
   // Colored via the 'brand' slot, which the mode overlay tints.
   const powerMode = useAppState(s_8 => getPowerModeFromSettings(s_8.settings));
@@ -367,6 +371,11 @@ function ModeIndicator({
   // Build parts array - exclude BackgroundTaskStatus when we have teammate pills
   // (teammate pills get their own row)
   const parts = [
+  // /remote paired-device pill — you are driving this session from a phone,
+  // so the terminal should say so even when you are not looking at it.
+  ...(remoteDevices > 0 ? [<Text color="ide" key="remote-devices">
+            {figures.circleFilled} {remoteDevices} device{remoteDevices === 1 ? '' : 's'} connected
+          </Text>] : []),
   // Remote session indicator
   ...(remoteSessionUrl ? [<Link url={remoteSessionUrl} key="remote">
             <Text color="ide">{figures.circleDouble} remote</Text>
