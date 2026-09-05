@@ -4,9 +4,6 @@
  * Run: bun run src/services/api/providers/gemini_code_assist.test.ts
  */
 
-import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import {
   ANTIGRAVITY_MODEL_IDS,
   ANTIGRAVITY_MODELS,
@@ -255,49 +252,13 @@ async function main(): Promise<void> {
     assert(request.sessionId === 'live-root-session', `sessionId=${request.sessionId}`)
   })
 
-  await test('an unentitled Antigravity model is not reported as exhausted quota', async () => {
-    // Code Assist answers an unentitled model with 429 RESOURCE_EXHAUSTED,
-    // identical to a real rate limit, and the picker does not filter by
-    // entitlement — so the id can be selected and then fails inscrutably.
-    const cachePath = join(
-      homedir(),
-      '.config',
-      'claude-code',
-      'gemini-code-assist.json',
-    )
-    let entitled: string[] | null = null
-    try {
-      const raw = JSON.parse(readFileSync(cachePath, 'utf-8')) as {
-        entitledModelIds?: string[]
-      }
-      entitled = raw.entitledModelIds ?? null
-    } catch {
-      entitled = null
-    }
-
-    if (!entitled || entitled.length === 0) {
-      // No entitlement lookup has run on this machine, so nothing can be
-      // asserted either way. The helper must stay silent rather than guess.
-      assert(
-        describeAntigravityEntitlementGap('gemini-3.7-flash-high') === null,
-        'helper claimed an entitlement gap with no cached entitlements',
-      )
-      return
-    }
-
-    const entitledSet = new Set(entitled.map(id => id.toLowerCase()))
+  await test('no entitlement claim is made before selecting a credential', async () => {
+    // Disk caches may belong to another login. Without a request credential,
+    // they cannot establish entitlement for this process. Credential-bound
+    // positive and negative cases live in antigravity_project_cache.test.ts.
     for (const model of ANTIGRAVITY_MODELS) {
-      const wire = resolveAntigravityWireModel(model.id).toLowerCase()
-      const isEntitled = entitledSet.has(model.id) || entitledSet.has(wire)
-      const gap = describeAntigravityEntitlementGap(model.id)
-      if (isEntitled) {
-        assert(gap === null, `${model.id}: entitled model reported as a gap`)
-      } else {
-        assert(
-          gap !== null && gap.includes(model.id),
-          `${model.id}: unentitled model was not diagnosed`,
-        )
-      }
+      assert(describeAntigravityEntitlementGap(model.id) === null,
+        `${model.id}: entitlement diagnosed without a selected credential`)
     }
 
     // Never claims anything about a non-Antigravity id.

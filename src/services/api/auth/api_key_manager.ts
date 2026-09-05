@@ -38,9 +38,9 @@ function ensureConfigDir(): void {
   }
 }
 
-function readStore(): KeyStore {
+function readStore(options?: { fresh?: boolean }): KeyStore {
   const now = Date.now()
-  if (_cachedStore && (now - _cacheTimestamp) < CACHE_TTL_MS) {
+  if (!options?.fresh && _cachedStore && (now - _cacheTimestamp) < CACHE_TTL_MS) {
     return _cachedStore
   }
   try {
@@ -91,10 +91,12 @@ export function saveProviderKey(provider: string, key: string): void {
 
 /**
  * Load a stored API key for a provider.
+ * Pass `{ fresh: true }` when a caller must observe credentials changed by
+ * another Tau process instead of using this process's short-lived snapshot.
  * Returns null if no key is stored.
  */
-export function loadProviderKey(provider: string): string | null {
-  const store = readStore()
+export function loadProviderKey(provider: string, options?: { fresh?: boolean }): string | null {
+  const store = readStore(options)
   return store.keys[provider] ?? null
 }
 

@@ -28,6 +28,9 @@
  */
 
 import { hasProviderUsageReporter } from './providerUsageCoverage.js'
+import { createHash } from 'crypto'
+import { loadProviderKey } from './auth/api_key_manager.js'
+import { loadStore, selectActiveAntigravityAccount } from '../../lanes/shared/antigravity_auth.js'
 import {
   buildProviderQuotaInput,
   type ProviderQuotaInput,
@@ -134,6 +137,30 @@ const entries = new Map<string, CacheEntry>()
 const inFlight = new Set<string>()
 const listeners = new Set<() => void>()
 
+/** Antigravity quota belongs to the selected login, including in-flight reads. */
+function quotaCacheKey(provider: string): string {
+  if (provider !== 'antigravity') return provider
+  const raw = loadProviderKey('gemini_oauth_antigravity')
+  let credential: string
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      credential = typeof parsed?.refreshToken === 'string' && parsed.refreshToken
+        ? parsed.refreshToken
+        : typeof parsed?.accessToken === 'string' && parsed.accessToken
+          ? parsed.accessToken
+          : raw
+    } catch {
+      credential = raw
+    }
+  } else {
+    const account = selectActiveAntigravityAccount(loadStore())
+    credential = account?.refreshToken || account?.accessToken || ''
+  }
+  // Keep bearer and refresh tokens out of cache keys and diagnostic dumps.
+  return `${provider}:${createHash('sha256').update(credential).digest('hex')}`
+}
+
 /**
  * Notified when a reading lands. The fetch completes long after the render
  * that started it, and nothing else would tell the bar to repaint.
@@ -170,7 +197,7 @@ export function getProviderQuotaOutcome(
   provider: string,
   activeModel?: string,
 ): ProviderQuotaOutcome | undefined {
-  const entry = entries.get(provider)
+  const entry = entries.get(quotaCacheKey(provider))
   if (!entry?.settled) return undefined
   const settled = entry.settled
   // Only a reading goes stale. "Absent" and "unconfigured" describe a
@@ -224,23 +251,29 @@ export function ensureProviderQuotaFresh(
   options: { afterTurn?: boolean } = {},
 ): void {
   if (!providerHasAccountQuota(provider)) return
-  if (inFlight.has(provider)) return
-  if (!shouldFetch(provider, Date.now(), options.afterTurn === true)) return
+  const cacheKey = quotaCacheKey(provider)
+  if (inFlight.has(cacheKey)) return
+  if (!shouldFetch(provider, Date.now(), options.afterTurn === true, cacheKey)) return
 
-  inFlight.add(provider)
+  inFlight.add(cacheKey)
   // Imported here rather than at module scope: providerUsage pulls in every
   // provider client, and nothing should pay for that unless a fetch happens.
   void import('./providerUsage.js')
-    .then(module =>
-      module.fetchProviderUsageFor(provider as ProviderUsageId, {
+    .then(module => {
+      if (quotaCacheKey(provider) !== cacheKey) return null
+      return module.fetchProviderUsageFor(provider as ProviderUsageId, {
         // Read-only stand-ins where a /usage reporter would write credentials.
         statusBar: true,
-      }),
-    )
-    .then(report => noteOutcome(provider, classifyReport(report)))
-    .catch(() => noteOutcome(provider, null))
+      })
+    })
+    .then(report => {
+      if (quotaCacheKey(provider) === cacheKey) noteOutcome(provider, classifyReport(report), Date.now(), cacheKey)
+    })
+    .catch(() => {
+      if (quotaCacheKey(provider) === cacheKey) noteOutcome(provider, null, Date.now(), cacheKey)
+    })
     .finally(() => {
-      inFlight.delete(provider)
+      inFlight.delete(cacheKey)
     })
 }
 
@@ -256,8 +289,9 @@ function shouldFetch(
   provider: string,
   now: number,
   afterTurn = false,
+  cacheKey = quotaCacheKey(provider),
 ): boolean {
-  const entry = entries.get(provider)
+  const entry = entries.get(cacheKey)
   if (!entry) return true
 
   // A clock that jumps backwards - NTP correction, a resumed VM - makes an
@@ -311,10 +345,11 @@ function noteOutcome(
   provider: string,
   outcome: ProviderQuotaOutcome | null,
   at: number = Date.now(),
+  cacheKey = quotaCacheKey(provider),
 ): void {
-  const previous = entries.get(provider)
+  const previous = entries.get(cacheKey)
   if (outcome === null) {
-    entries.set(provider, {
+    entries.set(cacheKey, {
       settled: previous?.settled ?? null,
       settledAt: previous?.settledAt ?? 0,
       consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
@@ -324,7 +359,7 @@ function noteOutcome(
     return
   }
 
-  entries.set(provider, {
+  entries.set(cacheKey, {
     settled: outcome,
     settledAt: at,
     consecutiveFailures: 0,
@@ -596,7 +631,7 @@ export function buildStatusLineProviderQuota(
   }
 
   if (outcome?.kind === 'reading') {
-    const entry = entries.get(provider)
+    const entry = entries.get(quotaCacheKey(provider))
     return {
       provider,
       status: 'available',

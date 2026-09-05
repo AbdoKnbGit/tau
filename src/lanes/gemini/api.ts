@@ -574,7 +574,11 @@ class GeminiApiClient {
             }
             if (resp.ok) {
               if (fastAntigravityGemini) {
-                recordAntigravityGeminiServedBase(tauStableSessionId, bases[i]!)
+                // A report can sweep away from the conversation's warm host.
+                // Its one-shot serve must not move or reset the chat's pin.
+                if (tauQuerySource !== 'report') {
+                  recordAntigravityGeminiServedBase(tauStableSessionId, bases[i]!)
+                }
                 writeAntigravityEndpointDebugEvent(tauStableSessionId, 'served', {
                   base: bases[i],
                   index: i,
@@ -870,7 +874,11 @@ class GeminiApiClient {
             }
             if (resp.ok) {
               if (fastAntigravityGemini) {
-                recordAntigravityGeminiServedBase(tauStableSessionId, bases[i]!)
+                // Reports share the wire session, but have no cache equity
+                // and must not alter the live conversation's host affinity.
+                if (tauQuerySource !== 'report') {
+                  recordAntigravityGeminiServedBase(tauStableSessionId, bases[i]!)
+                }
                 writeAntigravityEndpointDebugEvent(tauStableSessionId, 'served', {
                   base: bases[i],
                   index: i,

@@ -92,7 +92,7 @@ test('treats an already-expired token as stale', () => {
   )
 })
 
-test('honours the per-family active index the refresh path uses', () => {
+test('keeps the authenticated account when old family rotation selects another', () => {
   const accounts = [
     account({ email: 'first@example.com' }),
     account({ email: 'flash@example.com' }),
@@ -101,8 +101,23 @@ test('honours the per-family active index the refresh path uses', () => {
     store({ accounts, activeIndex: 0, activeIndexByFamily: { 'gemini-flash': 1 } }),
   )
   assert(
-    selected?.email === 'flash@example.com',
-    `the flash family index should win, got ${selected?.email}`,
+    selected?.email === 'first@example.com',
+    `authentication should win over old rotation state, got ${selected?.email}`,
+  )
+})
+
+test('does not select a disabled account through the active index', () => {
+  const accounts = [
+    account({ email: 'disabled@example.com', enabled: false }),
+    account({ email: 'enabled@example.com' }),
+  ]
+  assert(
+    selectActiveAntigravityAccount(store({ accounts, activeIndex: 0 }))?.email === 'enabled@example.com',
+    'a disabled active account must not supply a request token',
+  )
+  assert(
+    selectActiveAntigravityAccount(store({ accounts: [accounts[0]!], activeIndex: 0 })) === null,
+    'a store containing only a disabled account should be unavailable',
   )
 })
 

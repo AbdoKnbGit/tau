@@ -31,7 +31,7 @@
 
 import { homedir } from 'os'
 import { join } from 'path'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import {
   existsSync,
   mkdirSync,
@@ -549,6 +549,8 @@ const CACHE_VERSION = 7  // bump: retry project bootstrap after standard-tier mi
 
 interface CodeAssistCache {
   version: number
+  /** Antigravity project/entitlements belong to the credential that discovered them. */
+  credentialKey?: string
   projectId: string | null
   onboardedAt: number
   /**
@@ -677,6 +679,15 @@ export function hasPaidEntitlement(
 // In-memory caches — one per executor type
 let _cachedCli: CodeAssistCache | null = null
 let _cachedAntigravity: CodeAssistCache | null = null
+let _antigravityCredentialKey: string | undefined
+let _antigravityCacheEpoch = 0
+const _antigravityBootstrap = new Map<string, Promise<string | null>>()
+
+function antigravityCredentialKey(accessToken: string): string {
+  // Persist a one-way fingerprint, never the bearer token. A refreshed token
+  // revalidates project ownership once; ordinary turns keep the warm cache.
+  return createHash('sha256').update(accessToken).digest('hex')
+}
 
 /**
  * Clear the cached project ID for an executor. Called when we get a 403
@@ -690,6 +701,9 @@ export function clearCodeAssistCache(executor?: GeminiExecutor): void {
   }
   if (!executor || executor === 'antigravity') {
     _cachedAntigravity = null
+    _antigravityCredentialKey = undefined
+    _antigravityCacheEpoch++
+    _antigravityBootstrap.clear()
     try { const f = _cacheFileFor('antigravity'); if (existsSync(f)) writeFileSync(f, '{}') } catch {}
   }
 }
@@ -698,15 +712,19 @@ function _cacheFileFor(executor: GeminiExecutor): string {
   return executor === 'cli' ? CACHE_FILE_CLI : CACHE_FILE_ANTIGRAVITY
 }
 
-function _readCache(executor: GeminiExecutor): CodeAssistCache | null {
+function _readCache(executor: GeminiExecutor, credentialKey?: string): CodeAssistCache | null {
+  const owner = credentialKey ?? _antigravityCredentialKey
+  const matches = (cache: CodeAssistCache): boolean => executor === 'cli'
+    || (!!owner && cache.credentialKey === owner)
   const mem = executor === 'cli' ? _cachedCli : _cachedAntigravity
-  if (mem) return mem
+  if (mem && matches(mem)) return mem
   try {
     const file = _cacheFileFor(executor)
     if (!existsSync(file)) return null
     const raw = readFileSync(file, 'utf-8')
     const parsed = JSON.parse(raw) as CodeAssistCache
     if ((parsed.version ?? 0) < CACHE_VERSION) return null
+    if (!matches(parsed)) return null
     if (executor === 'cli') _cachedCli = parsed
     else _cachedAntigravity = parsed
     return parsed
@@ -889,16 +907,53 @@ async function _rediscoverAntigravityProject(accessToken: string): Promise<strin
  */
 export function peekCodeAssistProject(
   executor: GeminiExecutor = 'antigravity',
+  accessToken?: string,
 ): string | null {
-  return _readCache(executor)?.projectId ?? null
+  return _readCache(executor, accessToken ? antigravityCredentialKey(accessToken) : undefined)?.projectId ?? null
 }
 
 export async function ensureCodeAssistReady(
   accessToken: string,
   executor: GeminiExecutor = 'antigravity',
 ): Promise<string | null> {
-  const cached = _readCache(executor)
+  if (executor === 'cli') return _ensureCodeAssistReady(accessToken, executor)
+
+  const credentialKey = antigravityCredentialKey(accessToken)
+  _antigravityCredentialKey = credentialKey
+  const cached = _readCache(executor, credentialKey)
   if (cached?.projectId) return cached.projectId
+  const pending = _antigravityBootstrap.get(credentialKey)
+  if (pending) return pending
+
+  const bootstrap = _ensureCodeAssistReady(accessToken, executor, credentialKey)
+  _antigravityBootstrap.set(credentialKey, bootstrap)
+  try {
+    return await bootstrap
+  } finally {
+    if (_antigravityBootstrap.get(credentialKey) === bootstrap) {
+      _antigravityBootstrap.delete(credentialKey)
+    }
+  }
+}
+
+async function _ensureCodeAssistReady(
+  accessToken: string,
+  executor: GeminiExecutor,
+  credentialKey?: string,
+): Promise<string | null> {
+  const cached = _readCache(executor, credentialKey)
+  if (cached?.projectId) return cached.projectId
+  const epoch = _antigravityCacheEpoch
+  const cacheProject = (cache: CodeAssistCache): void => {
+    if (executor === 'antigravity') {
+      // A cleared cache or a newer login must not be overwritten by an older
+      // warmup finishing in the background. Its caller can still use its own
+      // discovered project, paired with the token that started that request.
+      if (epoch !== _antigravityCacheEpoch || credentialKey !== _antigravityCredentialKey) return
+      cache.credentialKey = credentialKey
+    }
+    _writeCache(executor, cache)
+  }
 
   const loadData = await _loadCodeAssist(accessToken, executor)
 
@@ -928,14 +983,16 @@ export async function ensureCodeAssistReady(
   // `GOOGLE_CLOUD_PROJECT` (or `GEMINI_CLOUD_PROJECT`) env var to
   // override the auto-discovered project. This matches the env var
   // gemini-cli, gcloud, and the Google AI SDKs already check.
-  const projectOverride = _projectOverrideFromEnv()
+  // Cloud project overrides are for Gemini CLI. Antigravity uses the managed
+  // project assigned to its OAuth account, including when both are configured.
+  const projectOverride = executor === 'cli' ? _projectOverrideFromEnv() : null
   if (projectOverride) {
     const entitled = await _fetchEntitledModelIds(
       accessToken,
       projectOverride,
       executor,
     )
-    _writeCache(executor, {
+    cacheProject({
       version: CACHE_VERSION,
       projectId: projectOverride,
       onboardedAt: Date.now(),
@@ -956,7 +1013,7 @@ export async function ensureCodeAssistReady(
       directProjectId,
       executor,
     )
-    _writeCache(executor, {
+    cacheProject({
       version: CACHE_VERSION,
       projectId: directProjectId,
       onboardedAt: Date.now(),
@@ -1007,7 +1064,7 @@ export async function ensureCodeAssistReady(
     onboardedProject,
     executor,
   )
-  _writeCache(executor, {
+  cacheProject({
     version: CACHE_VERSION,
     projectId: onboardedProject,
     onboardedAt: Date.now(),

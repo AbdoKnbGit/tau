@@ -373,6 +373,9 @@ export async function refreshGeminiOAuth(
   refreshToken: string,
 ): Promise<string> {
   const cfg = _configFor(type)
+  const credentialBeforeRefresh = type === 'antigravity'
+    ? loadProviderKey(cfg.storageKey, { fresh: true })
+    : null
 
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: 'POST',
@@ -391,6 +394,25 @@ export async function refreshGeminiOAuth(
   }
 
   const tokens = (await response.json()) as GoogleOAuthTokens
+
+  if (type === 'antigravity') {
+    const current = loadProviderKey(cfg.storageKey, { fresh: true })
+    let currentRefreshToken: string | undefined
+    try {
+      currentRefreshToken = current
+        ? (JSON.parse(current) as Partial<StoredGoogleTokens>).refreshToken
+        : undefined
+    } catch {
+      currentRefreshToken = undefined
+    }
+    if (current !== credentialBeforeRefresh || currentRefreshToken !== refreshToken) {
+      // Login/logout (or another refresh) won while this network call was in
+      // flight. Never restore the old account over that newer credential.
+      const activeToken = current ? await _parseAndRefresh(current, type) : null
+      if (activeToken) return activeToken
+      throw new Error('Antigravity login changed while refreshing its token. Retry with the current login.')
+    }
+  }
 
   const stored = mergeGoogleOAuthTokens(tokens, refreshToken)
   saveProviderKey(cfg.storageKey, JSON.stringify(stored))

@@ -4,7 +4,8 @@ import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logForDebugging } from '../utils/debug.js'
 import { isEnvDefinedFalsy } from '../utils/envUtils.js'
-import { getAPIProvider } from '../utils/model/providers.js'
+import { getAPIProvider, type APIProvider } from '../utils/model/providers.js'
+import type { QuerySource } from './querySource.js'
 import { getWorkload } from '../utils/workloadContext.js'
 import { providerReadsAttributionHeader } from './attributionProviders.js'
 
@@ -31,7 +32,15 @@ export const CLI_SYSPROMPT_PREFIXES: ReadonlySet<string> = new Set(
 export function getCLISyspromptPrefix(options?: {
   isNonInteractive: boolean
   hasAppendSystemPrompt: boolean
-}): CLISyspromptPrefix {
+  requestProvider?: APIProvider
+  querySource?: QuerySource
+}): CLISyspromptPrefix | '' {
+  // Reports supply their own task prompt. Code Assist can reject the injected
+  // Claude Agent SDK identity with an opaque 429 even when this account/model
+  // can serve the same report without it. Keep chat and other providers intact.
+  if (options?.requestProvider === 'antigravity' && options.querySource === 'report') {
+    return ''
+  }
   const apiProvider = getAPIProvider()
   if (apiProvider === 'vertex') {
     return DEFAULT_PREFIX

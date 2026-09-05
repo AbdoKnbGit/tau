@@ -28,7 +28,7 @@ import { createHash, randomBytes } from 'crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, chmodSync } from 'fs'
 import { join } from 'path'
-import { homedir, platform } from 'os'
+import { homedir } from 'os'
 import { URL } from 'url'
 import {
   ANTIGRAVITY_ENDPOINT_AUTOPUSH,
@@ -66,8 +66,6 @@ export const ANTIGRAVITY_SCOPES = [
 export const ENDPOINT_DAILY = ANTIGRAVITY_ENDPOINT_DAILY
 export const ENDPOINT_AUTOPUSH = ANTIGRAVITY_ENDPOINT_AUTOPUSH
 export const ENDPOINT_PROD = ANTIGRAVITY_ENDPOINT_PROD
-
-export const ANTIGRAVITY_DEFAULT_PROJECT_ID = 'rising-fact-p41fc'
 
 // Storage layout.
 const STORAGE_DIR = join(homedir(), '.claudex')
@@ -244,43 +242,6 @@ export async function refreshAccessToken(refreshToken: string): Promise<Antigrav
   return resp.json() as Promise<AntigravityTokens>
 }
 
-// ─── Project discovery ──────────────────────────────────────────
-
-export async function discoverProject(accessToken: string): Promise<{ projectId: string; managedProjectId?: string }> {
-  const p = platform()
-  const platformLabel = p === 'win32' ? 'WINDOWS' : p === 'darwin' ? 'MACOS' : 'LINUX'
-  const body = JSON.stringify({
-    metadata: { ideType: 'ANTIGRAVITY', platform: platformLabel, pluginType: 'GEMINI' },
-  })
-  const endpoints = [ENDPOINT_PROD, ENDPOINT_DAILY, ENDPOINT_AUTOPUSH]
-  let lastError = ''
-  for (const ep of endpoints) {
-    try {
-      const resp = await fetch(`${ep}/v1internal:loadCodeAssist`, {
-        method: 'POST',
-        headers: buildApiHeaders(accessToken),
-        body,
-      })
-      if (!resp.ok) {
-        lastError = `${ep}: HTTP ${resp.status}`
-        continue
-      }
-      const data = await resp.json() as any
-      const raw = data.cloudaicompanionProject
-      const projectId = typeof raw === 'string' ? raw : raw?.id ?? ANTIGRAVITY_DEFAULT_PROJECT_ID
-      return {
-        projectId,
-        managedProjectId: data.managedProject?.id,
-      }
-    } catch (e: any) {
-      lastError = `${ep}: ${e?.message ?? e}`
-    }
-  }
-  // All endpoints failed — fall back to the known default so the user can
-  // still make requests while Google sorts out the sandbox endpoints.
-  return { projectId: ANTIGRAVITY_DEFAULT_PROJECT_ID }
-}
-
 export function buildApiHeaders(accessToken: string): Record<string, string> {
   return {
     'Authorization': `Bearer ${accessToken}`,
@@ -352,16 +313,11 @@ export function selectActiveAntigravityAccount(
   store: AntigravityStore,
 ): AntigravityAccount | null {
   if (store.accounts.length === 0) return null
-  const preferredIndex =
-    store.activeIndexByFamily['gemini-flash'] ??
-    store.activeIndexByFamily['gemini-pro'] ??
-    store.activeIndexByFamily.claude ??
-    store.activeIndex
-  return (
-    store.accounts[preferredIndex] ??
-    store.accounts.find(account => account.enabled) ??
-    null
-  )
+  // Authentication selects activeIndex. Per-family indices are historical
+  // rotation state and must not silently replace the account the user chose.
+  const active = store.accounts[store.activeIndex]
+  if (active?.enabled) return active
+  return store.accounts.find(account => account.enabled) ?? null
 }
 
 export type AntigravityPeek =

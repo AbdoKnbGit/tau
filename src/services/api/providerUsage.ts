@@ -569,21 +569,37 @@ function classifyGeminiModelTier(modelId: string): string {
 }
 
 async function reportAntigravity(): Promise<ProviderUsageReport> {
-  const account = await getAntigravityAccount()
-  const oauthToken = account ? null : await getGeminiOAuthToken('antigravity')
+  // Match GeminiApiClient's credential precedence. A previous multi-account
+  // login may still be on disk after /login selects a different OAuth account.
+  const hasOAuthCredential = !!loadProviderKey(ANTIGRAVITY_OAUTH_STORAGE_KEY)
+  const account = hasOAuthCredential ? null : await getAntigravityAccount()
+  const oauthToken = hasOAuthCredential ? await getGeminiOAuthToken('antigravity') : null
   const accessToken = account?.accessToken ?? oauthToken
 
   if (!accessToken) {
     return baseReport(
       'antigravity',
-      'not_configured',
-      'none',
+      hasOAuthCredential ? 'error' : 'not_configured',
+      hasOAuthCredential ? 'oauth' : 'none',
       'Google Code Assist',
-      'No Antigravity account is connected.',
+      hasOAuthCredential
+        ? 'The current Antigravity credential could not be refreshed.'
+        : 'No Antigravity account is connected.',
     )
   }
 
-  const project = account?.projectId ?? await ensureAntigravityProject(accessToken)
+  // Requests discover their project from this same token. Legacy account
+  // records can contain an obsolete or default project and are not authority.
+  const project = await ensureAntigravityProject(accessToken)
+  if (!project) {
+    return baseReport(
+      'antigravity',
+      'error',
+      'oauth',
+      'Google Code Assist',
+      'The current Antigravity account project could not be discovered.',
+    )
+  }
   const accountLabel = account?.email
     ?? await fetchGoogleOAuthEmail(accessToken)
     ?? 'Antigravity OAuth'
@@ -634,11 +650,9 @@ async function reportAntigravity(): Promise<ProviderUsageReport> {
  * A usable Antigravity token from either credential store, without renewing
  * or writing anything, or null when neither can be read as-is.
  *
- * Both stores must be consulted: an account can live in the multi-account
- * file, or as a plain OAuth blob from `/login antigravity`, and reportAntigravity
- * falls back between them for exactly this reason. Checking only one and
- * concluding "not connected" is how a connected account gets reported as
- * having no quota.
+ * The /login OAuth blob takes precedence, exactly as it does for generation.
+ * The multi-account file is used only when no OAuth blob exists. An expired
+ * selected credential must not make quota silently refer to an older account.
  *
  * A project is required, not optional. Asked without one, the backend answers
  * with the generic model list where every quota reads 100% remaining - so an
@@ -650,24 +664,18 @@ function peekAntigravityCredential(): {
   accessToken: string
   projectId: string
 } | null {
-  const stored = peekAntigravityAccount()
-
+  const oauth = readStoredGoogleToken(loadProviderKey(ANTIGRAVITY_OAUTH_STORAGE_KEY))
   let accessToken: string
-  let storedProjectId: string | null = null
-  if (stored.kind === 'ready') {
-    accessToken = stored.account.accessToken
-    storedProjectId = stored.account.projectId || null
-  } else {
-    const oauth = readStoredGoogleToken(
-      loadProviderKey(ANTIGRAVITY_OAUTH_STORAGE_KEY),
-    )
+  if (oauth.kind !== 'none') {
     if (oauth.kind !== 'ready') return null
     accessToken = oauth.accessToken
+  } else {
+    const stored = peekAntigravityAccount()
+    if (stored.kind !== 'ready') return null
+    accessToken = stored.account.accessToken
   }
 
-  // The multi-account store carries its own project; an OAuth-blob session
-  // relies on the one discovery already cached.
-  const projectId = storedProjectId ?? peekCodeAssistProject('antigravity')
+  const projectId = peekCodeAssistProject('antigravity', accessToken)
   if (!projectId) return null
 
   return { accessToken, projectId }
@@ -675,9 +683,9 @@ function peekAntigravityCredential(): {
 
 /**
  * Base that last returned a COMPLETE Antigravity quota document, remembered
- * for the session. The search tries four bases against two payload shapes and
+ * for the credential. The search tries each configured base and
  * only stops early on one particular response, so a cold status refresh can
- * cost eight requests. Once a base is known to answer completely, one is
+ * probe every base. Once a base is known to answer completely, one is
  * enough - and cheap refreshes are what let the readout track a quota that
  * moves while you work.
  *
@@ -689,7 +697,7 @@ function peekAntigravityCredential(): {
  * showed 91%. Both paths now share the search below, so a difference between
  * them is not expressible.
  */
-let _antigravityQuotaBase: string | null = null
+let _antigravityQuotaBase: { accessToken: string; base: string } | null = null
 
 /**
  * Where to ask for quota, in the order requests are actually served.
@@ -719,7 +727,7 @@ async function fetchAntigravityQuotaCheaply(
   const data = await fetchAntigravityAvailableModels(
     accessToken,
     projectId,
-    _antigravityQuotaBase ?? undefined,
+    _antigravityQuotaBase?.accessToken === accessToken ? _antigravityQuotaBase.base : undefined,
   )
   if (!extractAntigravityModels(data)) {
     throw new Error('no Antigravity quota response')
@@ -3048,51 +3056,50 @@ async function ensureAntigravityProject(accessToken: string): Promise<string | n
  *
  * `preferredBase` is tried first and is the status bar's whole cost saving:
  * once a base has answered completely, a refresh is one request instead of
- * eight. It changes the ORDER of the search, never its acceptance test - the
- * bar and the /usage dialog must end up holding the same document, or they
+ * probing every base. It changes the search order, never its acceptance test.
+ * The bar and the /usage dialog must end up holding the same document, or they
  * report different numbers for the same account.
  */
 async function fetchAntigravityAvailableModels(
   accessToken: string,
-  projectId: string | null,
+  projectId: string,
   preferredBase?: string,
 ): Promise<unknown> {
   const bases = preferredBase
     ? [preferredBase, ...ANTIGRAVITY_QUOTA_BASES.filter(base => base !== preferredBase)]
     : [...ANTIGRAVITY_QUOTA_BASES]
-  const payloads = projectId ? [{ project: projectId }, {}] : [{}]
   const headers = antigravityApiHeaders(accessToken)
   let bestData: unknown = null
   const errors: string[] = []
 
   for (const base of bases) {
-    for (const payload of payloads) {
-      try {
-        const data = await fetchJson(`${base}/v1internal:fetchAvailableModels`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(payload),
-        })
-        const models = extractAntigravityModels(data)
-        if (models) {
-          bestData = data
-          if (hasAntigravity35FlashUsagePair(models)) {
-            // Only a complete document earns the memo. Remembering a base that
-            // merely parsed is what let the bar settle on a thinner answer.
-            _antigravityQuotaBase = base
-            return data
-          }
-          continue
+    try {
+      // Without a project this endpoint can return a generic catalog with
+      // full quota, even when the authenticated account is exhausted.
+      const data = await fetchJson(`${base}/v1internal:fetchAvailableModels`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ project: projectId }),
+      })
+      const models = extractAntigravityModels(data)
+      if (models) {
+        bestData = data
+        if (hasAntigravity35FlashUsagePair(models)) {
+          // Only a complete document earns the memo. Remembering a base that
+          // merely parsed is what let the bar settle on a thinner answer.
+          _antigravityQuotaBase = { accessToken, base }
+          return data
         }
-        if (bestData === null) bestData = data
-      } catch (error) {
-        errors.push(`${base}: ${messageFromError(error)}`)
+        continue
       }
+      if (bestData === null) bestData = data
+    } catch (error) {
+      errors.push(`${base}: ${messageFromError(error)}`)
     }
   }
 
   // Nothing answered completely, so the memo is stale by definition.
-  _antigravityQuotaBase = null
+  if (_antigravityQuotaBase?.accessToken === accessToken) _antigravityQuotaBase = null
   if (bestData !== null) return bestData
   throw new Error(errors.join('; ') || 'no Antigravity quota response')
 }
