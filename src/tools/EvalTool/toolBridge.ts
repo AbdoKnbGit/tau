@@ -1,3 +1,4 @@
+import { getAgentContext, runWithAgentContext } from '../../utils/agentContext.js'
 import { randomUUID } from 'crypto'
 import { createServer, type Server } from 'http'
 
@@ -192,12 +193,23 @@ async function invoke(
     ? decision.updatedInput
     : parsed.data) as Record<string, unknown>
 
-  const result = await tool.call(
-    input,
-    entry.toolUseContext,
-    entry.canUseTool,
-    entry.parentMessage,
-  )
+  // Run under the agent that owns THIS cell, not whoever happened to create the
+  // bridge. The server is memoized process-wide (`serverPromise ??=`), so its
+  // request handlers inherit the AsyncLocalStorage scope of the first caller
+  // forever — every later cell would otherwise report that agent's identity.
+  // Anything keyed on the running agent reads this: subagent file-write
+  // ownership, and per-agent analytics attribution.
+  const cellAgentId = entry.toolUseContext.agentId
+  const ambient = getAgentContext()
+  const invoke = () =>
+    tool.call(input, entry.toolUseContext, entry.canUseTool, entry.parentMessage)
+  const result =
+    cellAgentId !== undefined && ambient?.agentId !== cellAgentId
+      ? await runWithAgentContext(
+          { agentId: cellAgentId, agentType: 'subagent', invocationEmitted: false },
+          invoke,
+        )
+      : await invoke()
   const block = tool.mapToolResultToToolResultBlockParam(result.data, toolUseId)
   const { text, images } = textFromContent(block.content)
   if (images.length > 0) return { text, images }
