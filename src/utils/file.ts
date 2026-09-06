@@ -25,6 +25,7 @@ import {
 import { fileReadCache } from './fileReadCache.js'
 import { getFsImplementation, safeResolvePath } from './fsOperations.js'
 import { logError } from './log.js'
+import { enforceAgentFileClaim } from './agentFileClaims.js'
 import { expandPath } from './path.js'
 import { getPlatform } from './platform.js'
 
@@ -87,6 +88,12 @@ export function writeTextContent(
   encoding: BufferEncoding,
   endings: LineEndingType,
 ): void {
+  // Single choke point for every file mutation the agent can issue — Edit,
+  // Write, NotebookEdit and Bash-applied writes all land here. Refuses the
+  // write when another running subagent owns this path; a no-op unless two or
+  // more subagents are in flight. Reads never reach this function.
+  enforceAgentFileClaim(filePath)
+
   let toWrite = content
   if (endings === 'CRLF') {
     // Normalize any existing CRLF to LF first so a new_string that already

@@ -11,6 +11,7 @@ import { startAgentSummarization } from '../../services/AgentSummary/agentSummar
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { clearDumpState } from '../../services/api/dumpPrompts.js';
+import { beginAgentFileScope, endAgentFileScope } from '../../utils/agentFileClaims.js';
 import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { checkRemoteAgentEligibility, formatPreconditionError, getRemoteTaskSessionUrl, registerRemoteAgentTask } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { assembleToolPool } from '../../tools.js';
@@ -667,6 +668,9 @@ export const AgentTool = buildTool({
     };
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId;
+      // Register for file-write ownership. Engages only once a second
+      // agent is also running; released in this agent's cleanup finally.
+      beginAgentFileScope(asyncAgentId, name?.trim() || description);
       const agentBackgroundTask = registerAsyncAgent({
         agentId: asyncAgentId,
         description,
@@ -747,6 +751,8 @@ export const AgentTool = buildTool({
     } else {
       // Create an explicit agentId for sync agents
       const syncAgentId = asAgentId(earlyAgentId);
+      // Register for file-write ownership (see the async branch above).
+      beginAgentFileScope(syncAgentId, name?.trim() || description);
 
       // Register name → agentId for SendMessage routing, same as the async
       // branch. Sync agents used to be skipped because coordinator mode
@@ -1031,6 +1037,7 @@ export const AgentTool = buildTool({
                     stopBackgroundedSummarization?.();
                     clearInvokedSkillsForAgent(syncAgentId);
                     clearDumpState(syncAgentId);
+                    endAgentFileScope(syncAgentId);
                     // Note: worktree cleanup is done before enqueueAgentNotification
                     // in both try and catch paths so we can include worktree info
                   }
@@ -1182,6 +1189,11 @@ export const AgentTool = buildTool({
               });
             }
           }
+
+          // Release this agent's file-write claims so a later agent can own
+          // the same paths. Safe to call twice — the backgrounded finally above
+          // may already have run.
+          endAgentFileScope(syncAgentId);
 
           // Clean up scoped skills so they don't accumulate in the global map
           clearInvokedSkillsForAgent(syncAgentId);

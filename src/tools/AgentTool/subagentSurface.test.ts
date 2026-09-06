@@ -166,6 +166,43 @@ test('an unresolvable recipient fails loudly instead of reporting success', bund
   )
 })
 
+// The claim logic is unit-tested in utils/agentFileClaims.test.ts. What that
+// cannot see is whether the write path still calls it — so assert the hook
+// survives into the artifact, at the one choke point Edit, Write, NotebookEdit
+// and Bash-applied writes all funnel through.
+test('every mutating write path enforces subagent file ownership', bundle => {
+  present(
+    bundle,
+    'enforceAgentFileClaim',
+    'the claim check must ship',
+  )
+  // writeTextContent's body, with the check as its first statement.
+  const hooked =
+    /function writeTextContent\([^)]*\)\s*\{\s*(?:\/\/[^\n]*\n\s*)*enforceAgentFileClaim\(/.test(
+      bundle,
+    )
+  if (!hooked) {
+    throw new Error(
+      'writeTextContent must call enforceAgentFileClaim before writing — ' +
+        'without it two concurrent subagents can clobber one file through Bash, ' +
+        'which carries no staleness guard',
+    )
+  }
+})
+
+test('agent lifecycle releases file claims', bundle => {
+  present(
+    bundle,
+    'endAgentFileScope',
+    'claims must be released, or a finished agent holds paths hostage',
+  )
+  present(
+    bundle,
+    'beginAgentFileScope',
+    'agents must register, or the concurrent set is never populated',
+  )
+})
+
 test('the repair cache fails safe on colliding schemas', bundle => {
   present(bundle, 'ambiguous', 'the conflict guard must ship')
   present(
