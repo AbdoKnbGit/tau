@@ -41,7 +41,7 @@ import type { MCPServerConnection } from '../../services/mcp/types.js';
 import { abortPromptSuggestion, logSuggestionSuppressed } from '../../services/PromptSuggestion/promptSuggestion.js';
 import { type ActiveSpeculationState, abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
 import { getActiveAgentForInput, getViewedTeammateTask } from '../../state/selectors.js';
-import { enterTeammateView, exitTeammateView, stopOrDismissAgent } from '../../state/teammateViewHelpers.js';
+import { enterAgentView, exitAgentView, stopOrDismissAgent } from '../../state/agentViewHelpers.js';
 import type { ToolPermissionContext } from '../../Tool.js';
 import { getRunningTeammatesSorted } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js';
@@ -1816,17 +1816,17 @@ function PromptInput({
           if (isTeammateMode) {
             // Enter switches to the selected agent's view
             if (teammateFooterIndex === 0) {
-              exitTeammateView(setAppState);
+              exitAgentView(setAppState);
             } else {
               const teammate = inProcessTeammates[teammateFooterIndex - 1];
-              if (teammate) enterTeammateView(teammate.id, setAppState);
+              if (teammate) enterAgentView(teammate.id, setAppState);
             }
           } else if (coordinatorTaskIndex === 0 && coordinatorTaskCount > 0) {
-            exitTeammateView(setAppState);
+            exitAgentView(setAppState);
           } else {
             const selectedTaskId = getVisibleAgentTasks(tasks)[coordinatorTaskIndex - 1]?.id;
             if (selectedTaskId) {
-              enterTeammateView(selectedTaskId, setAppState);
+              enterAgentView(selectedTaskId, setAppState);
             } else {
               setShowBashesDialog(true);
               selectFooterItem(null);

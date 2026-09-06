@@ -5,7 +5,7 @@ import React, { type ReactNode, useEffect, useEffectEvent, useMemo, useRef, useS
 import { isCoordinatorMode } from 'src/coordinator/coordinatorMode.js';
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js';
 import { useAppState, useSetAppState } from 'src/state/AppState.js';
-import { enterTeammateView, exitTeammateView } from 'src/state/teammateViewHelpers.js';
+import { enterAgentView, exitAgentView } from 'src/state/agentViewHelpers.js';
 import type { ToolUseContext } from 'src/Tool.js';
 import { DreamTask, type DreamTaskState } from 'src/tasks/DreamTask/DreamTask.js';
 import { InProcessTeammateTask } from 'src/tasks/InProcessTeammateTask/InProcessTeammateTask.js';
@@ -226,7 +226,7 @@ export function BackgroundTasksDialog({
       const current = allSelectableItems[selectedIndex];
       if (current) {
         if (current.type === 'leader') {
-          exitTeammateView(setAppState);
+          exitAgentView(setAppState);
           onDone('Viewing leader', {
             display: 'system'
           });
@@ -285,13 +285,13 @@ export function BackgroundTasksDialog({
     if (e.key === 'f') {
       if ((currentSelection_0.type === 'in_process_teammate' || currentSelection_0.type === 'local_agent') && currentSelection_0.status === 'running') {
         e.preventDefault();
-        enterTeammateView(currentSelection_0.id, setAppState);
+        enterAgentView(currentSelection_0.id, setAppState);
         onDone(currentSelection_0.type === 'local_agent' ? 'Viewing agent' : 'Viewing teammate', {
           display: 'system'
         });
       } else if (currentSelection_0.type === 'leader') {
         e.preventDefault();
-        exitTeammateView(setAppState);
+        exitAgentView(setAppState);
         onDone('Viewing leader', {
           display: 'system'
         });
@@ -372,7 +372,7 @@ export function BackgroundTasksDialog({
         return <ShellDetailDialog shell={task_0} onDone={onDone} onKillShell={() => void killShellTask(task_0.id)} onBack={goBackToList} key={`shell-${task_0.id}`} />;
       case 'local_agent':
         return <AsyncAgentDetailDialog agent={task_0} onDone={onDone} onKillAgent={() => void killAgentTask(task_0.id)} onBack={goBackToList} onForeground={() => {
-          enterTeammateView(task_0.id, setAppState);
+          enterAgentView(task_0.id, setAppState);
           onDone('Viewing agent', {
             display: 'system'
           });
@@ -381,7 +381,7 @@ export function BackgroundTasksDialog({
         return <RemoteSessionDetailDialog session={task_0} onDone={onDone} toolUseContext={toolUseContext} onBack={goBackToList} onKill={task_0.status !== 'running' ? undefined : task_0.isUltraplan ? () => void stopUltraplan(task_0.id, task_0.sessionId, setAppState) : () => void killRemoteAgentTask(task_0.id)} key={`session-${task_0.id}`} />;
       case 'in_process_teammate':
         return <InProcessTeammateDetailDialog teammate={task_0} onDone={onDone} onKill={task_0.status === 'running' ? () => void killTeammateTask(task_0.id) : undefined} onBack={goBackToList} onForeground={task_0.status === 'running' ? () => {
-          enterTeammateView(task_0.id, setAppState);
+          enterAgentView(task_0.id, setAppState);
           onDone('Viewing teammate', {
             display: 'system'
           });

@@ -8,9 +8,9 @@ import {
   useSetAppState,
 } from '../state/AppState.js'
 import {
-  enterTeammateView,
-  exitTeammateView,
-} from '../state/teammateViewHelpers.js'
+  enterAgentView,
+  exitAgentView,
+} from '../state/agentViewHelpers.js'
 import {
   getRunningTeammatesSorted,
   InProcessTeammateTask,
@@ -157,7 +157,7 @@ export function useBackgroundTaskNavigation(options?: {
         }
       }
       // Teammate is not running or task doesn't exist — exit the view
-      exitTeammateView(setAppState)
+      exitAgentView(setAppState)
       return
     }
 
@@ -194,7 +194,7 @@ export function useBackgroundTaskNavigation(options?: {
       e.preventDefault()
       const selected = getSelectedTeammate()
       if (selected) {
-        enterTeammateView(selected.taskId, setAppState)
+        enterAgentView(selected.taskId, setAppState)
       }
       return
     }
@@ -203,7 +203,7 @@ export function useBackgroundTaskNavigation(options?: {
     if (e.key === 'return' && viewSelectionMode === 'selecting-agent') {
       e.preventDefault()
       if (selectedIPAgentIndex === -1) {
-        exitTeammateView(setAppState)
+        exitAgentView(setAppState)
       } else if (selectedIPAgentIndex >= teammateCount) {
         // "Hide" row selected - collapse the spinner tree
         setAppState(prev => ({
@@ -215,7 +215,7 @@ export function useBackgroundTaskNavigation(options?: {
       } else {
         const selected = getSelectedTeammate()
         if (selected) {
-          enterTeammateView(selected.taskId, setAppState)
+          enterAgentView(selected.taskId, setAppState)
         }
       }
       return

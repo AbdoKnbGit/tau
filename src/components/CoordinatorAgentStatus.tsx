@@ -14,7 +14,7 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Box, Text, wrapText } from '../ink.js';
 import { type AppState, useAppState, useSetAppState } from '../state/AppState.js';
-import { enterTeammateView, exitTeammateView } from '../state/teammateViewHelpers.js';
+import { enterAgentView, exitAgentView } from '../state/agentViewHelpers.js';
 import { isPanelAgentTask, type LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js';
 import { formatDuration, formatNumber } from '../utils/format.js';
 import { evictTerminalTask } from '../utils/task/framework.js';
@@ -70,8 +70,8 @@ export function CoordinatorTaskPanel(): React.ReactNode {
     return null;
   }
   return <Box flexDirection="column" marginTop={1}>
-      <MainLine isSelected={selectedIndex === 0} isViewed={viewingAgentTaskId === undefined} onClick={() => exitTeammateView(setAppState)} />
-      {visibleTasks.map((task, i) => <AgentLine key={task.id} task={task} name={nameByAgentId.get(task.id)} isSelected={selectedIndex === i + 1} isViewed={viewingAgentTaskId === task.id} onClick={() => enterTeammateView(task.id, setAppState)} />)}
+      <MainLine isSelected={selectedIndex === 0} isViewed={viewingAgentTaskId === undefined} onClick={() => exitAgentView(setAppState)} />
+      {visibleTasks.map((task, i) => <AgentLine key={task.id} task={task} name={nameByAgentId.get(task.id)} isSelected={selectedIndex === i + 1} isViewed={viewingAgentTaskId === task.id} onClick={() => enterAgentView(task.id, setAppState)} />)}
     </Box>;
 }
 

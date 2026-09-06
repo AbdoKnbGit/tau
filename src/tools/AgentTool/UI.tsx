@@ -697,29 +697,11 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
     const lastToolInfo = extractLastToolInfo(progressMessages, tools);
     const parsedInput = inputSchema().safeParse(param.input);
 
-    // teammate_spawned is not part of the exported Output type (cast through unknown
-    // for dead code elimination), so check via string comparison on the raw value
-    const isTeammateSpawn = result?.output?.status as string === 'teammate_spawned';
-
-    // For teammate spawns, show @name with type in parens and description as status
-    let agentType: string;
-    let description: string | undefined;
-    let color: keyof Theme | undefined;
-    let descriptionColor: keyof Theme | undefined;
-    let taskDescription: string | undefined;
-    if (isTeammateSpawn && parsedInput.success && parsedInput.data.name) {
-      agentType = `@${parsedInput.data.name}`;
-      const subagentType = parsedInput.data.subagent_type;
-      description = isCustomSubagentType(subagentType) ? subagentType : undefined;
-      taskDescription = parsedInput.data.description;
-      // Use the custom agent definition's color on the type, not the name
-      descriptionColor = isCustomSubagentType(subagentType) ? getAgentColor(subagentType) as keyof Theme | undefined : undefined;
-    } else {
-      agentType = parsedInput.success ? userFacingName(parsedInput.data) : 'Agent';
-      description = parsedInput.success ? parsedInput.data.description : undefined;
-      color = parsedInput.success ? userFacingNameBackgroundColor(parsedInput.data) : undefined;
-      taskDescription = undefined;
-    }
+    const agentType = parsedInput.success ? userFacingName(parsedInput.data) : 'Agent';
+    const description = parsedInput.success ? parsedInput.data.description : undefined;
+    const color = parsedInput.success ? userFacingNameBackgroundColor(parsedInput.data) : undefined;
+    const descriptionColor: keyof Theme | undefined = undefined;
+    const taskDescription: string | undefined = undefined;
 
     // Check if this was launched as a background agent OR backgrounded mid-execution
     const launchedAsAsync = parsedInput.success && 'run_in_background' in parsedInput.data && parsedInput.data.run_in_background === true;
@@ -727,7 +709,7 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
       status?: string;
     } | undefined)?.status;
     const backgroundedMidExecution = outputStatus === 'async_launched' || outputStatus === 'remote_launched';
-    const isAsync = launchedAsAsync || backgroundedMidExecution || isTeammateSpawn;
+    const isAsync = launchedAsAsync || backgroundedMidExecution;
     const name = parsedInput.success ? parsedInput.data.name : undefined;
     return {
       id: param.id,

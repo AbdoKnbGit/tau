@@ -21,7 +21,7 @@ import { useCommandQueue } from '../hooks/useCommandQueue.js'
 import { getShortcutDisplay } from '../keybindings/shortcutFormat.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
 import type { Screen } from '../screens/REPL.js'
-import { exitTeammateView } from '../state/teammateViewHelpers.js'
+import { exitAgentView } from '../state/agentViewHelpers.js'
 import {
   killAllRunningAgentTasks,
   markAgentsNotified,
@@ -200,7 +200,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   const handleInterrupt = useCallback(() => {
     if (isViewingTeammate) {
       killAllAgentsAndNotify()
-      exitTeammateView(setAppState)
+      exitAgentView(setAppState)
     }
     if (canCancelRunningTask || hasQueuedCommands) {
       handleCancel()

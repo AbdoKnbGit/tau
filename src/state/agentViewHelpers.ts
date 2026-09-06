@@ -9,7 +9,7 @@ const PANEL_GRACE_MS = 30_000
 import type { AppState } from './AppState.js'
 
 // Inline type check instead of importing isLocalAgentTask — breaks the
-// teammateViewHelpers → LocalAgentTask runtime edge that creates a cycle
+// agentViewHelpers → LocalAgentTask runtime edge that creates a cycle
 // through BackgroundTasksDialog.
 function isLocalAgent(task: unknown): task is LocalAgentTaskState {
   return (
@@ -22,8 +22,8 @@ function isLocalAgent(task: unknown): task is LocalAgentTaskState {
 
 /**
  * Return the task released back to stub form: retain dropped, messages
- * cleared, evictAfter set if terminal. Shared by exitTeammateView and
- * the switch-away path in enterTeammateView.
+ * cleared, evictAfter set if terminal. Shared by exitAgentView and
+ * the switch-away path in enterAgentView.
  */
 function release(task: LocalAgentTaskState): LocalAgentTaskState {
   return {
@@ -38,12 +38,12 @@ function release(task: LocalAgentTaskState): LocalAgentTaskState {
 }
 
 /**
- * Transitions the UI to view a teammate's transcript.
+ * Transitions the UI to view a background agent's transcript.
  * Sets viewingAgentTaskId and, for local_agent, retain: true (blocks eviction,
  * enables stream-append, triggers disk bootstrap) and clears evictAfter.
  * If switching from another agent, releases the previous one back to stub.
  */
-export function enterTeammateView(
+export function enterAgentView(
   taskId: string,
   setAppState: (updater: (prev: AppState) => AppState) => void,
 ): void {
@@ -85,7 +85,7 @@ export function enterTeammateView(
  * Drops retain and clears messages back to stub form; if terminal,
  * schedules eviction via evictAfter so the row lingers briefly.
  */
-export function exitTeammateView(
+export function exitAgentView(
   setAppState: (updater: (prev: AppState) => AppState) => void,
 ): void {
   logEvent('tengu_transcript_view_exit', {})

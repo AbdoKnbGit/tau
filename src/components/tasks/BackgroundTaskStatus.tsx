@@ -5,7 +5,7 @@ import { useMemo, useState } from 'react';
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js';
 import { stringWidth } from 'src/ink/stringWidth.js';
 import { useAppState, useSetAppState } from 'src/state/AppState.js';
-import { enterTeammateView, exitTeammateView } from 'src/state/teammateViewHelpers.js';
+import { enterAgentView, exitAgentView } from 'src/state/agentViewHelpers.js';
 import { isPanelAgentTask } from 'src/tasks/LocalAgentTask/LocalAgentTask.js';
 import { getPillLabel, pillNeedsCta } from 'src/tasks/pillLabel.js';
 import { type BackgroundTaskState, isBackgroundTask, type TaskState } from 'src/tasks/types.js';
@@ -152,7 +152,7 @@ export function BackgroundTaskStatus(t0) {
     if ($[25] !== selectedIdx || $[26] !== setAppState || $[27] !== viewedIdx || $[28] !== visiblePills) {
       t13 = visiblePills.map((pill_1, i_1) => {
         const needsSeparator = i_1 > 0;
-        return <React.Fragment key={pill_1.name}>{needsSeparator && <Text> </Text>}<AgentPill name={pill_1.name} color={pill_1.color} isSelected={selectedIdx === pill_1.idx} isViewed={viewedIdx === pill_1.idx} isIdle={pill_1.isIdle} onClick={() => pill_1.taskId ? enterTeammateView(pill_1.taskId, setAppState) : exitTeammateView(setAppState)} /></React.Fragment>;
+        return <React.Fragment key={pill_1.name}>{needsSeparator && <Text> </Text>}<AgentPill name={pill_1.name} color={pill_1.color} isSelected={selectedIdx === pill_1.idx} isViewed={viewedIdx === pill_1.idx} isIdle={pill_1.isIdle} onClick={() => pill_1.taskId ? enterAgentView(pill_1.taskId, setAppState) : exitAgentView(setAppState)} /></React.Fragment>;
       });
       $[25] = selectedIdx;
       $[26] = setAppState;

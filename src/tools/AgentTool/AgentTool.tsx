@@ -162,29 +162,8 @@ export const outputSchema = lazySchema(() => {
 type OutputSchema = ReturnType<typeof outputSchema>;
 type Output = z.input<OutputSchema>;
 
-// Private type for teammate spawn results - excluded from exported schema for dead code elimination
-// The 'teammate_spawned' status string is only included when ENABLE_AGENT_SWARMS is true
-type TeammateSpawnedOutput = {
-  status: 'teammate_spawned';
-  prompt: string;
-  teammate_id: string;
-  agent_id: string;
-  agent_type?: string;
-  model?: string;
-  name: string;
-  color?: string;
-  tmux_session_name: string;
-  tmux_window_name: string;
-  tmux_pane_id: string;
-  team_name?: string;
-  is_splitpane?: boolean;
-  plan_mode_required?: boolean;
-};
-
-// Combined output type including both public and internal types
-// Note: TeammateSpawnedOutput type is fine - TypeScript types are erased at compile time
 // Private type for remote-launched results — excluded from exported schema
-// like TeammateSpawnedOutput for dead code elimination purposes. Exported
+// for dead code elimination purposes. Exported
 // for UI.tsx to do proper discriminated-union narrowing instead of ad-hoc casts.
 export type RemoteLaunchedOutput = {
   status: 'remote_launched';
@@ -194,7 +173,7 @@ export type RemoteLaunchedOutput = {
   prompt: string;
   outputFile: string;
 };
-type InternalOutput = Output | TeammateSpawnedOutput | RemoteLaunchedOutput;
+type InternalOutput = Output | RemoteLaunchedOutput;
 import type { AgentToolProgress, ShellProgress } from '../../types/tools.js';
 // AgentTool forwards both its own progress events and shell progress
 // events from the sub-agent so the SDK receives tool_progress updates during bash/powershell runs.
@@ -1325,23 +1304,7 @@ export const AgentTool = buildTool({
     };
   },
   mapToolResultToToolResultBlockParam(data, toolUseID) {
-    // Multi-agent spawn result
     const internalData = data as InternalOutput;
-    if (typeof internalData === 'object' && internalData !== null && 'status' in internalData && internalData.status === 'teammate_spawned') {
-      const spawnData = internalData as TeammateSpawnedOutput;
-      return {
-        tool_use_id: toolUseID,
-        type: 'tool_result',
-        content: [{
-          type: 'text',
-          text: `Spawned successfully.
-agent_id: ${spawnData.teammate_id}
-name: ${spawnData.name}
-team_name: ${spawnData.team_name}
-The agent is now running and will receive instructions via mailbox.`
-        }]
-      };
-    }
     if ('status' in internalData && internalData.status === 'remote_launched') {
       const r = internalData;
       return {

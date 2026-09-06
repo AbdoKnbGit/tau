@@ -135,7 +135,7 @@ export type LocalAgentTaskState = TaskStateBase & {
   // Messages queued mid-turn via SendMessage, drained at tool-round boundaries
   pendingMessages: string[];
   // UI is holding this task: blocks eviction, enables stream-append, triggers
-  // disk bootstrap. Set by enterTeammateView. Separate from viewingAgentTaskId
+  // disk bootstrap. Set by enterAgentView. Separate from viewingAgentTaskId
   // (which is "what am I LOOKING at") — retain is "what am I HOLDING."
   retain: boolean;
   // Bootstrap has read the sidechain JSONL and UUID-merged into messages.

@@ -96,7 +96,7 @@ import { getShortcutDisplay } from '../keybindings/shortcutFormat.js';
 import { CancelRequestHandler } from '../hooks/useCancelRequest.js';
 import { useBackgroundTaskNavigation } from '../hooks/useBackgroundTaskNavigation.js';
 import { useSwarmInitialization } from '../hooks/useSwarmInitialization.js';
-import { useTeammateViewAutoExit } from '../hooks/useTeammateViewAutoExit.js';
+import { useAgentViewAutoExit } from '../hooks/useAgentViewAutoExit.js';
 import { errorMessage } from '../utils/errors.js';
 import { isHumanTurn } from '../utils/messagePredicates.js';
 import { logError } from '../utils/log.js';
@@ -4610,7 +4610,7 @@ export function REPL({
     onOpenBackgroundTasks: isShowingLocalJSXCommand ? undefined : () => setShowBashesDialog(true)
   });
   // Auto-exit viewing mode when teammate completes or errors
-  useTeammateViewAutoExit();
+  useAgentViewAutoExit();
   if (screen === 'transcript') {
     // Virtual scroll replaces the 30-message cap: everything is scrollable
     // and memory is bounded by the viewport. Without it, wrapping transcript
