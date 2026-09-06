@@ -14,6 +14,7 @@ import {
   _ownerLabelForTest,
   _resetAgentFileClaimsForTest,
   beginAgentFileScope,
+  checkAgentFileClaim,
   endAgentFileScope,
   enforceAgentFileClaim,
 } from './agentFileClaims.js'
@@ -171,10 +172,54 @@ test('releasing an agent drops only its own claims', () => {
   assert(_ownerLabelForTest(OTHER) === 'bravo', "bravo's claim survives")
 })
 
-// The tests above exercise the registry directly. These go through
-// writeTextContent — the single choke point Edit, Write, NotebookEdit and
-// Bash-applied writes all funnel into — so they cover the wiring, not just the
-// logic: if the hook is ever dropped from utils/file.ts, these fail.
+// checkAgentFileClaim is what the mutating tools call in validateInput, before
+// they read the file or match old_string. Without it the write-path backstop is
+// the first thing to fire — and by then Edit has already rejected with "String
+// to replace not found", which names no agent and invites the loser to retry
+// against the winner's content.
+test('checkAgentFileClaim names the owner without taking ownership', () => {
+  beginAgentFileScope('a', 'alpha')
+  beginAgentFileScope('b', 'bravo')
+  asAgent('a', () => enforceAgentFileClaim(FILE))
+
+  let seen: string | undefined
+  asAgent('b', () => {
+    seen = checkAgentFileClaim(FILE)
+  })
+  assert(seen === 'alpha', `expected alpha, got ${seen}`)
+  assert(_ownerLabelForTest(FILE) === 'alpha', 'a check must not steal ownership')
+})
+
+test('checkAgentFileClaim is silent for the owner, main session, and lone agents', () => {
+  beginAgentFileScope('a', 'alpha')
+  beginAgentFileScope('b', 'bravo')
+  asAgent('a', () => enforceAgentFileClaim(FILE))
+
+  let own: string | undefined = 'x'
+  asAgent('a', () => {
+    own = checkAgentFileClaim(FILE)
+  })
+  assert(own === undefined, 'the owner is never blocked by its own claim')
+  assert(checkAgentFileClaim(FILE) === undefined, 'the main session is never blocked')
+
+  endAgentFileScope('b')
+  let lone: string | undefined = 'x'
+  asAgent('a', () => {
+    lone = checkAgentFileClaim(FILE)
+  })
+  assert(lone === undefined, 'with one agent left there is no race')
+})
+
+test('checkAgentFileClaim never claims on an unowned path', () => {
+  beginAgentFileScope('a', 'alpha')
+  beginAgentFileScope('b', 'bravo')
+  asAgent('b', () => checkAgentFileClaim(OTHER))
+  assert(
+    _ownerLabelForTest(OTHER) === undefined,
+    'a validation that never reaches a write must leave no claim behind',
+  )
+})
+
 // The wiring — that writeTextContent actually calls into this module — is
 // asserted against the built bundle in tools/AgentTool/subagentSurface.test.ts,
 // because importing utils/file.js here pulls in the app graph that does not

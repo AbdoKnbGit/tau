@@ -190,6 +190,20 @@ test('every mutating write path enforces subagent file ownership', bundle => {
   }
 })
 
+test('the mutating tools check ownership before doing any work', bundle => {
+  // The write-path hook alone is too late: Edit rejects on its own
+  // "String to replace not found" first, which names no agent. Each mutating
+  // tool must consult the registry in validateInput, before it reads the file.
+  const checks = bundle.split('checkAgentFileClaim(').length - 1
+  if (checks < 3) {
+    throw new Error(
+      `expected Edit, Write and NotebookEdit to each check ownership in ` +
+        `validateInput; found ${checks} call sites`,
+    )
+  }
+  present(bundle, 'agentFileConflictMessage', 'both paths must share one wording')
+})
+
 test('agent lifecycle releases file claims', bundle => {
   present(
     bundle,

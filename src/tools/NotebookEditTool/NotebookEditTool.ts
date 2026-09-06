@@ -1,3 +1,4 @@
+import { agentFileConflictMessage, checkAgentFileClaim } from '../../utils/agentFileClaims.js'
 import { feature } from 'bun:bundle'
 import { extname } from 'path'
 import {
@@ -211,6 +212,16 @@ export const NotebookEditTool = buildTool({
     // Bash path like /c/Users/... is looked up verbatim while Read stored it as
     // C:\Users\..., so the read-before-edit gate fires even after a real read.
     const fullPath = expandPath(notebook_path)
+
+    // Ownership check before any other validation — see FileEditTool.
+    const claimOwner = checkAgentFileClaim(fullPath)
+    if (claimOwner) {
+      return {
+        result: false,
+        message: agentFileConflictMessage(fullPath, claimOwner),
+        errorCode: 0,
+      }
+    }
 
     // SECURITY: Skip filesystem operations for UNC paths to prevent NTLM credential leaks.
     if (fullPath.startsWith('\\\\') || fullPath.startsWith('//')) {
