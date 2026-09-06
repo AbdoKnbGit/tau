@@ -3,10 +3,7 @@ export const AGENT_TOOL_NAME = 'Agent'
 export const LEGACY_AGENT_TOOL_NAME = 'Task'
 export const VERIFICATION_AGENT_TYPE = 'verification'
 
-// Built-in agents that run once and return a report — the parent never
-// SendMessages back to continue them. Skip the agentId/SendMessage/usage
-// trailer for these to save tokens (~135 chars × 34M Explore runs/week).
-export const ONE_SHOT_BUILTIN_AGENT_TYPES: ReadonlySet<string> = new Set([
-  'Explore',
-  'Plan',
-])
+// One-shot agent types are derived from the definitions that declare
+// `oneShot` — see getOneShotAgentTypes() in ./builtInAgents.ts. Keeping a
+// literal name list here meant the exemption silently stopped matching when
+// a build stripped those agents.

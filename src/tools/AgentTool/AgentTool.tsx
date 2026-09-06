@@ -48,7 +48,8 @@ import { setAgentColor } from './agentColorManager.js';
 import { setAgentResolvedModel } from './agentModelManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
-import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from './constants.js';
+import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js';
+import { getOneShotAgentTypes } from './builtInAgents.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
 import type { AgentDefinition } from './loadAgentsDir.js';
 import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
@@ -91,7 +92,7 @@ const baseInputSchema = lazySchema(() => z.object({
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
   model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe("Optional model override for this agent. Takes precedence over the agent definition's model frontmatter, except on an agent pinned to a provider, which keeps its own model. If omitted, uses the agent definition's model, or inherits from the parent."),
   model_id: z.string().optional().describe('Optional fully-qualified model id (e.g. "gemini-3-flash", "kimi-k2.6", "deepseek-v3.1"). Used when the model is not Anthropic Sonnet/Opus/Haiku. Takes priority over the `model` enum when both are set. Pair with `provider` to pin the lane.'),
-  provider: z.string().optional().describe('Optional APIProvider name (e.g. "kiro", "antigravity", "moonshot") that this agent must route through, regardless of the session-global provider. Use this when /team-mode needs to pin one role to a specific provider while other agents run elsewhere.'),
+  provider: z.string().optional().describe('Optional APIProvider name (e.g. "kiro", "antigravity", "moonshot") that this agent must route through, regardless of the session-global provider. Use it to run one spawn on a different lane than the rest of the session; pair it with model_id to pin the exact model. An unrecognized name is ignored.'),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
 }));
 
@@ -299,18 +300,26 @@ export const AgentTool = buildTool({
     isolation,
     cwd
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
-    // Team-mode off-switch guard. When /team-mode is OFF, silently treat the
-    // team-mode-only fields as if they were never provided. This means:
-    //   - LLM passes provider/model_id by mistake → ignored, no error
-    //   - Runtime path is byte-identical to pre-team-mode behavior
-    //   - The schema is wider (LLM sees the fields) but the runtime is locked
+    // Per-spawn provider routing is validated, not gated.
     //
-    // Without this guard, an LLM that decides to use provider/model_id in
-    // normal mode would either route to the wrong lane or error out with
-    // "model not found" — neither of which the user is responsible for.
+    // This used to be locked to /team-mode being ON, which silently discarded
+    // provider/model_id in every ordinary session even though the schema
+    // advertised both. The reason given was that an LLM guess would "route to
+    // the wrong lane or error out with 'model not found' — neither of which
+    // the user is responsible for". Validation buys that protection without
+    // the capability loss: an invented provider name is dropped exactly as
+    // before (silently, no error), and model_id only survives alongside a real
+    // provider because a model id is meaningful only relative to its lane.
+    //
+    // A named-but-unconfigured provider still fails at request time — but that
+    // is not a new hazard: an agent definition's own `provider:` frontmatter
+    // already routes ungated through the same runWithAgentProvider path.
     const teamModeOn = isTeamModeEnabled();
-    const providerParam = teamModeOn ? rawProviderParam : undefined;
-    const modelIdParam = teamModeOn ? rawModelIdParam : undefined;
+    const providerParam =
+      rawProviderParam !== undefined && isAPIProvider(rawProviderParam)
+        ? rawProviderParam
+        : undefined;
+    const modelIdParam = providerParam !== undefined ? rawModelIdParam : undefined;
 
     // Team-mode role-binding validation. When team mode is ON and the caller
     // passes BOTH a provider and a model_id, the spawn MUST declare its role
@@ -948,6 +957,24 @@ export const AgentTool = buildTool({
       // Create an explicit agentId for sync agents
       const syncAgentId = asAgentId(earlyAgentId);
 
+      // Register name → agentId for SendMessage routing, same as the async
+      // branch. Sync agents used to be skipped because coordinator mode
+      // blocked the parent, so there was nothing to route. A sync agent still
+      // finishes with a readable transcript, and SendMessage resumes it from
+      // there — so without this entry a named sync spawn could only ever be
+      // continued by pasting its raw agentId, which the parent is told not to
+      // surface. Registration is idempotent per name (last spawn wins).
+      if (name) {
+        rootSetAppState(prev => {
+          const next = new Map(prev.agentNameRegistry);
+          next.set(name, syncAgentId);
+          return {
+            ...prev,
+            agentNameRegistry: next
+          };
+        });
+      }
+
       // Set up agent context for sync execution (for analytics attribution)
       const syncAgentContext = {
         agentId: syncAgentId,
@@ -1481,10 +1508,9 @@ export const AgentTool = buildTool({
       }
     };
 
+    // providerParam is already narrowed to a valid APIProvider at the top of
+    // call() — an unknown name never reaches here, it was dropped there.
     if (providerParam !== undefined) {
-      if (!isAPIProvider(providerParam)) {
-        throw new Error(`Unknown provider "${providerParam}". Pick one of the supported APIProvider names (e.g. "firstParty", "kiro", "antigravity", "moonshot", "openrouter").`);
-      }
       return runWithForcedProvider({ provider: providerParam }, runBodyWithTeamModeRuntime);
     }
     return runBodyWithTeamModeRuntime();
@@ -1576,12 +1602,12 @@ The agent is now running and will receive instructions via mailbox.`
         type: 'text' as const,
         text: '(Subagent completed but returned no output.)'
       }];
-      // One-shot built-ins (Explore, Plan) are never continued via SendMessage
-      // — the agentId hint and <usage> block are dead weight (~135 chars ×
+      // Agents that declare `oneShot` are never continued via SendMessage —
+      // the agentId hint and <usage> block are dead weight (~135 chars ×
       // 34M Explore runs/week ≈ 1-2 Gtok/week). Telemetry doesn't parse this
       // block (it uses logEvent in finalizeAgentTool), so dropping is safe.
       // agentType is optional for resume compat — missing means show trailer.
-      if (data.agentType && ONE_SHOT_BUILTIN_AGENT_TYPES.has(data.agentType) && !worktreeInfoText) {
+      if (data.agentType && getOneShotAgentTypes().has(data.agentType) && !worktreeInfoText) {
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',

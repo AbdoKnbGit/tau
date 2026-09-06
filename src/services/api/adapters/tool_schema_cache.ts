@@ -12,6 +12,18 @@
  *
  * Last-write-wins: the same tool name within the same session/process
  * overwrites prior entries so updated schemas take precedence.
+ *
+ * Conflict safety: the cache is keyed by tool NAME, but the inbound side only
+ * ever knows the name the provider echoed back — it cannot know which schema
+ * produced the call. So when two different schemas are registered under one
+ * name (concurrent subagents carrying their own StructuredOutput contract, two
+ * MCP servers exposing a same-named tool), a parameter whose declared type
+ * disagrees between them is marked ambiguous and never coerced. Skipping the
+ * repair leaves the raw provider value untouched — the pre-repair behavior,
+ * and a visible validation failure downstream — whereas coercing against the
+ * wrong schema silently rewrites the payload. The Anthropic-facing render
+ * cache hit this same collision and fixed it by keying on the schema
+ * (utils/api.ts); that fix is unavailable here, so we fail safe instead.
  */
 
 export interface SchemaInfo {
@@ -20,7 +32,29 @@ export interface SchemaInfo {
   properties?: Record<string, SchemaInfo>
 }
 
-const cache = new Map<string, Map<string, SchemaInfo>>()
+interface ToolSchemaEntry {
+  /** Params from the most recent write — last-write-wins, as before. */
+  params: Map<string, SchemaInfo>
+  /** Top-level `name:type` digest of the most recent write, for a no-op fast path. */
+  shape: string
+  /** Params whose top-level type disagreed across writes. Never coerced. */
+  ambiguous: Set<string>
+}
+
+const cache = new Map<string, ToolSchemaEntry>()
+
+/**
+ * Deterministic digest of the top-level parameter types — the only thing
+ * coercion consults. Nested `items`/`properties` are ignored on purpose: two
+ * schemas that agree on every top-level type coerce identically, so treating
+ * them as a conflict would disable repair for no benefit.
+ */
+function shapeOf(params: Map<string, SchemaInfo>): string {
+  return [...params]
+    .map(([name, info]) => `${name}:${info.type}`)
+    .sort()
+    .join(',')
+}
 
 function normalizeType(value: unknown): string {
   if (typeof value === 'string') return value
@@ -68,12 +102,37 @@ export function recordToolSchema(toolName: string, schema: unknown): void {
       params.set(name, extract(paramSchema))
     }
   }
-  cache.set(toolName, params)
+
+  const shape = shapeOf(params)
+  const previous = cache.get(toolName)
+
+  // Identical re-registration (the common case: one schema re-sent every turn,
+  // or a workflow reusing the same schema object across dozens of calls).
+  if (previous && previous.shape === shape) return
+
+  const ambiguous = new Set(previous?.ambiguous)
+  if (previous) {
+    // A different shape under the same name means two schemas are live at
+    // once. Any parameter the two disagree about — including one that exists
+    // in only one of them — can no longer be repaired safely.
+    for (const name of new Set([...previous.params.keys(), ...params.keys()])) {
+      if (previous.params.get(name)?.type !== params.get(name)?.type) {
+        ambiguous.add(name)
+      }
+    }
+  }
+
+  cache.set(toolName, { params, shape, ambiguous })
 }
 
-/** Returns the recorded type for a single parameter (e.g. "array", "object"). */
+/**
+ * Returns the recorded type for a single parameter (e.g. "array", "object"),
+ * or undefined when the parameter is ambiguous across colliding schemas.
+ */
 export function getParamType(toolName: string, paramName: string): string | undefined {
-  return cache.get(toolName)?.get(paramName)?.type
+  const entry = cache.get(toolName)
+  if (!entry || entry.ambiguous.has(paramName)) return undefined
+  return entry.params.get(paramName)?.type
 }
 
 function looksLikeJson(value: string): boolean {
@@ -91,14 +150,18 @@ function looksLikeJson(value: string): boolean {
  */
 export function coerceToolCallArgs(toolName: string, args: unknown): unknown {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return args
-  const params = cache.get(toolName)
-  if (!params || params.size === 0) return args
+  const entry = cache.get(toolName)
+  if (!entry || entry.params.size === 0) return args
 
   const record = args as Record<string, unknown>
   let mutated = false
   const next: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(record)) {
-    const expected = params.get(key)?.type
+    // Ambiguous params keep the provider's raw value: we cannot tell which of
+    // the colliding schemas produced this call, and a wrong parse corrupts.
+    const expected = entry.ambiguous.has(key)
+      ? undefined
+      : entry.params.get(key)?.type
     if (
       typeof value === 'string' &&
       (expected === 'array' || expected === 'object') &&

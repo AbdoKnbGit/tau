@@ -94,10 +94,18 @@ export type SystemPromptBlock = {
   cacheScope: CacheScope | null
 }
 
-// Fields to filter from tool schemas when swarms are not enabled
+// Fields to filter from tool schemas when swarms are not enabled.
+//
+// `name` is deliberately NOT listed: it is the subagent addressing primitive,
+// not a swarm field. Stripping it left the model unable to name a spawn, so
+// agentNameRegistry stayed empty and SendMessage could only route by raw
+// agentId — while the Agent tool's prompt and every result trailer told the
+// model to continue agents by name. A teammate spawn still requires
+// `team_name` (see the `teamName && name` guard in AgentTool), which stays
+// filtered, so exposing `name` alone cannot reach the swarm path.
 const SWARM_FIELDS_BY_TOOL: Record<string, string[]> = {
   [EXIT_PLAN_MODE_V2_TOOL_NAME]: ['launchSwarm', 'teammateCount'],
-  [AGENT_TOOL_NAME]: ['name', 'team_name', 'mode'],
+  [AGENT_TOOL_NAME]: ['team_name', 'mode'],
 }
 
 /**

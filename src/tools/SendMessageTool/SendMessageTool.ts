@@ -64,15 +64,31 @@ const StructuredMessage = lazySchema(() =>
   ]),
 )
 
+/**
+ * Describe only the recipient kinds this build can actually route to, so the
+ * model is never told about an address it cannot use. Subagent continuation is
+ * always reachable; teammate names and broadcast exist only with swarms on;
+ * cross-session peers only with the UDS inbox compiled in.
+ */
+function describeRecipient(): string {
+  const kinds = [
+    'the id or name of an agent you spawned with the Agent tool (continues it with your message; a finished agent is resumed from its transcript)',
+  ]
+  if (isAgentSwarmsEnabled()) {
+    kinds.push('a teammate name', '"*" to broadcast to all teammates')
+  }
+  if (feature('UDS_INBOX')) {
+    kinds.push(
+      '"uds:<socket-path>" for a local peer',
+      '"bridge:<session-id>" for a Remote Control peer (use ListPeers to discover)',
+    )
+  }
+  return `Recipient: ${kinds.join(', or ')}`
+}
+
 const inputSchema = lazySchema(() =>
   z.object({
-    to: z
-      .string()
-      .describe(
-        feature('UDS_INBOX')
-          ? 'Recipient: teammate name, "*" for broadcast, "uds:<socket-path>" for a local peer, or "bridge:<session-id>" for a Remote Control peer (use ListPeers to discover)'
-          : 'Recipient: teammate name, or "*" for broadcast to all teammates',
-      ),
+    to: z.string().describe(describeRecipient()),
     summary: z
       .string()
       .optional()
@@ -533,7 +549,15 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     shouldDefer: true,
 
     isEnabled() {
-      return isAgentSwarmsEnabled()
+      // Availability is derived from whether anyone is addressable, not from a
+      // feature flag. Two kinds of peer exist: swarm teammates (flag-gated)
+      // and spawned subagents (always available — the Agent tool carries no
+      // enablement gate). Binding this to isAgentSwarmsEnabled() disabled the
+      // only follow-up path to a finished subagent while the Agent tool kept
+      // advertising it on every result and in its own prompt, so a stopped or
+      // named agent could never be continued and the hint burned tokens on a
+      // tool that was not in the pool.
+      return true
     },
 
     isReadOnly(input) {
@@ -870,6 +894,29 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               }
             }
           }
+        }
+      }
+
+      // Nothing above resolved `to` to a live subagent. The remaining routes
+      // are the teammate mailbox and broadcast, which only have a reader when
+      // swarms are on — handleMessage otherwise writes a mailbox file no
+      // process ever drains and still reports "Message sent", so a typo'd or
+      // evicted recipient would look like a delivered message. Fail loudly
+      // instead, and say what IS addressable.
+      if (!isAgentSwarmsEnabled()) {
+        const appState = context.getAppState()
+        const addressable = [...appState.agentNameRegistry.keys()].sort()
+        const known = addressable.length
+          ? `Agents you can address: ${addressable.join(', ')}.`
+          : 'No agent has been spawned in this session yet.'
+        return {
+          data: {
+            success: false,
+            message:
+              input.to === '*'
+                ? `Broadcast is unavailable — there is no team in this session. ${known} Address one agent at a time by its name or agentId.`
+                : `No agent named "${input.to}" in this session, and its transcript could not be resumed. ${known} Use the name you passed when spawning it, or the agentId from its result.`,
+          },
         }
       }
 

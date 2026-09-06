@@ -181,6 +181,12 @@ export type BaseAgentDefinition = {
    * full CLAUDE.md and interprets their output. Saves ~5-15 Gtok/week across
    * 34M+ Explore spawns. Kill-switch: tengu_slim_subagent_claudemd. */
   omitClaudeMd?: boolean
+  /** This agent runs once and returns a report; the parent never continues it
+   * with SendMessage. Its result skips the agentId/continuation/usage trailer,
+   * which is dead weight at that scale. Declared on the definition rather than
+   * matched against a name list so a new one-shot agent needs no edit at the
+   * result-rendering site. */
+  oneShot?: boolean
 }
 
 // Built-in agents - dynamic prompts only, no static systemPrompt field

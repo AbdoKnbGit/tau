@@ -88,5 +88,7 @@ export const PLAN_AGENT: BuiltInAgentDefinition = {
   // Plan is read-only and can Read CLAUDE.md directly if it needs conventions.
   // Dropping it from context saves tokens without blocking access.
   omitClaudeMd: true,
+  // Returns a plan and is never continued — skip the result trailer.
+  oneShot: true,
   getSystemPrompt: () => getPlanV2SystemPrompt(),
 }

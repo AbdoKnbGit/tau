@@ -19,6 +19,22 @@ export function areExplorePlanAgentsEnabled(): boolean {
   return false
 }
 
+/**
+ * Agent types whose results skip the agentId/continuation/usage trailer.
+ *
+ * Derived from the definitions that declare `oneShot`, not from a name list:
+ * the previous hardcoded set named two agents that the external build strips
+ * entirely (see areExplorePlanAgentsEnabled), so the exemption never fired and
+ * every subagent result paid for a trailer it did not need.
+ */
+export function getOneShotAgentTypes(): ReadonlySet<string> {
+  const types = new Set<string>()
+  for (const agent of getBuiltInAgents()) {
+    if (agent.oneShot) types.add(agent.agentType)
+  }
+  return types
+}
+
 export function getBuiltInAgents(): AgentDefinition[] {
   // Allow disabling all built-in agents via env var (useful for SDK users who want a blank slate)
   // Only applies in noninteractive mode (SDK/API usage)

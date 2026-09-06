@@ -121,6 +121,20 @@ ${forkEnabled ? 'When spawning a fresh agent (with a `subagent_type`), it starts
 ${forkEnabled ? 'For fresh agents, terse' : 'Terse'} command-style prompts produce shallow, generic work.
 
 **Never delegate understanding.** Don't write "based on your findings, fix the bug" or "based on the research, implement it." Those phrases push synthesis onto the agent instead of doing it yourself. Write prompts that prove you understood: include file paths, line numbers, what specifically to change.
+
+An implementation prompt covers three things. A prompt missing any of them is not ready to send:
+- **Target** — the exact files and symbols in scope, and what is explicitly out of scope.
+- **Change** — what to add, remove, or rename; the APIs and patterns to follow.
+- **Acceptance** — the observable result that means it worked.
+
+## Running agents side by side
+
+Parallel agents share one working tree. Two rules make that safe, and both are your job before you launch, not theirs to negotiate afterwards:
+
+1. **Settle shared contracts up front.** If one agent implements an interface another consumes, decide the signature yourself and write it into both prompts. Agents cannot see each other's work, so anything left open gets guessed twice, differently.
+2. **Give each agent disjoint files.** Same-file edits from concurrent agents are not guaranteed to merge. When a change genuinely has to cross a shared boundary, name one agent as the owner of that file and have the others depend on it rather than edit it.
+
+Tell each parallel agent to skip formatters, linters, and project-wide test suites — those read files the others are still writing, so they block or report failures that aren't real. Run them once yourself after the last agent returns.
 `
 
   const forkExamples = `Example usage:
@@ -275,7 +289,8 @@ Usage notes:
 - **Foreground vs background**: Use foreground (default) when you need the agent's results before you can proceed — e.g., research agents whose findings inform your next steps. Use background when you have genuinely independent work to do in parallel.`
       : ''
   }
-- To continue a previously spawned agent, use ${SEND_MESSAGE_TOOL_NAME} with the agent's ID or name as the \`to\` field. The agent resumes with its full context preserved. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each Agent invocation starts fresh — provide a complete task description.'}
+- Pass a short \`name\` (one or two words, lowercase) when you spawn. It is how you address the agent afterwards, and it is what the user sees while it runs.
+- To continue a previously spawned agent, use ${SEND_MESSAGE_TOOL_NAME} with the agent's \`name\` — or the \`agentId\` from its result — as the \`to\` field. A running agent picks the message up at its next tool round; a finished one is resumed from its transcript with its full context preserved. Prefer continuing an existing agent over spawning a fresh one for follow-up work: it already holds the context, and the resumed session reuses its warm prompt cache while a new spawn starts cold. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each Agent invocation starts fresh — provide a complete task description.'}
 - The agent's outputs should generally be trusted
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.)${forkEnabled ? '' : ", since it is not aware of the user's intent"}
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
