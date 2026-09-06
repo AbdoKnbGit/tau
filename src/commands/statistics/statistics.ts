@@ -49,6 +49,7 @@ type ResponseModelStats = {
   model: string
   stats: ModelStats
   estimated?: boolean
+  finalUsage?: boolean
 }
 
 type TokenUsage = NonNullable<ReturnType<typeof getTokenUsage>>
@@ -229,7 +230,7 @@ function compactText(value: string, maxLength: number): string {
 }
 
 function modelUsageLine(name: string, usage: ModelStats): string {
-  usage = modelUsageForStatisticsDisplay(name, usage)
+  usage = modelUsageForStatisticsDisplay(name, usage, getAPIProvider())
   const label = compactText(name, 38)
   if (!shouldShowDetailedCacheUsage(name, usage)) {
     return `${label}: input ${formatInteger(usage.inputTokens)} | output ${formatInteger(usage.outputTokens)} | cache ${formatCacheHit(usage)}`
@@ -259,7 +260,10 @@ function modelStatsForStatisticsDisplay(
 ): Map<string, ModelStats> {
   const displayStats = new Map<string, ModelStats>()
   for (const [model, usage] of modelStats.entries()) {
-    displayStats.set(model, modelUsageForStatisticsDisplay(model, usage))
+    displayStats.set(
+      model,
+      modelUsageForStatisticsDisplay(model, usage, getAPIProvider()),
+    )
   }
   return displayStats
 }
@@ -454,7 +458,10 @@ function collectModelStats(messages: Message[]): Map<string, ModelStats> {
   return fallback
 }
 
-function collectResponseModelStats(messages: Message[]): ResponseModelStats[] {
+export function collectResponseModelStats(
+  messages: Message[],
+  provider: string = getAPIProvider(),
+): ResponseModelStats[] {
   const responses = new Map<string, ResponseModelStats>()
 
   messages.forEach((message, index) => {
@@ -469,13 +476,34 @@ function collectResponseModelStats(messages: Message[]): ResponseModelStats[] {
     if (!statsHaveTokens(stats)) return
 
     const existing = responses.get(responseKey)
-    if (existing && (estimated || existing.estimated)) {
+    const antigravityGemini =
+      provider === 'antigravity' && isAntigravityGeminiModel(model)
+    const finalUsage = !estimated && Boolean(message.message.stop_reason)
+    if (existing && antigravityGemini) {
+      // Split content blocks share a response id. Early Antigravity snapshots
+      // may report the entire prompt as input before cache counts arrive; the
+      // final snapshot replaces that with uncached input. Keep its complete
+      // tuple instead of independently taking maxima and counting cache twice.
+      // A reordered provisional record must never overwrite a final one.
+      if (finalUsage || (!existing.finalUsage && !estimated)) {
+        existing.stats = stats
+        existing.estimated = false
+        existing.finalUsage = finalUsage
+      } else if (!existing.finalUsage && existing.estimated) {
+        mergeEstimatedResponseStats(existing.stats, stats)
+      }
+    } else if (existing && (estimated || existing.estimated)) {
       mergeEstimatedResponseStats(existing.stats, stats)
       existing.estimated = true
     } else if (existing && shouldShowDetailedCacheUsage(model, stats)) {
       mergeResponseStats(existing.stats, stats)
     } else if (!existing) {
-      responses.set(responseKey, { model, stats, estimated })
+      responses.set(responseKey, {
+        model,
+        stats,
+        estimated,
+        ...(antigravityGemini && { finalUsage }),
+      })
     }
   })
 

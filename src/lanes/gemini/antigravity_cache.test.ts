@@ -10,6 +10,7 @@ import {
   guardAntigravityCommitWindow,
   paceAntigravityAgentRequest,
   recordAntigravityCacheRead,
+  antigravityCacheScope,
   writeAntigravityCacheDebugEntry,
   _getAntigravityPaceStateForTest,
   _resetAntigravityCacheStateForTest,
@@ -520,7 +521,7 @@ async function main(): Promise<void> {
     const SID = 'root-session'
     // Same model as the main loop — the case the model key alone cannot fix.
     const v1 = writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', probe, SID)
-    assert(v1 === 'n/a: below cache minimum', `probe verdict: ${v1}`)
+    assert(v1 === 'n/a: small request (cache eligibility unknown)', `probe verdict: ${v1}`)
     const v2 = writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', turn(1), SID)
     assert(v2 === 'cold', `real turn after same-model probe: ${v2}`)
   })
@@ -560,6 +561,92 @@ async function main(): Promise<void> {
     }
     const v = writeAntigravityCacheDebugEntry('gemini-3.6-flash-medium', churned, SID)
     assert(v === 'BREAK: systemInstruction', `got: ${v}`)
+  })
+
+  await test('small scoped agent requests are compared without guessing cache eligibility', () => {
+    _resetAntigravityCacheStateForTest()
+    const context = { model: 'gemini-3.8-flash-low', sessionId: 'agent', querySource: 'agent', requestId: 'a' }
+    assert(writeAntigravityCacheDebugEntry(context.model, probe, 'agent', context) === 'cold', 'first agent request')
+    assert(writeAntigravityCacheDebugEntry(context.model, probe, 'agent', { ...context, requestId: 'b' }) === 'ok: clean prefix extension', 'small identical request must be compared')
+  })
+
+  await test('same-model helper snapshots cannot overwrite main conversation snapshots', () => {
+    _resetAntigravityCacheStateForTest()
+    const context = { model: 'gemini-3.8-flash-low', sessionId: 'root', querySource: 'repl_main_thread', requestId: 'main-1' }
+    writeAntigravityCacheDebugEntry(context.model, turn(1), 'root', context)
+    writeAntigravityCacheDebugEntry(context.model, { ...turn(1), systemInstruction: { parts: [{ text: 'different helper'.repeat(6000) }] } }, 'root', {
+      ...context, querySource: 'web_fetch_apply', requestId: 'helper',
+    })
+    const verdict = writeAntigravityCacheDebugEntry(context.model, turn(3), 'root', { ...context, requestId: 'main-2' })
+    assert(verdict === 'ok: clean prefix extension', `helper caused ${verdict}`)
+  })
+
+  await test('final usage rows preserve identical consecutive requests and correlation', () => {
+    _resetAntigravityCacheStateForTest()
+    const logPath = join(_sandbox, 'tau-cache-debug.jsonl')
+    if (existsSync(logPath)) rmSync(logPath)
+    const context = { model: 'gemini-3.8-flash-low', sessionId: 'root', querySource: 'repl_main_thread', requestId: 'first' }
+    recordAntigravityCacheRead('root', 20_000, 24_000, context.querySource, context)
+    recordAntigravityCacheRead('root', 20_000, 24_000, context.querySource, { ...context, requestId: 'second' })
+    const rows = readFileSync(logPath, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    assert(rows.length === 2, 'identical final usage must not disappear from totals')
+    assert(rows.every(r => r.final && r.model === context.model && r.querySource === context.querySource), 'final usage metadata')
+    assert(rows[1].requestId === 'second' && rows[1].uncached === 4000, 'request correlation')
+    assert(rows[1].promptDelta === 0 && rows[1].cacheReadDelta === 0, 'usage deltas')
+  })
+
+  await test('models and helper sources have separate local recovery state', async () => {
+    _resetAntigravityCacheStateForTest()
+    _setAntigravityCommitWindowForTest(0)
+    const main = { model: 'gemini-3.8-flash-low', sessionId: 'root', querySource: 'repl_main_thread', requestId: 'main' }
+    const mainScope = antigravityCacheScope('root', main.model, main.querySource)
+    await guardAntigravityCommitWindow('root', undefined, BIG_PROMPT_CHARS, main.querySource, main.model)
+    recordAntigravityCacheRead('root', 30_000, 36_000, main.querySource, main)
+    recordAntigravityCacheRead('root', 0, 37_000, 'web_fetch_apply', { ...main, querySource: 'web_fetch_apply', requestId: 'helper' })
+    recordAntigravityCacheRead('root', 0, 37_000, main.querySource, { ...main, model: 'gemini-3.6-flash-high', requestId: 'other-model' })
+    const state = _getAntigravityPaceStateForTest(mainScope)
+    assert(state?.hitSeen && state.rearms === 0, 'helper cold must not rearm the warm main')
+    assert(antigravityCacheScope('root', main.model, 'repl_main_thread:resume') === mainScope, 'main continuation must retain state')
+
+    recordAntigravityCacheRead('root', 0, 37_000, main.querySource, main)
+    recordAntigravityCacheRead('root', 35_000, 37_000, 'web_fetch_apply', { ...main, querySource: 'web_fetch_apply' })
+    assert(!state.hitSeen && state.rearms === 1, 'helper hit must not latch a cold main')
+  })
+
+  await test('provider token counts enable recovery for a dense small agent prompt', async () => {
+    _resetAntigravityCacheStateForTest()
+    _setAntigravityCommitWindowForTest(50)
+    const context = { model: 'gemini-3.8-flash-low', sessionId: 'agent', querySource: 'agent', requestId: 'cold-agent' }
+    recordAntigravityCacheRead('agent', 0, 17_000, context.querySource, context)
+    const start = Date.now()
+    await guardAntigravityCommitWindow('agent', undefined, 64_000, context.querySource, context.model)
+    assert(Date.now() - start >= 30, 'measured over-threshold tokens must override the character guess')
+  })
+
+  await test('Gemini 3.8 subagents can recover below the old 16k threshold', async () => {
+    _resetAntigravityCacheStateForTest()
+    _setAntigravityCommitWindowForTest(50)
+    const context = { model: 'gemini-3.8-flash-low', sessionId: 'small-agent', querySource: 'agent', requestId: 'small-cold' }
+    recordAntigravityCacheRead('small-agent', 0, 9008, context.querySource, context)
+    const start = Date.now()
+    await guardAntigravityCommitWindow('small-agent', undefined, 38_441, context.querySource, context.model)
+    assert(Date.now() - start >= 30, 'the real 9k-agent fixture was incorrectly excluded from recovery')
+    recordAntigravityCacheRead('small-agent', 4079, 9008, context.querySource, { ...context, requestId: 'small-warm' })
+    const warmed = Date.now()
+    await guardAntigravityCommitWindow('small-agent', undefined, 38_441, context.querySource, context.model)
+    assert(Date.now() - warmed < 25, 'measured block-granular hit must not wait again just to reach 70%')
+  })
+
+  await test('tiny requests and unmeasured older models keep the conservative recovery gate', async () => {
+    _resetAntigravityCacheStateForTest()
+    _setAntigravityCommitWindowForTest(50)
+    for (const [model, prompt] of [['gemini-3.8-flash-low', 4993], ['gemini-3.5-flash-low', 9008]] as const) {
+      const context = { model, sessionId: 'small', querySource: 'agent', requestId: model }
+      recordAntigravityCacheRead('small', 0, prompt, context.querySource, context)
+      const start = Date.now()
+      await guardAntigravityCommitWindow('small', undefined, 20_000, context.querySource, model)
+      assert(Date.now() - start < 25, `${model}/${prompt}: inappropriate hold`)
+    }
   })
 
 

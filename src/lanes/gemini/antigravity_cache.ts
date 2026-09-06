@@ -1,64 +1,25 @@
 /**
- * Antigravity implicit-cache discipline (Gemini-family wire models).
+ * Antigravity Gemini implicit-cache recovery and diagnostics.
  *
- * Measured behavior of the Antigravity prompt cache (probed 2026-06-12
- * against gemini-3.5-flash-low with controlled requests and verified
- * end-to-end with live subagent sessions; cross-checked against the
- * session-independence and content-addressing results in external
- * proxy test suites):
+ * Historical 3.5 probes suggested a ~16k-token cache threshold. Controlled
+ * 2026-09-06 tests on 3.8 cached 9,008- and 11,811-token prompts, so that
+ * threshold is not universal. Identical 19,803-token requests repeatedly
+ * returned 16,353 cached tokens after 20s, with no tools or history changes.
+ * A stable prefix permits reuse; it does not guarantee full token coverage.
  *
- *   1. The cache is content-addressed on the tokenized prompt prefix
- *      (systemInstruction → tools → contents). Session ids do not key
- *      it — byte-identical prefixes hit regardless of sessionId.
- *   2. Minimum cacheable prompt ≈ 16,384 tokens. Prompts of 7.2k and
- *      12.5k tokens NEVER produce a cache entry; 17.3k+ prompts do.
- *   3. Writes commit asynchronously ~8-22s after the request. A request
- *      arriving before the commit pays full price and is itself written.
- *   4. Within a session, later requests prefix-match earlier committed
- *      entries (reads of 32.6k measured on live agent streams). Across
- *      sessions, only exact-duplicate prompts matched — because sibling
- *      agents' shared prefix (persona + tools) sat below the 16,384
- *      minimum, there was never a committable shared entry.
+ * The default guard waits after a completed cold response, with bounded
+ * retries. Its local state is scoped by session, model and query source;
+ * upstream routing IDs and prompt bytes remain untouched. Actual token
+ * counts override character estimates for dense agent prompts. Streaming
+ * usage must be finalized before it can consume a recovery opportunity.
  *
- * Consequences this module fixes:
+ * Prefix padding and extra agent pacing remain opt-in via
+ * TAU_ANTIGRAVITY_MAX_CACHE=1. They are not a guarantee of lower total cost.
+ * TAU_CACHE_DEBUG=1 records request hashes and final usage with correlation
+ * IDs kept out of the wire payload. No diagnostic calls the model itself.
  *
- *   - Subagent prompts (persona + tools + task ≈ 10-15k tokens) sit
- *     below the minimum, so agent streams historically cached 0% —
- *     every turn re-paid the full growing prompt. Fresh main-thread
- *     sessions with small system+tools bled the same way for their
- *     first turns.
- *   - Fast agent tool loops (~2s/turn) land inside the commit window,
- *     so even an over-minimum prompt missed on the second call.
- *
- * Fixes, all scoped by the caller to Antigravity Gemini wire models
- * (Claude models resold through Antigravity use a multi-entry
- * content-addressed cache with a much lower minimum — padding or
- * pacing them would only waste tokens and wall-clock):
- *
- *   - applyAntigravityPrefixPad(): prepend deterministic inert text to
- *     the stable system slot whenever (stable system + tool
- *     declarations) is estimated below the minimum, so every request —
- *     main thread and agents alike — clears it from turn 1 and the
- *     second call is a cache hit. Sized from turn-stable inputs only
- *     and memoized per size step, so a given conversation gets
- *     byte-identical padding on every turn, and same-type sibling
- *     agents share an over-minimum prefix.
- *   - paceAntigravityAgentRequest(): hold an agent's second request
- *     until the first write has had time to commit (one re-arm if it
- *     still missed, then give up). Main-thread requests are never
- *     paced — human cadence already clears the window, and stalling
- *     the user is worse than one cold turn.
- *   - writeAntigravityCacheDebugEntry(): TAU_CACHE_DEBUG=1 appends a
- *     JSONL line per request with a hash of every cache-relevant
- *     section, so prefix stability is verifiable instead of guessed.
- *   - freezeAntigravityVolatilePrefix(): preserves the first volatile
- *     environment/git block for a session. The normal Gemini cachedContents
- *     path can place fresh volatile context before the conversation because
- *     it is not part of that cache key. Antigravity's implicit cache hashes
- *     contents too, so changing that leading block rewrites byte 0 of the
- *     content prefix and drops the hit rate.
- *
- * Escape hatches: TAU_ANTIGRAVITY_NO_PREFIX_PAD=1, TAU_ANTIGRAVITY_NO_PACING=1.
+ * Callers restrict recovery/padding to Antigravity Gemini; Claude on
+ * Antigravity and other providers retain their existing behavior.
  */
 
 import { createHash } from 'crypto'
@@ -75,20 +36,17 @@ import {
 // The cache discipline (prefix pad + commit-window pacing + agent gate) is
 // OFF by default. It trades interactive latency for token savings and only
 // earns its keep on long, many-turn batch/agent runs. With it off, simple
-// prompts stay fast AND the implicit prefix cache still warms NATURALLY: the
-// backend content-addresses the whole prompt prefix (systemInstruction →
-// tools → contents), so once a session's growing conversation crosses the
-// 16,384-token minimum, every later turn hits its own committed prefix with
-// no padding at all. Flip TAU_ANTIGRAVITY_MAX_CACHE=1 to force-warm small
-// prompts too (at the cost of ~17.4k padding tokens on every turn).
+// prompts stay small and the implicit cache can warm from real conversation
+// content. Cache eligibility and coverage vary by model and server state.
+// TAU_ANTIGRAVITY_MAX_CACHE=1 adds padding toward the historical 17.4k target;
+// it does not guarantee reuse and adds tokens to every request.
 export function antigravityMaxCacheEnabled(): boolean {
   return process.env.TAU_ANTIGRAVITY_MAX_CACHE === '1'
 }
 
 // ─── Prefix padding ──────────────────────────────────────────────
 
-// Target prompt size in estimated tokens. Comfortably above the
-// measured 16,384 minimum so estimation error can't drop us below it.
+// Retain the historical opt-in padding target; default recovery adds no pad.
 const TARGET_TOKENS = 17_400
 
 // Existing-content token estimate: assume ≥1 token per 5.5 chars.
@@ -137,12 +95,12 @@ export function antigravityPrefixPad(tokens: number): string {
 }
 
 /**
- * Pad a request's stable system text so the total prompt clears the
- * backend's implicit-cache minimum.
+ * Pad a request's stable system text toward the historical opt-in target.
+ * This is not a guarantee of server cache eligibility or coverage.
  *
  * Applies to every Antigravity Gemini request whose stable prefix
- * (system text + tool declarations) is estimated below the minimum —
- * main thread and agents alike. Over-minimum prompts are returned
+ * (system text + tool declarations) is estimated below that target —
+ * main thread and agents alike. Over-target prompts are returned
  * unchanged, so naturally-large sessions never pay for padding. The
  * pad size is derived from turn-stable inputs only, so a given
  * conversation gets byte-identical padding on every turn of its run.
@@ -193,8 +151,8 @@ export function freezeAntigravityVolatilePrefix(
 
 // ─── Commit-window pacing (agent sessions only) ──────────────────
 //
-// Holding the agent's SECOND request until the first write has had
-// time to commit converts the rest of the run into prefix-cache hits.
+// Holding the agent's SECOND request gives a cold write time to become
+// reusable. It cannot guarantee subsequent hits or their token coverage.
 // If the second request still missed, one re-arm paces the third
 // request from the second's start; after two paced turns we give up so
 // a shape the server refuses to cache can't throttle a whole run. A
@@ -217,6 +175,13 @@ const AGENT_SESSION_PREFIX = 'tau-agent-'
 // commit-window guard so the NEXT request waits the write out. Bounded per
 // session so a backend that refuses to cache can't throttle a whole run.
 const GUARD_MIN_PROMPT_TOKENS = 16_384
+// Recovery policy, not a claim about the server's exact minimum. Controlled
+// Gemini 3.8 tests (2026-09-06) cached 9,008- and 11,811-token prompts after a
+// cold response; 4,993 tokens did not cache. The old 16k gate skipped these
+// eligible subagents entirely. Retain the older-model policy until measured.
+const GEMINI_38_GUARD_MIN_PROMPT_TOKENS = 8_192
+const CACHE_BLOCK_TOKENS = 4_096
+const GEMINI_38_UNCACHED_TAIL_ALLOWANCE = 6_144
 const FULL_COLD_READ_FRACTION = 0.05
 const MAX_GUARD_REARMS = 4
 
@@ -227,6 +192,53 @@ interface PaceState {
   hitSeen: boolean
   /** Times the guard was re-armed by an observed mid-session full cold. */
   rearms: number
+  /** Actual completed-response usage, preferable to a character estimate. */
+  promptTokens?: number
+  cacheReadTokens?: number
+}
+
+export interface AntigravityCacheRequestContext {
+  sessionId?: string
+  model: string
+  querySource?: string
+  requestId: string
+}
+
+// Out-of-band correlation: never serialize a diagnostic ID into the prompt or
+// change upstream affinity just to distinguish a helper from its parent.
+const requestContexts = new WeakMap<object, AntigravityCacheRequestContext>()
+
+export function trackAntigravityCacheRequest(
+  request: object,
+  context: AntigravityCacheRequestContext,
+): void {
+  requestContexts.set(request, context)
+}
+
+export function getAntigravityCacheRequestContext(
+  request: object,
+): AntigravityCacheRequestContext | undefined {
+  return requestContexts.get(request)
+}
+
+export function antigravityCacheScope(
+  sessionId: string,
+  model?: string,
+  querySource?: string,
+): string {
+  // Preserve the legacy standalone helper API. Production lane calls always
+  // provide the model, including for subagents and same-model side queries.
+  if (!model) return sessionId
+  const source = !querySource || querySource.startsWith('repl_main_thread') || querySource === 'sdk'
+    ? 'conversation'
+    : querySource
+  return JSON.stringify([sessionId, model.toLowerCase(), source])
+}
+
+function guardMinimumPromptTokens(model?: string): number {
+  return /^gemini-3\.8-flash-(?:low|medium|high|tiered)$/.test(model?.toLowerCase() ?? '')
+    ? GEMINI_38_GUARD_MIN_PROMPT_TOKENS
+    : GUARD_MIN_PROMPT_TOKENS
 }
 
 // Test override beats env (TAU_ANTIGRAVITY_PACING_MS) beats default.
@@ -258,9 +270,8 @@ export async function paceAntigravityAgentRequest(
   signal?: AbortSignal,
 ): Promise<void> {
   if (process.env.TAU_ANTIGRAVITY_NO_PACING === '1') return
-  // Default OFF — see antigravityMaxCacheEnabled(). Without padding, small
-  // agent prompts never reach the cache minimum anyway, so stalling them
-  // would buy nothing but latency.
+  // Default OFF — see antigravityMaxCacheEnabled(). The default guard below
+  // uses model-specific size policy and observed usage for recovery.
   if (!antigravityMaxCacheEnabled()) return
   if (!sessionId || !sessionId.startsWith(AGENT_SESSION_PREFIX)) return
   await holdForCommitWindow(sessionId, signal, commitWindowMs())
@@ -274,11 +285,11 @@ export async function paceAntigravityAgentRequest(
 // (~20-30k tokens). The guard holds those early requests until the window
 // has elapsed, then latches off for the whole session on the first observed
 // hit (steady-state turns are never held). Distinct from the opt-in
-// maxCache pacing above: no padding, no agent gating, and it never holds a
-// prompt too small to cache in the first place.
+// maxCache pacing above: no padding or agent gating. A conservative size
+// policy avoids holding tiny prompts, but cannot predict server eligibility.
 
-// Below the ~16,384-token minimum nothing commits, so holding is pure
-// latency. 90k chars ÷ 5.5 chars/token ≈ 16.4k tokens.
+// Historical older-model character estimate; current 3.8 uses its measured
+// recovery policy below, and final token counts override either estimate.
 const GUARD_MIN_PROMPT_CHARS = 90_000
 
 // Commits measured at ~8-22s (and later on thinking-tier models: an agent's
@@ -294,15 +305,24 @@ export async function guardAntigravityCommitWindow(
   signal: AbortSignal | undefined,
   promptChars: number,
   querySource?: string,
+  model?: string,
 ): Promise<void> {
   if (querySource === 'report') return
   if (process.env.TAU_ANTIGRAVITY_NO_PACING === '1') return
   if (!sessionId) return
-  if (promptChars < GUARD_MIN_PROMPT_CHARS) return
+  const scope = antigravityCacheScope(sessionId, model, querySource)
+  const minimumTokens = guardMinimumPromptTokens(model)
+  const minimumChars = minimumTokens === GUARD_MIN_PROMPT_TOKENS
+    ? GUARD_MIN_PROMPT_CHARS
+    : Math.ceil(minimumTokens * EXISTING_CHARS_PER_TOKEN)
+  // Token-dense agent prompts can exceed the token threshold long before
+  // 90k characters. Once the provider has measured them, trust that count.
+  if (promptChars < minimumChars
+    && (_agentPace.get(scope)?.promptTokens ?? 0) < minimumTokens) return
   const window = _commitWindowOverride !== undefined || process.env.TAU_ANTIGRAVITY_PACING_MS
     ? commitWindowMs()
     : GUARD_COMMIT_WINDOW_MS
-  await holdForCommitWindow(sessionId, signal, window)
+  await holdForCommitWindow(scope, signal, window)
 }
 
 async function holdForCommitWindow(
@@ -326,15 +346,14 @@ async function holdForCommitWindow(
 
   state.pacedCount++
   await new Promise<void>(resolve => {
-    const timer = setTimeout(resolve, waitMs)
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer)
-        resolve()
-      },
-      { once: true },
-    )
+    const finish = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', finish)
+      resolve()
+    }
+    const timer = setTimeout(finish, waitMs)
+    signal?.addEventListener('abort', finish, { once: true })
+    if (signal?.aborted) finish()
   })
   // This request is the new cold write — if it also misses, the next
   // turn paces from here.
@@ -342,63 +361,69 @@ async function holdForCommitWindow(
 }
 
 /**
- * Fold a stream's usage numbers back into the pacing state. Only a
- * read covering most of the prompt counts: a partial hit (e.g. just a
- * shared pad block matching another session) means this conversation's
- * own prefix is NOT committed yet and pacing must stay armed.
+ * Fold COMPLETED response usage back into the pacing state, once per request.
+ * A provisional SSE chunk can omit cachedContentTokenCount; treating that as
+ * a miss exhausts the recovery budget even when the final response is a hit.
+ * Qualifying reads latch recovery off. Older models retain the historical
+ * 70% rule; 3.8 also accepts measured block-sized partial reads so a warm
+ * small worker does not wait again for an unattainable percentage.
  */
 export function recordAntigravityCacheRead(
   sessionId: string | undefined,
   cacheReadTokens: number,
   promptTokens: number,
   querySource?: string,
+  context?: AntigravityCacheRequestContext,
 ): void {
   // A bounded report shares Antigravity routing affinity with its live chat,
   // but it is not part of that conversation's prompt-cache lineage. Do not let
   // its cold/read metrics arm, re-arm, or latch the root session's pacing.
   if (querySource === 'report') return
+  const scope = sessionId ? antigravityCacheScope(sessionId, context?.model, querySource) : undefined
+  const previous = scope ? _agentPace.get(scope) : undefined
   if (process.env.TAU_CACHE_DEBUG && sessionId && promptTokens > 0) {
-    // Usage arrives on many SSE chunks per turn — only log when the
-    // (cacheRead, prompt) pair changes so the file has one line per turn.
-    const sig = `${sessionId}:${cacheReadTokens}:${promptTokens}`
-    if (sig !== _lastUsageSig) {
-      _lastUsageSig = sig
-      try {
-        appendFileSync(
-          join(tmpdir(), 'tau-cache-debug.jsonl'),
-          JSON.stringify({
-            ts: new Date().toISOString(),
-            kind: 'usage',
-            sessionId,
-            cacheRead: cacheReadTokens,
-            prompt: promptTokens,
-            hitPct: Math.round((cacheReadTokens / promptTokens) * 100),
-          }) + '\n',
-        )
-      } catch {
-        // never break the request path
-      }
+    try {
+      appendFileSync(
+        join(tmpdir(), 'tau-cache-debug.jsonl'),
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          kind: 'usage',
+          sessionId,
+          model: context?.model,
+          querySource,
+          requestId: context?.requestId,
+          final: true,
+          cacheRead: cacheReadTokens,
+          prompt: promptTokens,
+          uncached: Math.max(0, promptTokens - cacheReadTokens),
+          promptDelta: previous?.promptTokens === undefined ? undefined : promptTokens - previous.promptTokens,
+          cacheReadDelta: previous?.cacheReadTokens === undefined ? undefined : cacheReadTokens - previous.cacheReadTokens,
+          hitPct: Math.round((cacheReadTokens / promptTokens) * 100),
+        }) + '\n',
+      )
+    } catch {
+      // never break the request path
     }
   }
-  if (!sessionId || promptTokens <= 0) return
+  if (!scope || promptTokens <= 0) return
 
-  // Full cold on a committable prompt (reads ~0 while the prompt is over the
-  // backend's 16,384-token cache minimum): whatever caused it — endpoint hop,
-  // replica miss, TTL expiry, byte churn — this request just re-paid the
-  // whole prefix and its write is now in flight. Re-arm the guard so the
-  // next request waits out the commit window instead of cascading a second
-  // full-price miss. Partial reads (quantum lag) are NOT colds: the entry
-  // exists, the next request will read it, so no hold is warranted.
+  const state: PaceState = previous ?? { armedAt: Date.now(), pacedCount: 0, hitSeen: false, rearms: 0 }
+  state.promptTokens = promptTokens
+  state.cacheReadTokens = cacheReadTokens
+  if (!previous) {
+    _agentPace.set(scope, state)
+    _prunePaceMap()
+  }
+
+  // Full cold on a prompt above the measured recovery floor: whatever caused
+  // it — endpoint hop, replica miss, TTL expiry, byte churn — this request
+  // just re-paid the whole prefix. Give a possible replacement write time
+  // to become reusable before the next request. Partial reads are not full
+  // colds and do not re-arm recovery; waiting need not improve their coverage.
   if (
     cacheReadTokens < promptTokens * FULL_COLD_READ_FRACTION
-    && promptTokens >= GUARD_MIN_PROMPT_TOKENS
+    && promptTokens >= guardMinimumPromptTokens(context?.model)
   ) {
-    const state = _agentPace.get(sessionId)
-    if (!state) {
-      _agentPace.set(sessionId, { armedAt: Date.now(), pacedCount: 0, hitSeen: false, rearms: 0 })
-      _prunePaceMap()
-      return
-    }
     if (state.hitSeen) {
       if (state.rearms >= MAX_GUARD_REARMS) return
       state.rearms++
@@ -413,9 +438,14 @@ export function recordAntigravityCacheRead(
   }
 
   if (cacheReadTokens <= 0) return
-  if (cacheReadTokens < promptTokens * 0.7) return
-  const state = _agentPace.get(sessionId)
-  if (state) state.hitSeen = true
+  // A current 3.8 worker can be warm below 70%: 8,166/11,811 measured on an
+  // exact duplicate even after 20s. Allow the observed block granularity so
+  // an unavoidable partial block does not cause additional pointless holds.
+  const qualifyingRead = guardMinimumPromptTokens(context?.model) === GEMINI_38_GUARD_MIN_PROMPT_TOKENS
+    ? Math.min(promptTokens * 0.7, Math.max(CACHE_BLOCK_TOKENS - 64, promptTokens - GEMINI_38_UNCACHED_TAIL_ALLOWANCE))
+    : promptTokens * 0.7
+  if (cacheReadTokens < qualifyingRead) return
+  state.hitSeen = true
 }
 
 /**
@@ -457,8 +487,8 @@ interface DebugSnapshot {
   /**
    * Per-function-declaration hash, keyed by tool name. `tools` above is one
    * hash of the whole block, so a BREAK: tools cannot say WHICH declaration
-   * moved — and the tool block sits at the FRONT of the cached prefix, so a
-   * single added tool voids the entire conversation cache. This names it.
+   * moved. Tool changes can interrupt reuse early in the prompt. This names
+   * the declaration involved without predicting the server's cached count.
    */
   toolsByName?: Record<string, string>
 }
@@ -466,13 +496,13 @@ interface DebugSnapshot {
 /**
  * Compare a request's cache-relevant section hashes against the previous
  * request on the SAME session and classify why the implicit prefix cache
- * would (or wouldn't) hit. The implicit cache only serves when the prior
- * committed request is an exact prefix of the new one — any change before
- * the appended tail voids the whole entry (measured: no partial credit).
+ * may stop reusing content. An unchanged committed prefix permits reuse. A
+ * changed section identifies where reuse can stop; this diagnostic cannot
+ * predict the provider's exact cached-token count or entry availability.
  *
  * Returns a short human-readable verdict:
  *   - 'cold'                       first request on this session
- *   - 'ok: clean prefix extension' history grew append-only — cache hits
+ *   - 'ok: clean prefix extension' history grew append-only — permits reuse
  *   - 'BREAK: systemInstruction'   the cached prefix changes at byte 0
  *   - 'BREAK: tools'               tools block churned
  *   - 'BREAK: history block i/N rewritten'  a non-tail content block
@@ -501,19 +531,13 @@ export function diagnoseAntigravityCacheBreak(
     : 'BREAK: history truncated'
 }
 
-// A request this small cannot participate in the implicit cache at all: the
-// backend commits nothing under ~16,384 tokens, and 16,384 x 4 chars/token is
-// the most optimistic conversion, so anything below this is definitively a
-// non-participant. Startup quota probes (~633 bytes), session titles and other
-// side-queries land here. They are still LOGGED — seeing the probe fire is
-// useful — but they must never seed the snapshot slot, or the next real turn
-// diffs against a 2-token ping and reports a BREAK that never happened. The
-// model key alone cannot separate them once the small-fast model and the main
-// loop model are the same id.
+// Historical diagnostic heuristic only, not a server-enforced minimum.
+// Characters cannot reliably establish token counts. Legacy unscoped calls
+// retain probe filtering; scoped lane calls can compare small agent requests
+// accurately without letting unrelated helpers overwrite their snapshots.
 const DEBUG_MIN_CACHEABLE_CHARS = 65_536
 
 const _lastDebugSnapshot = new Map<string, DebugSnapshot>()
-let _lastUsageSig = ''
 
 /**
  * TAU_CACHE_DEBUG=1 diagnostic: append one JSON line per Antigravity
@@ -528,6 +552,7 @@ export function writeAntigravityCacheDebugEntry(
   model: string,
   request: Record<string, unknown>,
   sessionId: string | undefined,
+  context?: AntigravityCacheRequestContext,
 ): string | undefined {
   try {
     const h = (value: unknown): string =>
@@ -579,8 +604,8 @@ export function writeAntigravityCacheDebugEntry(
 
     // Non-participants are recorded but never seed the slot (see
     // DEBUG_MIN_CACHEABLE_CHARS).
-    if (bytes < DEBUG_MIN_CACHEABLE_CHARS) {
-      const verdict = 'n/a: below cache minimum'
+    if (!context && bytes < DEBUG_MIN_CACHEABLE_CHARS) {
+      const verdict = 'n/a: small request (cache eligibility unknown)'
       appendFileSync(
         join(tmpdir(), 'tau-cache-debug.jsonl'),
         JSON.stringify({
@@ -602,7 +627,7 @@ export function writeAntigravityCacheDebugEntry(
     // Keyed by model too: background side-queries that ARE large enough to
     // cache still run their own system prompt and tools, and different models
     // are different cache entries upstream.
-    const key = `${sessionId ?? '<no-session>'}::${model}`
+    const key = antigravityCacheScope(sessionId ?? '<no-session>', model, context?.querySource)
     const prev = _lastDebugSnapshot.get(key)
     const verdict = diagnoseAntigravityCacheBreak(prev, snapshot)
     _lastDebugSnapshot.set(key, snapshot)
@@ -610,6 +635,8 @@ export function writeAntigravityCacheDebugEntry(
       ts: new Date().toISOString(),
       model,
       sessionId,
+      querySource: context?.querySource,
+      requestId: context?.requestId,
       break: verdict,
       system: snapshot.system,
       tools: snapshot.tools,

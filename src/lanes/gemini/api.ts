@@ -36,7 +36,10 @@ import {
   warmupCodeAssist,
 } from '../../services/api/providers/gemini_code_assist.js'
 import { resolveCliModelsForPicker } from '../../services/api/providers/gemini_provider.js'
-import { writeAntigravityEndpointDebugEvent } from './antigravity_cache.js'
+import {
+  getAntigravityCacheRequestContext,
+  writeAntigravityEndpointDebugEvent,
+} from './antigravity_cache.js'
 import {
   classifyGeminiError,
   type ClassifiedGeminiError,
@@ -83,6 +86,20 @@ function withTauStableSessionId(
   sessionId: string | undefined,
 ): Record<string, unknown> {
   return sessionId ? { ...body, sessionId } : body
+}
+
+function antigravityEndpointLogger(request: object, wireSessionId: string | undefined) {
+  const context = getAntigravityCacheRequestContext(request)
+  return (event: string, detail: Record<string, unknown>) =>
+    writeAntigravityEndpointDebugEvent(wireSessionId, event, {
+      ...detail,
+      ...(context && {
+        requestId: context.requestId,
+        conversationSessionId: context.sessionId,
+        model: context.model,
+        querySource: context.querySource,
+      }),
+    })
 }
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -478,6 +495,7 @@ class GeminiApiClient {
     delete body.model
     const tauStableSessionId = takeTauStableSessionId(body)
     const tauQuerySource = takeTauQuerySource(body)
+    const logEndpoint = antigravityEndpointLogger(request, tauStableSessionId)
 
     // OAuth path → Code Assist proxy (cloudcode-pa.googleapis.com). Uses the
     // same request envelopes and header sets that CLIProxyAPI emits so quota
@@ -561,7 +579,7 @@ class GeminiApiClient {
               if (signal?.aborted) throw err
               lastEndpointError = err
               if (fastAntigravityGemini && i < urls.length - 1) {
-                writeAntigravityEndpointDebugEvent(tauStableSessionId, 'hop', {
+                logEndpoint('hop', {
                   from: bases[i],
                   reason: err instanceof EndpointTimeoutError
                     ? 'timeout'
@@ -579,7 +597,7 @@ class GeminiApiClient {
                 if (tauQuerySource !== 'report') {
                   recordAntigravityGeminiServedBase(tauStableSessionId, bases[i]!)
                 }
-                writeAntigravityEndpointDebugEvent(tauStableSessionId, 'served', {
+                logEndpoint('served', {
                   base: bases[i],
                   index: i,
                   attempt: attemptNo,
@@ -599,7 +617,7 @@ class GeminiApiClient {
               )
             }
             if (shouldTryNextAntigravityGeminiEndpoint(executor, model, resp.status, i, urls.length, pinnedFirstAttempt)) {
-              writeAntigravityEndpointDebugEvent(tauStableSessionId, 'hop', {
+              logEndpoint('hop', {
                 from: bases[i],
                 reason: `status ${resp.status}`,
                 attempt: attemptNo,
@@ -683,7 +701,7 @@ class GeminiApiClient {
                 // The stripped retry sends different history bytes, so that
                 // turn re-pays the prompt cold and its write is orphaned —
                 // surface it instead of leaving an unexplained cold turn.
-                writeAntigravityEndpointDebugEvent(tauStableSessionId, 'sig-strip', {
+                logEndpoint('sig-strip', {
                   attempt: attemptNo,
                 })
               }
@@ -790,6 +808,7 @@ class GeminiApiClient {
     delete body.model
     const tauStableSessionId = takeTauStableSessionId(body)
     const tauQuerySource = takeTauQuerySource(body)
+    const logEndpoint = antigravityEndpointLogger(request, tauStableSessionId)
 
     // OAuth → Code Assist (unwraps the `{ response: ... }` envelope).
     const oauthRouting = this._tokenForModel(model)
@@ -861,7 +880,7 @@ class GeminiApiClient {
               if (signal?.aborted) throw err
               lastEndpointError = err
               if (fastAntigravityGemini && i < urls.length - 1) {
-                writeAntigravityEndpointDebugEvent(tauStableSessionId, 'hop', {
+                logEndpoint('hop', {
                   from: bases[i],
                   reason: err instanceof EndpointTimeoutError
                     ? 'timeout'
@@ -879,7 +898,7 @@ class GeminiApiClient {
                 if (tauQuerySource !== 'report') {
                   recordAntigravityGeminiServedBase(tauStableSessionId, bases[i]!)
                 }
-                writeAntigravityEndpointDebugEvent(tauStableSessionId, 'served', {
+                logEndpoint('served', {
                   base: bases[i],
                   index: i,
                   attempt: attemptNo,
@@ -899,7 +918,7 @@ class GeminiApiClient {
               )
             }
             if (shouldTryNextAntigravityGeminiEndpoint(executor, model, resp.status, i, urls.length, pinnedFirstAttempt)) {
-              writeAntigravityEndpointDebugEvent(tauStableSessionId, 'hop', {
+              logEndpoint('hop', {
                 from: bases[i],
                 reason: `status ${resp.status}`,
                 attempt: attemptNo,
@@ -966,7 +985,7 @@ class GeminiApiClient {
                 // The stripped retry sends different history bytes, so that
                 // turn re-pays the prompt cold and its write is orphaned —
                 // surface it instead of leaving an unexplained cold turn.
-                writeAntigravityEndpointDebugEvent(tauStableSessionId, 'sig-strip', {
+                logEndpoint('sig-strip', {
                   attempt: attemptNo,
                 })
               }

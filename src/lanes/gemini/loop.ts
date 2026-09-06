@@ -45,7 +45,9 @@ import {
   applyAntigravityPrefixPad,
   guardAntigravityCommitWindow,
   recordAntigravityCacheRead,
+  trackAntigravityCacheRequest,
   writeAntigravityCacheDebugEntry,
+  type AntigravityCacheRequestContext,
 } from './antigravity_cache.js'
 import {
   freezeSessionVolatileText,
@@ -202,17 +204,11 @@ export class GeminiLane implements Lane {
     })
     const functionDeclarations = buildLaneFunctionDeclarations(requestTools)
 
-    // Antigravity's implicit cache content-addresses the whole prompt prefix
-    // (systemInstruction → tools → contents), so a real session warms it
-    // NATURALLY once its growing conversation crosses the ~16,384-token
-    // minimum — no padding needed, and short prompts stay fast. The optional
-    // prefix pad below force-warms small prompts too, but at ~17.4k tokens
-    // every turn; it (and pacing) are OFF unless TAU_ANTIGRAVITY_MAX_CACHE=1.
-    // See antigravity_cache.ts for the measured cache semantics.
-    // The implicit-cache discipline (prefix pad + commit-window pacing)
-    // targets ONLY the single-slot Gemini cache. Claude resold through
-    // Antigravity uses a multi-entry, low-minimum cache where padding and
-    // pacing would only add latency and tokens — so it stays exempt.
+    // Keep real system/tool/history prefixes stable. Padding is an optional
+    // legacy policy, not necessary to make current 3.8 agents cacheable;
+    // recovery uses model-specific measurements in antigravity_cache.ts.
+    // Padding stays off unless TAU_ANTIGRAVITY_MAX_CACHE=1. Claude on
+    // Antigravity remains exempt from Gemini padding and recovery.
     const stableText = isAntigravityGemini
       ? applyAntigravityPrefixPad(
         split.stableText,
@@ -276,6 +272,10 @@ export class GeminiLane implements Lane {
       thinking,
       cacheName,
     })
+    const cacheContext: AntigravityCacheRequestContext | undefined = isAntigravityGemini
+      ? { model, sessionId, querySource, requestId: randomUUID() }
+      : undefined
+    if (cacheContext) trackAntigravityCacheRequest(request, cacheContext)
     if (isAntigravityRequest) {
       // A stable body session ID and the cache-debug trace shape/observe the
       // call without affecting latency, so they
@@ -285,7 +285,7 @@ export class GeminiLane implements Lane {
       // so only the report may reorder hosts away from a warm cache pool.
       if (querySource) request[TAU_QUERY_SOURCE_FIELD] = querySource
       if (process.env.TAU_CACHE_DEBUG) {
-        writeAntigravityCacheDebugEntry(model, request, sessionId)
+        writeAntigravityCacheDebugEntry(model, request, sessionId, cacheContext)
       }
     }
     if (isAntigravityGemini) {
@@ -302,6 +302,7 @@ export class GeminiLane implements Lane {
         signal,
         JSON.stringify(request).length,
         querySource,
+        model,
       )
     }
 
@@ -491,14 +492,6 @@ export class GeminiLane implements Lane {
           thinkingTokens = u.thoughtsTokenCount ?? thinkingTokens
           cacheReadTokens = u.cachedContentTokenCount ?? cacheReadTokens
           inputTokens = uncachedInputTokens(promptTokens, cacheReadTokens)
-          if (isAntigravityGemini) {
-            recordAntigravityCacheRead(
-              sessionId,
-              cacheReadTokens,
-              promptTokens,
-              querySource,
-            )
-          }
         }
 
         if (!messageStartEmitted) {
@@ -785,6 +778,14 @@ export class GeminiLane implements Lane {
         cache_write_tokens: cacheWriteTokens,
         thinking_tokens: thinkingTokens,
       }
+    }
+
+    // Cache usage is authoritative only after the stream completes. Initial
+    // metadata often has promptTokenCount but omits cachedContentTokenCount.
+    // Folding that provisional zero into the guard used up its cold-recovery
+    // budget on successful hits. Aborted/failed streams must not arm it either.
+    if (cacheContext && !signal.aborted) {
+      recordAntigravityCacheRead(sessionId, cacheReadTokens, promptTokens, querySource, cacheContext)
     }
 
     // Make sure message_start was emitted (edge case: empty response).
