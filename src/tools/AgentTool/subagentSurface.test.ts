@@ -204,6 +204,19 @@ test('the mutating tools check ownership before doing any work', bundle => {
   present(bundle, 'agentFileConflictMessage', 'both paths must share one wording')
 })
 
+test('every path that starts an agent registers it for file ownership', bundle => {
+  // Three starts: async spawn, sync spawn, and resume-via-SendMessage. The
+  // resume path was missed at first — it goes through runAsyncAgentLifecycle,
+  // which RELEASES in its finally, so an unregistered resumed agent silently
+  // never claimed and was never blocked.
+  const starts = bundle.split('beginAgentFileScope(').length - 1
+  if (starts < 3) {
+    throw new Error(
+      `expected async spawn, sync spawn and resume to each register; found ${starts}`,
+    )
+  }
+})
+
 test('agent lifecycle releases file claims', bundle => {
   present(
     bundle,

@@ -1,3 +1,4 @@
+import { beginAgentFileScope } from '../../utils/agentFileClaims.js'
 import { promises as fsp } from 'fs'
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js'
 import { getSystemPrompt } from '../../constants/prompts.js'
@@ -241,6 +242,14 @@ export async function resumeAgentBackground({
 
   const wrapWithCwd = <T>(fn: () => T): T =>
     resumedWorktreePath ? runWithCwdOverride(resumedWorktreePath, fn) : fn()
+
+  // Register for file-write ownership, exactly as a fresh spawn does. A resumed
+  // agent runs concurrently with whatever else is in flight and writes through
+  // the same tools, so leaving it unregistered would let it clobber a running
+  // agent's claimed file and leave its own writes unprotected — and it would
+  // not even count toward the two-agent threshold that turns enforcement on.
+  // runAsyncAgentLifecycle's finally already releases the scope.
+  beginAgentFileScope(agentBackgroundTask.agentId, uiDescription)
 
   void runWithAgentContext(asyncAgentContext, () =>
     wrapWithCwd(() =>
