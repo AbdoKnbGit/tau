@@ -114,8 +114,9 @@ The `Eval` tool runs a persistent Python kernel, so anything Python can do, Tau 
 It can call your other Tau tools from inside the code, keeps state between cells, and renders figures inline.
 
 **Subagents you can name, steer, and trust**
-Give a spawn a `name` and address it later with `SendMessage` — it resumes with its full context instead of starting cold, and pins its own provider and model if you want it on a different lane.
-Run several at once safely: concurrent agents take write-ownership of the files they touch, so two agents can never quietly clobber each other's work.
+Name a spawn and you can talk to it again: `Agent(name: "auth-fix", …)` does the work, then `SendMessage(to: "auth-fix", "also rotate the refresh token")` picks up where it left off — full context intact, nothing re-briefed, the same files not read twice.
+Each spawn can also run on its own provider and model, so a rate-limited or expensive main lane never stalls the work.
+Run several at once safely: concurrent agents take write-ownership of the files they edit, so two agents can't quietly clobber each other's changes.
 
 **GitHub automation and repo management**
 The `/github` command brings common GitHub work into Tau through `gh`: inspect issues and pull requests, review repo state, triage labels/status, generate changelog notes, run wrap-up flows for stage/commit/push, and inspect workflow or release status before publishing changes.
