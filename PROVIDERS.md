@@ -1,6 +1,6 @@
 # Supported Providers
 
-Tau ships **25 native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
+Tau ships **28 native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
 
 | Provider | Notes |
 |---|---|
@@ -29,6 +29,10 @@ Tau ships **25 native provider adapters**. Each speaks the provider's API direct
 | OpenCode Zen | deepseek-v4-flash unlimited usage |
 | Xiaomi MiMo | MiMo V2.5 Pro and V2.5 direct from Xiaomi, up to 1M context. Authenticates with an `api-key` header; set `MIMO_BASE_URL` to a `token-plan-*` host for a Token Plan subscription |
 | LXD API | Open-model relay billed in Xen credits (5/day free, 120/day on the $10 plan). Per-model thinking-effort ladders come straight from its catalog, and the free limited-time event rows are surfaced too |
+| OpenCode Go | OpenCode Zen's Go endpoint (`opencode.ai/zen/go`), selected separately from OpenCode Zen |
+| Fireworks AI | Open-model inference on Fireworks' OpenAI-compatible API (`api.fireworks.ai`), with account usage checks |
+| Cloudflare Workers AI | Cloudflare's hosted open models, authenticated with your account ID and API token |
+| Cline Pass | Cline's subscription pass, kept separate from the pay-as-you-go Cline row above |
 
 ## LM Studio note
 

@@ -17,7 +17,7 @@
 
 Tau has become the best free coding agent: a single tool that fuses the **Claude Code** and **OpenCode** ecosystems into one mixed agentic environment. You get the strongest parts of both agents, plus new features and optimizations layered on top.
 
-Native adapters for **22 providers**. Not a proxy, not a wrapper around someone else's wrapper. When you use OpenAI, Tau speaks OpenAI's API directly. Same for GLM, DeepSeek, Mistral, OpenRouter, AgentRouter, Vercel AI Gateway, Requesty, Command Code, MiniMax, OpenCode Zen, and the rest. Full list with per-provider notes in [PROVIDERS.md](PROVIDERS.md).
+Native adapters for **28 providers**. Not a proxy, not a wrapper around someone else's wrapper. When you use OpenAI, Tau speaks OpenAI's API directly. Same for GLM, DeepSeek, Mistral, OpenRouter, AgentRouter, Vercel AI Gateway, Requesty, Command Code, MiniMax, OpenCode Zen, and the rest. Full list with per-provider notes in [PROVIDERS.md](PROVIDERS.md).
 
 Install once. Type `/login`. Pick a provider. Work.
 
@@ -81,14 +81,14 @@ See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 
 ## Supported Providers
 
-22 providers with native adapters. See the full list and per-provider notes in **[PROVIDERS.md](PROVIDERS.md)**.
+28 providers with native adapters. See the full list and per-provider notes in **[PROVIDERS.md](PROVIDERS.md)**.
 
 ---
 
 ## Features
 
 **Multi-provider, natively**
-22 providers with native adapters. Not a routing layer, not a translation proxy. Each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
+28 providers with native adapters. Not a routing layer, not a translation proxy. Each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
 
 **The full agent loop**
 File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management: all present, all working across every provider.
@@ -104,6 +104,18 @@ Firecrawl provides 1k searches/month free for deep searching. Just enter your AP
 
 **WhatsApp remote control**
 Use `/whatsapp` to link WhatsApp and remotely control Tau from your phone.
+
+**Remote control your session**
+`/remote local` serves the session over your own Wi-Fi — instant, and nothing leaves your network. `/remote global` opens a free Cloudflare HTTPS tunnel that works on cellular (needs `cloudflared`).
+Scan the QR to pair, then read, prompt, and approve tools from your phone while the work keeps running on your machine.
+
+**Python kernel in the loop**
+The `Eval` tool runs a persistent Python kernel, so anything Python can do, Tau can do. Compute the answer instead of reading the raw material into context: counts, rankings, audits across many files, cross-checks, the same edit applied everywhere.
+It can call your other Tau tools from inside the code, keeps state between cells, and renders figures inline.
+
+**Subagents you can name, steer, and trust**
+Give a spawn a `name` and address it later with `SendMessage` — it resumes with its full context instead of starting cold, and pins its own provider and model if you want it on a different lane.
+Run several at once safely: concurrent agents take write-ownership of the files they touch, so two agents can never quietly clobber each other's work.
 
 **GitHub automation and repo management**
 The `/github` command brings common GitHub work into Tau through `gh`: inspect issues and pull requests, review repo state, triage labels/status, generate changelog notes, run wrap-up flows for stage/commit/push, and inspect workflow or release status before publishing changes.
