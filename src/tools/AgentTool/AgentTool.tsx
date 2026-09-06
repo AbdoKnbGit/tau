@@ -668,8 +668,9 @@ export const AgentTool = buildTool({
     };
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId;
-      // Register for file-write ownership. Engages only once a second
-      // agent is also running; released in this agent's cleanup finally.
+      // Register for file-write ownership: from here on, paths this agent
+      // writes are owned by it and refused to other running agents. Released
+      // in this agent's cleanup finally.
       beginAgentFileScope(asyncAgentId, name?.trim() || description);
       const agentBackgroundTask = registerAsyncAgent({
         agentId: asyncAgentId,

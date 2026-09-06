@@ -89,9 +89,11 @@ export function writeTextContent(
   endings: LineEndingType,
 ): void {
   // Single choke point for every file mutation the agent can issue — Edit,
-  // Write, NotebookEdit and Bash-applied writes all land here. Refuses the
-  // write when another running subagent owns this path; a no-op unless two or
-  // more subagents are in flight. Reads never reach this function.
+  // Write, NotebookEdit and Bash-applied writes all land here. A running
+  // subagent takes ownership of the path it writes, and is refused when
+  // another running subagent already owns it. A no-op for the main session,
+  // and unrefusable while only one subagent is running. Reads never reach
+  // this function.
   enforceAgentFileClaim(filePath)
 
   let toWrite = content

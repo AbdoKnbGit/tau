@@ -246,8 +246,7 @@ export async function resumeAgentBackground({
   // Register for file-write ownership, exactly as a fresh spawn does. A resumed
   // agent runs concurrently with whatever else is in flight and writes through
   // the same tools, so leaving it unregistered would let it clobber a running
-  // agent's claimed file and leave its own writes unprotected — and it would
-  // not even count toward the two-agent threshold that turns enforcement on.
+  // agent's claimed file and leave its own writes unprotected.
   // runAsyncAgentLifecycle's finally already releases the scope.
   beginAgentFileScope(agentBackgroundTask.agentId, uiDescription)
 

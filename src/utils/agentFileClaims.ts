@@ -24,8 +24,10 @@
  * - Only subagents claim, and only subagents are refused. The main session is
  *   the coordinator; it is never blocked and never claims, so no ordinary
  *   single-agent workflow can change behavior.
- * - Enforcement engages only while two or more subagents are running. With one
- *   agent — the overwhelmingly common case — the map is never consulted.
+ * - A refusal requires a different, still-registered subagent to hold the path.
+ *   That makes the two-agent condition structural rather than sampled: with one
+ *   subagent running nothing can be refused, because the only claim it can meet
+ *   is either its own or one whose owner has already finished.
  * - Reads are untouched. Only the write path consults claims.
  *
  * Nothing here reaches the model: no tool schema, description, or system-prompt
@@ -105,9 +107,8 @@ export function endAgentFileScope(agentId: string): void {
  */
 function acquire(filePath: string): { conflictWith: string } | undefined {
   const agentId = currentSubagentId()
-  // Not a subagent (main session), or fewer than two agents in flight: nothing
-  // can race, so never touch the map.
-  if (!agentId || activeAgents.size < 2) return undefined
+  // Not a subagent: the main session is the coordinator, so it never claims.
+  if (!agentId) return undefined
   // An agent whose scope was never opened is not part of the concurrent set.
   if (!activeAgents.has(agentId)) return undefined
 
@@ -151,7 +152,7 @@ export function agentFileConflictMessage(
  */
 export function checkAgentFileClaim(filePath: string): string | undefined {
   const agentId = currentSubagentId()
-  if (!agentId || activeAgents.size < 2) return undefined
+  if (!agentId) return undefined
   if (!activeAgents.has(agentId)) return undefined
 
   const key = claimKey(filePath)

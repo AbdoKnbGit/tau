@@ -68,13 +68,55 @@ test('the main session is never blocked and never claims', () => {
   assert(_ownerLabelForTest(FILE) === undefined, 'main must not take ownership')
 })
 
-test('a lone subagent never engages the map', () => {
+// The live agent count at write time says nothing about the count a moment
+// later: an agent is routinely the only one running when it writes and racing
+// a second agent by the time that file matters. So ownership is recorded
+// whenever a registered subagent writes, and only the *refusal* depends on who
+// else is running — which is why a lone agent can claim and still never be
+// blocked.
+test('a lone subagent claims what it writes, and is never refused', () => {
   beginAgentFileScope('a', 'alpha')
   asAgent('a', () => enforceAgentFileClaim(FILE))
   assert(
-    _ownerLabelForTest(FILE) === undefined,
-    'with one agent running there is no race to guard against',
+    _ownerLabelForTest(FILE) === 'alpha',
+    'ownership must be recorded at the moment it is written',
   )
+  assert(
+    throws(() => asAgent('a', () => enforceAgentFileClaim(FILE))) === undefined,
+    'one agent has nobody to race, so it can never be refused',
+  )
+})
+
+test('a path claimed while alone still blocks an agent that starts later', () => {
+  beginAgentFileScope('a', 'alpha')
+  asAgent('a', () => enforceAgentFileClaim(FILE))
+  beginAgentFileScope('b', 'bravo')
+  const err = throws(() => asAgent('b', () => enforceAgentFileClaim(FILE)))
+  assert(err !== undefined, 'the later agent must be refused')
+  assert(err!.message.includes('alpha'), 'and told who holds the path')
+})
+
+// The reported failure, exactly: two agents spawn together, the short one
+// finishes before the long one reaches its Edit, then SendMessage resumes it
+// while the long one is still running and still owns the file.
+test('a resumed agent is refused by the agent still holding the path', () => {
+  beginAgentFileScope('holder', 'holder')
+  beginAgentFileScope('worker', 'worker')
+  endAgentFileScope('worker')
+  asAgent('holder', () => enforceAgentFileClaim(FILE))
+  beginAgentFileScope('worker', 'worker')
+
+  let seen: string | undefined
+  asAgent('worker', () => {
+    seen = checkAgentFileClaim(FILE)
+  })
+  assert(seen === 'holder', `the resumed agent must be refused, got ${seen}`)
+  assert(
+    throws(() => asAgent('worker', () => enforceAgentFileClaim(FILE))) !==
+      undefined,
+    'and the write-path backstop must refuse it too',
+  )
+  assert(_ownerLabelForTest(FILE) === 'holder', 'the owner keeps the path')
 })
 
 test('the first of two concurrent subagents takes ownership', () => {
