@@ -3940,7 +3940,6 @@ async function run(): Promise<CommanderCommand> {
       permissionMode: 'auto'
     }));
     program.addOption(new Option('--tasks [id]', '[ANT-ONLY] Tasks mode: watch for tasks and auto-process them. Optional id is used as both the task list ID and agent ID (defaults to "tasklist").').argParser(String).hideHelp());
-    program.option('--agent-teams', '[ANT-ONLY] Force Tau to use multi-agent mode for solving problems', () => true);
   }
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     program.addOption(new Option('--enable-auto-mode', 'Opt in to auto mode').hideHelp());

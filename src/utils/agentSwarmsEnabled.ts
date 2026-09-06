@@ -1,44 +1,21 @@
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
-import { isEnvTruthy } from './envUtils.js'
-
 /**
- * Check if --agent-teams flag is provided via CLI.
- * Checks process.argv directly to avoid import cycles with bootstrap/state.
- * Note: The flag is only shown in help for ant users, but if external users
- * pass it anyway, it will work (subject to the killswitch).
- */
-function isAgentTeamsFlagSet(): boolean {
-  return process.argv.includes('--agent-teams')
-}
-
-/**
- * Centralized runtime check for agent teams/teammate features.
- * This is the single gate that should be checked everywhere teammates
- * are referenced (prompts, code, tools isEnabled, UI, etc.).
+ * Retired gate for the agent teams / teammate ("swarm") feature.
  *
- * Ant builds: always enabled.
- * External builds require both:
- * 1. Opt-in via CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS env var OR --agent-teams flag
- * 2. GrowthBook gate 'tengu_amber_flint' enabled (killswitch)
+ * The feature is being removed. This stays as the single choke point during
+ * that removal: every teammate code path in the tree is reachable only through
+ * this predicate, so pinning it to `false` makes all of them provably dead
+ * before any of them are deleted. That ordering is deliberate — it turns the
+ * deletion into removal of unreachable code rather than surgery on live paths,
+ * and it keeps the behavior change (the feature going away) in its own small,
+ * revertable commit, separate from the large mechanical one that follows.
+ *
+ * What was here before: an opt-in via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`
+ * or `--agent-teams`, plus a remote killswitch. Both are gone along with the
+ * flag itself, so nothing can turn teammates back on.
+ *
+ * Callers are removed as the teammate code is deleted; when the last one goes,
+ * so does this file.
  */
 export function isAgentSwarmsEnabled(): boolean {
-  // Ant: always on
-  if (process.env.USER_TYPE === 'ant') {
-    return true
-  }
-
-  // External: require opt-in via env var or --agent-teams flag
-  if (
-    !isEnvTruthy(process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS) &&
-    !isAgentTeamsFlagSet()
-  ) {
-    return false
-  }
-
-  // Killswitch — always respected for external users
-  if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_amber_flint', true)) {
-    return false
-  }
-
-  return true
+  return false
 }
