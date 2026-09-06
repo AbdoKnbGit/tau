@@ -58,8 +58,6 @@ import { runAgent } from './runAgent.js';
 import { runWithAgentProvider, runWithForcedProvider } from '../../utils/forcedProvider.js';
 import { isAPIProvider } from '../../utils/model/providers.js';
 import type { ModelAlias } from '../../utils/model/aliases.js';
-import { getActiveTeamModeRoles, getTeamModeFallbackWorker, isTeamModeEnabled, isTeamModeFallbackEnabled } from '../../utils/teamMode/state.js';
-import { completeTeamModeRun, failTeamModeRun, startTeamModeRun } from '../../utils/teamMode/runtime.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -203,46 +201,6 @@ import type { AgentToolProgress, ShellProgress } from '../../types/tools.js';
 // events from the sub-agent so the SDK receives tool_progress updates during bash/powershell runs.
 export type Progress = AgentToolProgress | ShellProgress;
 
-function summarizeTeamModeAgentResult(data: unknown): string | undefined {
-  if (data === null || data === undefined) {
-    return undefined;
-  }
-  if (typeof data !== 'object') {
-    return truncateTeamModePreview(String(data));
-  }
-  const record = data as Record<string, unknown>;
-  const fields = [
-    'status',
-    'name',
-    'agent_id',
-    'agentId',
-    'taskId',
-    'team_name',
-    'outputFile'
-  ];
-  const parts = fields.flatMap(field => {
-    const value = record[field];
-    if (typeof value !== 'string' || !value.trim()) {
-      return [];
-    }
-    return `${field}=${value}`;
-  });
-  const content = record.content;
-  if (Array.isArray(content)) {
-    parts.push(`content_items=${content.length}`);
-  }
-  return parts.length > 0
-    ? truncateTeamModePreview(parts.join(', '))
-    : undefined;
-}
-
-function truncateTeamModePreview(value: string): string {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  return normalized.length > 500
-    ? `${normalized.slice(0, 497)}...`
-    : normalized;
-}
-
 export const AgentTool = buildTool({
   async prompt({
     agents,
@@ -302,112 +260,30 @@ export const AgentTool = buildTool({
   }: AgentToolInput, toolUseContext, canUseTool, assistantMessage, onProgress?) {
     // Per-spawn provider routing is validated, not gated.
     //
-    // This used to be locked to /team-mode being ON, which silently discarded
-    // provider/model_id in every ordinary session even though the schema
-    // advertised both. The reason given was that an LLM guess would "route to
-    // the wrong lane or error out with 'model not found' — neither of which
-    // the user is responsible for". Validation buys that protection without
-    // the capability loss: an invented provider name is dropped exactly as
-    // before (silently, no error), and model_id only survives alongside a real
-    // provider because a model id is meaningful only relative to its lane.
+    // These used to be discarded unless a session-level roster feature was
+    // switched on, so an ordinary session silently ignored both even though
+    // the schema advertised them. The reason given was that an LLM guess would
+    // "route to the wrong lane or error out with 'model not found' — neither
+    // of which the user is responsible for". Validation buys that protection
+    // without the capability loss: an invented provider name is dropped
+    // exactly as before (silently, no error), and model_id only survives
+    // alongside a real provider because a model id means nothing without a
+    // lane.
     //
     // A named-but-unconfigured provider still fails at request time — but that
     // is not a new hazard: an agent definition's own `provider:` frontmatter
     // already routes ungated through the same runWithAgentProvider path.
-    const teamModeOn = isTeamModeEnabled();
     const providerParam =
       rawProviderParam !== undefined && isAPIProvider(rawProviderParam)
         ? rawProviderParam
         : undefined;
     const modelIdParam = providerParam !== undefined ? rawModelIdParam : undefined;
 
-    // Team-mode role-binding validation. When team mode is ON and the caller
-    // passes BOTH a provider and a model_id, the spawn MUST declare its role
-    // via `name`, and the (provider, model_id) pair MUST exactly match that
-    // role's binding from the roster (or the shared fallback worker).
-    //
-    // The hard `name` requirement is what closes the wrong-row hole: without
-    // it, an LLM that copies the Architect template by mistake when meaning
-    // to spawn the Implementer would pass a self-consistent (Architect's
-    // provider, Architect's model) pair and the worker would run as
-    // Architect with no signal that the orchestrator's intent was wrong.
-    // Requiring `name` forces the orchestrator to write the role id every
-    // time, and the runtime cross-checks the pair against that exact role.
-    //
-    // We only enforce this when the spawn passes provider/model_id at all.
-    // Bare Agent({prompt, description}) calls (rare in team-mode, but legal)
-    // fall through and inherit the parent's model.
-    if (teamModeOn && (providerParam !== undefined || modelIdParam !== undefined)) {
-      const activeRoles = getActiveTeamModeRoles()
-      const fallback = isTeamModeFallbackEnabled() ? getTeamModeFallbackWorker() : null
-      const rosterLines = activeRoles.map(
-        r => `  - ${r.role}: provider="${r.provider}", model_id="${r.model}"`,
-      )
-      const fallbackLine = fallback
-        ? `\n  - <fallback>: provider="${fallback.provider}", model_id="${fallback.model}"`
-        : ''
-      const rosterHint = `Configured bindings:\n${rosterLines.join('\n')}${fallbackLine}`
-
-      // Both fields required together. One without the other means the
-      // orchestrator dropped half the binding.
-      if (providerParam === undefined || modelIdParam === undefined) {
-        throw new Error(
-          `team-mode spawn requires both \`provider\` and \`model_id\` together (received provider=${JSON.stringify(providerParam ?? null)}, model_id=${JSON.stringify(modelIdParam ?? null)}).\n` +
-          `${rosterHint}\n` +
-          `Copy the full spawn template for the role you want to run — do not pass provider without model_id or vice versa.`,
-        )
-      }
-
-      const requestedProvider = providerParam.trim()
-      const requestedModel = modelIdParam.trim()
-
-      // The shared fallback is the one exception to the role-id requirement
-      // — it's a catch-all, not a named role. If the pair exactly matches
-      // the fallback worker, allow the spawn even when name isn't set.
-      const matchesFallback =
-        fallback !== null &&
-        fallback.provider === requestedProvider &&
-        fallback.model === requestedModel
-
-      if (!matchesFallback) {
-        // `name` is required for non-fallback spawns. Reject when missing
-        // OR when it doesn't match any configured role id.
-        const trimmedName = name?.trim()
-        const declaredRole = trimmedName
-          ? activeRoles.find(r => r.role === trimmedName)
-          : undefined
-
-        if (!declaredRole) {
-          const knownNames = activeRoles.map(r => `"${r.role}"`).join(', ')
-          throw new Error(
-            `team-mode spawn requires \`name\` to be one of the configured role ids (${knownNames || '<none configured>'}). ` +
-            `Received name=${JSON.stringify(name ?? null)}.\n` +
-            `${rosterHint}\n` +
-            `Use the per-role spawn template from your team-mode system prompt — it sets \`name\` to the role id automatically.`,
-          )
-        }
-
-        if (
-          declaredRole.provider !== requestedProvider ||
-          declaredRole.model !== requestedModel
-        ) {
-          throw new Error(
-            `team-mode role binding mismatch: spawning role "${declaredRole.role}" ` +
-            `requires provider="${declaredRole.provider}" + model_id="${declaredRole.model}", ` +
-            `but received provider="${requestedProvider}" + model_id="${requestedModel}".\n` +
-            `${rosterHint}\n` +
-            `You copied a different role's provider/model values into the "${declaredRole.role}" spawn. ` +
-            `Re-issue the call using the "${declaredRole.role}" template verbatim.`,
-          )
-        }
-      }
-    }
-
     // Provider override — pin every getAPIProvider() call inside this agent's
-    // lifecycle to the requested provider. /team-mode uses this to route each
-    // role through its bound provider (e.g. Sonnet via Kiro for "implementer",
-    // Gemini 3 Flash via Antigravity for "explorer") within a session whose
-    // /provider is set to something else entirely.
+    // lifecycle to the requested provider, so one spawn can run on a different
+    // lane than the rest of the session (e.g. Sonnet via Kiro for an
+    // implementer, Gemini 3 Flash via Antigravity for a explorer) while the
+    // session's own /provider is set to something else entirely.
     //
     // The async-local storage propagates across awaits and async iterator
     // yields, so model calls deep inside runAgent() see the override too.
@@ -416,8 +292,8 @@ export const AgentTool = buildTool({
     // broken the object literal's method ordering.
     const _runBody = async () => {
     const startTime = Date.now();
-    // model_id takes priority over the sonnet/opus/haiku enum so the /team-mode
-    // orchestrator can pin a worker to e.g. gemini-3-flash or kimi-k2.6 — the
+    // model_id takes priority over the sonnet/opus/haiku enum so a spawn can
+    // be pinned to e.g. gemini-3-flash or kimi-k2.6 — the
     // downstream getAgentModel() accepts any model alias and falls back to
     // parseUserSpecifiedModel() when the value isn't a known tier alias.
     const modelParam = modelIdParam ?? modelEnumParam;
@@ -1471,49 +1347,12 @@ export const AgentTool = buildTool({
     }
     };  // close _runBody arrow function
 
-    const runBodyWithTeamModeRuntime = async () => {
-      const recordedProvider = providerParam;
-      const recordedModel = modelIdParam;
-      if (
-        !teamModeOn ||
-        recordedProvider === undefined ||
-        recordedModel === undefined
-      ) {
-        return _runBody();
-      }
-
-      const runtimeRun = startTeamModeRun({
-        role: name?.trim() || 'fallback',
-        provider: recordedProvider,
-        model: recordedModel,
-        teamName: team_name,
-        description,
-        prompt,
-        runInBackground: run_in_background === true
-      });
-
-      if (runtimeRun === null) {
-        return _runBody();
-      }
-
-      try {
-        const result = await _runBody();
-        completeTeamModeRun(runtimeRun.id, {
-          resultPreview: summarizeTeamModeAgentResult(result.data)
-        });
-        return result;
-      } catch (error) {
-        failTeamModeRun(runtimeRun.id, error);
-        throw error;
-      }
-    };
-
     // providerParam is already narrowed to a valid APIProvider at the top of
     // call() — an unknown name never reaches here, it was dropped there.
     if (providerParam !== undefined) {
-      return runWithForcedProvider({ provider: providerParam }, runBodyWithTeamModeRuntime);
+      return runWithForcedProvider({ provider: providerParam }, _runBody);
     }
-    return runBodyWithTeamModeRuntime();
+    return _runBody();
   },
   isReadOnly() {
     return true; // delegates permission checks to its underlying tools

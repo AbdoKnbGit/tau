@@ -660,30 +660,6 @@ export type GlobalConfig = {
     effort?: string | number
   }>
 
-  // Legacy persisted /team-mode toggle. Current sessions keep activation
-  // process-local so every fresh CLI session starts with team mode off.
-  teamModeEnabled?: boolean
-
-  // Configured roster for /team-mode. Each fixed role can be bound to a
-  // provider+model pair; inactive roles are skipped by the orchestrator.
-  teamModeRoles?: Array<{
-    role: string
-    provider: string
-    model: string
-    effort?: string | number
-    active?: boolean
-  }>
-
-  // Shared "any-worker" fallback for /team-mode. When teamModeFallbackEnabled
-  // is true AND a worker spawn fails with an eligible error (auth, quota,
-  // 4xx, 5xx, network), AgentTool retries once on this provider+model. One
-  // shared backup catches failures from every role.
-  teamModeFallbackEnabled?: boolean
-  teamModeFallbackWorker?: {
-    provider: string
-    model: string
-    effort?: string | number
-  }
 }
 
 /**
@@ -779,10 +755,6 @@ export const GLOBAL_CONFIG_KEYS = [
   'favoriteModels',
   'fallbackEnabled',
   'fallbackTargets',
-  'teamModeEnabled',
-  'teamModeRoles',
-  'teamModeFallbackEnabled',
-  'teamModeFallbackWorker',
 ] as const
 
 export type GlobalConfigKey = (typeof GLOBAL_CONFIG_KEYS)[number]

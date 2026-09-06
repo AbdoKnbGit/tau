@@ -212,7 +212,6 @@ import { migrateChangelogFromConfig } from './utils/releaseNotes.js';
 import { SandboxManager } from './utils/sandbox/sandbox-adapter.js';
 import { checkOutTeleportedSessionBranch, processMessagesForTeleportResume, teleportToRemoteWithErrorHandling, validateGitState, validateSessionRepository } from './utils/teleport.js';
 import { fetchSession, prepareApiRequest } from './utils/teleport/api.js';
-import { setTeamModeEnabledForSession } from './utils/teamMode/state.js';
 import { shouldEnableThinkingByDefault, type ThinkingConfig } from './utils/thinking.js';
 import { initUser, resetUserCache } from './utils/user.js';
 import { getTmuxInstallInstructions, isTmuxAvailable, parsePRReference } from './utils/worktree.js';
@@ -637,8 +636,6 @@ export async function main() {
     }
   }
   profileCheckpoint('main_function_start');
-  setTeamModeEnabledForSession(false);
-  onSessionSwitch(() => setTeamModeEnabledForSession(false));
 
   // SECURITY: Prevent Windows from executing commands from current directory
   // This must be set before ANY command execution to prevent PATH hijacking attacks

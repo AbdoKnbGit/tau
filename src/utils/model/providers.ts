@@ -90,27 +90,13 @@ function _resolveAPIProvider(): APIProvider {
 }
 
 export function getAPIProvider(): APIProvider {
-  // /team-mode pins a per-agent provider via AsyncLocalStorage. It takes
-  // precedence over the session snapshot AND the test bypass so an agent
-  // spawned with provider='kiro' routes through Kiro regardless of what the
-  // user has globally selected via /provider.
+  // A spawn can pin its own provider via AsyncLocalStorage — either from the
+  // Agent tool's `provider` param or from an agent definition's `provider:`
+  // frontmatter. It takes precedence over the session snapshot AND the test
+  // bypass so an agent spawned with provider='kiro' routes through Kiro
+  // regardless of what the user has globally selected via /provider.
   const forced = getForcedProvider()
   if (forced !== undefined) return forced
-
-  // /team-mode orchestrator binding. When team mode is ON and an
-  // orchestrator role is configured, the main session runs on the
-  // orchestrator's pinned provider — not whatever /provider the user had
-  // set before turning team-mode on. This is the contract users expect:
-  // configuring `Orchestrator → Anthropic / Sonnet 4.6` should make the
-  // orchestrator actually run on Anthropic. Subagents bypass this branch
-  // entirely (they set forced via runWithForcedProvider above).
-  //
-  // Imported lazily to avoid a circular dep between providers.ts and
-  // teamMode/state.ts (state.ts → model/providers.ts via isAPIProvider).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const teamMode = require('../teamMode/state.js') as typeof import('../teamMode/state.js')
-  const orchestratorBinding = teamMode.getTeamModeOrchestratorBinding()
-  if (orchestratorBinding) return orchestratorBinding.provider
 
   if (process.env.NODE_ENV === 'test') return _resolveAPIProvider()
   if (_sessionActiveProvider !== null) return _sessionActiveProvider
