@@ -172,6 +172,25 @@ test('releasing an agent drops only its own claims', () => {
   assert(_ownerLabelForTest(OTHER) === 'bravo', "bravo's claim survives")
 })
 
+test('a relative path is refused, never resolved against the wrong cwd', () => {
+  beginAgentFileScope('a', 'alpha')
+  beginAgentFileScope('b', 'bravo')
+  // process.cwd() is not an agent's working directory once a spawn runs under
+  // isolation:"worktree", so guessing an absolute path here would key one
+  // agent's file under another's tree. Every real caller passes an absolute
+  // path; a relative one must be skipped rather than guessed.
+  asAgent('a', () => enforceAgentFileClaim('src/relative.ts'))
+  assert(
+    _ownerLabelForTest('src/relative.ts') === undefined,
+    'a relative path must not be claimed',
+  )
+  let seen: string | undefined = 'x'
+  asAgent('b', () => {
+    seen = checkAgentFileClaim('src/relative.ts')
+  })
+  assert(seen === undefined, 'and must not report a conflict')
+})
+
 // checkAgentFileClaim is what the mutating tools call in validateInput, before
 // they read the file or match old_string. Without it the write-path backstop is
 // the first thing to fire — and by then Edit has already rejected with "String

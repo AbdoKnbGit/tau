@@ -32,7 +32,7 @@
  * text changes. Enforcement lives entirely in the write path, so every provider
  * behaves identically and no prompt cache is affected.
  */
-import { isAbsolute, resolve } from 'node:path'
+import { isAbsolute } from 'node:path'
 import { getAgentContext } from './agentContext.js'
 
 interface FileClaim {
@@ -47,13 +47,24 @@ const claims = new Map<string, FileClaim>()
 const activeAgents = new Map<string, string | undefined>()
 
 /**
+ * Key a path for the claim map, or `undefined` when it cannot be keyed safely.
+ *
  * Case-insensitive on Windows because NTFS is: two agents writing `Src/App.ts`
  * and `src/app.ts` are writing one file, and a case-sensitive key would let
  * both claim it.
+ *
+ * A relative path is refused rather than resolved. Resolving it here would use
+ * `process.cwd()`, but an agent's real working directory is tau's `getCwd()`,
+ * which differs whenever the spawn runs under `isolation: "worktree"` — so the
+ * guess would key one agent's file under another agent's directory, inventing
+ * a conflict or missing a real one. `getCwd()` cannot be imported here without
+ * closing a cycle (file -> agentFileClaims -> cwd -> bootstrap/state -> model
+ * -> settings -> file), and every caller already passes an absolute path from
+ * `expandPath`, so refusing costs nothing and never guesses wrong.
  */
-function claimKey(filePath: string): string {
-  const absolute = isAbsolute(filePath) ? filePath : resolve(filePath)
-  return process.platform === 'win32' ? absolute.toLowerCase() : absolute
+function claimKey(filePath: string): string | undefined {
+  if (!isAbsolute(filePath)) return undefined
+  return process.platform === 'win32' ? filePath.toLowerCase() : filePath
 }
 
 /** The running subagent on this async execution chain, if any. */
@@ -101,6 +112,7 @@ function acquire(filePath: string): { conflictWith: string } | undefined {
   if (!activeAgents.has(agentId)) return undefined
 
   const key = claimKey(filePath)
+  if (key === undefined) return undefined
   const existing = claims.get(key)
   if (existing && existing.agentId !== agentId) {
     if (activeAgents.has(existing.agentId)) {
@@ -142,7 +154,9 @@ export function checkAgentFileClaim(filePath: string): string | undefined {
   if (!agentId || activeAgents.size < 2) return undefined
   if (!activeAgents.has(agentId)) return undefined
 
-  const existing = claims.get(claimKey(filePath))
+  const key = claimKey(filePath)
+  if (key === undefined) return undefined
+  const existing = claims.get(key)
   if (!existing || existing.agentId === agentId) return undefined
   if (!activeAgents.has(existing.agentId)) return undefined
   return existing.label ?? existing.agentId
@@ -178,6 +192,7 @@ export function _orphanAgentForTest(agentId: string): void {
 
 /** Test-only: inspect the current owner label for a path. */
 export function _ownerLabelForTest(filePath: string): string | undefined {
-  const claim = claims.get(claimKey(filePath))
+  const key = claimKey(filePath)
+  const claim = key === undefined ? undefined : claims.get(key)
   return claim ? (claim.label ?? claim.agentId) : undefined
 }
