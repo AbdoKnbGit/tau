@@ -133,6 +133,10 @@ Tree navigation, cloning, branching, and resume commands make long sessions easi
 **High-visibility monitoring and reporting**
 Tau separates live usage, session statistics, and final reports, so you can monitor consumption while still producing readable end-of-session summaries.
 
+**Reads the rules your team already wrote**
+Switching from another tool? Tau reads `AGENTS.md`, Cursor `.cursor/rules/*.mdc`, Copilot `.github/instructions`, Cline, and Windsurf rules where they already sit — no migration, no conversion step.
+Path-scoped rules load only when you touch a file they cover, and rules the original tool kept dormant stay dormant, so nothing bloats every request. Project files only; your global config for other tools is never read.
+
 **Self-learning & self-improvement**
 Tau gets better the more you use it. After a substantial task, or on demand via `/learned`, it proposes one critical, general, reusable lesson (a framework gotcha, a whole class of bug to avoid, a hard-won constraint, or your own preference) for you to Approve / Edit / Skip. Approved lessons are saved to memory and carried from this session into future ones and other projects, so the work keeps compounding instead of starting cold. Review, edit, delete, or toggle everything it learns with `/learned`.
 

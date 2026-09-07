@@ -3,7 +3,7 @@
  *
  * 1. Managed memory (eg. /etc/claude-code/CLAUDE.md) - Global instructions for all users
  * 2. User memory (~/.claude/CLAUDE.md) - Private global instructions for all projects
- * 3. Project memory (CLAUDE.md, .claude/CLAUDE.md, and .claude/rules/*.md in project roots) - Instructions checked into the codebase
+ * 3. Project memory (CLAUDE.md, .claude/CLAUDE.md, .claude/rules/*.md, and AGENTS.md in project roots) - Instructions checked into the codebase
  * 4. Local memory (CLAUDE.local.md in project roots) - Private project-specific instructions
  *
  * Files are loaded in reverse order of priority, i.e. the latest files are highest priority
@@ -13,7 +13,23 @@
  * - User memory is loaded from the user's home directory
  * - Project and Local files are discovered by traversing from the current directory up to root
  * - Files closer to the current directory have higher priority (loaded later)
- * - CLAUDE.md, .claude/CLAUDE.md, and all .md files in .claude/rules/ are checked in each directory for Project memory
+ * - CLAUDE.md, .claude/CLAUDE.md, all .md files in .claude/rules/, and AGENTS.md are checked in each directory for Project memory
+ * - AGENTS.md is the cross-vendor convention (Codex, Cursor, Zed); it is read last in each directory and skipped when its content duplicates a CLAUDE.md already loaded
+ *
+ * Rules written by other coding agents (project-scoped only; their user-level
+ * locations are deliberately not read):
+ * - .cursor/rules/*.mdc, .github/instructions/*.instructions.md and
+ *   .windsurf/rules/*.md are always scanned. Each file is classified by its own
+ *   tool's semantics, so a path-scoped rule joins the lazy set and costs nothing
+ *   until a matching file is touched, and a rule its author left dormant
+ *   (a Cursor Agent-Requested rule, a Copilot file with no applyTo) is skipped
+ *   rather than promoted into the always-on prompt
+ * - .github/copilot-instructions.md, .clinerules and .windsurfrules are
+ *   whole-project files, read only when a directory has no native instructions
+ *   and only until the first one hits — a repo that collected several across
+ *   tool migrations would otherwise pay for near-identical guidance on every
+ *   request
+ * - See foreignRuleFormats.ts for the per-tool dialects
  *
  * Memory @include directive:
  * - Memory files can include other files using @ notation
@@ -60,10 +76,14 @@ import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { getErrnoCode } from './errors.js'
 import { normalizePathForComparison } from './file.js'
 import { cacheKeys, type FileStateCache } from './fileStateCache.js'
+import { parseFrontmatter } from './frontmatterParser.js'
 import {
-  parseFrontmatter,
-  splitPathInFrontmatter,
-} from './frontmatterParser.js'
+  classifyForeignRule,
+  dialectForPath,
+  FOREIGN_GENERIC_SOURCES,
+  FOREIGN_RULE_DIR_SOURCES,
+  NATIVE_DIALECT,
+} from './foreignRuleFormats.js'
 import { getFsImplementation, safeResolvePath } from './fsOperations.js'
 import { findCanonicalGitRoot, findGitRoot } from './git.js'
 import {
@@ -96,6 +116,8 @@ export const MAX_MEMORY_CHARACTER_COUNT = 40000
 const TEXT_FILE_EXTENSIONS = new Set([
   // Markdown and text
   '.md',
+  // Cursor rule files: markdown with YAML frontmatter
+  '.mdc',
   '.txt',
   '.text',
   // Data formats
@@ -248,34 +270,41 @@ function pathInOriginalCwd(path: string): boolean {
 
 /**
  * Parses raw content to extract both content and glob patterns from frontmatter
+ *
+ * `filePath` selects the rule dialect. Files outside a foreign tool's rule
+ * directory read as native, where only `paths:` scopes a rule and an unscoped
+ * rule is unconditional — byte-identical to the behavior before other dialects
+ * were understood. A file inside one (Cursor `globs:`, Copilot `applyTo:`,
+ * Windsurf `trigger:`) is classified by that tool's own semantics, which
+ * includes tools whose unscoped rules are dormant rather than always-on.
+ *
  * @param rawContent Raw file content with frontmatter
- * @returns Object with content and globs (undefined if no paths or match-all pattern)
+ * @param filePath Absolute path, used to pick the dialect
+ * @returns Content plus globs, or `inert` when the rule should not load at all
  */
-function parseFrontmatterPaths(rawContent: string): {
+function parseFrontmatterPaths(
+  rawContent: string,
+  filePath?: string,
+): {
   content: string
   paths?: string[]
+  inert?: string
 } {
   const { frontmatter, content } = parseFrontmatter(rawContent)
+  const dialect =
+    filePath !== undefined ? dialectForPath(filePath) : NATIVE_DIALECT
 
-  if (!frontmatter.paths) {
-    return { content }
+  const activation = classifyForeignRule(
+    frontmatter as Record<string, unknown>,
+    dialect,
+  )
+  if (activation.kind === 'inert') {
+    return { content, inert: activation.reason }
   }
-
-  const patterns = splitPathInFrontmatter(frontmatter.paths)
-    .map(pattern => {
-      // Remove /** suffix - ignore library treats 'path' as matching both
-      // the path itself and everything inside it
-      return pattern.endsWith('/**') ? pattern.slice(0, -3) : pattern
-    })
-    .filter((p: string) => p.length > 0)
-
-  // If all patterns are ** (match-all), treat as no globs (undefined)
-  // This means the file applies to all paths
-  if (patterns.length === 0 || patterns.every((p: string) => p === '**')) {
-    return { content }
+  if (activation.kind === 'conditional') {
+    return { content, paths: activation.paths }
   }
-
-  return { content, paths: patterns }
+  return { content }
 }
 
 /**
@@ -345,6 +374,7 @@ function parseMemoryFileContent(
   filePath: string,
   type: MemoryType,
   includeBasePath?: string,
+  reachedViaInclude: boolean = false,
 ): { info: MemoryFileInfo | null; includePaths: string[] } {
   // Skip non-text files to prevent loading binary data (images, PDFs, etc.) into memory
   const ext = extname(filePath).toLowerCase()
@@ -353,8 +383,28 @@ function parseMemoryFileContent(
     return { info: null, includePaths: [] }
   }
 
-  const { content: withoutFrontmatter, paths } =
-    parseFrontmatterPaths(rawContent)
+  // A file pulled in by an explicit `@include` is a direct request, so it keeps
+  // native semantics wherever it happens to live. Passing no path selects the
+  // native dialect; without that, an include pointing into a foreign rules
+  // directory would inherit that tool's dialect and could be classified
+  // dormant, silently dropping content the author asked for by name.
+  const {
+    content: withoutFrontmatter,
+    paths,
+    inert,
+  } = parseFrontmatterPaths(
+    rawContent,
+    reachedViaInclude ? undefined : filePath,
+  )
+
+  // The rule's own tool leaves it dormant until asked for (a Cursor
+  // Agent-Requested/Manual rule, a Copilot instruction file with no applyTo).
+  // Loading it would promote it into the always-on set, which is the opposite
+  // of what its author selected.
+  if (inert !== undefined) {
+    logForDebugging(`Skipping dormant rule (${inert}): ${filePath}`)
+    return { info: null, includePaths: [] }
+  }
 
   // Lex once so strip and @include-extract share the same tokens. gfm:false
   // is required by extract (so ~/path doesn't tokenize as strikethrough) and
@@ -425,11 +475,18 @@ async function safelyReadMemoryFileAsync(
   filePath: string,
   type: MemoryType,
   includeBasePath?: string,
+  reachedViaInclude: boolean = false,
 ): Promise<{ info: MemoryFileInfo | null; includePaths: string[] }> {
   try {
     const fs = getFsImplementation()
     const rawContent = await fs.readFile(filePath, { encoding: 'utf-8' })
-    return parseMemoryFileContent(rawContent, filePath, type, includeBasePath)
+    return parseMemoryFileContent(
+      rawContent,
+      filePath,
+      type,
+      includeBasePath,
+      reachedViaInclude,
+    )
   } catch (error) {
     handleMemoryFileReadError(error, filePath)
     return { info: null, includePaths: [] }
@@ -648,7 +705,7 @@ export async function processMemoryFile(
   }
 
   const { info: memoryFile, includePaths: resolvedIncludePaths } =
-    await safelyReadMemoryFileAsync(filePath, type, resolvedPath)
+    await safelyReadMemoryFileAsync(filePath, type, resolvedPath, depth > 0)
   if (!memoryFile || !memoryFile.content.trim()) {
     return []
   }
@@ -701,6 +758,7 @@ export async function processMdRules({
   includeExternal,
   conditionalRule,
   visitedDirs = new Set(),
+  extensions = ['.md'],
 }: {
   rulesDir: string
   type: MemoryType
@@ -708,6 +766,12 @@ export async function processMdRules({
   includeExternal: boolean
   conditionalRule: boolean
   visitedDirs?: Set<string>
+  /**
+   * Filename suffixes to accept. Other tools name their rule files
+   * differently (Cursor `.mdc`, Copilot `.instructions.md`), so the caller
+   * supplies the set rather than the scan assuming `.md`.
+   */
+  extensions?: readonly string[]
 }): Promise<MemoryFileInfo[]> {
   if (visitedDirs.has(rulesDir)) {
     return []
@@ -760,9 +824,13 @@ export async function processMdRules({
             includeExternal,
             conditionalRule,
             visitedDirs,
+            extensions,
           })),
         )
-      } else if (isFile && entry.name.endsWith('.md')) {
+      } else if (
+        isFile &&
+        extensions.some(extension => entry.name.endsWith(extension))
+      ) {
         const files = await processMemoryFile(
           resolvedEntryPath,
           type,
@@ -785,6 +853,267 @@ export async function processMdRules({
     }
     return []
   }
+}
+
+/**
+ * Reads `AGENTS.md` from `dir` in the same slot as CLAUDE.md.
+ *
+ * AGENTS.md is the instruction file Codex, Cursor, Zed and others already
+ * write, so a team that has one gets their build commands and conventions
+ * honored without converting anything.
+ *
+ * Probed after the CLAUDE.md sources so that CLAUDE.md wins the content dedup
+ * below. Note this also places AGENTS.md later in the load order, and this
+ * module treats later files as higher priority, so a repo carrying both gives
+ * AGENTS.md slightly more weight. The two orderings cannot both be satisfied
+ * without re-sorting after the walk; dedup correctness was chosen because it
+ * is a hard guarantee while load order is a soft hint to the model.
+ *
+ * Content-deduped against what is already loaded. Repos routinely ship
+ * AGENTS.md as a copy of — or a symlink to — CLAUDE.md, and the path dedup in
+ * processMemoryFile does not catch that here: it tests the *link* path and
+ * only then records the resolved path, so it dedupes a symlink solely when the
+ * link is visited before its target. CLAUDE.md is probed first, so that
+ * ordering never holds, and identical content would otherwise reach the prompt
+ * twice. Dedup is scoped to this probe to leave every existing source's
+ * behavior untouched.
+ *
+ * Opting out uses the existing `claudeMdExcludes` setting (e.g.
+ * `"**\/AGENTS.md"`), which already covers every Project-type memory file.
+ */
+async function processAgentsMemoryFile(
+  dir: string,
+  alreadyLoaded: readonly MemoryFileInfo[],
+  processedPaths: Set<string>,
+  includeExternal: boolean,
+): Promise<MemoryFileInfo[]> {
+  const files = await processMemoryFile(
+    join(dir, 'AGENTS.md'),
+    'Project',
+    processedPaths,
+    includeExternal,
+  )
+  if (files.length === 0) {
+    return files
+  }
+  const seenContent = new Set(alreadyLoaded.map(file => file.content))
+  return files.filter(file => {
+    if (seenContent.has(file.content)) {
+      return false
+    }
+    seenContent.add(file.content)
+    return true
+  })
+}
+
+/**
+ * Rule directories other tools keep under a project directory.
+ *
+ * `baseDir` is the root their globs are written against — the project
+ * directory itself in every case — so a two-segment source (.cursor/rules)
+ * and a one-segment one (.clinerules) resolve their patterns the same way.
+ */
+function foreignRuleDirSpecs(
+  dir: string,
+): Array<{ rulesDir: string; extensions: readonly string[] }> {
+  return FOREIGN_RULE_DIR_SOURCES.map(source => ({
+    rulesDir: join(dir, ...source.segments),
+    extensions: source.extensions,
+  }))
+}
+
+/**
+ * Whether `dir` carries instructions tau reads natively.
+ *
+ * Used to gate the whole-project fallback files below. Deliberately a
+ * filesystem predicate rather than "did anything load", so the eager and lazy
+ * passes agree without threading state between them.
+ */
+async function hasNativeProjectInstructions(dir: string): Promise<boolean> {
+  const fs = getFsImplementation()
+  // Emptiness counts as absence. A zero-byte CLAUDE.md or a `.claude/rules`
+  // holding nothing but a .gitkeep contributes no guidance, so letting either
+  // suppress the fallback would leave the directory with no instructions at
+  // all — worse than the duplication the gate exists to prevent.
+  for (const name of ['CLAUDE.md', 'AGENTS.md', join('.claude', 'CLAUDE.md')]) {
+    try {
+      if ((await fs.stat(join(dir, name))).size > 0) return true
+    } catch {
+      // missing candidate; keep looking
+    }
+  }
+  try {
+    const entries = await fs.readdir(join(dir, '.claude', 'rules'))
+    if (entries.some(entry => entry.name.endsWith('.md'))) return true
+  } catch {
+    // no rules directory
+  }
+  return false
+}
+
+/**
+ * Reads rule files other coding agents maintain in `dir`.
+ *
+ * Two kinds of source, handled differently on purpose:
+ *
+ * Rule *directories* (.cursor/rules, .github/instructions, .windsurf/rules)
+ * are always scanned. Each file is classified by its own tool's semantics, so
+ * a scoped rule lands in the lazy set and costs nothing until a matching file
+ * is touched, and a rule its author left dormant is skipped rather than
+ * promoted into the always-on prompt.
+ *
+ * Whole-project *fallback* files (.github/copilot-instructions.md,
+ * .clinerules, .windsurfrules) are read only when the directory has no native
+ * instructions, and only the first one found wins. They all mean "apply to the
+ * entire project", so a repo that collected several across tool migrations
+ * would otherwise pay for near-identical guidance in its cached prefix on
+ * every request; the file the current tool reads is the maintained one and the
+ * rest are usually stale.
+ */
+async function processForeignProjectRules({
+  dir,
+  processedPaths,
+  includeExternal,
+  conditionalRule,
+}: {
+  dir: string
+  processedPaths: Set<string>
+  includeExternal: boolean
+  conditionalRule: boolean
+}): Promise<MemoryFileInfo[]> {
+  const result: MemoryFileInfo[] = []
+
+  for (const { rulesDir, extensions } of foreignRuleDirSpecs(dir)) {
+    result.push(
+      ...(await processMdRules({
+        rulesDir,
+        type: 'Project',
+        processedPaths,
+        includeExternal,
+        conditionalRule,
+        extensions,
+      })),
+    )
+  }
+
+  if (await hasNativeProjectInstructions(dir)) {
+    return result
+  }
+
+  const fs = getFsImplementation()
+  for (const source of FOREIGN_GENERIC_SOURCES) {
+    const candidate = join(dir, ...source.segments)
+    // Only a `file-or-dir` source needs the stat; a plain file source skips it
+    // and lets processMemoryFile report a missing path as "nothing loaded", so
+    // the common case costs one syscall rather than two.
+    let isDirectory = false
+    try {
+      isDirectory =
+        source.shape === 'file-or-dir' &&
+        (await fs.stat(candidate)).isDirectory()
+    } catch {
+      continue
+    }
+
+    const loaded = isDirectory
+      ? await processMdRules({
+          rulesDir: candidate,
+          type: 'Project',
+          processedPaths,
+          includeExternal,
+          conditionalRule,
+          extensions: source.extensions,
+        })
+      : conditionalRule
+        ? []
+        : await processMemoryFile(
+            candidate,
+            'Project',
+            processedPaths,
+            includeExternal,
+          )
+
+    if (loaded.length > 0) {
+      logForDebugging(
+        `Using ${candidate} for project instructions; later fallbacks skipped`,
+      )
+      result.push(...loaded)
+      break
+    }
+  }
+
+  return result
+}
+
+/**
+ * Foreign rules in `dir` whose globs match `targetPath`.
+ *
+ * The lazy half of `processForeignProjectRules`: a Cursor `globs:` rule or a
+ * Copilot `applyTo:` instruction file attaches only once the model touches a
+ * file it covers, so a repo full of path-scoped rules adds nothing to the
+ * cached prompt prefix.
+ */
+async function processForeignConditionedRules(
+  targetPath: string,
+  dir: string,
+  processedPaths: Set<string>,
+): Promise<MemoryFileInfo[]> {
+  const result: MemoryFileInfo[] = []
+
+  for (const { rulesDir, extensions } of foreignRuleDirSpecs(dir)) {
+    result.push(
+      ...(await processConditionedMdRules(
+        targetPath,
+        rulesDir,
+        'Project',
+        processedPaths,
+        false,
+        { extensions, baseDir: dir },
+      )),
+    )
+  }
+
+  // Only a directory-shaped fallback can hold path-scoped rules, so find one
+  // before paying for the native-instructions probe. This path runs for every
+  // cwd-level directory on every file the model touches, and the overwhelming
+  // majority of repos have no such directory at all.
+  const fs = getFsImplementation()
+  const dirFallbacks: Array<{
+    candidate: string
+    extensions: readonly string[]
+  }> = []
+  for (const source of FOREIGN_GENERIC_SOURCES) {
+    if (source.shape !== 'file-or-dir') continue
+    const candidate = join(dir, ...source.segments)
+    try {
+      if (!(await fs.stat(candidate)).isDirectory()) continue
+    } catch {
+      continue
+    }
+    dirFallbacks.push({ candidate, extensions: source.extensions })
+  }
+  if (dirFallbacks.length === 0) {
+    return result
+  }
+  if (await hasNativeProjectInstructions(dir)) {
+    return result
+  }
+
+  for (const { candidate, extensions } of dirFallbacks) {
+    result.push(
+      ...(await processConditionedMdRules(
+        targetPath,
+        candidate,
+        'Project',
+        processedPaths,
+        false,
+        { extensions, baseDir: dir },
+      )),
+    )
+    break
+  }
+
+  return result
 }
 
 export const getMemoryFiles = memoize(
@@ -885,38 +1214,55 @@ export const getMemoryFiles = memoize(
 
       // Try reading CLAUDE.md (Project) - only if projectSettings is enabled
       if (isSettingSourceEnabled('projectSettings') && !skipProject) {
-        const projectPath = join(dir, 'CLAUDE.md')
-        result.push(
+        // Read the native sources first so AGENTS.md can be deduped against
+        // them, but push them last: this module treats later files as higher
+        // priority, and a repo's own tau instructions should outrank rules it
+        // inherited from another tool. Reading order and push order are
+        // separated here precisely because those two needs disagree.
+        const nativeFiles: MemoryFileInfo[] = [
+          // CLAUDE.md (Project)
           ...(await processMemoryFile(
-            projectPath,
+            join(dir, 'CLAUDE.md'),
             'Project',
             processedPaths,
             includeExternal,
           )),
-        )
-
-        // Try reading .claude/CLAUDE.md (Project)
-        const dotClaudePath = join(dir, '.claude', 'CLAUDE.md')
-        result.push(
+          // .claude/CLAUDE.md (Project)
           ...(await processMemoryFile(
-            dotClaudePath,
+            join(dir, '.claude', 'CLAUDE.md'),
             'Project',
             processedPaths,
             includeExternal,
           )),
-        )
-
-        // Try reading .claude/rules/*.md files (Project)
-        const rulesDir = join(dir, '.claude', 'rules')
-        result.push(
+          // .claude/rules/*.md files (Project)
           ...(await processMdRules({
-            rulesDir,
+            rulesDir: join(dir, '.claude', 'rules'),
             type: 'Project',
             processedPaths,
             includeExternal,
             conditionalRule: false,
           })),
+        ]
+
+        // AGENTS.md (Project) - the cross-vendor convention. Deduped against
+        // everything already loaded plus the native files just read, so a
+        // repo whose AGENTS.md copies its CLAUDE.md keeps only CLAUDE.md.
+        const agentsFiles = await processAgentsMemoryFile(
+          dir,
+          [...result, ...nativeFiles],
+          processedPaths,
+          includeExternal,
         )
+
+        // Rule files other coding agents maintain in this directory
+        const foreignFiles = await processForeignProjectRules({
+          dir,
+          processedPaths,
+          includeExternal,
+          conditionalRule: false,
+        })
+
+        result.push(...foreignFiles, ...agentsFiles, ...nativeFiles)
       }
 
       // Try reading CLAUDE.local.md (Local) - only if localSettings is enabled
@@ -940,39 +1286,47 @@ export const getMemoryFiles = memoize(
     if (isEnvTruthy(process.env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD)) {
       const additionalDirs = getAdditionalDirectoriesForClaudeMd()
       for (const dir of additionalDirs) {
-        // Try reading CLAUDE.md from the additional directory
-        const projectPath = join(dir, 'CLAUDE.md')
-        result.push(
+        // Native sources read first (so AGENTS.md dedupes against them) and
+        // pushed last (so they outrank foreign rules) — see the main walk.
+        const nativeFiles: MemoryFileInfo[] = [
           ...(await processMemoryFile(
-            projectPath,
+            join(dir, 'CLAUDE.md'),
             'Project',
             processedPaths,
             includeExternal,
           )),
-        )
-
-        // Try reading .claude/CLAUDE.md from the additional directory
-        const dotClaudePath = join(dir, '.claude', 'CLAUDE.md')
-        result.push(
           ...(await processMemoryFile(
-            dotClaudePath,
+            join(dir, '.claude', 'CLAUDE.md'),
             'Project',
             processedPaths,
             includeExternal,
           )),
-        )
-
-        // Try reading .claude/rules/*.md files from the additional directory
-        const rulesDir = join(dir, '.claude', 'rules')
-        result.push(
           ...(await processMdRules({
-            rulesDir,
+            rulesDir: join(dir, '.claude', 'rules'),
             type: 'Project',
             processedPaths,
             includeExternal,
             conditionalRule: false,
           })),
+        ]
+
+        const agentsFiles = await processAgentsMemoryFile(
+          dir,
+          [...result, ...nativeFiles],
+          processedPaths,
+          includeExternal,
         )
+
+        // Kept in step with the main walk so an --add-dir directory resolves
+        // the same sources a project directory would.
+        const foreignFiles = await processForeignProjectRules({
+          dir,
+          processedPaths,
+          includeExternal,
+          conditionalRule: false,
+        })
+
+        result.push(...foreignFiles, ...agentsFiles, ...nativeFiles)
       }
     }
 
@@ -1253,6 +1607,12 @@ export async function getMemoryFilesForNestedDirectory(
 ): Promise<MemoryFileInfo[]> {
   const result: MemoryFileInfo[] = []
 
+  // Conditional rules other coding agents maintain here. First, so everything
+  // native to tau lands later and therefore ranks higher.
+  result.push(
+    ...(await processForeignConditionedRules(targetPath, dir, processedPaths)),
+  )
+
   // Process project memory files (CLAUDE.md and .claude/CLAUDE.md)
   if (isSettingSourceEnabled('projectSettings')) {
     const projectPath = join(dir, 'CLAUDE.md')
@@ -1332,13 +1692,25 @@ export async function getConditionalRulesForCwdLevelDirectory(
   processedPaths: Set<string>,
 ): Promise<MemoryFileInfo[]> {
   const rulesDir = join(dir, '.claude', 'rules')
-  return processConditionedMdRules(
+  // Foreign rule dirs live at the project root, which is a cwd-level directory
+  // rather than a nested one, so a Cursor `globs:` rule would never attach
+  // without this pass. Listed before the native rules because later files rank
+  // higher and tau's own rules should win.
+  const foreignRules = await processForeignConditionedRules(
     targetPath,
-    rulesDir,
-    'Project',
+    dir,
     processedPaths,
-    false,
   )
+  return [
+    ...foreignRules,
+    ...(await processConditionedMdRules(
+      targetPath,
+      rulesDir,
+      'Project',
+      processedPaths,
+      false,
+    )),
+  ]
 }
 
 /**
@@ -1357,6 +1729,17 @@ export async function processConditionedMdRules(
   type: MemoryType,
   processedPaths: Set<string>,
   includeExternal: boolean,
+  options: {
+    /** Filename suffixes to accept; other tools do not use `.md`. */
+    extensions?: readonly string[]
+    /**
+     * Root the rule's globs are written against. Defaults to the parent of the
+     * `.claude` directory, which is also correct for every two-segment foreign
+     * source (.cursor/rules, .github/instructions, .windsurf/rules). A
+     * one-segment source such as `.clinerules` must pass its own.
+     */
+    baseDir?: string
+  } = {},
 ): Promise<MemoryFileInfo[]> {
   const conditionedRuleMdFiles = await processMdRules({
     rulesDir,
@@ -1364,6 +1747,7 @@ export async function processConditionedMdRules(
     processedPaths,
     includeExternal,
     conditionalRule: true,
+    ...(options.extensions !== undefined && { extensions: options.extensions }),
   })
 
   // Filter to only include files whose globs patterns match the targetPath
@@ -1375,9 +1759,10 @@ export async function processConditionedMdRules(
     // For Project rules: glob patterns are relative to the directory containing .claude
     // For Managed/User rules: glob patterns are relative to the original CWD
     const baseDir =
-      type === 'Project'
+      options.baseDir ??
+      (type === 'Project'
         ? dirname(dirname(rulesDir)) // Parent of .claude
-        : getOriginalCwd() // Project root for managed/user rules
+        : getOriginalCwd()) // Project root for managed/user rules
 
     const relativePath = isAbsolute(targetPath)
       ? relative(baseDir, targetPath)
