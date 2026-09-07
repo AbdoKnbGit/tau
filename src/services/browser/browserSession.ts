@@ -11,7 +11,25 @@ import {
   resolveExistingBrowser,
 } from "./chromeLauncher.js";
 import {
+  diffEffect,
+  STATE_PROBE_SCRIPT,
+  type ActionEffect,
+  type PageStateSnapshot,
+} from "./effects.js";
+import { buildExtractScript, type ExtractResult } from "./extract.js";
+import type { FlowStep } from "./flows.js";
+import { describeImage, type ImageMeta } from "./imageMeta.js";
+import { MEASURE_SCRIPT, type MeasureResult } from "./measure.js";
+import {
+  buildWatchDomScript,
+  matchEventAlerts,
+  type WatchAlert,
+  type WatchCondition,
+  type WatchDomResult,
+} from "./watch.js";
+import {
   buildStealthScript,
+  stealthPlatformFromUserAgent,
   detectBlocker,
   MAX_OBSERVED_ELEMENTS,
   NUDGE_SCRIPT,
@@ -24,6 +42,8 @@ import {
   type ObservedState,
   type PageActionResult,
   type ReadResult,
+  type StateExplanation,
+  type StealthPlatform,
 } from "./pageScripts.js";
 
 export interface TabInfo {
@@ -564,6 +584,8 @@ class BrowserSessionService {
   /** Anti-detection: injected on every new document per target. */
   private stealthScript?: string;
   private cachedUserAgent?: string;
+  /** Platform identity every spoof must agree on; derived, never pinned. */
+  private stealthPlatform: StealthPlatform = stealthPlatformFromUserAgent();
   private stealthTargets = new Set<string>();
   /**
    * Recent blind coordinate clicks since the last explicit observe/screenshot.
@@ -584,14 +606,235 @@ class BrowserSessionService {
   private sessionNotes: string[] = [];
   private downloadDir?: string;
   private downloadNames = new Map<string, string>();
+  /**
+   * Monotonic within the process, never rewound by a reopen: it numbers action
+   * receipts and mints vision tokens, both of which must stay unambiguous for
+   * the whole conversation.
+   */
+  private stepCounter = 0;
+  /** Standing watch conditions and the timestamp already reported. */
+  private watchConditions: WatchCondition[] = [];
+  private watchCursor = 0;
+  /** Rolling record of replayable steps, oldest dropped first. */
+  private recordedSteps: FlowStep[] = [];
+  private recordingStartUrl?: string;
+  /** Advisory per-tab ownership, so concurrent agents do not steal each other's tab. */
+  private tabOwners = new Map<string, { agentId: string; label: string }>();
+  /** Serializes actions so two agents cannot interleave inside one action. */
+  private actionChain: Promise<unknown> = Promise.resolve();
+  /** How often each failure cause has been hit, so a repeat can say more. */
+  private failureStreak = new Map<string, number>();
 
   isRunning(): boolean {
     return !!this.client?.isOpen;
   }
 
+  /** Reserves the next receipt number. */
+  nextStep(): number {
+    this.stepCounter += 1;
+    return this.stepCounter;
+  }
+
+  currentStep(): number {
+    return this.stepCounter;
+  }
+
+  /**
+   * One cheap sample of the page for the before/after receipt. Returns null
+   * rather than throwing: a sample that cannot be taken is reported as
+   * unverified, never as success.
+   */
+  async sampleState(): Promise<PageStateSnapshot | null> {
+    if (!this.client?.isOpen) return null;
+    try {
+      const state = await this.evaluate<PageStateSnapshot | null>(
+        STATE_PROBE_SCRIPT,
+        { timeoutMs: 5_000 },
+      );
+      return state && typeof state.docId === "string" ? state : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Runs one action with a before/after sample around it, serialized against
+   * every other action on this session.
+   */
+  async withEffect<T>(
+    action: string,
+    run: () => Promise<T>,
+    options?: { producedValue?: (result: T) => boolean },
+  ): Promise<{ result: T; effect: ActionEffect }> {
+    const task = this.actionChain.then(async () => {
+      const step = this.nextStep();
+      const before = await this.sampleState();
+      const startedAt = Date.now();
+      const result = await run();
+      const elapsed = Date.now() - startedAt;
+      const after = await this.sampleState();
+      const effect = diffEffect(action, before, after, step, elapsed, {
+        producedValue: options?.producedValue?.(result) ?? false,
+      });
+      return { result, effect };
+    });
+    // Keep the chain alive even when this action rejects, or one failure would
+    // wedge every later action on the session.
+    this.actionChain = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  }
+
+  /**
+   * Advisory tab ownership. Two named subagents driving one browser will
+   * otherwise silently steal each other's active tab and stale each other's
+   * refs; this reports the handover instead of hiding it.
+   */
+  claimActiveTab(agent: { agentId: string; label: string }): string | null {
+    const targetId = this.activeTargetId;
+    if (!targetId) return null;
+    const owner = this.tabOwners.get(targetId);
+    this.tabOwners.set(targetId, agent);
+    if (!owner || owner.agentId === agent.agentId) return null;
+    return owner.label;
+  }
+
+  /** Registered watch conditions, in registration order. */
+  watchList(): WatchCondition[] {
+    return [...this.watchConditions];
+  }
+
+  watchAdd(conditions: WatchCondition[]): WatchCondition[] {
+    for (const condition of conditions) {
+      if (!this.watchConditions.some(existing => existing.spec === condition.spec)) {
+        this.watchConditions.push(condition);
+      }
+    }
+    // Only report what happens from now on; history belongs to console/network.
+    this.watchCursor = Date.now();
+    return this.watchList();
+  }
+
+  watchClear(): void {
+    this.watchConditions = [];
+    this.watchCursor = 0;
+  }
+
+  /**
+   * Drains event conditions against the capture rings. Cheap enough to run
+   * after every action, which is how alerts reach the model at all.
+   */
+  drainWatchAlerts(): WatchAlert[] {
+    if (this.watchConditions.length === 0) return [];
+    const targetId = this.activeTargetId;
+    const alerts = matchEventAlerts(this.watchConditions, {
+      console: (targetId && this.consoleBuf.get(targetId)) || [],
+      network: (targetId && this.networkBuf.get(targetId)) || [],
+      sinceTs: this.watchCursor,
+    });
+    if (alerts.length > 0) {
+      this.watchCursor = Math.max(this.watchCursor, alerts[alerts.length - 1]!.ts);
+    }
+    return alerts;
+  }
+
+  /** Evaluates the DOM conditions once, now. */
+  async watchCheckDom(): Promise<WatchDomResult[]> {
+    const domConditions = this.watchConditions.filter(
+      condition => !condition.kind.startsWith("console.") && condition.kind !== "request.failed",
+    );
+    if (domConditions.length === 0 || !this.client?.isOpen) return [];
+    try {
+      return (
+        (await this.evaluate<WatchDomResult[]>(buildWatchDomScript(domConditions), {
+          timeoutMs: 10_000,
+        })) ?? []
+      );
+    } catch (error: unknown) {
+      return domConditions.map(condition => ({
+        spec: condition.spec,
+        hit: false,
+        detail: `could not be evaluated: ${error instanceof Error ? error.message : String(error)}`,
+        invalid: true,
+      }));
+    }
+  }
+
+  /** True when a capture ring is full, so a check may have missed entries. */
+  captureBufferFull(): boolean {
+    const targetId = this.activeTargetId;
+    if (!targetId) return false;
+    return (
+      (this.consoleBuf.get(targetId)?.length ?? 0) >= EVENT_BUFFER_CAP ||
+      (this.networkBuf.get(targetId)?.length ?? 0) >= EVENT_BUFFER_CAP
+    );
+  }
+
+  /** Appends a replayable step to the rolling recording. */
+  recordStep(step: FlowStep): void {
+    if (this.recordedSteps.length === 0) {
+      this.recordingStartUrl = this.lastKnownUrl;
+    }
+    this.recordedSteps.push(step);
+    if (this.recordedSteps.length > 300) this.recordedSteps.shift();
+  }
+
+  recordedFlow(): { steps: FlowStep[]; startUrl?: string } {
+    return {
+      steps: [...this.recordedSteps],
+      ...(this.recordingStartUrl ? { startUrl: this.recordingStartUrl } : {}),
+    };
+  }
+
+  clearRecording(): void {
+    this.recordedSteps = [];
+    this.recordingStartUrl = undefined;
+  }
+
+  /**
+   * Why an action left the page unchanged, read from the target's own state.
+   * Turns a bare "nothing happened" into "it was already selected".
+   */
+  async explainNoEffect(ref: number): Promise<StateExplanation | null> {
+    if (!this.client?.isOpen) return null;
+    try {
+      return await this.callPageTools<StateExplanation>(`explainState(${Number(ref)})`);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Measured facts about what actually rendered. */
+  async measurePage(): Promise<MeasureResult> {
+    return this.evaluate<MeasureResult>(MEASURE_SCRIPT, { timeoutMs: 20_000 });
+  }
+
+  /** Structured extraction that reports where every value came from. */
+  async extractData(config: {
+    container?: string;
+    fields: Record<string, string>;
+    limit: number;
+  }): Promise<ExtractResult> {
+    return this.evaluate<ExtractResult>(buildExtractScript(config), {
+      timeoutMs: 20_000,
+    });
+  }
+
   getCachedElement(ref: number): InteractiveElement | undefined {
     if (this.cachedElementsTargetId !== this.activeTargetId) return undefined;
     return this.cachedElements.get(ref);
+  }
+
+  /**
+   * The whole last observation of this tab, in observation order. Recording a
+   * flow needs it: an element's label is only unambiguous relative to the other
+   * elements that were on screen with it.
+   */
+  getCachedElements(): InteractiveElement[] {
+    if (this.cachedElementsTargetId !== this.activeTargetId) return [];
+    return [...this.cachedElements.values()];
   }
 
   getLastKnownUrl(): string | undefined {
@@ -640,6 +883,23 @@ class BrowserSessionService {
    * registry may assign that number to a different element. Refresh once and
    * return the fresh observation so the caller can use its replacement ref.
    */
+  /**
+   * Counts identical failures so a second one can say something different.
+   * Keyed by cause, not by target: the same blocker stopping two different
+   * refs is the page's stacking order, which is the thing worth reporting.
+   */
+  private repeatedFailure(result: PageActionResult): number {
+    const covering = (result as ClickPrepareResult).covering ?? "";
+    const key = `${result.reason ?? "unknown"}|${covering}`;
+    const seen = (this.failureStreak.get(key) ?? 0) + 1;
+    this.failureStreak.set(key, seen);
+    if (this.failureStreak.size > 40) {
+      const oldest = this.failureStreak.keys().next().value;
+      if (oldest !== undefined) this.failureStreak.delete(oldest);
+    }
+    return seen;
+  }
+
   private async pageActionFailureOutcome(
     result: PageActionResult,
     fallbackError: string,
@@ -662,13 +922,29 @@ class BrowserSessionService {
     try {
       const { observation, warnings } = await this.observe(signal);
       if (result.reason === "element_covered") {
+        const kind = (result as ClickPrepareResult).coverageKind;
+        const seen = this.repeatedFailure(result);
+        // Only a dismissible layer earns the dismiss advice. Telling the model
+        // to dismiss a sticky header or a z-indexed label sends it round a loop
+        // that cannot terminate.
+        // Never claim more than the page reported: an unclassified blocker
+        // keeps the older, safe advice.
+        const guidance =
+          kind === "modal"
+            ? " I refreshed the observation below so the blocking layer and its close control have current refs. Use dismiss once, then retry using a ref from that refreshed observation."
+            : kind === "fixed"
+              ? " I refreshed the observation below. Scroll the page so the target sits clear of the fixed furniture, then retry by ref — dismissing will not move page chrome."
+              : kind === "stacked"
+                ? " I refreshed the observation below. Do not retry this target as-is and do not dismiss: nothing here is dismissible."
+                : " I refreshed the observation below so the blocking layer and its close control have current refs. If it is an overlay or drawer, use dismiss once, then retry using a ref from that refreshed observation.";
+        const repeat =
+          seen > 1
+            ? ` This is failure ${seen} with the same blocker, so it is not a targeting mistake — treat it as a real defect in the page and change approach.`
+            : "";
         return {
           ok: false,
           reason: result.reason,
-          error:
-            (result.error ?? fallbackError) +
-            " I refreshed the observation below so the blocking layer and its close control have current refs. " +
-            "If it is an overlay or drawer, use dismiss once, then retry using a ref from that refreshed observation.",
+          error: (result.error ?? fallbackError) + guidance + repeat,
           observation,
           warnings,
         };
@@ -1017,6 +1293,24 @@ class BrowserSessionService {
       );
       failed.warnings.unshift(...warnings);
       return failed;
+    }
+
+    // Say what it took to reach the target. Silent compensation is how a tool
+    // teaches the caller that a broken page is fine.
+    if (prep.recovered) {
+      warnings.push(
+        `The target was under fixed/sticky page furniture; I scrolled ${Math.abs(prep.scrolled ?? 0)}px to clear it before clicking.`,
+      );
+    }
+    if (prep.offCentre) {
+      warnings.push(
+        "The centre of that element is covered by something painted above it, so I clicked an uncovered point inside it instead. If the click does nothing, that overlap is the reason.",
+      );
+    }
+    if ((prep.matches ?? 0) > 1) {
+      warnings.push(
+        `${prep.matches} visible controls carry that text; I used match #${selected?.kind === "text" ? selected.nth : 1}. Click by @ref when several match — text ordering is not stable across renders.`,
+      );
     }
 
     const before = await this.pageFingerprint();
@@ -1722,6 +2016,8 @@ class BrowserSessionService {
     mediaType: "image/jpeg" | "image/png";
     savedPath?: string;
     note?: string;
+    /** Measured bytes, content hash and real pixel size of what was captured. */
+    meta?: ImageMeta;
   }> {
     const client = this.requireClient();
     const sessionId = await this.getActiveSession();
@@ -1829,13 +2125,17 @@ class BrowserSessionService {
         30_000,
       );
       const mediaType = asPng ? "image/png" : "image/jpeg";
+      // Measure what was actually produced: the requested clip, the capture
+      // scale and the device pixel ratio all disagree, and only the encoded
+      // header knows the answer.
+      const buffer = Buffer.from(data, "base64");
+      const meta = describeImage(buffer);
       if (toFile) {
-        const buffer = Buffer.from(data, "base64");
         mkdirSync(dirname(toFile), { recursive: true });
         writeFileSync(toFile, buffer);
-        return { mediaType, savedPath: toFile, note };
+        return { mediaType, savedPath: toFile, note, meta };
       }
-      return { base64: data, mediaType, note };
+      return { base64: data, mediaType, note, meta };
     } finally {
       if (annotated) {
         await this.callPageTools("clearAnnotations()").catch(() => undefined);
@@ -2378,7 +2678,9 @@ class BrowserSessionService {
           {
             userAgent: this.cachedUserAgent,
             acceptLanguage: "en-US,en;q=0.9",
-            platform: "Win32",
+            // Derived from the browser's own UA: a spoofed platform that
+            // contradicts the UA header is a stronger bot signal than none.
+            platform: this.stealthPlatform.navigator,
           },
           sessionId,
         )
@@ -2419,7 +2721,8 @@ class BrowserSessionService {
     } catch {
       this.cachedUserAgent = undefined;
     }
-    this.stealthScript = buildStealthScript(chromeMajor);
+    this.stealthPlatform = stealthPlatformFromUserAgent(this.cachedUserAgent);
+    this.stealthScript = buildStealthScript(chromeMajor, this.stealthPlatform);
   }
 
   private installClientHooks(): void {
@@ -2754,6 +3057,13 @@ class BrowserSessionService {
     this.sessionNotes = [];
     this.downloadDir = undefined;
     this.downloadNames.clear();
+    // Tab-scoped state dies with the browser; the step counter does not, so
+    // vision tokens stay unique for the whole process. Watch conditions are the
+    // caller's intent and survive a reopen, but their cursor cannot.
+    this.tabOwners.clear();
+    this.failureStreak.clear();
+    this.watchCursor = 0;
+    this.actionChain = Promise.resolve();
   }
 }
 

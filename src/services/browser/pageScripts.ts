@@ -93,6 +93,24 @@ export interface ClickPrepareResult extends PageActionResult {
   href?: string;
   label?: string;
   tag?: string;
+  /** The centre was blocked, so a different point inside the target was used. */
+  offCentre?: boolean;
+  /** Pixels scrolled to get the target out from under fixed/sticky chrome. */
+  scrolled?: number;
+  /** That scroll is what made the target reachable. */
+  recovered?: boolean;
+  /** For a text target: how many visible controls carry that text. */
+  matches?: number;
+  /** modal | fixed | stacked | offscreen — what kind of thing is on top. */
+  coverageKind?: "modal" | "fixed" | "stacked" | "offscreen";
+}
+
+/** Why an action that ran may have left the page unchanged. */
+export interface StateExplanation {
+  known: boolean;
+  reasons?: string[];
+  label?: string;
+  tag?: string;
 }
 
 /**
@@ -458,21 +476,171 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     window.__tauPageState.lastBlocker = { hit, scope, x, y, at: Date.now() };
     return scope;
   },
-  // Does the element's center point actually hit the element (or a relative)?
-  // If not, an overlay/modal is on top and a click would hit the wrong thing.
+  // A hit counts as on-target when it IS the element, sits inside it, or wraps
+  // it. Anything else is a different element painted on top.
+  pointHitsTarget(el, hit) {
+    if (!hit) return false;
+    return hit === el || el.contains(hit) || hit.contains(el);
+  },
+  // Points to try inside an element, best first. Testing only the centre fails
+  // whenever a badge, ribbon, sticker or price label is stacked over the middle
+  // of a control — common, and no reason to abandon the click when the rest of
+  // the control is reachable.
+  hitPoints(el) {
+    const doc = el.ownerDocument || document;
+    const view = doc.defaultView || window;
+    const r = el.getBoundingClientRect();
+    // Sample inside the element's VISIBLE part. An element taller than the
+    // viewport, or one hanging half off the fold, has a perfectly clickable
+    // area even though its geometric centre is nowhere on screen.
+    const left = Math.max(r.left, 1);
+    const right = Math.min(r.right, view.innerWidth - 1);
+    const top = Math.max(r.top, 1);
+    const bottom = Math.min(r.bottom, view.innerHeight - 1);
+    if (right <= left || bottom <= top) return [];
+    const fx = [0.5, 0.22, 0.78, 0.5, 0.5, 0.22, 0.78, 0.22, 0.78];
+    const fy = [0.5, 0.5, 0.5, 0.22, 0.78, 0.22, 0.22, 0.78, 0.78];
+    const out = [];
+    for (let i = 0; i < fx.length; i++) {
+      out.push({
+        x: left + (right - left) * fx[i],
+        y: top + (bottom - top) * fy[i],
+        centre: i === 0,
+      });
+    }
+    return out;
+  },
+  clickablePoint(el) {
+    const doc = el.ownerDocument || document;
+    const points = this.hitPoints(el);
+    let blocker = null;
+    for (let i = 0; i < points.length; i++) {
+      const hit = doc.elementFromPoint(points[i].x, points[i].y);
+      if (this.pointHitsTarget(el, hit)) {
+        return { found: true, x: points[i].x, y: points[i].y, centre: points[i].centre, tried: points.length };
+      }
+      if (!blocker && hit) blocker = hit;
+    }
+    return { found: false, blocker: blocker, tried: points.length };
+  },
+  // Why is something on top: a dialog you must close, page chrome that does not
+  // scroll, or a plain element painted above — three different situations that
+  // deserve three different answers.
+  classifyBlocker(blocker) {
+    if (!blocker) return { kind: 'offscreen' };
+    // An overlay scope is either semantic (role=dialog, drawer/modal naming) or
+    // geometric (a full-viewport layer or a side panel). Both are things a user
+    // closes, so both are dismissible — and this test has to come FIRST: a
+    // modal backdrop is position:fixed too, and calling it page furniture would
+    // send the caller scrolling instead of closing it.
+    const scope = this.findOverlayScope(blocker);
+    if (scope) return { kind: 'modal', node: scope };
+    let node = blocker;
+    let guard = 0;
+    while (node && guard++ < 8) {
+      let s;
+      try { s = getComputedStyle(node); } catch (e) { break; }
+      // Fixed or sticky, but not an overlay: headers, language bars, cookie
+      // strips. Nothing to dismiss; they move only when the page scrolls.
+      if (s.position === 'fixed' || s.position === 'sticky') return { kind: 'fixed', node: node };
+      node = node.parentElement;
+    }
+    return { kind: 'stacked', node: blocker };
+  },
+  // Full-width bands of fixed/sticky chrome pinned to the top or bottom of the
+  // viewport. Found by computed position and geometry — never by name.
+  fixedBands(el) {
+    const doc = el.ownerDocument || document;
+    const view = doc.defaultView || window;
+    const vh = Math.max(1, view.innerHeight);
+    const vw = Math.max(1, view.innerWidth);
+    const band = { top: 0, bottom: vh };
+    let nodes = [];
+    try { nodes = doc.querySelectorAll('body *'); } catch (e) { return band; }
+    const cap = nodes.length < 2500 ? nodes.length : 2500;
+    for (let i = 0; i < cap; i++) {
+      const node = nodes[i];
+      if (node === el || node.contains(el) || el.contains(node)) continue;
+      let s;
+      try { s = getComputedStyle(node); } catch (e) { continue; }
+      if (s.position !== 'fixed' && s.position !== 'sticky') continue;
+      if (!this.visible(node)) continue;
+      const r = node.getBoundingClientRect();
+      if (r.width < vw * 0.5 || r.height <= 0 || r.height > vh * 0.5) continue;
+      if (r.top <= 2 && r.bottom > band.top) band.top = r.bottom;
+      else if (r.bottom >= vh - 2 && r.top < band.bottom) band.bottom = r.top;
+    }
+    return band;
+  },
+  // scrollIntoView({block:'center'}) cannot centre anything on a page too short
+  // to scroll, so a target near the top stays under a sticky header. Move it
+  // into the free band between the fixed layers instead.
+  clearFixedCoverage(el) {
+    const doc = el.ownerDocument || document;
+    const view = doc.defaultView || window;
+    const band = this.fixedBands(el);
+    const free = band.bottom - band.top;
+    if (free < 40) return { scrolled: 0, band: band };
+    const r = el.getBoundingClientRect();
+    const desiredTop = band.top + Math.max(6, (free - r.height) / 2);
+    const delta = Math.round(r.top - desiredTop);
+    if (Math.abs(delta) < 4) return { scrolled: 0, band: band };
+    if (typeof view.scrollBy !== 'function') return { scrolled: 0, band: band };
+    const before = view.scrollY || 0;
+    try { view.scrollBy(0, delta); } catch (e) { return { scrolled: 0, band: band }; }
+    return { scrolled: Math.round((view.scrollY || 0) - before), band: band };
+  },
+  // Does a point on the element actually reach the element? Tries several
+  // points, then tries to get out from under fixed chrome, and only then
+  // reports a blocker — classified, so the caller knows whether to dismiss
+  // something, scroll, or treat it as a defect in the page.
   // Checked inside the element's own document AND at every hosting-frame level,
   // so a top-page modal covering an iframe form is caught too.
   coverageCheck(el) {
     const doc = el.ownerDocument || document;
     const dwin = doc.defaultView || window;
-    const r = el.getBoundingClientRect();
-    let x = Math.min(Math.max(r.left + r.width / 2, 1), dwin.innerWidth - 1);
-    let y = Math.min(Math.max(r.top + r.height / 2, 1), dwin.innerHeight - 1);
-    const hit = doc.elementFromPoint(x, y);
-    if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) {
-      const scope = this.rememberBlocker(hit, x, y);
-      return { ok: false, covering: this.describeEl(scope || hit), dismissible: !!scope };
+    let attempt = this.clickablePoint(el);
+    let scrolled = 0;
+    let recovered = false;
+    if (!attempt.found) {
+      const first = this.classifyBlocker(attempt.blocker);
+      if (first.kind === 'fixed' || first.kind === 'offscreen') {
+        const moved = this.clearFixedCoverage(el);
+        scrolled = moved.scrolled || 0;
+        if (scrolled !== 0) {
+          const retry = this.clickablePoint(el);
+          if (retry.found) {
+            attempt = retry;
+            recovered = true;
+          }
+        }
+      }
     }
+    if (!attempt.found) {
+      const verdict = this.classifyBlocker(attempt.blocker);
+      const scope = verdict.node || attempt.blocker;
+      const r = el.getBoundingClientRect();
+      if (attempt.blocker) {
+        this.rememberBlocker(attempt.blocker, r.left + r.width / 2, r.top + r.height / 2);
+      }
+      let z = 0;
+      try { z = parseInt(getComputedStyle(scope || el).zIndex, 10) || 0; } catch (e) { z = 0; }
+      let openOverlays = 0;
+      try { openOverlays = this.overlayCandidates().length; } catch (e) { openOverlays = 0; }
+      return {
+        ok: false,
+        covering: this.describeEl(scope || el),
+        dismissible: verdict.kind === 'modal',
+        kind: verdict.kind,
+        sampled: attempt.tried,
+        scrolled: scrolled,
+        zIndex: z,
+        openOverlays: openOverlays,
+      };
+    }
+    let x = Math.min(Math.max(attempt.x, 1), dwin.innerWidth - 1);
+    let y = Math.min(Math.max(attempt.y, 1), dwin.innerHeight - 1);
+    const localPoint = { x: x, y: y };
     let win = dwin, guard = 0;
     while (win && win !== window && win.frameElement && guard++ < 5) {
       const fe = win.frameElement;
@@ -486,11 +654,28 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
       );
       if (phit && phit !== fe && !fe.contains(phit) && !phit.contains(fe)) {
         const scope = this.rememberBlocker(phit, x, y);
-        return { ok: false, covering: this.describeEl(scope || phit), dismissible: !!scope };
+        const verdict = this.classifyBlocker(phit);
+        return {
+          ok: false,
+          covering: this.describeEl(scope || phit),
+          dismissible: verdict.kind === 'modal',
+          kind: verdict.kind,
+          sampled: 1,
+          scrolled: scrolled,
+          zIndex: 0,
+          openOverlays: 0,
+        };
       }
       win = win.parent;
     }
-    return { ok: true };
+    return {
+      ok: true,
+      x: localPoint.x,
+      y: localPoint.y,
+      offCentre: !attempt.centre,
+      scrolled: scrolled,
+      recovered: recovered,
+    };
   },
   byRef(ref) {
     const state = window.__tauRefState;
@@ -518,8 +703,32 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     if (got && got.error === 'no_such_ref') return 'unknown_ref';
     return 'detached';
   },
+  // scrollIntoView honours the CSS scroll-behavior property, so on a page that
+  // asks for smooth scrolling it is ASYNCHRONOUS: it returns immediately and the
+  // page glides into place over the next few hundred ms. Every rect read straight
+  // afterwards is then the PRE-scroll rect, so hit-testing lands on whatever
+  // occupies that point - usually the sticky header, which is exactly the
+  // mystery 'covered by the header' failure. behavior:instant overrides the
+  // page's preference; the fallback covers containers that still do not move.
+  scrollTo(el) {
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    } catch (e) {
+      try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e2) {}
+    }
+    const doc = el.ownerDocument || document;
+    const view = doc.defaultView || window;
+    const r = el.getBoundingClientRect();
+    if (r.bottom > 0 && r.top < view.innerHeight) return;
+    try {
+      const absoluteTop = r.top + (view.scrollY || 0);
+      view.scrollTo({ top: Math.max(0, absoluteTop - view.innerHeight / 2), behavior: 'instant' });
+    } catch (e) {
+      try { view.scrollTo(0, Math.max(0, r.top + (view.scrollY || 0) - view.innerHeight / 2)); } catch (e2) {}
+    }
+  },
   fireClick(el) {
-    el.scrollIntoView({ block: 'center', inline: 'center' });
+    this.scrollTo(el);
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
@@ -530,24 +739,72 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, button: 0, clientX: x, clientY: y }));
   },
   prepareEl(el) {
-    el.scrollIntoView({ block: 'center', inline: 'center' });
+    this.scrollTo(el);
     const cov = this.coverageCheck(el);
     if (!cov.ok) {
-      const hint = cov.dismissible
-        ? ' A modal, drawer, or full-page layer is blocking it. Use the dismiss action, then use a ref from the refreshed observation.'
-        : ' Observe the page again and target the visible control instead.';
-      return { success: false, reason: 'element_covered', covering: cov.covering, suggestedAction: cov.dismissible ? 'dismiss' : 'observe', error: 'Target is covered by: ' + cov.covering + '.' + hint };
+      // Three different situations, three different answers. Guessing "an
+      // overlay is blocking it" for all of them sends the caller into a
+      // dismiss/retry loop that cannot work when the cause is the page's own
+      // stacking order.
+      let hint;
+      if (cov.kind === 'offscreen') {
+        // Nothing is on top of it: there is simply no part of it on screen.
+        return {
+          success: false,
+          reason: 'element_covered',
+          coverageKind: cov.kind,
+          suggestedAction: 'observe',
+          error: 'Target has no visible area: after scrolling to it, no part of the element lies inside the viewport'
+            + (cov.scrolled ? ' (I scrolled ' + Math.abs(cov.scrolled) + 'px trying to bring it in)' : '')
+            + '. It may be hidden by a collapsed container, animating in, or laid out off-screen. Scroll, wait, or resize the viewport, then re-observe.',
+        };
+      }
+      if (cov.kind === 'modal') {
+        hint = ' A dialog, drawer or full-page layer is open above it'
+          + (cov.openOverlays > 1 ? ' (' + cov.openOverlays + ' layers are open — close the topmost first)' : '')
+          + '. Use the dismiss action, then re-observe and retry with a fresh ref.';
+      } else if (cov.kind === 'fixed') {
+        hint = ' That is fixed or sticky page furniture, and it stays put when the page scrolls.'
+          + (cov.scrolled ? ' I scrolled ' + Math.abs(cov.scrolled) + 'px to get out from under it and it still covers every point of the target.' : ' The page cannot scroll far enough to clear it.')
+          + ' Scroll the page yourself, resize taller, or act on a different element.';
+      } else if (cov.kind === 'offscreen') {
+        hint = ' The target has no point inside the viewport. Scroll it into view or resize the viewport first.';
+      } else {
+        hint = ' I tried ' + (cov.sampled || 1) + ' points across the target and every one landed on that element'
+          + (cov.zIndex ? ' (z-index ' + cov.zIndex + ')' : '')
+          + '. It is a normal element painted above the target, not a dialog — dismissing will not help and retrying the same click will fail the same way.'
+          + ' This is a stacking (z-index) defect in the page: report it, or act on the covering element instead.';
+      }
+      return {
+        success: false,
+        reason: 'element_covered',
+        covering: cov.covering,
+        suggestedAction: cov.dismissible ? 'dismiss' : 'observe',
+        coverageKind: cov.kind,
+        error: 'Target is covered by: ' + cov.covering + '.' + hint,
+      };
     }
     const r = this.absRect(el);
     const link = el.closest ? el.closest('a[href]') : null;
     const href = link && link.href && !String(link.href).startsWith('javascript:') ? String(link.href) : undefined;
+    // coverageCheck works in the element's own document; absRect is in top
+    // viewport coordinates. Carry the frame offset across so the real mouse
+    // event lands on the point that was actually hit-tested.
+    const local = el.getBoundingClientRect();
+    const offsetX = r.left - local.left;
+    const offsetY = r.top - local.top;
+    const pointX = cov.x != null ? cov.x + offsetX : r.left + r.width / 2;
+    const pointY = cov.y != null ? cov.y + offsetY : r.top + r.height / 2;
     return {
       success: true,
-      x: Math.round(r.left + r.width / 2),
-      y: Math.round(r.top + r.height / 2),
+      x: Math.round(pointX),
+      y: Math.round(pointY),
       href,
       label: this.label(el).slice(0, 120),
       tag: el.tagName.toLowerCase(),
+      offCentre: !!cov.offCentre,
+      scrolled: cov.scrolled || 0,
+      recovered: !!cov.recovered,
     };
   },
   prepareRef(ref) {
@@ -588,7 +845,50 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     if (!raw) return { success: false, reason: 'no_match', error: 'No visible element contains text: ' + text };
     if (score(this.label(raw)) >= NEG_SCORE) return { success: false, reason: 'no_match', error: 'Only negated matches found for "' + text + '" (e.g. "' + this.label(raw).slice(0, 60) + '"). Observe and click by ref instead.' };
     const el = raw.closest('a,button,[role=button],[role=link]') || raw;
-    return this.prepareEl(el);
+    const prepared = this.prepareEl(el);
+    // How many controls carry this text. One is unambiguous; several mean the
+    // caller is relying on ordering that the page is free to change.
+    prepared.matches = candidates.filter(c => score(this.label(c)) < NEG_SCORE).length;
+    return prepared;
+  },
+  // Why an action might have left the page unchanged. Read from the element's
+  // own state, so it works for a native <select>, an ARIA toggle, or any
+  // component library that exposes state through data-state.
+  explainState(ref) {
+    const got = this.byRef(ref);
+    if (!got || !got.el) return { known: false };
+    const el = got.el;
+    const attr = name => (el.getAttribute ? el.getAttribute(name) : null);
+    const reasons = [];
+    if (el.disabled === true || attr('aria-disabled') === 'true') reasons.push('the control is disabled');
+    if (attr('aria-pressed') === 'true') reasons.push('it was already pressed (aria-pressed="true")');
+    if (attr('aria-selected') === 'true') reasons.push('it was already selected (aria-selected="true")');
+    if (attr('aria-checked') === 'true') reasons.push('it was already checked (aria-checked="true")');
+    if (attr('aria-expanded') === 'true') reasons.push('it was already expanded (aria-expanded="true")');
+    const state = attr('data-state');
+    if (state && /^(checked|active|selected|on|open)$/i.test(state)) {
+      reasons.push('it was already active (data-state="' + state + '")');
+    }
+    if (String(el.tagName).toUpperCase() === 'OPTION' && el.selected) {
+      reasons.push('that option was already the selected one');
+    }
+    const select = el.closest ? el.closest('select') : null;
+    if (select) {
+      reasons.push('it belongs to a <select>, which fires no change event when the value does not change');
+    }
+    let style = null;
+    try { style = getComputedStyle(el); } catch (e) { style = null; }
+    if (style && style.pointerEvents === 'none') reasons.push('its computed pointer-events is none');
+    const href = attr('href');
+    if (href === '#' || (href && href.indexOf('javascript:') === 0)) {
+      reasons.push('its href is a placeholder (' + href + ')');
+    }
+    return {
+      known: reasons.length > 0,
+      reasons: reasons,
+      label: this.label(el).slice(0, 60),
+      tag: String(el.tagName || '').toLowerCase(),
+    };
   },
   labelAt(x, y) {
     const el = document.elementFromPoint(Number(x), Number(y));
@@ -651,7 +951,7 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     const el = this.editableTarget(got.el) || got.el;
     if (el.tagName === 'SELECT') return this.selectOption(el, value, ref);
     if (!this.editableTarget(el)) return { success: false, reason: 'not_editable', error: 'Element @' + ref + ' (' + el.tagName.toLowerCase() + ' "' + this.label(el).slice(0, 40) + '") is not an editable field.' };
-    el.scrollIntoView({ block: 'center', inline: 'center' });
+    this.scrollTo(el);
     el.focus();
     const want = String(value ?? '');
     this.insertText(el, want, true);
@@ -696,14 +996,14 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
   scrollToRef(ref) {
     const got = this.byRef(ref);
     if (got.error) return { success: false, reason: 'stale_ref', staleKind: this.staleKind(got), error: 'Element @' + ref + ' cannot be resolved (DOM changed). Re-observe.' };
-    got.el.scrollIntoView({ block: 'center', inline: 'center' });
+    got.this.scrollTo(el);
     return { success: true, info: { scrolledTo: this.label(got.el).slice(0, 60) || got.el.tagName.toLowerCase(), y: Math.round(window.scrollY) } };
   },
   // Viewport rect (with a small margin) of @ref for an element screenshot.
   rectOfRef(ref) {
     const got = this.byRef(ref);
     if (got.error) return { success: false, reason: 'stale_ref', staleKind: this.staleKind(got), error: 'Element @' + ref + ' cannot be resolved (DOM changed). Re-observe.' };
-    got.el.scrollIntoView({ block: 'center', inline: 'center' });
+    got.this.scrollTo(el);
     const r = this.absRect(got.el);
     return { success: true, info: { x: Math.max(0, Math.round(r.left) - 4), y: Math.max(0, Math.round(r.top) - 4), w: Math.min(Math.round(r.width) + 8, innerWidth), h: Math.min(Math.round(r.height) + 8, innerHeight) } };
   },
@@ -1048,7 +1348,75 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
  * We mask the high-signal ones. `chromeMajor` keeps the spoofed userAgentData
  * brands consistent with the real User-Agent string.
  */
-export function buildStealthScript(chromeMajor: number): string {
+/** Platform identity the spoofs must agree on. */
+export interface StealthPlatform {
+  /** `navigator.platform` (via Emulation.setUserAgentOverride). */
+  navigator: string;
+  /** `navigator.userAgentData.platform`. */
+  uaData: string;
+  /** `platformVersion` from getHighEntropyValues. */
+  version: string;
+  /** `architecture` from getHighEntropyValues. */
+  architecture: string;
+  /** `bitness` from getHighEntropyValues. */
+  bitness: string;
+}
+
+/**
+ * Derives the platform identity from the browser's own User-Agent, falling
+ * back to the host.
+ *
+ * This used to be hardcoded to Windows. On a Mac or a Linux box that made the
+ * spoof *worse* than no spoof: the UA header said "Macintosh" while
+ * navigator.platform said "Win32" and userAgentData said "Windows" — a
+ * contradiction no real browser produces, and one of the cheapest checks an
+ * anti-bot script can run.
+ */
+export function stealthPlatformFromUserAgent(
+  userAgent?: string,
+  hostPlatform: NodeJS.Platform = process.platform,
+  hostArch: string = process.arch,
+): StealthPlatform {
+  const architecture = /^arm/i.test(hostArch) ? "arm" : "x86";
+  const bitness = /64/.test(hostArch) ? "64" : "32";
+  const ua = userAgent ?? "";
+  const isMac = /Mac OS X|Macintosh/i.test(ua) || (!ua && hostPlatform === "darwin");
+  const isWindows = /Windows NT/i.test(ua) || (!ua && hostPlatform === "win32");
+  if (isMac) {
+    const raw = ua.match(/Mac OS X ([0-9_.]+)/)?.[1] ?? "10_15_7";
+    return {
+      navigator: "MacIntel",
+      uaData: "macOS",
+      version: raw.replace(/_/g, "."),
+      architecture,
+      bitness,
+    };
+  }
+  if (isWindows) {
+    const nt = ua.match(/Windows NT ([0-9.]+)/)?.[1] ?? "10.0";
+    return {
+      navigator: "Win32",
+      uaData: "Windows",
+      // Chrome reports the platform version, not the NT version, and pads it
+      // to three parts.
+      version: `${nt.split(".")[0] ?? "10"}.0.0`,
+      architecture,
+      bitness,
+    };
+  }
+  return {
+    navigator: hostArch === "arm64" ? "Linux aarch64" : "Linux x86_64",
+    uaData: "Linux",
+    version: "",
+    architecture,
+    bitness,
+  };
+}
+
+export function buildStealthScript(
+  chromeMajor: number,
+  platform: StealthPlatform = stealthPlatformFromUserAgent(),
+): string {
   const major =
     Number.isInteger(chromeMajor) && chromeMajor > 0 ? chromeMajor : 131;
   return `
@@ -1076,8 +1444,8 @@ export function buildStealthScript(chromeMajor: number): string {
           { brand: 'Chromium', version: '${major}' }
         ],
         mobile: false,
-        platform: 'Windows',
-        getHighEntropyValues: () => Promise.resolve({ platform: 'Windows', platformVersion: '10.0.0', architecture: 'x86', bitness: '64', model: '', uaFullVersion: '${major}.0.0.0' }),
+        platform: '${platform.uaData}',
+        getHighEntropyValues: () => Promise.resolve({ platform: '${platform.uaData}', platformVersion: '${platform.version}', architecture: '${platform.architecture}', bitness: '${platform.bitness}', model: '', uaFullVersion: '${major}.0.0.0' }),
       }),
       configurable: true
     });

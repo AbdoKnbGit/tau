@@ -113,6 +113,11 @@ Scan the QR to pair, then read, prompt, and approve tools from your phone while 
 The `Eval` tool runs a persistent Python kernel, so anything Python can do, Tau can do. Compute the answer instead of reading the raw material into context: counts, rankings, audits across many files, cross-checks, the same edit applied everywhere.
 It can call your other Tau tools from inside the code, keeps state between cells, and renders figures inline.
 
+**Browser automation**
+Tau has your browser. It opens a real Chrome window, looks at the page, and clicks, types, scrolls and fills forms with real input — the way a person browses, not by guessing coordinates. Test the UI you just changed, reproduce a bug, fill a long form, book a flight: you watch it happen in the window.
+Simple pages are read over plain HTTP and Chrome only starts when a page actually needs it. `measure` reports what really rendered (colors, fonts that fell back, contrast, broken images, overflow), `extract` pulls repeating rows with the selector behind every value, and the tab's console and network come back too, so an error in the app you are editing finds you.
+Cookie banners are dismissed, new tabs are followed, and anything you did once — a login, a setup wizard — can be saved as a flow and replayed later in one step, with no model tokens.
+
 **Subagents you can name, steer, and trust**
 Name a spawn and you can talk to it again: `Agent(name: "auth-fix", …)` does the work, then `SendMessage(to: "auth-fix", "also rotate the refresh token")` picks up where it left off — full context intact, nothing re-briefed, the same files not read twice.
 Each spawn can also run on its own provider and model, so a rate-limited or expensive main lane never stalls the work.

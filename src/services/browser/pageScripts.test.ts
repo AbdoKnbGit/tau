@@ -21,6 +21,7 @@ import {
 } from "./browserSession.js";
 import {
   buildStealthScript,
+  stealthPlatformFromUserAgent,
   detectBlocker,
   MAX_OBSERVED_ELEMENTS,
   OBSERVE_SCRIPT,
@@ -194,6 +195,51 @@ async function main(): Promise<void> {
   test("falls back to a default major for bad input", () => {
     const s = buildStealthScript(NaN);
     assert(s.includes("version: '131'"), "NaN major should default");
+  });
+
+  test("platform identity follows the browser's own user agent", () => {
+    const mac = stealthPlatformFromUserAgent(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0",
+      "darwin",
+      "arm64",
+    );
+    assert(mac.navigator === "MacIntel", mac.navigator);
+    assert(mac.uaData === "macOS", mac.uaData);
+    assert(mac.version === "10.15.7", mac.version);
+    assert(mac.architecture === "arm", mac.architecture);
+
+    const windows = stealthPlatformFromUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0",
+      "win32",
+      "x64",
+    );
+    assert(windows.navigator === "Win32", windows.navigator);
+    assert(windows.version === "10.0.0", windows.version);
+    assert(windows.bitness === "64", windows.bitness);
+
+    const linux = stealthPlatformFromUserAgent(
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0",
+      "linux",
+      "x64",
+    );
+    assert(linux.navigator === "Linux x86_64", linux.navigator);
+    assert(linux.uaData === "Linux", linux.uaData);
+  });
+
+  test("with no user agent it follows the host instead of pinning Windows", () => {
+    assert(stealthPlatformFromUserAgent(undefined, "darwin", "arm64").uaData === "macOS", "mac host");
+    assert(stealthPlatformFromUserAgent(undefined, "win32", "x64").uaData === "Windows", "windows host");
+    assert(stealthPlatformFromUserAgent(undefined, "linux", "x64").uaData === "Linux", "linux host");
+  });
+
+  test("the injected script carries the derived platform, not a fixed one", () => {
+    const mac = buildStealthScript(
+      131,
+      stealthPlatformFromUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", "darwin", "arm64"),
+    );
+    assert(mac.includes("platform: 'macOS'"), "userAgentData platform must be macOS");
+    assert(mac.includes("platformVersion: '10.15.7'"), "platform version must match");
+    assert(!mac.includes("'Windows'"), "no Windows must survive on a Mac");
   });
 
   console.log("observation cap:");

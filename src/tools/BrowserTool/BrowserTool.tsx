@@ -2,6 +2,7 @@ import type {
   Base64ImageSource,
   ToolResultBlockParam,
 } from '@anthropic-ai/sdk/resources/index.mjs'
+import { existsSync } from 'fs'
 import { z } from 'zod/v4'
 
 import { Text } from '../../ink.js'
@@ -18,20 +19,55 @@ import {
 } from '../../services/browser/riskClassifier.js'
 import {
   getBrowserSession,
+  normalizeUrlForNavigation,
   type BrowserActionOutcome,
   type TabInfo,
 } from '../../services/browser/browserSession.js'
 import type { ObservedState } from '../../services/browser/pageScripts.js'
+import { formatEffect, isMutatingAction } from '../../services/browser/effects.js'
+import { formatExtract } from '../../services/browser/extract.js'
+import {
+  deleteFlow,
+  describeStep,
+  formatFlow,
+  listFlows,
+  loadFlow,
+  saveFlow,
+  type Flow,
+  FLOW_FORMAT_VERSION,
+} from '../../services/browser/flows.js'
+import {
+  buildStepFromAction,
+  replayStep,
+  type ObservedElementLike,
+} from '../../services/browser/flowRunner.js'
+import { runSurfaceLadder } from '../../services/browser/surfaceLadder.js'
+import { formatVisionReceipt } from '../../services/browser/imageMeta.js'
+import { formatMeasure } from '../../services/browser/measure.js'
+import {
+  formatWatchReport,
+  parseWatchSpec,
+  type WatchCondition,
+} from '../../services/browser/watch.js'
 import type { PermissionResult } from '../../types/permissions.js'
+import { getAgentContext } from '../../utils/agentContext.js'
+import { getCwd } from '../../utils/cwd.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { BROWSER_TOOL_NAME } from './constants.js'
 
 const DESCRIPTION =
-  'Drive a real Chrome/Edge browser: navigate, observe numbered elements, read page content as markdown, click, fill, type, hover, drag, upload, run JS, watch console/network, screenshot, and manage tabs. One tool, one action per call.'
+  'Drive a real Chrome/Edge browser: read a page the cheap way (HTTP first, browser only when needed), observe numbered elements, click, fill, type, drag, upload, run JS, measure what actually rendered, extract structured data with provenance, watch for console/network errors, record and replay flows, screenshot, and manage tabs. Every action reports what it actually changed. One tool, one action per call.'
 
 const PROMPT = `Operate a real Chromium browser (Chrome, Edge, or Brave) through the DevTools protocol. Unlike WebBrowser/InspectSite (static HTML fetch), this runs JavaScript: it works on React/Vue/SPA pages, clicks and types through real trusted input, reads the rendered DOM (including same-origin iframes), extracts page content as markdown, runs JS in the page, watches console/network (great for debugging web apps you are developing), uploads files, and handles tabs, dialogs, and downloads.
 
 THE ONE RULE THAT PREVENTS ERRORS: every call is { "action": "<name>", ...params for that action }. Pick exactly one action. Provide only that action's params. Most actions return a fresh page observation, so continue from the returned state instead of guessing.
+
+EVIDENCE — THE PART THAT KEEPS YOU HONEST:
+- Every result carries an "Effect:" line: step number, whether the url changed, whether it is still the same document, how the interactive DOM moved, and how long it took. It is proof the action did something.
+- "NO OBSERVABLE EFFECT" means the url, the document, the DOM and the scroll position are all unchanged: your action did nothing. Do NOT repeat it with a tweak. Observe or screenshot, then act differently.
+- "unverified" means the page could not be sampled. Treat it as unknown, not as success.
+- NEVER describe how a page LOOKS unless a screenshot in this same turn returned a "vision token". A screenshot saved with { "path": ... } is NOT shown to you and mints no token — you may say where it was saved, nothing about its appearance. Reading the source of a component is not seeing it.
+- For visual facts without an image, use measure: it returns what actually painted (colors, fonts that failed to load, contrast ratios, broken images, overflow).
 
 THE LOOP:
 1. open — launch/attach the browser (once per session). Optionally pass url to land somewhere immediately.
@@ -47,11 +83,16 @@ WHEN AN ACTION FAILS OR DOES NOTHING, the fix is always to SEE the page, never t
 - Re-observe to get fresh @refs, then act by ref. (Most failures are just a changed DOM — refs went stale.)
 - screenshot when you need to SEE layout/visual state ({ "annotate": true } burns the @N badges into the image so you can match refs to what you see).
 - Then act by ref/text. Do not repeat a failed approach with tweaked numbers. If the same tactic fails twice, it is the wrong tactic — change it.
+- A click whose centre is covered is NOT abandoned: I click an uncovered point inside the target and tell you the centre was blocked. If that click then has no effect, the overlap is the likely reason.
+- When an action has no effect and the target's own state explains it (already selected, already pressed, disabled, inside a <select> that did not change value), the result says so. That is an answer, not a failure to retry.
 The tool BLOCKS repeated blind coordinate clicks on purpose (reason "coordinate_guessing"). That is a signal to stop guessing and observe/screenshot — not a hint to try yet another coordinate.
 
 CLOSING MODALS / POPUPS / OVERLAYS: use { "action": "dismiss" }. It finds the topmost dialog/popup/drawer/lightbox and clicks its close control (or sends Escape). Do NOT hunt for the X with coordinates. Cookie/consent banners are auto-dismissed on observe.
 
 SEE / READ:
+- get — { url, surface?, maxChars? } READ A PAGE THE CHEAP WAY. Fetches over HTTP first and only starts the browser when the bytes prove it is needed (empty SPA shell, bot wall, 403/429, timeout). The reply always says which rung answered ("rung=http" or "rung=chromium · escalated from http: ..."). Use this instead of open+navigate+read for anything you only want to READ. surface: "http" or "chromium" forces one rung.
+- measure — no params. MEASURED FACTS about what rendered: viewport, painted background/text colors by area, fonts that fell back because they never loaded, WCAG contrast failures with real ratios, broken and oversized images, elements overflowing the viewport, running animations, landmark boxes. This is how you check a UI without inventing it.
+- extract — { fields, container?, limit? } STRUCTURED SCRAPING WITH PROVENANCE. { "container": "article.product", "fields": { "name": ".title", "price": ".price", "link": "a@href" } }. Every value comes back with the selector that produced it, plus warnings you cannot get any other way: a selector that matched nothing, one that matched the same value in every row (it is reaching outside the row), one that matched several elements, and links that are really login/redirect/wishlist URLs rather than item URLs. If the container matches nothing you get the page's actual repeating structures to choose from. Nothing outside that table came from the page — do not fill gaps from memory.
 - observe — no params. url, title, elements as "@N tag \\"text\\" [role]", and scroll state.
 - read — { selector?, maxChars?, offset? }. Rendered page as markdown with [text](url) links. Defaults to the main content area; selector scopes it (e.g. "#docs"); long pages report total length — page through with offset.
 - screenshot — optional { full: true } whole page, { ref: N } one element, { annotate: true } @N badges over the last observation, { path: "shot.png" } save to a file instead of returning into context (use path when the user wants the image, not you).
@@ -78,6 +119,15 @@ ACT:
 - pdf — { path: "page.pdf" } save the current page as PDF.
 - resize — { width, height, mobile? } emulate a viewport for responsive testing (mobile: true also emulates touch; 0 x 0 resets to the real window).
 
+STANDING WATCH (the dev loop):
+- watch — { conditions: [...] } registers what you care about; { } with no conditions checks them. Conditions: console.error, console.warn, console.any, request.failed (all accept an optional ":substring" filter), selector.appears:CSS, selector.gone:CSS, text.appears:TEXT, url.matches:SUBSTRING.
+- Register once, then keep working: new console errors and failed requests are attached to the warnings of your later browser calls, so a runtime error in the app you are editing finds you instead of costing a console read every turn. Page conditions (selector/text/url) are evaluated when you call watch.
+
+FLOWS (stop paying for the same login twice):
+- Your successful navigate/click/fill/type/press/scroll/wait/dismiss actions are recorded automatically, by label rather than by @ref.
+- flow { mode: "save", name: "login" } writes them to .tau/flows/<name>.json. { mode: "run", name: "login" } replays them with no further calls from you and stops at the first step that no longer matches, naming that step. { mode: "list" }, { mode: "delete", name }, { mode: "clear" } (drop the recording and start fresh).
+- Replay is also the cheapest UI regression test you have: if a flow that worked yesterday diverges today, the step it names is what changed.
+
 TABS: tabs (list) / new_tab { url? } / switch_tab { tabIndex } / close_tab { tabIndex? }. A click that opens a new tab switches to it automatically.
 close — shut the browser down when the task is finished.
 
@@ -89,7 +139,12 @@ AUTOMATIC BEHAVIORS (read the warnings, do not fight them):
 
 RECOVERY (the reason field tells you which happened — adjust, do not retry blindly):
 - stale_ref — the page changed since your last observe. Observe and use the new refs.
-- element_covered — an overlay/modal is on top of your target. dismiss it, then retry by ref.
+- element_covered — something is on top of your target, and the message says WHICH KIND, because the fix differs:
+  · a dialog/drawer/layer → dismiss it (the message says how many layers are open; close the topmost first), then retry with a fresh ref.
+  · fixed or sticky page furniture (header, language bar, cookie strip) → dismiss does nothing to page chrome. Scroll, or act on something else.
+  · a normal element painted above (z-index) → I already tried several points across the target and every one hit the blocker. Retrying is pointless and dismiss does not apply: it is a stacking defect in the page. Report it, or act on the covering element.
+  · no visible area → the element is off-screen or still animating in. Wait or scroll, then re-observe.
+  If the same blocker stops you twice the message says so: stop retrying and change approach.
 - coordinate_guessing — you are clicking blind coordinates. Stop. Observe (refs) or screenshot (see), then act by ref/text.
 - not_editable — that element is not an input, or it rejected text. Click the actual input first, or fill a different element.
 - no_match — your text/selector matched nothing (or only a negation like "Don't allow"). Observe and act by ref.
@@ -102,9 +157,14 @@ Prefer this tool over the Computer tool for anything inside a web page — it is
 
 const ACTIONS = [
   'open',
+  'get',
   'navigate',
   'observe',
   'read',
+  'measure',
+  'extract',
+  'watch',
+  'flow',
   'click',
   'fill',
   'type',
@@ -296,6 +356,38 @@ const inputSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe('For reload: bypass the cache. Default false.'),
+    surface: z
+      .enum(['auto', 'http', 'chromium'])
+      .optional()
+      .describe(
+        'For get: which surface to use. auto (default) tries HTTP first and escalates to the browser only when the HTML turns out to be a shell or a bot wall.',
+      ),
+    container: z
+      .string()
+      .optional()
+      .describe(
+        'For extract: CSS selector matching one repeating row (e.g. "article.product"). Omit to extract a single row from the whole document.',
+      ),
+    fields: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe(
+        'For extract: { columnName: "selector" }. Add "@attr" to read an attribute instead of text ("a@href", "@data-id"); "." means the row element itself.',
+      ),
+    conditions: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'For watch: conditions to register, e.g. ["console.error", "request.failed", "selector.gone:.spinner", "text.appears:Order placed", "url.matches:/checkout"]. Omit to check the ones already registered.',
+      ),
+    name: z
+      .string()
+      .optional()
+      .describe('For flow save/run/delete: the flow name.'),
+    mode: z
+      .enum(['save', 'run', 'list', 'delete', 'clear'])
+      .optional()
+      .describe('For flow: what to do. Default list.'),
     tabIndex: z
       .number()
       .int()
@@ -328,6 +420,14 @@ const outputSchema = lazySchema(() =>
     consoleText: z.string().optional(),
     networkText: z.string().optional(),
     savedPath: z.string().optional(),
+    /** Proof-of-effect line: what this action actually changed. */
+    receipt: z.string().optional(),
+    /** Vision receipt: whether the image was seen, and its citation token. */
+    vision: z.string().optional(),
+    /** Which surface answered a get, and why it escalated. */
+    rung: z.string().optional(),
+    /** Rendered block for measure / extract / watch / flow. */
+    detailText: z.string().optional(),
     warnings: z.array(z.string()),
     screenshot: z
       .object({
@@ -342,6 +442,8 @@ export type BrowserOutput = z.infer<OutputSchema>
 
 const REQUIRED_BY_ACTION: Partial<Record<Input['action'], Array<keyof Input>>> = {
   navigate: ['url'],
+  get: ['url'],
+  extract: ['fields'],
   fill: ['ref', 'value'],
   type: ['text'],
   press: ['key'],
@@ -417,6 +519,42 @@ function validateBrowserInput(input: Input): ValidationResult {
       message:
         'Browser action "upload" needs at least one local file path in "files".',
       errorCode: 1,
+    }
+  }
+  if (
+    input.action === 'extract' &&
+    input.fields !== undefined &&
+    Object.keys(input.fields).length === 0
+  ) {
+    return {
+      result: false,
+      message:
+        'Browser action "extract" needs at least one field, e.g. { "fields": { "name": ".title", "price": ".price" } }.',
+      errorCode: 1,
+    }
+  }
+  if (input.action === 'flow') {
+    const mode = input.mode ?? 'list'
+    if ((mode === 'save' || mode === 'run' || mode === 'delete') && !input.name?.trim()) {
+      return {
+        result: false,
+        message: `Browser action "flow" with mode "${mode}" needs { "name": "<flow name>" }.`,
+        errorCode: 1,
+      }
+    }
+  }
+  if (input.action === 'watch' && input.conditions !== undefined) {
+    const bad = input.conditions
+      .map(spec => ({ spec, parsed: parseWatchSpec(spec) }))
+      .filter(entry => 'error' in entry.parsed)
+    if (bad.length > 0) {
+      return {
+        result: false,
+        message: bad
+          .map(entry => (entry.parsed as { error: string }).error)
+          .join(' '),
+        errorCode: 1,
+      }
     }
   }
   return { result: true }
@@ -528,8 +666,20 @@ function summarize(input: Partial<Input>): string {
       return `Navigate to ${input.url ?? ''}`
     case 'open':
       return input.url ? `Open browser at ${input.url}` : 'Open browser'
+    case 'get':
+      return `Get ${input.url ?? ''}`
     case 'observe':
       return 'Observe page'
+    case 'measure':
+      return 'Measure rendered page'
+    case 'extract':
+      return `Extract ${Object.keys(input.fields ?? {}).join(', ') || 'fields'}`
+    case 'watch':
+      return input.conditions?.length
+        ? `Watch ${input.conditions.join(', ')}`
+        : 'Check watches'
+    case 'flow':
+      return `Flow ${input.mode ?? 'list'}${input.name ? ` "${input.name}"` : ''}`
     case 'read':
       return input.selector
         ? `Read page (${input.selector})`
@@ -606,7 +756,167 @@ function summarize(input: Partial<Input>): string {
   }
 }
 
-async function runAction(
+/** Maps the shared surface ladder onto this tool's output shape. */
+async function runGet(
+  input: Input,
+  context: ToolUseContext,
+): Promise<BrowserOutput> {
+  const result = await runSurfaceLadder(getBrowserSession(), {
+    url: normalizeUrlForNavigation(input.url!, existsSync),
+    ...(input.surface ? { surface: input.surface } : {}),
+    ...(input.maxChars !== undefined ? { maxChars: input.maxChars } : {}),
+    signal: context.abortController.signal,
+  })
+  return {
+    action: 'get',
+    ok: result.ok,
+    message: result.message,
+    rung: result.rung,
+    ...(result.url ? { url: result.url } : {}),
+    ...(result.title ? { title: result.title } : {}),
+    ...(result.text !== undefined ? { pageText: result.text } : {}),
+    ...(result.reason ? { reason: result.reason } : {}),
+    warnings: result.warnings,
+  }
+}
+
+/** save / run / list / delete / clear over project-local `.tau/flows`. */
+async function runFlow(
+  input: Input,
+  context: ToolUseContext,
+): Promise<BrowserOutput> {
+  const session = getBrowserSession()
+  const signal = context.abortController.signal
+  const cwd = getCwd()
+  const mode = input.mode ?? 'list'
+
+  if (mode === 'list') {
+    const flows = listFlows(cwd)
+    return {
+      action: 'flow',
+      ok: true,
+      message: flows.length === 0 ? 'No flows saved in this project yet.' : `${flows.length} saved flow(s).`,
+      detailText:
+        flows.length === 0
+          ? 'Act in the browser, then save what you did with { "action": "flow", "mode": "save", "name": "login" }.'
+          : flows
+              .map(
+                flow =>
+                  `  ${flow.name} · ${flow.steps} step(s)${flow.createdAt ? ` · ${flow.createdAt}` : ''}${flow.startUrl ? ` · from ${flow.startUrl}` : ''}${flow.problem ? ` · ⚠ ${flow.problem}` : ''}`,
+              )
+              .join('\n'),
+      warnings: [],
+    }
+  }
+
+  if (mode === 'clear') {
+    session.clearRecording()
+    return {
+      action: 'flow',
+      ok: true,
+      message: 'Cleared the step recording. Everything you do from now on records fresh.',
+      warnings: [],
+    }
+  }
+
+  if (mode === 'delete') {
+    const removed = deleteFlow(cwd, input.name!)
+    return {
+      action: 'flow',
+      ok: removed,
+      message: removed
+        ? `Deleted flow "${input.name}".`
+        : `No flow named "${input.name}" to delete.`,
+      warnings: [],
+    }
+  }
+
+  if (mode === 'save') {
+    const recorded = session.recordedFlow()
+    if (recorded.steps.length === 0) {
+      return errorOutput(
+        'flow',
+        'Nothing has been recorded yet. Drive the browser first (navigate, click, fill, …), then save.',
+      )
+    }
+    const flow: Flow = {
+      version: FLOW_FORMAT_VERSION,
+      name: input.name!,
+      createdAt: new Date().toISOString(),
+      ...(recorded.startUrl ? { startUrl: recorded.startUrl } : {}),
+      steps: recorded.steps,
+    }
+    let savedPath: string
+    try {
+      savedPath = saveFlow(cwd, flow)
+    } catch (error: unknown) {
+      return errorOutput(
+        'flow',
+        error instanceof Error ? error.message : String(error),
+      )
+    }
+    return {
+      action: 'flow',
+      ok: true,
+      message: `Saved ${flow.steps.length} recorded step(s) as flow "${input.name}".`,
+      savedPath,
+      detailText: formatFlow(flow),
+      warnings: [],
+    }
+  }
+
+  const loaded = loadFlow(cwd, input.name!)
+  if ('error' in loaded) return errorOutput('flow', loaded.error)
+  if (loaded.steps.length === 0) {
+    return errorOutput('flow', `Flow "${loaded.name}" has no steps.`)
+  }
+  if (!session.isRunning()) {
+    await session.ensureStarted({ signal })
+  }
+  const trace: string[] = []
+  for (const [index, step] of loaded.steps.entries()) {
+    const position = `step ${index + 1}/${loaded.steps.length} (${describeStep(step)})`
+    if (step.unreplayable) {
+      trace.push(`  ✗ ${position} — recorded as unreplayable: ${step.unreplayable}`)
+      return {
+        action: 'flow',
+        ok: false,
+        message: `Flow "${loaded.name}" stopped at ${position}.`,
+        reason: 'flow_unreplayable',
+        url: session.getLastKnownUrl(),
+        detailText: trace.join('\n'),
+        warnings: session.drainSessionNotes(),
+      }
+    }
+    const outcome = await replayStep(session, step, signal)
+    if (!outcome.ok) {
+      trace.push(`  ✗ ${position} — ${outcome.error}`)
+      return {
+        action: 'flow',
+        ok: false,
+        message: `Flow "${loaded.name}" diverged at ${position}: ${outcome.error}. The page has changed since the flow was recorded; re-record it or fix the step.`,
+        reason: 'flow_diverged',
+        url: session.getLastKnownUrl(),
+        detailText: trace.join('\n'),
+        warnings: session.drainSessionNotes(),
+      }
+    }
+    trace.push(`  ✓ ${position}`)
+  }
+  const { observation, warnings } = await session.observe(signal)
+  return {
+    action: 'flow',
+    ok: true,
+    message: `Replayed all ${loaded.steps.length} step(s) of "${loaded.name}". Now on: ${observation.title || '(untitled)'} — ${observation.url}`,
+    url: observation.url,
+    title: observation.title,
+    elementsText: formatElements(observation),
+    detailText: trace.join('\n'),
+    warnings,
+  }
+}
+
+async function runActionInner(
   input: Input,
   context: ToolUseContext,
 ): Promise<BrowserOutput> {
@@ -696,6 +1006,72 @@ async function runAction(
         warnings: session.drainSessionNotes(),
       }
     }
+    case 'get':
+      return runGet(input, context)
+    case 'measure': {
+      const measured = await session.measurePage()
+      return {
+        action: 'measure',
+        ok: true,
+        message: `Measured the rendered page at ${measured.document.url}.`,
+        url: measured.document.url,
+        title: measured.document.title,
+        detailText: formatMeasure(measured),
+        warnings: session.drainSessionNotes(),
+      }
+    }
+    case 'extract': {
+      const fields = input.fields ?? {}
+      const extracted = await session.extractData({
+        container: input.container,
+        fields,
+        limit: Math.min(Math.max(input.limit ?? 20, 1), 200),
+      })
+      if (!extracted.ok) {
+        return errorOutput('extract', extracted.error ?? 'Extraction failed.')
+      }
+      return {
+        action: 'extract',
+        ok: true,
+        message: `Extracted ${extracted.rows.length} row(s) with provenance.`,
+        url: extracted.url,
+        title: extracted.title,
+        detailText: formatExtract(extracted, Object.keys(fields)),
+        warnings: session.drainSessionNotes(),
+      }
+    }
+    case 'watch': {
+      const registered = input.conditions
+        ? session.watchAdd(
+            input.conditions
+              .map(spec => parseWatchSpec(spec))
+              .filter((parsed): parsed is WatchCondition => !('error' in parsed)),
+          )
+        : session.watchList()
+      const alerts = session.drainWatchAlerts()
+      const dom = await session.watchCheckDom()
+      return {
+        action: 'watch',
+        ok: true,
+        message: input.conditions
+          ? `Watching ${registered.length} condition(s).`
+          : `Checked ${registered.length} watch condition(s).`,
+        detailText: formatWatchReport({
+          conditions: registered,
+          alerts,
+          dom,
+          ...(session.captureBufferFull()
+            ? {
+                droppedHint:
+                  'The console/network capture ring is full (300 entries per tab), so older events may have been dropped before this check.',
+              }
+            : {}),
+        }),
+        warnings: session.drainSessionNotes(),
+      }
+    }
+    case 'flow':
+      return runFlow(input, context)
     case 'click': {
       const outcome = await session.click(
         {
@@ -846,11 +1222,21 @@ async function runAction(
           : 'Captured a screenshot of the current tab.',
       ]
       if (shot.note) messageParts.push(shot.note)
+      // A capture that only reached disk is explicitly not citable: the model
+      // never saw those pixels and must not describe them.
+      const vision = shot.meta
+        ? formatVisionReceipt(shot.meta, {
+            step: session.currentStep(),
+            seen: !!shot.base64,
+            ...(shot.savedPath ? { savedPath: shot.savedPath } : {}),
+          })
+        : undefined
       return {
         action: 'screenshot',
         ok: true,
         message: messageParts.join(' '),
         ...(shot.savedPath ? { savedPath: shot.savedPath } : {}),
+        ...(vision ? { vision } : {}),
         warnings: session.drainSessionNotes(),
         ...(shot.base64
           ? {
@@ -912,10 +1298,113 @@ async function runAction(
   }
 }
 
+/** Records the action that just succeeded as a replayable step. */
+function recordActionAsStep(
+  input: Input,
+  element: ObservedElementLike | undefined,
+  siblings: ObservedElementLike[],
+): void {
+  const step = buildStepFromAction(input, element, siblings)
+  if (step) getBrowserSession().recordStep(step)
+}
+
+/** Names the agent driving this call, for advisory tab ownership. */
+function currentAgent(): { agentId: string; label: string } {
+  const context = getAgentContext()
+  if (!context) return { agentId: 'main', label: 'the main session' }
+  const named = 'subagentName' in context ? context.subagentName : undefined
+  return {
+    agentId: context.agentId,
+    label: named ? `subagent "${named}"` : `agent ${context.agentId.slice(0, 8)}`,
+  }
+}
+
+/**
+ * Every action carries a receipt.
+ *
+ * The whole switch is wrapped, so the trailing observe is inside the measured
+ * window: a click that changes nothing, followed by an observe that dismisses a
+ * newly-appeared consent banner, reads as "dom changed" rather than a no-op.
+ * That direction is deliberate — the failure this guards against is a silent
+ * no-op reported as success, and a missed verdict is better than a false alarm.
+ *
+ * Serialization comes with it: `withEffect` runs one action at a time per
+ * session, so two concurrent agents cannot interleave inside a single action.
+ */
+async function runAction(
+  input: Input,
+  context: ToolUseContext,
+): Promise<BrowserOutput> {
+  const session = getBrowserSession()
+  // Closing tears down the page the receipt would sample; there is nothing
+  // left to prove and nothing left to race with.
+  if (input.action === 'close') return runActionInner(input, context)
+
+  const ownershipWarnings: string[] = []
+  if (session.isRunning() && isMutatingAction(input.action)) {
+    const previousOwner = session.claimActiveTab(currentAgent())
+    if (previousOwner) {
+      ownershipWarnings.push(
+        `This tab was last driven by ${previousOwner}; you have taken it over. Its refs are stale for that agent — re-observe before trusting anything it reported.`,
+      )
+    }
+  }
+  // Resolve the ref to a durable label BEFORE acting: the trailing observe
+  // rebuilds the element cache, and a step recorded afterwards can point at a
+  // different element.
+  const targetElement =
+    input.ref !== undefined ? session.getCachedElement(input.ref) : undefined
+  // The label is only unambiguous relative to what else was on screen.
+  const targetSiblings = input.ref !== undefined ? session.getCachedElements() : []
+
+  const { result, effect } = await session.withEffect(
+    input.action,
+    () => runActionInner(input, context),
+    {
+      producedValue: output =>
+        output.action === 'eval'
+          ? output.value !== undefined && output.value !== 'undefined'
+          : false,
+    },
+  )
+  if (result.ok) recordActionAsStep(input, targetElement, targetSiblings)
+  // "Nothing happened" is more useful with a cause attached.
+  const noEffectNotes: string[] = []
+  if (effect.noop && input.ref !== undefined) {
+    const explained = await session.explainNoEffect(input.ref)
+    if (explained?.known && explained.reasons?.length) {
+      noEffectNotes.push(
+        `Nothing changed because ${explained.reasons.join('; ')}${explained.label ? ` (target: "${explained.label}")` : ''}.`,
+      )
+    }
+  }
+  const alerts = session.drainWatchAlerts()
+  const watchWarnings = alerts
+    .slice(0, 10)
+    .map(alert => `watch [${alert.spec}] ${alert.detail}`)
+  if (alerts.length > 10) {
+    watchWarnings.push(`watch: ${alerts.length - 10} more alert(s); check with { "action": "watch" }.`)
+  }
+  const warnings = [
+    ...result.warnings,
+    ...noEffectNotes,
+    ...ownershipWarnings,
+    ...watchWarnings,
+  ]
+  return {
+    ...result,
+    warnings,
+    ...(input.action === 'open' ? {} : { receipt: formatEffect(effect) }),
+  }
+}
+
 function toTextContent(output: BrowserOutput): string {
   const lines: string[] = []
   lines.push(output.ok ? output.message : `Error: ${output.message}`)
   if (output.reason) lines.push(`Reason: ${output.reason}`)
+  if (output.rung) lines.push(output.rung)
+  if (output.receipt) lines.push(`Effect: ${output.receipt}`)
+  if (output.vision) lines.push(output.vision)
   if (output.savedPath) lines.push(`Saved to: ${output.savedPath}`)
   if (output.warnings.length > 0) {
     lines.push('', 'Attention:')
@@ -923,6 +1412,9 @@ function toTextContent(output: BrowserOutput): string {
   }
   if (output.value !== undefined) {
     lines.push('', 'Result:', output.value)
+  }
+  if (output.detailText) {
+    lines.push('', output.detailText)
   }
   if (output.pageText !== undefined) {
     lines.push('', 'Page content:', output.pageText || '(no readable content found)')
@@ -980,7 +1472,12 @@ export const BrowserTool = buildTool({
       input.action === 'console' ||
       input.action === 'network' ||
       input.action === 'tabs' ||
-      input.action === 'wait'
+      input.action === 'wait' ||
+      input.action === 'measure' ||
+      input.action === 'extract' ||
+      input.action === 'watch' ||
+      // Listing flows only reads .tau/flows; saving writes and running acts.
+      (input.action === 'flow' && (input.mode ?? 'list') === 'list')
     )
   },
   isConcurrencySafe() {
@@ -994,7 +1491,9 @@ export const BrowserTool = buildTool({
       input.action === 'type' ||
       input.action === 'drag' ||
       input.action === 'upload' ||
-      input.action === 'eval'
+      input.action === 'eval' ||
+      // A replay re-performs every click and fill it recorded.
+      (input.action === 'flow' && input.mode === 'run')
     )
   },
   isOpenWorld() {
@@ -1040,8 +1539,13 @@ export const BrowserTool = buildTool({
     if (output.action === 'read' && output.ok) {
       return <Text>Read {output.title || output.url || 'the page'}.</Text>
     }
-    const head = output.ok ? output.message : `Error: ${output.message}`
-    return <Text>{head}</Text>
+    // One line, never the refreshed observation: @refs are an agent-side
+    // addressing detail and mean nothing to the person watching.
+    const firstSentence = output.message.split(/(?<=\.)\s/)[0] ?? output.message
+    const head = output.ok
+      ? firstSentence
+      : `Failed: ${firstSentence}${output.reason ? ` (${output.reason})` : ''}`
+    return <Text>{head.slice(0, 300)}</Text>
   },
   extractSearchText(output) {
     return [
@@ -1106,7 +1610,11 @@ export const BrowserTool = buildTool({
       tool_use_id: toolUseID,
       type: 'tool_result',
       content: toTextContent(output),
-      is_error: output.ok ? undefined : true,
+      // A page that did not do what was asked is a RESULT, not a tool failure:
+      // it carries a reason, a refreshed observation and a way forward, and the
+      // whole recovery block gets dumped into the transcript when it is flagged
+      // as an error. Reserve the flag for calls that genuinely could not run.
+      is_error: !output.ok && !output.reason ? true : undefined,
     }
   },
 } satisfies ToolDef<InputSchema, BrowserOutput>)
