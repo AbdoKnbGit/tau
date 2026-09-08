@@ -129,10 +129,12 @@ export function computeCompactionThreshold(input: {
   windowCap: number | undefined
 }): CompactionThresholdResult {
   const { contextWindow, reservedForSummary, bufferTokens } = input
-  const capped =
+  const capped = Math.max(
+    1,
     input.windowCap !== undefined && input.windowCap > 0
       ? Math.min(contextWindow, input.windowCap)
-      : contextWindow
+      : contextWindow,
+  )
 
   // The reserve is an absolute token count sized for mainstream windows, so on
   // a small local model (llama3 and codellama are 8K-16K) it exceeds the whole
@@ -152,7 +154,11 @@ export function computeCompactionThreshold(input: {
     ? proportionalReserve
     : absoluteReserve
 
-  const autoThreshold = capped - effectiveReserve
+  // Floored at 1: a window smaller than its own proportional reserve (only
+  // reachable by hand-editing a nonsensical ceiling into config) would
+  // otherwise yield a zero or negative threshold, which reads downstream as
+  // "always over" and would compact on every single turn.
+  const autoThreshold = Math.max(1, capped - effectiveReserve)
   // Kept as the window the percentage is taken against, so a percentage means
   // "of what is usable" rather than "of what includes the summary's landing
   // space".

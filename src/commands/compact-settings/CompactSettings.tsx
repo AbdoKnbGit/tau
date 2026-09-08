@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react'
-import { Box, Text, useInput } from '../../ink.js'
+import { Box, Text, useInput, useTheme } from '../../ink.js'
 import {
   isAutoCompactEnabled,
   previewAutoCompaction,
@@ -112,7 +112,8 @@ export function CompactSettings({
 }: {
   onDone: (message: string) => void
 }): React.ReactNode {
-  const theme = getTheme()
+  const [themeName] = useTheme()
+  const theme = getTheme(themeName)
   const model = getMainLoopModel()
 
   const [row, setRow] = useState<0 | 1>(0)

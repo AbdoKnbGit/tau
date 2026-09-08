@@ -101,7 +101,6 @@ import { errorMessage } from '../utils/errors.js';
 import { isHumanTurn } from '../utils/messagePredicates.js';
 import { logError } from '../utils/log.js';
 import { measureContextBaseline } from '../utils/analyzeContext.js';
-import { shouldRefreshContextBaseline } from '../utils/contextBaseline.js';
 import { isHeyModeFeatureOn } from '../voice/heyModeEnabled.js';
 // Dead code elimination: conditional imports
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
@@ -3172,16 +3171,14 @@ export function REPL({
     }
   }, [onQueryImpl, setAppState, resetLoadingState, queryGuard, mrOnBeforeQuery, mrOnTurnComplete]);
 
-  // Measure how much context the session already holds - system prompt, tool
-  // definitions, MCP tools, agents, skills, memory - so the status line can
-  // report it before the first response arrives instead of showing 0. Runs
-  // once per model in the background; the store skips duplicate work, so the
-  // dependency list re-measuring on a model switch costs nothing otherwise.
+  // Measure how much context the session already holds - system prompt and
+  // tool definitions - so the status line can report it before the first
+  // response arrives instead of showing 0. Estimated locally, so this issues
+  // no requests; the store skips work it has already done, so the dependency
+  // list re-running costs nothing after the first pass.
   useEffect(() => {
-    if (!shouldRefreshContextBaseline(mainLoopModel)) return;
-    const messagesNow = messagesRef.current ?? [];
-    void measureContextBaseline(messagesNow, mainLoopModel, async () => toolPermissionContext, tools, agentDefinitions, undefined, getToolUseContext(messagesNow, [], new AbortController(), mainLoopModel));
-  }, [mainLoopModel, tools, agentDefinitions, toolPermissionContext, getToolUseContext, messagesRef]);
+    void measureContextBaseline(mainLoopModel, tools, async () => toolPermissionContext, agentDefinitions);
+  }, [mainLoopModel, tools, agentDefinitions, toolPermissionContext]);
 
   // Handle initial message (from CLI args or plan mode exit with context clear)
   // This effect runs when isLoading becomes false and there's a pending message
