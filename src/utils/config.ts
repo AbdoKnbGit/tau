@@ -255,6 +255,21 @@ export type GlobalConfig = {
   bypassPermissionsModeAccepted?: boolean
   hasUsedBackslashReturn?: boolean
   autoCompactEnabled: boolean // Controls whether auto-compact is enabled
+  /**
+   * How full the usable context window gets before auto-compaction runs, as a
+   * percentage. Undefined means auto (compact as late as the engine's reserve
+   * allows). Expressed as a percentage rather than a token count so one
+   * setting behaves sensibly across a 200K model and a 1M one.
+   * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` still wins when set.
+   */
+  autoCompactThresholdPercent?: number
+  /**
+   * Absolute ceiling on context carried, in tokens, applied as
+   * `min(modelWindow, cap)`. Undefined means no ceiling. Bounds what a single
+   * turn can cost on a large-window model; inert on models smaller than the
+   * cap. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` still wins when set.
+   */
+  autoCompactWindowTokens?: number
   showTurnDuration: boolean // Controls whether to show turn duration message (e.g., "Cooked for 1m 6s")
   /**
    * Where the per-response header renders and what it contains — one of
@@ -723,6 +738,8 @@ export const GLOBAL_CONFIG_KEYS = [
   'editorMode',
   'hasUsedBackslashReturn',
   'autoCompactEnabled',
+  'autoCompactThresholdPercent',
+  'autoCompactWindowTokens',
   'showTurnDuration',
   'messageHeaderMode',
   'diffTool',

@@ -208,6 +208,7 @@ import {
 } from './commands/extra-usage/index.js'
 import rateLimitOptions from './commands/rate-limit-options/index.js'
 import statusline from './commands/statusline.js'
+import compactSettings from './commands/compact-settings/index.js'
 import effort from './commands/effort/index.js'
 import visionModel from './commands/vision-model/index.js'
 import thinking from './commands/thinking/index.js'
@@ -305,6 +306,7 @@ const COMMANDS = memoize((): Command[] => [
   cost,
   diff,
   doctor,
+  compactSettings,
   effort,
   visionModel,
   exit,

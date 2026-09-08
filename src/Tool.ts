@@ -153,6 +153,15 @@ export type CompactProgressEvent =
       hookType: 'pre_compact' | 'post_compact' | 'session_start'
     }
   | { type: 'compact_start' }
+  /**
+   * Summary generation progress, emitted while the compaction response
+   * streams. `fraction` is characters received over the response budget the
+   * request was issued with, so it is measured against a real ceiling rather
+   * than a guessed duration. It is a lower bound: summaries usually finish
+   * before the budget, so the bar can jump to complete — which is honest,
+   * where a timer that sits at 99% is not.
+   */
+  | { type: 'compact_progress'; fraction: number }
   | { type: 'compact_end' }
 
 export type ToolUseContext = {

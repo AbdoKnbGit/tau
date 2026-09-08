@@ -4,6 +4,11 @@ import { getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
+import {
+  getConfiguredThresholdPercent,
+  getConfiguredWindowCap,
+} from '../../utils/compactionConfig.js'
+import { computeCompactionThreshold } from '../../utils/compactionSettings.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -37,15 +42,112 @@ export function getEffectiveContextWindowSize(model: string): number {
   )
   let contextWindow = getContextWindowForModel(model, getSdkBetas())
 
+  // Ceiling on context carried, as `min(modelWindow, cap)`. The env var is the
+  // long-standing escape hatch and keeps priority; the config key is the same
+  // control surfaced through /compact-settings. Either way the cap is inert on
+  // a model whose window is already smaller, so one value is safe across every
+  // model and provider.
   const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
   if (autoCompactWindow) {
     const parsed = parseInt(autoCompactWindow, 10)
     if (!isNaN(parsed) && parsed > 0) {
       contextWindow = Math.min(contextWindow, parsed)
     }
+  } else {
+    const configuredCap = getConfiguredWindowCap()
+    if (configuredCap !== undefined) {
+      contextWindow = Math.min(contextWindow, configuredCap)
+    }
   }
 
   return contextWindow - reservedTokensForSummary
+}
+
+/** Resolved effect of a compaction configuration on one model. */
+export type AutoCompactionPreview = {
+  /** The model's real context window. */
+  contextWindow: number
+  /** Window after the ceiling and the summary-output reserve. */
+  effectiveWindow: number
+  /** Tokens held back for the summary response plus safety margin. */
+  reservedTokens: number
+  /** Token count at which auto-compaction fires. */
+  threshold: number
+  /** Threshold as a share of the real window. */
+  thresholdShareOfWindow: number
+  /** Room left between the threshold and the real window. */
+  headroomTokens: number
+  /** True when the requested percentage was capped by the reserve. */
+  clampedByReserve: boolean
+}
+
+/**
+ * What a hypothetical setting would resolve to on `model`, without reading or
+ * writing config.
+ *
+ * Everything derives from the model's live context window, so the same
+ * percentage and the same ceiling describe a 200K model and a 1M one without a
+ * per-model or per-provider table. Lets the settings UI show real numbers for
+ * a pending selection before it is saved.
+ */
+export function previewAutoCompaction(
+  model: string,
+  thresholdPercent: number | undefined,
+  windowCap: number | undefined,
+): AutoCompactionPreview {
+  const contextWindow = getContextWindowForModel(model, getSdkBetas())
+  const reservedForSummary = Math.min(
+    getMaxOutputTokensForModel(model),
+    MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+  )
+  // Same arithmetic getAutoCompactThreshold applies, so the preview cannot
+  // drift from what actually fires.
+  const resolved = computeCompactionThreshold({
+    contextWindow,
+    reservedForSummary,
+    bufferTokens: AUTOCOMPACT_BUFFER_TOKENS,
+    thresholdPercent,
+    windowCap,
+  })
+
+  return {
+    contextWindow,
+    reservedTokens: reservedForSummary + AUTOCOMPACT_BUFFER_TOKENS,
+    ...resolved,
+  }
+}
+
+/**
+ * What the *saved* configuration resolves to for a given model, including
+ * whether an environment variable is overriding it.
+ */
+export function describeAutoCompaction(model: string): AutoCompactionPreview & {
+  windowCap: number | undefined
+  source: 'auto' | 'percent' | 'env-percent'
+  envOverridesCap: boolean
+} {
+  const envPercentRaw = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+  const envPercent = envPercentRaw ? parseFloat(envPercentRaw) : NaN
+  const hasEnvPercent = !isNaN(envPercent) && envPercent > 0 && envPercent <= 100
+
+  const envCapRaw = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  const envCap = envCapRaw ? parseInt(envCapRaw, 10) : NaN
+  const hasEnvCap = !isNaN(envCap) && envCap > 0
+
+  const configuredPercent = getConfiguredThresholdPercent()
+  const windowCap = hasEnvCap ? envCap : getConfiguredWindowCap()
+  const percent = hasEnvPercent ? envPercent : configuredPercent
+
+  return {
+    ...previewAutoCompaction(model, percent, windowCap),
+    windowCap,
+    source: hasEnvPercent
+      ? 'env-percent'
+      : configuredPercent !== undefined
+        ? 'percent'
+        : 'auto',
+    envOverridesCap: hasEnvCap,
+  }
 }
 
 export type AutoCompactTrackingState = {
@@ -69,25 +171,16 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
 
+/**
+ * Token count at which automatic compaction fires for `model`.
+ *
+ * Delegates to {@link describeAutoCompaction} so the number the settings UI
+ * previews and the number that actually triggers can never drift apart — they
+ * are literally the same call. Precedence, highest first:
+ * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, the configured percentage, then auto.
+ */
 export function getAutoCompactThreshold(model: string): number {
-  const effectiveContextWindow = getEffectiveContextWindowSize(model)
-
-  const autocompactThreshold =
-    effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS
-
-  // Override for easier testing of autocompact
-  const envPercent = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
-  if (envPercent) {
-    const parsed = parseFloat(envPercent)
-    if (!isNaN(parsed) && parsed > 0 && parsed <= 100) {
-      const percentageThreshold = Math.floor(
-        effectiveContextWindow * (parsed / 100),
-      )
-      return Math.min(percentageThreshold, autocompactThreshold)
-    }
-  }
-
-  return autocompactThreshold
+  return describeAutoCompaction(model).threshold
 }
 
 export function calculateTokenWarningState(
