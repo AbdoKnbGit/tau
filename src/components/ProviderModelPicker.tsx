@@ -89,10 +89,7 @@ import {
   getOpenRouterEffortChipLabel,
   supportsOpenRouterEffortSelection,
 } from '../utils/model/openrouterThinking.js'
-import {
-  getVoiceConversationStatus,
-  hasVoiceConversationApiKey,
-} from '../voice/voiceConversation.js'
+import { hasStoredKey } from '../services/api/auth/api_key_manager.js'
 
 type Props = {
   initialProvider: BrowsableModelProvider
@@ -137,12 +134,7 @@ const SECTION_ACCENT: Record<NonNullable<ProviderModelSection['accent']>, string
 
 function getProviderStatusLabel(provider: BrowsableModelProvider): string {
   if (isVoiceConversationProvider(provider)) {
-    const status = getVoiceConversationStatus()
-    if (status.provider === 'gemini' && hasVoiceConversationApiKey()) {
-      return 'configured'
-    }
-    if (status.provider === 'gemini') return 'needs key'
-    return 'local'
+    return hasStoredKey('openai_oauth') ? 'OpenAI connected' : 'OpenAI OAuth required'
   }
 
   if (provider === 'firstParty') {
@@ -453,7 +445,7 @@ export function ProviderModelPicker({
       if (row?.kind !== 'model') return
 
       if (isVoiceConversationProvider(selectedProvider)) {
-        setFavoriteNotice('Voice models cannot be favorited')
+        setFavoriteNotice('Voices cannot be favorited')
         return
       }
 
@@ -721,6 +713,7 @@ export function ProviderModelPicker({
   }
 
   const totalRegistered = sections.reduce((sum, s) => sum + s.models.length, 0)
+  const itemLabel = isVoiceConversationProvider(selectedProvider) ? 'voices' : 'models'
 
   return (
     <Box flexDirection="column" paddingLeft={1}>
@@ -729,7 +722,7 @@ export function ProviderModelPicker({
           {getProviderBrowseLabel(selectedProvider)}
         </Text>
         {!loading && totalRegistered > 0 && (
-          <Text dimColor> ({totalRegistered} models)</Text>
+          <Text dimColor> ({totalRegistered} {itemLabel})</Text>
         )}
       </Box>
 
@@ -748,7 +741,7 @@ export function ProviderModelPicker({
       {loading && (
         <Box marginTop={1} flexDirection="column">
           <Text color="warning">
-            Fetching models from {getProviderBrowseLabel(selectedProvider)}...
+            Loading {itemLabel} from {getProviderBrowseLabel(selectedProvider)}...
           </Text>
           <Text dimColor>Esc to go back</Text>
         </Box>
@@ -766,7 +759,7 @@ export function ProviderModelPicker({
       {!loading && !loadError && (
         <Box marginTop={1} flexDirection="column">
           {flatRows.length === 0 ? (
-            <Text dimColor>No models match "{query}".</Text>
+            <Text dimColor>No {itemLabel} match "{query}".</Text>
           ) : (
             visibleRows.map((row, index) => {
               const actualIndex = scrollOffset + index

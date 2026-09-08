@@ -363,6 +363,24 @@ async function runPostinstall() {
   await main();
 
   await verifyDependencyTree();
+  // Official releases carry all supported audio binaries. Users never compile
+  // Rust or download a speech model. Source checkouts can build audio separately.
+  if (existsSync(join(packageRoot, 'native', 'tau-voice', 'bin', 'manifest.json'))) {
+    const { nativeVoiceTarget, nativeVoiceLoadPath } = await import('./native-voice.mjs');
+    let voiceSupported = true;
+    try { nativeVoiceTarget(); } catch (error) {
+      voiceSupported = false;
+      console.log(`[tau] ${error.message}`);
+    }
+    if (voiceSupported) {
+      const { createRequire } = await import('node:module');
+      const voice = createRequire(import.meta.url)(nativeVoiceLoadPath(packageRoot));
+      if (voice.voiceAbiVersion?.() !== 1 || typeof voice.AudioCapture !== 'function' || typeof voice.LiveWebRtcPeer !== 'function') {
+        throw new Error('The bundled Tau audio component is incompatible. Reinstall Tau.');
+      }
+      console.log('[tau] Native voice ready (no Rust or speech-model installation required).');
+    }
+  }
   try { buildOptionalNativeTools(); } catch { /* native accelerators are optional */ }
   try { primeOllamaCloudModels(); } catch { /* first launch retries */ }
 

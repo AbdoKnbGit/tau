@@ -1,0 +1,8 @@
+[env]
+# The statically linked upstream Opus uses a legacy CMake policy baseline.
+CMAKE_POLICY_VERSION_MINIMUM = { value = "3.5", force = false }
+
+[target.'cfg(all(windows, target_env = "msvc"))']
+# Ship the C runtime in the addon. Rust's cc/cmake build helpers propagate
+# crt-static to Opus, so users do not need a Visual C++ runtime installer.
+rustflags = ["-C", "target-feature=+crt-static"]

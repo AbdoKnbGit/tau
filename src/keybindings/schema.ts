@@ -168,7 +168,6 @@ export const KEYBINDING_ACTIONS = [
   'settings:retry',
   'settings:close',
   // Voice actions
-  'voice:pushToTalk',
   // Hey-mode (conversational hold-Space) actions
   'hey:pushToTalk',
 ] as const

@@ -92,9 +92,6 @@ const remoteControlServerCommand =
   feature('DAEMON') && feature('BRIDGE_MODE')
     ? require('./commands/remoteControlServer/index.js').default
     : null
-const voiceCommand = feature('VOICE_MODE')
-  ? require('./commands/voice/index.js').default
-  : null
 const heyCommand = require('./commands/hey/index.js').default
 const forceSnip = feature('HISTORY_SNIP')
   ? require('./commands/force-snip.js').default
@@ -376,7 +373,6 @@ const COMMANDS = memoize((): Command[] => [
   ...(assistantCommand ? [assistantCommand] : []),
   ...(bridge ? [bridge] : []),
   ...(remoteControlServerCommand ? [remoteControlServerCommand] : []),
-  ...(voiceCommand ? [voiceCommand] : []),
   ...(heyCommand ? [heyCommand] : []),
   thinkback,
   thinkbackPlay,

@@ -1,0 +1,27 @@
+[package]
+name = "tau-voice"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Standalone native audio and WebRTC for Tau"
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+members = ["engine"]
+resolver = "3"
+
+[dependencies]
+napi = { version = "=3.12.2", default-features = false, features = ["napi8", "dyn-symbols", "tokio_rt", "tokio_time"] }
+napi-derive = "=3.6.3"
+parking_lot = "=0.12.5"
+pi-voice = { path = "engine" }
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "time"] }
+
+[build-dependencies]
+napi-build = "=2.4.1"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

@@ -903,37 +903,17 @@ export const SettingsSchema = lazySchema(() =>
               ),
           }
         : {}),
-      ...(feature('VOICE_MODE')
-        ? {
-            voiceEnabled: z
-              .boolean()
-              .optional()
-              .describe('Enable voice mode (hold-to-talk dictation)'),
-          }
-        : {}),
       heyEnabled: z
         .boolean()
         .optional()
         .describe(
-          'Enable hey mode (hold-Space conversation: speech-to-text + auto-submit + spoken replies)',
-        ),
-      heyVoiceProvider: z
-        .enum(['local', 'gemini'])
-        .optional()
-        .describe(
-          'Voice conversation backend for /hey. "gemini" uses the saved gemini_voice key; "local" uses local speech tools.',
-        ),
-      heyVoiceModel: z
-        .string()
-        .optional()
-        .describe(
-          'Gemini text-to-speech model used by /hey voice conversation replies.',
+          'Enable Codex realtime voice conversation with hold-Space input.',
         ),
       heyVoiceName: z
         .string()
         .optional()
         .describe(
-          'Gemini prebuilt voice name used by /hey voice conversation replies.',
+          'Codex realtime voice for /hey. Choose with /models voice; defaults to sol.',
         ),
       ...(feature('KAIROS')
         ? {

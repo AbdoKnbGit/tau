@@ -1,0 +1,136 @@
+name: Build native voice release artifacts
+
+# Builds reviewable artifacts only. Publishing Tau remains a separate release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: linux-${{ matrix.arch }} (glibc 2.28, N-API 8)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x64
+            target: x86_64-unknown-linux-gnu
+            image: quay.io/pypa/manylinux_2_28_x86_64
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+            image: quay.io/pypa/manylinux_2_28_aarch64
+    container:
+      image: ${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          architecture: ${{ matrix.arch }}
+      - name: Install build tools
+        run: yum install -y cmake
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Test native audio and Opus behavior
+        working-directory: native/tau-voice
+        run: cargo test --locked -p pi-voice --release --target ${{ matrix.target }}
+      - name: Build distributable addon
+        run: node scripts/build-native-voice.mjs
+      - name: Test the addon on Tau's minimum Node version
+        run: node --test native/tau-voice/test/addon.test.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-voice-linux-${{ matrix.arch }}
+          path: native/tau-voice/bin/tau_voice.linux-${{ matrix.arch }}.node
+          if-no-files-found: error
+          retention-days: 30
+
+  desktop:
+    name: ${{ matrix.platform }}-${{ matrix.arch }} (N-API 8)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            platform: win32
+            arch: x64
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            platform: win32
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+          - runner: macos-15-intel
+            platform: darwin
+            arch: x64
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            platform: darwin
+            arch: arm64
+            target: aarch64-apple-darwin
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          architecture: ${{ matrix.arch }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Test native audio and Opus behavior
+        working-directory: native/tau-voice
+        run: cargo test --locked -p pi-voice --release --target ${{ matrix.target }}
+      - name: Build distributable addon
+        run: node scripts/build-native-voice.mjs
+      - name: Test the addon on Tau's minimum Node version
+        run: node --test native/tau-voice/test/addon.test.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-voice-${{ matrix.platform }}-${{ matrix.arch }}
+          path: native/tau-voice/bin/tau_voice.${{ matrix.platform }}-${{ matrix.arch }}.node
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble:
+    name: Verify universal native voice release
+    needs: [linux, desktop]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-voice-*
+          path: native/tau-voice/bin
+          merge-multiple: true
+      - name: Verify architecture and create SHA-256 manifest
+        run: node release/verify-native-voice.mjs --write-manifest
+      - name: Exercise release integrity checks
+        run: node --test test/native-voice-packaging.test.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-voice-universal-${{ github.sha }}
+          path: |
+            native/tau-voice/bin/*.node
+            native/tau-voice/bin/manifest.json
+          if-no-files-found: error
+          retention-days: 30

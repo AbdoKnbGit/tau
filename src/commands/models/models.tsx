@@ -29,8 +29,8 @@ import {
 import { getProviderModelDisplayName } from '../../utils/model/display.js'
 import { isConcreteOpenAIGptModelForProvider } from '../../utils/model/openaiGptModels.js'
 import {
-  getVoiceConversationModelDisplayName,
-  setSelectedVoiceModel,
+  getLiveVoiceDisplayName,
+  setSelectedLiveVoice,
 } from '../../voice/voiceConversation.js'
 import { setClineEffort } from '../../utils/model/clineThinking.js'
 import { isClinePassProvider } from '../../utils/model/clinePassCatalog.js'
@@ -67,17 +67,17 @@ function ModelsPickerWrapper({
 
   function handleSelect(provider: BrowsableModelProvider, modelId: string) {
     if (isVoiceConversationProvider(provider)) {
-      const result = setSelectedVoiceModel(modelId)
+      const result = setSelectedLiveVoice(modelId)
       if (result.error) {
         onDone(
-          'Failed to save voice conversation model. Check your settings file for syntax errors.',
+          `Failed to save Codex voice: ${result.error.message}`,
           { display: 'system' },
         )
         return
       }
       const displayModel =
-        getVoiceConversationModelDisplayName(modelId) ?? modelId
-      onDone(`Set voice conversation model to ${chalk.bold(displayModel)}`)
+        getLiveVoiceDisplayName(modelId) ?? modelId
+      onDone(`Set Codex voice to ${chalk.bold(displayModel)}. Applies to the next /hey session.`)
       return
     }
 

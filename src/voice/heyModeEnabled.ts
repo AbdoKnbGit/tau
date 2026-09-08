@@ -1,9 +1,7 @@
 import { getInitialSettings } from '../utils/settings/settings.js'
 
-// Hey-mode (the /hey conversational hold-Space flow) is intentionally available in
-// external builds. Unlike /voice it does not require Anthropic OAuth or the
-// claude.ai voice_stream feature: STT is local whisper.cpp and TTS is OS-native.
-// Runtime prerequisites are checked by /hey before the setting is enabled.
+// /hey is the Codex realtime conversation with hold-Space input.
+// Native audio and OpenAI OAuth availability are checked when starting a session.
 export function isHeyModeFeatureOn(): boolean {
   return true
 }

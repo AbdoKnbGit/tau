@@ -285,6 +285,7 @@ export async function startOpenAIOAuthFlow(): Promise<{
 export async function refreshOpenAIToken(refreshToken: string): Promise<string> {
   const response = await fetch(OPENAI_TOKEN_URL, {
     method: 'POST',
+    signal: AbortSignal.timeout(30_000),
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       'Accept': 'application/json',
@@ -302,6 +303,11 @@ export async function refreshOpenAIToken(refreshToken: string): Promise<string> 
   }
 
   const tokens = (await response.json()) as OpenAIOAuthTokens
+  if (!tokens || typeof tokens.access_token !== 'string' || !tokens.access_token ||
+      !Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0 ||
+      (tokens.refresh_token !== undefined && typeof tokens.refresh_token !== 'string')) {
+    throw new Error('OpenAI token refresh returned invalid credentials')
+  }
 
   // If the refresh response contains an id_token, do the second exchange
   // again so the stored token is always API-capable.
@@ -310,6 +316,7 @@ export async function refreshOpenAIToken(refreshToken: string): Promise<string> 
     try {
       const exchange = await fetch(OPENAI_TOKEN_URL, {
         method: 'POST',
+        signal: AbortSignal.timeout(30_000),
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Accept': 'application/json',
@@ -390,6 +397,55 @@ export async function getOpenAIOAuthToken(): Promise<string | null> {
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────
+
+let sessionRefresh: Promise<string> | undefined
+
+/** ChatGPT backend credential for voice; never return the exchanged API key. */
+export async function getValidOpenAISessionAccess(forceRefresh = false, signal?: AbortSignal): Promise<{ accessToken: string; accountId?: string }> {
+  signal?.throwIfAborted()
+  const loginHint = 'Run /login openai and choose ChatGPT OAuth, then /hey. No Codex CLI installation is required.'
+  const stored = loadProviderKey('openai_oauth')
+  if (!stored) throw new Error(loginHint)
+  let tokens: StoredOpenAITokens
+  try { tokens = JSON.parse(stored) } catch { throw new Error(loginHint) }
+  if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens) ||
+      (tokens.sessionToken !== undefined && typeof tokens.sessionToken !== 'string') ||
+      (tokens.refreshToken !== undefined && typeof tokens.refreshToken !== 'string') ||
+      !Number.isFinite(tokens.expiresAt)) throw new Error(loginHint)
+  if (forceRefresh || !tokens.sessionToken || Date.now() > tokens.expiresAt - 5 * 60 * 1000) {
+    if (!tokens.refreshToken) throw new Error(loginHint)
+    try {
+      sessionRefresh ??= refreshOpenAIToken(tokens.refreshToken).finally(() => { sessionRefresh = undefined })
+      await awaitSessionRefresh(sessionRefresh, signal)
+      tokens = JSON.parse(loadProviderKey('openai_oauth') ?? '{}')
+    } catch {
+      signal?.throwIfAborted()
+      throw new Error(`ChatGPT sign-in could not be refreshed. ${loginHint}`)
+    }
+  }
+  signal?.throwIfAborted()
+  if (!tokens || typeof tokens.sessionToken !== 'string' || !tokens.sessionToken) throw new Error(loginHint)
+  let accountId: string | undefined
+  try {
+    const claims = JSON.parse(Buffer.from(tokens.sessionToken.split('.')[1] ?? '', 'base64url').toString('utf8'))
+    const id = claims['https://api.openai.com/auth']?.chatgpt_account_id
+    if (typeof id === 'string') accountId = id
+  } catch { /* Opaque tokens may omit the optional account header. */ }
+  return { accessToken: tokens.sessionToken, ...(accountId ? { accountId } : {}) }
+}
+
+function awaitSessionRefresh<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason) }
+    signal.addEventListener('abort', abort, { once: true })
+    promise.then(value => { signal.removeEventListener('abort', abort); resolve(value) }, error => {
+      signal.removeEventListener('abort', abort)
+      reject(error)
+    })
+  })
+}
 
 /**
  * Try to free a port by killing whatever process is listening on it.

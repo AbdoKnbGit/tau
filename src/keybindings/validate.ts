@@ -217,7 +217,7 @@ function validateBlock(
           suggestion: 'Move this binding to a block with "context": "Chat"',
         })
       }
-    } else if (action === 'voice:pushToTalk' || action === 'hey:pushToTalk') {
+    } else if (action === 'hey:pushToTalk') {
       // Hold detection needs OS auto-repeat. Bare letters print into the
       // input during warmup and the activation strip is best-effort —
       // space (default) or a modifier combo like meta+k avoid that.
