@@ -84,6 +84,12 @@ import {
   supportsAlibabaEffortSelection,
 } from '../utils/model/alibabaThinking.js'
 import {
+  cycleOpenRouterEffort,
+  getOpenRouterEffort,
+  getOpenRouterEffortChipLabel,
+  supportsOpenRouterEffortSelection,
+} from '../utils/model/openrouterThinking.js'
+import {
   getVoiceConversationStatus,
   hasVoiceConversationApiKey,
 } from '../voice/voiceConversation.js'
@@ -290,6 +296,7 @@ export function ProviderModelPicker({
   const [, setLxdEffortTick] = useState(0)
   const [, setMimoEffortTick] = useState(0)
   const [, setAlibabaEffortTick] = useState(0)
+  const [, setOpenRouterEffortTick] = useState(0)
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
   // Bumped when a favorite is toggled so the ★ column re-renders. The list
   // itself lives in GlobalConfig and is read fresh during render.
@@ -640,6 +647,16 @@ export function ProviderModelPicker({
         setAlibabaEffortTick(tick => tick + 1)
         return
       }
+
+      if (
+        row?.kind === 'model'
+        && selectedProvider === 'openrouter'
+        && supportsOpenRouterEffortSelection(row.model.id)
+      ) {
+        cycleOpenRouterEffort(row.model.id, key.leftArrow ? 'left' : 'right')
+        setOpenRouterEffortTick(tick => tick + 1)
+        return
+      }
       return
     }
 
@@ -818,6 +835,16 @@ export function ProviderModelPicker({
               const alibabaEffort = isAlibabaThinking
                 ? getAlibabaEffort(model.id)
                 : undefined
+              // OpenRouter states its own ladder per model, and they really do
+              // differ (minimal…max on Muse Spark, low/high/max on Grok 4.20,
+              // a bare on/off where a row reasons but publishes no efforts).
+              // Rows OpenRouter does not describe as reasoning show no chip.
+              const isOpenRouterThinking =
+                selectedProvider === 'openrouter'
+                && supportsOpenRouterEffortSelection(model.id)
+              const openRouterEffort = isOpenRouterThinking
+                ? getOpenRouterEffort(model.id)
+                : undefined
               const selectedVariant = getSelectedVariant(
                 selectedProvider,
                 model,
@@ -895,6 +922,11 @@ export function ProviderModelPicker({
                   {isAlibabaThinking && alibabaEffort && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
                       {' '}◀ {getAlibabaEffortLabel(alibabaEffort)} ▶
+                    </Text>
+                  )}
+                  {isOpenRouterThinking && openRouterEffort && (
+                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
+                      {' '}◀ {getOpenRouterEffortChipLabel(openRouterEffort)} ▶
                     </Text>
                   )}
                   {showVariant && selectedVariant && (

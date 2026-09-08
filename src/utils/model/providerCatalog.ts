@@ -30,6 +30,7 @@ import {
   type CursorVariantTag,
 } from '../../lanes/cursor/catalog.js'
 import { inferProviderLabelFromModelId } from './openrouterCatalog.js'
+import { warmOpenRouterReasoningCatalog } from './openrouterReasoningCatalog.js'
 import {
   VOICE_CONVERSATION_LABEL,
   VOICE_CONVERSATION_MODELS,
@@ -259,6 +260,13 @@ export async function loadProviderModels(
   await resolveProviderAuth(provider)
 
   const models = await getProvider(provider).listModels()
+  if (provider === 'openrouter') {
+    // OpenRouter states each row's reasoning ladder in its own catalogue, and
+    // the picker draws those chips synchronously. Warming here — alongside a
+    // fetch the user is already waiting on — is what makes the ladder correct
+    // on the FIRST /models visit rather than after a keypress.
+    await warmOpenRouterReasoningCatalog()
+  }
   recordProviderModelContextWindows(provider, models)
   if ([
     'cursor',

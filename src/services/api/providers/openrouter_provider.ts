@@ -20,6 +20,11 @@ import {
 } from '../../../utils/model/openrouterCatalog.js'
 import { resolveOpenRouterVirtualModelId } from '../../../utils/model/openrouterAliases.js'
 import { normalizeOpenRouterGPTToolSchemas } from '../../../utils/model/openrouterStrictSchema.js'
+import {
+  getOpenRouterReasoningMeta,
+  recordOpenRouterCatalogPayload,
+} from '../../../utils/model/openrouterReasoningCatalog.js'
+import { resolveOpenRouterReasoningField } from '../../../utils/model/openrouterThinking.js'
 
 export class OpenRouterProvider extends OpenAIProvider {
   readonly name = 'openrouter'
@@ -69,10 +74,11 @@ export class OpenRouterProvider extends OpenAIProvider {
   protected override finalizeChatCompletionsBody(
     body: Record<string, unknown>,
     model: string,
-    _params: ProviderRequestParams,
+    params: ProviderRequestParams,
     messages: OpenAIMessage[],
     tools: OpenAITool[] | undefined,
   ): void {
+    applyOpenRouterReasoning(body, model, params.thinking)
     const sessionKey = this.cacheSessionKeyForModel(model)
     body.session_id = sessionKey
     body.prompt_cache_key = sessionKey
@@ -117,9 +123,11 @@ export class OpenRouterProvider extends OpenAIProvider {
 
     if (!response.ok) return []
 
-    const data = (await response.json()) as {
-      data: OpenRouterCatalogModel[]
-    }
+    const payload = await response.json()
+    // The same document states each row's reasoning ladder. Recording it here
+    // means the common path costs no extra request.
+    recordOpenRouterCatalogPayload(payload)
+    const data = payload as { data: OpenRouterCatalogModel[] }
 
     return (data.data ?? [])
       .filter(m => {
@@ -137,6 +145,44 @@ function normalizeOpenRouterSessionId(sessionId: string): string {
   if (sessionId.length <= 256) return sessionId
   const hash = shortStableHash(sessionId)
   return `${sessionId.slice(0, 247)}:${hash}`
+}
+
+/**
+ * Steer reasoning through OpenRouter's own per-model ladder.
+ *
+ * The base class puts `reasoning_effort` on the body from the OpenAI picker's
+ * low/medium/high scale. That scale is not a subset of every OpenRouter row's
+ * ladder — `x-ai/grok-4.20` publishes only low/high/max — so once OpenRouter
+ * has described the model, the described field replaces it rather than riding
+ * alongside it. Rows OpenRouter has not described keep the previous behaviour.
+ */
+function applyOpenRouterReasoning(
+  body: Record<string, unknown>,
+  model: string,
+  thinking: ProviderRequestParams['thinking'],
+): void {
+  if (!getOpenRouterReasoningMeta(model)) return
+  const enabled = !!thinking && thinking.type !== 'disabled'
+  const reasoning = resolveOpenRouterReasoningField(model, {
+    enabled,
+    effort: reasoningEffortFromThinking(thinking),
+  })
+  // An off-ladder effort is a 400 whether or not a replacement is going out,
+  // so the base class's value goes either way.
+  delete body.reasoning_effort
+  if (reasoning) body.reasoning = reasoning
+}
+
+/** Anthropic thinking budget → the low/medium/high scale, as the lane maps it. */
+function reasoningEffortFromThinking(
+  thinking: ProviderRequestParams['thinking'],
+): 'low' | 'medium' | 'high' | null {
+  if (!thinking || thinking.type === 'disabled') return null
+  const budget = (thinking as { budget_tokens?: number }).budget_tokens
+  if (budget == null) return 'medium'
+  if (budget < 2000) return 'low'
+  if (budget < 8000) return 'medium'
+  return 'high'
 }
 
 const OPENROUTER_VOLATILE_CONTEXT = Symbol('openrouter volatile context')

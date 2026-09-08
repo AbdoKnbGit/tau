@@ -38,6 +38,13 @@ export const OPENROUTER_ALLOWLIST = new Set([
   'openai/gpt-5-mini',
   'openai/gpt-5-nano',
   'openai/gpt-oss-120b',
+  // Meta
+  'meta/muse-spark-1.3',
+  'meta/muse-spark-1.3-contributor',
+  'meta/muse-spark-1.2',
+  'meta/muse-spark-1.2-contributor',
+  'meta/muse-spark-1.1',
+  'meta/muse-glimmer-30b',
   // NVIDIA
   'nvidia/nemotron-3-super',
   'nvidia/nemotron-3-nano-30b-a3b',

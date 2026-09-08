@@ -10,6 +10,7 @@ import {
   getAPIProvider,
   isThirdPartyProvider,
 } from '../../utils/model/providers.js'
+import { openRouterModelReasons } from '../../utils/model/openrouterReasoningCatalog.js'
 
 /**
  * Static whitelist of third-party models known to support a
@@ -37,6 +38,9 @@ function currentModelSupportsThinking(model: string): boolean {
   if (!isThirdPartyProvider(provider)) {
     return modelSupportsThinking(model)
   }
+  // OpenRouter states this per model in its own catalogue, so the hand-kept
+  // list below is only the fallback for a row it has not described yet.
+  if (provider === 'openrouter' && openRouterModelReasons(model)) return true
   const models = THIRD_PARTY_THINKING_MODELS[provider]
   if (!models) return false
   return models.some(m => model.includes(m))

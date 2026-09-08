@@ -78,6 +78,10 @@ import {
   type OpenRouterCatalogModel,
 } from '../../utils/model/openrouterCatalog.js'
 import { resolveOpenRouterVirtualModelId } from '../../utils/model/openrouterAliases.js'
+import {
+  isOpenRouterStrictToolSchemaError,
+  recordOpenRouterStrictToolSchemaModel,
+} from '../../utils/model/openrouterStrictSchema.js'
 import { isMoonshotThinkingModel } from '../../utils/model/moonshotCatalog.js'
 import {
   getOpencodeEffort,
@@ -508,10 +512,11 @@ export class OpenAICompatLane implements Lane {
     // PowerShell tool descriptions may be replaced with compact
     // example-driven versions for weak compat-lane models — see
     // shell_descriptions.ts.
-    const openaiTools = buildOpenAITools(filteredTools, provider, model, {
+    const buildToolsCtx: BuildToolsCtx = {
       platform: getPlatform() === 'windows' ? 'win32' : (process.platform),
       psEdition,
-    })
+    }
+    const openaiTools = buildOpenAITools(filteredTools, provider, model, buildToolsCtx)
 
     // Prepend OPENAI_COMPAT_TOOL_USAGE_RULES to the system message when
     // tools are present — in-context reminder of schema authority for
@@ -671,29 +676,59 @@ export class OpenAICompatLane implements Lane {
       }
     }
 
-    let response: Response
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal,
-      })
-    } catch (err: any) {
-      // A request that never received a response produced nothing durable.
-      // Throw into the shared retry controller instead of persisting an
-      // assistant error turn, which would shift every provider's cache prefix.
-      if (isAbortError(err, signal)) throw err
-      throw createProviderConnectionError(provider, err)
+    let response!: Response
+    let errText = ''
+    // One self-heal attempt: an upstream that runs OpenAI's strict
+    // function-schema validator says so in its 400, and the schemas it will
+    // accept are a pure re-derivation of the ones already built. Retrying
+    // here means the model works on the turn the user asked for, and
+    // openrouterStrictSchema.ts remembers the row so no later turn pays for
+    // it. Nothing has been yielded yet, so the retry is invisible.
+    let strictToolSchemaRetried = false
+    for (;;) {
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        })
+      } catch (err: any) {
+        // A request that never received a response produced nothing durable.
+        // Throw into the shared retry controller instead of persisting an
+        // assistant error turn, which would shift every provider's cache prefix.
+        if (isAbortError(err, signal)) throw err
+        throw createProviderConnectionError(provider, err)
+      }
+
+      // Harvested before the ok check on purpose: a 429 carries the most useful
+      // rate limit headers of any response, and this is the path real traffic
+      // takes. The legacy openai_provider shim harvests separately.
+      recordProviderRateLimits(provider, response.headers)
+      if (response.ok) break
+
+      errText = await response.text().catch(() => '')
+      if (
+        !strictToolSchemaRetried
+        && provider === 'openrouter'
+        && response.status === 400
+        && body.tools?.length
+        && isOpenRouterStrictToolSchemaError(errText)
+      ) {
+        strictToolSchemaRetried = true
+        recordOpenRouterStrictToolSchemaModel(model)
+        const stamped = body.tools[body.tools.length - 1]?.cache_control
+        body.tools = buildOpenAITools(filteredTools, provider, model, buildToolsCtx)
+        const lastTool = body.tools[body.tools.length - 1]
+        // Re-stamp the tool-prefix cache breakpoint the transformer placed on
+        // the original array; losing it would cold-start the upstream cache.
+        if (stamped && lastTool) lastTool.cache_control = stamped
+        continue
+      }
+      break
     }
 
-    // Harvested before the ok check on purpose: a 429 carries the most useful
-    // rate limit headers of any response, and this is the path real traffic
-    // takes. The legacy openai_provider shim harvests separately.
-    recordProviderRateLimits(provider, response.headers)
-
     if (!response.ok) {
-      const errText = await response.text().catch(() => '')
       throwRetryableProviderHttpError(provider, response, errText)
       if (!messageStartEmitted) {
         const mst = emitMessageStart()
@@ -731,7 +766,7 @@ export class OpenAICompatLane implements Lane {
       const markers = transformer.contextExceededMarkers()
       const lowered = errText.toLowerCase()
       const isPromptTooLong = markers.some(m => lowered.includes(m.toLowerCase()))
-      yield* emitErrorText(formatProviderHttpError(provider, response.status, errText, isPromptTooLong))
+      yield* emitErrorText(formatProviderHttpError(provider, response.status, errText, isPromptTooLong, model))
       yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }
       yield { type: 'message_stop' }
       return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
@@ -1816,7 +1851,7 @@ async function* streamOpenCodeAnthropicRoute(
     const errText = await response.text().catch(() => '')
     throwRetryableProviderHttpError(provider, response, errText)
     yield emitSyntheticStart()
-    yield* emitErrorText(formatProviderHttpError(provider, response.status, errText, false))
+    yield* emitErrorText(formatProviderHttpError(provider, response.status, errText, false, params.model))
     yield {
       type: 'message_delta',
       delta: { stop_reason: 'end_turn' },
@@ -1961,9 +1996,14 @@ function formatProviderHttpError(
   status: number,
   errText: string,
   isPromptTooLong: boolean,
+  model?: string,
 ): string {
   if (provider === 'glm') {
     return formatGlmHttpError(status, errText, isPromptTooLong)
+  }
+  if (provider === 'openrouter' && !isPromptTooLong) {
+    const guardrail = formatOpenRouterGuardrailError(status, errText, model)
+    if (guardrail) return guardrail
   }
   if ((provider === 'opencode' || provider === 'opencodego') && status === 429 && errText.includes('FreeUsageLimitError')) {
     // FreeUsageLimitError comes from the gateway's IP-based anonymous
@@ -1981,6 +2021,68 @@ function formatProviderHttpError(
     ? `Prompt is too long (${provider} ${status})`
     : `${provider} API error ${status}`
   return `${headline}: ${errText.slice(0, 500)}`
+}
+
+/**
+ * OpenRouter's "no endpoint matches your policy" refusal, made readable.
+ *
+ * When every endpoint for a model is filtered out by the ACCOUNT's guardrail
+ * and data-policy settings, OpenRouter answers 404 with a machine-readable
+ * `metadata.ineligibility_reasons` list, each carrying a `configure_url`. It
+ * is not a request problem — nothing Tau can send changes the outcome — but
+ * raw it reaches the user as a wall of escaped JSON, usually truncated before
+ * the URL that would tell them what to change.
+ *
+ * The reasons are echoed straight from the payload rather than enumerated
+ * here, so a policy OpenRouter adds later still renders with its own slug,
+ * count and settings link.
+ */
+function formatOpenRouterGuardrailError(
+  status: number,
+  errText: string,
+  model?: string,
+): string | null {
+  if (status !== 404) return null
+
+  let reasons: Array<Record<string, unknown>> = []
+  let message = ''
+  try {
+    const error = (JSON.parse(errText) as { error?: Record<string, unknown> })?.error
+    if (!error) return null
+    if (typeof error.message === 'string') message = error.message
+    const metadata = error.metadata as Record<string, unknown> | undefined
+    if (Array.isArray(metadata?.ineligibility_reasons)) {
+      reasons = metadata.ineligibility_reasons.filter(
+        (entry): entry is Record<string, unknown> =>
+          entry !== null && typeof entry === 'object' && !Array.isArray(entry),
+      )
+    }
+  } catch {
+    return null
+  }
+
+  // Only claim this shape when the payload actually carries it; any other 404
+  // (a retired model id, a bad base URL) falls through to the generic text.
+  if (reasons.length === 0 && !/endpoints .* are available/i.test(message)) return null
+
+  const lines = [
+    `openrouter API error 404: no endpoint for ${model ?? 'this model'} passes your OpenRouter account settings.`,
+  ]
+  for (const entry of reasons) {
+    const reason = typeof entry.reason === 'string' ? entry.reason : 'unspecified'
+    const count = typeof entry.endpoint_count === 'number' ? entry.endpoint_count : null
+    const url = typeof entry.configure_url === 'string' ? entry.configure_url : null
+    lines.push(
+      `  - ${reason}${count === null ? '' : ` (${count} endpoint${count === 1 ? '' : 's'})`}`
+      + `${url ? ` — change it at ${url}` : ''}`,
+    )
+  }
+  if (reasons.length === 0 && message) lines.push(`  ${message.split('\n').join(' ')}`)
+  lines.push(
+    'This is an account policy, not a request problem — retrying or changing the prompt cannot route it.',
+    'Either change the setting above, or pick a model whose endpoints match your policy with /models.',
+  )
+  return lines.join('\n')
 }
 
 function formatGlmHttpError(

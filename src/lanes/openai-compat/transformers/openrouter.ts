@@ -23,9 +23,11 @@
 import type { Transformer, TransformContext, HeaderContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 import {
-  isOpenAIStrictOnOpenRouter,
+  isStrictToolSchemaOnOpenRouter,
   normalizeOpenAIStrictToolSchema,
 } from '../../../utils/model/openrouterStrictSchema.js'
+import { resolveOpenRouterReasoningField } from '../../../utils/model/openrouterThinking.js'
+import { getOpenRouterReasoningMeta } from '../../../utils/model/openrouterReasoningCatalog.js'
 
 export const openrouterTransformer: Transformer = {
   id: 'openrouter',
@@ -72,12 +74,7 @@ export const openrouterTransformer: Transformer = {
     applyOpenRouterContextCompressionPlugin(body)
     applyOpenRouterProviderRouting(body, ctx.sessionId)
 
-    // Only emit the reasoning knob for models that actually support it.
-    // Llama-4 / prompt-guard / base-chat Llamas routed via Vertex return
-    // "thinking is not supported by this model" when reasoning is set.
-    if (ctx.isReasoning && ctx.reasoningEffort && openrouterModelSupportsReasoning(body.model)) {
-      body.reasoning = { effort: ctx.reasoningEffort }
-    }
+    applyOpenRouterReasoning(body, ctx)
     return body
   },
 
@@ -95,9 +92,14 @@ export const openrouterTransformer: Transformer = {
   // Mirrors opencode's `sanitizeGemini` in provider/transform.ts:1329.
   // Other upstreams on OR (Anthropic, OpenAI, Llama, …) accept the
   // base shape, so the sanitizer is gated on the model id.
+  //
+  // Separately, some upstreams (OpenAI's own rows, and — as of Muse Spark —
+  // Meta's) run OpenAI's strict function-schema validator, which demands
+  // `required` name every key in `properties`. That set is learned from the
+  // upstream's own 400 rather than listed here; see openrouterStrictSchema.ts.
   sanitizeToolSchemaExtra(schema: Record<string, unknown>, modelId: string): Record<string, unknown> {
     if (isGeminiOnOR(modelId)) return sanitizeGeminiSchema(schema) as Record<string, unknown>
-    if (isOpenAIStrictOnOpenRouter(modelId)) return normalizeOpenAIStrictToolSchema(schema)
+    if (isStrictToolSchemaOnOpenRouter(modelId)) return normalizeOpenAIStrictToolSchema(schema)
     return schema
   },
 
@@ -418,6 +420,44 @@ function hasSchemaIntent(node: Record<string, unknown>): boolean {
     'additionalProperties', 'patternProperties', 'required', 'not', 'if',
     'then', 'else',
   ].some(k => k in node)
+}
+
+/**
+ * Put the `reasoning` knob on the body — or deliberately nothing.
+ *
+ * OpenRouter publishes, per model, whether the row reasons at all, whether
+ * reasoning can be switched off, and which effort values it accepts. That
+ * catalogue is the authority here (openrouterThinking.ts turns it into the
+ * picker's ladder and the field below), because the ladders genuinely differ:
+ * `meta/muse-spark-1.3` takes minimal…max, `x-ai/grok-4.20` takes only
+ * low/high/max, and sending a value a row did not publish is a 400.
+ *
+ * The family list below is the fallback for a model the catalogue has not
+ * described yet — a cold cache, or a refresh that could not reach the network.
+ * Llama-4 / prompt-guard / base-chat Llamas routed via Vertex answer "thinking
+ * is not supported by this model" when reasoning is set, so an unknown row
+ * still gets silence rather than a guess.
+ */
+function applyOpenRouterReasoning(
+  body: OpenAIChatRequest,
+  ctx: TransformContext,
+): void {
+  if (getOpenRouterReasoningMeta(body.model)) {
+    const reasoning = resolveOpenRouterReasoningField(body.model, {
+      enabled: ctx.isReasoning,
+      effort: ctx.reasoningEffort,
+    })
+    if (reasoning) body.reasoning = reasoning
+    // Saying nothing is a deliberate answer here — it leaves OpenRouter's own
+    // default_effort in charge — so any value a caller pre-set is cleared
+    // rather than shipped past the ladder that just rejected it.
+    else delete body.reasoning
+    return
+  }
+
+  if (ctx.isReasoning && ctx.reasoningEffort && openrouterModelSupportsReasoning(body.model)) {
+    body.reasoning = { effort: ctx.reasoningEffort }
+  }
 }
 
 function openrouterModelSupportsReasoning(model: string): boolean {
