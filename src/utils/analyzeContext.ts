@@ -985,15 +985,18 @@ export async function measureContextBaseline(
   getToolPermissionContext: () => Promise<ToolPermissionContext>,
   agentDefinitions: AgentDefinitionsResult,
 ): Promise<void> {
-  // Keyed by the model the session actually runs, which is what the status
-  // line looks the value up by; the two must agree or every lookup misses.
-  const runtimeModel = getRuntimeMainLoopModel({
-    permissionMode: (await getToolPermissionContext()).mode,
-    mainLoopModel: model,
-  })
-  if (!shouldRefreshContextBaseline(runtimeModel)) return
-  beginContextBaselineRefresh(runtimeModel)
+  // Everything is inside the try: this is called with `void` from a React
+  // effect, so anything escaping would surface as an unhandled rejection
+  // rather than a failed measurement.
   try {
+    // Keyed by the model the session actually runs, which is what the status
+    // line looks the value up by; the two must agree or every lookup misses.
+    const runtimeModel = getRuntimeMainLoopModel({
+      permissionMode: (await getToolPermissionContext()).mode,
+      mainLoopModel: model,
+    })
+    if (!shouldRefreshContextBaseline(runtimeModel)) return
+    beginContextBaselineRefresh(runtimeModel)
     const systemPrompt = await getSystemPrompt(tools, runtimeModel)
     const toolSchemas = await Promise.all(
       tools.map(tool =>

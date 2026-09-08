@@ -24,7 +24,17 @@ export function setCompactProgress(next: number | null): void {
       : Math.min(1, Math.max(0, next))
   if (clamped === fraction) return
   fraction = clamped
-  for (const listener of listeners) listener()
+  for (const listener of listeners) {
+    // A subscriber must never be able to break the run it is reporting on:
+    // this is called from inside the compaction stream loop, so a throwing
+    // listener would abort the summary itself.
+    try {
+      listener()
+    } catch {
+      // A progress indicator that cannot repaint is not worth a failed
+      // compaction.
+    }
+  }
 }
 
 /** Current progress, or null when no summary is streaming. */
