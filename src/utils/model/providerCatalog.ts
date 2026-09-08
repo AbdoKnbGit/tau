@@ -32,8 +32,7 @@ import {
 import { inferProviderLabelFromModelId } from './openrouterCatalog.js'
 import {
   VOICE_CONVERSATION_LABEL,
-  DEFAULT_LIVE_VOICE,
-  LIVE_VOICE_OPTIONS,
+  VOICE_CONVERSATION_MODELS,
   VOICE_CONVERSATION_PROVIDER,
 } from '../../voice/voiceConversation.js'
 import {
@@ -85,6 +84,9 @@ function normalizeProviderQueryToken(
     voice: VOICE_CONVERSATION_PROVIDER,
     voiceconversation: VOICE_CONVERSATION_PROVIDER,
     'voice-conversation': VOICE_CONVERSATION_PROVIDER,
+    geminivoice: VOICE_CONVERSATION_PROVIDER,
+    'gemini-voice': VOICE_CONVERSATION_PROVIDER,
+    gemini_voice: VOICE_CONVERSATION_PROVIDER,
     kimi: 'moonshot',
     moonshotai: 'moonshot',
     'moonshot-ai': 'moonshot',
@@ -235,10 +237,10 @@ export async function loadProviderModels(
   provider: BrowsableModelProvider,
 ): Promise<ModelInfo[]> {
   if (isVoiceConversationProvider(provider)) {
-    return LIVE_VOICE_OPTIONS.map(voice => ({
-      id: voice.value,
-      name: voice.label,
-      tags: voice.value === DEFAULT_LIVE_VOICE ? ['recommended'] : [],
+    return VOICE_CONVERSATION_MODELS.map(model => ({
+      id: model.id,
+      name: model.name,
+      tags: model.tags,
       provider: VOICE_CONVERSATION_LABEL,
     }))
   }
@@ -470,10 +472,10 @@ export async function loadProviderModelSections(
         id: 'voice-conversation',
         title: VOICE_CONVERSATION_LABEL,
         accent: 'cloud',
-        models: LIVE_VOICE_OPTIONS.map(voice => ({
-          id: voice.value,
-          name: voice.label,
-          tags: voice.value === DEFAULT_LIVE_VOICE ? ['recommended'] : [],
+        models: VOICE_CONVERSATION_MODELS.map(model => ({
+          id: model.id,
+          name: model.name,
+          tags: model.tags.filter(isModelTag),
           provider: VOICE_CONVERSATION_LABEL,
         })),
       },
