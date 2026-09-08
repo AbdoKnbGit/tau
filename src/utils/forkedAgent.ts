@@ -105,6 +105,13 @@ export type ForkedAgentParams = {
   maxTurns?: number
   /** Optional callback invoked for each message as it arrives (for streaming UI) */
   onMessage?: (message: Message) => void
+  /**
+   * Optional callback invoked with the character count of each streamed text
+   * delta. Stream events are consumed inside the loop and never reach
+   * `onMessage`, so this is the only way a caller can observe generation
+   * progress on a forked run. Purely observational — it cannot alter the run.
+   */
+  onTextDelta?: (characters: number) => void
   /** Skip sidechain transcript recording (e.g., for ephemeral work like speculation) */
   skipTranscript?: boolean
   /** Skip writing new prompt cache entries on the last message. For
@@ -501,6 +508,7 @@ export async function runForkedAgent({
   maxOutputTokens,
   maxTurns,
   onMessage,
+  onTextDelta,
   skipTranscript,
   skipCacheWrite,
 }: ForkedAgentParams): Promise<ForkedAgentResult> {
@@ -568,6 +576,14 @@ export async function runForkedAgent({
         ) {
           const turnUsage = updateUsage({ ...EMPTY_USAGE }, message.event.usage)
           totalUsage = accumulateUsage(totalUsage, turnUsage)
+        }
+        if (
+          onTextDelta &&
+          'event' in message &&
+          message.event?.type === 'content_block_delta' &&
+          message.event.delta?.type === 'text_delta'
+        ) {
+          onTextDelta(message.event.delta.text.length)
         }
         continue
       }

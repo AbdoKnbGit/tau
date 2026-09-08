@@ -1180,6 +1180,29 @@ async function streamCompactSummary({
       )
     : undefined
 
+  // Progress denominator, shared by both paths so the bar paces identically
+  // whether or not cache sharing is in play. ~4 characters per token is the
+  // standard rough conversion and only needs to be good enough to pace a bar.
+  const summaryBudgetChars =
+    Math.min(
+      COMPACT_MAX_OUTPUT_TOKENS,
+      getMaxOutputTokensForModel(context.options.mainLoopModel),
+    ) * 4
+  let summaryCharacters = 0
+  let lastReportedProgressBucket = -1
+  // Reported only when the whole-percent bucket changes, so a long summary
+  // costs a handful of UI updates rather than one per delta.
+  const reportSummaryProgress = (characters: number): void => {
+    summaryCharacters += characters
+    const fraction = Math.min(1, summaryCharacters / summaryBudgetChars)
+    const bucket = Math.floor(fraction * 100)
+    if (bucket > lastReportedProgressBucket) {
+      lastReportedProgressBucket = bucket
+      setCompactProgress(fraction)
+      context.onCompactProgress?.({ type: 'compact_progress', fraction })
+    }
+  }
+
   try {
     if (promptCacheSharingEnabled) {
       try {
@@ -1202,6 +1225,7 @@ async function streamCompactSummary({
           // fork — same signal the streaming fallback uses at
           // `signal: context.abortController.signal` below.
           overrides: { abortController: context.abortController },
+          onTextDelta: reportSummaryProgress,
         })
         const assistantMsg = getLastAssistantMessage(result.messages)
         const assistantText = assistantMsg
@@ -1329,17 +1353,6 @@ async function streamCompactSummary({
           effortValue: appState.effortValue,
         },
       })
-      // Denominator for the progress indicator. The model's response budget is
-      // in tokens; ~4 characters per token is the standard rough conversion and
-      // only needs to be good enough to pace a progress bar.
-      const summaryBudgetChars =
-        Math.min(
-          COMPACT_MAX_OUTPUT_TOKENS,
-          getMaxOutputTokensForModel(context.options.mainLoopModel),
-        ) * 4
-      let summaryCharacters = 0
-      let lastReportedProgressBucket = -1
-
       const streamIter = streamingGen[Symbol.asyncIterator]()
       let next = await streamIter.next()
 
@@ -1364,19 +1377,7 @@ async function streamCompactSummary({
           const charactersStreamed = event.event.delta.text.length
           context.setResponseLength?.(length => length + charactersStreamed)
 
-          // Progress for the compaction indicator. The denominator is the
-          // response budget this request was actually issued with, so the
-          // fraction is measured against a real ceiling. Reported only when the
-          // whole-percent bucket changes, so a long summary costs a handful of
-          // UI updates rather than one per delta.
-          summaryCharacters += charactersStreamed
-          const fraction = Math.min(1, summaryCharacters / summaryBudgetChars)
-          const bucket = Math.floor(fraction * 100)
-          if (bucket > lastReportedProgressBucket) {
-            lastReportedProgressBucket = bucket
-            setCompactProgress(fraction)
-            context.onCompactProgress?.({ type: 'compact_progress', fraction })
-          }
+          reportSummaryProgress(charactersStreamed)
         }
 
         if (event.type === 'assistant') {
