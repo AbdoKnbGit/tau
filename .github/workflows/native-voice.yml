@@ -51,6 +51,8 @@ jobs:
         run: node scripts/build-native-voice.mjs
       - name: Test the addon on Tau's minimum Node version
         run: node --test native/tau-voice/test/addon.test.mjs
+      - name: Test voice install without compiler executables
+        run: node --test test/native-voice-postinstall.test.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: native-voice-linux-${{ matrix.arch }}
@@ -100,6 +102,8 @@ jobs:
         run: node scripts/build-native-voice.mjs
       - name: Test the addon on Tau's minimum Node version
         run: node --test native/tau-voice/test/addon.test.mjs
+      - name: Test voice install without compiler executables
+        run: node --test test/native-voice-postinstall.test.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: native-voice-${{ matrix.platform }}-${{ matrix.arch }}
