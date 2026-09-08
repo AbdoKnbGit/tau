@@ -48,7 +48,8 @@ test('changed binaries stage to a different cache so an update does not overwrit
   assert.deepEqual(readFileSync(after), data)
 })
 test('unsupported CPU/libc gets an explicit error instead of a compiler install', () => {
-  assert.throws(() => nativeVoiceTarget('linux', 'x64', undefined), /musl/)
+  // Explicit absence: undefined would invoke the default host libc detector.
+  assert.throws(() => nativeVoiceTarget('linux', 'x64', ''), /musl/)
   assert.throws(() => nativeVoiceTarget('win32', 'ia32'), /does not yet support/)
   assert.equal(nativeVoiceTarget('linux', 'arm64', '2.28'), 'linux-arm64')
 })
