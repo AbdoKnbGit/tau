@@ -35,7 +35,21 @@ import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 
 // Returns the context window size minus the max output tokens for the model
-export function getEffectiveContextWindowSize(model: string): number {
+export function getEffectiveContextWindowSize(
+  model: string,
+  options?: {
+    /**
+     * Ignore the configured context ceiling.
+     *
+     * The ceiling is a cost preference, not a capability limit. Callers that
+     * ask "will the provider reject this request" must reason about the real
+     * window, or a user who caps a 1M model at 200K gets a prompt-too-long
+     * refusal for a request the model would have accepted. Only the compaction
+     * trigger should honour the ceiling.
+     */
+    ignoreConfiguredCap?: boolean
+  },
+): number {
   const reservedTokensForSummary = Math.min(
     getMaxOutputTokensForModel(model),
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
@@ -53,7 +67,7 @@ export function getEffectiveContextWindowSize(model: string): number {
     if (!isNaN(parsed) && parsed > 0) {
       contextWindow = Math.min(contextWindow, parsed)
     }
-  } else {
+  } else if (!options?.ignoreConfiguredCap) {
     const configuredCap = getConfiguredWindowCap()
     if (configuredCap !== undefined) {
       contextWindow = Math.min(contextWindow, configuredCap)
@@ -212,7 +226,13 @@ export function calculateTokenWarningState(
   const isAboveAutoCompactThreshold =
     isAutoCompactEnabled() && tokenUsage >= autoCompactThreshold
 
-  const actualContextWindow = getEffectiveContextWindowSize(model)
+  // Deliberately ignores the configured ceiling: blocking answers "would the
+  // provider reject this", which is a property of the model, not of a cost
+  // preference. Compaction still fires at the capped threshold above, so a
+  // ceiling shrinks context by summarizing rather than by refusing turns.
+  const actualContextWindow = getEffectiveContextWindowSize(model, {
+    ignoreConfiguredCap: true,
+  })
   const defaultBlockingLimit =
     actualContextWindow - MANUAL_COMPACT_BUFFER_TOKENS
 

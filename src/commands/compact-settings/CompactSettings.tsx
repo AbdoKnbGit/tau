@@ -23,13 +23,13 @@ import { getMainLoopModel } from '../../utils/model/model.js'
 import { getTheme } from '../../utils/theme.js'
 
 /**
- * `undefined` occupies the last slot of each track and means "auto". It sits
- * on the right because on both controls auto is the most permissive end:
- * compact as late as possible, and no ceiling.
+ * `undefined` occupies the last slot of each track and means "auto". It sits on
+ * the right because on both controls auto is the most permissive end: compact
+ * as late as possible, and no ceiling.
  */
-type Choice<T> = T | undefined
+type Choice = number | undefined
 
-const THRESHOLD_CHOICES: Choice<number>[] = [
+const THRESHOLD_CHOICES: Choice[] = [
   ...Array.from(
     {
       length:
@@ -43,60 +43,67 @@ const THRESHOLD_CHOICES: Choice<number>[] = [
   undefined,
 ]
 
-const CAP_CHOICES: Choice<number>[] = [...COMPACT_WINDOW_CAP_CHOICES, undefined]
+const CAP_CHOICES: Choice[] = [...COMPACT_WINDOW_CAP_CHOICES, undefined]
 
-const TRACK_WIDTH = 46
+const TRACK_WIDTH = 40
 
-function indexOfChoice<T>(choices: Choice<T>[], value: Choice<T>): number {
+function indexOfChoice(choices: Choice[], value: Choice): number {
   const found = choices.indexOf(value)
   return found === -1 ? choices.length - 1 : found
 }
 
-/** Filled/partial/empty track showing where the cursor sits on the range. */
-function Track({
+/**
+ * One control: its current value, a filled track, and the track's endpoints.
+ *
+ * Endpoints label the track rather than a tick under every step. Sixteen ticks
+ * do not fit in a terminal-width track — padding each to the two columns that
+ * remain collapses them into an unreadable run of digits — so the selected
+ * value is shown in the header instead, which also covers the steps that would
+ * never have had a tick of their own.
+ */
+function Control({
+  label,
+  value,
   position,
   total,
-  color,
-  dim,
+  minLabel,
+  maxLabel,
+  focused,
+  theme,
 }: {
+  label: string
+  value: string
   position: number
   total: number
-  color: string
-  dim: string
+  minLabel: string
+  maxLabel: string
+  focused: boolean
+  theme: ReturnType<typeof getTheme>
 }): React.ReactNode {
-  const filled = Math.max(
-    1,
-    Math.round(((position + 1) / total) * TRACK_WIDTH),
-  )
+  const filled = Math.max(1, Math.round(((position + 1) / total) * TRACK_WIDTH))
+  const accent = focused ? theme.suggestion : theme.subtle
   return (
-    <Text>
-      <Text color={color}>{'▉'.repeat(filled)}</Text>
-      <Text color={dim}>{'░'.repeat(Math.max(0, TRACK_WIDTH - filled))}</Text>
-    </Text>
-  )
-}
-
-/** Evenly spaced tick labels under a track, with the active one highlighted. */
-function Ticks({
-  labels,
-  active,
-  color,
-  dim,
-}: {
-  labels: string[]
-  active: number
-  color: string
-  dim: string
-}): React.ReactNode {
-  const slot = Math.max(1, Math.floor(TRACK_WIDTH / labels.length))
-  return (
-    <Text>
-      {labels.map((label, i) => (
-        <Text key={label} color={i === active ? color : dim} bold={i === active}>
-          {label.padEnd(slot).slice(0, Math.max(slot, label.length + 1))}
+    <Box flexDirection="column">
+      <Text>
+        <Text bold color={focused ? theme.suggestion : undefined}>
+          {focused ? '❯ ' : '  '}
+          {label}
         </Text>
-      ))}
-    </Text>
+        <Text bold color={accent}>
+          {'   '}
+          {value}
+        </Text>
+      </Text>
+      <Text>
+        {'  '}
+        <Text color={theme.inactive}>{minLabel.padEnd(6)}</Text>
+        <Text color={accent}>{'▉'.repeat(filled)}</Text>
+        <Text color={theme.inactive}>
+          {'░'.repeat(Math.max(0, TRACK_WIDTH - filled))}
+        </Text>
+        <Text color={theme.inactive}> {maxLabel}</Text>
+      </Text>
+    </Box>
   )
 }
 
@@ -156,99 +163,85 @@ export function CompactSettings({
     }
   })
 
-  const autoOff = !isAutoCompactEnabled()
+  const capIsInert = cap !== undefined && cap >= preview.contextWindow
 
   return (
     <Box flexDirection="column" gap={1} paddingX={1}>
       <Box flexDirection="column">
         <Text bold>Compaction settings</Text>
-        <Text color={theme.subtle}>
+        <Text color={theme.subtle} wrap="wrap">
           When context fills up, older history is summarized so the session can
-          continue. These control when that happens — both scale to whatever
-          model you are on.
+          continue. Both controls are relative to the active model, so one
+          choice behaves sensibly on any window size.
+        </Text>
+        <Text color={theme.subtle}>
+          {model} · {formatTokenCount(preview.contextWindow)} context window
         </Text>
       </Box>
 
-      {autoOff && (
-        <Text color={theme.warning}>
-          Auto-compaction is currently off, so these only take effect once it is
+      {!isAutoCompactEnabled() && (
+        <Text color={theme.warning} wrap="wrap">
+          Auto-compaction is off, so these take effect only once it is
           re-enabled. Tool-result pruning keeps running either way.
         </Text>
       )}
 
-      {/* ── Threshold ─────────────────────────────────────────────── */}
       <Box flexDirection="column">
-        <Box justifyContent="space-between">
-          <Text bold color={row === 0 ? theme.suggestion : undefined}>
-            {row === 0 ? '❯ ' : '  '}Compact at
-          </Text>
-          <Text color={theme.subtle}>
-            {model} · {formatTokenCount(preview.contextWindow)} window
-          </Text>
-        </Box>
+        <Control
+          label="Compact at"
+          value={percent === undefined ? 'auto' : `${percent}%`}
+          position={thresholdIndex}
+          total={THRESHOLD_CHOICES.length}
+          minLabel={`${COMPACT_THRESHOLD_MIN_PERCENT}%`}
+          maxLabel="auto"
+          focused={row === 0}
+          theme={theme}
+        />
         <Box paddingLeft={2} flexDirection="column">
-          <Track
-            position={thresholdIndex}
-            total={THRESHOLD_CHOICES.length}
-            color={row === 0 ? theme.suggestion : theme.subtle}
-            dim={theme.inactive}
-          />
-          <Ticks
-            labels={THRESHOLD_CHOICES.map(c =>
-              c === undefined ? 'Auto' : `${c}`,
-            )}
-            active={thresholdIndex}
-            color={theme.suggestion}
-            dim={theme.inactive}
-          />
-          <Text color={theme.subtle}>
+          <Text color={theme.subtle} wrap="wrap">
             {describeThresholdPercent(percent)}
           </Text>
-          <Text>
+          <Text wrap="wrap">
             <Text color={theme.success}>
               Fires at {preview.threshold.toLocaleString()} tokens
             </Text>
             <Text color={theme.subtle}>
               {' '}
-              ({preview.thresholdShareOfWindow.toFixed(0)}% of the window) ·{' '}
-              {preview.headroomTokens.toLocaleString()} left for the summary and
-              your next turn
+              ({preview.thresholdShareOfWindow.toFixed(0)}% of the window),
+              leaving {preview.headroomTokens.toLocaleString()} — of which{' '}
+              {preview.reservedTokens.toLocaleString()} is held back for the
+              summary itself.
             </Text>
           </Text>
           {preview.clampedByReserve && (
-            <Text color={theme.warning}>
-              Capped by the {preview.reservedTokens.toLocaleString()}-token
-              reserve compaction needs to run — a higher percentage cannot go
-              further on this window.
+            <Text color={theme.warning} wrap="wrap">
+              Capped: a higher percentage cannot go further on this window
+              without eating the reserve compaction needs to run.
             </Text>
           )}
         </Box>
       </Box>
 
-      {/* ── Context cap ───────────────────────────────────────────── */}
       <Box flexDirection="column">
-        <Text bold color={row === 1 ? theme.suggestion : undefined}>
-          {row === 1 ? '❯ ' : '  '}Context cap
-        </Text>
+        <Control
+          label="Context cap"
+          value={cap === undefined ? 'auto' : formatTokenCount(cap)}
+          position={capIndex}
+          total={CAP_CHOICES.length}
+          minLabel={formatTokenCount(COMPACT_WINDOW_CAP_CHOICES[0] ?? 100_000)}
+          maxLabel="auto"
+          focused={row === 1}
+          theme={theme}
+        />
         <Box paddingLeft={2} flexDirection="column">
-          <Track
-            position={capIndex}
-            total={CAP_CHOICES.length}
-            color={row === 1 ? theme.suggestion : theme.subtle}
-            dim={theme.inactive}
-          />
-          <Ticks
-            labels={CAP_CHOICES.map(c =>
-              c === undefined ? 'Auto' : formatTokenCount(c),
-            )}
-            active={capIndex}
-            color={theme.suggestion}
-            dim={theme.inactive}
-          />
-          <Text color={theme.subtle}>{describeWindowCap(cap)}</Text>
-          {cap !== undefined && cap >= preview.contextWindow && (
-            <Text color={theme.subtle}>
-              No effect here — this model&apos;s window is already smaller.
+          <Text color={theme.subtle} wrap="wrap">
+            {describeWindowCap(cap)}
+          </Text>
+          {capIsInert && (
+            <Text color={theme.warning} wrap="wrap">
+              No effect on {model}: its window is already{' '}
+              {formatTokenCount(preview.contextWindow)}, smaller than this cap.
+              It applies only on larger models.
             </Text>
           )}
         </Box>
