@@ -63,6 +63,13 @@ import { buildEffectiveSystemPrompt } from './systemPrompt.js'
 import type { Theme } from './theme.js'
 import { getCurrentUsage } from './tokens.js'
 
+import {
+  beginContextBaselineRefresh,
+  endContextBaselineRefresh,
+  setContextBaselineTokens,
+  shouldRefreshContextBaseline,
+} from './contextBaseline.js'
+
 const RESERVED_CATEGORY_NAME = 'Autocompact buffer'
 const MANUAL_COMPACT_BUFFER_NAME = 'Compact buffer'
 
@@ -951,6 +958,46 @@ async function approximateMessageTokens(
 
   breakdown.totalTokens = approximateMessageTokens
   return breakdown
+}
+
+/**
+ * Measure and cache the context a session carries before any conversation.
+ *
+ * Sums every analysis category except the ones that are not initial context:
+ * the conversation itself, unused space, and the compaction reserve. What
+ * remains is the system prompt, tool definitions, MCP tools, custom agents,
+ * skills, memory files and slash commands — the tokens a session is already
+ * holding the moment it opens.
+ *
+ * Best-effort: any failure leaves the previous measurement (or none) in place,
+ * so the status line degrades to the behaviour it had before rather than to an
+ * error.
+ */
+export async function measureContextBaseline(
+  ...args: Parameters<typeof analyzeContextUsage>
+): Promise<void> {
+  const model = args[1]
+  if (!shouldRefreshContextBaseline(model)) return
+  beginContextBaselineRefresh(model)
+  try {
+    const data = await analyzeContextUsage(...args)
+    const tokens = data.categories
+      .filter(
+        category =>
+          category.name !== 'Messages' &&
+          category.name !== 'Free space' &&
+          category.name !== RESERVED_CATEGORY_NAME &&
+          category.name !== MANUAL_COMPACT_BUFFER_NAME,
+      )
+      .reduce((total, category) => total + category.tokens, 0)
+    setContextBaselineTokens(model, tokens)
+  } catch (error) {
+    logForDebugging(
+      `[contextBaseline] measurement failed: ${error instanceof Error ? error.message : 'unknown'}`,
+    )
+  } finally {
+    endContextBaselineRefresh(model)
+  }
 }
 
 export async function analyzeContextUsage(

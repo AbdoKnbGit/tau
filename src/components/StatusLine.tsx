@@ -22,6 +22,8 @@ import type { StatusLineCommandInput } from '../types/statusLine.js';
 import type { VimMode } from '../types/textInputTypes.js';
 import { checkHasTrustDialogAccepted } from '../utils/config.js';
 import { calculateContextPercentages, getContextWindowForModel } from '../utils/context.js';
+import { getContextBaselineTokens } from '../utils/contextBaseline.js';
+import { roughTokenCountEstimationForMessages } from '../services/tokenEstimation.js';
 import { getCwd } from '../utils/cwd.js';
 import { logForDebugging } from '../utils/debug.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
@@ -95,6 +97,31 @@ export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
 export function sessionStatusBarShouldDisplay(settings: ReadonlySettings): boolean {
   return resolveDisplay(settings).builtin;
 }
+
+/**
+ * Report the session's real initial context while no API usage exists yet.
+ *
+ * A floor, never a ceiling: it can only raise a number toward the truth, and
+ * it steps aside entirely as soon as the provider reports anything, so a
+ * measured value never overrides a real one. Returns the input unchanged when
+ * no baseline has been measured, which keeps the previous behaviour intact.
+ */
+function withInitialContextFloor(
+  usage: ReturnType<typeof getCurrentUsage>,
+  baselineTokens: number,
+  messages: Message[],
+): ReturnType<typeof getCurrentUsage> {
+  if (baselineTokens <= 0) return usage;
+  const reported = usage ? usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens : 0;
+  if (reported > 0) return usage;
+  return {
+    input_tokens: baselineTokens + roughTokenCountEstimationForMessages(messages),
+    output_tokens: usage?.output_tokens ?? 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0
+  };
+}
+
 function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, vimMode?: VimMode): StatusLineCommandInput {
   const agentType = getMainThreadAgentType();
   const worktreeSession = getCurrentWorktreeSession();
@@ -104,8 +131,19 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
     exceeds200kTokens
   });
   const outputStyleName = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME;
-  const currentUsage = getCurrentUsage(messages);
+  const rawUsage = getCurrentUsage(messages);
   const contextWindowSize = getContextWindowForModel(runtimeModel, getSdkBetas());
+  // Before the first response there is no API usage to report, so the bar used
+  // to read 0/200K even though the session already holds its system prompt,
+  // tools, MCP servers, agents, skills and memory. Substitute the measured
+  // initial context so a fresh session shows what it is actually carrying.
+  // Only applied when there is nothing real to report yet — once the provider
+  // has answered, its numbers are ground truth and are left untouched.
+  const currentUsage = withInitialContextFloor(
+    rawUsage,
+    getContextBaselineTokens(runtimeModel),
+    messages,
+  );
   const contextPercentages = calculateContextPercentages(currentUsage, contextWindowSize);
   const sessionId = getSessionId();
   const sessionName = getCurrentSessionTitle(sessionId);
