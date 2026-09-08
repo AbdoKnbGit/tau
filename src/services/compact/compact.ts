@@ -112,6 +112,7 @@ import {
   roughTokenCountEstimation,
   roughTokenCountEstimationForMessages,
 } from '../tokenEstimation.js'
+import { setCompactProgress } from './compactProgress.js'
 import { groupMessagesByApiRound } from './grouping.js'
 import {
   getCompactPrompt,
@@ -426,6 +427,7 @@ export async function compactConversation(
     // Show requesting mode with up arrow and custom message
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
+    setCompactProgress(null)
     context.onCompactProgress?.({ type: 'compact_start' })
 
     // 3P default: true — forked-agent path reuses main conversation's prompt cache.
@@ -757,6 +759,7 @@ export async function compactConversation(
   } finally {
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
+    setCompactProgress(null)
     context.onCompactProgress?.({ type: 'compact_end' })
     context.setSDKStatus?.(null)
   }
@@ -835,6 +838,7 @@ export async function partialCompactConversation(
 
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
+    setCompactProgress(null)
     context.onCompactProgress?.({ type: 'compact_start' })
 
     const compactPrompt = getPartialCompactPrompt(customInstructions, direction)
@@ -1100,6 +1104,7 @@ export async function partialCompactConversation(
   } finally {
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
+    setCompactProgress(null)
     context.onCompactProgress?.({ type: 'compact_end' })
     context.setSDKStatus?.(null)
   }
@@ -1369,6 +1374,7 @@ async function streamCompactSummary({
           const bucket = Math.floor(fraction * 100)
           if (bucket > lastReportedProgressBucket) {
             lastReportedProgressBucket = bucket
+            setCompactProgress(fraction)
             context.onCompactProgress?.({ type: 'compact_progress', fraction })
           }
         }

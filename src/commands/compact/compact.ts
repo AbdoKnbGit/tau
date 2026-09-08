@@ -15,6 +15,7 @@ import {
 } from '../../services/compact/compact.js'
 import { suppressCompactWarning } from '../../services/compact/compactWarningState.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
+import { setCompactProgress } from '../../services/compact/compactProgress.js'
 import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
 import { trySessionMemoryCompaction } from '../../services/compact/sessionMemoryCompact.js'
 import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
@@ -170,6 +171,7 @@ async function compactViaReactive(
 
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
+    setCompactProgress(null)
     context.onCompactProgress?.({ type: 'compact_start' })
 
     const outcome = await reactive.reactiveCompactOnPromptTooLong(
@@ -222,6 +224,7 @@ async function compactViaReactive(
   } finally {
     context.setStreamMode?.('requesting')
     context.setResponseLength?.(() => 0)
+    setCompactProgress(null)
     context.onCompactProgress?.({ type: 'compact_end' })
     context.setSDKStatus?.(null)
   }

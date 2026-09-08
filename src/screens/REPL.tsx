@@ -209,22 +209,6 @@ import { useInboxPoller } from '../hooks/useInboxPoller.js';
 // Dead code elimination: conditional import for loop mode
 /* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/index.js') : null;
-/** Cells in the compaction progress bar. Narrow enough to survive a small terminal. */
-const COMPACT_PROGRESS_CELLS = 24;
-
-/**
- * Progress line shown while a compaction summary streams, e.g.
- * `Compacting conversation ▰▰▰▰▱▱▱▱ 18%`.
- *
- * The fraction is characters received over the response budget the request was
- * issued with, so it tracks real work rather than elapsed time.
- */
-function renderCompactProgress(fraction: number): string {
-  const clamped = Math.min(1, Math.max(0, fraction));
-  const filled = Math.round(clamped * COMPACT_PROGRESS_CELLS);
-  return `Compacting conversation ${'▰'.repeat(filled)}${'▱'.repeat(COMPACT_PROGRESS_CELLS - filled)} ${Math.round(clamped * 100)}%`;
-}
-
 const PROACTIVE_NO_OP_SUBSCRIBE = (_cb: () => void) => () => {};
 const PROACTIVE_FALSE = () => false;
 const SUGGEST_BG_PR_NOOP = (_p: string, _n: string): boolean => false;
@@ -2661,9 +2645,6 @@ export function REPL({
             break;
           case 'compact_start':
             setSpinnerMessage('Compacting conversation');
-            break;
-          case 'compact_progress':
-            setSpinnerMessage(renderCompactProgress(event.fraction));
             break;
           case 'compact_end':
             setSpinnerMessage(null);

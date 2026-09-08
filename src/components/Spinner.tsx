@@ -7,6 +7,7 @@ import { computeGlimmerIndex, computeShimmerSegments, SHIMMER_INTERVAL_MS } from
 import { feature } from 'bun:bundle';
 import { getKairosActive, getUserMsgOptIn } from '../bootstrap/state.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
+import { getCompactProgress, subscribeCompactProgress } from '../services/compact/compactProgress.js';
 import { isEnvTruthy } from '../utils/envUtils.js';
 import { count } from '../utils/array.js';
 import sample from 'lodash-es/sample.js';
@@ -79,6 +80,34 @@ export function SpinnerWithVerb(props: Props): React.ReactNode {
   }
   return <SpinnerWithVerbInner {...props} />;
 }
+
+/** Cells in the compaction progress bar, before terminal-width clamping. */
+const COMPACT_BAR_CELLS = 40;
+
+/**
+ * Progress row shown while a compaction summary streams.
+ *
+ * Owns its own subscription rather than taking a prop, so the surrounding
+ * spinner — which is React Compiler output with fixed memo slots — gains no
+ * hook. Returns null whenever no summary is streaming, which is every spinner
+ * state except compaction, so the row costs nothing the rest of the time.
+ */
+function CompactProgressRow({
+  columns
+}: {
+  columns: number;
+}): React.ReactNode {
+  const fraction = React.useSyncExternalStore(subscribeCompactProgress, getCompactProgress, getCompactProgress);
+  if (fraction === null) return null;
+  const cells = Math.max(8, Math.min(COMPACT_BAR_CELLS, columns - 12));
+  const filled = Math.round(Math.min(1, Math.max(0, fraction)) * cells);
+  return <Box paddingLeft={2}>
+      <Text dimColor={true}>
+        {'▰'.repeat(filled)}{'▱'.repeat(cells - filled)} {Math.round(fraction * 100)}%
+      </Text>
+    </Box>;
+}
+
 function SpinnerWithVerbInner({
   mode,
   loadingStartTimeRef,
@@ -279,6 +308,7 @@ function SpinnerWithVerbInner({
   }
   return <Box flexDirection="column" width="100%" alignItems="flex-start">
       <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix={effortSuffix} />
+      <CompactProgressRow columns={columns} />
       {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} /> : showExpandedTodos && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
           <MessageResponse>
             <TaskListV2 tasks={tasksV2} />
