@@ -89,6 +89,7 @@ import { lxdReasoningContentReplayRequired } from '../../utils/model/lxdThinking
 import { mimoReasoningContentReplayRequired } from '../../utils/model/mimoThinking.js'
 import { alibabaReasoningContentReplayRequired } from '../../utils/model/alibabaThinking.js'
 import { recordProviderModelContextWindows } from '../../utils/model/contextWindows.js'
+import type { APIProvider } from '../../utils/model/providers.js'
 import { providerUsesStableRequestSession } from '../../services/api/cacheAffinity.js'
 import {
   createRetryableConnectionError,
@@ -1214,7 +1215,20 @@ export class OpenAICompatLane implements Lane {
       // still need a fallback when `/models` is unavailable.
       const fixed = transformer.staticCatalog?.() ?? []
       const preferLiveCatalog = transformer.preferLiveModelCatalog?.() ?? false
-      if (!preferLiveCatalog && fixed.length > 0) return fixed
+      if (!preferLiveCatalog && fixed.length > 0) {
+        // The curated list is what the picker gets, unchanged. But when it
+        // carries no window for some of its models, learn those out-of-band
+        // rather than letting them fall through to the 200K default forever.
+        if (
+          fixed.some(
+            model =>
+              !(typeof model.contextWindow === 'number' && model.contextWindow > 0),
+          )
+        ) {
+          learnContextWindowsFromUpstream(providerName, cfg, transformer)
+        }
+        return fixed
+      }
       try {
         const url = `${normalizeBaseUrl(cfg.baseUrl)}/models`
         const headers: Record<string, string> = { 'Accept': 'application/json' }
@@ -1301,6 +1315,76 @@ function isOpencodeAnonymousModelId(id: string): boolean {
     || normalized === 'big-pickle'
     || normalized === 'gpt-5-nano'
     || normalized === 'gpt-5.4-nano'
+}
+
+/** Providers whose upstream catalog has already been consulted for metadata. */
+const contextWindowLearnAttempted = new Set<string>()
+
+/**
+ * Learn context windows for providers whose curated catalog suppresses
+ * `/models`.
+ *
+ * A `staticCatalog()` decides what the picker *shows* — curated ordering, a
+ * deliberate subset, junk hidden. It is not a statement about model metadata,
+ * and most of these catalogs omit `contextWindow` entirely. Because returning
+ * the curated list short-circuits the `/models` request, nothing downstream
+ * ever sees a window for those models, so every one of them resolves to
+ * MODEL_CONTEXT_WINDOW_DEFAULT — the number auto-compact then divides by.
+ *
+ * Fetching the upstream catalog purely for its metadata separates the two
+ * concerns: the displayed list stays byte-identical, while the context-window
+ * store learns real sizes, including for models the provider adds later. That
+ * is what keeps this from becoming another hand-maintained table.
+ *
+ * Best-effort by construction: at most one attempt per provider per process,
+ * a bounded timeout, every failure silent, and no effect on the caller's
+ * return value.
+ */
+function learnContextWindowsFromUpstream(
+  providerName: string,
+  cfg: { apiKey: string; baseUrl: string },
+  transformer: ReturnType<typeof getTransformer>,
+): void {
+  if (contextWindowLearnAttempted.has(providerName)) return
+  contextWindowLearnAttempted.add(providerName)
+
+  void (async () => {
+    try {
+      const headers: Record<string, string> = { Accept: 'application/json' }
+      if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
+      // Same provider-specific auth/catalog headers the live path builds, but
+      // keep Accept as JSON rather than the streaming default.
+      for (const [k, v] of Object.entries(transformer.buildHeaders?.(cfg.apiKey) ?? {})) {
+        if (k.toLowerCase() === 'accept') continue
+        headers[k] = v
+      }
+      const resp = await fetch(`${normalizeBaseUrl(cfg.baseUrl)}/models`, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!resp.ok) return
+
+      const data = await resp.json() as {
+        data?: CompatCatalogModel[]
+        result?: CompatCatalogModel[]
+      }
+      const models = (data.data ?? data.result ?? [])
+        .map(m => toCompatCatalogModel(providerName, m))
+        .filter(
+          (model): model is ModelInfo =>
+            model !== null &&
+            typeof model.contextWindow === 'number' &&
+            model.contextWindow > 0,
+        )
+      if (models.length > 0) {
+        recordProviderModelContextWindows(providerName as APIProvider, models)
+      }
+    } catch {
+      // Metadata-only: a provider without /models, an expired key, or an
+      // offline box just leaves the existing resolution in place.
+    }
+  })()
 }
 
 function toCompatCatalogModel(

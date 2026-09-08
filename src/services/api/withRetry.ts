@@ -11,7 +11,8 @@ import { isAwsCredentialsProviderError } from 'src/utils/aws.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from 'src/utils/log.js'
 import { createSystemAPIErrorMessage } from 'src/utils/messages.js'
-import { getAPIProviderForStatsig } from 'src/utils/model/providers.js'
+import { getAPIProvider, getAPIProviderForStatsig } from 'src/utils/model/providers.js'
+import { recordProviderModelContextWindows } from 'src/utils/model/contextWindows.js'
 import {
   clearApiKeyHelperCache,
   clearAwsCredentialsCache,
@@ -470,6 +471,18 @@ export async function* withRetry<T>(
         const overflowData = parseMaxTokensContextOverflowError(error)
         if (overflowData) {
           const { inputTokens, contextLimit } = overflowData
+
+          // The provider just named its own limit — a more authoritative window
+          // than any catalogue or table. Record it before the early return
+          // below, so even an attempt we cannot salvage leaves the next
+          // threshold check sizing against the real number.
+          recordProviderModelContextWindows(getAPIProvider(), [
+            {
+              id: retryContext.model,
+              name: retryContext.model,
+              contextWindow: contextLimit,
+            },
+          ])
 
           const safetyBuffer = 1000
           const availableContext = Math.max(

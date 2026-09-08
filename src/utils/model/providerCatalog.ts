@@ -15,9 +15,13 @@ import {
 import {
   SELECTABLE_PROVIDERS,
   type APIProvider,
+  getAPIProvider,
   PROVIDER_DISPLAY_NAMES,
 } from './providers.js'
 import { recordProviderModelContextWindows } from './contextWindows.js'
+import { getStoredCatalogAgeMs } from './contextWindowStore.js'
+import { logForDebugging } from '../debug.js'
+import { isEssentialTrafficOnly } from '../privacyLevel.js'
 import { modelSupportsReasoning } from './openaiReasoning.js'
 import {
   CURSOR_ORDERED_MODEL_GROUPS,
@@ -28,7 +32,8 @@ import {
 import { inferProviderLabelFromModelId } from './openrouterCatalog.js'
 import {
   VOICE_CONVERSATION_LABEL,
-  VOICE_CONVERSATION_MODELS,
+  DEFAULT_LIVE_VOICE,
+  LIVE_VOICE_OPTIONS,
   VOICE_CONVERSATION_PROVIDER,
 } from '../../voice/voiceConversation.js'
 import {
@@ -80,9 +85,6 @@ function normalizeProviderQueryToken(
     voice: VOICE_CONVERSATION_PROVIDER,
     voiceconversation: VOICE_CONVERSATION_PROVIDER,
     'voice-conversation': VOICE_CONVERSATION_PROVIDER,
-    geminivoice: VOICE_CONVERSATION_PROVIDER,
-    'gemini-voice': VOICE_CONVERSATION_PROVIDER,
-    gemini_voice: VOICE_CONVERSATION_PROVIDER,
     kimi: 'moonshot',
     moonshotai: 'moonshot',
     'moonshot-ai': 'moonshot',
@@ -190,14 +192,53 @@ export function parseProviderModelQuery(
   return { provider: fallbackProvider, query: args }
 }
 
+/** How long a persisted catalogue is trusted before a background re-fetch. */
+const CONTEXT_WINDOW_REFRESH_TTL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Prime the persistent context-window store for the active provider.
+ *
+ * `recordProviderModelContextWindows` only ever ran from the /models picker,
+ * so a user who never opened it resolved every model through the static tables
+ * — and anything missing from them silently became
+ * MODEL_CONTEXT_WINDOW_DEFAULT. Fetching the catalogue once in the background
+ * gives the store the provider's own numbers, which then survive into later
+ * sessions, so new models get a correct window without a table edit.
+ *
+ * Fire-and-forget from startup: never awaited, never throws, and skipped
+ * entirely while a recent catalogue is already on disk, so the steady state
+ * costs no network at all.
+ */
+export async function refreshProviderContextWindows(): Promise<void> {
+  try {
+    if (isEssentialTrafficOnly()) {
+      return
+    }
+    const provider = getAPIProvider()
+    // The picker's own provider set — the one `loadProviderModels` is built for.
+    if (!SELECTABLE_PROVIDERS.includes(provider)) {
+      return
+    }
+    const ageMs = getStoredCatalogAgeMs(provider)
+    if (ageMs !== undefined && ageMs < CONTEXT_WINDOW_REFRESH_TTL_MS) {
+      return
+    }
+    await loadProviderModels(provider)
+  } catch (error) {
+    logForDebugging(
+      `[contextWindowStore] catalog refresh failed: ${error instanceof Error ? error.message : 'unknown'}`,
+    )
+  }
+}
+
 export async function loadProviderModels(
   provider: BrowsableModelProvider,
 ): Promise<ModelInfo[]> {
   if (isVoiceConversationProvider(provider)) {
-    return VOICE_CONVERSATION_MODELS.map(model => ({
-      id: model.id,
-      name: model.name,
-      tags: model.tags,
+    return LIVE_VOICE_OPTIONS.map(voice => ({
+      id: voice.value,
+      name: voice.label,
+      tags: voice.value === DEFAULT_LIVE_VOICE ? ['recommended'] : [],
       provider: VOICE_CONVERSATION_LABEL,
     }))
   }
@@ -429,10 +470,10 @@ export async function loadProviderModelSections(
         id: 'voice-conversation',
         title: VOICE_CONVERSATION_LABEL,
         accent: 'cloud',
-        models: VOICE_CONVERSATION_MODELS.map(model => ({
-          id: model.id,
-          name: model.name,
-          tags: model.tags.filter(isModelTag),
+        models: LIVE_VOICE_OPTIONS.map(voice => ({
+          id: voice.value,
+          name: voice.label,
+          tags: voice.value === DEFAULT_LIVE_VOICE ? ['recommended'] : [],
           provider: VOICE_CONVERSATION_LABEL,
         })),
       },

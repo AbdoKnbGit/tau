@@ -1,6 +1,10 @@
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import type { APIProvider } from './providers.js'
 import { getAlibabaModelMeta } from './alibabaCatalog.js'
+import {
+  getStoredContextWindow,
+  persistProviderContextWindows,
+} from './contextWindowStore.js'
 
 type ContextWindowMap = Record<string, number>
 
@@ -184,6 +188,12 @@ const PREFIX_CONTEXT_WINDOWS: ContextWindowMap = {
   'gemini-3.1-pro': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-3.1-flash-lite': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-3-flash': GEMINI_LONG_CONTEXT_WINDOW,
+  // Family floor for Gemini 3.x. Prefix keys are matched longest-first, so
+  // every specific entry above still wins; this only catches releases that
+  // shipped after the table was last touched (3.6/3.7/3.8 flash, and the
+  // `-tiered` wire ids, all of which resolved to the 200K default before).
+  // Narrower-window variants would need an explicit longer key here.
+  'gemini-3': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-2.5-pro': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-2.5-flash': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-2.0': GEMINI_LONG_CONTEXT_WINDOW,
@@ -253,6 +263,11 @@ export function recordProviderModelContextWindows(
       providerWindows.set(candidate, model.contextWindow)
     }
   }
+
+  // Hand the resolved map to the durable store so the next session starts
+  // knowing these windows instead of defaulting. Fire-and-forget: persistence
+  // failures leave the in-memory behaviour untouched.
+  persistProviderContextWindows(provider, providerWindows)
 }
 
 export function getProviderCatalogContextWindow(
@@ -280,6 +295,16 @@ export function getProviderCatalogContextWindow(
       if (catalogWindow !== undefined) {
         return catalogWindow
       }
+    }
+
+    // Windows observed in an earlier session, replayed from disk. Below the
+    // live map (this session's catalogue is fresher) and above the static
+    // tables, since it came from the provider's own catalogue rather than a
+    // hand-maintained list that cannot know about models released after it was
+    // last edited. Same precedence the in-memory map already had, just durable.
+    const storedWindow = getStoredContextWindow(provider, candidates)
+    if (storedWindow !== undefined) {
+      return storedWindow
     }
 
     const scopedWindow = lookupRecord(candidates, PROVIDER_SCOPED_CONTEXT_WINDOWS[provider])
@@ -351,10 +376,11 @@ function getModelLookupCandidates(model: string): string[] {
     return []
   }
 
-  const baseCandidates = [normalized]
+  const baseCandidates: string[] = []
+  addNamespaceCandidates(normalized, baseCandidates)
   const slashIndex = normalized.lastIndexOf('/')
   if (slashIndex >= 0 && slashIndex < normalized.length - 1) {
-    baseCandidates.push(normalized.slice(slashIndex + 1))
+    addNamespaceCandidates(normalized.slice(slashIndex + 1), baseCandidates)
   }
 
   const candidates: string[] = []
@@ -363,6 +389,34 @@ function getModelLookupCandidates(model: string): string[] {
   }
 
   return Array.from(new Set(candidates))
+}
+
+/**
+ * A leading dot-segment is a vendor namespace only when it is letters alone —
+ * no digit, no hyphen. ModelRouter and AgentRouter name models that way
+ * (`zai.glm-4.7`, `moonshotai.kimi-k2.5`, `us.meta.llama4-scout-...`) while
+ * the shared tables describe them under the bare id. The letters-only test is
+ * what keeps a version dot from being read as a separator: `gemini-3.8-flash`,
+ * `qwen3.8-flash` and `gpt-4.1` all have a head containing a digit or hyphen
+ * and are left whole.
+ */
+const VENDOR_NAMESPACE_SEGMENT = /^[a-z_]+$/
+
+function addNamespaceCandidates(candidate: string, candidates: string[]): void {
+  let current = candidate
+  candidates.push(current)
+  // Bounded: the deepest observed form is two segments (`us.meta.llama4-…`).
+  for (let i = 0; i < 3; i += 1) {
+    const dotIndex = current.indexOf('.')
+    if (dotIndex <= 0 || dotIndex === current.length - 1) {
+      return
+    }
+    if (!VENDOR_NAMESPACE_SEGMENT.test(current.slice(0, dotIndex))) {
+      return
+    }
+    current = current.slice(dotIndex + 1)
+    candidates.push(current)
+  }
 }
 
 function addVariantCandidates(candidate: string, candidates: string[]): void {
