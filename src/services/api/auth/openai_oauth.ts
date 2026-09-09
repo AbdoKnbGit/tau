@@ -21,8 +21,8 @@
 
 import { createServer, type Server } from 'http'
 import { randomBytes, createHash } from 'crypto'
-import { execSync } from 'child_process'
 import { saveProviderKey, loadProviderKey } from './api_key_manager.js'
+import { describeOwners, reclaimPort, type PortOwner } from './portOwners.js'
 import { openBrowser } from '../../../utils/browser.js'
 
 // ─── Bundled OAuth credentials (from openai/codex CLI) ───────────────
@@ -180,7 +180,13 @@ export async function startOpenAIOAuthFlow(): Promise<{
   } catch (err: any) {
     if (err?.message?.includes('Port') && err?.message?.includes('in use')) {
       // Try to free the port and retry once
-      const freed = await _tryFreePort(port)
+      const { freed, refused } = await _tryFreePort(port)
+      if (refused.length) {
+        throw new Error(
+          `Port ${port} is held by ${describeOwners(refused)}. OpenAI only accepts this exact port, ` +
+          `so close that process and run /login again. Tau will not terminate it for you.`,
+        )
+      }
       if (freed) {
         const retryState = randomBytes(16).toString('hex')
         // Update the state in the auth URL (we haven't opened the browser yet)
@@ -448,99 +454,29 @@ function awaitSessionRefresh<T>(promise: Promise<T>, signal?: AbortSignal): Prom
 }
 
 /**
- * Try to free a port by killing whatever process is listening on it.
- * Returns true if the port was successfully freed (or is now free).
+ * Try to free the callback port.
  *
- * This handles the common case where a previous claudex session crashed
- * and left a stale callback server behind, or the real Codex CLI is
- * occupying the port.  Tau is a standalone tool and should not
- * require users to hunt down stale listeners manually.
+ * Handles the common case where a previous session crashed and left a stale
+ * callback server behind, or the real Codex CLI holds the port. Only processes
+ * that plausibly run such a server are killed; anything else is reported so the
+ * caller can name it instead of terminating a stranger's work.
  */
-async function _tryFreePort(port: number): Promise<boolean> {
+async function _tryFreePort(port: number): Promise<{ freed: boolean; refused: PortOwner[] }> {
   try {
-    // ── Step 1: Same-process stale server ──────────────────────────
-    // The most common case: a previous /login in THIS claudex session
-    // left a callback server alive. _cleanupActiveServer only works if
-    // the module-level _activeServer was set, but after a hot-reload or
-    // first run with new code the reference may be null even though an
-    // old server is still bound.  We use a brute-force approach: try to
-    // find the port owner's PID and compare with process.pid.  If it's
-    // us, we know there's a dangling server inside our own event loop
-    // that we can't reach via _activeServer.  In that case we create a
-    // throw-away connection to the port, which lets us confirm it's
-    // reachable, then we use the exclusive trick below.
-    const ownPid = String(process.pid)
-    let portOwnedBySelf = false
+    const { ownedBySelf, refused } = reclaimPort(port)
 
-    if (process.platform === 'win32') {
-      try {
-        const out = execSync(
-          `netstat -ano | findstr ":${port}" | findstr "LISTENING"`,
-          { encoding: 'utf-8', timeout: 5000 },
-        )
-        const pids = new Set<string>()
-        for (const line of out.trim().split('\n')) {
-          const parts = line.trim().split(/\s+/)
-          const pid = parts[parts.length - 1]
-          if (pid && pid !== '0' && /^\d+$/.test(pid)) pids.add(pid)
-        }
-
-        if (pids.has(ownPid)) {
-          portOwnedBySelf = true
-        }
-
-        // Kill only external processes (never ourselves)
-        for (const pid of pids) {
-          if (pid === ownPid) continue
-          try {
-            execSync(`taskkill /F /PID ${pid}`, {
-              encoding: 'utf-8',
-              timeout: 5000,
-              stdio: 'ignore',
-            })
-          } catch { /* process may already be gone */ }
-        }
-      } catch { /* netstat failed — port may already be free */ }
-    } else {
-      // macOS / Linux
-      try {
-        const pidOutput = execSync(`lsof -ti:${port} 2>/dev/null`, {
-          encoding: 'utf-8',
-          timeout: 5000,
-        }).trim()
-        if (pidOutput) {
-          const pids = pidOutput.split('\n').map(p => p.trim())
-          if (pids.includes(ownPid)) {
-            portOwnedBySelf = true
-          }
-          // Kill only external processes
-          const externalPids = pids.filter(p => p !== ownPid).join(' ')
-          if (externalPids) {
-            execSync(`kill -9 ${externalPids}`, {
-              encoding: 'utf-8',
-              timeout: 5000,
-              stdio: 'ignore',
-            })
-          }
-        }
-      } catch { /* nothing found */ }
-    }
-
-    // ── Step 2: Same-process — force-close the orphaned server ─────
-    // When the stale server is in our own process, we can't taskkill
-    // ourselves. Instead, enumerate all active Node handles and close
-    // any TCP server bound to this port.
-    if (portOwnedBySelf) {
+    // We cannot taskkill ourselves. When the stale server is inside this
+    // process, close the orphaned handle directly instead.
+    if (ownedBySelf) {
       _forceCloseServersOnPort(port)
-      // Small delay for the OS to process the close
       await new Promise(r => setTimeout(r, 300))
     }
 
-    // Give the OS a moment to release the socket
+    // Give the OS a moment to release the socket.
     await new Promise(r => setTimeout(r, 600))
-    return true
+    return { freed: refused.length === 0, refused }
   } catch {
-    return false
+    return { freed: false, refused: [] }
   }
 }
 

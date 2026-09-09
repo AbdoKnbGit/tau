@@ -34,6 +34,8 @@ export interface LiveTransportOptions {
   voice: string
   signal: AbortSignal
   callbacks: { onEvent(event: LiveServerEvent): void; onOutputLevel(level: number): void }
+  // Reports the outstanding step so a startup timeout can name where it stalled.
+  stage?: (label: string) => void
   // Dependency injection keeps lifecycle/authorization tests offline.
   post?: typeof postLiveOffer
   socket?: (url: string, headers: Record<string, string>) => WebSocket
@@ -79,6 +81,19 @@ export function postLiveOffer(body: string, headers: Record<string, string>, sig
   })
 }
 
+/** Signaling rejections, phrased as the thing the user can actually act on.
+ * OpenAI hides the Codex realtime route from accounts without it rather than
+ * refusing the request, so 404 is an entitlement answer, not a missing path. */
+export function describeSignalingFailure(status: number, detail: string): string {
+  if (status === 404) {
+    return 'Codex voice is not available on this ChatGPT account (404). The realtime voice route is part of a paid Codex plan; a free Codex session cannot open a call, and OpenAI hides the route rather than refusing it. Check your plan with /usage. Nothing in Tau can work around this.'
+  }
+  if ([401, 403].includes(status)) {
+    return `Codex voice access was refused (${status}). Sign in with ChatGPT OAuth in /login; your account must have access to Codex voice.`
+  }
+  return `Codex voice connection failed (${status}): ${detail}`
+}
+
 export class CodexLiveTransport implements VoiceTransport {
   private peer?: NativeVoicePeer
   private sideband?: WebSocket
@@ -109,6 +124,7 @@ export class CodexLiveTransport implements VoiceTransport {
       )
       this.peer = peer
       peer.setMuted(true)
+      this.options.stage?.('preparing the audio connection')
       const offer = await peer.createOffer()
       this.controller.signal.throwIfAborted()
       const realtimeId = randomUUID()
@@ -116,25 +132,28 @@ export class CodexLiveTransport implements VoiceTransport {
       let headers: Record<string, string> = {}
       let response: SignalResponse | undefined
       for (let attempt = 0; attempt < 2; attempt++) {
+        this.options.stage?.(attempt === 0 ? 'checking the ChatGPT sign-in' : 'refreshing the ChatGPT sign-in')
         const access = await this.options.access(attempt === 1)
         this.controller.signal.throwIfAborted()
         headers = liveSessionHeaders(access, this.options.sessionId, realtimeId)
+        this.options.stage?.('asking ChatGPT to open the call')
         response = await (this.options.post ?? postLiveOffer)(body, headers, this.controller.signal)
         if (![401, 403].includes(response.status)) break
       }
       if (!response || response.status < 200 || response.status >= 300) {
         const status = response?.status ?? 0
         const detail = response?.body.replace(/\s+/g, ' ').slice(0, 600) || 'No response'
-        throw new Error([401, 403].includes(status)
-          ? `Codex voice access was refused (${status}). Sign in with ChatGPT OAuth in /login; your account must have access to Codex voice.`
-          : `Codex voice connection failed (${status}): ${detail}`)
+        throw new Error(describeSignalingFailure(status, detail))
       }
       const callId = parseLiveCallId(response.location)
       if (!callId || !response.body.startsWith('v=')) throw new Error('Codex voice returned an invalid call or SDP answer')
+      this.options.stage?.('agreeing the audio connection')
       await peer.acceptAnswer(response.body)
       this.controller.signal.throwIfAborted()
+      this.options.stage?.('waiting for the audio connection to open')
       await peer.waitForOpen(20_000)
       this.controller.signal.throwIfAborted()
+      this.options.stage?.('opening the control channel')
       for (let attempt = 0; ; attempt++) {
         try { await this.openSideband(callId, headers); break } catch (error) {
           this.controller.signal.throwIfAborted()

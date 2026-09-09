@@ -50,6 +50,14 @@ test('changed binaries stage to a different cache so an update does not overwrit
 test('unsupported CPU/libc gets an explicit error instead of a compiler install', () => {
   // Explicit absence: undefined would invoke the default host libc detector.
   assert.throws(() => nativeVoiceTarget('linux', 'x64', ''), /musl/)
+  // getReport() blocks the loop for as long as it takes to walk the process, so
+  // a supported non-Linux host must never trigger the libc probe at all.
+  const report = process.report.getReport
+  process.report.getReport = () => { throw new Error('getReport must not run off Linux') }
+  try {
+    assert.equal(nativeVoiceTarget('win32', 'x64'), 'win32-x64')
+    assert.equal(nativeVoiceTarget('darwin', 'arm64'), 'darwin-arm64')
+  } finally { process.report.getReport = report }
   assert.throws(() => nativeVoiceTarget('win32', 'ia32'), /does not yet support/)
   assert.equal(nativeVoiceTarget('linux', 'arm64', '2.28'), 'linux-arm64')
 })

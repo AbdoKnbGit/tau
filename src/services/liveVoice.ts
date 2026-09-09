@@ -14,11 +14,14 @@ Speak briefly and naturally. Commentary context is silent background information
 The user's microphone is push-to-talk: they hold Space to speak and release to stop. Pauses and release are normal. Do not require a wake phrase. The terminal command /bye ends the call.`
 
 const session = new LiveVoiceSession({
-  async createTransport(callbacks, signal) {
+  async createTransport(callbacks, signal, stage) {
+    stage?.('checking the ChatGPT sign-in')
     const access = await getValidOpenAISessionAccess(false, signal)
     signal.throwIfAborted()
+    stage?.('loading the audio component')
+    const native = loadNativeVoice()
     return new CodexLiveTransport({
-      native: loadNativeVoice(), callbacks, signal, sessionId: getSessionId(),
+      native, callbacks, signal, sessionId: getSessionId(), stage,
       instructions: INSTRUCTIONS, voice: getSelectedLiveVoice(),
       access: force => force ? getValidOpenAISessionAccess(true, signal) : Promise.resolve(access),
     })

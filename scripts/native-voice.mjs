@@ -4,10 +4,24 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export const NATIVE_VOICE_TARGETS = ['win32-x64', 'win32-arm64', 'darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-arm64']
-export function nativeVoiceTarget(platform = process.platform, arch = process.arch, glibc = process.report?.getReport()?.header?.glibcVersionRuntime) {
+
+/** Only Linux needs the runtime libc, and getReport() is synchronous: it walks
+ * every handle, loaded module and thread stack, so it blocks the event loop for
+ * as long as that takes. As a default argument it ran on every call and every
+ * platform, then went unused off Linux. Detect lazily, once, and never on
+ * Windows or macOS. */
+let hostGlibc
+function runtimeGlibc(platform) {
+  if (platform !== 'linux') return ''
+  hostGlibc ??= process.report?.getReport()?.header?.glibcVersionRuntime ?? ''
+  return hostGlibc
+}
+export function nativeVoiceTarget(platform = process.platform, arch = process.arch, glibc) {
   const target = `${platform}-${arch}`
-  if (!NATIVE_VOICE_TARGETS.includes(target) || (platform === 'linux' && !glibc)) {
-    throw new Error(`Tau voice does not yet support ${target}${platform === 'linux' && !glibc ? ' (musl)' : ''}. Use Windows, macOS, or glibc Linux on x64/arm64.`)
+  // An explicitly passed value wins, including '' for "this host has no glibc".
+  const libc = glibc ?? runtimeGlibc(platform)
+  if (!NATIVE_VOICE_TARGETS.includes(target) || (platform === 'linux' && !libc)) {
+    throw new Error(`Tau voice does not yet support ${target}${platform === 'linux' && !libc ? ' (musl)' : ''}. Use Windows, macOS, or glibc Linux on x64/arm64.`)
   }
   return target
 }

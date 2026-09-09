@@ -43,6 +43,7 @@
     "build:native-tools": "node scripts/build-native-tools.mjs",
     "build:native-voice": "node scripts/build-native-voice.mjs",
     "test:voice": "node scripts/test-voice.mjs",
+    "test:auth": "node --test test/auth-port-owners.test.mjs",
     "voice:release-check": "node release/verify-native-voice.mjs",
     "shrinkwrap:generate": "node release/production-shrinkwrap.mjs --write",
     "shrinkwrap:check": "node release/production-shrinkwrap.mjs --check",

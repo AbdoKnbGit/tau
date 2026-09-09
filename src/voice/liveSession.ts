@@ -21,9 +21,26 @@ export interface VoiceTransport {
   send(message: LiveClientMessage): Promise<void>
 }
 export interface VoiceSessionDependencies {
-  createTransport(callbacks: { onEvent(event: LiveServerEvent): void; onOutputLevel(level: number): void }, signal: AbortSignal): Promise<VoiceTransport> | VoiceTransport
+  createTransport(
+    callbacks: { onEvent(event: LiveServerEvent): void; onOutputLevel(level: number): void },
+    signal: AbortSignal,
+    stage?: (label: string) => void,
+  ): Promise<VoiceTransport> | VoiceTransport
   capture(onAudio: (error: Error | null, samples: Float32Array) => void): { stop(): void; drain?(): Promise<void> }
 }
+
+/** Every individual step is bounded, but their worst cases sum to minutes, so
+ * startup also gets one overall deadline. Without it a single stalled step
+ * leaves the prompt apparently frozen with no way to tell which one it was. */
+export const STARTUP_TIMEOUT_MS = Number(process.env.TAU_VOICE_CONNECT_TIMEOUT_MS) || 30_000
+
+/** A delegation is only completed by the REPL turn that claims it, matched by
+ * exact request text. A turn that never matches -- rewritten text, a request
+ * that routes elsewhere -- completes nothing, and the delegation stays pending
+ * forever: the phase sticks on `working` and the voice model waits for a result
+ * that cannot arrive. Idle time, not total time, bounds it, so a genuinely long
+ * turn that keeps reporting progress is never cut short. */
+export const DELEGATION_IDLE_TIMEOUT_MS = Number(process.env.TAU_VOICE_DELEGATION_TIMEOUT_MS) || 600_000
 
 /** Owns microphone lifetime independently of terminal key handling and networking. */
 export class LiveVoiceSession {
@@ -45,6 +62,7 @@ export class LiveVoiceSession {
   private lastProgress = new Map<string, string>()
   private progressPending = new Map<string, string>()
   private progressTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private delegationTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(private readonly deps: VoiceSessionDependencies) {}
   getSnapshot = (): LiveVoiceSnapshot => this.snapshot
@@ -69,13 +87,17 @@ export class LiveVoiceSession {
     const controller = new AbortController()
     this.controller = controller
     this.update({ phase: 'connecting', error: null, inputLevel: 0, transcript: '' })
-    const operation = (async () => {
+    // The label names the step still outstanding, so a timeout reports where it
+    // stalled instead of only that it did.
+    let stage = 'waiting for the previous call to close'
+    const work = (async () => {
       await this.closing
       controller.signal.throwIfAborted()
+      stage = 'opening audio and authorizing'
       const transport = await this.deps.createTransport({
         onEvent: event => { if (generation === this.generation) this.onEvent(event) },
         onOutputLevel: level => { if (generation === this.generation) this.onOutputLevel(level) },
-      }, controller.signal)
+      }, controller.signal, label => { stage = label })
       if (generation !== this.generation) { await transport.close(); throw new DOMException('Voice stopped', 'AbortError') }
       this.transport = transport
       await transport.connect()
@@ -87,10 +109,26 @@ export class LiveVoiceSession {
       if (context) {
         for (const chunk of chunkLiveContext(context)) await transport.send(buildSessionContextAppend(chunk, 'commentary'))
       }
-    })().catch(async error => {
+    })()
+    // Aborting only unblocks steps that watch the signal; the native offer,
+    // answer and open calls take none. So the deadline settles the caller's
+    // promise itself rather than trusting the stalled step to notice, and the
+    // prompt comes back even when the stall is inside the addon.
+    const operation = new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(() => {
+        const timeout = new DOMException(`Voice gave up after ${Math.round(STARTUP_TIMEOUT_MS / 1000)}s while ${stage}.`, 'TimeoutError')
+        controller.abort(timeout)
+        reject(timeout)
+      }, STARTUP_TIMEOUT_MS)
+      deadline.unref?.()
+      const done = () => clearTimeout(deadline)
+      work.then(value => { done(); resolve(value) }, error => { done(); reject(error) })
+    }).catch(async error => {
       if (generation === this.generation) await this.fail(error)
       throw error
     }).finally(() => { if (this.starting === operation) this.starting = undefined })
+    // The abandoned step may still reject later; keep that from going unhandled.
+    work.catch(() => {})
     this.starting = operation
     return operation
   }
@@ -108,6 +146,8 @@ export class LiveVoiceSession {
     this.progressPending.clear()
     for (const timer of this.progressTimers.values()) clearTimeout(timer)
     this.progressTimers.clear()
+    for (const timer of this.delegationTimers.values()) clearTimeout(timer)
+    this.delegationTimers.clear()
     const transport = this.transport
     this.transport = undefined
     this.update({ phase: 'off', inputLevel: 0, error: null })
@@ -204,6 +244,7 @@ export class LiveVoiceSession {
     this.seen.add(event.item.id)
     if (this.seen.size > 4096) this.seen.delete(this.seen.values().next().value!)
     this.pending.push(event.item.id)
+    this.armDelegationTimeout(event.item.id)
     if (!this.capture) this.update({ phase: 'working' })
     if (!this.bridge) {
       this.finish('Tau is not ready to accept this request. Ask again once the prompt is ready.', event.item.id)
@@ -217,8 +258,19 @@ export class LiveVoiceSession {
       this.finish(`Tau could not submit the request: ${error instanceof Error ? error.message : String(error)}`, event.item.id)
     }
   }
+  private armDelegationTimeout(requestId: string): void {
+    clearTimeout(this.delegationTimers.get(requestId))
+    const timer = setTimeout(() => {
+      this.delegationTimers.delete(requestId)
+      this.finish('Tau never reported a result for this request, so it was given up on. Tell the user to check the terminal and ask again.', requestId)
+    }, DELEGATION_IDLE_TIMEOUT_MS)
+    timer.unref?.()
+    this.delegationTimers.set(requestId, timer)
+  }
   progress(text: string, requestId = this.pending[0]): void {
     if (!requestId || !this.pending.includes(requestId) || !text.trim() || this.lastProgress.get(requestId) === text) return
+    // Progress proves the turn is alive; the idle clock restarts.
+    this.armDelegationTimeout(requestId)
     this.progressPending.set(requestId, text)
     if (this.progressTimers.has(requestId)) return
     const timer = setTimeout(() => {
@@ -241,6 +293,8 @@ export class LiveVoiceSession {
     clearTimeout(this.progressTimers.get(requestId))
     this.progressTimers.delete(requestId)
     this.progressPending.delete(requestId)
+    clearTimeout(this.delegationTimers.get(requestId))
+    this.delegationTimers.delete(requestId)
     this.append(requestId, `"Agent Final Message":\n\n${text.trim() || 'The agent turn ended without a text response.'}`)
     if (!this.capture && this.snapshot.phase === 'working') this.update({ phase: this.idlePhase() })
   }
