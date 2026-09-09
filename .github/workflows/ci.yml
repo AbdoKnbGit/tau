@@ -84,7 +84,7 @@ jobs:
           exit "$INSTALL_STATUS"
 
       - name: Test installer, release gate, lifecycle bridge, and production lock
-        run: node --test packages/tau-installer/test/installer.test.mjs test/lifecycle-bridge.test.mjs test/platform-support.test.mjs test/production-shrinkwrap.test.mjs test/release-gate.test.mjs test/rust-lsp-setup.test.mjs test/update-routing.test.mjs
+        run: node --test packages/tau-installer/test/installer.test.mjs test/lifecycle-bridge.test.mjs test/platform-support.test.mjs test/production-shrinkwrap.test.mjs test/release-gate.test.mjs test/rust-lsp-setup.test.mjs test/update-routing.test.mjs test/voice-platform-packages.test.mjs test/auth-port-owners.test.mjs
 
       - name: Test realtime voice settings, controls, and release integrity
         run: npm run test:voice

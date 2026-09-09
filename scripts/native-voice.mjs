@@ -1,7 +1,8 @@
+import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import { constants, copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 export const NATIVE_VOICE_TARGETS = ['win32-x64', 'win32-arm64', 'darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-arm64']
 
@@ -25,13 +26,33 @@ export function nativeVoiceTarget(platform = process.platform, arch = process.ar
   }
   return target
 }
+export const voicePackageNameFor = target => `@abdoknbgit/tau-voice-${target}`
+
+/**
+ * Where this host's addon lives.
+ *
+ * A published install gets it from the per-platform optional dependency, so
+ * only the matching binary is ever downloaded. A source checkout, and the
+ * release staging that builds those packages, keeps all six under
+ * `native/tau-voice/bin`. Both layouts carry a manifest next to the binary, so
+ * the integrity check downstream is identical either way.
+ */
+export function resolveNativeVoiceArtifact(packageRoot, target, options = {}) {
+  const file = `tau_voice.${target}.node`
+  const require_ = options.require ?? createRequire(join(packageRoot, 'package.json'))
+  try {
+    const packaged = require_.resolve(`${voicePackageNameFor(target)}/${file}`)
+    if (existsSync(packaged)) return { path: packaged, directory: dirname(packaged), file, packaged: true }
+  } catch { /* Not installed: fall through to the release directory. */ }
+  const directory = join(packageRoot, 'native', 'tau-voice', 'bin')
+  return { path: join(directory, file), directory, file, packaged: false }
+}
+
 export function verifyNativeVoice(packageRoot, options = {}) {
   const target = options.target ?? nativeVoiceTarget()
   if (!NATIVE_VOICE_TARGETS.includes(target)) throw new Error(`Unsupported voice target: ${target}`)
-  const file = `tau_voice.${target}.node`
-  const directory = join(packageRoot, 'native', 'tau-voice', 'bin')
-  const path = join(directory, file)
-  if (!existsSync(path)) throw new Error(`Tau's bundled audio component is missing (${target}). Reinstall or update Tau. Source builds: npm run build:native-voice.`)
+  const { path, directory, file } = resolveNativeVoiceArtifact(packageRoot, target, options)
+  if (!existsSync(path)) throw new Error(`Tau's audio component for ${target} is missing. Reinstall or update Tau; if npm skipped the optional ${voicePackageNameFor(target)} package, reinstall with a working network. Source builds: npm run build:native-voice.`)
   const content = readFileSync(path)
   const hash = createHash('sha256').update(content).digest('hex')
   const manifestPath = join(directory, 'manifest.json')

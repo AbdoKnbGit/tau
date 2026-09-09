@@ -1,0 +1,29 @@
+{
+  "name": "@abdoknbgit/tau-voice-darwin-x64",
+  "version": "0.92.30",
+  "description": "Native audio and WebRTC engine for Tau voice (macOS Intel).",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "tau_voice.darwin-x64.node",
+    "manifest.json",
+    "LICENSE-OMP",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbdoKnbGit/tau.git",
+    "directory": "platform-packages/tau-voice-darwin-x64"
+  },
+  "engines": {
+    "node": ">=20.19.0 <21.0.0 || >=22.12.0"
+  }
+}

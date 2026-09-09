@@ -67,6 +67,32 @@ Old Gemini/Whisper voice provider/model preferences are ignored. An old voice
 such as `Kore` resolves to Sol. Ordinary Gemini coding credentials are preserved.
 Run `/hey` again after restarting Tau or changing the voice to open a new call.
 
+## Releasing the platform voice packages
+
+The addon ships as six per-platform npm packages, `@abdoknbgit/tau-voice-<os>-<cpu>`,
+each carrying `os` and `cpu` so npm installs only the one the host can load.
+They live in `platform-packages/` and are deliberately **not** npm workspaces:
+npm materialises every workspace regardless of `os`/`cpu` and fails with
+`EBADPLATFORM` on the five that do not match the build host.
+
+Release order matters, and the production shrinkwrap gate enforces it. Publish
+the six platform packages **before** Tau itself; a Tau release whose optional
+dependencies are not yet on the registry installs without voice and says so
+rather than failing.
+
+1. Collect the verified `native-voice.yml` artifact into `native/tau-voice/bin`
+   and run `npm run voice:release-check`.
+2. `node release/sync-voice-packages.mjs --binaries` — copies each binary into
+   its package after checking it against the signed manifest, and writes the
+   single-artifact manifest the runtime verifies against.
+3. Publish all six from `platform-packages/`.
+4. Only then add or bump the six entries in Tau's `optionalDependencies`,
+   refresh the lockfile and production shrinkwrap, and publish Tau.
+
+`npm run test:voice-packages` checks the tracked manifests still match the
+generator and the root version, so a stale package version fails CI rather than
+a release. Binaries stay untracked; only the manifests are committed.
+
 ## Source builds and release checks
 
 Contributors building audio from source need stable Rust, CMake and their OS

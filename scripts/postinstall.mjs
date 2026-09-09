@@ -363,30 +363,41 @@ async function runPostinstall() {
   await main();
 
   await verifyDependencyTree();
-  // Official releases carry all supported audio binaries. Users never compile
-  // Rust or download a speech model. Source checkouts can build audio separately.
-  if (existsSync(join(packageRoot, 'native', 'tau-voice', 'bin', 'manifest.json'))) {
-    const { nativeVoiceTarget, nativeVoiceLoadPath } = await import('./native-voice.mjs');
-    let voiceSupported = true;
-    try { nativeVoiceTarget(); } catch (error) {
-      voiceSupported = false;
-      console.log(`[tau] ${error.message}`);
-    }
-    if (voiceSupported) {
-      const { createRequire } = await import('node:module');
-      const voice = createRequire(import.meta.url)(nativeVoiceLoadPath(packageRoot));
-      if (voice.voiceAbiVersion?.() !== 1 || typeof voice.AudioCapture !== 'function' || typeof voice.LiveWebRtcPeer !== 'function') {
-        throw new Error('The bundled Tau audio component is incompatible. Reinstall Tau.');
-      }
-      console.log('[tau] Native voice ready (no Rust or speech-model installation required).');
-    }
-  }
+  // Users never compile Rust or download a speech model: the addon arrives
+  // prebuilt. Trimmed or partial trees (repair fixtures, vendored subsets) may
+  // not carry the voice helper at all, which is not an install failure.
+  const voiceHelper = join(packageRoot, 'scripts', 'native-voice.mjs');
+  if (existsSync(voiceHelper)) await verifyBundledVoice();
   try { buildOptionalNativeTools(); } catch { /* native accelerators are optional */ }
   try { primeOllamaCloudModels(); } catch { /* first launch retries */ }
 
   // This is the final mandatory operation. A missing marker lets the verifier
   // distinguish npm 12's exit-0/script-blocked install from a completed one.
   writeLifecycleCompletionMarker(packageRoot);
+}
+
+async function verifyBundledVoice() {
+  const { nativeVoiceTarget, nativeVoiceLoadPath, resolveNativeVoiceArtifact, voicePackageNameFor } =
+    await import('./native-voice.mjs');
+  let voiceTarget = null;
+  try { voiceTarget = nativeVoiceTarget(); } catch (error) { console.log(`[tau] ${error.message}`); }
+  if (voiceTarget) {
+    // The addon arrives as a per-platform optional dependency, so npm can
+    // legitimately skip it (unsupported host, or no network). That is not an
+    // install failure: voice degrades and the rest of Tau works. A binary that
+    // is present but fails its integrity check still fails the install, because
+    // that means tampering or corruption rather than absence.
+    if (existsSync(resolveNativeVoiceArtifact(packageRoot, voiceTarget).path)) {
+      const { createRequire } = await import('node:module');
+      const voice = createRequire(import.meta.url)(nativeVoiceLoadPath(packageRoot));
+      if (voice.voiceAbiVersion?.() !== 1 || typeof voice.AudioCapture !== 'function' || typeof voice.LiveWebRtcPeer !== 'function') {
+        throw new Error('The Tau audio component is incompatible. Reinstall Tau.');
+      }
+      console.log('[tau] Native voice ready (no Rust or speech-model installation required).');
+    } else {
+      console.log(`[tau] Voice audio (${voicePackageNameFor(voiceTarget)}) was not installed; /hey stays unavailable until it is. The rest of Tau is unaffected.`);
+    }
+  }
 }
 
 runPostinstall().catch(error => {
