@@ -59,6 +59,33 @@ function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`)
 }
 
+/**
+ * Re-pins Tau's optional platform dependencies to `version`.
+ *
+ * These are exact pins, so a version bump that updates only package.json would
+ * leave Tau asking for last release's addons. Rewriting them here means one
+ * command keeps the root, the six manifests and the pins in step, and the
+ * drift is caught by test/voice-platform-packages.test.mjs rather than by a
+ * user. No-ops until the pins are declared.
+ */
+export function syncRootOptionalDependencies(version, manifestPath = join(root, 'package.json')) {
+  const before = readFileSync(manifestPath, 'utf8')
+  let after = before
+  for (const { target } of VOICE_TARGETS) {
+    // Edit the pin in place rather than re-serialising: reformatting the whole
+    // manifest to change six strings would bury the change in a huge diff.
+    const key = '"' + packageNameFor(target) + '":'
+    const at = after.indexOf(key)
+    if (at === -1) continue
+    const open = after.indexOf('"', at + key.length)
+    const close = open === -1 ? -1 : after.indexOf('"', open + 1)
+    if (open === -1 || close === -1) continue
+    after = after.slice(0, open + 1) + version + after.slice(close)
+  }
+  if (after !== before) writeFileSync(manifestPath, after)
+  return after !== before
+}
+
 /** Writes the six package manifests. Binaries are copied only with `--binaries`. */
 export function syncVoicePackages({ version, withBinaries = false } = {}) {
   const resolved = version ?? JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
@@ -97,11 +124,12 @@ manifest.json
     }
     written.push(packageNameFor(entry.target))
   }
-  return { version: resolved, packages: written }
+  const repinned = syncRootOptionalDependencies(resolved)
+  return { version: resolved, packages: written, repinned }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const withBinaries = process.argv.includes('--binaries')
-  const { version, packages } = syncVoicePackages({ withBinaries })
+  const { version, packages, repinned } = syncVoicePackages({ withBinaries })
   process.stdout.write(`Synced ${packages.length} voice packages at ${version}${withBinaries ? ' with binaries' : ' (manifests only)'}.\n`)
 }

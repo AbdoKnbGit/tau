@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { VOICE_TARGETS, manifestFor, packageNameFor } from '../release/sync-voice-packages.mjs'
+import { VOICE_TARGETS, manifestFor, packageNameFor, syncRootOptionalDependencies } from '../release/sync-voice-packages.mjs'
 import { NATIVE_VOICE_TARGETS, resolveNativeVoiceArtifact, voicePackageNameFor } from '../scripts/native-voice.mjs'
 
 test('a package is declared for exactly the supported targets', () => {
@@ -66,4 +66,34 @@ test('a source checkout still resolves the release directory', t => {
   assert.equal(fallback.packaged, false)
   assert.equal(fallback.directory, bin)
   assert.equal(readFileSync(fallback.path, 'utf8'), 'release-staging')
+})
+
+test('every declared platform pin tracks the root version', () => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+  const declared = Object.entries(pkg.optionalDependencies ?? {})
+    .filter(([name]) => name.startsWith('@abdoknbgit/tau-voice-'))
+  // Tolerated before the six are published; strict the moment they are pinned.
+  if (declared.length) {
+    assert.equal(declared.length, VOICE_TARGETS.length, 'some platforms are pinned and others are not')
+    for (const [name, range] of declared) {
+      assert.equal(range, pkg.version, `${name} is pinned at ${range} but Tau is ${pkg.version}`)
+    }
+  }
+})
+
+test('a version bump re-pins every platform dependency', t => {
+  const file = join(mkdtempSync(join(tmpdir(), 'tau-pin-')), 'package.json')
+  t.after(() => rmSync(join(file, '..'), { recursive: true, force: true }))
+  const pins = Object.fromEntries(VOICE_TARGETS.map(e => [packageNameFor(e.target), '0.0.1']))
+  writeFileSync(file, JSON.stringify({ name: '@abdoknbgit/tau', version: '9.9.9', optionalDependencies: { ...pins, 'node-pty': '^1.1.0' } }, null, 2))
+
+  assert.equal(syncRootOptionalDependencies('9.9.9', file), true)
+  const updated = JSON.parse(readFileSync(file, 'utf8'))
+  for (const entry of VOICE_TARGETS) {
+    assert.equal(updated.optionalDependencies[packageNameFor(entry.target)], '9.9.9', `${entry.target} was left behind`)
+  }
+  // Unrelated optional dependencies must not be touched.
+  assert.equal(updated.optionalDependencies['node-pty'], '^1.1.0')
+  // Running it again is a no-op, so it is safe in a release script.
+  assert.equal(syncRootOptionalDependencies('9.9.9', file), false)
 })

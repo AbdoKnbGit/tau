@@ -89,9 +89,17 @@ rather than failing.
 4. Only then add or bump the six entries in Tau's `optionalDependencies`,
    refresh the lockfile and production shrinkwrap, and publish Tau.
 
-`npm run test:voice-packages` checks the tracked manifests still match the
-generator and the root version, so a stale package version fails CI rather than
-a release. Binaries stay untracked; only the manifests are committed.
+Bumping a version is one command: `npm version` as usual, then
+`node release/sync-voice-packages.mjs`, which rewrites the six package
+manifests **and** re-pins Tau's own `optionalDependencies` to the new version.
+The pins are exact, so a bump that updated only `package.json` would leave Tau
+asking for the previous release's addons.
+
+`npm run test:voice-packages` fails if the tracked manifests or those pins drift
+from the root version, so a missed bump fails CI rather than a release. Nothing
+here is per-machine: targets come from `process.platform`/`process.arch`, and
+the one list of supported targets is asserted to match the runtime's. Binaries
+stay untracked; only the manifests are committed.
 
 ## Source builds and release checks
 
