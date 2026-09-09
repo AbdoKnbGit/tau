@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/tau-voice-linux-x64",
-  "version": "0.92.30",
+  "version": "1.0.0",
   "description": "Native audio and WebRTC engine for Tau voice (Linux x64 (glibc)).",
   "license": "MIT",
   "os": [

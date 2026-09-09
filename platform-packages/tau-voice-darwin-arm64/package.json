@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/tau-voice-darwin-arm64",
-  "version": "0.92.30",
+  "version": "1.0.0",
   "description": "Native audio and WebRTC engine for Tau voice (macOS Apple silicon).",
   "license": "MIT",
   "os": [

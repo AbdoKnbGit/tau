@@ -1,0 +1,4 @@
+{
+  "comment": "Version of the six @abdoknbgit/tau-voice-* packages. Independent of Tau's own version: bump it only when the native audio engine changes, then publish the addons. Tau releases that do not touch the engine keep pinning the version already on the registry and publish nothing extra.",
+  "version": "1.0.0"
+}

@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/tau-voice-win32-arm64",
-  "version": "0.92.30",
+  "version": "1.0.0",
   "description": "Native audio and WebRTC engine for Tau voice (Windows arm64).",
   "license": "MIT",
   "os": [

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { VOICE_TARGETS, manifestFor, packageNameFor, syncRootOptionalDependencies } from '../release/sync-voice-packages.mjs'
+import { VOICE_TARGETS, addonVersion, manifestFor, packageNameFor, syncRootOptionalDependencies } from '../release/sync-voice-packages.mjs'
 import { NATIVE_VOICE_TARGETS, resolveNativeVoiceArtifact, voicePackageNameFor } from '../scripts/native-voice.mjs'
 import { applySplit } from '../release/publish-voice-release.mjs'
 
@@ -23,8 +23,8 @@ test('a package is declared for exactly the supported targets', () => {
   }
 })
 
-test('the checked-in package manifests match the generator and the root version', () => {
-  const version = JSON.parse(readFileSync('package.json', 'utf8')).version
+test('the checked-in package manifests match the generator and the addon version', () => {
+  const version = addonVersion()
   for (const entry of VOICE_TARGETS) {
     const path = join('platform-packages', `tau-voice-${entry.target}`, 'package.json')
     assert.ok(existsSync(path), `${path} is missing; run node release/sync-voice-packages.mjs`)
@@ -69,17 +69,28 @@ test('a source checkout still resolves the release directory', t => {
   assert.equal(readFileSync(fallback.path, 'utf8'), 'release-staging')
 })
 
-test('every declared platform pin tracks the root version', () => {
+test('every declared platform pin tracks the addon version, not Tau’s', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+  const addon = addonVersion()
   const declared = Object.entries(pkg.optionalDependencies ?? {})
     .filter(([name]) => name.startsWith('@abdoknbgit/tau-voice-'))
   // Tolerated before the six are published; strict the moment they are pinned.
   if (declared.length) {
     assert.equal(declared.length, VOICE_TARGETS.length, 'some platforms are pinned and others are not')
     for (const [name, range] of declared) {
-      assert.equal(range, pkg.version, `${name} is pinned at ${range} but Tau is ${pkg.version}`)
+      assert.equal(range, addon, `${name} is pinned at ${range} but the addon is ${addon}`)
     }
   }
+})
+
+test('the addon version is independent of Tau’s, so unrelated releases publish nothing', () => {
+  const addon = addonVersion()
+  assert.match(addon, /^\d+\.\d+\.\d+$/)
+  // Not an assertion that they differ -- only that nothing derives one from the
+  // other. Sharing Tau's version would force six republishes per Tau release.
+  const source = readFileSync('release/sync-voice-packages.mjs', 'utf8')
+  assert.doesNotMatch(source, /package\.json'\), 'utf8'\)\)\.version/, 'addon version must not be read from package.json')
+  assert.equal(manifestFor(VOICE_TARGETS[0], addon).version, addon)
 })
 
 test('a version bump re-pins every platform dependency', t => {

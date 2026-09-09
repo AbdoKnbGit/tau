@@ -89,11 +89,18 @@ rather than failing.
 4. Only then add or bump the six entries in Tau's `optionalDependencies`,
    refresh the lockfile and production shrinkwrap, and publish Tau.
 
-Bumping a version is one command: `npm version` as usual, then
-`node release/sync-voice-packages.mjs`, which rewrites the six package
-manifests **and** re-pins Tau's own `optionalDependencies` to the new version.
-The pins are exact, so a bump that updated only `package.json` would leave Tau
-asking for the previous release's addons.
+The addons carry their **own** version, in `release/voice-addon-version.json`,
+not Tau's. Pins are exact, so sharing Tau's version would force six republishes
+for every Tau release and make each one depend on having the built binaries to
+hand. A Tau release that does not touch the audio engine therefore publishes
+nothing extra and needs no binaries at all: `npm run release:voice -- --publish`
+sees the addons already on the registry, skips straight past them and publishes
+Tau alone.
+
+Bump `release/voice-addon-version.json` only when the engine changes, then run
+`node release/sync-voice-packages.mjs` to rewrite the six manifests and re-pin
+Tau's `optionalDependencies`. A bump that updated only the version file would
+leave Tau asking for the previous addons.
 
 `npm run test:voice-packages` fails if the tracked manifests or those pins drift
 from the root version, so a missed bump fails CI rather than a release. Nothing

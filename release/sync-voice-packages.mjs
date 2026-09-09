@@ -31,6 +31,19 @@ export const VOICE_TARGETS = [
 ]
 
 export const packageNameFor = target => `@abdoknbgit/tau-voice-${target}`
+
+/**
+ * The addons carry their own version, not Tau's.
+ *
+ * Pins are exact, so sharing Tau's version would force six republishes for
+ * every Tau release, engine change or not, and would make each release depend
+ * on having the built binaries to hand. Versioning the engine separately means
+ * a release that does not touch it publishes nothing extra and needs no
+ * binaries at all.
+ */
+export function addonVersion() {
+  return JSON.parse(readFileSync(join(root, 'release', 'voice-addon-version.json'), 'utf8')).version
+}
 export const packageDirFor = target => join(root, 'platform-packages', `tau-voice-${target}`)
 
 /** The manifest each package.json declares, kept identical across releases. */
@@ -88,7 +101,7 @@ export function syncRootOptionalDependencies(version, manifestPath = join(root, 
 
 /** Writes the six package manifests. Binaries are copied only with `--binaries`. */
 export function syncVoicePackages({ version, withBinaries = false } = {}) {
-  const resolved = version ?? JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
+  const resolved = version ?? addonVersion()
   const manifest = withBinaries
     ? JSON.parse(readFileSync(join(binDir, 'manifest.json'), 'utf8'))
     : null
