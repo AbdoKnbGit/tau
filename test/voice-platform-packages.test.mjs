@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { VOICE_TARGETS, manifestFor, packageNameFor, syncRootOptionalDependencies } from '../release/sync-voice-packages.mjs'
 import { NATIVE_VOICE_TARGETS, resolveNativeVoiceArtifact, voicePackageNameFor } from '../scripts/native-voice.mjs'
+import { applySplit } from '../release/publish-voice-release.mjs'
 
 test('a package is declared for exactly the supported targets', () => {
   assert.deepEqual(VOICE_TARGETS.map(t => t.target).sort(), [...NATIVE_VOICE_TARGETS].sort())
@@ -96,4 +97,40 @@ test('a version bump re-pins every platform dependency', t => {
   assert.equal(updated.optionalDependencies['node-pty'], '^1.1.0')
   // Running it again is a no-op, so it is safe in a release script.
   assert.equal(syncRootOptionalDependencies('9.9.9', file), false)
+})
+
+test('the release step pins every platform and stops bundling the addons', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'tau-split-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const manifestPath = join(dir, 'package.json')
+  const ignorePath = join(dir, '.npmignore')
+  writeFileSync(manifestPath, JSON.stringify({
+    name: '@abdoknbgit/tau', version: '1.2.3',
+    optionalDependencies: { 'node-pty': '^1.1.0' },
+  }, null, 2))
+  writeFileSync(ignorePath, ['/target/', '/.tools/', ''].join('\n'))
+
+  applySplit('1.2.3', { manifestPath, ignorePath })
+  const pinned = JSON.parse(readFileSync(manifestPath, 'utf8')).optionalDependencies
+  for (const entry of VOICE_TARGETS) {
+    assert.equal(pinned[packageNameFor(entry.target)], '1.2.3', `${entry.target} not pinned`)
+  }
+  // Unrelated optional dependencies survive.
+  assert.equal(pinned['node-pty'], '^1.1.0')
+  // Only the addons leave the tarball; the rest of native/ must stay.
+  const ignore = readFileSync(ignorePath, 'utf8')
+  assert.match(ignore, /^\/bin\/$/m)
+  assert.match(ignore, /^\/target\/$/m)
+
+  // Re-running a release must not duplicate pins or ignore rules.
+  applySplit('1.2.3', { manifestPath, ignorePath })
+  const again = readFileSync(manifestPath, 'utf8')
+  assert.equal(again.match(/tau-voice-win32-x64/g).length, 1, 'pin was duplicated on re-run')
+  assert.equal(readFileSync(ignorePath, 'utf8').match(/^\/bin\/$/gm).length, 1, 'ignore rule duplicated')
+
+  // A later version re-pins rather than stacking entries.
+  applySplit('1.3.0', { manifestPath, ignorePath })
+  const bumped = JSON.parse(readFileSync(manifestPath, 'utf8')).optionalDependencies
+  assert.equal(bumped[packageNameFor('win32-x64')], '1.3.0')
+  assert.equal(Object.keys(bumped).length, VOICE_TARGETS.length + 1)
 })

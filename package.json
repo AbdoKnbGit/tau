@@ -45,6 +45,7 @@
     "voice:sync-packages": "node release/sync-voice-packages.mjs",
     "test:voice-packages": "node --test test/voice-platform-packages.test.mjs",
     "voice:release-check": "node release/verify-native-voice.mjs",
+    "release:voice": "node release/publish-voice-release.mjs",
     "shrinkwrap:generate": "node release/production-shrinkwrap.mjs --write",
     "shrinkwrap:check": "node release/production-shrinkwrap.mjs --check",
     "preinstall": "node scripts/preinstall.mjs",
