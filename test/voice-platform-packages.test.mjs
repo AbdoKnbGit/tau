@@ -145,3 +145,43 @@ test('the release step pins every platform and stops bundling the addons', t => 
   assert.equal(bumped[packageNameFor('win32-x64')], '1.3.0')
   assert.equal(Object.keys(bumped).length, VOICE_TARGETS.length + 1)
 })
+
+test('pinning works on a CRLF manifest and refuses to silently do nothing', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'tau-crlf-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const manifestPath = join(dir, 'package.json')
+  const ignorePath = join(dir, '.npmignore')
+
+  // Git checks package.json out with CRLF on Windows. Anchoring the edit on a
+  // bare newline made it a no-op, and a release shipped with no pins and no
+  // bundled addons, leaving voice unavailable for everyone who installed it.
+  const crlf = JSON.stringify({
+    name: '@abdoknbgit/tau', version: '1.2.3',
+    optionalDependencies: { 'node-pty': '^1.1.0' },
+  }, null, 2).split(String.fromCharCode(10)).join(String.fromCharCode(13, 10))
+  writeFileSync(manifestPath, crlf)
+  writeFileSync(ignorePath, ['/target/', ''].join(String.fromCharCode(13, 10)))
+
+  applySplit('9.9.9', { manifestPath, ignorePath })
+
+  const after = readFileSync(manifestPath, "utf8")
+  const pinned = JSON.parse(after).optionalDependencies
+  for (const entry of VOICE_TARGETS) {
+    assert.equal(pinned[packageNameFor(entry.target)], '9.9.9', `${entry.target} was not pinned in a CRLF manifest`)
+  }
+  assert.equal(pinned['node-pty'], '^1.1.0')
+  // The file must stay CRLF rather than being rewritten with mixed endings.
+  assert.ok(!/[^\r]\n/.test(after), "line endings became mixed")
+  assert.match(readFileSync(ignorePath, "utf8"), /^\/bin\/\r?$/m)
+})
+
+test('a manifest without an optionalDependencies block fails loudly', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'tau-noopt-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const manifestPath = join(dir, 'package.json')
+  const ignorePath = join(dir, '.npmignore')
+  writeFileSync(manifestPath, JSON.stringify({ name: 'x', version: '1.0.0' }, null, 2))
+  writeFileSync(ignorePath, '/target/')
+  // Better to stop the release than to publish a Tau that pins nothing.
+  assert.throws(() => applySplit('9.9.9', { manifestPath, ignorePath }), /optionalDependencies/)
+})

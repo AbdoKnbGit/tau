@@ -73,22 +73,31 @@ function publishedAlready(name, version) {
 export function applySplit(version, paths = {}) {
   const manifestPath = paths.manifestPath ?? join(root, 'package.json')
   const source = readFileSync(manifestPath, 'utf8')
-  const manifest = JSON.parse(source)
-  const stale = VOICE_TARGETS
-    .map(entry => packageNameFor(entry.target))
-    .some(name => manifest.optionalDependencies?.[name] !== version)
-  if (stale) {
-    // Rewrite the block wholesale so re-runs cannot leave duplicate pins.
-    const pins = VOICE_TARGETS.map(entry => `    "${packageNameFor(entry.target)}": "${version}",\n`).join('')
-    const anchor = '  "optionalDependencies": {\n'
-    const stripped = source.replace(/^ {4}"@abdoknbgit\/tau-voice-[^"]+": "[^"]*",\n/gm, '')
-    writeFileSync(manifestPath, stripped.replace(anchor, anchor + pins))
+  // Git checks this file out with CRLF on Windows. Anchoring on a bare newline
+  // made the replace a silent no-op, and a release shipped with no pins and no
+  // bundled addons: voice was simply unavailable. Match the file's own ending.
+  const eol = source.includes('\r\n') ? '\r\n' : '\n'
+  const pins = VOICE_TARGETS
+    .map(entry => `    "${packageNameFor(entry.target)}": "${version}",${eol}`)
+    .join('')
+  const anchor = `  "optionalDependencies": {${eol}`
+  if (!source.includes(anchor)) throw new Error('Could not find the optionalDependencies block in package.json.')
+  const stripped = source.replace(/^ {4}"@abdoknbgit\/tau-voice-[^"]+": "[^"]*",\r?\n/gm, '')
+  writeFileSync(manifestPath, stripped.replace(anchor, anchor + pins))
+
+  // Never trust the edit: re-read and confirm. A no-op here previously reached
+  // the registry, so this must fail the release rather than be assumed.
+  const written = JSON.parse(readFileSync(manifestPath, 'utf8')).optionalDependencies ?? {}
+  for (const entry of VOICE_TARGETS) {
+    const name = packageNameFor(entry.target)
+    if (written[name] !== version) throw new Error(`Failed to pin ${name} at ${version} in package.json.`)
   }
+
   // native/ must stay published: the shell-parser and tau-tools go.mod files are
   // required in the tarball. Only the addon binaries are excluded.
   const ignorePath = paths.ignorePath ?? join(root, 'native', 'tau-voice', '.npmignore')
   const ignore = readFileSync(ignorePath, 'utf8')
-  if (!/^\/bin\/$/m.test(ignore)) writeFileSync(ignorePath, `${ignore.replace(/\n*$/, '')}\n/bin/\n`)
+  if (!/^\/bin\/\r?$/m.test(ignore)) writeFileSync(ignorePath, `${ignore.replace(/\s*$/, '')}\n/bin/\n`)
 }
 
 function main() {
