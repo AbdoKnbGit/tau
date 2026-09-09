@@ -120,7 +120,11 @@ export class LiveVoiceSession {
         controller.abort(timeout)
         reject(timeout)
       }, STARTUP_TIMEOUT_MS)
-      deadline.unref?.()
+      // Deliberately not unref'd: this timer is the only guarantee that start()
+      // settles, so it must hold the event loop open until it fires or is
+      // cleared. Unref'd, a process with nothing else pending exits with the
+      // promise unresolved. It is cleared the moment the work settles, so it
+      // never delays shutdown.
       const done = () => clearTimeout(deadline)
       work.then(value => { done(); resolve(value) }, error => { done(); reject(error) })
     }).catch(async error => {
