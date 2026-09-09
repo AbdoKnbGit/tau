@@ -35,10 +35,15 @@ test('real voice postinstall verifies bundled audio without Rust, external execu
   assert.equal(installed.status, 0, installed.error?.message ?? installed.stderr)
   assert.match(installed.stdout, /Native voice ready/)
   assert.ok(existsSync(join(root, '.tau-lifecycle-complete.json')))
-  // A broken same-version update must invalidate the old completion marker.
+  // A corrupted addon must not condemn the whole CLI. Voice is an optional
+  // dependency behind a paid plan; the install completes, says why voice is
+  // unavailable, and still writes the completion marker. Tampered code is
+  // stopped in-process by loadNativeVoice before it can run -- see
+  // native-voice-runtime.test.mjs -- so nothing is lost by reporting here.
   writeFileSync(join(bin, file), 'corrupted update')
   const corrupted = run()
-  assert.notEqual(corrupted.status, 0)
-  assert.match(corrupted.stderr, /audio integrity check failed/)
-  assert.ok(!existsSync(join(root, '.tau-lifecycle-complete.json')))
+  assert.equal(corrupted.status, 0, corrupted.stderr)
+  assert.match(corrupted.stdout, /Voice audio is unavailable on this host/)
+  assert.match(corrupted.stdout, /rest of Tau is unaffected/)
+  assert.ok(existsSync(join(root, '.tau-lifecycle-complete.json')), 'a voice fault must not mark the install incomplete')
 })

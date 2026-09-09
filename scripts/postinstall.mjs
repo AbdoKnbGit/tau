@@ -376,7 +376,31 @@ async function runPostinstall() {
   writeLifecycleCompletionMarker(packageRoot);
 }
 
+/**
+ * Reports whether this host's voice addon is usable. Never fails the install.
+ *
+ * Voice is an optional dependency behind a paid plan, so most installs never
+ * load it and none of them should break because of it. Everything that can go
+ * wrong here -- a glibc or macOS older than the build floor, an antivirus
+ * quarantine, a truncated download, a corrupted file -- used to abort the
+ * install and leave the lifecycle marker unwritten, condemning a working CLI
+ * over a feature the user may not even have access to.
+ *
+ * Nothing is lost by reporting instead. The integrity check that protects the
+ * user runs again in-process, in loadNativeVoice, immediately before the addon
+ * is executed: a tampered binary still never runs. This check is an early
+ * warning, not the gate.
+ */
 async function verifyBundledVoice() {
+  try {
+    await checkBundledVoice();
+  } catch (error) {
+    console.log(`[tau] Voice audio is unavailable on this host: ${error?.message ?? error}`);
+    console.log('[tau] The rest of Tau is unaffected; /hey will report the same reason.');
+  }
+}
+
+async function checkBundledVoice() {
   const { nativeVoiceTarget, nativeVoiceLoadPath, resolveNativeVoiceArtifact, voicePackageNameFor } =
     await import('./native-voice.mjs');
   let voiceTarget = null;
