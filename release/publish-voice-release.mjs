@@ -21,6 +21,17 @@ import { fileURLToPath } from 'node:url'
 import { VOICE_TARGETS, addonVersion, packageDirFor, packageNameFor, syncVoicePackages } from './sync-voice-packages.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+// Reject anything unrecognised rather than ignoring it. A typo such as
+// --publis would otherwise fall through to a dry run that looks like a
+// successful release, and the difference is six publishes.
+const KNOWN_FLAGS = new Set(['--publish'])
+const unknownFlags = process.argv.slice(2).filter(argument => !KNOWN_FLAGS.has(argument))
+if (unknownFlags.length) {
+  process.stderr.write(`Unknown option: ${unknownFlags.join(' ')}
+Usage: node release/publish-voice-release.mjs [--publish]
+`)
+  process.exit(2)
+}
 const live = process.argv.includes('--publish')
 const step = message => process.stdout.write(`\n== ${message}\n`)
 const note = message => process.stdout.write(`   ${message}\n`)
