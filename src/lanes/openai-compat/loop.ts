@@ -269,6 +269,12 @@ interface CompatCatalogModel extends OpenRouterCatalogModel {
     completion_chat?: boolean
     function_calling?: boolean
     vision?: boolean
+    /** GitHub Copilot states its token limits here, not at the top level. */
+    limits?: {
+      max_prompt_tokens?: number
+      max_context_window_tokens?: number
+      max_output_tokens?: number
+    }
   }
 }
 
@@ -1467,10 +1473,17 @@ function toCompatCatalogModel(
     && model.owned_by.toLowerCase() !== 'system'
       ? model.owned_by
       : undefined
+  const limits = model.capabilities?.limits
   const contextWindow =
-    model.context_length
+    // A stated prompt ceiling is the limit the host enforces. Copilot rejects
+    // a prompt over max_prompt_tokens even where the model's whole window is
+    // larger (Opus 4.7: 168K of 200K), so that is the number compaction has
+    // to respect. The whole window only stands in when no ceiling is stated.
+    positiveCatalogNumber(limits?.max_prompt_tokens)
+    ?? model.context_length
     ?? model.context_window
     ?? model.max_context_length
+    ?? positiveCatalogNumber(limits?.max_context_window_tokens)
 
   return {
     id: model.id,
@@ -1484,6 +1497,12 @@ function toCompatCatalogModel(
       ? { supportsToolCalling: true }
       : {}),
   }
+}
+
+function positiveCatalogNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : undefined
 }
 
 function isTextGenerationCatalogType(type: string | undefined): boolean {

@@ -7,7 +7,7 @@ import {
 import { microcompactMessages } from 'src/services/compact/microCompact.js'
 import { getSdkBetas } from '../bootstrap/state.js'
 import { getCommandName } from '../commands.js'
-import { getSystemContext } from '../context.js'
+import { getSystemContext, getUserContext } from '../context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   getAutoCompactThreshold,
@@ -969,11 +969,13 @@ async function approximateMessageTokens(
  * API path already falls back to, so it costs nothing and cannot fail because
  * a provider is unreachable.
  *
- * Covers the two categories that dominate the total — the system prompt and
- * tool definitions. Smaller ones (MCP tools, agents, skills) are left out, so
- * the result is a slight under-count, which is the safe direction: the caller
- * uses it as a floor, and a floor that is a little low still beats reporting
- * zero.
+ * Covers what every request carries ahead of the conversation: the system
+ * prompt, every tool definition (MCP servers' included), and the memory files
+ * and date prepended as user context. Git status is left out: it comes from
+ * running git, which must not happen before the workspace is trusted, and it
+ * is small. The result is a slight under-count, which is the safe direction:
+ * the caller uses it as a floor, and a floor that is a little low still beats
+ * reporting zero.
  *
  * Best-effort throughout: any failure leaves the previous measurement (or
  * none) in place, so the status line degrades to the behaviour it had before
@@ -997,7 +999,12 @@ export async function measureContextBaseline(
     })
     if (!shouldRefreshContextBaseline(runtimeModel)) return
     beginContextBaselineRefresh(runtimeModel)
-    const systemPrompt = await getSystemPrompt(tools, runtimeModel)
+    // getUserContext only reads memory files, and startup has already begun
+    // it: this awaits the same memoized result the first request will use.
+    const [systemPrompt, userContext] = await Promise.all([
+      getSystemPrompt(tools, runtimeModel),
+      getUserContext(),
+    ])
     const toolSchemas = await Promise.all(
       tools.map(tool =>
         toolToAPISchema(tool, {
@@ -1010,6 +1017,7 @@ export async function measureContextBaseline(
     )
     const tokens =
       roughTokenCountEstimation(systemPrompt.join(' ')) +
+      roughTokenCountEstimation(Object.values(userContext).join('\n')) +
       roughTokenCountEstimation(jsonStringify(toolSchemas)) +
       (toolSchemas.length > 0 ? TOOL_TOKEN_COUNT_OVERHEAD : 0)
     setContextBaselineTokens(runtimeModel, tokens)

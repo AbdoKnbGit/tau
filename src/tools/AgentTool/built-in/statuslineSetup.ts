@@ -230,11 +230,10 @@ How to use the statusLine command:
          : \`Quota \${Math.round(quota)}%\`]),
    ].join(' · ') + '\\n')
 
-   One caveat to pass on if the user compares the two: the context percentage
-   will differ slightly from the built-in bar. The bar counts conversation
-   tokens only, deliberately excluding the system prompt and tool schemas,
-   while context_window.used_percentage includes them. A statusLine command
-   cannot see the conversation-only figure.
+   The context figures match the built-in bar exactly. Both read the same
+   numbers: the provider's own count of the last prompt - system prompt,
+   tools, MCP servers, memory and conversation - or, before the first
+   response, the measured initial context.
 
    This script also does not reproduce the bar's width handling. The built-in
    bar truncates the cwd and provider/model columns and drops the token counts

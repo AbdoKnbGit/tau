@@ -6,7 +6,10 @@
 
 import {
   deriveTable,
+  lookupCatalogContextWindow,
   lookupCatalogPrice,
+  lookupCatalogPromptCeiling,
+  noteMissingContextWindow,
   resetCatalogForTests,
   isLocalProvider,
   _refreshRetryDelay,
@@ -396,6 +399,206 @@ test('returns null when no table has been loaded', () => {
     lookupCatalogPrice('deepseek', 'deepseek-v4-flash') === null,
     'no catalogue means unpriced, never a guess',
   )
+})
+
+// ─── context windows ─────────────────────────────────────────────────
+
+// Shaped like models.dev: Copilot states a prompt ceiling below the whole
+// window, OpenCode Zen only the window, and neither prices every row.
+const WINDOW_PAYLOAD = {
+  'github-copilot': {
+    models: {
+      'gpt-4.1': { limit: { context: 128_000, input: 128_000, output: 16_384 } },
+      'claude-opus-4.7': {
+        cost: { input: 5, output: 25 },
+        limit: { context: 200_000, input: 168_000, output: 32_000 },
+      },
+      'no-limit': { cost: { input: 1, output: 2 } },
+      'junk-limit': { limit: { context: 'large', input: -1 } },
+    },
+  },
+  opencode: {
+    models: {
+      'claude-fable-5-1': { limit: { context: 1_000_000, output: 128_000 } },
+      'Qwen3-Coder': { limit: { context: 262_144 } },
+    },
+  },
+  lmstudio: { models: { 'qwen3-8b': { limit: { context: 32_768 } } } },
+}
+
+function windowTable(): CatalogTable {
+  return deriveTable(WINDOW_PAYLOAD, NOW)
+}
+
+test('stores a window for every model that states one, priced or not', () => {
+  const limits = windowTable().limits!
+  assert(
+    limits.opencode?.['claude-fable-5-1'] === 1_000_000,
+    'an unpriced model still has its window',
+  )
+  assert(limits['github-copilot']?.['gpt-4.1'] === 128_000, 'kept per host')
+})
+
+test('prefers the prompt ceiling a host enforces over its whole window', () => {
+  // Copilot rejects an Opus 4.7 prompt past 168K although the window is 200K.
+  const window = windowTable().limits!['github-copilot']?.['claude-opus-4.7']
+  assert(window === 168_000, `expected the 168K ceiling, got ${window}`)
+})
+
+test('skips missing and malformed limits', () => {
+  const copilot = windowTable().limits!['github-copilot']!
+  assert(copilot['no-limit'] === undefined, 'no limit block, no window')
+  assert(copilot['junk-limit'] === undefined, 'non-numeric and negative limits are ignored')
+})
+
+test('answers through the provider alias, case-insensitively', () => {
+  resetCatalogForTests(windowTable())
+  assert(
+    lookupCatalogContextWindow('copilot', ['gpt-4.1']) === 128_000,
+    'copilot resolves to github-copilot',
+  )
+  assert(
+    lookupCatalogContextWindow('opencode', ['QWEN3-coder']) === 262_144,
+    'ids match regardless of case',
+  )
+})
+
+test('tries each candidate spelling in order', () => {
+  resetCatalogForTests(windowTable())
+  const window = lookupCatalogContextWindow('opencode', [
+    'claude-fable-5-1-high',
+    'claude-fable-5-1',
+  ])
+  assert(window === 1_000_000, `expected the base id's window, got ${window}`)
+})
+
+test("never borrows another host's window for the same id", () => {
+  resetCatalogForTests(windowTable())
+  assert(
+    lookupCatalogContextWindow('openrouter', ['gpt-4.1']) === undefined,
+    "Copilot's 128K is not OpenRouter's",
+  )
+})
+
+test('states no window for a local runtime', () => {
+  // Its window is whatever the running instance was started with.
+  resetCatalogForTests(windowTable())
+  assert(
+    lookupCatalogContextWindow('lmstudio', ['qwen3-8b']) === undefined,
+    'a local window is not catalogue data',
+  )
+})
+
+test('a table from before windows were stored answers nothing', () => {
+  resetCatalogForTests(TABLE)
+  assert(
+    lookupCatalogContextWindow('deepseek', ['deepseek-v4-flash']) === undefined,
+    'no limits block, no answer',
+  )
+})
+
+test('opting out stops context windows too', () => {
+  resetCatalogForTests(windowTable())
+  process.env.CLAUDEX_DISABLE_MODEL_PRICING = '1'
+  try {
+    assert(
+      lookupCatalogContextWindow('copilot', ['gpt-4.1']) === undefined,
+      'a disabled catalogue answers nothing',
+    )
+    assert(
+      lookupCatalogPromptCeiling('copilot', ['claude-opus-4.7']) === undefined,
+      'nor any ceiling',
+    )
+  } finally {
+    delete process.env.CLAUDEX_DISABLE_MODEL_PRICING
+  }
+})
+
+test('keeps a ceiling only where a host states one below the window', () => {
+  const ceilings = windowTable().ceilings!
+  assert(
+    ceilings['github-copilot']?.['claude-opus-4.7'] === 168_000,
+    "Opus 4.7's 168K of 200K is a ceiling",
+  )
+  assert(
+    ceilings['github-copilot']?.['gpt-4.1'] === undefined,
+    'an input equal to the window is not a ceiling',
+  )
+  assert(ceilings.opencode === undefined, 'a host stating whole windows only has none')
+})
+
+test('answers the prompt ceiling through the provider alias', () => {
+  resetCatalogForTests(windowTable())
+  assert(
+    lookupCatalogPromptCeiling('copilot', ['claude-opus-4.7']) === 168_000,
+    'the ceiling Copilot states',
+  )
+  assert(
+    lookupCatalogPromptCeiling('copilot', ['gpt-4.1']) === undefined,
+    'no ceiling where none is stated',
+  )
+})
+
+// ─── refreshing for a missing window ─────────────────────────────────
+
+/**
+ * Count download attempts without ever completing one: a failed response
+ * leaves the table, and the file on disk, untouched.
+ */
+function countFailedDownloads(): { calls: () => number; restore: () => void } {
+  const original = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = (async () => {
+    calls += 1
+    return new Response('unavailable', { status: 503 })
+  }) as unknown as typeof fetch
+  return {
+    calls: () => calls,
+    restore: () => {
+      globalThis.fetch = original
+    },
+  }
+}
+
+/** An old table for a host it does describe - where a miss may refresh. */
+function staleWindowTable(): CatalogTable {
+  return { ...windowTable(), fetchedAt: 0 }
+}
+
+test('a window miss on a described host refreshes a stale catalogue', () => {
+  resetCatalogForTests(staleWindowTable())
+  const downloads = countFailedDownloads()
+  try {
+    noteMissingContextWindow('copilot')
+    assert(downloads.calls() === 1, `expected one download, got ${downloads.calls()}`)
+  } finally {
+    downloads.restore()
+  }
+})
+
+test('never downloads for a window while nonessential traffic is disabled', () => {
+  resetCatalogForTests(staleWindowTable())
+  const downloads = countFailedDownloads()
+  process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+  try {
+    noteMissingContextWindow('copilot')
+    assert(downloads.calls() === 0, `expected no download, got ${downloads.calls()}`)
+  } finally {
+    delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+    downloads.restore()
+  }
+})
+
+test('a table that does not describe the host is not downloaded again for it', () => {
+  // Antigravity is absent from models.dev; a fresh copy would not change that.
+  resetCatalogForTests(staleWindowTable())
+  const downloads = countFailedDownloads()
+  try {
+    noteMissingContextWindow('antigravity')
+    assert(downloads.calls() === 0, `expected no download, got ${downloads.calls()}`)
+  } finally {
+    downloads.restore()
+  }
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

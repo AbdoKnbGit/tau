@@ -293,13 +293,20 @@ export const copilotTransformer: Transformer = {
   },
 
   filterModelCatalog(models: Array<{ id: string; name?: string }>): Array<{ id: string; name?: string }> {
-    const deduped = new Map<string, { id: string; name?: string }>()
+    const deduped = new Map<string, { id: string; name?: string; contextWindow?: number }>()
     for (const model of models) {
       if (!_isChatCapableCopilotModel(model.id)) continue
       if (!_isCurrentPlanEligibleCopilotModel(model.id)) continue
+      // Carry the context window through: it is the only place Copilot's own
+      // limit for a model arrives, and rebuilding the row from its id alone
+      // dropped it, so every Copilot model fell through to tables describing
+      // other hosts. Nothing else is carried - an owner or tags here would
+      // regroup and re-badge the picker, which sorts by owner first.
+      const { contextWindow } = model as { contextWindow?: number }
       deduped.set(model.id, {
         id: model.id,
         name: _copilotDisplayName(model.id),
+        ...(typeof contextWindow === 'number' && contextWindow > 0 && { contextWindow }),
       })
     }
     return Array.from(deduped.values())

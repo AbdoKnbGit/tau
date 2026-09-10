@@ -1,16 +1,20 @@
 import * as React from 'react'
 import { Box, Text } from 'src/ink.js'
-import { getSdkBetas } from '../../bootstrap/state.js'
+import { useAppState } from 'src/state/AppState.js'
+import type { Message } from '../../types/message.js'
 import { useSettings } from '../../hooks/useSettings.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
 import { statusRowFits } from '../statusLineDisplay.js'
 import { sessionStatusBarShouldDisplay } from '../StatusLine.js'
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js'
-import { analyzeContext } from '../../utils/contextAnalysis.js'
-import { getContextWindowForModel } from '../../utils/context.js'
+import {
+  getContextBaselineRevision,
+  subscribeContextBaseline,
+} from '../../utils/contextBaseline.js'
 import { getCwd } from '../../utils/cwd.js'
 import { modelDisplayStringForProvider } from '../../utils/model/display.js'
+import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
 import {
   getAPIProvider,
   isThirdPartyProvider,
@@ -18,7 +22,11 @@ import {
   type APIProvider,
 } from '../../utils/model/providers.js'
 import {
-  calculateConsumedContextPercentage,
+  getSessionContextUsage,
+  type SessionContextUsage,
+} from '../../utils/sessionContextUsage.js'
+import { doesMostRecentAssistantMessageExceed200k } from '../../utils/tokens.js'
+import {
   formatSessionStatus,
   shortenSessionCwd,
   type SessionQuotaStatus,
@@ -154,8 +162,29 @@ function resolveQuota(
 const QUOTA_TICK_MS = 60_000
 
 type Props = {
-  messages: Parameters<typeof analyzeContext>[0]
+  messages: Message[]
   columns: number
+}
+
+/**
+ * How full the context window is, or null when it cannot be read.
+ *
+ * The same call the statusLine command's `context_window` JSON is built from,
+ * so this bar and a custom script can never report different numbers for one
+ * session: the provider's own count of the last prompt - system prompt, tool
+ * schemas, MCP servers, skills, memory and conversation - or, before the
+ * first response, the measured initial context plus what has been typed since.
+ */
+function readContextUsage(
+  messages: Message[],
+  runtimeModel: string,
+): SessionContextUsage | null {
+  try {
+    return getSessionContextUsage(messages, runtimeModel)
+  } catch {
+    // A status-only reading must never make the prompt unusable.
+    return null
+  }
 }
 
 export function PromptInputStatusBar({
@@ -170,22 +199,17 @@ export function PromptInputStatusBar({
     sessionStatusBarShouldDisplay(settings) &&
     statusRowFits(isFullscreenEnvEnabled(), rows)
   const mainLoopModel = useMainLoopModel()
+  const permissionMode = useAppState(s => s.toolPermissionContext.mode)
   const provider = getAPIProvider()
-  const contextWindow = getContextWindowForModel(mainLoopModel, getSdkBetas())
   const lastMessageCount = messages.length
-  const usedContextTokens = React.useMemo(() => {
-    // Skip the scan entirely while hidden - it walks every message.
-    if (!visible) return null
-    try {
-      // Count only conversation content that consumes the initially free
-      // portion of the window. System prompts, tool schemas, and skill
-      // frontmatter are injected separately and are deliberately excluded.
-      return analyzeContext(messages).total
-    } catch {
-      // A status-only estimate must never make the prompt unusable.
-      return null
-    }
-  }, [messages, visible])
+
+  // The initial-context measurement lands after the first render, and nothing
+  // else redraws this row before the first response - the stretch it exists
+  // for. Subscribing makes a fresh session show what it carries once known.
+  React.useSyncExternalStore(
+    subscribeContextBaseline,
+    getContextBaselineRevision,
+  )
 
   // Kept off the render path: this starts an account lookup at most once per
   // TTL and returns immediately, so the row always paints from what is already
@@ -220,18 +244,24 @@ export function PromptInputStatusBar({
   // there is no reason to do while the bar is hidden.
   if (!visible) return null
 
+  // The model that actually runs, which the statusLine command reports too.
+  // Under opusplan it differs from the configured one, and so does its window.
+  const runtimeModel = getRuntimeMainLoopModel({
+    permissionMode,
+    mainLoopModel,
+    exceeds200kTokens: doesMostRecentAssistantMessageExceed200k(messages),
+  })
+  const context = readContextUsage(messages, runtimeModel)
+
   const cwd = shortenSessionCwd(getCwd())
   const status = formatSessionStatus(
     {
       cwd,
       provider: PROVIDER_DISPLAY_NAMES[provider],
       model: modelDisplayStringForProvider(mainLoopModel, provider),
-      usedContextTokens,
-      contextWindowTokens: contextWindow,
-      consumedContextPercentage:
-        usedContextTokens === null
-          ? null
-          : calculateConsumedContextPercentage(usedContextTokens, contextWindow),
+      usedContextTokens: context?.usedTokens ?? null,
+      contextWindowTokens: context?.contextWindowSize ?? null,
+      consumedContextPercentage: context?.usedPercentage ?? null,
       quota: resolveQuota(provider, mainLoopModel),
     },
     columns,

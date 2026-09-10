@@ -600,6 +600,55 @@ async function main(): Promise<void> {
     await assertLiveModelCatalogBypassesCache('moonshot', ['kimi-k2.7-code', 'kimi-k2.8-code'])
   })
 
+  await test('Copilot /models keeps the prompt ceiling it enforces as the context window', async () => {
+    // Copilot states its limits under capabilities.limits, never at the top
+    // level, and rejects a prompt over max_prompt_tokens even where the whole
+    // window is larger. The picker row has to carry that ceiling, or the model
+    // falls through to tables describing other hosts - OpenAI's 1M gpt-4.1.
+    // Every id here is on Copilot Free too, so the plan filter keeps them all.
+    const lane = new OpenAICompatLane()
+    lane.registerProvider('copilot', 'copilot-token', 'https://api.githubcopilot.com')
+    const oldFetch = globalThis.fetch
+    try {
+      globalThis.fetch = (async () => new Response(JSON.stringify({
+        object: 'list',
+        data: [
+          {
+            id: 'gpt-4.1',
+            name: 'GPT-4.1',
+            capabilities: {
+              type: 'chat',
+              limits: { max_context_window_tokens: 128_000, max_prompt_tokens: 128_000, max_output_tokens: 16_384 },
+            },
+          },
+          {
+            id: 'claude-haiku-4.5',
+            name: 'Claude Haiku 4.5',
+            capabilities: {
+              type: 'chat',
+              limits: { max_context_window_tokens: 200_000, max_prompt_tokens: 136_000, max_output_tokens: 64_000 },
+            },
+          },
+          {
+            id: 'gpt-5-mini',
+            name: 'GPT-5 mini',
+            capabilities: { type: 'chat', limits: { max_context_window_tokens: 264_000 } },
+          },
+        ],
+      }), { status: 200 })) as unknown as typeof fetch
+
+      const models = await lane.listModels('copilot')
+      const windowOf = (id: string) => models.find(model => model.id === id)?.contextWindow
+      assert(windowOf('gpt-4.1') === 128_000, `gpt-4.1 window=${windowOf('gpt-4.1')}`)
+      assert(windowOf('claude-haiku-4.5') === 136_000,
+        `claude-haiku-4.5 window=${windowOf('claude-haiku-4.5')}`)
+      assert(windowOf('gpt-5-mini') === 264_000, `gpt-5-mini window=${windowOf('gpt-5-mini')}`)
+    } finally {
+      globalThis.fetch = oldFetch
+      lane.unregisterProvider('copilot')
+    }
+  })
+
   await test('sends prompt_cache_key and affinity headers from session id', async () => {
     const { request } = await captureCopilotRequest('session-fixed')
     assert(request.url === 'https://api.githubcopilot.com/chat/completions', `url=${request.url}`)

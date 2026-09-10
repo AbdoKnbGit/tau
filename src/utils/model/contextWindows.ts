@@ -1,5 +1,10 @@
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import type { APIProvider } from './providers.js'
+import {
+  lookupCatalogContextWindow,
+  lookupCatalogPromptCeiling,
+  noteMissingContextWindow,
+} from '../modelPricingCatalog.js'
 import { getAlibabaModelMeta } from './alibabaCatalog.js'
 import {
   getStoredContextWindow,
@@ -240,6 +245,21 @@ const VARIANT_SUFFIXES = new Set([
   'xhigh',
 ])
 
+/**
+ * Providers the models.dev tier must not answer for: Anthropic's own
+ * platforms. models.dev lists their windows with the 1M beta applied (Sonnet
+ * 4.5 at 1M), while getContextWindowForModel decides that from the betas the
+ * session actually sends. Mirrors isAnthropicNativeProvider, which is not
+ * imported because providers.ts pulls in the settings graph and this module
+ * has to stay loadable on its own.
+ */
+const ANTHROPIC_NATIVE_PROVIDERS: ReadonlySet<string> = new Set([
+  'firstParty',
+  'bedrock',
+  'vertex',
+  'foundry',
+])
+
 export function recordProviderModelContextWindows(
   provider: APIProvider,
   models: readonly ModelInfo[],
@@ -280,36 +300,9 @@ export function getProviderCatalogContextWindow(
   }
 
   if (provider) {
-    const dynamicWindow = lookupMap(candidates, providerContextWindows.get(provider))
-    if (dynamicWindow !== undefined) {
-      return dynamicWindow
-    }
-
-    // Alibaba publishes no context window on its own /models route, so the
-    // catalogue is the only source — and it is a live one, which is why there
-    // is no static Alibaba block below. Consulted here rather than waiting for
-    // the picker to record windows, so a session that resumes straight onto a
-    // Qwen model still knows how big its window is.
-    if (provider === 'alibaba') {
-      const catalogWindow = getAlibabaModelMeta(model)?.contextWindow
-      if (catalogWindow !== undefined) {
-        return catalogWindow
-      }
-    }
-
-    // Windows observed in an earlier session, replayed from disk. Below the
-    // live map (this session's catalogue is fresher) and above the static
-    // tables, since it came from the provider's own catalogue rather than a
-    // hand-maintained list that cannot know about models released after it was
-    // last edited. Same precedence the in-memory map already had, just durable.
-    const storedWindow = getStoredContextWindow(provider, candidates)
-    if (storedWindow !== undefined) {
-      return storedWindow
-    }
-
-    const scopedWindow = lookupRecord(candidates, PROVIDER_SCOPED_CONTEXT_WINDOWS[provider])
-    if (scopedWindow !== undefined) {
-      return scopedWindow
+    const hostWindow = lookupHostWindow(model, provider, candidates)
+    if (hostWindow !== undefined) {
+      return capToPromptCeiling(hostWindow, provider, candidates)
     }
   }
 
@@ -319,6 +312,82 @@ export function getProviderCatalogContextWindow(
   }
 
   return lookupPrefixes(candidates)
+}
+
+/** What the sources scoped to one host say, most authoritative first. */
+function lookupHostWindow(
+  model: string,
+  provider: APIProvider,
+  candidates: readonly string[],
+): number | undefined {
+  const dynamicWindow = lookupMap(candidates, providerContextWindows.get(provider))
+  if (dynamicWindow !== undefined) {
+    return dynamicWindow
+  }
+
+  // Alibaba publishes no context window on its own /models route, so the
+  // catalogue is the only source — and it is a live one, which is why there
+  // is no static Alibaba block below. Consulted here rather than waiting for
+  // the picker to record windows, so a session that resumes straight onto a
+  // Qwen model still knows how big its window is.
+  if (provider === 'alibaba') {
+    const catalogWindow = getAlibabaModelMeta(model)?.contextWindow
+    if (catalogWindow !== undefined) {
+      return catalogWindow
+    }
+  }
+
+  // Windows observed in an earlier session, replayed from disk. Below the
+  // live map (this session's catalogue is fresher) and above the static
+  // tables, since it came from the provider's own catalogue rather than a
+  // hand-maintained list that cannot know about models released after it was
+  // last edited. Same precedence the in-memory map already had, just durable.
+  const storedWindow = getStoredContextWindow(provider, candidates)
+  if (storedWindow !== undefined) {
+    return storedWindow
+  }
+
+  const scopedWindow = lookupRecord(candidates, PROVIDER_SCOPED_CONTEXT_WINDOWS[provider])
+  if (scopedWindow !== undefined) {
+    return scopedWindow
+  }
+
+  // What models.dev states for this host, from the same catalogue the price
+  // table is built from. Unlike the tables below it is host-specific —
+  // Copilot's gpt-4.1 is 128K, OpenAI's 1M — and it already knows models
+  // released after those tables were last edited, such as OpenCode Zen's
+  // claude-fable-5-1 at 1M, which fell to the 200K default before.
+  if (!ANTHROPIC_NATIVE_PROVIDERS.has(provider)) {
+    const catalogWindow = lookupCatalogContextWindow(provider, candidates)
+    if (catalogWindow !== undefined) {
+      return catalogWindow
+    }
+    noteMissingContextWindow(provider)
+  }
+
+  return undefined
+}
+
+/**
+ * Hold a host's window to the prompt ceiling models.dev states for it.
+ *
+ * A provider's own catalogue tends to state a model's whole window —
+ * OpenRouter lists OpenAI's gpt-5 at 400K — while the model rejects a prompt
+ * past a smaller ceiling: OpenAI caps gpt-5 input at 272K and keeps the rest
+ * for output. Sizing compaction by the whole window lets a prompt grow past
+ * that ceiling and fail; the smaller number costs at most an earlier
+ * compaction. A figure already below the ceiling is kept as it is.
+ */
+function capToPromptCeiling(
+  window: number,
+  provider: APIProvider,
+  candidates: readonly string[],
+): number {
+  if (ANTHROPIC_NATIVE_PROVIDERS.has(provider)) {
+    return window
+  }
+  const ceiling = lookupCatalogPromptCeiling(provider, candidates)
+  return ceiling !== undefined && ceiling < window ? ceiling : window
 }
 
 function lookupMap(

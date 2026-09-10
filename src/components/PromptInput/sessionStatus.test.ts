@@ -7,7 +7,6 @@
 import path from 'path'
 import { stringWidth } from '../../ink/stringWidth.js'
 import {
-  calculateConsumedContextPercentage,
   formatSessionStatus,
   formatTokenCount,
   shortenSessionCwd,
@@ -145,23 +144,6 @@ test('keeps cwd, provider/model, and context on one narrow row', () => {
   assert(status.includes('·'), 'status should retain field separators')
   assert(status.includes('Anthropic'), 'provider should remain identifiable')
   assert(status.endsWith('█░░░░░ 18%'), 'context bar should remain visible')
-})
-
-test('measures only supplied conversation tokens against the full window', () => {
-  const percentage = calculateConsumedContextPercentage(20_000, 200_000)
-  assert(percentage === 10, `unexpected consumed percentage: ${percentage}`)
-  assert(
-    calculateConsumedContextPercentage(-500, 200_000) === 0,
-    'negative estimates should clamp to zero',
-  )
-  assert(
-    calculateConsumedContextPercentage(250_000, 200_000) === 100,
-    'usage should clamp to the context window',
-  )
-  assert(
-    calculateConsumedContextPercentage(20_000, 0) === null,
-    'invalid context windows should remain unknown',
-  )
 })
 
 const quotaInfo: SessionStatusInfo = {

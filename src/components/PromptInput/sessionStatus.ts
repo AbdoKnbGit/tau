@@ -60,26 +60,6 @@ function normalizePercentage(value: number | null): number | null {
 }
 
 /**
- * Percentage of the full context window consumed by conversation content.
- * The caller supplies conversation-only tokens so fixed system, tool-schema,
- * and skill-frontmatter overhead never inflates the displayed usage.
- */
-export function calculateConsumedContextPercentage(
-  conversationTokens: number,
-  contextWindow: number,
-): number | null {
-  if (
-    !Number.isFinite(conversationTokens) ||
-    !Number.isFinite(contextWindow) ||
-    contextWindow <= 0
-  ) {
-    return null
-  }
-
-  return Math.min(100, Math.max(0, (conversationTokens / contextWindow) * 100))
-}
-
-/**
  * Compact token count for the status row: `840`, `16K`, `1M`, `1.5M`.
  * Counts round rather than truncate so an in-progress conversation never
  * reads as `0K` while tokens are already being consumed.

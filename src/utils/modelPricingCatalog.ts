@@ -13,6 +13,10 @@
  * a broken transitive import that stops it loading outside the bundler, and
  * pricing rules are worth testing.
  *
+ * The same document states each model's context window per host, so the
+ * table keeps those as well (lookupCatalogContextWindow). One download serves
+ * both, under the same discipline.
+ *
  * ── Discipline ───────────────────────────────────────────────────────
  *
  *   - Lookups are synchronous and pure memory. Cost is computed per stream
@@ -34,6 +38,8 @@ import {
 } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+// Reads the environment and nothing else, so this module still loads alone.
+import { isEssentialTrafficOnly } from './privacyLevel.js'
 
 const CONFIG_DIR = join(homedir(), '.config', 'claude-code')
 const CACHE_FILE = join(CONFIG_DIR, 'model-prices.json')
@@ -149,6 +155,19 @@ export type CatalogTable = {
   version: number
   fetchedAt: number
   providers: Record<string, Record<string, CatalogPriceRow>>
+  /**
+   * Usable prompt window per host and lowercased model id, for every model
+   * that states one - priced or not. Absent from tables written before
+   * windows were stored; such a table still prices, and is replaced at the
+   * next refresh.
+   */
+  limits?: Record<string, Record<string, number>>
+  /**
+   * The subset of `limits` that is an input ceiling below the whole window,
+   * keyed the same way. A provider's own catalogue tends to state the whole
+   * window, so these are what hold it to the prompt the host will accept.
+   */
+  ceilings?: Record<string, Record<string, number>>
 }
 
 /** The shape modelCost.ts consumes. Declared here to avoid importing it. */
@@ -216,14 +235,54 @@ export function resolveCatalogProvider(tauProvider: string): string | null {
 }
 
 /**
- * Reduce a models.dev api.json payload to the prices alone.
+ * The prompt a host will accept for a model, from a models.dev `limit` block.
+ *
+ * `context` is the whole window. `input`, where stated, is the share a prompt
+ * may use once the output reservation is taken out - gpt-5.x on OpenAI is
+ * 272K of a 400K window, Opus 4.7 on Copilot 168K of 200K - and the host
+ * rejects a prompt past it. That is the ceiling compaction has to stay under,
+ * the same thing Claude's own `max_input_tokens` describes.
+ */
+function usableContextWindow(limit: unknown): number | null {
+  if (!limit || typeof limit !== 'object') return null
+  return (
+    promptCeiling(limit) ??
+    positiveOrNull((limit as { context?: unknown }).context)
+  )
+}
+
+/**
+ * The input ceiling a `limit` block states below its whole window, or null
+ * when it states none. An input limit with no window beside it still counts:
+ * it is the most a prompt may be.
+ */
+function promptCeiling(limit: unknown): number | null {
+  if (!limit || typeof limit !== 'object') return null
+  const { context, input } = limit as { context?: unknown; input?: unknown }
+  const prompt = positiveOrNull(input)
+  if (prompt === null) return null
+  const whole = positiveOrNull(context)
+  return whole === null || prompt < whole ? prompt : null
+}
+
+function positiveOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : null
+}
+
+/**
+ * Reduce a models.dev api.json payload to the prices and context windows.
  *
  * The published document is ~4MB of capability metadata; the rows below are
- * ~300KB. Only models quoting both an input and an output rate are kept - a
- * half-specified entry cannot price a request.
+ * a fraction of it. Only models quoting both an input and an output rate get
+ * a price - a half-specified entry cannot price a request - while every model
+ * that states a window keeps it, priced or not.
  */
 export function deriveTable(payload: unknown, fetchedAt: number): CatalogTable {
   const providers: CatalogTable['providers'] = {}
+  const limits: NonNullable<CatalogTable['limits']> = {}
+  const ceilings: NonNullable<CatalogTable['ceilings']> = {}
   if (payload && typeof payload === 'object') {
     for (const [providerId, provider] of Object.entries(
       payload as Record<string, unknown>,
@@ -232,9 +291,22 @@ export function deriveTable(payload: unknown, fetchedAt: number): CatalogTable {
       if (!models || typeof models !== 'object') continue
 
       const rows: Record<string, CatalogPriceRow> = {}
+      const windows: Record<string, number> = {}
+      const hostCeilings: Record<string, number> = {}
       for (const [modelId, model] of Object.entries(
         models as Record<string, unknown>,
       )) {
+        // Lowercased because lookups arrive normalized. Should a host ever
+        // list one id twice in different case, the first spelling wins.
+        const limit = (model as { limit?: unknown } | null)?.limit
+        const window = usableContextWindow(limit)
+        const windowKey = modelId.toLowerCase()
+        if (window !== null && typeof windows[windowKey] !== 'number') {
+          windows[windowKey] = window
+          const ceiling = promptCeiling(limit)
+          if (ceiling !== null) hostCeilings[windowKey] = ceiling
+        }
+
         const cost = (model as { cost?: unknown } | null)?.cost as
           | Record<string, unknown>
           | undefined
@@ -253,9 +325,13 @@ export function deriveTable(payload: unknown, fetchedAt: number): CatalogTable {
         rows[modelId] = tiers ? [...base, tiers] : base
       }
       if (Object.keys(rows).length > 0) providers[providerId] = rows
+      if (Object.keys(windows).length > 0) limits[providerId] = windows
+      if (Object.keys(hostCeilings).length > 0) {
+        ceilings[providerId] = hostCeilings
+      }
     }
   }
-  return { version: CACHE_VERSION, fetchedAt, providers }
+  return { version: CACHE_VERSION, fetchedAt, providers, limits, ceilings }
 }
 
 /**
@@ -309,6 +385,14 @@ function loadTable(): CatalogTable | null {
     const parsed = JSON.parse(readFileSync(CACHE_FILE, 'utf8')) as CatalogTable
     if (parsed?.version !== CACHE_VERSION) return null
     if (!parsed.providers || typeof parsed.providers !== 'object') return null
+    // Windows are optional: a table from before they were stored still
+    // prices. A malformed block is dropped rather than trusted.
+    for (const key of ['limits', 'ceilings'] as const) {
+      const block = parsed[key]
+      if (block !== undefined && (block === null || typeof block !== 'object')) {
+        parsed[key] = undefined
+      }
+    }
     table = parsed
   } catch {
     // An unreadable cache is simply no cache; the next refresh rewrites it.
@@ -346,6 +430,81 @@ export function lookupCatalogPrice(
     // price onto another.
     ?? rows[model.toLowerCase().replace(/\./g, '-')]
   return row ? rowToPrice(row, contextTokens) : null
+}
+
+/**
+ * The context window models.dev states for a model on this host, or
+ * undefined when it states none.
+ *
+ * Host-scoped like prices, and for the same reason: GitHub Copilot serves
+ * gpt-4.1 with 128K where OpenAI serves 1M, so borrowing across hosts would
+ * trade one wrong number for another. `candidates` are the caller's
+ * normalized spellings of the id, tried in order. Local runtimes are never
+ * answered - their window is whatever the running instance was started with.
+ */
+export function lookupCatalogContextWindow(
+  tauProvider: string,
+  candidates: readonly string[],
+): number | undefined {
+  return lookupHostValue('limits', tauProvider, candidates)
+}
+
+/**
+ * The input ceiling models.dev states below a model's whole window on this
+ * host, or undefined when it states none. A provider's own catalogue tends to
+ * report the whole window, so this is what holds it to the prompt the host
+ * will actually accept.
+ */
+export function lookupCatalogPromptCeiling(
+  tauProvider: string,
+  candidates: readonly string[],
+): number | undefined {
+  return lookupHostValue('ceilings', tauProvider, candidates)
+}
+
+function lookupHostValue(
+  field: 'limits' | 'ceilings',
+  tauProvider: string,
+  candidates: readonly string[],
+): number | undefined {
+  if (isModelPricingDisabled()) return undefined
+  const providerId = resolveCatalogProvider(tauProvider)
+  if (!providerId) return undefined
+
+  const values = loadTable()?.[field]?.[providerId]
+  if (!values) return undefined
+  for (const candidate of candidates) {
+    const id = candidate.toLowerCase()
+    // The same dotted/dashed tolerance prices get, for the same ids.
+    for (const key of [id, id.replace(/\./g, '-')]) {
+      const value = values[key]
+      if (typeof value === 'number' && value > 0) return value
+    }
+  }
+  return undefined
+}
+
+/**
+ * Note that a host's window could not be answered from the catalogue.
+ *
+ * Refreshes it when it could not have answered: nothing downloaded yet, a
+ * table from before windows were stored, or a stale table for a host it does
+ * describe - the model may simply be newer than the table. A current table
+ * that lacks the host altogether (Antigravity, Kiro, Cursor) is left alone,
+ * since downloading it again would not change the answer. Nothing is fetched
+ * while nonessential traffic is disabled: sizing a window is not a reason to
+ * download a catalogue.
+ *
+ * Returns immediately; the refresh is ensureModelPricesFresh's, with its TTL,
+ * backoff and in-flight guard.
+ */
+export function noteMissingContextWindow(tauProvider: string): void {
+  if (isModelPricingDisabled() || isEssentialTrafficOnly()) return
+  const providerId = resolveCatalogProvider(tauProvider)
+  if (!providerId) return
+  const limits = loadTable()?.limits
+  if (limits && !limits[providerId]) return
+  ensureModelPricesFresh()
 }
 
 /** When the stored table was fetched, or null when there is none. */
@@ -419,12 +578,23 @@ function refreshRetryDelay(failures: number): number {
 }
 
 /**
+ * Whether a table carries everything this build reads from it. One written by
+ * an older build still prices, but is refreshed at the next opportunity
+ * instead of after the usual day - otherwise an update would wait that long
+ * to learn context windows and prompt ceilings.
+ */
+function hasCurrentShape(table: CatalogTable | null): boolean {
+  return Boolean(table?.limits && table.ceilings)
+}
+
+/**
  * Refresh the stored table if it is missing or a day old. Fire-and-forget:
  * returns immediately, never throws, and leaves the previous table untouched
  * when the fetch fails.
  *
- * Called on discovering a model with no known price, so a session that never
- * meets one issues no request at all.
+ * Called on discovering a model with no known price, or a third-party context
+ * window nothing else could state (noteMissingContextWindow), so a session
+ * that meets neither issues no request at all.
  */
 export function ensureModelPricesFresh(): void {
   if (isModelPricingDisabled()) return
@@ -446,15 +616,16 @@ export function ensureModelPricesFresh(): void {
   }
 
   let current = loadTable()
-  if (!current) {
-    // Another session may have written the table since this one first looked.
-    // Re-reading a local file beats re-downloading four megabytes.
+  if (!hasCurrentShape(current)) {
+    // Another session may have written the table since this one first looked,
+    // or replaced one an older build wrote. Re-reading a local file beats
+    // re-downloading four megabytes.
     loadAttempted = false
     current = loadTable()
   }
 
   const age = current ? now - current.fetchedAt : -1
-  if (current && age >= 0 && age < TTL_MS) return
+  if (hasCurrentShape(current) && age >= 0 && age < TTL_MS) return
 
   refreshInFlight = true
   void (async () => {

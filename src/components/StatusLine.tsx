@@ -4,7 +4,7 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { logEvent } from 'src/services/analytics/index.js';
 import { useAppState, useSetAppState } from 'src/state/AppState.js';
 import type { PermissionMode } from 'src/utils/permissions/PermissionMode.js';
-import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../bootstrap/state.js';
+import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSessionId } from '../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from '../constants/outputStyles.js';
 import { useNotifications } from '../context/notifications.js';
 import { getTotalAPIDuration, getTotalCost, getTotalDuration, getTotalInputTokens, getTotalLinesAdded, getTotalLinesRemoved, getTotalOutputTokens } from '../cost-tracker.js';
@@ -21,9 +21,8 @@ import type { Message } from '../types/message.js';
 import type { StatusLineCommandInput } from '../types/statusLine.js';
 import type { VimMode } from '../types/textInputTypes.js';
 import { checkHasTrustDialogAccepted } from '../utils/config.js';
-import { calculateContextPercentages, getContextWindowForModel } from '../utils/context.js';
-import { getContextBaselineTokens } from '../utils/contextBaseline.js';
-import { roughTokenCountEstimationForMessages } from '../services/tokenEstimation.js';
+import { subscribeContextBaseline } from '../utils/contextBaseline.js';
+import { getSessionContextUsage } from '../utils/sessionContextUsage.js';
 import { getCwd } from '../utils/cwd.js';
 import { logForDebugging } from '../utils/debug.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
@@ -34,7 +33,7 @@ import { resolveStatusLineDisplay, type StatusLineDisplay } from './statusLineDi
 import { getLastAssistantMessage } from '../utils/messages.js';
 import { getRuntimeMainLoopModel, type ModelName, renderModelName } from '../utils/model/model.js';
 import { getCurrentSessionTitle } from '../utils/sessionStorage.js';
-import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from '../utils/tokens.js';
+import { doesMostRecentAssistantMessageExceed200k } from '../utils/tokens.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
 import { getAPIProvider, PROVIDER_DISPLAY_NAMES, isThirdPartyProvider } from '../utils/model/providers.js';
 import { isVimModeEnabled } from './PromptInput/utils.js';
@@ -98,30 +97,6 @@ export function sessionStatusBarShouldDisplay(settings: ReadonlySettings): boole
   return resolveDisplay(settings).builtin;
 }
 
-/**
- * Report the session's real initial context while no API usage exists yet.
- *
- * A floor, never a ceiling: it can only raise a number toward the truth, and
- * it steps aside entirely as soon as the provider reports anything, so a
- * measured value never overrides a real one. Returns the input unchanged when
- * no baseline has been measured, which keeps the previous behaviour intact.
- */
-function withInitialContextFloor(
-  usage: ReturnType<typeof getCurrentUsage>,
-  baselineTokens: number,
-  messages: Message[],
-): ReturnType<typeof getCurrentUsage> {
-  if (baselineTokens <= 0) return usage;
-  const reported = usage ? usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens : 0;
-  if (reported > 0) return usage;
-  return {
-    input_tokens: baselineTokens + roughTokenCountEstimationForMessages(messages),
-    output_tokens: usage?.output_tokens ?? 0,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0
-  };
-}
-
 function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, vimMode?: VimMode): StatusLineCommandInput {
   const agentType = getMainThreadAgentType();
   const worktreeSession = getCurrentWorktreeSession();
@@ -131,20 +106,12 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
     exceeds200kTokens
   });
   const outputStyleName = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME;
-  const rawUsage = getCurrentUsage(messages);
-  const contextWindowSize = getContextWindowForModel(runtimeModel, getSdkBetas());
-  // Before the first response there is no API usage to report, so the bar used
-  // to read 0/200K even though the session already holds its system prompt,
-  // tools, MCP servers, agents, skills and memory. Substitute the measured
-  // initial context so a fresh session shows what it is actually carrying.
-  // Only applied when there is nothing real to report yet — once the provider
-  // has answered, its numbers are ground truth and are left untouched.
-  const currentUsage = withInitialContextFloor(
-    rawUsage,
-    getContextBaselineTokens(runtimeModel),
-    messages,
-  );
-  const contextPercentages = calculateContextPercentages(currentUsage, contextWindowSize);
+  // The same reading the built-in session bar shows, so a custom script and
+  // the bar can never disagree about one session. It is the provider's count
+  // of the last prompt or, before the first response, the measured initial
+  // context (system prompt, tools, MCP servers, memory) plus what has been
+  // typed since. Once the provider has answered, its numbers are ground truth.
+  const contextUsage = getSessionContextUsage(messages, runtimeModel);
   const sessionId = getSessionId();
   const sessionName = getCurrentSessionTitle(sessionId);
   const unpricedModels = getUnpricedModels();
@@ -214,10 +181,10 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
     context_window: {
       total_input_tokens: getTotalInputTokens(),
       total_output_tokens: getTotalOutputTokens(),
-      context_window_size: contextWindowSize,
-      current_usage: currentUsage,
-      used_percentage: contextPercentages.used,
-      remaining_percentage: contextPercentages.remaining
+      context_window_size: contextUsage.contextWindowSize,
+      current_usage: contextUsage.currentUsage,
+      used_percentage: contextUsage.usedPercentage,
+      remaining_percentage: contextUsage.remainingPercentage
     },
     exceeds_200k_tokens: exceeds200kTokens,
     ...((rateLimits.five_hour || rateLimits.seven_day) && {
@@ -371,6 +338,11 @@ function StatusLineInner({
       scheduleUpdate();
     }
   }, [lastAssistantMessageId, permissionMode, vimMode, mainLoopModel, scheduleUpdate]);
+
+  // The initial-context measurement usually lands after the mount run below,
+  // and nothing else re-runs the command before the first response — the
+  // stretch that measurement exists for. Re-run when it arrives.
+  useEffect(() => subscribeContextBaseline(scheduleUpdate), [scheduleUpdate]);
 
   // When the statusLine command changes (hot reload), log the next result
   const statusLineCommand = settings?.statusLine?.command;
