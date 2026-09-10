@@ -2257,10 +2257,10 @@ function PromptInput({
     return isCenteredPrompt ? 'brandBright' : 'brand';
   };
   if (isExternalEditorActive) {
-    // Studio prompt frame: left bar + filled panel + ╵ foot.
+    // Transparent editor frame with the current mode's metallic border.
     return <>
         <Box flexDirection="row" alignItems="center" justifyContent="center" borderColor={getBorderColor()} borderStyle="round" borderTop={false} borderRight={false} borderBottom={false} width="100%">
-          <Box flexGrow={1} paddingLeft={1} paddingY={1} backgroundColor="backgroundElement">
+          <Box flexGrow={1} paddingLeft={1} paddingY={1}>
             <Text dimColor italic>
               Save and close editor to continue...
             </Text>
@@ -2297,9 +2297,9 @@ function PromptInput({
           </Box>
           <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
         </> : <>
-          {/* Studio prompt frame: rounded card around a filled input panel. */}
+          {/* The input inherits the canvas; only the cursor and border stand out. */}
           <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" width="100%">
-            <Box flexDirection="row" flexGrow={1} flexShrink={1} paddingX={1} backgroundColor="backgroundElement" onClick={handleInputClick}>
+            <Box flexDirection="row" flexGrow={1} flexShrink={1} paddingX={1} onClick={handleInputClick}>
               <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
               <Box flexGrow={1} flexShrink={1}>
                 {textInputElement}

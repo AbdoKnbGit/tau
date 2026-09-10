@@ -1,6 +1,6 @@
 import chalk from 'chalk'
 import cliBoxes, { type Boxes, type BoxStyle } from 'cli-boxes'
-import { applyColor } from './colorize.js'
+import { applyColor, applyTextStyles } from './colorize.js'
 import type { DOMNode } from './dom.js'
 import type Output from './output.js'
 import { stringWidth } from './stringWidth.js'
@@ -84,6 +84,7 @@ const renderBorder = (
   y: number,
   node: DOMNode,
   output: Output,
+  backgroundColor?: Color,
 ): void => {
   if (node.style.borderStyle) {
     const width = Math.floor(node.yogaNode!.getComputedWidth())
@@ -211,19 +212,19 @@ const renderBorder = (
     const offsetY = showTopBorder ? 1 : 0
 
     if (topBorder) {
-      output.write(x, y, topBorder)
+      output.write(x, y, applyTextStyles(topBorder, { backgroundColor }))
     }
 
     if (showLeftBorder) {
-      output.write(x, y + offsetY, leftBorder)
+      output.write(x, y + offsetY, applyTextStyles(leftBorder, { backgroundColor }))
     }
 
     if (showRightBorder) {
-      output.write(x + width - 1, y + offsetY, rightBorder)
+      output.write(x + width - 1, y + offsetY, applyTextStyles(rightBorder, { backgroundColor }))
     }
 
     if (bottomBorder) {
-      output.write(x, y + height - 1, bottomBorder)
+      output.write(x, y + height - 1, applyTextStyles(bottomBorder, { backgroundColor }))
     }
   }
 }

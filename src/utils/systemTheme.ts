@@ -11,7 +11,7 @@
  * updated by the watcher once the OSC 11 response arrives.
  */
 
-import type { ThemeName, ThemeSetting } from './theme.js'
+import { normalizeThemeSetting, type ThemeName, type ThemeSetting } from './theme.js'
 
 export type SystemTheme = 'dark' | 'light'
 
@@ -40,10 +40,11 @@ export function setCachedSystemTheme(theme: SystemTheme): void {
  * Resolve a ThemeSetting (which may be 'auto') to a concrete ThemeName.
  */
 export function resolveThemeSetting(setting: ThemeSetting): ThemeName {
-  if (setting === 'auto') {
+  const normalized = normalizeThemeSetting(setting)
+  if (normalized === 'auto') {
     return getSystemThemeName()
   }
-  return setting
+  return normalized
 }
 
 /**

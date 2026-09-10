@@ -98,14 +98,14 @@ function ThemedBox(t0) {
     rest = $[9];
   }
   const [themeName] = useTheme();
+  const theme = getTheme(themeName);
   let resolvedBorderBottomColor;
   let resolvedBorderColor;
   let resolvedBorderLeftColor;
   let resolvedBorderRightColor;
   let resolvedBorderTopColor;
   let t1;
-  if ($[10] !== backgroundColor || $[11] !== borderBottomColor || $[12] !== borderColor || $[13] !== borderLeftColor || $[14] !== borderRightColor || $[15] !== borderTopColor || $[16] !== themeName) {
-    const theme = getTheme(themeName);
+  if ($[10] !== backgroundColor || $[11] !== borderBottomColor || $[12] !== borderColor || $[13] !== borderLeftColor || $[14] !== borderRightColor || $[15] !== borderTopColor || $[16] !== theme) {
     resolvedBorderColor = resolveColor(borderColor, theme);
     resolvedBorderTopColor = resolveColor(borderTopColor, theme);
     resolvedBorderBottomColor = resolveColor(borderBottomColor, theme);
@@ -118,7 +118,7 @@ function ThemedBox(t0) {
     $[13] = borderLeftColor;
     $[14] = borderRightColor;
     $[15] = borderTopColor;
-    $[16] = themeName;
+    $[16] = theme;
     $[17] = resolvedBorderBottomColor;
     $[18] = resolvedBorderColor;
     $[19] = resolvedBorderLeftColor;

@@ -21,7 +21,7 @@ import {
   filterDisabledPrebuiltTools,
   getDisabledPrebuiltToolIds,
 } from './prebuiltToolToggles.js'
-import { getTheme } from './theme.js'
+import { getTheme, THEME_NAMES } from './theme.js'
 
 describe('power mode', () => {
   // Every test starts with an unpinned session so the pure resolver is
@@ -241,28 +241,11 @@ describe('power mode theme overlay', () => {
     setPowerModeTheme('normal', { animate: false })
   })
 
-  test('ANSI themes snap instead of interpolating', async () => {
-    setPowerModeTheme('normal', { animate: false })
-    setPowerModeTheme('cheap', { durationMs: 40 })
-    const during = getTheme('dark-ansi')
-    expect(during.brand.startsWith('ansi:')).toBe(true)
-    await new Promise(resolve => setTimeout(resolve, 80))
-    expect(getTheme('dark-ansi').brand.startsWith('ansi:')).toBe(true)
-    setPowerModeTheme('normal', { animate: false })
-  })
 
   test('every mode has a defined palette for every theme family', () => {
     for (const mode of POWER_MODES) {
       setPowerModeTheme(mode, { animate: false })
-      for (const themeName of [
-        'dark',
-        'light',
-        'studio',
-        'dark-ansi',
-        'light-ansi',
-        'dark-daltonized',
-        'light-daltonized',
-      ] as const) {
+      for (const themeName of THEME_NAMES) {
         const theme = getTheme(themeName)
         expect(typeof theme.brand).toBe('string')
         expect(theme.brand.length).toBeGreaterThan(0)

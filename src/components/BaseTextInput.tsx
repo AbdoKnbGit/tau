@@ -111,7 +111,7 @@ export function BaseTextInput(t0) {
   const t6 = showArgumentHint && <Text dimColor={true}>{props.value?.endsWith(" ") ? "" : " "}{props.argumentHint}</Text>;
   let t7;
   if ($[4] !== T1 || $[5] !== children || $[6] !== props || $[7] !== t5 || $[8] !== t6) {
-    t7 = <T1 wrap={t4} dimColor={props.dimColor}>{t5}{t6}{children}</T1>;
+    t7 = <T1 wrap={t4} color="text" dimColor={props.dimColor}>{t5}{t6}{children}</T1>;
     $[4] = T1;
     $[5] = children;
     $[6] = props;

@@ -15,7 +15,7 @@ import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import { gracefulShutdown } from '../utils/gracefulShutdown.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
-import type { ThemeSetting } from '../utils/theme.js'
+import { THEME_LABELS, THEME_NAMES, type ThemeSetting } from '../utils/theme.js'
 import { Select } from './CustomSelect/index.js'
 import { Byline } from './design-system/Byline.js'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js'
@@ -91,30 +91,11 @@ export function ThemePicker({
     skipExitHandling ? () => {} : undefined,
   )
 
-  const themeOptions: { label: string; value: ThemeSetting }[] = [
-    ...(feature('AUTO_THEME')
-      ? [{ label: 'Auto (match terminal)', value: 'auto' as const }]
-      : []),
-    { label: 'Tau dark (red/brown glow)', value: 'dark' },
-    { label: 'Studio (peach / blue / purple on near-black)', value: 'studio' },
-    { label: 'Light mode', value: 'light' },
-    {
-      label: 'Dark mode (colorblind-friendly)',
-      value: 'dark-daltonized',
-    },
-    {
-      label: 'Light mode (colorblind-friendly)',
-      value: 'light-daltonized',
-    },
-    {
-      label: 'Dark mode (ANSI colors only)',
-      value: 'dark-ansi',
-    },
-    {
-      label: 'Light mode (ANSI colors only)',
-      value: 'light-ansi',
-    },
+  const themeOptions = [
+    ...(feature('AUTO_THEME') ? [{ label: THEME_LABELS.auto, value: 'auto' as const }] : []),
+    ...THEME_NAMES.map(value => ({ label: THEME_LABELS[value], value })),
   ]
+  const selectedTheme = themeSetting === 'auto' ? theme : themeSetting
 
   const syntaxStatus =
     colorModuleUnavailableReason === 'env'
@@ -163,12 +144,18 @@ export function ThemePicker({
           }
           visibleOptionCount={themeOptions.length}
           defaultValue={themeSetting}
-          defaultFocusValue={themeSetting}
+          defaultFocusValue={selectedTheme}
         />
       </Box>
 
       {showPreview && (
         <Box flexDirection="column" width="100%">
+          <Box borderStyle="round" borderColor="brand" paddingX={1} marginBottom={1}>
+            <Text color="brand">❯ </Text>
+            <Text color="text">Your prompt stays readable </Text>
+            <Text color="text" inverse> </Text>
+          </Box>
+          <Text dimColor>Transparent input · silver, bronze, and gold mode accents</Text>
           <Box
             flexDirection="column"
             borderTop

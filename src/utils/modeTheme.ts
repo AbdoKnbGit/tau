@@ -32,7 +32,7 @@ type ModeAccentSlot = (typeof MODE_ACCENT_SLOTS)[number]
 
 type ModeAccentOverlay = Record<ModeAccentSlot, string>
 
-type OverlayFamily = 'dark' | 'light' | 'darkAnsi' | 'lightAnsi'
+type OverlayFamily = 'dark' | 'light'
 
 /** Soft bronze — muted copper-browns, calm rather than saturated. */
 const BRONZE_OVERLAYS: Record<OverlayFamily, ModeAccentOverlay> = {
@@ -55,26 +55,6 @@ const BRONZE_OVERLAYS: Record<OverlayFamily, ModeAccentOverlay> = {
     primary: 'rgb(150,108,68)',
     secondary: 'rgb(160,124,88)',
     accent: 'rgb(129,90,54)',
-  },
-  darkAnsi: {
-    brand: 'ansi:yellow',
-    brandDim: 'ansi:yellow',
-    brandBright: 'ansi:yellowBright',
-    claude: 'ansi:yellow',
-    claudeShimmer: 'ansi:yellowBright',
-    primary: 'ansi:yellow',
-    secondary: 'ansi:yellow',
-    accent: 'ansi:yellowBright',
-  },
-  lightAnsi: {
-    brand: 'ansi:yellow',
-    brandDim: 'ansi:yellow',
-    brandBright: 'ansi:yellow',
-    claude: 'ansi:yellow',
-    claudeShimmer: 'ansi:yellow',
-    primary: 'ansi:yellow',
-    secondary: 'ansi:yellow',
-    accent: 'ansi:yellow',
   },
 }
 
@@ -100,33 +80,10 @@ const GOLD_OVERLAYS: Record<OverlayFamily, ModeAccentOverlay> = {
     secondary: 'rgb(172,140,60)',
     accent: 'rgb(146,112,28)',
   },
-  darkAnsi: {
-    brand: 'ansi:yellowBright',
-    brandDim: 'ansi:yellow',
-    brandBright: 'ansi:yellowBright',
-    claude: 'ansi:yellowBright',
-    claudeShimmer: 'ansi:yellowBright',
-    primary: 'ansi:yellowBright',
-    secondary: 'ansi:yellow',
-    accent: 'ansi:yellowBright',
-  },
-  lightAnsi: {
-    brand: 'ansi:yellow',
-    brandDim: 'ansi:yellow',
-    brandBright: 'ansi:yellow',
-    claude: 'ansi:yellow',
-    claudeShimmer: 'ansi:yellow',
-    primary: 'ansi:yellow',
-    secondary: 'ansi:yellow',
-    accent: 'ansi:yellow',
-  },
 }
 
 function overlayFamilyFor(themeName: ThemeName): OverlayFamily {
-  const light = themeName.startsWith('light')
-  const ansi = themeName.endsWith('-ansi')
-  if (ansi) return light ? 'lightAnsi' : 'darkAnsi'
-  return light ? 'light' : 'dark'
+  return themeName === 'light' ? 'light' : 'dark'
 }
 
 function overlayFor(
@@ -340,7 +297,34 @@ const WORDMARK_GOLD: WordmarkPalette = {
   peak: { r: 255, g: 246, b: 214 },
 }
 
-function wordmarkFor(mode: PowerMode): WordmarkPalette {
+// On porcelain, the same metals need a deeper ramp so their highlights do
+// not disappear into the canvas. Dark/Macchiato keep the original gradients.
+const LIGHT_WORDMARKS: Record<PowerMode, WordmarkPalette> = {
+  normal: {
+    bodyLeft: { r: 116, g: 122, b: 134 },
+    bodyRight: { r: 57, g: 64, b: 77 },
+    shadow: { r: 171, g: 176, b: 185 },
+    primary: { r: 88, g: 96, b: 111 },
+    peak: { r: 112, g: 120, b: 135 },
+  },
+  cheap: {
+    bodyLeft: { r: 146, g: 106, b: 72 },
+    bodyRight: { r: 99, g: 66, b: 41 },
+    shadow: { r: 192, g: 166, b: 137 },
+    primary: { r: 144, g: 103, b: 65 },
+    peak: { r: 161, g: 119, b: 80 },
+  },
+  full: {
+    bodyLeft: { r: 151, g: 116, b: 38 },
+    bodyRight: { r: 105, g: 77, b: 19 },
+    shadow: { r: 197, g: 179, b: 131 },
+    primary: { r: 146, g: 111, b: 29 },
+    peak: { r: 164, g: 130, b: 48 },
+  },
+}
+
+function wordmarkFor(mode: PowerMode, theme?: ThemeName): WordmarkPalette {
+  if (theme === 'light') return LIGHT_WORDMARKS[mode]
   if (mode === 'cheap') return WORDMARK_BRONZE
   if (mode === 'full') return WORDMARK_GOLD
   return WORDMARK_NORMAL
@@ -379,17 +363,18 @@ function mixWordmark(
  */
 export function getPowerModeWordmarkPalette(options?: {
   snap?: boolean
+  theme?: ThemeName
 }): WordmarkPalette {
   if (options?.snap || !isPowerModeThemeTransitionActive() || !transition) {
-    return wordmarkFor(currentMode)
+    return wordmarkFor(currentMode, options?.theme)
   }
   const progress = easeInOutCubic(transitionProgress(Date.now()))
   const fromPalette = mixWordmark(
-    wordmarkFor(transition.from.a),
-    wordmarkFor(transition.from.b),
+    wordmarkFor(transition.from.a, options?.theme),
+    wordmarkFor(transition.from.b, options?.theme),
     transition.from.t,
   )
-  return mixWordmark(fromPalette, wordmarkFor(transition.to), progress)
+  return mixWordmark(fromPalette, wordmarkFor(transition.to, options?.theme), progress)
 }
 
 // ---------------------------------------------------------------------------

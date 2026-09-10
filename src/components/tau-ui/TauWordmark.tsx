@@ -6,6 +6,7 @@ import {
   Text,
   type ClickEvent,
   useAnimationFrame,
+  useTheme,
 } from '../../ink.js'
 import {
   getPowerModeWordmarkPalette,
@@ -488,6 +489,7 @@ function colorFor(
 }
 
 export function TauWordmark(): React.ReactNode {
+  const [theme] = useTheme()
   const [reducedMotion] = useState(() => {
     // Idempotent seed — covers standalone renders (e.g. welcome screens)
     // that mount before/without the ThemeProvider doing it.
@@ -501,7 +503,7 @@ export function TauWordmark(): React.ReactNode {
 
   // The palette samples the shared /mode cross-fade.
   const wordmark = TAUCODE_WORDMARK
-  const palette = getPowerModeWordmarkPalette({ snap: !animatable })
+  const palette = getPowerModeWordmarkPalette({ snap: !animatable, theme })
   const [, bumpModeRepaint] = useState(0)
   useEffect(() => {
     return subscribePowerModeTheme(() => bumpModeRepaint(n => n + 1))

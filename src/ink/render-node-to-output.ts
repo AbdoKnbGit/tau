@@ -1170,8 +1170,8 @@ function renderNodeToOutput(
           const innerHeight = Math.floor(height) - borderTop - borderBottom
           if (innerWidth > 0 && innerHeight > 0) {
             const spaces = ' '.repeat(innerWidth)
-            const fillLine = ownBackgroundColor
-              ? applyTextStyles(spaces, { backgroundColor: ownBackgroundColor })
+            const fillLine = boxBackgroundColor
+              ? applyTextStyles(spaces, { backgroundColor: boxBackgroundColor })
               : spaces
             const fill = Array(innerHeight).fill(fillLine).join('\n')
             output.write(x + borderLeft, y + borderTop, fill)
@@ -1203,7 +1203,7 @@ function renderNodeToOutput(
       // Render border AFTER children to ensure it's not overwritten by child
       // clearing operations. When a child shrinks, it clears its old area,
       // which may overlap with where the parent's border now is.
-      renderBorder(x, y, node, output)
+      renderBorder(x, y, node, output, boxBackgroundColor)
     } else if (node.nodeName === 'ink-root') {
       renderChildren(
         node,

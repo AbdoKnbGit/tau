@@ -2,12 +2,15 @@ import { c as _c } from "react/compiler-runtime";
 import { feature } from 'bun:bundle';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import useStdin from '../../ink/hooks/use-stdin.js';
+import Box from '../../ink/components/Box.js';
+import { TerminalSizeContext } from '../../ink/components/TerminalSizeContext.js';
+import type { Color } from '../../ink/styles.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { initializePowerModeTheme, isPowerModeThemeTransitionActive, subscribePowerModeTheme } from '../../utils/modeTheme.js';
 import { getPowerModeFromSettings } from '../../utils/powerMode.js';
 import { getInitialSettings } from '../../utils/settings/settings.js';
 import { getSystemThemeName, type SystemTheme } from '../../utils/systemTheme.js';
-import type { ThemeName, ThemeSetting } from '../../utils/theme.js';
+import { getTheme, normalizeThemeSetting, type ThemeName, type ThemeSetting } from '../../utils/theme.js';
 type ThemeContextValue = {
   /** The saved user preference. May be 'auto'. */
   themeSetting: ThemeSetting;
@@ -55,8 +58,9 @@ export function ThemeProvider({
   initialState,
   onThemeSave = defaultSaveTheme
 }: Props) {
-  const [themeSetting, setThemeSetting] = useState(initialState ?? defaultInitialTheme);
+  const [themeSetting, setThemeSetting] = useState(() => normalizeThemeSetting(initialState ?? defaultInitialTheme()));
   const [previewTheme, setPreviewTheme] = useState<ThemeSetting | null>(null);
+  const terminalSize = useContext(TerminalSizeContext);
 
   // Power-mode palette: seed from persisted settings so the first frame
   // already renders bronze (cheap) / gold (full), then tick ~30fps while a
@@ -160,7 +164,13 @@ export function ThemeProvider({
     currentTheme,
     modeThemeTick
   }), [themeSetting, previewTheme, currentTheme, onThemeSave, modeThemeTick]);
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+  // Paint one canvas, so transparent inputs remain readable even when the
+  // terminal itself uses a different background. Keep Tau dark's native backdrop.
+  const backgroundColor = currentTheme === 'dark' ? undefined : getTheme(currentTheme).background as Color;
+  const canvasHeight = currentTheme === 'dark' ? undefined : terminalSize?.rows;
+  return <ThemeContext.Provider value={value}>
+    <Box flexDirection="column" width="100%" height={canvasHeight} flexShrink={0} backgroundColor={backgroundColor}>{children}</Box>
+  </ThemeContext.Provider>;
 }
 
 /**

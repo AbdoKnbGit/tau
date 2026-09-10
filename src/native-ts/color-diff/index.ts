@@ -190,6 +190,7 @@ type Theme = {
 }
 
 function defaultSyntaxThemeName(themeName: string): string {
+  if (themeName === 'catppuccin-macchiato') return 'Catppuccin Macchiato'
   if (themeName.includes('ansi')) return 'ansi'
   if (themeName.includes('dark')) return 'Monokai Extended'
   return 'GitHub'
@@ -252,6 +253,34 @@ const GITHUB_SCOPES: Record<string, Color> = {
   subst: rgb(51, 51, 51),
 }
 
+// Catppuccin Macchiato scopes, shared by code blocks and structured diffs.
+const MACCHIATO_SCOPES: Record<string, Color> = {
+  keyword: rgb(198, 160, 246),
+  _storage: rgb(198, 160, 246),
+  built_in: rgb(237, 135, 150),
+  type: rgb(238, 212, 159),
+  literal: rgb(245, 169, 127),
+  number: rgb(245, 169, 127),
+  string: rgb(166, 218, 149),
+  title: rgb(138, 173, 244),
+  'title.function': rgb(138, 173, 244),
+  'title.class': rgb(238, 212, 159),
+  'title.class.inherited': rgb(238, 212, 159),
+  params: rgb(202, 211, 245),
+  comment: rgb(147, 154, 183),
+  meta: rgb(245, 169, 127),
+  attr: rgb(238, 212, 159),
+  attribute: rgb(238, 212, 159),
+  variable: rgb(202, 211, 245),
+  'variable.language': rgb(237, 135, 150),
+  property: rgb(202, 211, 245),
+  operator: rgb(145, 215, 227),
+  punctuation: rgb(184, 192, 224),
+  symbol: rgb(245, 189, 230),
+  regexp: rgb(245, 189, 230),
+  subst: rgb(202, 211, 245),
+}
+
 // Keywords that syntect scopes as storage.type rather than keyword.control.
 // highlight.js lumps these under "keyword"; we re-split so const/function/etc.
 // get the cyan storage color instead of pink.
@@ -290,6 +319,23 @@ const ANSI_SCOPES: Record<string, Color> = {
 }
 
 function buildTheme(themeName: string, mode: ColorMode): Theme {
+  if (themeName === 'catppuccin-macchiato') {
+    return {
+      addLine: rgb(48, 65, 57),
+      addWord: rgb(62, 86, 62),
+      addDecoration: rgb(166, 218, 149),
+      deleteLine: rgb(70, 45, 57),
+      deleteWord: rgb(92, 53, 68),
+      deleteDecoration: rgb(237, 135, 150),
+      modifyLine: rgb(64, 57, 46),
+      modifyWord: rgb(81, 71, 51),
+      modifyDecoration: rgb(238, 212, 159),
+      modifyEnabled: true,
+      foreground: rgb(202, 211, 245),
+      background: DEFAULT_BG,
+      scopes: MACCHIATO_SCOPES,
+    }
+  }
   const isDark = themeName.includes('dark')
   const isAnsi = themeName.includes('ansi')
   const isDaltonized = themeName.includes('daltonized')

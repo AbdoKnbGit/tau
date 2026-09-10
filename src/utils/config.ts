@@ -34,7 +34,7 @@ import type { MemoryType } from './memory/types.js'
 import { normalizePathForConfigKey } from './path.js'
 import { getEssentialTrafficOnlyReason } from './privacyLevel.js'
 import { getManagedFilePath } from './settings/managedPath.js'
-import type { ThemeSetting } from './theme.js'
+import { normalizeThemeSetting, type ThemeSetting } from './theme.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -1019,6 +1019,8 @@ registerCleanup(async () => {
  * @internal
  */
 function migrateConfigFields(config: GlobalConfig): GlobalConfig {
+  const theme = normalizeThemeSetting(config.theme)
+  if (theme !== config.theme) config = { ...config, theme }
   // Already migrated
   if (config.installMethod !== undefined) {
     return config

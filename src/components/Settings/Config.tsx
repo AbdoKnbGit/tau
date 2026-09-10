@@ -1,3 +1,4 @@
+import { THEME_LABELS } from '../../utils/theme.js';
 import { c as _c } from "react/compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle';
@@ -1733,7 +1734,7 @@ export function Config({
                                       quality.
                                     </Text>}
                               </> : setting_2.id === 'theme' ? <Text color={isSelected ? 'suggestion' : undefined}>
-                                {THEME_LABELS[setting_2.value.toString()] ?? setting_2.value.toString()}
+                                {THEME_LABELS[setting_2.value.toString() as keyof typeof THEME_LABELS] ?? setting_2.value.toString()}
                               </Text> : setting_2.id === 'notifChannel' ? <Text color={isSelected ? 'suggestion' : undefined}>
                                 <NotifChannelLabel value={setting_2.value.toString()} />
                               </Text> : setting_2.id === 'defaultPermissionMode' ? <Text color={isSelected ? 'suggestion' : undefined}>
@@ -1792,15 +1793,7 @@ function teammateModelDisplayString(value: string | null | undefined): string {
   if (value === null) return "Default (leader's model)";
   return modelDisplayString(value);
 }
-const THEME_LABELS: Record<string, string> = {
-  auto: 'Auto (match terminal)',
-  dark: 'Tau dark (red/brown glow)',
-  light: 'Light mode',
-  'dark-daltonized': 'Dark mode (colorblind-friendly)',
-  'light-daltonized': 'Light mode (colorblind-friendly)',
-  'dark-ansi': 'Dark mode (ANSI colors only)',
-  'light-ansi': 'Light mode (ANSI colors only)'
-};
+
 function NotifChannelLabel(t0) {
   const $ = _c(4);
   const {
