@@ -2,7 +2,9 @@ import { c as _c } from "react/compiler-runtime";
 import React from 'react';
 import stripAnsi from 'strip-ansi';
 import Link from './components/Link.js';
-import Text from './components/Text.js';
+// Keep ANSI output aligned with the active Tau palette when a span uses the
+// terminal default foreground (which is especially important on light themes).
+import Text from '../components/design-system/ThemedText.js';
 import type { Color } from './styles.js';
 import { type NamedColor, Parser, type Color as TermioColor, type TextStyle } from './termio.js';
 type Props = {
@@ -39,7 +41,7 @@ export const Ansi = React.memo(function Ansi(t0) {
   if (typeof children !== "string") {
     let t1;
     if ($[0] !== children || $[1] !== dimColor) {
-      t1 = dimColor ? <Text dim={true}>{String(children)}</Text> : <Text>{String(children)}</Text>;
+      t1 = dimColor ? <Text dimColor>{String(children)}</Text> : <Text>{String(children)}</Text>;
       $[0] = children;
       $[1] = dimColor;
       $[2] = t1;
@@ -61,7 +63,7 @@ export const Ansi = React.memo(function Ansi(t0) {
         spans = parseToSpans(children);
       } catch {
         const fallbackText = stripAnsi(children);
-        t2 = dimColor ? <Text dim={true}>{fallbackText}</Text> : <Text>{fallbackText}</Text>;
+        t2 = dimColor ? <Text dimColor>{fallbackText}</Text> : <Text>{fallbackText}</Text>;
         break bb0;
       }
       if (spans.length === 0) {
@@ -69,7 +71,7 @@ export const Ansi = React.memo(function Ansi(t0) {
         break bb0;
       }
       if (spans.length === 1 && !hasAnyProps(spans[0].props)) {
-        t2 = dimColor ? <Text dim={true}>{spans[0].text}</Text> : <Text>{spans[0].text}</Text>;
+        t2 = dimColor ? <Text dimColor>{spans[0].text}</Text> : <Text>{spans[0].text}</Text>;
         break bb0;
       }
       let t3;
@@ -106,7 +108,7 @@ export const Ansi = React.memo(function Ansi(t0) {
   const content = t1;
   let t3;
   if ($[9] !== content || $[10] !== dimColor) {
-    t3 = dimColor ? <Text dim={true}>{content}</Text> : <Text>{content}</Text>;
+    t3 = dimColor ? <Text dimColor>{content}</Text> : <Text>{content}</Text>;
     $[9] = content;
     $[10] = dimColor;
     $[11] = t3;
@@ -265,7 +267,7 @@ function StyledText(t0) {
   if (dim) {
     let t1;
     if ($[5] !== children || $[6] !== rest) {
-      t1 = <Text {...rest} dim={true}>{children}</Text>;
+      t1 = <Text {...rest} dimColor>{children}</Text>;
       $[5] = children;
       $[6] = rest;
       $[7] = t1;

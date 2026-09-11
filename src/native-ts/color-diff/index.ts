@@ -153,7 +153,11 @@ function asTerminalEscaped(
   let out = dim ? RESET + DIM : RESET
   for (const [style, text] of blocks) {
     out += colorToEscape(style.foreground, true, mode)
-    if (!skipBackground) {
+    // A themed canvas may intentionally differ from the terminal's default
+    // background. Keep non-default backgrounds even for ColorFile/code-block
+    // output, which otherwise starts with a reset and leaves black rectangles
+    // behind short ANSI spans on light themes.
+    if (!skipBackground || style.background !== DEFAULT_BG) {
       out += colorToEscape(style.background, false, mode)
     }
     out += text
@@ -332,7 +336,10 @@ function buildTheme(themeName: string, mode: ColorMode): Theme {
       modifyDecoration: rgb(238, 212, 159),
       modifyEnabled: true,
       foreground: rgb(202, 211, 245),
-      background: DEFAULT_BG,
+      // ColorDiff output is emitted as ANSI and can contain a default
+      // background reset. Keep that reset aligned with Tau's canvas so
+      // context lines do not reveal the terminal's black backdrop.
+      background: rgb(36, 39, 58),
       scopes: MACCHIATO_SCOPES,
     }
   }
@@ -416,7 +423,7 @@ function buildTheme(themeName: string, mode: ColorMode): Theme {
       modifyDecoration: deleteDecoration,
       modifyEnabled: false,
       foreground: fg,
-      background: DEFAULT_BG,
+      background: rgb(250, 249, 246),
       scopes: GITHUB_SCOPES,
     }
   }
@@ -432,7 +439,9 @@ function buildTheme(themeName: string, mode: ColorMode): Theme {
     modifyDecoration: rgb(149, 110, 0),
     modifyEnabled: true,
     foreground: fg,
-    background: DEFAULT_BG,
+    // The light canvas is not necessarily the terminal's default background.
+    // Emit it explicitly so pre-rendered diff rows do not paint black gaps.
+    background: rgb(250, 249, 246),
     scopes: GITHUB_SCOPES,
   }
 }

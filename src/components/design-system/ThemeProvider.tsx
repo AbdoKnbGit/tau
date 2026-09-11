@@ -3,7 +3,6 @@ import { feature } from 'bun:bundle';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import useStdin from '../../ink/hooks/use-stdin.js';
 import Box from '../../ink/components/Box.js';
-import { TerminalSizeContext } from '../../ink/components/TerminalSizeContext.js';
 import type { Color } from '../../ink/styles.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { initializePowerModeTheme, isPowerModeThemeTransitionActive, subscribePowerModeTheme } from '../../utils/modeTheme.js';
@@ -60,7 +59,6 @@ export function ThemeProvider({
 }: Props) {
   const [themeSetting, setThemeSetting] = useState(() => normalizeThemeSetting(initialState ?? defaultInitialTheme()));
   const [previewTheme, setPreviewTheme] = useState<ThemeSetting | null>(null);
-  const terminalSize = useContext(TerminalSizeContext);
 
   // Power-mode palette: seed from persisted settings so the first frame
   // already renders bronze (cheap) / gold (full), then tick ~30fps while a
@@ -164,12 +162,12 @@ export function ThemeProvider({
     currentTheme,
     modeThemeTick
   }), [themeSetting, previewTheme, currentTheme, onThemeSave, modeThemeTick]);
-  // Paint one canvas, so transparent inputs remain readable even when the
-  // terminal itself uses a different background. Keep Tau dark's native backdrop.
+  // Color the content without constraining its layout. A viewport-sized height
+  // here squeezes long transcripts and desynchronizes inline image placement.
+  // AlternateScreen owns viewport sizing; main-screen content grows naturally.
   const backgroundColor = currentTheme === 'dark' ? undefined : getTheme(currentTheme).background as Color;
-  const canvasHeight = currentTheme === 'dark' ? undefined : terminalSize?.rows;
   return <ThemeContext.Provider value={value}>
-    <Box flexDirection="column" width="100%" height={canvasHeight} flexShrink={0} backgroundColor={backgroundColor}>{children}</Box>
+    <Box flexDirection="column" width="100%" flexShrink={0} backgroundColor={backgroundColor}>{children}</Box>
   </ThemeContext.Provider>;
 }
 

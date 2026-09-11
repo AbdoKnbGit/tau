@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { getSyntaxTheme, highlightCodeToAnsi } from '../native-ts/color-diff/index.js'
+import { ColorDiff, ColorFile, getSyntaxTheme, highlightCodeToAnsi } from '../native-ts/color-diff/index.js'
 import { getPowerModeWordmarkPalette, setPowerModeTheme } from './modeTheme.js'
 import { getTheme, normalizeThemeSetting, THEME_NAMES } from './theme.js'
 
@@ -76,6 +76,32 @@ describe('Tau themes', () => {
       expect(code).toContain('38;2;198;160;246')
       expect(code).toContain('38;2;166;218;149')
       expect(getSyntaxTheme('light').theme).toBe('GitHub')
+    } finally {
+      if (previous === undefined) delete process.env.COLORTERM
+      else process.env.COLORTERM = previous
+    }
+  })
+
+  test('pre-rendered code and diff rows keep the themed canvas background', () => {
+    const previous = process.env.COLORTERM
+    process.env.COLORTERM = 'truecolor'
+    try {
+      for (const name of ['light', 'catppuccin-macchiato'] as const) {
+        const background = getTheme(name).background.match(/\d+/g)!.join(';')
+        const expected = `48;2;${background}`
+        const code = new ColorFile('const value = 1', 'example.ts').render(name, 40, false)![0]!
+        const diff = new ColorDiff({
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: [' const value = 1'],
+        }, null, 'example.ts').render(name, 40, false)![0]!
+        expect(code).toContain(expected)
+        expect(diff).toContain(expected)
+        expect(code).not.toContain('\x1b[49m')
+        expect(diff).not.toContain('\x1b[49m')
+      }
     } finally {
       if (previous === undefined) delete process.env.COLORTERM
       else process.env.COLORTERM = previous
