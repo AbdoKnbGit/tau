@@ -21,6 +21,7 @@ import { preconnectAnthropicApi } from '../utils/apiPreconnect.js'
 import { applyExtraCACertsFromConfig } from '../utils/caCertsConfig.js'
 import { registerCleanup } from '../utils/cleanupRegistry.js'
 import { enableConfigs, recordFirstStartTime } from '../utils/config.js'
+import { configureConnectAttemptTimeout } from '../utils/connectAttemptTimeout.js'
 import { logForDebugging } from '../utils/debug.js'
 import { detectCurrentRepository } from '../utils/detectRepository.js'
 import { logForDiagnosticsNoPII } from '../utils/diagLogs.js'
@@ -58,6 +59,10 @@ export const init = memoize(async (): Promise<void> => {
   const initStartTime = Date.now()
   logForDiagnosticsNoPII('info', 'init_started')
   profileCheckpoint('init_function_start')
+
+  // First: before anything below can open a socket, and before settings.json
+  // env is applied, so NODE_OPTIONS is still the value Node parsed at startup.
+  const connectAttempt = configureConnectAttemptTimeout()
 
   // Validate configs are valid and enable configuration system
   try {
@@ -130,6 +135,15 @@ export const init = memoize(async (): Promise<void> => {
 
     // Record the first start time
     recordFirstStartTime()
+
+    // Logged here rather than at the top: logForDebugging caches the debug
+    // settings on first use, and they should see the settings env applied above.
+    logForDebugging(
+      `[init] connect attempt timeout: ${connectAttempt.outcome}` +
+        (connectAttempt.previousMs === undefined
+          ? ''
+          : ` (Node default was ${connectAttempt.previousMs}ms)`),
+    )
 
     // Configure global mTLS settings
     const mtlsStart = Date.now()
