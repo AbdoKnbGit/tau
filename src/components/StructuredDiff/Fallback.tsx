@@ -272,18 +272,18 @@ function generateWordDiffElements(item: DiffLine, width: number, maxWidth: numbe
   wordDiffs.forEach((part, partIndex) => {
     // Determine if this part should be shown for this line type
     let shouldShow = false;
-    let partBgColor: 'diffAddedWord' | 'diffRemovedWord' | undefined;
+    let partBgColor: 'diffAddedWord' | 'diffRemovedWord' | 'diffModifiedWord' | undefined;
     if (type === 'add') {
       if (part.added) {
         shouldShow = true;
-        partBgColor = 'diffAddedWord';
+        partBgColor = 'diffModifiedWord';
       } else if (!part.removed) {
         shouldShow = true;
       }
     } else if (type === 'remove') {
       if (part.removed) {
         shouldShow = true;
-        partBgColor = 'diffRemovedWord';
+        partBgColor = 'diffModifiedWord';
       } else if (!part.added) {
         shouldShow = true;
       }
@@ -326,7 +326,7 @@ function generateWordDiffElements(item: DiffLine, width: number, maxWidth: numbe
     contentWidth
   }, lineIndex) => {
     const key = `${type}-${i}-${lineIndex}`;
-    const lineBgColor = type === 'add' ? dim ? 'diffAddedDimmed' : 'diffAdded' : dim ? 'diffRemovedDimmed' : 'diffRemoved';
+    const lineBgColor = dim ? 'diffModifiedDimmed' : 'diffModified';
     const lineNum = lineIndex === 0 ? i : undefined;
     const lineNumStr = (lineNum !== undefined ? lineNum.toString().padStart(maxWidth) : ' '.repeat(maxWidth)) + ' ';
     // Calculate padding to fill the entire terminal width

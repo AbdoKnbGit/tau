@@ -107,4 +107,34 @@ describe('Tau themes', () => {
       else process.env.COLORTERM = previous
     }
   })
+
+  test('uses one restrained modification color for paired edits in both new themes', () => {
+    const previous = process.env.COLORTERM
+    process.env.COLORTERM = 'truecolor'
+    try {
+      const patch = {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-const answer = 1', '+const answer = 2'],
+      }
+      const palettes = {
+        light: { line: '255;247;200', word: '255;233;148' },
+        'catppuccin-macchiato': { line: '64;57;46', word: '81;71;51' },
+      } as const
+
+      for (const [name, palette] of Object.entries(palettes)) {
+        const rows = new ColorDiff(patch, null, 'example.ts').render(name, 60, false)!
+        expect(rows).toHaveLength(2)
+        for (const row of rows) {
+          expect(row).toContain(`48;2;${palette.line}`)
+          expect(row).toContain(`48;2;${palette.word}`)
+        }
+      }
+    } finally {
+      if (previous === undefined) delete process.env.COLORTERM
+      else process.env.COLORTERM = previous
+    }
+  })
 })

@@ -37,6 +37,10 @@ export type Theme = {
   // Word-level diff highlighting
   diffAddedWord: string
   diffRemovedWord: string
+  // In-place edits (paired add/remove lines with a small change)
+  diffModified: string
+  diffModifiedDimmed: string
+  diffModifiedWord: string
   // Agent colors
   red_FOR_SUBAGENTS_ONLY: string
   blue_FOR_SUBAGENTS_ONLY: string
@@ -155,6 +159,9 @@ const darkTheme: Theme = {
   diffRemovedDimmed: 'rgb(92,60,75)', // Dim magenta
   diffAddedWord: 'rgb(60,200,140)', // Bright teal-green
   diffRemovedWord: 'rgb(220,90,140)', // Bright magenta
+  diffModified: 'rgb(84,70,40)', // Muted amber for in-place edits
+  diffModifiedDimmed: 'rgb(64,58,46)',
+  diffModifiedWord: 'rgb(150,112,48)',
   // Agent colors (neon variants)
   red_FOR_SUBAGENTS_ONLY: 'rgb(255,70,100)', // Neon red
   blue_FOR_SUBAGENTS_ONLY: 'rgb(80,140,255)', // Neon blue
@@ -255,6 +262,9 @@ const tauDarkTheme: Theme = {
   diffRemovedDimmed: 'rgb(46,36,38)',
   diffAddedWord: 'rgb(120,190,130)',
   diffRemovedWord: 'rgb(220,120,120)',
+  diffModified: 'rgb(64,57,46)',
+  diffModifiedDimmed: 'rgb(52,49,44)',
+  diffModifiedWord: 'rgb(81,71,51)',
   red_FOR_SUBAGENTS_ONLY: 'rgb(244,72,62)',
   blue_FOR_SUBAGENTS_ONLY: 'rgb(166,103,92)',
   green_FOR_SUBAGENTS_ONLY: 'rgb(145,170,112)',
@@ -360,6 +370,9 @@ const lightTheme: Theme = {
   diffRemovedDimmed: 'rgb(247,235,232)',
   diffAddedWord: 'rgb(181,216,188)',
   diffRemovedWord: 'rgb(232,182,185)',
+  diffModified: 'rgb(255,247,200)',
+  diffModifiedDimmed: 'rgb(247,239,207)',
+  diffModifiedWord: 'rgb(255,233,148)',
   red_FOR_SUBAGENTS_ONLY: 'rgb(170,57,72)',
   blue_FOR_SUBAGENTS_ONLY: 'rgb(66,99,145)',
   green_FOR_SUBAGENTS_ONLY: 'rgb(49,111,75)',
@@ -450,6 +463,9 @@ const macchiatoTheme: Theme = {
   diffRemovedDimmed: 'rgb(55,43,55)',
   diffAddedWord: 'rgb(62,86,62)',
   diffRemovedWord: 'rgb(92,53,68)',
+  diffModified: 'rgb(64,57,46)',
+  diffModifiedDimmed: 'rgb(52,49,44)',
+  diffModifiedWord: 'rgb(81,71,51)',
   red_FOR_SUBAGENTS_ONLY: 'rgb(237,135,150)',
   blue_FOR_SUBAGENTS_ONLY: 'rgb(138,173,244)',
   green_FOR_SUBAGENTS_ONLY: 'rgb(166,218,149)',

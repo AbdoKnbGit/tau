@@ -1,7 +1,7 @@
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages/messages.mjs'
 import * as React from 'react'
 import { stripUnderlineAnsi } from 'src/components/shell/OutputLine.js'
-import { Box, Text } from '../ink.js'
+import { Ansi, Box, Text } from '../ink.js'
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js'
 import { countCharInString } from '../utils/stringUtils.js'
 import { normalizeToolError } from './fallbackToolError.js'
@@ -36,7 +36,9 @@ export function FallbackToolUseErrorMessage({
   return (
     <MessageResponse>
       <Box flexDirection="column">
-        <Text color="error">{renderedError}</Text>
+        <Text color="error">
+          <Ansi>{renderedError}</Ansi>
+        </Text>
         {!verbose && plusLines > 0 && (
           <Box>
             <Text dimColor>

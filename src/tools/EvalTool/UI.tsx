@@ -3,7 +3,7 @@ import * as React from 'react'
 import { HighlightedCode } from '../../components/HighlightedCode.js'
 import { InlineImage } from '../../components/InlineImage.js'
 import { MessageResponse } from '../../components/MessageResponse.js'
-import { Box, Text } from '../../ink.js'
+import { Ansi, Box, Text } from '../../ink.js'
 import type { EvalOutput } from './EvalTool.js'
 import { splitFailure } from './format.js'
 
@@ -214,7 +214,13 @@ export function renderToolResultMessage(
 
       {outputView.shown.trim() ? (
         <Box flexDirection="column" marginTop={code ? 1 : 0}>
-          <Text color={output.ok ? undefined : 'error'}>{outputView.shown}</Text>
+          {output.ok ? (
+            <Ansi>{outputView.shown}</Ansi>
+          ) : (
+            <Text color="error">
+              <Ansi>{outputView.shown}</Ansi>
+            </Text>
+          )}
           {outputView.hidden > 0 ? (
             <Text dimColor>
               {'… +'}
