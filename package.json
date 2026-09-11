@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/tau",
-  "version": "0.92.31",
+  "version": "0.92.32",
   "workspaces": [
     "packages/*"
   ],
@@ -162,6 +162,12 @@
     "@computer-use/nut-js": "^4.2.0"
   },
   "optionalDependencies": {
+    "@abdoknbgit/tau-voice-win32-x64": "1.0.0",
+    "@abdoknbgit/tau-voice-win32-arm64": "1.0.0",
+    "@abdoknbgit/tau-voice-darwin-x64": "1.0.0",
+    "@abdoknbgit/tau-voice-darwin-arm64": "1.0.0",
+    "@abdoknbgit/tau-voice-linux-x64": "1.0.0",
+    "@abdoknbgit/tau-voice-linux-arm64": "1.0.0",
     "node-pty": "^1.1.0"
   },
   "peerDependenciesMeta": {

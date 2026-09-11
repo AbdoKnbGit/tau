@@ -95,6 +95,12 @@
       "license": "MIT",
       "name": "@abdoknbgit/tau",
       "optionalDependencies": {
+        "@abdoknbgit/tau-voice-darwin-arm64": "1.0.0",
+        "@abdoknbgit/tau-voice-darwin-x64": "1.0.0",
+        "@abdoknbgit/tau-voice-linux-arm64": "1.0.0",
+        "@abdoknbgit/tau-voice-linux-x64": "1.0.0",
+        "@abdoknbgit/tau-voice-win32-arm64": "1.0.0",
+        "@abdoknbgit/tau-voice-win32-x64": "1.0.0",
         "node-pty": "^1.1.0"
       },
       "peerDependencies": {
@@ -105,7 +111,103 @@
           "optional": true
         }
       },
-      "version": "0.92.30"
+      "version": "0.92.32"
+    },
+    "node_modules/@abdoknbgit/tau-voice-darwin-arm64": {
+      "cpu": [
+        "arm64"
+      ],
+      "engines": {
+        "node": ">=20.19.0 <21.0.0 || >=22.12.0"
+      },
+      "integrity": "sha512-IDdPKJhqBmoNRPcZ2DvRUEQqDfhmyzBc+bUA7ft3Fq+LFVwWDq/ooXXtTy4Xel+BpHKuEGkYxN8pOnPaoEgNrA==",
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "resolved": "https://registry.npmjs.org/@abdoknbgit/tau-voice-darwin-arm64/-/tau-voice-darwin-arm64-1.0.0.tgz",
+      "version": "1.0.0"
+    },
+    "node_modules/@abdoknbgit/tau-voice-darwin-x64": {
+      "cpu": [
+        "x64"
+      ],
+      "engines": {
+        "node": ">=20.19.0 <21.0.0 || >=22.12.0"
+      },
+      "integrity": "sha512-bMN6VEEHQ9AqA5vmL0ie/ew2Z9qh2YvJ+qOxl/1CqFJRGCPQezLaw1fUX1qy5Bjz1dyAUx9JPLXPmy1LwxMTOA==",
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "resolved": "https://registry.npmjs.org/@abdoknbgit/tau-voice-darwin-x64/-/tau-voice-darwin-x64-1.0.0.tgz",
+      "version": "1.0.0"
+    },
+    "node_modules/@abdoknbgit/tau-voice-linux-arm64": {
+      "cpu": [
+        "arm64"
+      ],
+      "engines": {
+        "node": ">=20.19.0 <21.0.0 || >=22.12.0"
+      },
+      "integrity": "sha512-TnnbPX5I9savIMYtigxq4zohM4YIgoe9k6zCdL3tJgxAvQe/udQpjJwzl4Jnw+o/IyOKQyDzltAcsqHIOAml6g==",
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "resolved": "https://registry.npmjs.org/@abdoknbgit/tau-voice-linux-arm64/-/tau-voice-linux-arm64-1.0.0.tgz",
+      "version": "1.0.0"
+    },
+    "node_modules/@abdoknbgit/tau-voice-linux-x64": {
+      "cpu": [
+        "x64"
+      ],
+      "engines": {
+        "node": ">=20.19.0 <21.0.0 || >=22.12.0"
+      },
+      "integrity": "sha512-39fN4mwvKJdj6lkH+Gx+F+xTecVteYcbPeDoORaIinvBGAyAe6Vugkbk6Jsc6kFdbRsgKvpOMC7CDEu+YFKc8w==",
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "resolved": "https://registry.npmjs.org/@abdoknbgit/tau-voice-linux-x64/-/tau-voice-linux-x64-1.0.0.tgz",
+      "version": "1.0.0"
+    },
+    "node_modules/@abdoknbgit/tau-voice-win32-arm64": {
+      "cpu": [
+        "arm64"
+      ],
+      "engines": {
+        "node": ">=20.19.0 <21.0.0 || >=22.12.0"
+      },
+      "integrity": "sha512-X7z9VX8Ijewsc9MbxCARbK5pd3AMHZbHGAeFfFTQx9PY8vPcXQG7wv3NAzg0dcyuHHq3cyHZuDs43nx3r8lJwA==",
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "resolved": "https://registry.npmjs.org/@abdoknbgit/tau-voice-win32-arm64/-/tau-voice-win32-arm64-1.0.0.tgz",
+      "version": "1.0.0"
+    },
+    "node_modules/@abdoknbgit/tau-voice-win32-x64": {
+      "cpu": [
+        "x64"
+      ],
+      "engines": {
+        "node": ">=20.19.0 <21.0.0 || >=22.12.0"
+      },
+      "integrity": "sha512-1/kBg/OZqVYd3IsBYD5Q89fUFnP4chykfkvOQM6txrozrdNlCjLmeUq2VSxGOkSicHlJDbvd6ghUo/ctd2Je3g==",
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "resolved": "https://registry.npmjs.org/@abdoknbgit/tau-voice-win32-x64/-/tau-voice-win32-x64-1.0.0.tgz",
+      "version": "1.0.0"
     },
     "node_modules/@agentclientprotocol/sdk": {
       "integrity": "sha512-ialrcI+RzKOYe+fw+TfpyTdRmEoqIkXLlwbTi6XgaXXfdhNcdod7TmE1VsTnG3yTlox8TMTSMQgWbLLbz3r86Q==",
@@ -6708,5 +6810,5 @@
     }
   },
   "requires": true,
-  "version": "0.92.30"
+  "version": "0.92.32"
 }
