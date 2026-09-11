@@ -1,5 +1,6 @@
 import { extname } from 'path'
 import { isNativeTauToolsAvailable, runNativeTauTool } from './nativeTauTools.js'
+import type { ThemeName } from './theme.js'
 
 const MAX_CACHE_ENTRIES = 300
 const MAX_NATIVE_HIGHLIGHT_CHARS = 200_000
@@ -9,6 +10,12 @@ const MAX_NATIVE_HIGHLIGHT_CHARS = 200_000
 // the cap we skip; a later render (once the stream slows and a slot frees)
 // fills the cache for the now-stable content.
 const MAX_INFLIGHT_HIGHLIGHTS = 3
+
+// The native helper currently ships one Chroma style. Keep it opt-in so a
+// later cache fill cannot replace a custom Tau palette with github-dark ANSI.
+const NATIVE_SYNTAX_STYLES: Partial<Record<ThemeName, string>> = {
+  dark: 'github-dark',
+}
 
 const TRAILING_ANSI_SPACE_RE =
   /(?:(?:\x1B\[[0-?]*[ -/]*[@-~])*[ \t]+(?:\x1B\[[0-?]*[ -/]*[@-~])*)+$/u
@@ -58,6 +65,10 @@ function normalizeRendered(rendered: string | null): string | null {
   )
 }
 
+export function getNativeHighlightStyle(themeName: ThemeName): string | null {
+  return NATIVE_SYNTAX_STYLES[themeName] ?? null
+}
+
 // Fill the highlight cache off the render path. Never awaited by callers: the
 // current render uses the JS fallback (null return below) and a later render
 // picks up the cached result. Deduped + concurrency-capped so streaming's
@@ -66,6 +77,7 @@ function scheduleNativeHighlight(
   key: string,
   code: string,
   language: string,
+  style: string,
 ): void {
   if (
     inFlightHighlights.has(key) ||
@@ -74,7 +86,7 @@ function scheduleNativeHighlight(
     return
   }
   inFlightHighlights.add(key)
-  const args = ['--style', 'github-dark']
+  const args = ['--style', style]
   if (language) args.push('--lang', language)
   runNativeTauTool('highlight-code', args, {
     input: code,
@@ -98,21 +110,24 @@ function scheduleNativeHighlight(
  * dead Esc/Ctrl+C) for seconds-to-minutes; cold spawns measured ~4.4s each.
  *
  * Now a cache miss only *schedules* an async fill and returns null immediately.
- * Both callers — markdown code blocks (`utils/markdown.ts`) and
- * `HighlightedCode` — already fall back to the fast in-process JS highlighter
- * when this returns null, so the render stays instant and the native result
- * swaps in on a subsequent render once it lands.
+ * `HighlightedCode` falls back to the fast in-process JS highlighter when this
+ * returns null. Themes without a matching native style stay on that themed
+ * renderer permanently, while supported themes can swap in the native result
+ * once it lands.
  */
 export function highlightCodeWithNative(
   code: string,
   filePathOrLanguage?: string,
+  themeName: ThemeName = 'dark',
 ): string | null {
   if (!code || code.length > MAX_NATIVE_HIGHLIGHT_CHARS) return null
+  const style = getNativeHighlightStyle(themeName)
+  if (!style) return null
   if (!isNativeTauToolsAvailable()) return null
   const language = languageFromPathOrHint(filePathOrLanguage)
-  const key = `code:${language}:${filePathOrLanguage ?? ''}:${code}`
+  const key = `code:${themeName}:${style}:${language}:${filePathOrLanguage ?? ''}:${code}`
   const cached = highlightCache.get(key)
   if (cached !== undefined) return cached
-  scheduleNativeHighlight(key, code, language)
+  scheduleNativeHighlight(key, code, language, style)
   return null
 }

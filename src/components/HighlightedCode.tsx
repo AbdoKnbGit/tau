@@ -120,7 +120,7 @@ export const HighlightedCode = memo(function HighlightedCode(t0) {
     t6 = t7.length + 2;
   }
   const gutterWidth = t6;
-  const nativeHighlighted = syntaxHighlightingDisabled ? null : highlightCodeWithNative(code, filePath);
+  const nativeHighlighted = syntaxHighlightingDisabled ? null : highlightCodeWithNative(code, filePath, theme);
   if (nativeHighlighted) {
     const nativeLines = nativeHighlighted.replace(/\r?\n$/, "").split(/\r?\n/);
     return <Box ref={ref}><Box flexDirection="column">{nativeLines.map((line, i) => <Text key={i}><Ansi>{line}</Ansi></Text>)}</Box></Box>;
