@@ -13,7 +13,7 @@ import { execFileNoThrow } from './execFileNoThrow.js'
 import { findExecutable } from './findExecutable.js'
 import { logError } from './log.js'
 import { getPlatform } from './platform.js'
-import { isUsableRipgrep } from './ripgrepBinary.js'
+import { isUsableRipgrep, parseRipgrepMajorVersion } from './ripgrepBinary.js'
 import { countCharInString } from './stringUtils.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -362,6 +362,7 @@ export async function ripGrep(
   args: string[],
   target: string,
   abortSignal: AbortSignal,
+  { strictErrors = false }: { strictErrors?: boolean } = {},
 ): Promise<string[]> {
   await codesignRipgrepIfNecessary()
 
@@ -386,6 +387,13 @@ export async function ripGrep(
             .map(line => line.replace(/\r$/, ''))
             .filter(Boolean),
         )
+        return
+      }
+
+      // Grep cancellation is not a completed search. Discovery callers also use
+      // AbortSignal for time budgets and retain their existing partial results.
+      if (strictErrors && error.code === 'ABORT_ERR') {
+        reject(error)
         return
       }
 
@@ -426,6 +434,13 @@ export async function ripGrep(
 
       // For all other errors, try to return partial results if available
       const hasOutput = stdout && stdout.trim().length > 0
+      // Grep opts into errors rather than misleading "no matches" results.
+      // Shared discovery callers intentionally tolerate absent optional dirs.
+      // Keep partial output: traversal errors can exit 2 after valid matches.
+      if (strictErrors && error.code === 2 && !hasOutput) {
+        reject(new Error(stderr.trim() || error.message, { cause: error }))
+        return
+      }
       const isTimeout =
         error.signal === 'SIGTERM' ||
         error.signal === 'SIGKILL' ||
@@ -450,9 +465,8 @@ export async function ripGrep(
         `rg error (signal=${error.signal}, code=${error.code}, stderr: ${stderr}), ${lines.length} results`,
       )
 
-      // code 2 = ripgrep usage error (already handled); ABORT_ERR = caller
-      // explicitly aborted (not an error, just a cancellation — interactive
-      // callers may abort on every keystroke-after-debounce).
+      // Code 2 is either a recoverable traversal error or a tolerated missing
+      // optional directory. Strict Grep errors without output returned above.
       if (error.code !== 2 && error.code !== 'ABORT_ERR') {
         logError(error)
       }
@@ -540,9 +554,17 @@ export const countFilesRoundedRg = memoize(
 // Singleton to store ripgrep availability status
 let ripgrepStatus: {
   working: boolean
+  majorVersion: number | null
   lastTested: number
   config: RipgrepConfig
 } | null = null
+
+/** Share the existing one-time probe; never add Grep-only flags to shared args. */
+export async function getRipgrepMajorVersion(): Promise<number | null> {
+  await codesignRipgrepIfNecessary()
+  await testRipgrepOnFirstUse()
+  return ripgrepStatus?.majorVersion ?? null
+}
 
 /**
  * Get ripgrep status and configuration info
@@ -579,20 +601,25 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
     if (config.argv0) {
       // Only Bun embeds ripgrep.
       // eslint-disable-next-line custom-rules/require-bun-typeof-guard
-      const proc = Bun.spawn([config.command, '--version'], {
+      const proc = Bun.spawn([config.command, ...config.args, '--version'], {
         argv0: config.argv0,
         stderr: 'ignore',
         stdout: 'pipe',
       })
 
-      // Bun's ReadableStream has .text() at runtime, but TS types don't reflect it
-      const [stdout, code] = await Promise.all([
-        (proc.stdout as unknown as Blob).text(),
-        proc.exited,
-      ])
-      test = {
-        code,
-        stdout,
+      // Grep now awaits this probe. Bound embedded mode just like standalone rg.
+      const timeout = setTimeout(() => {
+        try { proc.kill() } catch { /* already exited */ }
+      }, 5000)
+      try {
+        // Bun's ReadableStream has .text() at runtime, but TS types don't reflect it
+        const [stdout, code] = await Promise.all([
+          (proc.stdout as unknown as Blob).text(),
+          proc.exited,
+        ])
+        test = { code, stdout }
+      } finally {
+        clearTimeout(timeout)
       }
     } else {
       test = await execFileNoThrow(
@@ -609,6 +636,7 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
 
     ripgrepStatus = {
       working,
+      majorVersion: working ? parseRipgrepMajorVersion(test.stdout) : null,
       lastTested: Date.now(),
       config,
     }
@@ -625,6 +653,7 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
   } catch (error) {
     ripgrepStatus = {
       working: false,
+      majorVersion: null,
       lastTested: Date.now(),
       config,
     }

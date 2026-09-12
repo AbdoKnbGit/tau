@@ -18,11 +18,12 @@ import {
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { getGlobExclusionsForPluginCache } from '../../utils/plugins/orphanedPluginFilter.js'
-import { ripGrep } from '../../utils/ripgrep.js'
+import { getRipgrepMajorVersion, ripGrep } from '../../utils/ripgrep.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
 import { plural } from '../../utils/stringUtils.js'
 import { buildGroupedGrepSummary } from './groupFlood.js'
+import { getGrepIgnoreArgs } from './grepIgnore.js'
 import { GREP_TOOL_NAME, getDescription } from './prompt.js'
 import {
   getToolUseSummary,
@@ -329,6 +330,12 @@ export const GrepTool = buildTool({
   ) {
     const absolutePath = path ? expandPath(path) : getCwd()
     const args = ['--hidden']
+    abortController.signal.throwIfAborted()
+    args.push(...await getGrepIgnoreArgs(
+      absolutePath,
+      await getRipgrepMajorVersion(),
+      abortController.signal,
+    ))
 
     // Exclude VCS directories to avoid noise from version control metadata
     for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) {
@@ -439,7 +446,9 @@ export const GrepTool = buildTool({
     // We don't use AbortController for timeout to avoid interrupting the agent loop
     // If ripgrep times out, it throws RipgrepTimeoutError which propagates up
     // so Claude knows the search didn't complete (rather than thinking there were no matches)
-    const results = await ripGrep(args, absolutePath, abortController.signal)
+    const results = await ripGrep(args, absolutePath, abortController.signal, {
+      strictErrors: true,
+    })
 
     if (output_mode === 'content') {
       // For content mode, results are the actual content lines

@@ -1,6 +1,6 @@
 /** Focused regression tests for vendored-ripgrep compatibility probing. */
 
-import { isUsableRipgrep } from './ripgrepBinary.js'
+import { isUsableRipgrep, parseRipgrepMajorVersion } from './ripgrepBinary.js'
 
 let passed = 0
 let failed = 0
@@ -64,6 +64,24 @@ test('accepts only a successful ripgrep version probe', () => {
     spawnSyncImpl: (() => ({ status: 0, stdout: 'not-ripgrep\n' })) as never,
   })
   assert(!impostor, 'unrelated executable was accepted as ripgrep')
+})
+
+test('parses capability versions from official and development version banners', () => {
+  for (const [banner, expected] of [
+    ['ripgrep 11.0.2\n', 11],
+    ['ripgrep 12.0.0\r\n', 12],
+    ['ripgrep 15.2.0 (rev e89fff89ac)\nfeatures:+pcre2', 15],
+    ['ripgrep 15.2.0-dev+build\n', 15],
+  ] as const) {
+    assert(parseRipgrepMajorVersion(banner) === expected, `wrong version: ${banner}`)
+  }
+})
+
+test('unknown and malformed banners never enable a ripgrep capability', () => {
+  for (const banner of ['', 'grep 15.2.0', 'ripgrep 15', 'ripgrep 15.2.0junk',
+    'error: ripgrep 15.2.0', 'ripgrep 999999999999999999999.0.0']) {
+    assert(parseRipgrepMajorVersion(banner) === null, `accepted ${banner}`)
+  }
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

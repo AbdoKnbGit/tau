@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
+import { RG_VERSION } from '../scripts/postinstall.mjs'
 
 const target = `${process.platform}-${process.arch}`
 const file = `tau_voice.${target}.node`
@@ -17,7 +18,7 @@ test('real voice postinstall verifies bundled audio without Rust, external execu
   // Isolate the unrelated ripgrep prerequisite; the audio installer, manifest,
   // ABI load, and lifecycle marker are the actual production implementations.
   cpSync(join(root, 'scripts/platform-support.mjs'), join(root, 'scripts/platform-support-real.mjs'))
-  writeFileSync(join(root, 'scripts/platform-support.mjs'), `export * from './platform-support-real.mjs'; export const isUsableRipgrepCommand = () => true;`)
+  writeFileSync(join(root, 'scripts/platform-support.mjs'), `export * from './platform-support-real.mjs'; export const getRipgrepVersion = () => '${RG_VERSION}';`)
   const rgDir = join(root, 'dist/vendor/ripgrep', `${process.arch}-${process.platform === 'win32' ? 'win32' : process.platform}`)
   mkdirSync(rgDir, { recursive: true })
   writeFileSync(join(rgDir, process.platform === 'win32' ? 'rg.exe' : 'rg'), 'isolated prerequisite')

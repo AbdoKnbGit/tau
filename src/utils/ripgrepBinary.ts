@@ -3,6 +3,14 @@ import { existsSync } from 'fs'
 
 type SpawnSyncLike = typeof spawnSync
 
+/** Unknown/non-ripgrep output must never enable flags the binary may reject. */
+export function parseRipgrepMajorVersion(output: string): number | null {
+  const match = /^ripgrep (\d+)\.\d+\.\d+(?:[-+][^\s]+)?(?:\s|$)/.exec(output)
+  if (!match) return null
+  const major = Number(match[1])
+  return Number.isSafeInteger(major) ? major : null
+}
+
 /**
  * A downloaded file is not necessarily executable on the current host
  * (wrong architecture, corrupt archive, missing loader, or an OS policy can

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -13,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -30,6 +29,7 @@ import {
   writeLifecycleCompletionMarker,
 } from '../scripts/verify-deps.mjs';
 import { ALLOWED_SCRIPTS } from '../packages/tau-installer/lib/installer.mjs';
+import { RG_VERSION } from '../scripts/postinstall.mjs';
 import {
   acquireSynchronousUpdateLease,
   getManagedLocalUpdateLockPath,
@@ -94,46 +94,14 @@ function makePostinstallFixture(options = {}) {
   );
   copyFileSync(
     join(repositoryRoot, 'scripts', 'platform-support.mjs'),
-    join(scriptsRoot, 'platform-support.mjs'),
+    join(scriptsRoot, 'platform-support-real.mjs'),
   );
-
-  const ripgrepLayouts = {
-    'win32-x64': ['x64-win32', 'rg.exe'],
-    'win32-arm64': ['arm64-win32', 'rg.exe'],
-    'darwin-x64': ['x64-darwin', 'rg'],
-    'darwin-arm64': ['arm64-darwin', 'rg'],
-    'linux-x64': ['x64-linux', 'rg'],
-    'linux-arm64': ['arm64-linux', 'rg'],
-  };
-  const layout = ripgrepLayouts[`${process.platform}-${process.arch}`];
-  if (layout) {
-    const ripgrepRoot = join(packageRoot, 'dist', 'vendor', 'ripgrep', layout[0]);
-    mkdirSync(ripgrepRoot, { recursive: true });
-    const repositoryBinary = join(
-      repositoryRoot,
-      'dist',
-      'vendor',
-      'ripgrep',
-      layout[0],
-      layout[1],
-    );
-    const pathCandidates = (process.env.PATH ?? '')
-      .split(delimiter)
-      .filter(Boolean)
-      .map(entry => join(entry, process.platform === 'win32' ? 'rg.exe' : 'rg'));
-    const sourceBinary = [repositoryBinary, ...pathCandidates].find(candidate => {
-      if (!existsSync(candidate)) return false;
-      const probe = spawnSync(candidate, ['--version'], {
-        encoding: 'utf8',
-        timeout: 5_000,
-      });
-      return probe.status === 0 && probe.stdout.startsWith('ripgrep ');
-    });
-    assert.ok(sourceBinary, 'tests require an executable ripgrep binary');
-    const fixtureBinary = join(ripgrepRoot, layout[1]);
-    copyFileSync(sourceBinary, fixtureBinary);
-    if (process.platform !== 'win32') chmodSync(fixtureBinary, 0o755);
-  }
+  // This fixture tests lifecycle completion, not network or binary upgrades.
+  // Keep it independent of whichever ripgrep happens to be on the test host.
+  writeFileSync(
+    join(scriptsRoot, 'platform-support.mjs'),
+    `export * from './platform-support-real.mjs'; export const getRipgrepVersion = () => '${RG_VERSION}';\n`,
+  );
 
   if (options.failingRequiredNativeBuild) {
     writeFileSync(

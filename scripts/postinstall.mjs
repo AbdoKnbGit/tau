@@ -11,16 +11,17 @@
  * and first-launch code will retry any missed Ollama pulls.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, createWriteStream, readdirSync, renameSync, rmSync, copyFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, createWriteStream, createReadStream, readdirSync, renameSync, rmSync, copyFileSync, realpathSync } from 'fs';
 import { chmod } from 'fs/promises';
+import { createHash } from 'node:crypto';
 import { resolve, dirname, join, basename } from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { spawnSync } from 'child_process';
 import https from 'https';
 import { tmpdir } from 'os';
 import {
   isLinuxArm64Musl,
-  isUsableRipgrepCommand,
+  getRipgrepVersion,
   resolveWindowsSystemExecutable,
 } from './platform-support.mjs';
 
@@ -43,85 +44,99 @@ const OLLAMA_CLOUD_MODELS = [
   'gemini-3-flash-preview:cloud',
 ];
 
-const RG_VERSION = '14.1.1';
+// Pinned to the latest stable upstream release reviewed on 2026-09-12.
+// Digests below are the release asset SHA-256 values published by GitHub:
+// https://github.com/BurntSushi/ripgrep/releases/tag/15.2.0
+export const RG_VERSION = '15.2.0';
 
 // Map Node's (platform-arch) pair to the ripgrep release info
 const PLATFORM_MAP = {
-  'win32-x64':   { target: 'x86_64-pc-windows-msvc',   ext: 'zip',    binary: 'rg.exe', dir: 'x64-win32'   },
-  // ripgrep first added an official Windows ARM64 artifact in 15.x. Keep the
-  // established 14.1.1 binary everywhere else to avoid an unrelated upgrade.
-  'win32-arm64': { target: 'aarch64-pc-windows-msvc',  ext: 'zip',    binary: 'rg.exe', dir: 'arm64-win32', version: '15.1.0' },
-  'darwin-x64':  { target: 'x86_64-apple-darwin',       ext: 'tar.gz', binary: 'rg',     dir: 'x64-darwin'   },
-  'darwin-arm64':{ target: 'aarch64-apple-darwin',      ext: 'tar.gz', binary: 'rg',     dir: 'arm64-darwin' },
-  'linux-x64':   { target: 'x86_64-unknown-linux-musl', ext: 'tar.gz', binary: 'rg',     dir: 'x64-linux'    },
-  'linux-arm64': { target: 'aarch64-unknown-linux-gnu', ext: 'tar.gz', binary: 'rg',     dir: 'arm64-linux'  },
+  'win32-x64':   { target: 'x86_64-pc-windows-msvc',   ext: 'zip',    binary: 'rg.exe', dir: 'x64-win32',   sha256: '71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5' },
+  'win32-arm64': { target: 'aarch64-pc-windows-msvc',  ext: 'zip',    binary: 'rg.exe', dir: 'arm64-win32', sha256: 'e4abca10c3a64ebea742667dd7009449d49403db5460dd6873e389fa2945360f' },
+  'darwin-x64':  { target: 'x86_64-apple-darwin',       ext: 'tar.gz', binary: 'rg',     dir: 'x64-darwin',  sha256: 'af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1' },
+  'darwin-arm64':{ target: 'aarch64-apple-darwin',      ext: 'tar.gz', binary: 'rg',     dir: 'arm64-darwin',sha256: '3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4' },
+  'linux-x64':   { target: 'x86_64-unknown-linux-musl', ext: 'tar.gz', binary: 'rg',     dir: 'x64-linux',   sha256: '33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c' },
+  'linux-arm64': { target: 'aarch64-unknown-linux-gnu', ext: 'tar.gz', binary: 'rg',     dir: 'arm64-linux', sha256: 'a740b91c82eaf9914cfedd353572f2791cbe0162c84101ee0951058f4dcbc90d' },
+  'linux-arm64-musl': { target: 'aarch64-unknown-linux-musl', ext: 'tar.gz', binary: 'rg', dir: 'arm64-linux', sha256: '800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915' },
 };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(__dirname, '..');
 
-async function main() {
-  const key = `${process.platform}-${process.arch}`;
+export function resolveRipgrepRelease({ platform = process.platform, arch = process.arch, getReport } = {}) {
+  const key = `${platform}-${arch}${isLinuxArm64Musl({ platform, arch, getReport }) ? '-musl' : ''}`;
   const info = PLATFORM_MAP[key];
+  return info ? { ...info, version: RG_VERSION } : null;
+}
+
+/** Install only ripgrep; also used by --ripgrep-only without other lifecycles. */
+export async function installRipgrep({
+  root = packageRoot,
+  platform = process.platform,
+  arch = process.arch,
+  getReport,
+  temporaryRoot = tmpdir(),
+  downloadImpl = download,
+  verifyArchiveImpl = verifyRipgrepArchive,
+  extractImpl = extract,
+  versionImpl = getRipgrepVersion,
+  renameImpl = renameSync,
+  log = console.log,
+} = {}) {
+  const key = `${platform}-${arch}`;
+  const info = resolveRipgrepRelease({ platform, arch, getReport });
 
   if (!info) {
     return requireSystemRipgrep(
       `there is no vendored ripgrep build for ${key}`,
+      versionImpl,
+      log,
     );
   }
 
-  if (isLinuxArm64Musl()) {
-    return requireSystemRipgrep(
-      'the upstream release has no Linux ARM64 musl binary',
-    );
-  }
-
-  const destDir = join(packageRoot, 'dist', 'vendor', 'ripgrep', info.dir);
+  const destDir = join(root, 'dist', 'vendor', 'ripgrep', info.dir);
   const destBinary = join(destDir, info.binary);
-
-  if (existsSync(destBinary)) {
-    // A file left by a build or interrupted install is not proof that it can
-    // execute on this OS/architecture. Probe it before certifying the install.
-    if (
-      isUsableRipgrepCommand(destBinary, {
-        requireFile: true,
-      })
-    ) {
-      return;
-    }
-    rmSync(destBinary, { force: true });
-  }
-
-  const version = info.version ?? RG_VERSION;
+  const version = info.version;
+  // An older executable can still be usable; that must not suppress upgrades.
+  if (versionImpl(destBinary, { requireFile: true }) === version) return;
   const archiveName = `ripgrep-${version}-${info.target}.${info.ext}`;
   const url = `https://github.com/BurntSushi/ripgrep/releases/download/${version}/${archiveName}`;
-  // Use a private, unique directory. A predictable shared /tmp filename lets
-  // concurrent installs corrupt each other's download and can follow a stale
-  // symlink left by another local user.
-  const temporaryDirectory = mkdtempSync(join(tmpdir(), 'tau-ripgrep-'));
-  const tmpArchive = join(temporaryDirectory, archiveName);
+  let temporaryDirectory;
+  let stagingDir;
 
-  console.log(`[tau] Downloading ripgrep ${version} for ${key}...`);
+  log(`[tau] Downloading ripgrep ${version} for ${key}...`);
 
   try {
-    await download(url, tmpArchive);
+    // Use a private, unique directory. A predictable shared /tmp filename lets
+    // concurrent installs corrupt each other's download and can follow a stale
+    // symlink left by another local user. Creation failures use the same safe
+    // fallback as download failures rather than breaking a working install.
+    temporaryDirectory = mkdtempSync(join(temporaryRoot, 'tau-ripgrep-'));
+    const tmpArchive = join(temporaryDirectory, archiveName);
+    await downloadImpl(url, tmpArchive);
+    await verifyArchiveImpl(tmpArchive, info.sha256);
     mkdirSync(destDir, { recursive: true });
-    await extract(tmpArchive, info.ext, info.binary, destDir);
-    if (process.platform !== 'win32') {
-      await chmod(destBinary, 0o755);
+    // Stage on the destination filesystem for an atomic replacement. Keep a
+    // working old binary in place until the new archive and executable pass.
+    stagingDir = mkdtempSync(join(dirname(destDir), `.${basename(destDir)}-install-`));
+    const stagedBinary = join(stagingDir, info.binary);
+    await extractImpl(tmpArchive, info.ext, info.binary, stagingDir);
+    if (platform !== 'win32') {
+      await chmod(stagedBinary, 0o755);
     }
-    if (
-      !isUsableRipgrepCommand(destBinary, {
-        requireFile: true,
-      })
-    ) {
-      throw new Error('the downloaded ripgrep binary cannot run on this host');
+    if (versionImpl(stagedBinary, { requireFile: true }) !== version) {
+      throw new Error(`the downloaded ripgrep binary cannot run as version ${version} on this host`);
     }
-    console.log(`[tau] ripgrep installed at ${destBinary}`);
+    renameImpl(stagedBinary, destBinary);
+    log(`[tau] ripgrep ${version} installed at ${destBinary}`);
   } catch (err) {
-    rmSync(destBinary, { force: true });
-    if (isUsableRipgrepCommand('rg')) {
-      console.log(
+    const existingVersion = versionImpl(destBinary, { requireFile: true });
+    if (existingVersion) {
+      log(`[tau] Could not update ripgrep to ${version} (${err.message}); keeping working vendored ripgrep ${existingVersion}.`);
+      return;
+    }
+    if (versionImpl('rg')) {
+      log(
         `[tau] Vendored ripgrep unavailable (${err.message}); using the working system rg.`,
       );
       return;
@@ -131,7 +146,21 @@ async function main() {
       { cause: err },
     );
   } finally {
-    try { rmSync(temporaryDirectory, { recursive: true, force: true }); } catch { /* ignore */ }
+    if (stagingDir) {
+      try { rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+    if (temporaryDirectory) {
+      try { rmSync(temporaryDirectory, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Verify the pinned upstream digest before unpacking or executing a download. */
+export async function verifyRipgrepArchive(archivePath, expectedSha256) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(archivePath)) hash.update(chunk);
+  if (hash.digest('hex') !== expectedSha256) {
+    throw new Error('ripgrep archive SHA-256 checksum mismatch');
   }
 }
 
@@ -235,9 +264,9 @@ async function extract(archivePath, ext, binaryName, destDir) {
   }
 }
 
-function requireSystemRipgrep(reason) {
-  if (isUsableRipgrepCommand('rg')) {
-    console.log(`[tau] ${reason}; using the working system rg.`);
+function requireSystemRipgrep(reason, versionImpl, log) {
+  if (versionImpl('rg')) {
+    log(`[tau] ${reason}; using the working system rg.`);
     return;
   }
   throw new Error(
@@ -360,7 +389,7 @@ async function runPostinstall() {
   } = await import('./verify-deps.mjs');
   clearLifecycleCompletionMarker(packageRoot);
 
-  await main();
+  await installRipgrep();
 
   await verifyDependencyTree();
   // Users never compile Rust or download a speech model: the addon arrives
@@ -424,7 +453,10 @@ async function checkBundledVoice() {
   }
 }
 
-runPostinstall().catch(error => {
-  console.error(`[tau] postinstall failed: ${error?.message ?? error}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
+  const operation = process.argv.includes('--ripgrep-only') ? installRipgrep : runPostinstall;
+  operation().catch(error => {
+    console.error(`[tau] postinstall failed: ${error?.message ?? error}`);
+    process.exitCode = 1;
+  });
+}

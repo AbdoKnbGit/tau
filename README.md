@@ -93,6 +93,9 @@ See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 **The full agent loop**
 File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management: all present, all working across every provider.
 
+**Search in extracted projects**
+Grep respects `.gitignore` even before `git init`, so ignored dependencies and build output stay out of ordinary content searches. Searches starting inside Git repositories retain their repository boundaries. Explicit file paths and matching `glob` filters can still include ignored files; Glob keeps its existing file-discovery behavior.
+
 **LSP native integration**
 Built-in Language Server Protocol support. The agent gets real diagnostics, definitions, references, and hover information from project LSPs (TypeScript, Python, Bash, YAML, and more) without spawning external editor tooling. Type errors, unused symbols, and cross-file references are first-class signal in the agent loop.
 

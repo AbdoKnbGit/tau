@@ -31,9 +31,8 @@ export function resolveWindowsSystemExecutable(
 }
 
 /**
- * The ripgrep 14.1.1 release has no Linux ARM64 musl artifact. Detect the
- * libc reported by Node so postinstall does not place a known-incompatible
- * GNU binary on Alpine ARM64. Unknown report implementations return false;
+ * Detect the libc reported by Node so postinstall selects the upstream musl
+ * artifact on Alpine ARM64. Unknown report implementations return false;
  * runtime still probes the binary before selecting it.
  */
 export function isLinuxArm64Musl(
@@ -60,6 +59,14 @@ export function isLinuxArm64Musl(
  */
 export function isUsableRipgrepCommand(
   command,
+  options = {},
+) {
+  return getRipgrepVersion(command, options) !== null;
+}
+
+/** Return the executable's release version, or null when it cannot run. */
+export function getRipgrepVersion(
+  command,
   {
     fileExists = existsSync,
     requireFile = false,
@@ -72,7 +79,7 @@ export function isUsableRipgrepCommand(
     /[\0\r\n]/.test(command) ||
     (requireFile && !fileExists(command))
   ) {
-    return false;
+    return null;
   }
 
   try {
@@ -82,12 +89,9 @@ export function isUsableRipgrepCommand(
       timeout: 5000,
       windowsHide: true,
     });
-    return (
-      probe.status === 0 &&
-      typeof probe.stdout === 'string' &&
-      probe.stdout.startsWith('ripgrep ')
-    );
+    if (probe.status !== 0 || typeof probe.stdout !== 'string') return null;
+    return /^ripgrep (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?=\s|$)/.exec(probe.stdout)?.[1] ?? null;
   } catch {
-    return false;
+    return null;
   }
 }
