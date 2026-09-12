@@ -30,6 +30,8 @@ import { expandPath } from '../../utils/path.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
 import { exec, setCwd } from '../../utils/Shell.js';
+import type { AgentModelEnv } from '../../utils/shell/agentEnv.js';
+import { getAgentModelEnv } from '../../utils/shell/agentModelEnv.js';
 import { getCwd } from '../../utils/cwd.js';
 import { allWorkingDirectories, pathInAllowedWorkingPath } from '../../utils/permissions/filesystem.js';
 import type { ExecResult } from '../../utils/ShellCommand.js';
@@ -941,7 +943,8 @@ export const BashTool = buildTool({
         keepInForeground: isHiddenCommand,
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
-        agentId: toolUseContext.agentId
+        agentId: toolUseContext.agentId,
+        agentModelEnv: getAgentModelEnv(toolUseContext, parentMessage)
       });
 
       // Consume the generator and capture the return value
@@ -1195,7 +1198,8 @@ async function* runShellCommand({
   keepInForeground,
   isMainThread,
   toolUseId,
-  agentId
+  agentId,
+  agentModelEnv
 }: {
   input: BashToolInput;
   abortController: AbortController;
@@ -1207,6 +1211,8 @@ async function* runShellCommand({
   isMainThread?: boolean;
   toolUseId?: string;
   agentId?: AgentId;
+  /** Calling agent's provider/model/effort, only for a model's own tool call. */
+  agentModelEnv?: AgentModelEnv;
 }): AsyncGenerator<{
   type: 'progress';
   output: string;
@@ -1262,7 +1268,8 @@ async function* runShellCommand({
     preventCwdChanges,
     shouldUseSandbox: shouldUseSandbox(input),
     shouldAutoBackground,
-    workdir
+    workdir,
+    agentModelEnv
   });
 
   // Start the command execution

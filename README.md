@@ -138,6 +138,9 @@ A configurable fallback system can move work to another model/provider when the 
 **Session management and flexibility**
 Tree navigation, cloning, branching, and resume commands make long sessions easier to control without losing context.
 
+**Session info for your scripts**
+Commands run by Tau's Bash and PowerShell tools, including the ones you type with `!`, get `AI_AGENT=tau` and `TAU_SESSION_ID` (the id `/status` shows). When the model runs the command, it also gets `TAU_PROVIDER` and `TAU_MODEL` (a subagent reports its own), plus `TAU_EFFORT` for Anthropic, Bedrock, Vertex and Foundry models that have an effort level. Git hooks and scripts can use them to log which session and model made a change. The model never sees these values, so they cost no tokens.
+
 **High-visibility monitoring and reporting**
 Tau separates live usage, session statistics, and final reports, so you can monitor consumption while still producing readable end-of-session summaries.
 

@@ -37,6 +37,7 @@ import { getClaudeTempDirName } from './permissions/filesystem.js'
 import { getPlatform } from './platform.js'
 import { SandboxManager } from './sandbox/sandbox-adapter.js'
 import { invalidateSessionEnvCache } from './sessionEnvironment.js'
+import { type AgentModelEnv, withAgentEnv } from './shell/agentEnv.js'
 import { createBashShellProvider } from './shell/bashProvider.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
 import { createPowerShellProvider } from './shell/powershellProvider.js'
@@ -218,6 +219,12 @@ export type ExecOptions = {
    * lets the model run a command elsewhere without persisting a `cd`.
    */
   workdir?: string
+  /**
+   * Provider, model and effort of the agent whose own tool call runs this
+   * command (see shell/agentModelEnv.ts), exported as TAU_PROVIDER,
+   * TAU_MODEL and TAU_EFFORT. When absent, those variables stay unset.
+   */
+  agentModelEnv?: AgentModelEnv
 }
 
 /**
@@ -244,6 +251,7 @@ export async function exec(
     shouldAutoBackground,
     onStdout,
     workdir,
+    agentModelEnv,
   } = options ?? {}
   const commandTimeout = timeout || DEFAULT_TIMEOUT
   // When workdir is set, never update the session cwd: the override is
@@ -388,7 +396,10 @@ export async function exec(
 
   try {
     const childProcess = spawn(spawnBinary, shellArgs, {
-      env: {
+      // withAgentEnv adds AI_AGENT and TAU_SESSION_ID (plus TAU_PROVIDER,
+      // TAU_MODEL and TAU_EFFORT for a model's own tool call) and drops
+      // inherited copies, such as a parent Tau's.
+      env: withAgentEnv({
         ...baseEnv,
         // Shell tools redirect stdout/stderr to files. On Windows, native
         // Python otherwise often defaults redirected stdio to the ANSI code
@@ -407,7 +418,7 @@ export async function exec(
               CLAUDE_CODE_SESSION_ID: getSessionId(),
             }
           : {}),
-      },
+      }, { sessionId: getSessionId(), agentModel: agentModelEnv }),
       cwd,
       stdio: usePipeMode
         ? ['pipe', 'pipe', 'pipe']

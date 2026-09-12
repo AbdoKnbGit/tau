@@ -23,6 +23,8 @@ import type { PermissionResult } from '../../utils/permissions/PermissionResult.
 import { getPlatform } from '../../utils/platform.js';
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
 import { exec } from '../../utils/Shell.js';
+import type { AgentModelEnv } from '../../utils/shell/agentEnv.js';
+import { getAgentModelEnv } from '../../utils/shell/agentModelEnv.js';
 import { getCwd } from '../../utils/cwd.js';
 import { getOriginalCwd, getVisitedDirs, recordVisitedDir } from '../../bootstrap/state.js';
 import { allWorkingDirectories } from '../../utils/permissions/filesystem.js';
@@ -462,7 +464,7 @@ export const PowerShellTool = buildTool({
       is_error: interrupted
     };
   },
-  async call(input: PowerShellToolInput, toolUseContext: Parameters<Tool['call']>[1], _canUseTool?: CanUseToolFn, _parentMessage?: AssistantMessage, onProgress?: ToolCallProgress<PowerShellProgress>): Promise<{
+  async call(input: PowerShellToolInput, toolUseContext: Parameters<Tool['call']>[1], _canUseTool?: CanUseToolFn, parentMessage?: AssistantMessage, onProgress?: ToolCallProgress<PowerShellProgress>): Promise<{
     data: Out;
   }> {
     // Load-bearing guard: promptShellExecution.ts and processBashCommand.tsx
@@ -541,7 +543,8 @@ export const PowerShellTool = buildTool({
         keepInForeground: isHiddenCommand,
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
-        agentId: toolUseContext.agentId
+        agentId: toolUseContext.agentId,
+        agentModelEnv: getAgentModelEnv(toolUseContext, parentMessage)
       });
       let generatorResult;
       do {
@@ -764,7 +767,8 @@ async function* runPowerShellCommand({
   keepInForeground,
   isMainThread,
   toolUseId,
-  agentId
+  agentId,
+  agentModelEnv
 }: {
   input: PowerShellToolInput;
   abortController: AbortController;
@@ -776,6 +780,8 @@ async function* runPowerShellCommand({
   isMainThread?: boolean;
   toolUseId?: string;
   agentId?: AgentId;
+  /** Calling agent's provider/model/effort, only for a model's own tool call. */
+  agentModelEnv?: AgentModelEnv;
 }): AsyncGenerator<{
   type: 'progress';
   output: string;
@@ -847,7 +853,8 @@ async function* runPowerShellCommand({
         dangerouslyDisableSandbox
       }),
       shouldAutoBackground,
-      workdir
+      workdir,
+      agentModelEnv
     });
   } catch (e) {
     logError(e);
