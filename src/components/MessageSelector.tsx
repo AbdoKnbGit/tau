@@ -13,6 +13,7 @@ import { Box, Text } from '../ink.js';
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js';
 import type { Message, PartialCompactDirection, UserMessage } from '../types/message.js';
 import { stripDisplayTags } from '../utils/displayTags.js';
+import { isHiddenBashMessage } from '../utils/hiddenBashMessage.js';
 import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../utils/messages.js';
 import { type OptionWithDescription, Select } from './CustomSelect/select.js';
 import { Spinner } from './Spinner.js';
@@ -805,6 +806,9 @@ export function messagesAfterAreOnlySynthetic(messages: Message[], fromIndex: nu
     if (isSyntheticMessage(msg)) continue;
     if (isToolUseResultMessage(msg)) continue;
     if (msg.type === 'progress') continue;
+    // A `!!cmd` ran after this message. It leaves no user message of its own,
+    // so undoing past it would restore an older, unrelated input.
+    if (isHiddenBashMessage(msg)) return false;
     if (msg.type === 'system') continue;
     if (msg.type === 'attachment') continue;
     if (msg.type === 'user' && msg.isMeta) continue;

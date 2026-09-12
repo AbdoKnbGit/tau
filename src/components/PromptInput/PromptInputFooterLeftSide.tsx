@@ -54,6 +54,8 @@ type Props = {
   };
   vimMode: VimMode | undefined;
   mode: PromptInputMode;
+  /** Bash mode with a `!!cmd`: its output won't be sent to the model. */
+  hiddenBashInput?: boolean;
   toolPermissionContext: ToolPermissionContext;
   suppressHint: boolean;
   isLoading: boolean;
@@ -123,11 +125,12 @@ function ProactiveCountdown() {
   return t4;
 }
 export function PromptInputFooterLeftSide(t0) {
-  const $ = _c(27);
+  const $ = _c(28);
   const {
     exitMessage,
     vimMode,
     mode,
+    hiddenBashInput,
     toolPermissionContext,
     suppressHint,
     isLoading,
@@ -194,8 +197,8 @@ export function PromptInputFooterLeftSide(t0) {
   }
   const t4 = !suppressHint && !showVim;
   let t5;
-  if ($[13] !== isLoading || $[14] !== mode || $[15] !== onOpenTasksDialog || $[16] !== t4 || $[17] !== tasksSelected || $[18] !== teammateFooterIndex || $[19] !== teamsSelected || $[20] !== tmuxSelected || $[21] !== toolPermissionContext) {
-    t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} tmuxSelected={tmuxSelected} onOpenTasksDialog={onOpenTasksDialog} />;
+  if ($[13] !== isLoading || $[14] !== mode || $[15] !== onOpenTasksDialog || $[16] !== t4 || $[17] !== tasksSelected || $[18] !== teammateFooterIndex || $[19] !== teamsSelected || $[20] !== tmuxSelected || $[21] !== toolPermissionContext || $[27] !== hiddenBashInput) {
+    t5 = <ModeIndicator mode={mode} hiddenBashInput={hiddenBashInput} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} tmuxSelected={tmuxSelected} onOpenTasksDialog={onOpenTasksDialog} />;
     $[13] = isLoading;
     $[14] = mode;
     $[15] = onOpenTasksDialog;
@@ -205,6 +208,7 @@ export function PromptInputFooterLeftSide(t0) {
     $[19] = teamsSelected;
     $[20] = tmuxSelected;
     $[21] = toolPermissionContext;
+    $[27] = hiddenBashInput;
     $[22] = t5;
   } else {
     t5 = $[22];
@@ -223,6 +227,7 @@ export function PromptInputFooterLeftSide(t0) {
 }
 type ModeIndicatorProps = {
   mode: PromptInputMode;
+  hiddenBashInput?: boolean;
   toolPermissionContext: ToolPermissionContext;
   showHint: boolean;
   isLoading: boolean;
@@ -234,6 +239,7 @@ type ModeIndicatorProps = {
 };
 function ModeIndicator({
   mode,
+  hiddenBashInput,
   toolPermissionContext,
   showHint,
   isLoading,
@@ -283,7 +289,8 @@ function ModeIndicator({
   // In-process mode uses Shift+Down/Up navigation, not footer teams menu
   const hasTeams = isAgentSwarmsEnabled() && !isInProcessEnabled() && teamContext !== undefined && count(Object.values(teamContext.teammates), t_0 => t_0.name !== 'team-lead') > 0;
   if (mode === 'bash') {
-    return <Text color="bashBorder">! for bash mode</Text>;
+    // `!!cmd`: say so while typing, so the second `!` isn't taken for a typo.
+    return hiddenBashInput ? <Text dimColor>!! output not sent to model</Text> : <Text color="bashBorder">! for bash mode</Text>;
   }
   const currentMode = toolPermissionContext?.mode;
   const hasActiveMode = !isDefaultMode(currentMode);

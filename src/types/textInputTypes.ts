@@ -199,6 +199,14 @@ export type BaseTextInputProps = {
    * input drops the event.
    */
   readonly inputFilter?: (input: string, key: Key) => string
+
+  /**
+   * The prompt's current mode. A mode character (`!`) typed at the start of
+   * the input switches modes, unless the input is already in that mode:
+   * then it's plain text (in bash mode, `!!cmd` keeps its output from the
+   * model). Unset for inputs that have no modes.
+   */
+  readonly inputMode?: PromptInputMode
 }
 
 /**

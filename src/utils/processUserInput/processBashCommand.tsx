@@ -8,13 +8,19 @@ import type { AttachmentMessage, SystemMessage, UserMessage } from 'src/types/me
 import type { ShellProgress } from 'src/types/tools.js';
 import { logEvent } from '../../services/analytics/index.js';
 import { errorMessage, ShellError } from '../errors.js';
+import { createHiddenBashMessage } from '../hiddenBashMessage.js';
 import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../messages.js';
 import { resolveDefaultShell } from '../shell/resolveDefaultShell.js';
 import { isPowerShellToolEnabled } from '../shell/shellToolUtils.js';
 import { processToolResultBlock } from '../toolResultStorage.js';
 import { escapeXml } from '../xml.js';
 import type { ProcessUserInputContext } from './processUserInput.js';
-export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn): Promise<{
+export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn, {
+  hidden = false
+}: {
+  /** `!!cmd`: show the result in the transcript only, never send it to the model. */
+  hidden?: boolean;
+} = {}): Promise<{
   messages: (UserMessage | AttachmentMessage | SystemMessage)[];
   shouldQuery: boolean;
 }> {
@@ -33,13 +39,23 @@ export async function processBashCommand(inputString: string, precedingInputBloc
       precedingInputBlocks
     })
   });
+  // A hidden command's whole result is one UI-only system message: no caveat,
+  // no <bash-input>/<bash-stdout> user messages, nothing sent to the model.
+  const hiddenResult = (output: string, interrupted = false) => ({
+    messages: [createHiddenBashMessage({
+      command: inputString,
+      output,
+      interrupted
+    })],
+    shouldQuery: false
+  });
 
   // ctrl+b to background indicator
   let jsx: React.ReactNode;
 
   // Just show initial UI
   setToolJSX({
-    jsx: <BashModeProgress input={inputString} progress={null} verbose={context.options.verbose} />,
+    jsx: <BashModeProgress input={inputString} progress={null} verbose={context.options.verbose} hidden={hidden} />,
     shouldHidePromptInput: false
   });
   try {
@@ -48,7 +64,8 @@ export async function processBashCommand(inputString: string, precedingInputBloc
       // TODO: Clean up this hack
       setToolJSX: _ => {
         jsx = _?.jsx;
-      }
+      },
+      hiddenShellCommand: hidden
     };
 
     // Progress UI — shared across both shell backends (both emit ShellProgress)
@@ -57,7 +74,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     }) => {
       setToolJSX({
         jsx: <>
-            <BashModeProgress input={inputString!} progress={progress.data} verbose={context.options.verbose} />
+            <BashModeProgress input={inputString!} progress={progress.data} verbose={context.options.verbose} hidden={hidden} />
             {jsx}
           </>,
         shouldHidePromptInput: false,
@@ -104,15 +121,22 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     // tags into &lt;persisted-output&gt;, breaking the model's parse and
     // UserBashOutputMessage's extractTag. Escape the raw fallback only.
     const stdout = typeof mapped.content === 'string' ? mapped.content : escapeXml(data.stdout);
+    const output = `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${escapeXml(stderr)}</bash-stderr>`;
+    if (hidden) {
+      return hiddenResult(output);
+    }
     return {
       messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
-        content: `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${escapeXml(stderr)}</bash-stderr>`
+        content: output
       })],
       shouldQuery: false
     };
   } catch (e) {
     if (e instanceof ShellError) {
       if (e.interrupted) {
+        if (hidden) {
+          return hiddenResult('', true);
+        }
         return {
           messages: [createSyntheticUserCaveatMessage(), userMessage, createUserInterruptionMessage({
             toolUse: false
@@ -120,16 +144,24 @@ export async function processBashCommand(inputString: string, precedingInputBloc
           shouldQuery: false
         };
       }
+      const errorOutput = `<bash-stdout>${escapeXml(e.stdout)}</bash-stdout><bash-stderr>${escapeXml(e.stderr)}</bash-stderr>`;
+      if (hidden) {
+        return hiddenResult(errorOutput);
+      }
       return {
         messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
-          content: `<bash-stdout>${escapeXml(e.stdout)}</bash-stdout><bash-stderr>${escapeXml(e.stderr)}</bash-stderr>`
+          content: errorOutput
         })],
         shouldQuery: false
       };
     }
+    const failureOutput = `<bash-stderr>Command failed: ${escapeXml(errorMessage(e))}</bash-stderr>`;
+    if (hidden) {
+      return hiddenResult(failureOutput);
+    }
     return {
       messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
-        content: `<bash-stderr>Command failed: ${escapeXml(errorMessage(e))}</bash-stderr>`
+        content: failureOutput
       })],
       shouldQuery: false
     };

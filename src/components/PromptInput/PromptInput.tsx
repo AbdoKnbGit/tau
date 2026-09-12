@@ -112,7 +112,7 @@ import { BackgroundTasksDialog } from '../tasks/BackgroundTasksDialog.js';
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
 import { TeamsDialog } from '../teams/TeamsDialog.js';
 import VimTextInput from '../VimTextInput.js';
-import { getModeFromInput, getValueFromInput } from './inputModes.js';
+import { getModeFromInput, getModeSwitchFromInput, getValueFromInput, isHiddenBashInput } from './inputModes.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT, Notifications } from './Notifications.js';
 import PromptInputFooter from './PromptInputFooter.js';
 import type { SuggestionItem } from './PromptInputFooterSuggestions.js';
@@ -857,7 +857,9 @@ function PromptInput({
     submitCount,
     viewingAgentName
   });
-  const onChange = useCallback((value: string) => {
+  // detectModeCharacter is false when restoring text that already belongs to
+  // a mode (history): a restored `!!cmd` keeps its second `!`.
+  const applyInputChange = useCallback((value: string, detectModeCharacter: boolean) => {
     if (value === '?') {
       logEvent('tengu_help_toggled', {});
       setHelpOpen(v => !v);
@@ -874,16 +876,21 @@ function PromptInput({
 
     // Check if this is a single character insertion at the start
     const isSingleCharInsertion = value.length === input.length + 1;
-    const insertedAtStart = cursorOffset === 0;
-    const mode = getModeFromInput(value);
-    if (insertedAtStart && mode !== 'prompt') {
+    // `?` toggles help without changing the input, yet the text input has
+    // already moved its cursor past the `?`. Clamp, or a `!` typed after
+    // closing help is taken as text instead of switching to bash mode.
+    const insertedAtStart = Math.min(cursorOffset, input.length) === 0;
+    // In bash mode a leading `!` is text, not a mode switch: `!!cmd` runs a
+    // command without sending its output to the model.
+    const newMode = detectModeCharacter && insertedAtStart ? getModeSwitchFromInput(value, mode) : null;
+    if (newMode) {
       if (isSingleCharInsertion) {
-        onModeChange(mode);
+        onModeChange(newMode);
         return;
       }
       // Multi-char insertion into empty input (e.g. tab-accepting "! gcloud auth login")
       if (input.length === 0) {
-        onModeChange(mode);
+        onModeChange(newMode);
         const valueWithoutMode = getValueFromInput(value).replaceAll('\t', '    ');
         pushToBuffer(input, cursorOffset, pastedContents);
         trackAndSetInput(valueWithoutMode);
@@ -904,7 +911,8 @@ function PromptInput({
       footerSelection: null
     });
     trackAndSetInput(processedValue);
-  }, [trackAndSetInput, onModeChange, input, cursorOffset, pushToBuffer, pastedContents, dismissStashHint, setAppState]);
+  }, [trackAndSetInput, onModeChange, mode, input, cursorOffset, pushToBuffer, pastedContents, dismissStashHint, setAppState]);
+  const onChange = useCallback((value: string) => applyInputChange(value, true), [applyInputChange]);
   const {
     resetHistory,
     onHistoryUp,
@@ -912,7 +920,7 @@ function PromptInput({
     dismissSearchHint,
     historyIndex
   } = useArrowKeyHistory((value: string, historyMode: HistoryMode, pastedContents: Record<number, PastedContent>) => {
-    onChange(value);
+    applyInputChange(value, false);
     onModeChange(historyMode);
     setPastedContents(pastedContents);
   }, input, pastedContents, setCursorOffset, mode);
@@ -2232,7 +2240,8 @@ function PromptInput({
     } : undefined,
     highlights: combinedHighlights,
     inlineGhostText,
-    inputFilter: lazySpaceInputFilter
+    inputFilter: lazySpaceInputFilter,
+    inputMode: mode
   };
   const getBorderColor = (): keyof Theme => {
     const modeColors: Record<string, keyof Theme> = {
@@ -2307,7 +2316,7 @@ function PromptInput({
             </Box>
           </Box>
         </>}
-      <PromptInputFooter apiKeyStatus={apiKeyStatus} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={input.length > 0} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} bridgeSelected={bridgeSelected} tmuxSelected={tmuxSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
+      <PromptInputFooter apiKeyStatus={apiKeyStatus} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} hiddenBashInput={mode === 'bash' && isHiddenBashInput(displayedValue)} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={input.length > 0} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} bridgeSelected={bridgeSelected} tmuxSelected={tmuxSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
       <PromptInputStatusBar messages={messages} columns={promptContentColumns} />
       {isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {isFullscreenEnvEnabled() ?

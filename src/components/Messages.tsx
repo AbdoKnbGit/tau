@@ -28,6 +28,7 @@ import { getGlobalConfig } from '../utils/config.js';
 import { isEnvTruthy } from '../utils/envUtils.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
 import { applyGrouping } from '../utils/groupToolUses.js';
+import { isHiddenBashMessage } from '../utils/hiddenBashMessage.js';
 import { buildMessageLookups, createAssistantMessage, deriveUUID, getMessagesAfterCompactBoundary, getToolUseID, getToolUseIDs, hasUnresolvedHooksFromLookup, isNotEmptyMessage, normalizeMessages, reorderMessagesInUI, type StreamingThinking, type StreamingToolUse, shouldShowUserMessage } from '../utils/messages.js';
 import { plural } from '../utils/stringUtils.js';
 import { renderableSearchText } from '../utils/transcriptSearch.js';
@@ -425,6 +426,10 @@ const MessagesImpl = ({
     // Iterate backwards to find the last user message with bash output
     for (let i_0 = normalizedMessages.length - 1; i_0 >= 0; i_0--) {
       const msg_0 = normalizedMessages[i_0];
+      // A hidden `!!cmd` counts too: it renders its output the same way.
+      if (msg_0 && isHiddenBashMessage(msg_0)) {
+        return msg_0.uuid;
+      }
       if (msg_0?.type === 'user') {
         const content_0 = msg_0.message.content;
         // Check if any text content is bash output

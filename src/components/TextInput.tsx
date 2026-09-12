@@ -47,7 +47,8 @@ export default function TextInput(props: Props): React.ReactNode {
     onOffsetChange: props.onChangeCursorOffset,
     inputFilter: props.inputFilter,
     inlineGhostText: props.inlineGhostText,
-    dim: chalk.dim
+    dim: chalk.dim,
+    inputMode: props.inputMode
   });
   return <Box>
       <BaseTextInput inputState={textInputState} terminalFocus={isTerminalFocused} highlights={props.highlights} invert={invert} {...props} />

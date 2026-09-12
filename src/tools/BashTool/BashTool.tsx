@@ -833,7 +833,12 @@ export const BashTool = buildTool({
     let wasInterrupted = false;
     let result: ExecResult;
     const isMainThread = !toolUseContext.agentId;
-    const preventCwdChanges = !isMainThread;
+    // A hidden `!!` command (typed by the user, output never sent to the
+    // model) must leave nothing the model would notice later: no background
+    // task (its notifications reach the model) and no session cwd change
+    // (a persisted cd also resets the cached env_info prompt section).
+    const isHiddenCommand = toolUseContext.hiddenShellCommand === true;
+    const preventCwdChanges = !isMainThread || isHiddenCommand;
     // Snapshot before exec: executionDir is where this command will actually
     // run (workdir override or session cwd). Used for cwd-transparency notes
     // and failure guidance so the model always knows where a command ran.
@@ -918,8 +923,11 @@ export const BashTool = buildTool({
     // path even though the session cwd is unchanged — report that dir.
     const executionDir = anchorDir ?? resolveEffectiveBashCwd(input, cwdBeforeExec);
     // Remember where this command actually ran so later commands can find files
-    // that live here, even from a different cwd.
-    recordVisitedDir(executionDir);
+    // that live here, even from a different cwd. Not for a hidden command: the
+    // model never saw it, so it must not steer where later commands run.
+    if (!isHiddenCommand) {
+      recordVisitedDir(executionDir);
+    }
     try {
       // Use the new async generator version of runShellCommand
       const commandGenerator = runShellCommand({
@@ -930,6 +938,7 @@ export const BashTool = buildTool({
         setAppState: toolUseContext.setAppStateForTasks ?? setAppState,
         setToolJSX,
         preventCwdChanges,
+        keepInForeground: isHiddenCommand,
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
         agentId: toolUseContext.agentId
@@ -1183,6 +1192,7 @@ async function* runShellCommand({
   setAppState,
   setToolJSX,
   preventCwdChanges,
+  keepInForeground,
   isMainThread,
   toolUseId,
   agentId
@@ -1192,6 +1202,8 @@ async function* runShellCommand({
   setAppState: (f: (prev: AppState) => AppState) => void;
   setToolJSX?: SetToolJSXFn;
   preventCwdChanges?: boolean;
+  /** Never background the command (hidden `!!` commands). */
+  keepInForeground?: boolean;
   isMainThread?: boolean;
   toolUseId?: string;
   agentId?: AgentId;
@@ -1232,7 +1244,7 @@ async function* runShellCommand({
   // Determine if auto-backgrounding should be enabled
   // Only enable for commands that are allowed to be auto-backgrounded
   // and when background tasks are not disabled
-  const shouldAutoBackground = !isBackgroundTasksDisabled && allowsAutomaticBackgrounding(command);
+  const shouldAutoBackground = !keepInForeground && !isBackgroundTasksDisabled && allowsAutomaticBackgrounding(command);
   const shellCommand = await exec(command, abortController.signal, 'bash', {
     timeout: timeoutMs,
     onProgress(lastLines, allLines, totalLines, totalBytes, isIncomplete) {
@@ -1481,7 +1493,7 @@ async function* runShellCommand({
 
       // Show minimal backgrounding UI if available
       // Skip if background tasks are disabled
-      if (!isBackgroundTasksDisabled && backgroundShellId === undefined && elapsedSeconds >= PROGRESS_THRESHOLD_MS / 1000 && setToolJSX) {
+      if (!keepInForeground && !isBackgroundTasksDisabled && backgroundShellId === undefined && elapsedSeconds >= PROGRESS_THRESHOLD_MS / 1000 && setToolJSX) {
         // Register this command as a foreground task so it can be backgrounded via Ctrl+B
         if (!foregroundTaskId) {
           foregroundTaskId = registerForeground({

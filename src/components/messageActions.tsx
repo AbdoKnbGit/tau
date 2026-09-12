@@ -6,6 +6,7 @@ import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { logEvent } from '../services/analytics/index.js';
 import type { NormalizedUserMessage, RenderableMessage } from '../types/message.js';
+import { isHiddenBashMessage } from '../utils/hiddenBashMessage.js';
 import { isEmptyMessageText, SYNTHETIC_MESSAGES } from '../utils/messages.js';
 const NAVIGABLE_TYPES = ['user', 'assistant', 'grouped_tool_use', 'collapsed_read_search', 'system', 'attachment'] as const;
 export type NavigableType = (typeof NAVIGABLE_TYPES)[number];
@@ -36,6 +37,9 @@ export function isNavigableMessage(msg: NavigableMessage): boolean {
         return !stripSystemReminders(b.text).startsWith('<');
       }
     case 'system':
+      // `!!cmd` output, like `!cmd` output (XML-wrapped user messages above),
+      // isn't a message to act on.
+      if (isHiddenBashMessage(msg)) return false;
       // biome-ignore lint/nursery/useExhaustiveSwitchCases: blocklist — fallthrough return-true is the design
       switch (msg.subtype) {
         case 'api_metrics':

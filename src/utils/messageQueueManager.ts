@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
+import { isHiddenBashInput } from 'src/components/PromptInput/inputModes.js'
 import type { Permutations } from 'src/types/utils.js'
 import { getSessionId } from '../bootstrap/state.js'
 import type { AppState } from '../state/AppState.js'
@@ -357,13 +358,30 @@ export function isPromptInputModeEditable(
  * the user's input.
  */
 export function isQueuedCommandEditable(cmd: QueuedCommand): boolean {
-  return isPromptInputModeEditable(cmd.mode) && !cmd.isMeta
+  return (
+    isPromptInputModeEditable(cmd.mode) &&
+    !cmd.isMeta &&
+    !isQueuedHiddenBashCommand(cmd)
+  )
+}
+
+/**
+ * A queued `!!cmd`. Pulled back into the input it would land in prompt mode
+ * (the queue is restored as plain prompt text) and reach the model on Enter,
+ * so it stays queued and runs after the turn.
+ */
+function isQueuedHiddenBashCommand(cmd: QueuedCommand): boolean {
+  return (
+    cmd.mode === 'bash' &&
+    typeof cmd.value === 'string' &&
+    isHiddenBashInput(cmd.value)
+  )
 }
 
 /**
  * Whether this queued command should render in the queue preview under the
- * prompt. Superset of editable — channel messages show (so the keyboard user
- * sees what arrived) but stay non-editable (raw XML).
+ * prompt. Superset of editable — channel messages and `!!cmd` show (so the
+ * keyboard user sees what is pending) but stay non-editable.
  */
 export function isQueuedCommandVisible(cmd: QueuedCommand): boolean {
   if (
@@ -371,7 +389,7 @@ export function isQueuedCommandVisible(cmd: QueuedCommand): boolean {
     cmd.origin?.kind === 'channel'
   )
     return true
-  return isQueuedCommandEditable(cmd)
+  return isQueuedCommandEditable(cmd) || isQueuedHiddenBashCommand(cmd)
 }
 
 /**

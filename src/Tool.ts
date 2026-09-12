@@ -210,6 +210,13 @@ export type ToolUseContext = {
     signal: AbortSignal,
   ) => Promise<ElicitResult>
   setToolJSX?: SetToolJSXFn
+  /**
+   * Set for a `!!cmd` shell command typed by the user, whose output must
+   * never reach the model. Shell tools keep it in the foreground (a
+   * background task reports to the model when it ends) and don't let it
+   * change the session cwd (the model wouldn't know it moved).
+   */
+  hiddenShellCommand?: boolean
   addNotification?: (notif: Notification) => void
   /** Append a UI-only system message to the REPL message list. Stripped at the
    *  normalizeMessagesForAPI boundary — the Exclude<> makes that type-enforced. */

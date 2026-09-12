@@ -1,4 +1,7 @@
-import { isInputModeCharacter } from 'src/components/PromptInput/inputModes.js'
+import {
+  getModeSwitchFromInput,
+  isInputModeCharacter,
+} from 'src/components/PromptInput/inputModes.js'
 import { useNotifications } from 'src/context/notifications.js'
 import stripAnsi from 'strip-ansi'
 import { markBackslashReturnUsed } from '../commands/terminalSetup/terminalSetup.js'
@@ -6,6 +9,7 @@ import { addToHistory } from '../history.js'
 import type { Key } from '../ink.js'
 import type {
   InlineGhostText,
+  PromptInputMode,
   TextInputState,
 } from '../types/textInputTypes.js'
 import {
@@ -68,6 +72,8 @@ export type UseTextInputProps = {
   inputFilter?: (input: string, key: Key) => string
   inlineGhostText?: InlineGhostText
   dim?: (text: string) => string
+  /** The prompt's current mode (see BaseTextInputProps.inputMode). */
+  inputMode?: PromptInputMode
 }
 
 export function useTextInput({
@@ -94,6 +100,7 @@ export function useTextInput({
   inputFilter,
   inlineGhostText,
   dim,
+  inputMode,
 }: UseTextInputProps): TextInputState {
   // Pre-warm the modifiers module for Apple Terminal (has internal guard, safe to call multiple times)
   if (env.terminal === 'Apple_Terminal') {
@@ -401,7 +408,14 @@ export function useTextInput({
                 // eslint-disable-next-line custom-rules/no-lookbehind-regex -- .replace(re, str) on 1-2 char keystrokes: no-match returns same string (Object.is), regex never runs
                 .replace(/(?<=[^\\\r\n])\r$/, '')
                 .replace(/\r/g, '\n')
-              if (cursor.isAtStart() && isInputModeCharacter(input)) {
+              // A mode character that switches modes keeps the cursor in
+              // front of it, because the caller strips it. In its own mode
+              // it's plain text (`!!cmd` in bash mode).
+              if (
+                cursor.isAtStart() &&
+                isInputModeCharacter(input) &&
+                getModeSwitchFromInput(input, inputMode) !== null
+              ) {
                 return cursor.insert(text).left()
               }
               return cursor.insert(text)

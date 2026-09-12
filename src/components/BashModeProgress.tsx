@@ -3,29 +3,34 @@ import React from 'react';
 import { Box } from '../ink.js';
 import { BashTool } from '../tools/BashTool/BashTool.js';
 import type { ShellProgress } from '../types/tools.js';
+import { HiddenBashInputMessage } from './messages/HiddenBashMessage.js';
 import { UserBashInputMessage } from './messages/UserBashInputMessage.js';
 import { ShellProgressMessage } from './shell/ShellProgressMessage.js';
 type Props = {
   input: string;
   progress: ShellProgress | null;
   verbose: boolean;
+  /** `!!cmd`: the output isn't sent to the model. */
+  hidden?: boolean;
 };
 export function BashModeProgress(t0) {
-  const $ = _c(8);
+  const $ = _c(9);
   const {
     input,
     progress,
-    verbose
+    verbose,
+    hidden
   } = t0;
   const t1 = `<bash-input>${input}</bash-input>`;
   let t2;
-  if ($[0] !== t1) {
-    t2 = <UserBashInputMessage addMargin={false} param={{
+  if ($[0] !== t1 || $[8] !== hidden) {
+    t2 = hidden ? <HiddenBashInputMessage command={input} addMargin={false} /> : <UserBashInputMessage addMargin={false} param={{
       text: t1,
       type: "text"
     }} />;
     $[0] = t1;
     $[1] = t2;
+    $[8] = hidden;
   } else {
     t2 = $[1];
   }

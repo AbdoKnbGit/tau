@@ -33,6 +33,7 @@ import { processUserInput } from './processUserInput/processUserInput.js'
 import type { QueryGuard } from './QueryGuard.js'
 import { queryCheckpoint, startQueryProfile } from './queryProfiler.js'
 import { createSystemMessage } from './messages.js'
+import { isHiddenBashMessage } from './hiddenBashMessage.js'
 import { buildSurfCacheBanner, runSurfPhaseHook } from './surf/applyPhase.js'
 import {
   estimateTranscriptTokens,
@@ -593,7 +594,9 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           ? resolveSkillModelOverride(model, mainLoopModel)
           : mainLoopModel
         let surfResult: ReturnType<typeof runSurfPhaseHook> = null
-        if (!model) {
+        // A hidden `!!cmd` sends nothing to the model, so it must not
+        // re-route the model either (that would change the next request).
+        if (!model && !newMessages.every(isHiddenBashMessage)) {
           const ctx = makeContext()
           surfResult = runSurfPhaseHook({
             permissionMode: ctx.getAppState().toolPermissionContext.mode,

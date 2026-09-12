@@ -314,7 +314,8 @@ function MessageImpl(t0) {
         } else {
           t2 = $[79];
         }
-        return t2;
+        // The latest `!!cmd` output shows in full, like the latest `!cmd` output.
+        return latestBashOutputUUID === message.uuid ? <ExpandShellOutputProvider>{t2}</ExpandShellOutputProvider> : t2;
       }
     case "grouped_tool_use":
       {

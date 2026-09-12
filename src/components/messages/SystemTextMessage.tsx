@@ -18,6 +18,8 @@ import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemThinkingMessage, SystemMemorySavedMessage } from '../../types/message.js';
 import { SystemAPIErrorMessage } from './SystemAPIErrorMessage.js';
+import { HiddenBashMessage } from './HiddenBashMessage.js';
+import { isHiddenBashMessage } from '../../utils/hiddenBashMessage.js';
 import { formatDuration, formatNumber, formatSecondsShort } from '../../utils/format.js';
 import { getGlobalConfig } from '../../utils/config.js';
 import Link from '../../ink/components/Link.js';
@@ -42,6 +44,9 @@ export function SystemTextMessage(t0) {
     isTranscriptMode
   } = t0;
   const bg = useSelectedMessageBg();
+  if (isHiddenBashMessage(message)) {
+    return <HiddenBashMessage content={message.content} interrupted={message.interrupted === true} addMargin={addMargin} verbose={verbose} />;
+  }
   if (message.subtype === "turn_duration") {
     let t1;
     if ($[0] !== addMargin || $[1] !== message) {

@@ -5,6 +5,10 @@ import type {
   ImageBlockParam,
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
+import {
+  getHiddenBashCommand,
+  isHiddenBashInput,
+} from 'src/components/PromptInput/inputModes.js'
 import type { QuerySource } from 'src/constants/querySource.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getContentText } from 'src/utils/messages.js'
@@ -346,6 +350,22 @@ async function processUserInputBase(
 
   if (inputString === null && mode !== 'prompt') {
     throw new Error(`Mode: ${mode} requires a string input.`)
+  }
+
+  // `!!cmd` runs a shell command whose output never reaches the model. Return
+  // before pasted images and attachments are collected: some attachments are
+  // marked as delivered when they're built (e.g. the skill list), so building
+  // them for a hidden command would lose them.
+  if (mode === 'bash' && inputString !== null && isHiddenBashInput(inputString)) {
+    const hiddenBashCommand = getHiddenBashCommand(inputString)
+    // `!!` with nothing after it: nothing to run, nothing to record.
+    if (hiddenBashCommand === null) {
+      return { messages: [], shouldQuery: false }
+    }
+    const { processBashCommand } = await import('./processBashCommand.js')
+    return processBashCommand(hiddenBashCommand, [], [], context, setToolJSX, {
+      hidden: true,
+    })
   }
 
   // Extract and convert image content to content blocks early

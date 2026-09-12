@@ -69,6 +69,21 @@ Shows statistics for the active session, including session activity and tool-cal
 **`/report` - Generate a final report**
 Creates a clean content report for the session in Markdown, PDF, or HTML. This is for readable session quality, not usage statistics.
 
+## Shell commands
+
+**`!command` - Run a shell command yourself**
+Start your message with `!` to run a command directly, without asking the model. The command and its output are added to the conversation, so the model can see them on its next turn.
+
+**`!!command` - Run a shell command the model doesn't see**
+Use `!!` when you just want to check something, like `!!git status` or `!!ls`, without adding it to the conversation. As soon as you type the second `!`, the footer changes to `!! output not sent to model`. You still see the output (dimmed and marked `not sent to model`), but it is never sent to the model, not even after `/resume`, so it costs no tokens. `!! command` with a space works too, and a command you bring back with Up or Ctrl+R stays hidden.
+
+A few things work differently from `!`, so the model can't find out about the command later:
+
+- It always runs in the foreground. Ctrl+B won't move it to the background, and if it runs past the shell timeout it is stopped, because a background task tells the model when it finishes.
+- It can't change Tau's working folder. `!!cd dir` only affects that one command. Use `!cd dir` if you want the model to work there.
+- If Tau is busy, it waits in the queue and runs when the current turn ends. Esc and Up leave it in the queue, because anything pulled back from the queue comes back as a normal prompt.
+- `!!` removes one `!`. If your shell is PowerShell, where `!` means "not", type `!!!(Test-Path x)` to run `!(Test-Path x)`.
+
 ## Features
 
 **`/tools` - Toggle optional prebuilt tools**

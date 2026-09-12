@@ -20,7 +20,7 @@ type Props = {
   paddingX?: number;
 };
 export function PromptInputHelpMenu(props) {
-  const $ = _c(99);
+  const $ = _c(108);
   const {
     dimColor,
     fixedWidth,
@@ -127,6 +127,15 @@ export function PromptInputHelpMenu(props) {
     t19 = $[19];
   }
   const imagePasteShortcut = t19;
+  const historySearchShortcutDisplay = useShortcutDisplay("history:search", "Global", "ctrl+r");
+  let historySearchShortcut;
+  if ($[102] !== historySearchShortcutDisplay) {
+    historySearchShortcut = formatShortcut(historySearchShortcutDisplay);
+    $[102] = historySearchShortcutDisplay;
+    $[103] = historySearchShortcut;
+  } else {
+    historySearchShortcut = $[103];
+  }
   let t20;
   if ($[20] !== dimColor || $[21] !== terminalShortcut) {
     t20 = feature("TERMINAL_PANEL") ? getFeatureValue_CACHED_MAY_BE_STALE("tengu_terminal_panel", false) ? <Box><Text dimColor={dimColor}>{terminalShortcut} for terminal</Text></Box> : null : null;
@@ -145,6 +154,14 @@ export function PromptInputHelpMenu(props) {
     $[24] = t22;
   } else {
     t22 = $[24];
+  }
+  let hiddenBashHint;
+  if ($[99] !== dimColor) {
+    hiddenBashHint = <Box><Text dimColor={dimColor}>!! for bash, no context</Text></Box>;
+    $[99] = dimColor;
+    $[100] = hiddenBashHint;
+  } else {
+    hiddenBashHint = $[100];
   }
   let t23;
   if ($[25] !== dimColor) {
@@ -179,10 +196,11 @@ export function PromptInputHelpMenu(props) {
     t26 = $[32];
   }
   let t27;
-  if ($[33] !== t21 || $[34] !== t22 || $[35] !== t23 || $[36] !== t24 || $[37] !== t25 || $[38] !== t26) {
-    t27 = <Box flexDirection="column" width={t21}>{t22}{t23}{t24}{t25}{t26}</Box>;
+  if ($[33] !== t21 || $[34] !== t22 || $[101] !== hiddenBashHint || $[35] !== t23 || $[36] !== t24 || $[37] !== t25 || $[38] !== t26) {
+    t27 = <Box flexDirection="column" width={t21}>{t22}{hiddenBashHint}{t23}{t24}{t25}{t26}</Box>;
     $[33] = t21;
     $[34] = t22;
+    $[101] = hiddenBashHint;
     $[35] = t23;
     $[36] = t24;
     $[37] = t25;
@@ -242,11 +260,21 @@ export function PromptInputHelpMenu(props) {
   } else {
     t34 = $[53];
   }
+  let historySearchHint;
+  if ($[104] !== dimColor || $[105] !== historySearchShortcut) {
+    historySearchHint = <Box><Text dimColor={dimColor}>{historySearchShortcut} to search history</Text></Box>;
+    $[104] = dimColor;
+    $[105] = historySearchShortcut;
+    $[106] = historySearchHint;
+  } else {
+    historySearchHint = $[106];
+  }
   let t35;
-  if ($[54] !== t28 || $[55] !== t29 || $[56] !== t30 || $[57] !== t31 || $[58] !== t32 || $[59] !== t34 || $[60] !== terminalShortcutElement) {
-    t35 = <Box flexDirection="column" width={t28}>{t29}{t30}{t31}{t32}{terminalShortcutElement}{t34}</Box>;
+  if ($[54] !== t28 || $[55] !== t29 || $[107] !== historySearchHint || $[56] !== t30 || $[57] !== t31 || $[58] !== t32 || $[59] !== t34 || $[60] !== terminalShortcutElement) {
+    t35 = <Box flexDirection="column" width={t28}>{t29}{historySearchHint}{t30}{t31}{t32}{terminalShortcutElement}{t34}</Box>;
     $[54] = t28;
     $[55] = t29;
+    $[107] = historySearchHint;
     $[56] = t30;
     $[57] = t31;
     $[58] = t32;
