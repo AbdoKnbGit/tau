@@ -43,7 +43,7 @@ export const DEEPSEEK_DEFAULT_EFFORT: DeepSeekEffort = 'none'
  * a bare prefix test cannot collide with another host's v4 naming.
  */
 export function isDeepSeekV4ThinkingModel(model: string): boolean {
-  return /^deepseek-v4(?:-|$)/i.test(model.trim())
+  return /^deepseek-v4(?:-|$)/i.test(model.trim()) || model.trim().toLowerCase() === 'deepseek-flash'
 }
 
 /** The effort stops a DeepSeek row cycles through in the picker. */

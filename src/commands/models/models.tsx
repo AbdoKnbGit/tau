@@ -1,3 +1,4 @@
+import { directModelDetails } from '../../utils/model/directProviderThinking.js'
 import chalk from 'chalk'
 import * as React from 'react'
 import { setMainLoopModelOverride } from '../../bootstrap/state.js'
@@ -32,7 +33,7 @@ import {
   getLiveVoiceDisplayName,
   setSelectedLiveVoice,
 } from '../../voice/voiceConversation.js'
-import { setClineEffort } from '../../utils/model/clineThinking.js'
+import { getClineEffortLabel, setClineEffort } from '../../utils/model/clineThinking.js'
 import { isClinePassProvider } from '../../utils/model/clinePassCatalog.js'
 
 function renderSearchBadges(tags?: readonly string[]): string {
@@ -133,7 +134,7 @@ function ModelsPickerWrapper({
     const effortNote = selection.effort
       ? ` with ${chalk.bold(selection.effort)} effort`
       : selection.clineEffort
-        ? ` with ${chalk.bold(selection.clineEffort === 'none' ? 'Off' : selection.clineEffort === 'xhigh' ? 'Extra High' : selection.clineEffort)} thinking`
+        ? ` with ${chalk.bold(getClineEffortLabel(selection.clineEffort, selection.modelId))} thinking`
       : ''
 
     onDone(`Set model to ${chalk.bold(displayModel)}${effortNote}${providerNote}`)
@@ -187,7 +188,7 @@ async function showSearchResults(
     '',
     ...results.slice(0, 20).map(
       model =>
-        `  ${chalk.cyan(model.id)}${model.name && model.name !== model.id ? ` - ${model.name}` : ''}${renderSearchBadges(model.tags)}`,
+        `  ${chalk.cyan(model.id)}${model.name && model.name !== model.id ? ` - ${model.name}` : ''}${renderSearchBadges(model.tags)}${directModelDetails(provider, model.id, model.contextWindow)}`,
     ),
   ]
 

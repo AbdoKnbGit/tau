@@ -3,10 +3,11 @@
  *
  * MiniMax's current OpenAI-compatible text endpoint is
  * https://api.minimax.io/v1/chat/completions. The public docs advertise
- * max_completion_tokens instead of max_tokens and a 2048 output cap, so
- * this transformer keeps requests conservative.
+ * max_completion_tokens. Limits and thinking controls are model-specific.
  */
 
+import { getDirectModelMeta } from '../../../utils/model/directProviderCatalog.js'
+import { directThinkingFields } from '../../../utils/model/directProviderThinking.js'
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 import { filterMiniMaxModelCatalog } from '../../../utils/model/minimaxCatalog.js'
@@ -27,31 +28,39 @@ export const minimaxTransformer: Transformer = {
   },
 
   clampMaxTokens(requested: number): number {
-    return Math.min(Math.max(1, requested), 2048)
+    return Math.max(1, requested)
   },
 
-  transformRequest(body: OpenAIChatRequest, _ctx: TransformContext): OpenAIChatRequest {
+  transformRequest(body: OpenAIChatRequest, ctx: TransformContext): OpenAIChatRequest {
     const bag = body as unknown as Record<string, unknown>
     const maxTokens = body.max_tokens
     if (typeof maxTokens === 'number') {
-      bag.max_completion_tokens = Math.min(Math.max(1, maxTokens), 2048)
+      bag.max_completion_tokens = Math.min(Math.max(1, maxTokens), getDirectModelMeta('minimax', ctx.model)?.maxOutputTokens ?? 32_768)
       delete bag.max_tokens
     }
 
     delete bag.reasoning_effort
     delete bag.reasoning
     delete bag.thinking
-    delete bag.stream_options
+    Object.assign(body, directThinkingFields('minimax', ctx.model))
+    // Keep MiniMax's native <think> content intact on every replay. Explicit
+    // split output would require retaining its full reasoning_details objects.
+    body.messages = body.messages.map(message => {
+      if (message.reasoning_content === undefined) return message
+      const { reasoning_content, ...rest } = message
+      return { ...rest, content: `<think>${reasoning_content}</think>${typeof rest.content === 'string' ? rest.content : ''}` }
+    })
+    if (body.stream) body.stream_options = { include_usage: true }
     delete bag.store
     delete bag.prompt_cache_key
     delete bag.prompt_cache_retention
 
     if (typeof body.temperature === 'number') {
-      if (body.temperature <= 0) delete bag.temperature
-      else if (body.temperature > 1) body.temperature = 1
+      if (body.temperature < 0) delete bag.temperature
+      else if (body.temperature > 2) body.temperature = 2
     }
     if (typeof body.top_p === 'number') {
-      if (body.top_p <= 0) delete bag.top_p
+      if (body.top_p < 0) delete bag.top_p
       else if (body.top_p > 1) body.top_p = 1
     }
 

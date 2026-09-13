@@ -82,7 +82,8 @@ import {
   isOpenRouterStrictToolSchemaError,
   recordOpenRouterStrictToolSchemaModel,
 } from '../../utils/model/openrouterStrictSchema.js'
-import { isMoonshotThinkingModel } from '../../utils/model/moonshotCatalog.js'
+import { buildDirectHistory, convertDirectHistory } from './direct_history.js'
+import { isDirectProvider, isDirectThinkingProvider, listDirectProviderModels } from '../../utils/model/directProviderCatalog.js'
 import {
   getOpencodeEffort,
   isOpencodeThinkingModel,
@@ -243,13 +244,6 @@ interface OpenAIChatRequest {
     auto_cache?: boolean
     [key: string]: unknown
   }
-  /**
-   * OpenRouter-native detailed-usage flag. When set, the gateway returns
-   * cache_discount and per-breakpoint hit counts on the final stream
-   * chunk so implicit-cache hits (DeepSeek, OpenAI gpt-5/4.1 on OR) are
-   * actually visible in our usage parsing instead of looking like 0.
-   */
-  usage?: { include?: boolean }
 }
 
 interface CompatCatalogModel extends OpenRouterCatalogModel {
@@ -558,7 +552,9 @@ export class OpenAICompatLane implements Lane {
             model,
             cacheSessionId,
           )
-        : convertHistoryToOpenAI(
+        : isDirectThinkingProvider(provider)
+          ? buildDirectCacheStableMessages(messages, systemText, provider, model, cacheSessionId)
+          : convertHistoryToOpenAI(
             messages,
             stripSystemDynamicBoundary(systemText),
             provider,
@@ -1234,7 +1230,7 @@ export class OpenAICompatLane implements Lane {
     const now = Date.now()
     const cacheKey = providerFilter ?? '__all__'
     const liveOnlyCatalog =
-      providerFilter === 'moonshot' || providerFilter === 'minimax'
+      providerFilter !== undefined && isDirectProvider(providerFilter)
     const cached = _modelsCacheByProvider.get(cacheKey)
     if (!liveOnlyCatalog && cached && now - cached.at < MODELS_CACHE_TTL_MS) {
       return cached.models
@@ -1242,6 +1238,9 @@ export class OpenAICompatLane implements Lane {
     const entries = Array.from(this.configs.entries())
       .filter(([name]) => !providerFilter || name === providerFilter)
     const results = await Promise.allSettled(entries.map(async ([providerName, cfg]) => {
+      if (isDirectProvider(providerName)) {
+        return listDirectProviderModels(providerName, cfg.baseUrl, { Authorization: `Bearer ${cfg.apiKey}`, Accept: 'application/json' })
+      }
       if (providerName === 'lmstudio') {
         const openAIModels = await listLmStudioOpenAIModels(cfg)
         if (openAIModels.length > 0) return openAIModels
@@ -1562,7 +1561,7 @@ function toCloudflareCatalogModel(model: CompatCatalogModel): ModelInfo | null {
 }
 
 function isCloudflareTextGenerationModel(model: CompatCatalogModel): boolean {
-  const id = model.id.toLowerCase()
+  const id = typeof model.id === 'string' ? model.id.toLowerCase() : ''
   const markers = [
     'embedding', 'embed', 'bge-', 'reranker', 'whisper', 'flux', 'aura',
     'melotts', 'transcribe', 'speech', 'tts', 'image', 'video', 'translation',
@@ -3224,8 +3223,9 @@ function convertHistoryToOpenAI(
   if (provider === 'deepseek') {
     return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
   }
-  if (provider === 'moonshot' && isMoonshotThinkingModel(model)) {
-    return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
+  if (isDirectThinkingProvider(provider)) {
+    const out = convertDirectHistory(messages, turns => convertHistoryToOpenAIDefault(turns, '', provider, model))
+    return systemText ? [{ role: 'system', content: systemText }, ...out] : out
   }
   // OpenCode Zen with per-model thinking enabled: the gateway forwards
   // `reasoning_content` from streamed deltas, and the downstream upstream
@@ -3338,6 +3338,17 @@ function buildDeepSeekCacheStableMessages(
     content: `<dynamic_context>\n${frozen}\n</dynamic_context>`,
   })
   return out
+}
+
+export function buildDirectCacheStableMessages(
+  messages: ProviderMessage[],
+  systemText: string,
+  provider: 'glm' | 'moonshot' | 'minimax',
+  model: string,
+  sessionId?: string,
+): OpenAIChatMessage[] {
+  return buildDirectHistory(messages, systemText, provider, model, sessionId,
+    turns => convertHistoryToOpenAIDefault(turns, '', provider, model))
 }
 
 function opencodeThinkingActive(provider: ProviderType, model: string): boolean {

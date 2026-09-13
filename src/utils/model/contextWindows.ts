@@ -6,6 +6,7 @@ import {
   noteMissingContextWindow,
 } from '../modelPricingCatalog.js'
 import { getAlibabaModelMeta } from './alibabaCatalog.js'
+import { getDirectModelMeta, isDirectProvider } from './directProviderCatalog.js'
 import {
   getStoredContextWindow,
   persistProviderContextWindows,
@@ -335,6 +336,11 @@ function lookupHostWindow(
     if (catalogWindow !== undefined) {
       return catalogWindow
     }
+  }
+
+  if (isDirectProvider(provider)) {
+    const window = getDirectModelMeta(provider, model)?.contextWindow
+    if (window !== undefined) return window
   }
 
   // Windows observed in an earlier session, replayed from disk. Below the

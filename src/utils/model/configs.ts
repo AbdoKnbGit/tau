@@ -863,17 +863,17 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
       free: {
         opus:   'kimi-k2.6',
         sonnet: 'kimi-k2.6',
-        haiku:  'kimi-k2-turbo-preview',
+        haiku:  'kimi-k2.7-code-highspeed',
       },
       pro: {
         opus:   process.env.MOONSHOT_MODEL_OPUS   ?? 'kimi-k2.6',
         sonnet: process.env.MOONSHOT_MODEL_SONNET ?? 'kimi-k2.6',
-        haiku:  process.env.MOONSHOT_MODEL_HAIKU  ?? 'kimi-k2-turbo-preview',
+        haiku:  process.env.MOONSHOT_MODEL_HAIKU  ?? 'kimi-k2.7-code-highspeed',
       },
       plus: {
         opus:   process.env.MOONSHOT_MODEL_OPUS   ?? 'kimi-k2.6',
         sonnet: process.env.MOONSHOT_MODEL_SONNET ?? 'kimi-k2.6',
-        haiku:  process.env.MOONSHOT_MODEL_HAIKU  ?? 'kimi-k2-turbo-preview',
+        haiku:  process.env.MOONSHOT_MODEL_HAIKU  ?? 'kimi-k2.7-code-highspeed',
       },
     },
   },

@@ -1,3 +1,4 @@
+import { enrichDirectModel } from './directProviderCatalog.js'
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 
 export type MiniMaxCatalogModel = Partial<ModelInfo> & {
@@ -25,7 +26,7 @@ export function filterMiniMaxModelCatalog(
     const key = id.toLowerCase()
     if (!isMiniMaxTextModel(id) || seen.has(key)) continue
     seen.add(key)
-    out.push(toMiniMaxModelInfo({ ...model, id }))
+    out.push(enrichDirectModel('minimax', toMiniMaxModelInfo({ ...model, id })))
   }
   return out
 }
@@ -39,7 +40,6 @@ export function toMiniMaxModelInfo(
     ?? numberOrUndefined(model.context_length)
     ?? numberOrUndefined(model.context_window)
     ?? numberOrUndefined(model.max_context_length)
-    ?? numberOrUndefined(model.max_tokens)
   const supportsToolCalling =
     model.supportsToolCalling === true
     || model.tags?.includes('tools') === true

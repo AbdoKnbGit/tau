@@ -8,7 +8,8 @@
  * Auth: Bearer token (sk-...)
  * API: OpenAI-compatible
  *
- * Available models (August 2026):
+ * Available models (September 2026):
+ *   - deepseek-flash                — DeepSeek V4.1 Flash
  *   - deepseek-v4-pro               — 1.6T MoE flagship (thinking by default)
  *   - deepseek-v4-flash             — 284B MoE cheap/fast row
  *   - deepseek-v4-flash-vision-exp  — experimental, accepts image input
@@ -24,8 +25,10 @@
  * Auth: API key only (no OAuth). Get key at https://platform.deepseek.com
  */
 
+import { listDirectProviderModels } from '../../../utils/model/directProviderCatalog.js'
 import { OpenAIProvider } from './openai_provider.js'
 import type {
+  ModelInfo,
   ProviderConfig,
   ProviderRequestParams,
   ProviderStreamResult,
@@ -41,6 +44,10 @@ export class DeepSeekProvider extends OpenAIProvider {
       baseUrl: config.baseUrl ?? 'https://api.deepseek.com/v1',
       extraHeaders: config.extraHeaders,
     })
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    return listDirectProviderModels('deepseek', this.baseUrl, this._headers())
   }
 
   /**

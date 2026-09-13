@@ -36,11 +36,8 @@ import {
   getDeepSeekEffortLabel,
   supportsDeepSeekEffortSelection,
 } from '../utils/model/deepseekThinking.js'
-import {
-  getGlmThinking,
-  isGlmThinkingModel,
-  toggleGlmThinking,
-} from '../utils/model/glmThinking.js'
+import { isDirectProvider, isDirectThinkingProvider, getDirectModelMeta } from '../utils/model/directProviderCatalog.js'
+import { cycleDirectEffort, directEffortLevels, directEffortLabel, getDirectEffort } from '../utils/model/directProviderThinking.js'
 import {
   cycleClineEffort,
   getClineEffort,
@@ -277,7 +274,7 @@ export function ProviderModelPicker({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [sections, setSections] = useState<ProviderModelSection[]>([])
   const [, setReasoningTick] = useState(0)
-  const [glmThinking, setGlmThinking] = useState(getGlmThinking)
+  const [, setDirectThinkingTick] = useState(0)
   // Bumped to force a re-render after toggling provider-owned per-model effort.
   // The actual effort state lives in the provider utility modules.
   const [, setClineEffortTick] = useState(0)
@@ -563,10 +560,11 @@ export function ProviderModelPicker({
 
       if (
         row?.kind === 'model'
-        && selectedProvider === 'glm'
-        && isGlmThinkingModel(row.model.id)
+        && isDirectThinkingProvider(selectedProvider)
+        && directEffortLevels(selectedProvider, row.model.id).length > 1
       ) {
-        setGlmThinking(toggleGlmThinking())
+        cycleDirectEffort(selectedProvider, row.model.id, key.leftArrow ? 'left' : 'right')
+        setDirectThinkingTick(tick => tick + 1)
         return
       }
 
@@ -793,7 +791,9 @@ export function ProviderModelPicker({
               const isDeepseekV4 =
                 selectedProvider === 'deepseek' && supportsDeepSeekEffortSelection(model.id)
               const deepseekEffort = isDeepseekV4 ? getDeepSeekEffort(model.id) : undefined
-              const isGlmThinking = selectedProvider === 'glm' && isGlmThinkingModel(model.id)
+              const directMeta = isDirectProvider(selectedProvider) ? getDirectModelMeta(selectedProvider, model.id) : undefined
+              const directEffort = isDirectThinkingProvider(selectedProvider) && directEffortLevels(selectedProvider, model.id).length > 1
+                ? getDirectEffort(selectedProvider, model.id) : undefined
               const isClineThinking = selectedProvider === 'cline' && supportsClineThinkingSelection(model.id, model.tags)
               const clineEffort = isClineThinking ? getClineEffort(model.id) : undefined
               const isOpencodeThinking =
@@ -862,6 +862,12 @@ export function ProviderModelPicker({
                     {isSelected ? '> ' : '  '}
                     {label}
                   </Text>
+                  {isDirectProvider(selectedProvider) && (
+                    <Text dimColor>{' '}[{model.contextWindow?.toLocaleString('en-US') ?? 'unknown'} context]</Text>
+                  )}
+                  {isDirectThinkingProvider(selectedProvider) && directMeta?.reasoning && !directEffort && (
+                    <Text dimColor>{' '}[Thinking always on]</Text>
+                  )}
                   {isStarred && (
                     <Text color="yellow" bold={isSelected}>
                       {' '}{FAVORITE_MARKER}
@@ -877,14 +883,14 @@ export function ProviderModelPicker({
                       {' '}◀ {getDeepSeekEffortLabel(deepseekEffort)} ▶
                     </Text>
                   )}
-                  {isGlmThinking && (
+                  {directEffort && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ Thinking {glmThinking ? 'ON' : 'OFF'} ▶
+                      {' '}◀ {directEffortLabel(directEffort)} ▶
                     </Text>
                   )}
                   {isClineThinking && clineEffort && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ Thinking {getClineEffortLabel(clineEffort)} ▶
+                      {' '}◀ Thinking {getClineEffortLabel(clineEffort, model.id)} ▶
                     </Text>
                   )}
                   {isOpencodeThinking && opencodeEffort && (

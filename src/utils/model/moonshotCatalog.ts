@@ -1,3 +1,4 @@
+import { getDirectModelMeta, enrichDirectModel } from './directProviderCatalog.js'
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 
 export type MoonshotCatalogModel = Partial<ModelInfo> & {
@@ -25,7 +26,7 @@ export function filterMoonshotModelCatalog(
     const key = id.toLowerCase()
     if (!isMoonshotChatModelId(id) || seen.has(key)) continue
     seen.add(key)
-    out.push(toMoonshotModelInfo({ ...model, id }))
+    out.push(enrichDirectModel('moonshot', toMoonshotModelInfo({ ...model, id })))
   }
   return out
 }
@@ -64,7 +65,7 @@ export function normalizeMoonshotModelId(model: string): string {
 
 export function isMoonshotThinkingModel(model: string): boolean {
   const normalized = normalizeMoonshotModelId(model)
-  return looksLikeMoonshotThinkingModel(normalized)
+  return getDirectModelMeta('moonshot', normalized)?.reasoning ?? looksLikeMoonshotThinkingModel(normalized)
 }
 
 function looksLikeMoonshotThinkingModel(id: string): boolean {

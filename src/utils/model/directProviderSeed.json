@@ -1,0 +1,58 @@
+{
+  "deepseek": {
+    "deepseek-flash": {"name": "DeepSeek V4.1 Flash", "contextWindow": 1000000, "maxOutputTokens": 384000, "reasoning": true, "toggle": true, "efforts": ["low", "high", "max"], "released": "2026-09-10", "vision": true, "tools": true},
+    "deepseek-v4-flash-vision-exp": {"name": "DeepSeek V4 Flash Vision Exp", "contextWindow": 1000000, "maxOutputTokens": 384000, "reasoning": true, "toggle": true, "efforts": ["low", "high", "max"], "released": "2026-09-10", "vision": true, "tools": true},
+    "deepseek-v4-flash": {"name": "DeepSeek V4 Flash", "contextWindow": 1000000, "maxOutputTokens": 384000, "reasoning": true, "toggle": true, "efforts": ["low", "high", "max"], "released": "2026-09-10", "vision": true, "tools": true},
+    "deepseek-v4-pro": {"name": "DeepSeek V4 Pro", "contextWindow": 1000000, "maxOutputTokens": 384000, "reasoning": true, "toggle": true, "efforts": ["high", "max"], "released": "2026-08-12", "vision": false, "tools": true}
+  },
+  "zhipuai": {
+    "glm-4.5-air": {"name": "GLM-4.5-Air", "contextWindow": 131072, "maxOutputTokens": 98304, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-07-28", "vision": false, "tools": true},
+    "glm-4.5-flash": {"name": "GLM-4.5-Flash", "contextWindow": 131072, "maxOutputTokens": 98304, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-07-28", "vision": false, "tools": true},
+    "glm-4.5": {"name": "GLM-4.5", "contextWindow": 131072, "maxOutputTokens": 98304, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-07-28", "vision": false, "tools": true},
+    "glm-4.5v": {"name": "GLM-4.5V", "contextWindow": 64000, "maxOutputTokens": 16384, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-08-11", "vision": true, "tools": true},
+    "glm-4.6": {"name": "GLM-4.6", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-09-30", "vision": false, "tools": true},
+    "glm-4.6v": {"name": "GLM-4.6V", "contextWindow": 128000, "maxOutputTokens": 32768, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-12-08", "vision": true, "tools": true},
+    "glm-4.7-flash": {"name": "GLM-4.7-Flash", "contextWindow": 200000, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-01-19", "vision": false, "tools": true},
+    "glm-4.7-flashx": {"name": "GLM-4.7-FlashX", "contextWindow": 200000, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-01-19", "vision": false, "tools": true},
+    "glm-4.7": {"name": "GLM-4.7", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-12-22", "vision": false, "tools": true},
+    "glm-5.1": {"name": "GLM-5.1", "contextWindow": 200000, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-03-27", "vision": false, "tools": true},
+    "glm-5.2": {"name": "GLM-5.2", "contextWindow": 1000000, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": ["high", "max"], "released": "2026-06-13", "vision": false, "tools": true},
+    "glm-5.3-flash": {"name": "GLM-5.3-Flash", "contextWindow": 1000000, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": ["low", "high", "max"], "released": "2026-08-26", "vision": true, "tools": true},
+    "glm-5.3": {"name": "GLM-5.3", "contextWindow": 1000000, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": ["low", "high", "max"], "released": "2026-08-14", "vision": false, "tools": true},
+    "glm-5": {"name": "GLM-5", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-02-11", "vision": false, "tools": true},
+    "glm-5v-turbo": {"name": "GLM-5V-Turbo", "contextWindow": 200000, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-04-01", "vision": true, "tools": true}
+  },
+  "zai": {
+    "glm-4.5-air": {"name": "GLM-4.5-Air", "contextWindow": 131072, "maxOutputTokens": 98304, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-07-28", "vision": false, "tools": true},
+    "glm-4.5-flash": {"name": "GLM-4.5-Flash", "contextWindow": 131072, "maxOutputTokens": 98304, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-07-28", "vision": false, "tools": true},
+    "glm-4.5": {"name": "GLM-4.5", "contextWindow": 131072, "maxOutputTokens": 98304, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-07-28", "vision": false, "tools": true},
+    "glm-4.5v": {"name": "GLM-4.5V", "contextWindow": 64000, "maxOutputTokens": 16384, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-08-11", "vision": true, "tools": true},
+    "glm-4.6": {"name": "GLM-4.6", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-09-30", "vision": false, "tools": true},
+    "glm-4.6v": {"name": "GLM-4.6V", "contextWindow": 128000, "maxOutputTokens": 32768, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-12-08", "vision": true, "tools": true},
+    "glm-4.7-flash": {"name": "GLM-4.7-Flash", "contextWindow": 200000, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-01-19", "vision": false, "tools": true},
+    "glm-4.7-flashx": {"name": "GLM-4.7-FlashX", "contextWindow": 200000, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-01-19", "vision": false, "tools": true},
+    "glm-4.7": {"name": "GLM-4.7", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2025-12-22", "vision": false, "tools": true},
+    "glm-5-turbo": {"name": "GLM-5-Turbo", "contextWindow": 200000, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-03-16", "vision": false, "tools": true},
+    "glm-5.1": {"name": "GLM-5.1", "contextWindow": 200000, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-04-07", "vision": false, "tools": true},
+    "glm-5.2": {"name": "GLM-5.2", "contextWindow": 1000000, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": ["high", "max"], "released": "2026-06-13", "vision": false, "tools": true},
+    "glm-5.3-flash": {"name": "GLM-5.3-Flash", "contextWindow": 1000000, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": ["low", "high", "max"], "released": "2026-08-26", "vision": true, "tools": true},
+    "glm-5.3": {"name": "GLM-5.3", "contextWindow": 1000000, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": ["low", "high", "max"], "released": "2026-08-14", "vision": false, "tools": true},
+    "glm-5": {"name": "GLM-5", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-02-12", "vision": false, "tools": true},
+    "glm-5v-turbo": {"name": "GLM-5V-Turbo", "contextWindow": 200000, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-04-01", "vision": true, "tools": true}
+  },
+  "moonshotai": {
+    "kimi-k2.6": {"name": "Kimi K2.6", "contextWindow": 262144, "maxOutputTokens": 262144, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-04-21", "vision": true, "tools": true},
+    "kimi-k2.7-code-highspeed": {"name": "Kimi K2.7 Code HighSpeed", "contextWindow": 262144, "maxOutputTokens": 262144, "reasoning": true, "toggle": false, "efforts": [], "released": "2026-06-12", "vision": true, "tools": true},
+    "kimi-k2.7-code": {"name": "Kimi K2.7 Code", "contextWindow": 262144, "maxOutputTokens": 262144, "reasoning": true, "toggle": false, "efforts": [], "released": "2026-06-12", "vision": true, "tools": true},
+    "kimi-k3": {"name": "Kimi K3", "contextWindow": 1048576, "maxOutputTokens": 131072, "reasoning": true, "toggle": true, "efforts": ["low", "high", "max"], "released": "2026-07-16", "vision": true, "tools": true}
+  },
+  "minimax": {
+    "minimax-m2.1": {"name": "MiniMax-M2.1", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": [], "released": "2025-12-23", "vision": false, "tools": true},
+    "minimax-m2.5-highspeed": {"name": "MiniMax-M2.5-highspeed", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": [], "released": "2026-02-13", "vision": false, "tools": true},
+    "minimax-m2.5": {"name": "MiniMax-M2.5", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": [], "released": "2026-02-12", "vision": false, "tools": true},
+    "minimax-m2.7-highspeed": {"name": "MiniMax-M2.7-highspeed", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": [], "released": "2026-03-18", "vision": false, "tools": true},
+    "minimax-m2.7": {"name": "MiniMax-M2.7", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": [], "released": "2026-03-18", "vision": false, "tools": true},
+    "minimax-m2": {"name": "MiniMax-M2", "contextWindow": 204800, "maxOutputTokens": 131072, "reasoning": true, "toggle": false, "efforts": [], "released": "2025-10-27", "vision": false, "tools": true},
+    "minimax-m3": {"name": "MiniMax-M3", "contextWindow": 1048576, "maxOutputTokens": 512000, "reasoning": true, "toggle": true, "efforts": [], "released": "2026-06-01", "vision": true, "tools": true}
+  }
+}

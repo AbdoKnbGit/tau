@@ -5,14 +5,14 @@
  * https://api.moonshot.ai/v1 with bearer-token authentication.
  */
 
-import { OpenAIProvider } from './openai_provider.js'
+import { listDirectProviderModels } from '../../../utils/model/directProviderCatalog.js'
+import { DirectChatProvider } from './direct_chat_provider.js'
 import type { ModelInfo, ProviderConfig } from './base_provider.js'
 import {
-  filterMoonshotModelCatalog,
   normalizeMoonshotModelId,
 } from '../../../utils/model/moonshotCatalog.js'
 
-export class MoonshotProvider extends OpenAIProvider {
+export class MoonshotProvider extends DirectChatProvider {
   readonly name = 'moonshot'
 
   constructor(config: ProviderConfig) {
@@ -25,35 +25,7 @@ export class MoonshotProvider extends OpenAIProvider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    const response = await fetch(`${this.baseUrl}/models`, {
-      headers: this._headers(),
-      signal: AbortSignal.timeout(8_000),
-    })
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '')
-      throw new Error(
-        `Moonshot /models request failed with HTTP ${response.status}${detail ? `: ${detail}` : ''}`,
-      )
-    }
-
-    const data = (await response.json()) as {
-      data?: Array<{
-        id?: string
-        name?: string
-        context_length?: number
-        context_window?: number
-        max_context_length?: number
-        supports_reasoning?: boolean
-        supports_tool_calling?: boolean
-        tags?: readonly string[]
-      }>
-    }
-    const apiModels = filterMoonshotModelCatalog(data.data ?? [])
-    if (apiModels.length === 0) {
-      throw new Error('Moonshot /models returned no chat models.')
-    }
-
-    return apiModels
+    return listDirectProviderModels('moonshot', this.baseUrl, this._headers())
   }
 
   resolveModel(claudeModel: string): string {

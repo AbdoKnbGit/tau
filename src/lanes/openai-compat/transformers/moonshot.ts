@@ -6,6 +6,8 @@
  * stream deltas, which the shared compat loop renders as thinking blocks.
  */
 
+import { getDirectModelMeta } from '../../../utils/model/directProviderCatalog.js'
+import { directThinkingFields } from '../../../utils/model/directProviderThinking.js'
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatMessage, OpenAIChatRequest } from './shared_types.js'
 import {
@@ -43,13 +45,17 @@ export const moonshotTransformer: Transformer = {
     if (ctx.sessionId) body.prompt_cache_key = ctx.sessionId
     else delete bag.prompt_cache_key
 
-    if (supportsMoonshotThinkingToggle(body.model)) {
+    const meta = getDirectModelMeta('moonshot', body.model)
+    delete body.thinking
+    if (meta) {
+      const fields = directThinkingFields('moonshot', body.model)
+      Object.assign(body, fields)
+      if (body.max_tokens) body.max_tokens = Math.min(body.max_tokens, meta.maxOutputTokens)
+      if (fields.thinking?.type === 'disabled') body.messages = body.messages.map(stripMoonshotReasoningContent)
+    } else if (supportsMoonshotThinkingToggle(body.model)) {
       body.thinking = { type: ctx.isReasoning ? 'enabled' : 'disabled' }
-      if (!ctx.isReasoning) {
-        body.messages = body.messages.map(stripMoonshotReasoningContent)
-      }
+      if (!ctx.isReasoning) body.messages = body.messages.map(stripMoonshotReasoningContent)
     } else if (!isMoonshotThinkingModel(body.model)) {
-      delete bag.thinking
       body.messages = body.messages.map(stripMoonshotReasoningContent)
     }
 
@@ -87,7 +93,7 @@ export const moonshotTransformer: Transformer = {
   defaultGenerationParams(model: string) {
     const id = model.toLowerCase()
     if (!id.includes('kimi') && !id.includes('moonshot')) return undefined
-    const isThinking = ['thinking', 'k2.', 'k2p', 'k2-5'].some(s => id.includes(s))
+    const isThinking = isMoonshotThinkingModel(id)
     if (isThinking) return { temperature: 1.0, top_p: 0.95 }
     return { temperature: 0.6 }
   },
@@ -110,7 +116,7 @@ export const moonshotTransformer: Transformer = {
   },
 
   smallFastModel(_model: string): string | null {
-    return 'kimi-k2-turbo-preview'
+    return 'kimi-k2.7-code-highspeed'
   },
 
   cacheControlMode(): 'none' | 'passthrough' | 'last-only' {

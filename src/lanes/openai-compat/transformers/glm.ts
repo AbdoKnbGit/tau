@@ -8,41 +8,8 @@
 
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
-import {
-  getGlmThinking,
-  isGlmThinkingModel,
-} from '../../../utils/model/glmThinking.js'
-
-const GLM_MODELS = [
-  {
-    id: 'glm-5.1',
-    name: 'GLM-5.1',
-    contextWindow: 200_000,
-    supportsToolCalling: true,
-    tags: ['recommended', 'reasoning'],
-  },
-  {
-    id: 'glm-5-turbo',
-    name: 'GLM-5-Turbo',
-    contextWindow: 200_000,
-    supportsToolCalling: true,
-    tags: ['fast', 'reasoning'],
-  },
-  {
-    id: 'glm-5',
-    name: 'GLM-5',
-    contextWindow: 200_000,
-    supportsToolCalling: true,
-    tags: ['reasoning'],
-  },
-  {
-    id: 'glm-4.7',
-    name: 'GLM-4.7',
-    contextWindow: 200_000,
-    supportsToolCalling: true,
-    tags: ['reasoning'],
-  },
-] as const
+import { directProviderModels, getDirectModelMeta } from '../../../utils/model/directProviderCatalog.js'
+import { directThinkingFields } from '../../../utils/model/directProviderThinking.js'
 
 export const glmTransformer: Transformer = {
   id: 'glm',
@@ -52,17 +19,19 @@ export const glmTransformer: Transformer = {
   supportsStrictMode: () => false,
 
   staticCatalog() {
-    return GLM_MODELS.map(model => ({ ...model, tags: [...model.tags] }))
+    return directProviderModels('glm')
   },
 
   clampMaxTokens(requested: number): number {
-    return requested > 128_000 ? 128_000 : requested
+    return requested
   },
 
   transformRequest(body: OpenAIChatRequest, ctx: TransformContext): OpenAIChatRequest {
     body.model = normalizeGlmModelId(body.model)
-    const thinkingEnabled = isGlmThinkingModel(ctx.model) && getGlmThinking()
-    body.thinking = { type: thinkingEnabled ? 'enabled' : 'disabled' }
+    delete body.thinking
+    delete body.reasoning_effort
+    Object.assign(body, directThinkingFields('glm', ctx.model))
+    if (body.max_tokens) body.max_tokens = Math.min(body.max_tokens, getDirectModelMeta('glm', ctx.model)?.maxOutputTokens ?? 32_768)
     delete body.stream_options
     return body
   },
