@@ -56,6 +56,9 @@ Resume the last useful session or pick an older one when you want to continue wh
 **`/compact-settings` - Configure automatic compaction**
 Adjust the compaction threshold, context cap, and **Preserve recent context**. Preservation is Off by default. When On, automatic compaction in the main conversation keeps a bounded set of recent exchanges word-for-word after the summary, preserving complete tool exchanges. The amount adapts to available space and can be reduced or omitted. Manual `/compact` and subagents are unchanged. Use `/compact-settings status` to inspect the settings, or `/compact-settings reset` to restore defaults, including preservation Off.
 
+**`/files` - See which files Tau counts as read**
+Lists, sorted, the files Tau treats as already read in this session: files the model opened or @-mentioned, files it edited or wrote, and the CLAUDE.md and memory files loaded at startup. Useful when Edit says a file has not been read yet, or to see what `/compact` kept (it re-reads up to five files). Files read through shell commands or by subagents are not listed, and Tau tracks at most 100 files. Like other commands, the output is added to the conversation, so the model sees it on its next turn.
+
 ## Orchestration
 
 **`/team-mode` - Orchestrator with worker agents**
