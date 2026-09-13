@@ -16,8 +16,10 @@ import {
 import {
   getConfiguredThresholdPercent,
   getConfiguredWindowCap,
+  isRecentContextPreservationEnabled,
   setConfiguredThresholdPercent,
   setConfiguredWindowCap,
+  setRecentContextPreservationEnabled,
 } from '../../utils/compactionConfig.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
 import { getTheme } from '../../utils/theme.js'
@@ -116,12 +118,15 @@ export function CompactSettings({
   const theme = getTheme(themeName)
   const model = getMainLoopModel()
 
-  const [row, setRow] = useState<0 | 1>(0)
+  const [row, setRow] = useState(0)
   const [thresholdIndex, setThresholdIndex] = useState(() =>
     indexOfChoice(THRESHOLD_CHOICES, getConfiguredThresholdPercent()),
   )
   const [capIndex, setCapIndex] = useState(() =>
     indexOfChoice(CAP_CHOICES, getConfiguredWindowCap()),
+  )
+  const [preserveRecent, setPreserveRecent] = useState(
+    isRecentContextPreservationEnabled,
   )
 
   const percent = THRESHOLD_CHOICES[thresholdIndex]
@@ -142,15 +147,19 @@ export function CompactSettings({
     if (key.return) {
       setConfiguredThresholdPercent(percent)
       setConfiguredWindowCap(cap)
+      setRecentContextPreservationEnabled(preserveRecent)
       onDone(
         `Auto-compaction set to ${percent === undefined ? 'auto' : `${percent}%`}` +
           `${cap === undefined ? '' : ` with a ${formatTokenCount(cap)} context cap`}` +
-          ` — fires at ${preview.threshold.toLocaleString()} tokens on ${model}`,
+          ` — fires at ${preview.threshold.toLocaleString()} tokens on ${model}` +
+          `; preserve recent context ${preserveRecent ? 'on' : 'off'}`,
       )
       return
     }
-    if (key.upArrow || key.downArrow || input === 'k' || input === 'j') {
-      setRow(current => (current === 0 ? 1 : 0))
+    if (key.upArrow || key.downArrow || key.tab || input === 'k' || input === 'j') {
+      const direction =
+        key.upArrow || input === 'k' || (key.tab && key.shift) ? -1 : 1
+      setRow(current => (current + direction + 3) % 3)
       return
     }
     const delta = key.leftArrow ? -1 : key.rightArrow ? 1 : 0
@@ -159,8 +168,10 @@ export function CompactSettings({
       setThresholdIndex(i =>
         Math.min(THRESHOLD_CHOICES.length - 1, Math.max(0, i + delta)),
       )
-    } else {
+    } else if (row === 1) {
       setCapIndex(i => Math.min(CAP_CHOICES.length - 1, Math.max(0, i + delta)))
+    } else {
+      setPreserveRecent(delta > 0)
     }
   })
 
@@ -172,8 +183,7 @@ export function CompactSettings({
         <Text bold>Compaction settings</Text>
         <Text color={theme.subtle} wrap="wrap">
           When context fills up, older history is summarized so the session can
-          continue. Both controls are relative to the active model, so one
-          choice behaves sensibly on any window size.
+          continue. The threshold and cap adapt to the active model's window.
         </Text>
         <Text color={theme.subtle}>
           {model} · {formatTokenCount(preview.contextWindow)} context window
@@ -248,8 +258,28 @@ export function CompactSettings({
         </Box>
       </Box>
 
+      <Box flexDirection="column">
+        <Text>
+          <Text bold color={row === 2 ? theme.suggestion : undefined}>
+            {row === 2 ? '❯ ' : '  '}
+            Preserve recent context
+          </Text>
+          <Text bold color={row === 2 ? theme.suggestion : theme.subtle}>
+            {'   '}
+            {preserveRecent ? 'On' : 'Off'}
+          </Text>
+        </Text>
+        <Box paddingLeft={2} flexDirection="column">
+          <Text color={theme.subtle} wrap="wrap">
+            Keep recent exchanges verbatim after automatic compaction in the
+            main conversation. The amount kept may be reduced or omitted when
+            needed. Manual /compact and subagents are unchanged.
+          </Text>
+        </Box>
+      </Box>
+
       <Text color={theme.subtle}>
-        ←/→ adjust · ↑/↓ switch control · Enter save · Esc cancel
+        ←/→ adjust · ↑/↓ or Tab switch control · Enter save · Esc cancel
       </Text>
     </Box>
   )

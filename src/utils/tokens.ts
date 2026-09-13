@@ -1,7 +1,11 @@
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { roughTokenCountEstimationForMessages } from '../services/tokenEstimation.js'
 import type { AssistantMessage, Message } from '../types/message.js'
-import { SYNTHETIC_MESSAGES, SYNTHETIC_MODEL } from './messages.js'
+import {
+  isCompactBoundaryMessage,
+  SYNTHETIC_MESSAGES,
+  SYNTHETIC_MODEL,
+} from './messages.js'
 import { jsonStringify } from './slowOperations.js'
 
 export function getTokenUsage(message: Message): Usage | undefined {
@@ -37,6 +41,35 @@ function getAssistantMessageId(message: Message): string | undefined {
 }
 
 /**
+ * Retained responses keep their original usage for billing and transcripts,
+ * but that usage describes the context BEFORE compaction. Only a response
+ * after the preserved tail can measure the new context. The same rule works
+ * in memory and after resume, using the existing persisted segment endpoints.
+ */
+function getContextAccountingRange(messages: readonly Message[]): {
+  contextStart: number
+  usageStart: number
+} {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (!message || !isCompactBoundaryMessage(message)) continue
+    const contextStart = i + 1
+    const segment = message.compactMetadata?.preservedSegment
+    if (!segment) return { contextStart, usageStart: contextStart }
+
+    for (let j = messages.length - 1; j >= contextStart; j--) {
+      if (messages[j]?.uuid === segment.tailUuid) {
+        return { contextStart, usageStart: j + 1 }
+      }
+    }
+    // Incomplete/malformed segment metadata cannot establish fresh usage.
+    // Estimate the active messages instead of reusing a pre-compact count.
+    return { contextStart, usageStart: messages.length }
+  }
+  return { contextStart: 0, usageStart: 0 }
+}
+
+/**
  * Calculate total context window tokens from an API response's usage data.
  * Includes input_tokens + cache tokens + output_tokens.
  *
@@ -53,8 +86,9 @@ export function getTokenCountFromUsage(usage: Usage): number {
 }
 
 export function tokenCountFromLastAPIResponse(messages: Message[]): number {
+  const { usageStart } = getContextAccountingRange(messages)
   let i = messages.length - 1
-  while (i >= 0) {
+  while (i >= usageStart) {
     const message = messages[i]
     const usage = message ? getTokenUsage(message) : undefined
     if (usage) {
@@ -79,8 +113,9 @@ export function tokenCountFromLastAPIResponse(messages: Message[]): number {
 export function finalContextTokensFromLastResponse(
   messages: Message[],
 ): number {
+  const { usageStart } = getContextAccountingRange(messages)
   let i = messages.length - 1
-  while (i >= 0) {
+  while (i >= usageStart) {
     const message = messages[i]
     const usage = message ? getTokenUsage(message) : undefined
     if (usage) {
@@ -141,7 +176,8 @@ export function getCurrentUsage(messages: Message[]): {
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
 } | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
+  const { usageStart } = getContextAccountingRange(messages)
+  for (let i = messages.length - 1; i >= usageStart; i--) {
     const message = messages[i]
     const usage = message ? getTokenUsage(message) : undefined
     if (usage) {
@@ -161,10 +197,14 @@ export function doesMostRecentAssistantMessageExceed200k(
 ): boolean {
   const THRESHOLD = 200_000
 
-  const lastAsst = messages.findLast(m => m.type === 'assistant')
-  if (!lastAsst) return false
-  const usage = getTokenUsage(lastAsst)
-  return usage ? getTokenCountFromUsage(usage) > THRESHOLD : false
+  const { usageStart } = getContextAccountingRange(messages)
+  for (let i = messages.length - 1; i >= usageStart; i--) {
+    const message = messages[i]
+    if (message?.type !== 'assistant') continue
+    const usage = getTokenUsage(message)
+    return usage ? getTokenCountFromUsage(usage) > THRESHOLD : false
+  }
+  return false
 }
 
 /**
@@ -224,8 +264,9 @@ export function getAssistantMessageContentLength(
  * so every interleaved tool_result is included in the rough estimate.
  */
 export function tokenCountWithEstimation(messages: readonly Message[]): number {
+  const { contextStart, usageStart } = getContextAccountingRange(messages)
   let i = messages.length - 1
-  while (i >= 0) {
+  while (i >= usageStart) {
     const message = messages[i]
     const usage = message ? getTokenUsage(message) : undefined
     if (message && usage) {
@@ -235,7 +276,7 @@ export function tokenCountWithEstimation(messages: readonly Message[]): number {
       const responseId = getAssistantMessageId(message)
       if (responseId) {
         let j = i - 1
-        while (j >= 0) {
+        while (j >= usageStart) {
           const prior = messages[j]
           const priorId = prior ? getAssistantMessageId(prior) : undefined
           if (priorId === responseId) {
@@ -257,5 +298,5 @@ export function tokenCountWithEstimation(messages: readonly Message[]): number {
     }
     i--
   }
-  return roughTokenCountEstimationForMessages(messages)
+  return roughTokenCountEstimationForMessages(messages.slice(contextStart))
 }

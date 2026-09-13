@@ -1526,6 +1526,13 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
           head_uuid: UUIDPlaceholder(),
           anchor_uuid: UUIDPlaceholder(),
           tail_uuid: UUIDPlaceholder(),
+          message_uuids: z
+            .array(UUIDPlaceholder())
+            .optional()
+            .describe(
+              'Exact retained transcript order, including parallel tool results. ' +
+                'When present, loaders relink every listed message before pruning.',
+            ),
         })
         .optional()
         .describe(

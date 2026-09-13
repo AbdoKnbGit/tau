@@ -1948,9 +1948,10 @@ export function removeExtraFields(
  *
  * Preserved messages exist in the JSONL with their ORIGINAL pre-compact
  * parentUuids (recordTranscript dedup-skipped them — can't rewrite).
- * The internal chain (keep[i+1]→keep[i]) is intact; only endpoints need
- * patching: head→anchor, and anchor's other children→tail. Anchor is the
- * last summary for suffix-preserving, boundary itself for prefix-preserving.
+ * New ordered segments relink every retained participant: parallel tool
+ * results can branch away from the single-parent chain. Older segments only
+ * provide endpoints and use the original tail→head walk. Anchor is the last
+ * summary for suffix-preserving, boundary itself for prefix-preserving.
  *
  * Only the LAST seg-boundary is relinked — earlier segs were summarized
  * into it. Everything physically before the absolute-last boundary (except
@@ -1962,9 +1963,7 @@ export function removeExtraFields(
 function applyPreservedSegmentRelinks(
   messages: Map<UUID, TranscriptMessage>,
 ): void {
-  type Seg = NonNullable<
-    SystemCompactBoundaryMessage['compactMetadata']['preservedSegment']
-  >
+  type Seg = import('./compactMetadata.js').PreservedSegment
 
   // Find the absolute-last boundary and the last seg-boundary (can differ:
   // manual /compact after reactive compact → seg is stale).
@@ -1992,10 +1991,37 @@ function applyPreservedSegmentRelinks(
   // absolute — otherwise the stale preserved chain becomes a phantom leaf.
   const segIsLive = lastSegBoundaryIdx === absoluteLastBoundaryIdx
 
-  // Validate tail→head BEFORE mutating so malformed metadata is a true
-  // no-op (walk stops at headUuid, doesn't need the relink to run first).
+  // Validate the ordered list or legacy tail→head walk BEFORE mutating so
+  // malformed metadata leaves the original transcript available for recovery.
   const preservedUuids = new Set<UUID>()
-  if (segIsLive) {
+  if (segIsLive && lastSeg.messageUuids !== undefined) {
+    const order = lastSeg.messageUuids
+    // Validate before touching the map. Endpoints alone cannot reconstruct
+    // parallel tool results: their original parents form branches, not a list.
+    if (
+      !Array.isArray(order) ||
+      order.length === 0 ||
+      order[0] !== lastSeg.headUuid ||
+      order.at(-1) !== lastSeg.tailUuid ||
+      !messages.has(lastSeg.anchorUuid) ||
+      order.some(uuid => {
+        const message = messages.get(uuid)
+        if (
+          !message ||
+          uuid === lastSeg.anchorUuid ||
+          isCompactBoundaryMessage(message) ||
+          message.type === 'progress' ||
+          preservedUuids.has(uuid)
+        )
+          return true
+        preservedUuids.add(uuid)
+        return false
+      })
+    ) {
+      logEvent('tengu_relink_order_invalid', {})
+      return
+    }
+  } else if (segIsLive) {
     const walkSeen = new Set<UUID>()
     let cur = messages.get(lastSeg.tailUuid)
     let reachedHead = false
@@ -2026,6 +2052,14 @@ function applyPreservedSegmentRelinks(
   }
 
   if (segIsLive) {
+    if (lastSeg.messageUuids) {
+      let parentUuid = lastSeg.anchorUuid
+      for (const uuid of lastSeg.messageUuids) {
+        const message = messages.get(uuid)!
+        messages.set(uuid, { ...message, parentUuid })
+        parentUuid = uuid
+      }
+    }
     const head = messages.get(lastSeg.headUuid)
     if (head) {
       messages.set(lastSeg.headUuid, {
@@ -2040,26 +2074,9 @@ function applyPreservedSegmentRelinks(
         messages.set(uuid, { ...msg, parentUuid: lastSeg.tailUuid })
       }
     }
-    // Zero stale usage: on-disk input_tokens reflect pre-compact context
-    // (~190K) — stripStaleUsage only patched in-memory copies that were
-    // dedup-skipped. Without this, resume → immediate autocompact spiral.
-    for (const uuid of preservedUuids) {
-      const msg = messages.get(uuid)
-      if (msg?.type !== 'assistant') continue
-      messages.set(uuid, {
-        ...msg,
-        message: {
-          ...msg.message,
-          usage: {
-            ...msg.message.usage,
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-          },
-        },
-      })
-    }
+    // Preserve historical usage. Context accounting ignores usage inside the
+    // segment until a fresh response arrives; rewriting it here loses billing
+    // history and makes resumed sessions disagree with the live session.
   }
 
   // Prune everything physically before the absolute-last boundary that

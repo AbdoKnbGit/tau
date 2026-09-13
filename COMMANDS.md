@@ -53,6 +53,9 @@ Start a fork from the current point in the session without losing the original p
 **`/resume` - Continue later**
 Resume the last useful session or pick an older one when you want to continue where you left off.
 
+**`/compact-settings` - Configure automatic compaction**
+Adjust the compaction threshold, context cap, and **Preserve recent context**. Preservation is Off by default. When On, automatic compaction in the main conversation keeps a bounded set of recent exchanges word-for-word after the summary, preserving complete tool exchanges. The amount adapts to available space and can be reduced or omitted. Manual `/compact` and subagents are unchanged. Use `/compact-settings status` to inspect the settings, or `/compact-settings reset` to restore defaults, including preservation Off.
+
 ## Orchestration
 
 **`/team-mode` - Orchestrator with worker agents**

@@ -25,6 +25,11 @@ export function getConfiguredWindowCap(): number | undefined {
   return isValidWindowCap(value) ? Math.floor(value) : undefined
 }
 
+/** Retaining recent context is enabled only by an explicit boolean opt-in. */
+export function isRecentContextPreservationEnabled(): boolean {
+  return getGlobalConfig().autoCompactPreserveRecent === true
+}
+
 /** Persist the threshold percentage; `undefined` restores auto. */
 export function setConfiguredThresholdPercent(
   percent: number | undefined,
@@ -45,5 +50,14 @@ export function setConfiguredWindowCap(tokens: number | undefined): void {
     config.autoCompactWindowTokens === next
       ? config
       : { ...config, autoCompactWindowTokens: next },
+  )
+}
+
+/** Persist the automatic-compaction preference; manual /compact is unaffected. */
+export function setRecentContextPreservationEnabled(enabled: boolean): void {
+  saveGlobalConfig(config =>
+    config.autoCompactPreserveRecent === enabled
+      ? config
+      : { ...config, autoCompactPreserveRecent: enabled },
   )
 }

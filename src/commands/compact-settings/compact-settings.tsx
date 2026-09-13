@@ -2,8 +2,10 @@ import React from 'react'
 import { describeAutoCompaction } from '../../services/compact/autoCompact.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import {
+  isRecentContextPreservationEnabled,
   setConfiguredThresholdPercent,
   setConfiguredWindowCap,
+  setRecentContextPreservationEnabled,
 } from '../../utils/compactionConfig.js'
 import { formatTokenCount } from '../../utils/compactionSettings.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
@@ -13,9 +15,8 @@ const HELP_ARGS = ['help', '-h', '--help']
 
 const USAGE = `Usage: /compact-settings [status|reset]
 
-Controls when automatic compaction runs. Both settings are expressed
-relative to the active model's real context window, so one choice behaves
-sensibly whether you are on a 200K model or a 1M one.
+Controls automatic compaction. The threshold and cap adapt to the active
+model's real context window.
 
   Compact at    How full the usable window gets before older history is
                 summarized. Lower means cheaper turns and more frequent
@@ -25,8 +26,14 @@ sensibly whether you are on a 200K model or a 1M one.
                 min(model window, cap). Bounds what a single turn can cost
                 on a large-window model; inert on smaller models.
 
+  Preserve recent context
+                Keep recent exchanges verbatim after automatic compaction
+                in the main conversation. Off by default; the amount kept
+                may be reduced or omitted when needed. Manual /compact and
+                subagents are unchanged.
+
   status        Print what the current settings resolve to.
-  reset         Restore both to auto.`
+  reset         Restore threshold and cap to auto; recent context to Off.`
 
 /** One-line summary of what the saved configuration means for this model. */
 function describeCurrent(): string {
@@ -55,6 +62,9 @@ function describeCurrent(): string {
   } else {
     lines.push("Context cap: none — uses the model's full window")
   }
+  lines.push(
+    `Preserve recent context: ${isRecentContextPreservationEnabled() ? 'On' : 'Off'} (main conversation's automatic compaction only; manual /compact and subagents unchanged)`,
+  )
   if (state.clampedByReserve) {
     lines.push(
       'Note: the requested percentage was capped by the reserve compaction needs to run.',
@@ -83,7 +93,8 @@ export async function call(
   if (arg === 'reset' || arg === 'auto') {
     setConfiguredThresholdPercent(undefined)
     setConfiguredWindowCap(undefined)
-    onDone(`Compaction settings reset to auto.\n\n${describeCurrent()}`)
+    setRecentContextPreservationEnabled(false)
+    onDone(`Compaction settings reset to defaults.\n\n${describeCurrent()}`)
     return
   }
 

@@ -74,7 +74,9 @@ import {
 } from '../../utils/sessionActivity.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
 import {
+  cleanMessagesForLogging,
   getTranscriptPath,
+  isChainParticipant,
   reAppendSessionMetadata,
 } from '../../utils/sessionStorage.js'
 import { sleep } from '../../utils/sleep.js'
@@ -110,6 +112,7 @@ import { getRetryDelay } from '../api/withRetry.js'
 import { logPermissionContextForAnts } from '../internalLogging.js'
 import {
   roughTokenCountEstimation,
+  roughTokenCountEstimationForMessage,
   roughTokenCountEstimationForMessages,
 } from '../tokenEstimation.js'
 import { setCompactProgress } from './compactProgress.js'
@@ -119,6 +122,7 @@ import {
   getCompactUserSummaryMessage,
   getPartialCompactPrompt,
 } from './prompt.js'
+import { prepareRecentContext } from './recentContext.js'
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
 export const POST_COMPACT_TOKEN_BUDGET = 50_000
@@ -130,6 +134,11 @@ export const POST_COMPACT_MAX_TOKENS_PER_FILE = 5_000
 export const POST_COMPACT_MAX_TOKENS_PER_SKILL = 5_000
 export const POST_COMPACT_SKILLS_TOKEN_BUDGET = 25_000
 const MAX_COMPACT_STREAMING_RETRIES = 2
+// A small working set, scaled down for smaller configured/model windows.
+// Leave additional room for estimation error and the next tool exchange.
+const MAX_RECENT_CONTEXT_TOKENS = 10_000
+const RECENT_CONTEXT_FRACTION = 0.1
+const POST_COMPACT_TARGET_FRACTION = 0.8
 
 /**
  * Strip image blocks from user messages before sending for compaction.
@@ -346,11 +355,14 @@ export function buildPostCompactMessages(result: CompactionResult): Message[] {
  * `anchorUuid` = what sits immediately before keep[0] in the desired chain:
  *   - suffix-preserving (reactive/session-memory): last summary message
  *   - prefix-preserving (partial compact): the boundary itself
+ * `preserveOrder` records every participant for exact replay of parallel tool
+ * results, whose disk parents can branch. Pass transcript participants only.
  */
 export function annotateBoundaryWithPreservedSegment(
   boundary: SystemCompactBoundaryMessage,
   anchorUuid: UUID,
   messagesToKeep: readonly Message[] | undefined,
+  preserveOrder: boolean = false,
 ): SystemCompactBoundaryMessage {
   const keep = messagesToKeep ?? []
   if (keep.length === 0) return boundary
@@ -362,6 +374,7 @@ export function annotateBoundaryWithPreservedSegment(
         headUuid: keep[0]!.uuid,
         anchorUuid,
         tailUuid: keep.at(-1)!.uuid,
+        ...(preserveOrder ? { messageUuids: keep.map(m => m.uuid) } : {}),
       },
     },
   }
@@ -393,6 +406,7 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
+  preserveRecentContext: boolean = false,
 ): Promise<CompactionResult> {
   try {
     if (messages.length === 0) {
@@ -597,7 +611,7 @@ export async function compactConversation(
 
     // Create the compact boundary marker and summary messages before the
     // event so we can compute the true resulting-context size.
-    const boundaryMarker = createCompactBoundaryMessage(
+    let boundaryMarker = createCompactBoundaryMessage(
       isAutoCompact ? 'auto' : 'manual',
       preCompactTokenCount ?? 0,
       messages.at(-1)?.uuid,
@@ -625,6 +639,88 @@ export async function compactConversation(
       }),
     ]
 
+    let messagesToKeep: Message[] | undefined
+    if (isAutoCompact && preserveRecentContext && recompactionInfo) {
+      try {
+        // Keep the existing summary request (including its full cached prefix)
+        // unchanged. Since it covers the entire conversation, retaining less
+        // context here never requires another summary call or loses coverage.
+        const recentSummary = createUserMessage({
+          content: getCompactUserSummaryMessage(
+            summary,
+            suppressFollowUpQuestions,
+            transcriptPath,
+            true,
+          ),
+          isCompactSummary: true,
+          isVisibleInTranscriptOnly: true,
+        })
+        const baseTokens = roughTokenCountEstimationForMessages([
+          boundaryMarker,
+          recentSummary,
+          ...postCompactFileAttachments,
+          ...hookMessages,
+        ])
+        // API usage includes system/tool context, which message estimates omit.
+        // Infer that overhead from this conversation rather than assuming a
+        // particular provider, model, or system-prompt size.
+        const promptOverhead = Math.max(
+          0,
+          preCompactTokenCount - roughTokenCountEstimationForMessages(messages),
+        )
+        const threshold = recompactionInfo.autoCompactThreshold
+        const maxTokens = Math.min(
+          MAX_RECENT_CONTEXT_TOKENS,
+          Math.floor(threshold * RECENT_CONTEXT_FRACTION),
+          Math.floor(threshold * POST_COMPACT_TARGET_FRACTION) -
+            baseTokens -
+            promptOverhead,
+        )
+        const recent = prepareRecentContext(
+          messages,
+          maxTokens,
+          roughTokenCountEstimationForMessage,
+        )
+        if (recent) {
+          // Some transient attachments are deliberately not logged. Use the
+          // actual transcript participants for splice endpoints, so resume
+          // never references an attachment UUID absent from the transcript.
+          const persisted = cleanMessagesForLogging(
+            recent.messagesToKeep,
+            messages,
+          ).filter(isChainParticipant)
+          const persistedByUuid = new Map(persisted.map(m => [m.uuid, m]))
+          // Transcript transforms can strip internal assistant/tool wrappers.
+          // Decline retention if a conversation record would change on resume;
+          // otherwise an unlogged assistant after tailUuid could expose stale
+          // usage, or the saved tool exchange could differ from the live one.
+          const conversationSurvivesLogging = recent.messagesToKeep.every(m => {
+            if (m.type !== 'assistant' && m.type !== 'user') return true
+            const saved = persistedByUuid.get(m.uuid)
+            return (
+              (saved?.type === 'assistant' || saved?.type === 'user') &&
+              saved.message.content === m.message.content
+            )
+          })
+          if (persisted.length > 0 && conversationSurvivesLogging) {
+            const retainedBoundary = annotateBoundaryWithPreservedSegment(
+              boundaryMarker,
+              recentSummary.uuid,
+              persisted,
+              true,
+            )
+            messagesToKeep = recent.messagesToKeep
+            summaryMessages[0] = recentSummary
+            boundaryMarker = retainedBoundary
+          }
+        }
+      } catch (error) {
+        // Retention is optional. A malformed historic record or unavailable
+        // estimate must not discard a successfully generated full summary.
+        logError(error)
+      }
+    }
+
     // Previously "postCompactTokenCount" — renamed because this is the
     // compact API call's total usage (input_tokens ≈ preCompactTokenCount),
     // NOT the size of the resulting context. Kept for event-field continuity.
@@ -639,6 +735,7 @@ export async function compactConversation(
     const truePostCompactTokenCount = roughTokenCountEstimationForMessages([
       boundaryMarker,
       ...summaryMessages,
+      ...(messagesToKeep ?? []),
       ...postCompactFileAttachments,
       ...hookMessages,
     ])
@@ -740,6 +837,7 @@ export async function compactConversation(
     return {
       boundaryMarker,
       summaryMessages,
+      ...(messagesToKeep ? { messagesToKeep } : {}),
       attachments: postCompactFileAttachments,
       hookResults: hookMessages,
       userDisplayMessage: combinedUserDisplayMessage || undefined,

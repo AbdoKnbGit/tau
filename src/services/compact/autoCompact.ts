@@ -7,6 +7,7 @@ import type { Message } from '../../types/message.js'
 import {
   getConfiguredThresholdPercent,
   getConfiguredWindowCap,
+  isRecentContextPreservationEnabled,
 } from '../../utils/compactionConfig.js'
 import { computeCompactionThreshold } from '../../utils/compactionSettings.js'
 import { getGlobalConfig } from '../../utils/config.js'
@@ -431,6 +432,11 @@ export async function autoCompactIfNeeded(
       undefined, // No custom instructions for autocompact
       true, // isAutoCompact
       recompactionInfo,
+      // Main conversations opt in explicitly. Forks and background agents
+      // share global config, but must not inherit this retention policy.
+      (querySource?.startsWith('repl_main_thread') === true ||
+        querySource === 'sdk') &&
+        isRecentContextPreservationEnabled(),
     )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages

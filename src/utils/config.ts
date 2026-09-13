@@ -270,6 +270,8 @@ export type GlobalConfig = {
    * cap. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` still wins when set.
    */
   autoCompactWindowTokens?: number
+  /** Keep recent exchanges verbatim during automatic compaction. Opt-in only. */
+  autoCompactPreserveRecent?: boolean
   showTurnDuration: boolean // Controls whether to show turn duration message (e.g., "Cooked for 1m 6s")
   /**
    * Where the per-response header renders and what it contains — one of
@@ -740,6 +742,7 @@ export const GLOBAL_CONFIG_KEYS = [
   'autoCompactEnabled',
   'autoCompactThresholdPercent',
   'autoCompactWindowTokens',
+  'autoCompactPreserveRecent',
   'showTurnDuration',
   'messageHeaderMode',
   'diffTool',

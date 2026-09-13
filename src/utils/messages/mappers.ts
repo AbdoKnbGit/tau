@@ -20,6 +20,7 @@ import type {
 } from 'src/types/message.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import stripAnsi from 'strip-ansi'
+import type { PreservedSegment } from '../compactMetadata.js'
 import { createAssistantMessage } from '../messages.js'
 import { getPlan } from '../plans.js'
 
@@ -78,7 +79,7 @@ type SDKCompactMetadata = SDKCompactBoundaryMessage['compact_metadata']
 export function toSDKCompactMetadata(
   meta: CompactMetadata,
 ): SDKCompactMetadata {
-  const seg = meta.preservedSegment
+  const seg: PreservedSegment | undefined = meta.preservedSegment
   return {
     trigger: meta.trigger,
     pre_tokens: meta.preTokens,
@@ -87,6 +88,7 @@ export function toSDKCompactMetadata(
         head_uuid: seg.headUuid,
         anchor_uuid: seg.anchorUuid,
         tail_uuid: seg.tailUuid,
+        ...(seg.messageUuids ? { message_uuids: seg.messageUuids } : {}),
       },
     }),
   }
@@ -107,6 +109,7 @@ export function fromSDKCompactMetadata(
         headUuid: seg.head_uuid,
         anchorUuid: seg.anchor_uuid,
         tailUuid: seg.tail_uuid,
+        ...(seg.message_uuids ? { messageUuids: seg.message_uuids } : {}),
       },
     }),
   }
