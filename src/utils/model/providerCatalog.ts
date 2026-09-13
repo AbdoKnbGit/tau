@@ -38,10 +38,10 @@ import {
   VOICE_CONVERSATION_PROVIDER,
 } from '../../voice/voiceConversation.js'
 import {
-  CLINE_EFFORT_LEVELS,
   encodeClineEffortVariant,
   getClineEffort,
   getClineEffortLabel,
+  getClineThinkingLadder,
   parseClineEffortVariant,
   type ClineEffort,
 } from './clineThinking.js'
@@ -270,6 +270,7 @@ export async function loadProviderModels(
     'cursor',
     'cline',
     'clinepass',
+    'deepseek',
     'glm',
     'moonshot',
     'minimax',
@@ -628,20 +629,32 @@ function buildClinePassSections(models: readonly ModelInfo[]): ProviderModelSect
 }
 
 function toClinePassSectionedModel(model: ModelInfo): SectionedModelInfo {
+  // Each model's own stops, from models.dev (clineThinking.ts): glm-5.3
+  // cycles Default/Low/High/Max, deepseek-v4-pro Off/Low/Medium/High/Extra High.
+  const ladder = getClineThinkingLadder(model.id)
+  if (!ladder) {
+    return {
+      ...model,
+      tags: mergeModelTags(
+        pickKnownModelTags(model)?.filter(tag => tag !== 'thinking'),
+        ['pro'] as const,
+      ),
+    }
+  }
   const currentEffort = getClineEffort(model.id)
-  const defaultEffort = CLINE_EFFORT_LEVELS.includes(currentEffort)
+  const defaultEffort = ladder.levels.includes(currentEffort)
     ? currentEffort
-    : 'none'
+    : ladder.levels[0]!
   const modelName = model.name && model.name !== model.id ? model.name : model.id
 
   return {
     ...model,
     tags: mergeModelTags(pickKnownModelTags(model), ['thinking', 'pro'] as const),
     defaultVariantId: encodeClineEffortVariant(model.id, defaultEffort),
-    variants: CLINE_EFFORT_LEVELS.map(effort => ({
+    variants: ladder.levels.map(effort => ({
       id: encodeClineEffortVariant(model.id, effort),
-      name: `${modelName} (${getClineEffortLabel(effort)} thinking)`,
-      label: getClineEffortLabel(effort),
+      name: `${modelName} (${getClineEffortLabel(effort, model.id)} thinking)`,
+      label: getClineEffortLabel(effort, model.id),
       tags: effort === 'none'
         ? (['pro'] as const)
         : (['thinking', 'pro'] as const),

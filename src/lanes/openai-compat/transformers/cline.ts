@@ -14,9 +14,8 @@
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 import {
-  applyClineReasoningToRequest,
-  getClineRequestEffort,
-  isClineThinkingModel,
+  applyClineReasoningFields,
+  resolveClineReasoningFields,
 } from '../../../utils/model/clineThinking.js'
 
 export const clineTransformer: Transformer = {
@@ -42,11 +41,11 @@ export const clineTransformer: Transformer = {
   },
 
   transformRequest(body: OpenAIChatRequest, _ctx: TransformContext): OpenAIChatRequest {
-    if (isClineThinkingModel(body.model)) {
-      applyClineReasoningToRequest(
-        body as unknown as Record<string, unknown>,
-        getClineRequestEffort(body.model),
-      )
+    // Only a stop on the model's own ladder is sent (clineThinking.ts); a
+    // model with nothing to set keeps whatever the request already carries.
+    const fields = resolveClineReasoningFields(body.model)
+    if (fields) {
+      applyClineReasoningFields(body as unknown as Record<string, unknown>, fields)
     }
     return body
   },

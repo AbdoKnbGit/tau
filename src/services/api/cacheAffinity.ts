@@ -23,9 +23,15 @@ const STABLE_REQUEST_SESSION_PROVIDERS = new Set<string>([
   // user message, which a leading context reminder can rewrite.
   'deepseek',
   'moonshot',
+  'glm',
+  'minimax',
   'mistral',
   'fireworks',
   'cloudflare',
+  // Cline's own clients tag every request of a task with X-Task-ID; the
+  // Cline lane sends this id there so the gateway sees one task per session.
+  'cline',
+  'clinepass',
 ])
 
 /**

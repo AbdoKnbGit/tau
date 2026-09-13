@@ -289,6 +289,18 @@ async function main(): Promise<void> {
     assert(forced === 'openai', `forced OpenAI request was routed to ${forced}`)
   })
 
+  await test('gives Cline requests the stable session sent as X-Task-ID', () => {
+    for (const provider of ['cline', 'clinepass'] as const) {
+      assert(providerUsesStableRequestSession(provider), `${provider} has no stable session`)
+      const chat = resolveProviderRequestSessionId({
+        provider,
+        rootSessionId: 'root-session',
+        querySource: 'repl_main_thread' as QuerySource,
+      })
+      assert(chat === 'root-session', `${provider}: chat session=${chat}`)
+    }
+  })
+
   await test('does not add affinity keys for providers that do not use them', () => {
     const sessionId = resolveProviderRequestSessionId({
       provider: 'gemini',

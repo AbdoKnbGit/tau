@@ -4,55 +4,74 @@ import { stripClineEffortVariant } from './clineThinking.js'
 export const CLINE_PASS_PROVIDER = 'clinepass'
 export const CLINE_PASS_LABEL = 'Cline Pass'
 
-export const CLINE_PASS_MODEL_IDS = [
-  'cline-pass/glm-5.2',
-  'cline-pass/kimi-k2.7-code',
-  'cline-pass/kimi-k2.6',
-  'cline-pass/deepseek-v4-pro',
-  'cline-pass/deepseek-v4-flash',
-  'cline-pass/mimo-v2.5',
-  'cline-pass/mimo-v2.5-pro',
-  'cline-pass/minimax-m3',
-  'cline-pass/qwen3.7-max',
-  'cline-pass/qwen3.7-plus',
-] as const
+// Offline fallback only. The live Cline Pass list is the `clinePass` bucket of
+// Cline's recommended-models feed, the same source Cline's own model pickers
+// read (see lanes/cline/catalog.ts). This snapshot of that bucket is used when
+// the feed cannot be reached, like the bundled catalog the Cline SDK ships.
+const BUNDLED_CLINE_PASS_MODELS: ReadonlyArray<{ id: string; name: string }> = [
+  { id: 'cline-pass/qwen3.8-max', name: 'Qwen3.8 Max' },
+  { id: 'cline-pass/glm-5.2', name: 'GLM 5.2' },
+  { id: 'cline-pass/deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+  { id: 'cline-pass/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
+  { id: 'cline-pass/kimi-k3', name: 'Kimi K3' },
+  { id: 'cline-pass/glm-5.3-flash', name: 'GLM 5.3 Flash' },
+  { id: 'cline-pass/glm-5.3', name: 'GLM 5.3' },
+  { id: 'cline-pass/qwen3.7-plus', name: 'Qwen3.7 Plus' },
+  { id: 'cline-pass/minimax-m3', name: 'MiniMax M3' },
+  { id: 'cline-pass/kimi-k2.7-code', name: 'Kimi K2.7 Code' },
+  { id: 'cline-pass/kimi-k2.6', name: 'Kimi K2.6' },
+  { id: 'cline-pass/deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+  { id: 'cline-pass/qwen3.7-max', name: 'Qwen3.7 Max' },
+  { id: 'cline-pass/mimo-v2.5-pro', name: 'MiMo-V2.5-Pro' },
+  { id: 'cline-pass/mimo-v2.5', name: 'MiMo-V2.5' },
+]
 
-export type ClinePassModelId = (typeof CLINE_PASS_MODEL_IDS)[number]
+// Display names from the most recent live list, keyed by lowercase model id.
+const liveDisplayNames = new Map<string, string>()
 
-const CLINE_PASS_MODEL_NAMES: Record<ClinePassModelId, string> = {
-  'cline-pass/glm-5.2': 'GLM-5.2',
-  'cline-pass/kimi-k2.7-code': 'Kimi K2.7 Code',
-  'cline-pass/kimi-k2.6': 'Kimi K2.6',
-  'cline-pass/deepseek-v4-pro': 'DeepSeek V4 Pro',
-  'cline-pass/deepseek-v4-flash': 'DeepSeek V4 Flash',
-  'cline-pass/mimo-v2.5': 'MiMo-V2.5',
-  'cline-pass/mimo-v2.5-pro': 'MiMo-V2.5-Pro',
-  'cline-pass/minimax-m3': 'MiniMax M3',
-  'cline-pass/qwen3.7-max': 'Qwen3.7 Max',
-  'cline-pass/qwen3.7-plus': 'Qwen3.7 Plus',
+function normalizeClinePassModelId(modelId: string): string {
+  return stripClineEffortVariant(modelId).trim().toLowerCase()
 }
 
 export function isClinePassProvider(provider: string | undefined): boolean {
   return provider === CLINE_PASS_PROVIDER
 }
 
-export function isClinePassModelId(modelId: string): modelId is ClinePassModelId {
-  return (CLINE_PASS_MODEL_IDS as readonly string[]).includes(modelId)
-}
-
 export function getClinePassModelDisplayName(modelId: string): string | null {
-  const baseModelId = stripClineEffortVariant(modelId).toLowerCase()
-  return isClinePassModelId(baseModelId)
-    ? CLINE_PASS_MODEL_NAMES[baseModelId]
-    : null
+  const id = normalizeClinePassModelId(modelId)
+  return liveDisplayNames.get(id)
+    ?? BUNDLED_CLINE_PASS_MODELS.find(model => model.id === id)?.name
+    ?? null
 }
 
-export function getClinePassModels(): ModelInfo[] {
-  return CLINE_PASS_MODEL_IDS.map(id => ({
+/** Remember the live list's names so status lines match the picker. */
+export function recordClinePassModelNames(
+  models: readonly Pick<ModelInfo, 'id' | 'name'>[],
+): void {
+  for (const model of models) {
+    if (model.name && model.name !== model.id) {
+      liveDisplayNames.set(normalizeClinePassModelId(model.id), model.name)
+    }
+  }
+}
+
+export function toClinePassModelInfo(
+  id: string,
+  name: string,
+  details: Pick<ModelInfo, 'contextWindow' | 'supportsToolCalling'> = {},
+): ModelInfo {
+  return {
     id,
-    name: CLINE_PASS_MODEL_NAMES[id],
+    name,
     provider: CLINE_PASS_LABEL,
-    supportsToolCalling: true,
+    ...(details.contextWindow ? { contextWindow: details.contextWindow } : {}),
+    supportsToolCalling: details.supportsToolCalling ?? true,
     tags: ['thinking', 'pro'],
-  }))
+  }
+}
+
+/** The bundled offline list, in feed order. */
+export function getClinePassModels(): ModelInfo[] {
+  return BUNDLED_CLINE_PASS_MODELS.map(model =>
+    toClinePassModelInfo(model.id, model.name))
 }
