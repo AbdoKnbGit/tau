@@ -116,6 +116,8 @@ One switch for how Tau operates, with a matching identity and accent color that 
 /mode full     everything on
 ```
 
+Antigravity has no cheap mode. While it is the active provider, `cheap` is shown as unavailable in the picker and `/mode cheap` is refused. Switching to an Antigravity model from cheap mode, or launching on Antigravity with cheap saved, moves the session to normal and shows a notice.
+
 Saved `/tools` toggles are never rewritten - cheap/full override them while active, and normal mode restores them (`/tools` appears in normal mode). Switching modes changes the tool set and system prompt once, so the prompt cache re-warms on the next message. Cheap then sends every schema eagerly on every provider and stays byte-stable for the rest of the session. In normal/full mode, optional schemas are deferred behind ToolSearch: client-native lanes append a loaded schema once and keep it, so each newly loaded batch can cause one additional expected re-warm but never removal or reordering, while Anthropic-native discovery keeps its physical tool block fixed and hides definitions server-side. A tool called before its schema arrived is not refused - its arguments are checked against the schema Tau holds locally and the call runs when they match, so a correct call costs no extra turn; only a parameter the schema does not define is rejected, and that rejection carries the real schema for a single direct retry.
 
 **`/fallback` - Recover automatically**

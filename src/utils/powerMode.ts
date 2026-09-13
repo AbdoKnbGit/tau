@@ -1,3 +1,4 @@
+import type { APIProvider } from './model/providerRegistry.js'
 import type { SettingsJson } from './settings/types.js'
 
 /**
@@ -38,6 +39,15 @@ export const DEFAULT_POWER_MODE: PowerMode = 'normal'
 /** Modes that retain the user's normal /tools and provider behavior. */
 export function isNormalToolingMode(mode: PowerMode): boolean {
   return mode === 'normal'
+}
+
+/**
+ * Whether `provider` offers cheap mode. Antigravity doesn't: /mode refuses
+ * cheap while it is the session's provider, and a session that arrives on it
+ * in cheap mode is switched to normal (hooks/useProviderPowerModeGuard.ts).
+ */
+export function providerSupportsCheapMode(provider: APIProvider): boolean {
+  return provider !== 'antigravity'
 }
 
 type SettingsWithPowerMode = Pick<SettingsJson, 'powerMode'>

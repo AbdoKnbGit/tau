@@ -16,12 +16,17 @@ import type {
   LocalJSXCommandCall,
   LocalJSXCommandContext,
 } from '../../types/command.js'
+import {
+  getAPIProvider,
+  PROVIDER_DISPLAY_NAMES,
+} from '../../utils/model/providers.js'
 import { setPowerModeTheme } from '../../utils/modeTheme.js'
 import {
   getPowerModeFromSettings,
   normalizePowerMode,
   POWER_MODE_DESCRIPTIONS,
   POWER_MODE_LABELS,
+  providerSupportsCheapMode,
   SELECTABLE_POWER_MODES,
   setSessionPowerMode,
   type PowerMode,
@@ -50,6 +55,17 @@ function currentPowerMode(): PowerMode {
 }
 
 /**
+ * Display name of the session's provider when it has no cheap mode
+ * (Antigravity), otherwise null.
+ */
+function providerWithoutCheapMode(): string | null {
+  const provider = getAPIProvider()
+  return providerSupportsCheapMode(provider)
+    ? null
+    : PROVIDER_DISPLAY_NAMES[provider]
+}
+
+/**
  * Apply a power mode change end-to-end: persist the setting, refresh the
  * reactive app state, drop every tool/command cache derived from the old
  * mode, start/stop LSP, and cross-fade the theme accents.
@@ -57,11 +73,25 @@ function currentPowerMode(): PowerMode {
  * The tool list changes once per switch (like toggling /tools), so the
  * prompt cache re-warms on the next message and then stays stable — the
  * mode itself never mutates request shape mid-conversation.
+ *
+ * Every mode switch goes through here — the picker, `/mode <name>`, and
+ * hooks/useProviderPowerModeGuard.ts — so this is also where cheap is
+ * refused on a provider that has no cheap mode. `error` is ready to show.
  */
-function applyPowerMode(
+export function applyPowerMode(
   next: PowerMode,
-  context: LocalJSXCommandContext,
+  setAppState: LocalJSXCommandContext['setAppState'],
 ): { error: string | null; changed: boolean } {
+  if (next === 'cheap') {
+    const provider = providerWithoutCheapMode()
+    if (provider) {
+      return {
+        error: `Cheap mode isn't available on ${provider}. Pick a model from another provider with /models to use it.`,
+        changed: false,
+      }
+    }
+  }
+
   const previous = currentPowerMode()
   if (next === previous) {
     return { error: null, changed: false }
@@ -71,7 +101,10 @@ function applyPowerMode(
     powerMode: next === 'normal' ? undefined : next,
   })
   if (error) {
-    return { error: error.message, changed: false }
+    return {
+      error: `Failed to save power mode: ${error.message}`,
+      changed: false,
+    }
   }
 
   // Pin the new mode for THIS session. Persisting above sets the default for
@@ -82,7 +115,7 @@ function applyPowerMode(
   setSessionPowerMode(next)
 
   // Reactive settings for hooks (tool pool, MCP connections, footer chip).
-  context.setAppState(prev => ({
+  setAppState(prev => ({
     ...prev,
     settings: {
       ...prev.settings,
@@ -137,6 +170,11 @@ function PowerModePicker({
 }): React.ReactNode {
   const [initialMode] = useState<PowerMode>(currentPowerMode)
   const [focused, setFocused] = useState<PowerMode>(initialMode)
+  // On a provider without cheap mode, cheap stays listed but disabled, so the
+  // user sees why it can't be picked.
+  const [noCheapProvider] = useState(providerWithoutCheapMode)
+  const isUnavailable = (mode: PowerMode) =>
+    mode === 'cheap' && noCheapProvider !== null
 
   // Cheap/normal are offered; 'full' is retired from the UI. If the
   // session is somehow still on 'full' (persisted setting), surface it as the
@@ -148,11 +186,13 @@ function PowerModePicker({
     : [initialMode, ...selectable]
 
   const options = visibleModes.map(mode => ({
-    label:
-      mode === initialMode
+    label: isUnavailable(mode)
+      ? `${POWER_MODE_LABELS[mode]} (not available on ${noCheapProvider})`
+      : mode === initialMode
         ? `${POWER_MODE_LABELS[mode]} (current)`
         : POWER_MODE_LABELS[mode],
     value: mode,
+    disabled: isUnavailable(mode),
   }))
 
   return (
@@ -176,15 +216,16 @@ function PowerModePicker({
             const mode = value as PowerMode
             setFocused(mode)
             // Live palette preview — visual only, nothing persists until Enter.
-            setPowerModeTheme(mode)
+            // A mode that can't be picked keeps the current palette.
+            setPowerModeTheme(isUnavailable(mode) ? initialMode : mode)
           }}
           onChange={(value: string) => {
             const mode = value as PowerMode
-            const result = applyPowerMode(mode, context)
+            const result = applyPowerMode(mode, context.setAppState)
             if (result.error) {
-              // Persist failed — restore the real palette before reporting.
+              // Refused or persist failed — restore the real palette first.
               setPowerModeTheme(initialMode)
-              onDone(`Failed to save power mode: ${result.error}`)
+              onDone(result.error)
               return
             }
             onDone(doneMessage(mode, result.changed))
@@ -194,7 +235,11 @@ function PowerModePicker({
             onDone('Power mode unchanged', { display: 'system' })
           }}
         />
-        <Text dimColor>{POWER_MODE_DESCRIPTIONS[focused]}</Text>
+        <Text dimColor>
+          {isUnavailable(focused)
+            ? `${noCheapProvider} has no cheap mode — pick a model from another provider with /models to use it`
+            : POWER_MODE_DESCRIPTIONS[focused]}
+        </Text>
       </Box>
     </Pane>
   )
@@ -211,9 +256,9 @@ function ApplyPowerMode({
   context: LocalJSXCommandContext
 }): React.ReactNode {
   useEffect(() => {
-    const result = applyPowerMode(mode, context)
+    const result = applyPowerMode(mode, context.setAppState)
     if (result.error) {
-      onDone(`Failed to save power mode: ${result.error}`)
+      onDone(result.error)
       return
     }
     onDone(doneMessage(mode, result.changed))

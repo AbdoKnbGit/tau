@@ -2,6 +2,7 @@ import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 
 import { isEnvTruthy } from '../envUtils.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { getForcedProvider } from '../forcedProvider.js'
+import { createSignal } from '../signal.js'
 import {
   API_PROVIDERS,
   SELECTABLE_PROVIDERS,
@@ -104,18 +105,28 @@ export function getAPIProvider(): APIProvider {
   return _sessionActiveProvider
 }
 
+// Emitted by setActiveProvider when this session moves to a different
+// provider, so state tied to the provider can follow every switch path
+// (/models, favorites, /login, /fallback, surf) from one place.
+const activeProviderChanged = createSignal<[APIProvider]>()
+export const subscribeActiveProviderChange = activeProviderChanged.subscribe
+
 /**
  * Persist the active provider selection to global config AND update this
  * session's snapshot. Disk write keeps the choice across restarts;
  * snapshot update makes the change visible on the next request in this
- * session without waiting on the config-freshness watcher.
+ * session without waiting on the config-freshness watcher. Listeners
+ * registered with subscribeActiveProviderChange run after both, and only
+ * when the provider actually changed.
  */
 export function setActiveProvider(provider: APIProvider): void {
+  const changed = _sessionActiveProvider !== provider
   _sessionActiveProvider = provider
   saveGlobalConfig(current => ({
     ...current,
     activeProvider: provider,
   }))
+  if (changed) activeProviderChanged.emit(provider)
 }
 
 /**

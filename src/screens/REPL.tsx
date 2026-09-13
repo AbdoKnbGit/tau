@@ -161,6 +161,7 @@ import { mergeAndFilterTools } from '../utils/toolPool.js';
 import { getPowerModeFromSettings } from '../utils/powerMode.js';
 import { useMergedCommands } from '../hooks/useMergedCommands.js';
 import { useSkillsChange } from '../hooks/useSkillsChange.js';
+import { useProviderPowerModeGuard } from '../hooks/useProviderPowerModeGuard.js';
 import { useManagePlugins } from '../hooks/useManagePlugins.js';
 import { Messages } from '../components/Messages.js';
 import { TaskListV2 } from '../components/TaskListV2.js';
@@ -760,6 +761,9 @@ export function REPL({
     addNotification,
     removeNotification
   } = useNotifications();
+  // Antigravity has no cheap mode: leave it on launch and after any provider
+  // switch. Declared before the initial-message effect so turn 1 sees it.
+  useProviderPowerModeGuard();
 
   // eslint-disable-next-line prefer-const
   let trySuggestBgPRIntercept = SUGGEST_BG_PR_NOOP;

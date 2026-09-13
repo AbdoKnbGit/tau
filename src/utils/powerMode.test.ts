@@ -13,10 +13,12 @@ import {
   isNormalToolingMode,
   normalizePowerMode,
   POWER_MODES,
+  providerSupportsCheapMode,
   resetSessionPowerModeForTesting,
   seedSessionPowerMode,
   setSessionPowerMode,
 } from './powerMode.js'
+import { API_PROVIDERS } from './model/providerRegistry.js'
 import {
   filterDisabledPrebuiltTools,
   getDisabledPrebuiltToolIds,
@@ -58,6 +60,15 @@ describe('power mode', () => {
     expect(isNormalToolingMode('normal')).toBe(true)
     expect(isNormalToolingMode('cheap')).toBe(false)
     expect(isNormalToolingMode('full')).toBe(false)
+  })
+
+  test('antigravity is the only provider without a cheap mode', () => {
+    expect(providerSupportsCheapMode('antigravity')).toBe(false)
+    const others = API_PROVIDERS.filter(provider => provider !== 'antigravity')
+    expect(others.length).toBe(API_PROVIDERS.length - 1)
+    for (const provider of others) {
+      expect(providerSupportsCheapMode(provider)).toBe(true)
+    }
   })
 
   test('cheap mode forces every optional toggle off', () => {
