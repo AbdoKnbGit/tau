@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import stripAnsi from 'strip-ansi';
 import { Messages } from '../components/Messages.js';
+import { MermaidDiagramsContext } from '../components/MermaidDiagram.js';
 import { KeybindingProvider } from '../keybindings/KeybindingContext.js';
 import { loadKeybindingsSyncWithWarnings } from '../keybindings/loadUserBindings.js';
 import type { KeybindingContextName } from '../keybindings/types.js';
@@ -56,16 +57,21 @@ export async function streamRenderedMessages(messages: Message[], tools: Tools, 
   columns,
   verbose = false,
   chunkSize = 40,
-  onProgress
+  onProgress,
+  drawDiagrams = true
 }: {
   columns?: number;
   verbose?: boolean;
   chunkSize?: number;
   onProgress?: (rendered: number) => void;
+  /** False keeps ```mermaid blocks as source, for text written to files. */
+  drawDiagrams?: boolean;
 } = {}): Promise<void> {
   const renderChunk = (range: readonly [number, number]) => renderToAnsiString(<AppStateProvider>
         <StaticKeybindingProvider>
-          <Messages messages={messages} tools={tools} commands={[]} verbose={verbose} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={new Set()} isMessageSelectorVisible={false} conversationId="export" screen="prompt" streamingToolUses={[]} showAllInTranscript={true} isLoading={false} renderRange={range} />
+          <MermaidDiagramsContext.Provider value={drawDiagrams}>
+            <Messages messages={messages} tools={tools} commands={[]} verbose={verbose} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={new Set()} isMessageSelectorVisible={false} conversationId="export" screen="prompt" streamingToolUses={[]} showAllInTranscript={true} isLoading={false} renderRange={range} />
+          </MermaidDiagramsContext.Provider>
         </StaticKeybindingProvider>
       </AppStateProvider>, columns);
 
@@ -91,7 +97,8 @@ export async function streamRenderedMessages(messages: Message[], tools: Tools, 
 export async function renderMessagesToPlainText(messages: Message[], tools: Tools = [], columns?: number): Promise<string> {
   const parts: string[] = [];
   await streamRenderedMessages(messages, tools, chunk => void parts.push(stripAnsi(chunk)), {
-    columns
+    columns,
+    drawDiagrams: false
   });
   return parts.join('');
 }

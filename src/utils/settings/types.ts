@@ -703,6 +703,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Whether to render images inline in the transcript (defaults to true). Set to false to show only the summary line.',
         ),
+      mermaidDiagrams: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether to draw ```mermaid blocks in replies as diagrams and tell the model it can use them for flows, sequences, state machines and data models (defaults to true). The model is told on its next turn.',
+        ),
       syntaxHighlightingDisabled: z
         .boolean()
         .optional()

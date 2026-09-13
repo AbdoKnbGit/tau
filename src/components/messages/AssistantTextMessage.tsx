@@ -45,7 +45,7 @@ function InvalidApiKeyMessage() {
   return t1;
 }
 export function AssistantTextMessage(t0) {
-  const $ = _c(34);
+  const $ = _c(35);
   const {
     param: t1,
     addMargin,
@@ -237,9 +237,10 @@ export function AssistantTextMessage(t0) {
           t4 = $[24];
         }
         let t5;
-        if ($[25] !== text) {
-          t5 = <Box flexDirection="column"><Markdown>{text}</Markdown></Box>;
+        if ($[25] !== text || $[34] !== verbose) {
+          t5 = <Box flexDirection="column"><Markdown mermaid mermaidSource={verbose}>{text}</Markdown></Box>;
           $[25] = text;
+          $[34] = verbose;
           $[26] = t5;
         } else {
           t5 = $[26];

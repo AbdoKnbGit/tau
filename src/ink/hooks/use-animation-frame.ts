@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from 'react'
+import { useContext, useEffect, useReducer, useState } from 'react'
 import { ClockContext } from '../components/ClockContext.js'
 import type { DOMElement } from '../dom.js'
 import { useTerminalViewport } from './use-terminal-viewport.js'
@@ -31,8 +31,9 @@ export function useAnimationFrame(
   intervalMs: number | null = 16,
 ): [ref: (element: DOMElement | null) => void, time: number] {
   const clock = useContext(ClockContext)
-  const [viewportRef, { isVisible }] = useTerminalViewport()
+  const [viewportRef, { isVisible }, isVisibleNow] = useTerminalViewport()
   const [time, setTime] = useState(() => clock?.now() ?? 0)
+  const [, renderAgain] = useReducer((n: number) => n + 1, 0)
 
   const active = isVisible && intervalMs !== null
 
@@ -45,13 +46,21 @@ export function useAnimationFrame(
       const now = clock.now()
       if (now - lastUpdate >= intervalMs!) {
         lastUpdate = now
-        setTime(now)
+        // Other content can push the element into scrollback between its own
+        // renders, and a new frame there forces log-update into a full
+        // terminal reset. Render again without advancing time instead; once a
+        // render sees the element offscreen, this subscription ends.
+        if (isVisibleNow()) {
+          setTime(now)
+        } else {
+          renderAgain()
+        }
       }
     }
 
     // keepAlive: true — visible animations drive the clock
     return clock.subscribe(onChange, true)
-  }, [clock, intervalMs, active])
+  }, [clock, intervalMs, active, isVisibleNow])
 
   return [viewportRef, time]
 }

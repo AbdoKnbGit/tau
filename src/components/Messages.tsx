@@ -712,7 +712,7 @@ const MessagesImpl = ({
               <Text color="text">{BLACK_CIRCLE}</Text>
             </Box>
             <Box flexDirection="column">
-              <StreamingMarkdown>{streamingText}</StreamingMarkdown>
+              <StreamingMarkdown mermaid>{streamingText}</StreamingMarkdown>
             </Box>
           </Box>
         </Box>}

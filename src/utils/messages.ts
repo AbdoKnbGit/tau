@@ -24,6 +24,10 @@ import type { AgentId } from 'src/types/ids.js'
 import { companionIntroText } from '../buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
 import { OUTPUT_STYLE_CONFIG } from '../constants/outputStyles.js'
+import {
+  getMermaidDiagramsReminder,
+  getMermaidNotDrawnReminder,
+} from './mermaidDiagramsReminder.js'
 import { isAutoMemoryEnabled } from '../memdir/paths.js'
 import {
   checkStatsigFeatureGate_CACHED_MAY_BE_STALE,
@@ -4325,6 +4329,22 @@ You have exited auto mode. The user may now want to interact more directly. You 
       }
       return wrapMessagesInSystemReminder([
         createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
+      ])
+    }
+    case 'mermaid_diagrams': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: getMermaidDiagramsReminder(attachment.enabled),
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'mermaid_not_drawn': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: getMermaidNotDrawnReminder(attachment.reasons),
+          isMeta: true,
+        }),
       ])
     }
     case 'companion_intro': {

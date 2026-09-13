@@ -116,6 +116,10 @@ Scan the QR to pair, then read, prompt, and approve tools from your phone while 
 The `Eval` tool runs a persistent Python kernel, so anything Python can do, Tau can do. Compute the answer instead of reading the raw material into context: counts, rankings, audits across many files, cross-checks, the same edit applied everywhere.
 It can call your other Tau tools from inside the code, keeps state between cells, and renders figures inline.
 
+**Diagrams in the terminal**
+When something is easier to see than to read (a flow, a sequence of calls, a state machine, a data model), Tau answers with a small diagram and a short explanation, drawn right in your terminal with any provider.
+A diagram too wide for your window is turned to fit or replaced by a one-line note (ctrl+o shows its source), and the model keeps the next one smaller. On by default; switch it off in `/config` -> **Draw diagrams**.
+
 **Browser automation**
 Tau has your browser. It opens a real Chrome window, looks at the page, and clicks, types, scrolls and fills forms with real input — the way a person browses, not by guessing coordinates. Test the UI you just changed, reproduce a bug, fill a long form, book a flight: you watch it happen in the window.
 Simple pages are read over plain HTTP and Chrome only starts when a page actually needs it. `measure` reports what really rendered (colors, fonts that fell back, contrast, broken images, overflow), `extract` pulls repeating rows with the selector behind every value, and the tab's console and network come back too, so an error in the app you are editing finds you.

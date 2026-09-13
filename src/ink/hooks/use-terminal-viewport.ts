@@ -12,7 +12,8 @@ type ViewportEntry = {
 /**
  * Hook to detect if a component is within the terminal viewport.
  *
- * Returns a callback ref and a viewport entry object.
+ * Returns a callback ref, a viewport entry object, and a function that
+ * measures visibility against the latest layout on demand.
  * Attach the ref to the component you want to track.
  *
  * The entry is updated during the layout phase (useLayoutEffect) so callers
@@ -20,7 +21,9 @@ type ViewportEntry = {
  * re-renders on their own — callers that re-render for other reasons (e.g.
  * animation ticks, state changes) will pick up the latest value naturally.
  * This avoids infinite update loops when combined with other layout effects
- * that also call setState.
+ * that also call setState. Code that runs between renders, like an animation
+ * tick, calls `isVisibleNow` instead: the entry only moves when this
+ * component renders, and other content can push it into scrollback meanwhile.
  *
  * @example
  * const [ref, entry] = useTerminalViewport()
@@ -29,24 +32,26 @@ type ViewportEntry = {
 export function useTerminalViewport(): [
   ref: (element: DOMElement | null) => void,
   entry: ViewportEntry,
+  isVisibleNow: () => boolean,
 ] {
   const terminalSize = useContext(TerminalSizeContext)
   const elementRef = useRef<DOMElement | null>(null)
   const entryRef = useRef<ViewportEntry>({ isVisible: true })
+  const terminalSizeRef = useRef(terminalSize)
+  terminalSizeRef.current = terminalSize
 
   const setElement = useCallback((el: DOMElement | null) => {
     elementRef.current = el
   }, [])
 
-  // Runs on every render because yoga layout values can change
-  // without React being aware. Only updates the ref — no setState
-  // to avoid cascading re-renders during the commit phase.
-  // Walks the DOM ancestor chain fresh each time to avoid holding stale
-  // references after yoga tree rebuilds.
-  useLayoutEffect(() => {
+  // Whether the element is within the viewport in the latest layout, or null
+  // while it has none. Walks the DOM ancestor chain fresh each time to avoid
+  // holding stale references after yoga tree rebuilds.
+  const measure = useCallback((): boolean | null => {
     const element = elementRef.current
+    const terminalSize = terminalSizeRef.current
     if (!element?.yogaNode || !terminalSize) {
-      return
+      return null
     }
 
     const height = element.yogaNode.getComputedHeight()
@@ -85,12 +90,23 @@ export function useTerminalViewport(): [
     const cursorRestoreScroll = screenHeight > rows ? 1 : 0
     const viewportY = Math.max(0, screenHeight - rows) + cursorRestoreScroll
     const viewportBottom = viewportY + rows
-    const visible = bottom > viewportY && absoluteTop < viewportBottom
+    return bottom > viewportY && absoluteTop < viewportBottom
+  }, [])
 
-    if (visible !== entryRef.current.isVisible) {
+  // Runs on every render because yoga layout values can change
+  // without React being aware. Only updates the ref — no setState
+  // to avoid cascading re-renders during the commit phase.
+  useLayoutEffect(() => {
+    const visible = measure()
+    if (visible !== null && visible !== entryRef.current.isVisible) {
       entryRef.current = { isVisible: visible }
     }
   })
 
-  return [setElement, entryRef.current]
+  const isVisibleNow = useCallback(
+    () => measure() ?? entryRef.current.isVisible,
+    [measure],
+  )
+
+  return [setElement, entryRef.current, isVisibleNow]
 }

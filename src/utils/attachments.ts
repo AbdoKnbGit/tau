@@ -158,7 +158,10 @@ import {
   getLastEmittedDate,
   setLastEmittedDate,
   getKairosActive,
+  getIsInteractive,
 } from '../bootstrap/state.js'
+import { getMermaidDiagramsChange } from './mermaidDiagramsReminder.js'
+import { getUndrawnMermaidReasons } from './mermaidDiagramFeedback.js'
 import type { QuerySource } from '../constants/querySource.js'
 import { getAPIProvider } from './model/providers.js'
 import {
@@ -724,6 +727,16 @@ export type Attachment =
       removedNames: string[]
     }
   | {
+      type: 'mermaid_diagrams'
+      /** The "Draw diagrams" state being announced to the model. */
+      enabled: boolean
+    }
+  | {
+      type: 'mermaid_not_drawn'
+      /** Why diagrams in the latest reply were not drawn, for the model. */
+      reasons: string[]
+    }
+  | {
       type: 'companion_intro'
       name: string
       species: string
@@ -980,6 +993,36 @@ export async function getAttachments(
         maybe('output_style', async () =>
           Promise.resolve(getOutputStyleAttachment()),
         ),
+        maybe('mermaid_diagrams', async () => {
+          // Tells the model when "Draw diagrams" (on unless switched off)
+          // differs from what this conversation was last told. Print and SDK
+          // output is never drawn.
+          if (!getIsInteractive()) return []
+          const change = getMermaidDiagramsChange(
+            getInitialSettings().mermaidDiagrams !== false,
+            messages ?? [],
+          )
+          return change === null
+            ? []
+            : [{ type: 'mermaid_diagrams' as const, enabled: change }]
+        }),
+        maybe('mermaid_not_drawn', async () => {
+          // Tells the model when a diagram in its latest reply could not be
+          // drawn at the current terminal width, so the next one fits.
+          if (
+            !getIsInteractive() ||
+            getInitialSettings().mermaidDiagrams === false
+          ) {
+            return []
+          }
+          const reasons = getUndrawnMermaidReasons(
+            messages ?? [],
+            process.stdout.columns || 80,
+          )
+          return reasons.length === 0
+            ? []
+            : [{ type: 'mermaid_not_drawn' as const, reasons }]
+        }),
         maybe('diagnostics', async () =>
           getDiagnosticAttachments(toolUseContext),
         ),

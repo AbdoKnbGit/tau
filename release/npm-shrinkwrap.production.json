@@ -46,6 +46,7 @@
         "figures": "^6.1.0",
         "fuse.js": "^7.0.0",
         "get-east-asian-width": "^1.3.0",
+        "grok-mermaid": "0.2.3",
         "highlight.js": "^11.11.1",
         "https-proxy-agent": "^7.0.6",
         "ignore": "^7.0.3",
@@ -4305,6 +4306,15 @@
       "license": "ISC",
       "resolved": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
       "version": "4.2.11"
+    },
+    "node_modules/grok-mermaid": {
+      "engines": {
+        "node": ">=18"
+      },
+      "integrity": "sha512-/4KopAbsjvuRP9MdPtlDjOHUmUVEohOX73JNcsWpzAtFxh+bq5+Dhb6gzvRieLDwIPQIR3/vy8V1NNTuz4Zsmg==",
+      "license": "Apache-2.0",
+      "resolved": "https://registry.npmjs.org/grok-mermaid/-/grok-mermaid-0.2.3.tgz",
+      "version": "0.2.3"
     },
     "node_modules/has-flag": {
       "engines": {

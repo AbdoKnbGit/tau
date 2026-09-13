@@ -330,6 +330,30 @@ export function Config({
       });
     }
   }, {
+    id: 'mermaidDiagrams',
+    label: 'Draw diagrams',
+    value: settingsData?.mermaidDiagrams ?? true,
+    type: 'boolean' as const,
+    onChange(mermaidDiagrams: boolean) {
+      updateSettingsForSource('localSettings', {
+        mermaidDiagrams
+      });
+      setSettingsData(prev_mermaid => ({
+        ...prev_mermaid,
+        mermaidDiagrams
+      }));
+      // Mirror into AppState so replies already on screen redraw now. The
+      // model hears about the change on its next turn (mermaid_diagrams
+      // attachment).
+      setAppState(prev_mermaid_state => ({
+        ...prev_mermaid_state,
+        settings: {
+          ...prev_mermaid_state.settings,
+          mermaidDiagrams
+        }
+      }));
+    }
+  }, {
     id: 'prefersReducedMotion',
     label: 'Reduce motion',
     value: settingsData?.prefersReducedMotion ?? false,

@@ -1,17 +1,27 @@
 import { c as _c } from "react/compiler-runtime";
 import { marked, type Token, type Tokens } from 'marked';
-import React, { Suspense, use, useMemo, useRef } from 'react';
+import React, { Suspense, use, useContext, useMemo, useRef } from 'react';
 import { useSettings } from '../hooks/useSettings.js';
 import { Ansi, Box, useTheme } from '../ink.js';
+import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
 import { type CliHighlight, getCliHighlightPromise } from '../utils/cliHighlight.js';
 import { hashContent } from '../utils/hash.js';
 import { configureMarked, formatToken } from '../utils/markdown.js';
+import { isMermaidFence, normalizeMermaidFences } from '../utils/mermaidDiagram.js';
 import { stripPromptXMLTags } from '../utils/messages.js';
 import { MarkdownTable } from './MarkdownTable.js';
+import { MermaidDiagram, MermaidDiagramsContext } from './MermaidDiagram.js';
 type Props = {
   children: string;
   /** When true, render all text content as dim */
   dimColor?: boolean;
+  /**
+   * Draw finished top-level ```mermaid blocks as diagrams while the
+   * mermaidDiagrams setting is on. Only assistant replies opt in.
+   */
+  mermaid?: boolean;
+  /** Show the source of a block that is not drawn (the ctrl+o view). */
+  mermaidSource?: boolean;
 };
 
 // Module-level token cache — marked.lexer is the hot cost on virtual-scroll
@@ -122,21 +132,29 @@ function MarkdownWithHighlight(props) {
   return t1;
 }
 function MarkdownBody(t0) {
-  const $ = _c(7);
+  const $ = _c(9);
   const {
     children,
     dimColor,
-    highlight
+    highlight,
+    mermaid,
+    mermaidSource
   } = t0;
   const [theme] = useTheme();
+  const mermaidSetting = useAppStateMaybeOutsideOfProvider(selectMermaidDiagrams);
+  const mermaidAllowed = useContext(MermaidDiagramsContext);
+  // On unless switched off in /config (mermaidDiagrams: false).
+  const drawMermaid = mermaid === true && mermaidSetting !== false && mermaidAllowed;
   configureMarked();
   let elements;
-  if ($[0] !== children || $[1] !== dimColor || $[2] !== highlight || $[3] !== theme) {
+  if ($[0] !== children || $[1] !== dimColor || $[2] !== highlight || $[3] !== theme || $[4] !== drawMermaid || $[8] !== mermaidSource) {
     const strippedContent = stripPromptXMLTags(children);
-    if (ANSI_RE.test(strippedContent)) {
-      elements = [<Ansi key={0} dimColor={dimColor}>{strippedContent.trim()}</Ansi>];
+    // Repairs glued or unclosed mermaid fences, so they are drawn.
+    const content = drawMermaid ? normalizeMermaidFences(strippedContent) : strippedContent;
+    if (ANSI_RE.test(content)) {
+      elements = [<Ansi key={0} dimColor={dimColor}>{content.trim()}</Ansi>];
     } else {
-    const tokens = cachedLexer(strippedContent);
+    const tokens = cachedLexer(content);
     elements = [];
     let nonTableContent = "";
     const flushNonTableContent = function flushNonTableContent() {
@@ -149,6 +167,9 @@ function MarkdownBody(t0) {
       if (token.type === "table") {
         flushNonTableContent();
         elements.push(<MarkdownTable key={elements.length} token={token as Tokens.Table} highlight={highlight} />);
+      } else if (drawMermaid && token.type === "code" && isMermaidFence((token as Tokens.Code).lang)) {
+        flushNonTableContent();
+        elements.push(<MermaidDiagram key={elements.length} token={token as Tokens.Code} showSource={mermaidSource === true} />);
       } else {
         nonTableContent = nonTableContent + formatToken(token, theme, 0, null, null, highlight);
         nonTableContent;
@@ -160,23 +181,34 @@ function MarkdownBody(t0) {
     $[1] = dimColor;
     $[2] = highlight;
     $[3] = theme;
-    $[4] = elements;
+    $[4] = drawMermaid;
+    $[8] = mermaidSource;
+    $[5] = elements;
   } else {
-    elements = $[4];
+    elements = $[5];
   }
   const elements_0 = elements;
   let t1;
-  if ($[5] !== elements_0) {
+  if ($[6] !== elements_0) {
     t1 = <Box flexDirection="column" gap={1}>{elements_0}</Box>;
-    $[5] = elements_0;
-    $[6] = t1;
+    $[6] = elements_0;
+    $[7] = t1;
   } else {
-    t1 = $[6];
+    t1 = $[7];
   }
   return t1;
 }
+function selectMermaidDiagrams(s: {
+  settings: {
+    mermaidDiagrams?: boolean;
+  };
+}): boolean | undefined {
+  return s.settings.mermaidDiagrams;
+}
 type StreamingProps = {
   children: string;
+  /** Passed to finished blocks only; see Markdown's `mermaid` prop. */
+  mermaid?: boolean;
 };
 
 /**
@@ -190,7 +222,8 @@ type StreamingProps = {
  * between turns (streamingText → null), resetting the ref.
  */
 export function StreamingMarkdown({
-  children
+  children,
+  mermaid
 }: StreamingProps): React.ReactNode {
   // React Compiler: this component reads and writes stablePrefixRef.current
   // during render by design. The boundary only advances (monotonic), so
@@ -200,12 +233,19 @@ export function StreamingMarkdown({
   'use no memo';
 
   configureMarked();
+  const mermaidSetting = useAppStateMaybeOutsideOfProvider(selectMermaidDiagrams);
+  const mermaidAllowed = useContext(MermaidDiagramsContext);
+  const drawMermaid = mermaid === true && mermaidSetting !== false && mermaidAllowed;
 
   // Strip before boundary tracking so it matches <Markdown>'s stripping
   // (line 29). When a closing tag arrives, stripped(N+1) is not a prefix
   // of stripped(N), but the startsWith reset below handles that with a
-  // one-time re-lex on the smaller stripped string.
-  const stripped = stripPromptXMLTags(children);
+  // one-time re-lex on the smaller stripped string. Mermaid fences are
+  // repaired here too, so the boundary falls where <Markdown> sees blocks
+  // end; a repair only touches lines of the block still growing, so the
+  // stable prefix stays a prefix.
+  const plain = stripPromptXMLTags(children);
+  const stripped = drawMermaid ? normalizeMermaidFences(plain) : plain;
   const stablePrefixRef = useRef('');
 
   // Reset if text was replaced (defensive; normally unmount handles this)
@@ -233,9 +273,10 @@ export function StreamingMarkdown({
   const unstableSuffix = stripped.substring(stablePrefix.length);
 
   // stablePrefix is memoized inside <Markdown> via useMemo([children, ...])
-  // so it never re-parses as the unstable suffix grows
+  // so it never re-parses as the unstable suffix grows. Only finished blocks
+  // may become diagrams; the growing one can still be half-written.
   return <Box flexDirection="column" gap={1}>
-      {stablePrefix && <Markdown>{stablePrefix}</Markdown>}
+      {stablePrefix && <Markdown mermaid={mermaid}>{stablePrefix}</Markdown>}
       {unstableSuffix && <Markdown>{unstableSuffix}</Markdown>}
     </Box>;
 }
