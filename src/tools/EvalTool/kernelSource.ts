@@ -3,7 +3,7 @@
  *
  * Why embedded and not a `.py` file next to this one: `build.mjs` configures
  * esbuild with only `.ts`/`.tsx` loaders, and `package.json#files` ships only
- * `dist/`, `native/`, `scripts/` and `docs/`. A sibling `.py` would resolve in
+ * `dist/`, `native/` and `scripts/`. A sibling `.py` would resolve in
  * a dev checkout and silently vanish from the npm tarball. Embedding keeps one
  * source of truth that behaves identically in both. `runnerCache.ts` writes it
  * to a hashed path under the OS temp dir once per content hash.

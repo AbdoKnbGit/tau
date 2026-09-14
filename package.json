@@ -24,7 +24,6 @@
     "dist/shim.js",
     "dist/tau.mjs",
     "dist/tau-office.mjs",
-    "docs",
     "native",
     "npm-shrinkwrap.json",
     "scripts",

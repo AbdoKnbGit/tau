@@ -150,8 +150,6 @@ Tau can do in a browser what you can do: inspect your frontend design, check you
 
 <p align="center">
   <img src="docs/work.gif" alt="Tau finding the cheapest PC for GTA 6 on Amazon and saving a screenshot of the listing">
-  <br>
-  <em>Finding the cheapest PC that can run GTA 6 on Amazon and saving a screenshot of the listing, on qwen3.8-flash for $0.31.</em>
 </p>
 
 ### Subagents that stay alive
