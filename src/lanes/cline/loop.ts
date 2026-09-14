@@ -78,8 +78,10 @@ import {
   catalogSupportsPromptCache,
   catalogSupportsTools,
   findClineCatalogModel,
+  isClineCatalogRetryDue,
   parseClineCatalog,
   parseClineRecommendedFeed,
+  type ClineCatalogFailure,
   type ClineCatalogIndex,
   type ClineCatalogModel,
   type ClineFeedEntry,
@@ -120,7 +122,9 @@ interface ClineCatalogSnapshot {
 }
 
 const CLINE_CATALOG_TTL_MS = 5 * 60_000
-// A snapshot that is missing a feed is retried sooner than a complete one.
+// A snapshot that is missing a feed is retried sooner than a complete one:
+// after 30 s, then twice as long after each further shortfall, up to the
+// complete TTL (see _catalogRetryDue).
 const CLINE_PARTIAL_CATALOG_TTL_MS = 30_000
 const CLINE_CATALOG_FETCH_TIMEOUT_MS = 15_000
 // How long a first request waits for what it has to decide with: the catalog
@@ -221,6 +225,8 @@ export class ClineLane implements Lane {
   // Catalog snapshots and in-flight loads, keyed by API root.
   private catalogs = new Map<string, ClineCatalogSnapshot>()
   private catalogLoads = new Map<string, Promise<ClineCatalogSnapshot>>()
+  // Loads in a row that fell short, keyed by API root. Paces the retries.
+  private catalogFailures = new Map<string, ClineCatalogFailure>()
   // Prompt-cache decisions stay fixed for the session, keyed by model id.
   private promptCacheShapes = new Map<string, ClinePromptCacheShape>()
   private promptCacheRefused = new Set<string>()
@@ -235,6 +241,8 @@ export class ClineLane implements Lane {
 
   invalidateModelCache(): void {
     this.catalogs.clear()
+    // A new login retries at once instead of waiting out an earlier failure.
+    this.catalogFailures.clear()
   }
 
   supportsModel(_model: string): boolean {
@@ -406,6 +414,7 @@ export class ClineLane implements Lane {
             at: Date.now(),
           }
           if (models || feed) this.catalogs.set(root, snapshot)
+          this._noteCatalogLoad(root, snapshot.complete)
           return snapshot
         })
         .finally(() => {
@@ -438,23 +447,54 @@ export class ClineLane implements Lane {
   /**
    * The catalog for a chat request: whatever is cached (refreshed in the
    * background when stale), else a fresh load that is waited on only
-   * briefly, so a slow catalog never holds up a turn.
+   * briefly, so a slow catalog never holds up a turn. While a failed load's
+   * retry is not due, nothing is fetched or waited on.
    */
   private async _catalogForRequest(
     params: LaneProviderCallParams,
   ): Promise<ClineCatalogSnapshot | null> {
-    const cached = this.catalogs.get(this._apiRoot(params.providerHint))
+    const root = this._apiRoot(params.providerHint)
+    const retryDue = this._catalogRetryDue(root)
+    const cached = this.catalogs.get(root)
     if (cached) {
-      if (Date.now() - cached.at >= catalogTtl(cached)) {
+      if (retryDue && Date.now() - cached.at >= catalogTtl(cached)) {
         void this._loadCatalog(params.providerHint)
       }
       return cached
     }
+    if (!retryDue) return null
     return waitAtMost(
       this._loadCatalog(params.providerHint),
       CLINE_CATALOG_REQUEST_WAIT_MS,
       params.signal,
     )
+  }
+
+  /**
+   * Whether `root` may be loaded again. After a load that fell short (a feed
+   * failed, or both did), the next one waits CLINE_PARTIAL_CATALOG_TTL_MS,
+   * doubling with each shortfall in a row up to CLINE_CATALOG_TTL_MS, so a
+   * failing catalog is never fetched more often than a healthy one is
+   * refreshed. Without this, a load that brought nothing back was retried by
+   * the very next request, which waited on it too.
+   */
+  private _catalogRetryDue(root: string): boolean {
+    const failure = this.catalogFailures.get(root)
+    return !failure || isClineCatalogRetryDue(
+      failure,
+      Date.now(),
+      CLINE_PARTIAL_CATALOG_TTL_MS,
+      CLINE_CATALOG_TTL_MS,
+    )
+  }
+
+  private _noteCatalogLoad(root: string, complete: boolean): void {
+    if (complete) {
+      this.catalogFailures.delete(root)
+      return
+    }
+    const count = (this.catalogFailures.get(root)?.count ?? 0) + 1
+    this.catalogFailures.set(root, { count, at: Date.now() })
   }
 
   private async _promptCacheShape(

@@ -89,7 +89,7 @@ export async function collectClineStream(
     }
   }
   return {
-    events: state.usage ? withClineUsage(events, usage) : events,
+    events: endOnce(state.usage ? withClineUsage(events, usage) : events),
     usage,
     failure: null,
   }
@@ -145,6 +145,44 @@ function withClineUsage(
       },
     } as AnthropicStreamEvent
   })
+}
+
+/**
+ * End the response once. Some Cline routes repeat finish_reason on the
+ * trailing usage chunk, and the shared adapter then ends the message again: a
+ * second message_delta and message_stop, and a second stop for every tool
+ * block. claude.ts adds a response's usage to the session once per
+ * message_delta, so each such request was counted twice, and each repeated
+ * stop re-emits a tool call. The first ending, which already carries the
+ * final usage, closes the stream; the repeat is dropped. A stream that ended
+ * once comes back untouched.
+ */
+function endOnce(events: AnthropicStreamEvent[]): AnthropicStreamEvent[] {
+  const ending = events.find(event => event.type === 'message_delta')
+  const firstStop = events.findIndex(event => event.type === 'message_stop')
+  const endings = events.filter(event => event.type === 'message_delta').length
+  if (!ending || firstStop < 0 || endings < 2) return events
+
+  // Blocks the first ending closed, or deliberately left open (a tool call
+  // cut off by the output cap). The repeat must not stop them again.
+  const settled = new Set<number>()
+  for (const event of events.slice(0, firstStop)) {
+    if (event.type === 'content_block_start' && typeof event.index === 'number') {
+      settled.add(event.index)
+    }
+  }
+
+  const kept: AnthropicStreamEvent[] = []
+  events.forEach((event, position) => {
+    if (event.type === 'message_delta' || event.type === 'message_stop') return
+    if (position > firstStop && typeof event.index === 'number') {
+      // A block that starts after the first ending is new output: keep it whole.
+      if (event.type === 'content_block_start') settled.delete(event.index)
+      else if (event.type === 'content_block_stop' && settled.has(event.index)) return
+    }
+    kept.push(event)
+  })
+  return [...kept, ending, events[firstStop]!]
 }
 
 function parseJson(text: string): unknown {

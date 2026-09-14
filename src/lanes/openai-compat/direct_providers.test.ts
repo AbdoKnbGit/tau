@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { OpenAICompatLane } from './loop.js'
@@ -178,4 +178,59 @@ test('catalog refresh discovers future models, persists metadata, and ignores ma
     await warmDirectProviderCatalog()
     expect(getDirectModelMeta('moonshot', 'kimi-k4')?.contextWindow).toBe(2_000_000)
   } finally { globalThis.fetch = original; process.env.TAU_DISABLE_DIRECT_MODEL_CATALOG = '1' }
+})
+
+test('a saved catalog answers /models without waiting on a models.dev refresh', async () => {
+  const original = globalThis.fetch
+  const store = process.env.TAU_DIRECT_MODEL_CATALOG_STORE
+  let release: ((response: Response) => void) | undefined
+  try {
+    process.env.TAU_DIRECT_MODEL_CATALOG_STORE = join(temp, 'saved-models.json')
+    writeFileSync(process.env.TAU_DIRECT_MODEL_CATALOG_STORE, JSON.stringify({
+      version: 1,
+      fetchedAt: Date.now() - 3 * 24 * 60 * 60 * 1000,
+      catalog: { deepseek: { 'deepseek-v4-pro': {
+        name: 'Saved V4 Pro', contextWindow: 900_000, maxOutputTokens: 384_000, reasoning: true,
+        toggle: true, efforts: ['high', 'max'], released: '2026-08-12', vision: false, tools: true,
+      } } },
+    }))
+    delete process.env.TAU_DISABLE_DIRECT_MODEL_CATALOG
+    // models.dev answers only when released, so a listing that waited on it would hang.
+    globalThis.fetch = (async (url: RequestInfo | URL) => String(url).includes('models.dev')
+      ? new Promise<Response>(resolve => { release = resolve })
+      : Response.json({ data: [{ id: 'deepseek-v4-pro' }] })) as unknown as typeof fetch
+    const rows = await listDirectProviderModels('deepseek', 'https://api.deepseek.com/v1', {})
+    expect(rows.map(m => [m.id, m.name, m.contextWindow])).toEqual([['deepseek-v4-pro', 'Saved V4 Pro', 900_000]])
+    expect(release).toBeDefined()
+  } finally {
+    release?.(new Response('', { status: 503 }))
+    await warmDirectProviderCatalog()
+    globalThis.fetch = original
+    process.env.TAU_DIRECT_MODEL_CATALOG_STORE = store
+    process.env.TAU_DISABLE_DIRECT_MODEL_CATALOG = '1'
+  }
+})
+
+test('a first run with nothing saved still waits for models.dev before listing', async () => {
+  const original = globalThis.fetch
+  const store = process.env.TAU_DIRECT_MODEL_CATALOG_STORE
+  try {
+    process.env.TAU_DIRECT_MODEL_CATALOG_STORE = join(temp, 'first-run-models.json')
+    delete process.env.TAU_DISABLE_DIRECT_MODEL_CATALOG
+    const payload = { deepseek: { models: { 'deepseek-v5': {
+      name: 'DeepSeek V5', limit: { context: 2_000_000, output: 64_000 },
+      modalities: { input: ['text'], output: ['text'] }, reasoning: true, tool_call: true, release_date: '2026-12-01',
+    } } } }
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      if (!String(url).includes('models.dev')) return Response.json({ data: [{ id: 'deepseek-v5' }] })
+      await new Promise(resolve => setTimeout(resolve, 50))
+      return Response.json(payload)
+    }) as unknown as typeof fetch
+    const rows = await listDirectProviderModels('deepseek', 'https://api.deepseek.com/v1', {})
+    expect(rows.map(m => [m.id, m.name, m.contextWindow])).toEqual([['deepseek-v5', 'DeepSeek V5', 2_000_000]])
+  } finally {
+    globalThis.fetch = original
+    process.env.TAU_DIRECT_MODEL_CATALOG_STORE = store
+    process.env.TAU_DISABLE_DIRECT_MODEL_CATALOG = '1'
+  }
 })

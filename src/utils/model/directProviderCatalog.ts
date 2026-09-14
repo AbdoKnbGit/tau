@@ -204,7 +204,11 @@ export async function listDirectProviderModels(provider: DirectProvider, baseUrl
       })
     }
   } catch { /* Provider without /models: use the current metadata catalog. */ }
-  await metadata
+  // Only a first run, with no saved catalog and no failed refresh yet, waits
+  // for models.dev. A saved copy, even a stale one, already describes what the
+  // provider lists, and the refresh finishes in the background for next time.
+  if (!fetchedAt && !retryAt) await metadata
+  else metadata.catch(() => { /* Not awaited here, so never an unhandled rejection. */ })
   if (!live.length) return directProviderModels(provider)
   const seen = new Set<string>()
   return live.filter(m => {

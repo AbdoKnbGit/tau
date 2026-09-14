@@ -271,3 +271,27 @@ export function buildClinePassModels(
   }
   return models
 }
+
+/** Loads in a row that did not bring back both feeds, and when the last ended. */
+export interface ClineCatalogFailure {
+  count: number
+  at: number
+}
+
+/**
+ * Whether a catalog that fell short `failure.count` times in a row may be
+ * loaded again: `baseMs` after the first shortfall, doubling with each one
+ * after it, never more than `capMs`. A clock that moved backwards counts as
+ * due, so a retry is never put off indefinitely.
+ */
+export function isClineCatalogRetryDue(
+  failure: ClineCatalogFailure,
+  now: number,
+  baseMs: number,
+  capMs: number,
+): boolean {
+  const elapsed = now - failure.at
+  if (elapsed < 0) return true
+  const doublings = Math.min(30, Math.max(0, failure.count - 1))
+  return elapsed >= Math.min(capMs, baseMs * 2 ** doublings)
+}

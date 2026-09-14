@@ -15,7 +15,9 @@ Metadata refreshes daily and is persisted in
 contains 46 resolved first-party rows from the supplied local reference, including
 inherited lab limits. It supplies an offline first-run fallback. Regional and
 coding-plan endpoints select their corresponding models.dev provider surface.
-Essential-traffic mode disables the models.dev request.
+Essential-traffic mode disables the models.dev request. Once a copy is saved,
+`/models` uses it without waiting for models.dev and refreshes in the background;
+only a first run, with nothing saved yet, waits for the download.
 
 The picker displays exact token counts and uses left/right arrows to cycle only
 the model's supported settings. Choices persist per provider and model in

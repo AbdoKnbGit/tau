@@ -12,6 +12,7 @@ import {
   catalogSupportsPromptCache,
   clineModelDisplayName,
   findClineCatalogModel,
+  isClineCatalogRetryDue,
   parseClineCatalog,
   parseClineRecommendedFeed,
 } from './catalog.js'
@@ -242,6 +243,24 @@ async function main(): Promise<void> {
     assert(!catalogSupportsPromptCache(byId.get('qwen/qwen3.6-plus')!), 'qwen3.6-plus does not cache')
   })
 
+  await test('a catalog that fell short is retried after 30 s, then 1, 2 and 4 minutes, then every 5', () => {
+    // The lane's pacing: CLINE_PARTIAL_CATALOG_TTL_MS, doubling up to CLINE_CATALOG_TTL_MS.
+    const due = (count: number, elapsed: number) =>
+      isClineCatalogRetryDue({ count, at: 1_000_000 }, 1_000_000 + elapsed, 30_000, 300_000)
+    for (const [count, delay] of [
+      [1, 30_000],
+      [2, 60_000],
+      [3, 120_000],
+      [4, 240_000],
+      [5, 300_000],
+      [60, 300_000],
+    ] as const) {
+      assert(!due(count, delay - 1) && due(count, delay), `shortfall ${count} should retry after ${delay} ms`)
+    }
+    assert(isClineCatalogRetryDue({ count: 3, at: 2_000_000 }, 1_000_000, 30_000, 300_000),
+      'a clock that moved backwards must not put the retry off')
+  })
+
   await test('markers go only to explicit-cache families', () => {
     assert(resolveClinePromptCacheShape('anthropic/claude-opus-5', undefined) === 'anthropic',
       'claude needs no catalog')
@@ -383,6 +402,44 @@ async function main(): Promise<void> {
     assert(collected.failure === null, 'recorded response failed')
     assert(collected.usage.input_tokens === 22 && collected.usage.output_tokens === 4,
       `usage=${JSON.stringify(collected.usage)}`)
+  })
+
+  await test('a finish_reason repeated on the usage chunk ends the response once', async () => {
+    // Each extra message_delta made claude.ts add the whole usage to the
+    // session again, and each repeated tool stop re-emitted its tool call.
+    const usage = { prompt_tokens: 26_460, completion_tokens: 59, prompt_tokens_details: { cached_tokens: 20_000 } }
+    const repeatFinish = (reason: string) => ({
+      id: 'gen-1',
+      object: 'chat.completion.chunk',
+      model: 'test/model',
+      choices: [{ index: 0, delta: {}, finish_reason: reason }],
+      usage,
+    })
+    const read = (index: number, id: string, file: string) => chunk({
+      tool_calls: [{ index, id, type: 'function', function: { name: 'Read', arguments: JSON.stringify({ file_path: file }) } }],
+    })
+    const text = await collectClineStream(sse(
+      chunk({ role: 'assistant' }), chunk({ content: 'Hi' }), chunk({}, 'stop'), repeatFinish('stop'), 'data: [DONE]\n\n'))
+    const tools = await collectClineStream(sse(
+      chunk({ role: 'assistant' }), chunk({ content: 'Reading both.' }), read(0, 'c1', 'a.ts'), read(1, 'c2', 'b.ts'),
+      chunk({}, 'tool_calls'), repeatFinish('tool_calls'), 'data: [DONE]\n\n'))
+
+    for (const [name, collected, stopReason] of [['text', text, 'end_turn'], ['tools', tools, 'tool_use']] as const) {
+      const deltas = collected.events.filter(event => event.type === 'message_delta')
+      assert(deltas.length === 1, `${name}: message_delta x${deltas.length}`)
+      assert(deltas[0]!.delta?.stop_reason === stopReason, `${name}: stop_reason=${deltas[0]!.delta?.stop_reason}`)
+      assert(deltas[0]!.usage?.input_tokens === 6_460 && deltas[0]!.usage.output_tokens === 59
+        && deltas[0]!.usage.cache_read_input_tokens === 20_000,
+      `${name}: usage=${JSON.stringify(deltas[0]!.usage)}`)
+      assert(collected.events.filter(event => event.type === 'message_stop').length === 1,
+        `${name}: more than one message_stop`)
+      assert(collected.events.at(-1)?.type === 'message_stop', `${name}: the stream must end with message_stop`)
+      const stops = collected.events.filter(event => event.type === 'content_block_stop').map(event => event.index)
+      assert(new Set(stops).size === stops.length, `${name}: a block was stopped twice: ${stops.join(',')}`)
+    }
+    assert(streamedText(text.events) === 'Hi', 'the answer text changed')
+    assert(tools.events.filter(event => event.content_block?.type === 'tool_use').length === 2,
+      'both tool calls must survive')
   })
 
   await test('an error inside a 200 stream is reported instead of an empty turn', async () => {
