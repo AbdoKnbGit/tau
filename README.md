@@ -7,29 +7,11 @@
 [![npm version](https://img.shields.io/npm/v/%40abdoknbgit%2Ftau.svg)](https://www.npmjs.com/package/@abdoknbgit/tau)
 [![License](https://img.shields.io/npm/l/%40abdoknbgit%2Ftau.svg)](https://www.npmjs.com/package/@abdoknbgit/tau)
 
-<p align="center">
-  🌐 <strong><a href="https://tau-site-ten.vercel.app/">Visit the Tau website</a></strong> for more information
-</p>
-
 ---
 
 ## What is Tau?
 
-Tau has become the best free coding agent: a single tool that fuses the **Claude Code** and **OpenCode** ecosystems into one mixed agentic environment. You get the strongest parts of both agents, plus new features and optimizations layered on top.
-
-Native adapters for **28 providers**. Not a proxy, not a wrapper around someone else's wrapper. When you use OpenAI, Tau speaks OpenAI's API directly. Same for GLM, DeepSeek, Mistral, OpenRouter, AgentRouter, Vercel AI Gateway, Requesty, Command Code, MiniMax, OpenCode Zen, and the rest. Full list with per-provider notes in [PROVIDERS.md](PROVIDERS.md).
-
-Install once. Type `/login`. Pick a provider. Work.
-
-That's it: plug and play with one command and one login flow. No shell configuration. No export statements. No environment variable archaeology. A first-run wizard handles credentials and saves them.
-
----
-
-## Why Tau exists
-
-The price of AI keeps climbing. The leading agents either lock you into a single subscription, gate the good features behind enterprise tiers, or quietly burn through your wallet on per-token billing the moment you do real work. Hit a rate limit on one provider and your day stops.
-
-Tau gives you a way out. **You can work with any provider without that provider's official tool installed on your machine.** Not Codex CLI, not Antigravity, not Cline, not KiloCode, not Kiro, not Copilot. None of them downloaded, none of them configured, none of them present. Tau brings the runtime. You bring whatever API key or auth flow you already have.
+Tau is an adaptive coding harness that is simple to use. It costs less to run, gives you higher quality output, and lets you follow what the agent is doing with better monitoring and visuals. You don't have to go hunting for tools and plugins, because Tau brings the ecosystem to you: prebuilt integrations that cover most of your use cases, ready from the first run. Getting started is plug and play. Install it, type `/login`, pick a provider, and start working. Tau has native adapters for 28 providers, so it talks to each provider API directly with no proxy in between. The full list is in [PROVIDERS.md](PROVIDERS.md).
 
 ---
 
@@ -64,7 +46,7 @@ tau update
 ```
 
 <p align="center">
-  <img src="tau_docs.PNG" alt="Tau commands overview" width="720">
+  <img src="tau_docs.PNG" alt="Tau start screen" width="720">
 </p>
 
 ## Commands
@@ -87,72 +69,148 @@ See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 
 ## Features
 
-**Multi-provider, natively**
+### Multi-provider, natively
+
 28 providers with native adapters. Not a routing layer, not a translation proxy. Each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
 
-**The full agent loop**
-File editing, bash execution, glob, grep, web search, web fetch, MCP servers, hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop, Notification), skills (/commit, /review-pr, /simplify), and task management: all present, all working across every provider.
+### The full agent loop
 
-**Search in extracted projects**
-Grep respects `.gitignore` even before `git init`, so ignored dependencies and build output stay out of ordinary content searches. Searches starting inside Git repositories retain their repository boundaries. Explicit file paths and matching `glob` filters can still include ignored files; Glob keeps its existing file-discovery behavior.
+Everything a full agent loop needs is built in: tools, skills, subagents, MCP servers, LSP and hooks. It all works the same way with every provider.
 
-**LSP native integration**
+<p align="center">
+  <img src="docs/AgentLoop.PNG" alt="Tau listing its tools, grouped by purpose">
+</p>
+
+### Optimized tools
+
+We put work into every tool so it does its job as well as possible. Search is a good example. Most agents give the model a basic search tool. Tau uses the latest ripgrep with signal fetch and native indexing, so queries are fast, the results are better, and large outputs are saved so the agent can come back to them without searching again. It also respects `.gitignore` in folders that are not git repos yet, so `node_modules` and build output stay out of your results.
+
+Reading files got the same treatment. Tau reads by signal and starts from a skeleton of the file, so when it needs one function in an 800-line file, it reads those 50 lines instead of the whole file. The Bash tool follows best practices by default, and commands go through a security classifier built on a Go shell parser. All of this keeps noise out of the context window and cuts down on turns wasted by commands that fail.
+
+### LSP native integration
+
 Built-in Language Server Protocol support. The agent gets real diagnostics, definitions, references, and hover information from project LSPs (TypeScript, Python, Bash, YAML, and more) without spawning external editor tooling. Type errors, unused symbols, and cross-file references are first-class signal in the agent loop.
 
-**Snapshot with time traveling**
-Per-turn working-tree snapshots stored in a shadow git repo separate from your project's `.git`. The agent can `save`, `list`, `diff`, and `restore`: instant undo for any change the agent made, large files (>2 MB) auto-excluded so the store stays small, weekly garbage collection. Travel back to any prior state without touching your branches.
+<p align="center">
+  <img src="docs/LSP.PNG" alt="Tau reporting new diagnostics from the language server" width="560">
+</p>
 
-**`web_search` tool**
-Firecrawl provides 1k searches/month free for deep searching. Just enter your API key through `/login` -> **Firecrawl Search**.
+### Snapshots and time travel
 
-**WhatsApp remote control**
-Use `/whatsapp` to link WhatsApp and remotely control Tau from your phone.
+Tau keeps snapshots of your working tree in a shadow git repo, separate from your project `.git`, so your branches and history are never touched. The agent can save, list, diff and restore them, which gives you real time travel: go back to how your files looked an hour ago, then return to where you were. You can also try two approaches to the same problem, snapshot each one, and keep the one you like better. And if the agent breaks something or a session crashes halfway through a task, your last good state is still there, one restore away. Files over 2 MB are skipped so the store stays small, and old snapshots are cleaned up every week.
 
-**Remote control your session**
-`/remote local` serves the session over your own Wi-Fi — instant, and nothing leaves your network. `/remote global` opens a free Cloudflare HTTPS tunnel that works on cellular (needs `cloudflared`).
-Scan the QR to pair, then read, prompt, and approve tools from your phone while the work keeps running on your machine.
+<p align="center">
+  <img src="docs/snapchot.PNG" alt="Listing snapshots, saving a new one and diffing it against the previous one">
+</p>
 
-**Python kernel in the loop**
-The `Eval` tool runs a persistent Python kernel, so anything Python can do, Tau can do. Compute the answer instead of reading the raw material into context: counts, rankings, audits across many files, cross-checks, the same edit applied everywhere.
-It can call your other Tau tools from inside the code, keeps state between cells, and renders figures inline.
+<p align="center">
+  <img src="docs/snapchot%202.PNG" alt="Restoring an older snapshot, then restoring back">
+</p>
 
-**Diagrams in the terminal**
-When something is easier to see than to read (a flow, a sequence of calls, a state machine, a data model), Tau answers with a small diagram and a short explanation, drawn right in your terminal with any provider.
-A diagram too wide for your window is turned to fit or replaced by a one-line note (ctrl+o shows its source), and the model keeps the next one smaller. On by default; switch it off in `/config` -> **Draw diagrams**.
+### Web search
 
-**Browser automation**
-Tau has your browser. It opens a real Chrome window, looks at the page, and clicks, types, scrolls and fills forms with real input — the way a person browses, not by guessing coordinates. Test the UI you just changed, reproduce a bug, fill a long form, book a flight: you watch it happen in the window.
-Simple pages are read over plain HTTP and Chrome only starts when a page actually needs it. `measure` reports what really rendered (colors, fonts that fell back, contrast, broken images, overflow), `extract` pulls repeating rows with the selector behind every value, and the tab's console and network come back too, so an error in the app you are editing finds you.
-Cookie banners are dismissed, new tabs are followed, and anything you did once — a login, a setup wizard — can be saved as a flow and replayed later in one step, with no model tokens.
+Web search works out of the box. Tau has a native MCP search built in as a tool, so there is no key to add and nothing to configure, and it is free with no limits. If you prefer Firecrawl, add your key through `/login`, then **Firecrawl Search**, and Tau will use the Firecrawl search backend instead. Their free plan includes 1,000 searches a month.
 
-**Subagents you can name, steer, and trust**
-Name a spawn and you can talk to it again: `Agent(name: "auth-fix", …)` does the work, then `SendMessage(to: "auth-fix", "also rotate the refresh token")` picks up where it left off — full context intact, nothing re-briefed, the same files not read twice.
-Each spawn can also run on its own provider and model, so a rate-limited or expensive main lane never stalls the work.
-Run several at once safely: concurrent agents take write-ownership of the files they edit, so two agents can't quietly clobber each other's changes.
+### Remote control and shared sessions
 
-**GitHub automation and repo management**
+`/remote local` serves your session over your own Wi-Fi. It connects instantly and nothing leaves your network. `/remote global` opens a free Cloudflare HTTPS tunnel that works from anywhere, even on cellular (it needs `cloudflared`). Scan the QR code to pair, then read, prompt and approve tools from your phone while the work keeps running on your machine.
+
+The global link is also how you work together. Share that one link and your teammates can join the session and work in it with you.
+
+<p align="center">
+  <img src="docs/remote.PNG" alt="A Tau session on the computer" width="70%">
+  <img src="docs/remote-phone.jpeg" alt="The same session on a phone" width="20%">
+</p>
+
+### Python kernel in the loop
+
+This is one of the biggest reasons Tau costs less than other agents. Tau has a persistent Python kernel, so anything Python can do, Tau can do too. Say you want insights from 20 CSV files. A typical agent works through them one at a time, which easily adds up to 30 turns. Every file it reads stays in the context window, so each turn costs more than the one before, and you pay again for the turns spent fixing mistakes on the way. Tau writes the whole workflow as one Python cell, runs it in a single turn and gets back only the result. The context stays clean, the logic sits in one place so problems are easy to spot, the answer is better, and the bill is much smaller.
+
+CSV files are only one example. The same goes for counting and ranking things across a codebase, auditing many files at once, cross-checking data, or making the same change everywhere. The kernel keeps its state between cells, can call your other Tau tools from inside the code, and draws charts right in the terminal, like this one:
+
+<p align="center">
+  <img src="docs/kernel.PNG" alt="Tau running one Python cell that charts the most modified files in git history" width="640">
+</p>
+
+### Diagrams in the terminal
+
+Tau would rather show you than bury you in text. For everyday tasks it reaches for a diagram first, like a flow, an architecture or a sequence of calls, drawn right in your terminal next to a short explanation. It works with any provider, and the diagrams stay in your session like the rest of the output. If you prefer plain text, turn them off in `/config`, then **Draw diagrams**.
+
+<p align="center">
+  <img src="docs/Diagram.PNG" alt="A diagram of a backend drawn in the terminal" width="720">
+</p>
+
+### Browser automation
+
+Tau can do in a browser what you can do: inspect your frontend design, check your email, compare prices, book you a flight. It uses a real Chrome window with real clicks and typing, and it reads the page console and network too, so errors in the app you are building come straight back to it.
+
+<p align="center">
+  <img src="docs/Browser-frontend.PNG" alt="Tau testing the filters and sorting of a local shop page" width="640">
+</p>
+
+<p align="center">
+  <img src="docs/work.gif" alt="Tau finding the cheapest PC for GTA 6 on Amazon and saving a screenshot of the listing">
+  <br>
+  <em>Finding the cheapest PC that can run GTA 6 on Amazon and saving a screenshot of the listing, on qwen3.8-flash for $0.31.</em>
+</p>
+
+### Subagents that stay alive
+
+In most harnesses a subagent lives a short life: it gets spawned, does its job and dies. Tau treats a subagent like a real worker. You can name it, talk to it while it works and send it new instructions. When agents run in parallel and need to edit the same file, Tau makes them take turns, so their changes never overlap. And a finished agent doesn't die. It stays alive with all the context it gathered, so you can hand it the next task instead of paying for a fresh agent to read everything again. Each agent can also run on its own provider and model. You get better orchestration, no overlapping edits and a smaller bill.
+
+Here a named agent looks for bugs, gets a follow-up task after it has finished, and reports back with the fixes:
+
+<p align="center">
+  <img src="docs/Agent1.PNG" alt="Spawning a named subagent that looks for bugs">
+</p>
+
+<p align="center">
+  <img src="docs/Agent2.PNG" alt="Sending the finished agent a follow-up task">
+</p>
+
+<p align="center">
+  <img src="docs/Agent33.PNG" alt="The agent reporting back with the verified fixes">
+</p>
+
+### Pay only for what you use
+
+Tau thinks about your money and your preferences before anything else. A normal workflow doesn't need skills, agents or MCP servers, so you can leave them off and stay in cheap mode. When you need them, one command turns them on: `/mode normal`. You don't need an MCP server for things like diagrams or browser automation either, because those tools are built into Tau. Switch each of them on or off with `/tools`, so you pay less, or nothing, for what you don't use.
+
+<p align="center">
+  <img src="docs/Capture.PNG" alt="Tau start screen in cheap mode" width="720">
+</p>
+
+### GitHub automation and repo management
+
 The `/github` command brings common GitHub work into Tau through `gh`: inspect issues and pull requests, review repo state, triage labels/status, generate changelog notes, run wrap-up flows for stage/commit/push, and inspect workflow or release status before publishing changes.
 
-**Scalable context across providers**
+### Scalable context across providers
+
 Tau adapts context windows when switching between models and providers, so larger-context models can carry more history while smaller-context models stay usable.
 
-**Fallback recovery**
+### Fallback recovery
+
 A configurable fallback system can move work to another model/provider when the current one fails or overloads.
 
-**Session management and flexibility**
+### Session management and flexibility
+
 Tree navigation, cloning, branching, and resume commands make long sessions easier to control without losing context.
 
-**Session info for your scripts**
+### Session info for your scripts
+
 Commands run by Tau's Bash and PowerShell tools, including the ones you type with `!`, get `AI_AGENT=tau` and `TAU_SESSION_ID` (the id `/status` shows). When the model runs the command, it also gets `TAU_PROVIDER` and `TAU_MODEL` (a subagent reports its own), plus `TAU_EFFORT` for Anthropic, Bedrock, Vertex and Foundry models that have an effort level. Git hooks and scripts can use them to log which session and model made a change. The model never sees these values, so they cost no tokens.
 
-**High-visibility monitoring and reporting**
+### High-visibility monitoring and reporting
+
 Tau separates live usage, session statistics, and final reports, so you can monitor consumption while still producing readable end-of-session summaries.
 
-**Reads the rules your team already wrote**
+### Reads the rules your team already wrote
+
 Switching from another tool? Tau reads `AGENTS.md`, Cursor `.cursor/rules/*.mdc`, Copilot `.github/instructions`, Cline, and Windsurf rules where they already sit — no migration, no conversion step.
 Path-scoped rules load only when you touch a file they cover, and rules the original tool kept dormant stay dormant, so nothing bloats every request. Project files only; your global config for other tools is never read.
 
-**Self-learning & self-improvement**
+### Self-learning & self-improvement
+
 Tau gets better the more you use it. After a substantial task, or on demand via `/learned`, it proposes one critical, general, reusable lesson (a framework gotcha, a whole class of bug to avoid, a hard-won constraint, or your own preference) for you to Approve / Edit / Skip. Approved lessons are saved to memory and carried from this session into future ones and other projects, so the work keeps compounding instead of starting cold. Review, edit, delete, or toggle everything it learns with `/learned`.
 
 ---
