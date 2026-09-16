@@ -8,7 +8,7 @@ import { logError } from '../../utils/log.js';
 import { EventEmitter } from '../events/emitter.js';
 import { InputEvent } from '../events/input-event.js';
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js';
-import { INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses } from '../parse-keypress.js';
+import { INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses, type TerminalResponse } from '../parse-keypress.js';
 import reconciler from '../reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js';
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js';
@@ -50,6 +50,10 @@ const MAX_CELL_GEOMETRY_ATTEMPTS = 3;
 // are all sized against the wrong font — so it never gives up, it just slows
 // down. Bounded to terminals that have answered at least once.
 const CELL_GEOMETRY_RECHECK_MS = 2000;
+
+// Late terminal replies logged per session. Behind an old Windows ConPTY every
+// geometry probe produces them, and a window drag sends dozens of probes.
+const MAX_UNCLAIMED_RESPONSE_LOGS = 20;
 type Props = {
   readonly children: ReactNode;
   readonly stdin: NodeJS.ReadStream;
@@ -140,6 +144,23 @@ export default class App extends PureComponent<Props, State> {
   // Terminal query/response dispatch. Responses arrive on stdin (parsed
   // out by parse-keypress) and are routed to pending promise resolvers.
   querier = new TerminalQuerier(this.props.stdout);
+
+  /** Replies logged by {@link noteUnclaimedResponse} so far. */
+  private unclaimedResponsesLogged = 0;
+
+  /**
+   * Log a terminal reply nothing was waiting for.
+   *
+   * These are silent failures otherwise: a cell-size reply that lands after
+   * its DA1 barrier leaves images on block glyphs with nothing in the log to
+   * say the terminal did answer — only too late for the querier to use it.
+   */
+  noteUnclaimedResponse(response: TerminalResponse): void {
+    if (this.unclaimedResponsesLogged >= MAX_UNCLAIMED_RESPONSE_LOGS) return;
+    this.unclaimedResponsesLogged++;
+    const detail = response.type === 'pixelSize' ? `${response.kind} size ${response.width}x${response.height}px` : response.type === 'xtversion' ? `XTVERSION "${response.name}"` : response.type === 'da1' ? `DA1 [${response.params.join(',')}]` : response.type;
+    logForDebugging(`terminal reply arrived with nothing waiting for it: ${detail}. Usually it came after the DA1 reply that closed its query batch, meaning something between Tau and the terminal answered DA1 first (an old Windows ConPTY does)`);
+  }
 
   // Multi-click tracking for double/triple-click text selection. A click
   // within MULTI_CLICK_TIMEOUT_MS and MULTI_CLICK_DISTANCE of the previous
@@ -498,6 +519,8 @@ export default class App extends PureComponent<Props, State> {
                   height: window.height / rows
                 }, this.terminalGrid());
               }
+            } else {
+              logForDebugging('terminalGraphics: no cell size reply (CSI 16 t or 14 t) before DA1; inline images use block glyphs');
             }
           });
         });
@@ -696,7 +719,9 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
     // Terminal responses (DECRPM, DA1, OSC replies, etc.) are not user
     // input — route them to the querier to resolve pending promises.
     if (item.kind === 'response') {
-      app.querier.onResponse(item.response);
+      if (!app.querier.onResponse(item.response)) {
+        app.noteUnclaimedResponse(item.response);
+      }
       continue;
     }
 

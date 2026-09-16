@@ -9,11 +9,11 @@
  * the several gates between "read a PNG" and "write a sixel" closed.
  *
  * Every check prints its own verdict, and the last section draws real output —
- * a sixel, a row of quadrant glyphs, a row of half blocks — so a terminal that
- * answers a capability query but cannot actually render the result is caught
- * too. That is not hypothetical: the Windows console host reports Unicode
- * support and then draws `?` for every quadrant, because the fonts it ships do
- * not contain U+2596..U+259F.
+ * a test image in the protocol Tau would use, a row of quadrant glyphs, a row
+ * of half blocks — so a terminal that answers a capability query but cannot
+ * actually render the result is caught too. That is not hypothetical: the
+ * Windows console host reports Unicode support and then draws `?` for every
+ * quadrant, because the fonts it ships do not contain U+2596..U+259F.
  *
  * Run it in a plain terminal tab, not inside Tau — it puts stdin in raw mode.
  */
@@ -83,6 +83,10 @@ const env = process.env
 line('platform', process.platform)
 line('TERM', env.TERM ?? dim('(unset)'))
 line('TERM_PROGRAM', env.TERM_PROGRAM ?? dim('(unset)'))
+line('COLORTERM', env.COLORTERM ?? dim('(unset)'))
+// WezTerm and Windows Terminal hand their variables to WSL through WSLENV; when
+// TERM_PROGRAM is missing inside WSL, this shows whether it was ever passed.
+if (env.WSL_DISTRO_NAME) line('WSLENV', env.WSLENV ?? dim('(unset)'))
 line('WT_SESSION', env.WT_SESSION ? 'set (Windows Terminal)' : dim('(unset)'))
 line('MSYSTEM', env.MSYSTEM ?? dim('(unset)'))
 line('multiplexer', env.TMUX || env.STY ? warn('tmux/screen — unsupported') : 'none', !(env.TMUX || env.STY))
@@ -97,12 +101,33 @@ for (const name of ['TAU_IMAGE_PROTOCOL', 'TAU_INLINE_IMAGE_GLYPHS', 'TAU_INLINE
 
 // ── 2. Terminal queries ─────────────────────────────────────────────────────
 
+/** Offset in the probe replies just past the DA1 that ends Tau's batch, or -1. */
+let probeBarrier = -1
+
 /**
- * Write the queries, then read replies until DA1 comes back or the deadline
- * passes. DA1 is the sentinel every terminal since the VT100 answers, so a
- * reply that has not arrived by then is one the terminal does not implement.
+ * Mirror of isLegacyConsoleHost in src/utils/terminalGraphics.ts; keep the two
+ * in step. True when DA1 was answered by an old Windows console host rather
+ * than the terminal: conhost's `1;0` up to 1.17, or `61` with its extension set
+ * and no sixel from 1.18 to 1.21. That host also drops Kitty and sixel data.
  */
-async function probe(timeoutMs = 1500) {
+function isLegacyConsoleHost(params) {
+  if (!params || params.length === 0) return false
+  if (params.length === 2 && params[0] === 1 && params[1] === 0) return true
+  return params[0] === 61 && !params.includes(4) && [28, 32, 42].every(p => params.includes(p))
+}
+
+/**
+ * Write the queries Tau writes at startup, then read replies until the DA1 that
+ * ends the batch comes back or the deadline passes. DA1 is the sentinel every
+ * terminal since the VT100 answers, so a reply that has not arrived by then is
+ * one Tau never sees.
+ *
+ * Reading goes on briefly after that DA1. Terminals answer in order, so nothing
+ * should follow it — but when something in between answers DA1 itself, as an
+ * old Windows ConPTY does, the terminal's own replies land afterwards. Catching
+ * them names that failure instead of leaking the bytes into the shell.
+ */
+async function probe(timeoutMs = 1500, lateMs = 300) {
   const direct =
     OUT.isTTY && process.stdin.isTTY
       ? { input: process.stdin, output: OUT, close() {} }
@@ -120,13 +145,20 @@ async function probe(timeoutMs = 1500) {
     input.resume()
     input.on('data', onData)
 
-    // Cell size, window size, then the sentinel — terminals answer in order,
-    // and DA1 is the one every terminal since the VT100 answers, so anything
-    // still missing when it lands is genuinely unsupported.
-    output.write(`${ESC}[16t${ESC}[14t${ESC}[c`)
+    // Exactly Tau's startup batch (src/ink/components/App.tsx): terminal name,
+    // DA1, cell size, window size, then DA1 again as the sentinel.
+    output.write(`${ESC}[>0q${ESC}[c${ESC}[16t${ESC}[14t${ESC}[c`)
 
     const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline && !/\x1b\[\??[0-9;]*c/.test(buf)) {
+    let settleBy = deadline
+    while (Date.now() < Math.min(deadline, settleBy)) {
+      if (probeBarrier < 0) {
+        const answers = [...buf.matchAll(/\x1b\[\??[0-9;]*c/g)]
+        if (answers.length >= 2) {
+          probeBarrier = answers[1].index + answers[1][0].length
+          settleBy = Date.now() + lateMs
+        }
+      }
       await new Promise(r => setTimeout(r, 20))
     }
   } finally {
@@ -144,6 +176,7 @@ const replies = await probe()
 const grid = probeGrid ?? { columns: OUT.columns, rows: OUT.rows }
 line('grid', grid.columns ? `${grid.columns} x ${grid.rows}` : dim('unknown'))
 let da1Params = null
+let legacyConsoleHost = false
 let cell = null
 let windowPx = null
 
@@ -157,21 +190,43 @@ if (replies === null) {
 } else {
   const da1 = /\x1b\[\?([0-9;]*)c/.exec(replies)
   if (da1) da1Params = da1[1].split(';').filter(Boolean).map(Number)
+  legacyConsoleHost = isLegacyConsoleHost(da1Params)
+  // A reply after the DA1 that ends the batch exists, but Tau never sees it.
+  const late = match => probeBarrier >= 0 && match.index >= probeBarrier
+  const tooLate = value => bad(`${value}, but only after DA1 — Tau ignores it`)
   const t16 = /\x1b\[6;(\d+);(\d+)t/.exec(replies)
-  if (t16) cell = { height: Number(t16[1]), width: Number(t16[2]) }
+  if (t16 && !late(t16)) cell = { height: Number(t16[1]), width: Number(t16[2]) }
   const t14 = /\x1b\[4;(\d+);(\d+)t/.exec(replies)
-  if (t14) windowPx = { height: Number(t14[1]), width: Number(t14[2]) }
+  if (t14 && !late(t14)) windowPx = { height: Number(t14[1]), width: Number(t14[2]) }
+  const name = /\x1bP>\|([^\x1b]*)\x1b\\/.exec(replies)
+  const anyLate = [t16, t14, name].some(match => match && late(match))
 
   line('DA1 (CSI c)', da1Params ? `[${da1Params.join(',')}]` : bad('no reply'), da1Params !== null)
+  if (legacyConsoleHost) {
+    line('DA1 answered by', bad('an old Windows ConPTY, not your terminal'), false)
+  }
   line(
     'sixel advertised (DA1 = 4)',
-    da1Params?.includes(4) ? 'yes' : bad('no — this terminal has no sixel'),
+    da1Params?.includes(4)
+      ? 'yes'
+      : legacyConsoleHost
+        ? warn('unknown — the ConPTY answered instead')
+        : bad('no — this terminal has no sixel'),
     da1Params?.includes(4) === true,
   )
-  line('cell size (CSI 16 t)', cell ? `${cell.width} x ${cell.height} px` : bad('no reply'), cell !== null)
+  line('terminal name (XTVERSION)', name ? (late(name) ? tooLate(name[1]) : name[1]) : dim('no reply'))
+  line(
+    'cell size (CSI 16 t)',
+    cell ? `${cell.width} x ${cell.height} px` : t16 ? tooLate(`${t16[2]} x ${t16[1]} px`) : bad('no reply'),
+    cell !== null,
+  )
   line(
     'window size (CSI 14 t)',
-    windowPx ? `${windowPx.width} x ${windowPx.height} px` : warn('no reply'),
+    windowPx
+      ? `${windowPx.width} x ${windowPx.height} px`
+      : t14
+        ? tooLate(`${t14[2]} x ${t14[1]} px`)
+        : warn('no reply'),
     windowPx !== null,
   )
   if (!cell && windowPx && grid.columns > 0 && grid.rows > 0) {
@@ -182,7 +237,12 @@ if (replies === null) {
     line('cell size (derived)', `${derived.width.toFixed(1)} x ${derived.height.toFixed(1)} px`, true)
     cell = derived
   }
-  if (!cell) {
+  if (anyLate) {
+    OUT.write(
+      `       ${warn('The terminal did answer, but after DA1: something in between')}\n` +
+        `       ${warn('answered DA1 first, so Tau had already stopped listening.')}\n`,
+    )
+  } else if (!cell) {
     OUT.write(
       `       ${warn('Without a cell size nothing can be sized in pixels, so images')}\n` +
         `       ${warn('fall back to block glyphs. This is the usual cause.')}\n`,
@@ -251,18 +311,30 @@ if (sharp && image2sixel) {
 // ── 4. Verdict ──────────────────────────────────────────────────────────────
 
 OUT.write(`\n${bold('4. Verdict')}\n`)
+// Mirrors resolveGraphicsProtocol in src/utils/terminalGraphics.ts.
 const forced = env.TAU_IMAGE_PROTOCOL?.trim().toLowerCase()
 let protocol = 'none'
 if (forced && forced !== 'off' && forced !== 'none' && forced !== '0') protocol = forced
+else if (env.NO_COLOR) protocol = 'none'
 else if (env.TMUX || env.STY) protocol = 'none'
 else if (env.TERM_PROGRAM?.toLowerCase() === 'vscode') protocol = 'none'
-else if (env.KITTY_WINDOW_ID || /kitty|ghostty/i.test(env.TERM ?? '')) protocol = 'kitty'
+else if (legacyConsoleHost) protocol = 'none'
+else if (
+  env.KITTY_WINDOW_ID ||
+  /kitty|ghostty/i.test(env.TERM ?? '') ||
+  /^(ghostty|wezterm)$/i.test(env.TERM_PROGRAM ?? '')
+) protocol = 'kitty'
 else if (env.TERM_PROGRAM === 'iTerm.app') protocol = 'iterm2'
 else if (da1Params?.includes(4)) protocol = 'sixel'
 
 if (replies === null) {
   OUT.write(`  ${warn('Inconclusive — the terminal was never asked.')} The encoder checks\n`)
   OUT.write(`  above still hold; nothing about protocol support does.\n`)
+} else if (legacyConsoleHost) {
+  OUT.write(`  ${bad('An old Windows ConPTY sits between Tau and your terminal.')} It answers\n`)
+  OUT.write(`  queries for the terminal and drops Kitty and sixel image data on the way,\n`)
+  OUT.write(`  so images render as block glyphs whatever the terminal supports. Update\n`)
+  OUT.write(`  the terminal: WezTerm nightly and Windows Terminal 1.22+ pass images through.\n`)
 } else if (protocol === 'none') {
   OUT.write(`  ${bad('No graphics protocol.')} Images render as block glyphs, which is correct\n`)
   OUT.write(`  for this terminal. Try Windows Terminal 1.22+, kitty, Ghostty, WezTerm,\n`)
@@ -273,8 +345,9 @@ if (replies === null) {
 } else {
   OUT.write(`  ${ok(`${protocol} available, cell ${Math.floor(cell.width)}x${Math.floor(cell.height)} px.`)}\n`)
   OUT.write(`  Inline images should render as real pixels. If they do not, run\n`)
-  OUT.write(`  ${bold('tau --debug')}, read an image, and look for the ${bold('graphics:')} lines —\n`)
-  OUT.write(`  each names the gate that closed.\n`)
+  OUT.write(`  ${bold('tau --debug')}, ask Tau to read an image file (a pasted image is not\n`)
+  OUT.write(`  drawn inline), and look in ${bold('~/.claude/debug/latest')} for the lines\n`)
+  OUT.write(`  starting ${bold('terminalGraphics:')} — each names the gate that closed.\n`)
 }
 
 // ── 5. What this terminal actually draws ────────────────────────────────────
@@ -285,6 +358,32 @@ if (sixelSequence && protocol === 'sixel') {
   OUT.write(`  ${dim('sixel (should be a smooth colour gradient):')}\n`)
   OUT.write(sixelSequence)
   OUT.write('\n\n')
+}
+
+// Kitty and iTerm2 get a picture too, so "available" is never taken on trust.
+// q=2 stops the terminal replying into the shell after this script exits.
+if (replies !== null && protocol === 'kitty') {
+  const checkerboard = Buffer.alloc(8 * 8 * 3)
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const i = (y * 8 + x) * 3
+      const red = ((x >> 1) + (y >> 1)) % 2 === 0
+      checkerboard[i] = red ? 0xe0 : 0x20
+      checkerboard[i + 1] = 0x20
+      checkerboard[i + 2] = red ? 0x20 : 0xe0
+    }
+  }
+  OUT.write(`  ${dim('kitty (should be a red and blue checkerboard):')}\n`)
+  OUT.write(`${ESC}_Ga=T,f=24,s=8,v=8,c=16,r=4,q=2;${checkerboard.toString('base64')}${ESC}\\`)
+  OUT.write('\n\n\n\n\n')
+}
+if (replies !== null && protocol === 'iterm2') {
+  // An 8x8 green PNG.
+  const png =
+    'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGNQOOCAFTEMLQkAGmxIAe9nQWwAAAAASUVORK5CYII='
+  OUT.write(`  ${dim('iTerm2 (should be a green square):')}\n`)
+  OUT.write(`${ESC}]1337;File=inline=1;width=16;height=4;preserveAspectRatio=0:${png}\x07`)
+  OUT.write('\n\n\n\n\n')
 }
 
 OUT.write(`  ${dim('quadrant glyphs — any `?` here means the font lacks U+2596..U+259F:')}\n`)

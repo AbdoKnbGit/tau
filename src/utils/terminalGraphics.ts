@@ -326,13 +326,52 @@ const DA1_SIXEL = 4
 
 let da1Params: readonly number[] | null = null
 
+/**
+ * Whether DA1 was answered by an old Windows console host instead of the
+ * terminal.
+ *
+ * On Windows, ConPTY sits between Tau and the terminal, and so it does for WSL
+ * and SSH sessions opened from that terminal. Before Windows Terminal 1.22 it
+ * answered DA1 itself, instantly, while passing the pixel-size queries on — so
+ * the DA1 barrier closes before the terminal's own replies arrive. Worse, it
+ * discards Kitty (APC) and sixel (DCS) payloads instead of forwarding them, and
+ * the oldest builds print them as text. Nothing drawn in pixels can reach the
+ * terminal through it, whatever the environment says the terminal is.
+ *
+ * WezTerm's stable release still bundles such a build. WezTerm nightly and
+ * Windows Terminal 1.22+ ship the pass-through ConPTY, where the terminal
+ * answers for itself. The signatures are conhost's own replies: `1;0` up to
+ * 1.17, then `61` with its extension set and no sixel from 1.18 to 1.21.
+ */
+export function isLegacyConsoleHost(
+  attributes: readonly number[] | null = da1Params,
+): boolean {
+  if (!attributes || attributes.length === 0) return false
+  if (attributes.length === 2 && attributes[0] === 1 && attributes[1] === 0) {
+    return true
+  }
+  return (
+    attributes[0] === 61 &&
+    !attributes.includes(DA1_SIXEL) &&
+    [28, 32, 42].every(param => attributes.includes(param))
+  )
+}
+
 /** Record the DA1 response, the authoritative sixel probe. */
 export function setDeviceAttributes(params: readonly number[]): void {
   da1Params = params
   logForDebugging(
-    `terminalGraphics: DA1 params [${params.join(',')}] — sixel ${
-      params.includes(DA1_SIXEL) ? 'advertised' : 'not advertised'
-    }`,
+    isLegacyConsoleHost(params)
+      ? `terminalGraphics: DA1 params [${params.join(',')}] came from an old ` +
+          'Windows ConPTY, not the terminal. It drops Kitty and sixel data, so ' +
+          'images stay block glyphs; WezTerm nightly and Windows Terminal 1.22+ ' +
+          'ship a ConPTY that passes them through'
+      : `terminalGraphics: DA1 params [${params.join(',')}] — sixel ${
+          params.includes(DA1_SIXEL) ? 'advertised' : 'not advertised'
+        }`,
+  )
+  logForDebugging(
+    `terminalGraphics: inline graphics protocol ${resolveGraphicsProtocol()}`,
   )
   announceCapabilityChange()
 }
@@ -355,7 +394,8 @@ function envSaysKitty(env: NodeJS.ProcessEnv): boolean {
  *
  * Multiplexers are excluded outright. tmux and screen rewrite the byte stream
  * and would need explicit passthrough wrapping per protocol; without it the
- * payload is mangled and the pane corrupted.
+ * payload is mangled and the pane corrupted. So is an old Windows console host,
+ * which drops the payloads on the way; see {@link isLegacyConsoleHost}.
  */
 export function resolveGraphicsProtocol(
   env: NodeJS.ProcessEnv = process.env,
@@ -374,6 +414,9 @@ export function resolveGraphicsProtocol(
   if (env.TMUX || env.STY) return 'none'
   // xterm.js draws neither Kitty APC nor sixel; it would print the payload.
   if (env.TERM_PROGRAM?.toLowerCase() === 'vscode') return 'none'
+  // Checked before the environment: TERM_PROGRAM=WezTerm is still set when an
+  // old ConPTY sits in between, and the payloads would never arrive.
+  if (isLegacyConsoleHost(attributes)) return 'none'
 
   if (envSaysKitty(env)) return 'kitty'
   if (env.TERM_PROGRAM === 'iTerm.app') return 'iterm2'

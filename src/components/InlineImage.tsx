@@ -17,13 +17,14 @@ import {
   setGraphicsPlacement,
   subscribeGraphicsConstraints,
 } from '../ink/graphicsPlacement.js'
-import { Box, RawAnsi } from '../ink.js'
+import { Box, RawAnsi, Text } from '../ink.js'
 import type { GraphicsOverlay } from '../utils/terminalGraphics.js'
 import {
   getCellPixelSize,
   getGraphicsGeneration,
   hasMeasuredCellSize,
   isCellGeometryStale,
+  isLegacyConsoleHost,
   renderGraphicsOverlay,
   resolveGraphicsProtocol,
   subscribeGraphicsCapability,
@@ -52,6 +53,17 @@ const TRANSCRIPT_GUTTER_COLUMNS = 8
  * render and no encode at all.
  */
 const GRAPHICS_RETRY_MS = 120
+
+/**
+ * Shown under a block render that an old Windows ConPTY forced. Without it the
+ * downgrade is silent, and the fix is outside Tau: the terminal has to ship a
+ * ConPTY that passes image data through.
+ */
+const LEGACY_CONSOLE_HOST_HINT =
+  'Blocky preview: an old Windows ConPTY drops image data. Use WezTerm nightly or Windows Terminal 1.22+ for real images.'
+
+/** The mounted image carrying that hint; one in the transcript is enough. */
+let legacyHintOwner: string | null = null
 
 type Props = {
   /** Base64-encoded image bytes, as produced by the read tools. */
@@ -231,6 +243,24 @@ export function InlineImage({
     return () => clearTimeout(timer)
   }, [withheld, attempt, imagesEnabled])
 
+  // Behind an old Windows ConPTY the block render is all there will ever be.
+  // Say why under one image, claimed in an effect so an abandoned render cannot
+  // hold the hint, and released on unmount so a later image can take it over.
+  const blockedByConsoleHost =
+    imagesEnabled && image !== null && overlay === null && isLegacyConsoleHost()
+  const [ownsLegacyHint, setOwnsLegacyHint] = useState(false)
+  useEffect(() => {
+    if (!blockedByConsoleHost) return
+    const id = placementId.current!
+    if (legacyHintOwner !== null && legacyHintOwner !== id) return
+    legacyHintOwner = id
+    setOwnsLegacyHint(true)
+    return () => {
+      if (legacyHintOwner === id) legacyHintOwner = null
+      setOwnsLegacyHint(false)
+    }
+  }, [blockedByConsoleHost])
+
   // Register the encoded payload for the renderer to draw over the box above.
   useLayoutEffect(() => {
     const id = placementId.current!
@@ -278,6 +308,9 @@ export function InlineImage({
       >
         <RawAnsi lines={image.lines} width={image.columns} />
       </Box>
+      {ownsLegacyHint && blockedByConsoleHost && (
+        <Text dimColor>{LEGACY_CONSOLE_HOST_HINT}</Text>
+      )}
     </Box>
   )
 }

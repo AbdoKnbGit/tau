@@ -16,6 +16,7 @@ import {
   type ParsedInput,
   parseMultipleKeypresses,
 } from '../ink/parse-keypress.js'
+import { cellPixelSize, TerminalQuerier } from '../ink/terminal-querier.js'
 import {
   allocateKittyImageId,
   clearCellGeometryStale,
@@ -28,6 +29,7 @@ import {
   isCellGeometryCurrent,
   type GraphicsProtocol,
   isCellGeometryStale,
+  isLegacyConsoleHost,
   markCellGeometryStale,
   renderGraphicsOverlay,
   resolveGraphicsProtocol,
@@ -177,6 +179,66 @@ test('TAU_IMAGE_PROTOCOL overrides detection in both directions', () => {
     protocolOf({ TAU_IMAGE_PROTOCOL: 'kitty', TMUX: '/tmp/x' }, null),
     'kitty',
     'an explicit force beats the tmux exclusion',
+  )
+})
+
+test('an old Windows ConPTY answering DA1 turns every protocol off', () => {
+  // conhost before 1.22 answers DA1 for the terminal and drops Kitty and sixel
+  // payloads. WezTerm's stable release bundles one, and still exports
+  // TERM_PROGRAM=WezTerm — which must not win (issue #35).
+  for (const da1 of [
+    [61, 6, 7, 22, 23, 24, 28, 32, 42], // 1.18
+    [61, 1, 6, 7, 22, 23, 24, 28, 32, 42], // 1.18, 132-column variant
+    [61, 6, 7, 21, 22, 23, 24, 28, 32, 42], // 1.19, 1.20
+    [61, 6, 7, 14, 21, 22, 23, 24, 28, 32, 42], // 1.21
+    [1, 0], // up to 1.17, and Windows 10's inbox host
+  ]) {
+    assert(isLegacyConsoleHost(da1), `[${da1}] is an old console host`)
+    assertEqual(
+      protocolOf({ TERM_PROGRAM: 'WezTerm' }, da1),
+      'none',
+      `WezTerm env behind [${da1}]`,
+    )
+    assertEqual(protocolOf({ TERM: 'xterm-kitty' }, da1), 'none', `kitty TERM behind [${da1}]`)
+  }
+})
+
+test('a pass-through ConPTY and real terminals keep their protocols', () => {
+  // From 1.22 conhost advertises sixel itself and forwards everything, and in
+  // pass-through mode the terminal behind it answers for itself.
+  assertEqual(
+    protocolOf({ WT_SESSION: 'x' }, [61, 4, 6, 7, 14, 21, 22, 23, 24, 28, 32, 42]),
+    'sixel',
+    'Windows Terminal 1.22+',
+  )
+  assertEqual(
+    protocolOf({ WT_SESSION: 'x' }, [61, 4, 6, 7, 14, 21, 22, 23, 24, 28, 32, 42, 52]),
+    'sixel',
+    'Windows Terminal with clipboard access',
+  )
+  assertEqual(protocolOf({}, [65, 4, 6, 18, 22, 52]), 'sixel', 'WezTerm answering for itself')
+  assertEqual(
+    protocolOf({ TERM_PROGRAM: 'WezTerm' }, [65, 4, 6, 18, 22, 52]),
+    'kitty',
+    'WezTerm with its environment',
+  )
+  assertEqual(
+    protocolOf({ TERM_PROGRAM: 'WezTerm' }, null),
+    'kitty',
+    'no DA1 yet leaves the environment to decide',
+  )
+  // Close relatives of the signatures are ordinary terminals.
+  assertEqual(protocolOf({ TERM: 'xterm-kitty' }, [1, 2]), 'kitty', 'VT100 with advanced video')
+  assertEqual(protocolOf({ TERM: 'xterm-kitty' }, [61, 22]), 'kitty', '61 without conhost extensions')
+  assert(!isLegacyConsoleHost([]), 'an empty DA1 is not evidence')
+  assert(!isLegacyConsoleHost(null), 'a missing DA1 is not evidence')
+})
+
+test('forcing a protocol still beats an old ConPTY', () => {
+  assertEqual(
+    protocolOf({ TAU_IMAGE_PROTOCOL: 'kitty' }, [61, 6, 7, 22, 23, 24, 28, 32, 42]),
+    'kitty',
+    'an explicit force is the user taking responsibility',
   )
 })
 
@@ -436,6 +498,28 @@ test('the pixel-size pattern does not swallow ordinary input', () => {
       `${JSON.stringify(seq)} must not parse as a pixel report`,
     )
   }
+})
+
+await asyncTest('a reply landing after its DA1 barrier is reported as unclaimed', async () => {
+  // Behind an old ConPTY the DA1 comes back instantly from the console host and
+  // the terminal's own cell-size reply only afterwards. The querier cannot use
+  // it, but it must say so rather than drop it silently.
+  const querier = new TerminalQuerier({ write: () => true } as unknown as NodeJS.WriteStream)
+  const batch = Promise.all([querier.send(cellPixelSize()), querier.flush()])
+  const da1 = parseOne('\x1b[?61;6;7;22;23;24;28;32;42c')
+  const late = parseOne('\x1b[6;22;10t')
+  assert(da1?.kind === 'response' && late?.kind === 'response', 'both parse as responses')
+  assertEqual(querier.onResponse((da1 as any).response), true, 'the DA1 closes the batch')
+  const [cell] = await batch
+  assertEqual(cell, undefined, 'the batch closed without a cell size')
+  assertEqual(querier.onResponse((late as any).response), false, 'nothing waits for the late reply')
+
+  const inOrder = new TerminalQuerier({ write: () => true } as unknown as NodeJS.WriteStream)
+  const answered = Promise.all([inOrder.send(cellPixelSize()), inOrder.flush()])
+  assertEqual(inOrder.onResponse((late as any).response), true, 'a reply in order is claimed')
+  assertEqual(inOrder.onResponse((da1 as any).response), true, 'and its DA1 still closes the batch')
+  const [measured] = await answered
+  assertEqual((measured as any)?.width, 10, 'the in-order reply is delivered')
 })
 
 // --- Kitty identity and deletion -------------------------------------------

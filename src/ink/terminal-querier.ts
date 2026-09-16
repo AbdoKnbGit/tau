@@ -217,23 +217,30 @@ export class TerminalQuerier {
    *   and signal its flush() completion. Only draining up to the first
    *   sentinel keeps later batches intact when multiple callers have
    *   concurrent queries in flight.
-   * - Unsolicited responses (no match, no sentinel) are silently dropped.
+   * - Unsolicited responses (no match, no sentinel) are dropped.
+   *
+   * Returns whether anything was waiting for the response. One that nothing
+   * was waiting for usually arrived after the DA1 that closed its batch, which
+   * means something between us and the terminal answered DA1 first — an old
+   * Windows ConPTY does. The caller decides whether that is worth logging.
    */
-  onResponse(r: TerminalResponse): void {
+  onResponse(r: TerminalResponse): boolean {
     const idx = this.queue.findIndex(p => p.kind === 'query' && p.match(r))
     if (idx !== -1) {
       const [q] = this.queue.splice(idx, 1)
       if (q?.kind === 'query') q.resolve(r)
-      return
+      return true
     }
 
     if (r.type === 'da1') {
       const s = this.queue.findIndex(p => p.kind === 'sentinel')
-      if (s === -1) return
+      if (s === -1) return false
       for (const p of this.queue.splice(0, s + 1)) {
         if (p.kind === 'query') p.resolve(undefined)
         else p.resolve()
       }
+      return true
     }
+    return false
   }
 }
