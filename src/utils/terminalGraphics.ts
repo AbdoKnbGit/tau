@@ -224,19 +224,31 @@ export function setCellPixelSize(
   ) {
     return
   }
-  measuredCell = {
-    width: Math.floor(size.width),
-    height: Math.floor(size.height),
-  }
-  measuredGrid = sanitizeGrid(grid)
+  const cell = { width: Math.floor(size.width), height: Math.floor(size.height) }
+  const cellGrid = sanitizeGrid(grid)
+  // A re-measure that only confirms what is on record changes nothing an image
+  // was encoded against. Announcing it anyway restarted every encode in flight,
+  // and a resize is measured two or three times over — so every image was
+  // re-encoded that many times before it could be drawn again.
+  const confirmsRecord =
+    staleUntil === 0 &&
+    measurementCurrent &&
+    cellPixelSize !== null &&
+    cellPixelSize.width === cell.width &&
+    cellPixelSize.height === cell.height &&
+    measuredGrid?.columns === cellGrid?.columns &&
+    measuredGrid?.rows === cellGrid?.rows
+  measuredCell = cell
+  measuredGrid = cellGrid
   measurementCurrent = true
   cellPixelSize = measuredCell
   staleUntil = 0
   clearStaleLapse()
   logForDebugging(
-    `terminalGraphics: cell size ${cellPixelSize.width}x${cellPixelSize.height}px`,
+    `terminalGraphics: cell size ${cellPixelSize.width}x${cellPixelSize.height}px` +
+      (confirmsRecord ? ' (unchanged)' : ''),
   )
-  announceCapabilityChange()
+  if (!confirmsRecord) announceCapabilityChange()
 }
 
 /** A usable grid, or null — a non-TTY reports zero columns. */
@@ -687,6 +699,25 @@ export type GraphicsOverlay = {
   cellHeight: number
 }
 
+/** Encodes started and not yet finished; see {@link graphicsEncodeQuietFor}. */
+let graphicsEncodesInFlight = 0
+let lastGraphicsEncodeEndedAt = 0
+
+/**
+ * How long image encoding has been quiet, in milliseconds: 0 while an encode is
+ * running, and infinite if none has ever run.
+ *
+ * A resize re-encodes every image, one after another, and each lands in a frame
+ * of its own a moment after its encode. Ink waits for this to settle before
+ * rewriting the transcript to draw the images left in history, so the burst
+ * costs one full reset rather than one per image.
+ */
+export function graphicsEncodeQuietFor(now: number = Date.now()): number {
+  if (graphicsEncodesInFlight > 0) return 0
+  if (lastGraphicsEncodeEndedAt === 0) return Number.POSITIVE_INFINITY
+  return Math.max(0, now - lastGraphicsEncodeEndedAt)
+}
+
 /**
  * Encode an image and report the cell box it occupies.
  *
@@ -705,6 +736,12 @@ export async function renderGraphicsOverlay(
   maxColumns: number,
   maxRows: number,
   protocol: GraphicsProtocol = resolveGraphicsProtocol(),
+  /**
+   * Kitty image id to encode under. A caller re-encoding the same image passes
+   * the same id, so identical pixels produce an identical payload and are not
+   * mistaken for a different image; see `allocateKittyImageId`.
+   */
+  imageId?: number,
 ): Promise<GraphicsOverlay | null> {
   // Every path out of here falls back to block glyphs, and for a long time all
   // of them were silent — which is why "it just renders blurry" took so many
@@ -735,6 +772,7 @@ export async function renderGraphicsOverlay(
     return null
   }
 
+  graphicsEncodesInFlight++
   try {
     const processor = await getImageProcessor()
     const probe = processor(imageData) as unknown as GraphicsSharp
@@ -817,7 +855,7 @@ export async function renderGraphicsOverlay(
     // nothing can refer to the image afterwards, and every redraw stacks
     // another placement that no erase can reach — the accumulating ghost.
     const kittyImageId =
-      protocol === 'kitty' ? allocateKittyImageId() : undefined
+      protocol === 'kitty' ? (imageId ?? allocateKittyImageId()) : undefined
     const sequence =
       protocol === 'kitty'
         ? encodeKittyGraphics(base64, columns, rows, kittyImageId)
@@ -842,5 +880,8 @@ export async function renderGraphicsOverlay(
       }`,
     )
     return null
+  } finally {
+    graphicsEncodesInFlight--
+    lastGraphicsEncodeEndedAt = Date.now()
   }
 }

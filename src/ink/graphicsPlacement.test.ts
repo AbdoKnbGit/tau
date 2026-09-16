@@ -13,15 +13,21 @@
 import type { DOMElement } from './dom.js'
 import {
   buildGraphicsSequence,
+  commitRowGraphics,
+  discardRowGraphics,
   forceGraphicsRedraw,
   getPlacementRowLimit,
   invalidateGraphicsPlacements,
+  isGraphicsReprintOwed,
+  planRowGraphics,
   setGraphicsPlacement,
+  takeGraphicsReprintRequest,
 } from './graphicsPlacement.js'
 import { nodeCache } from './node-cache.js'
 import {
   clearCellGeometryStale,
   markCellGeometryStale,
+  setCellPixelSize,
 } from '../utils/terminalGraphics.js'
 import {
   CellWidth,
@@ -133,7 +139,8 @@ function build(screen: Screen, stylePool: StylePool, damage?: any): string {
 }
 
 function reset(): void {
-  for (const id of ['a', 'b']) setGraphicsPlacement(id, null)
+  for (const id of ['a', 'b', 'c']) setGraphicsPlacement(id, null)
+  discardRowGraphics()
   invalidateGraphicsPlacements()
   // Row limits deliberately survive a wipe now, so a test starts a fresh
   // viewport epoch to drop them.
@@ -775,6 +782,380 @@ test('an erase reaches rows the frame has since dropped', () => {
   assert(
     out.includes(`\x1b[10B\x1b[5G${' '.repeat(8)}`),
     'the vacated rows are blanked rather than skipped',
+  )
+})
+
+// --- Scrolling into history --------------------------------------------------
+
+/** A main-screen frame through a 24-row window whose top is `viewportTop`. */
+const windowAt = (
+  screen: Screen,
+  stylePool: StylePool,
+  viewportTop: number,
+  damage?: any,
+): string =>
+  buildGraphicsSequence({
+    cursor: { x: 0, y: viewportTop + 23 },
+    viewportTop,
+    viewportRows: 24,
+    viewportColumns: 60,
+    damage,
+    cell: CELL,
+    screen,
+    stylePool,
+  })
+
+const WHOLE_FRAME = { x: 0, y: 0, width: 60, height: 80 }
+
+test('an image scrolling into history keeps its pixels', () => {
+  // The "sharp, then blocky one turn later" bug. The next turn's text pushed
+  // the image's top above the window, the viewport rule erased it, and nothing
+  // can draw above the viewport again, so the block fallback stood for good.
+  // The terminal had already carried the pixels up with the text.
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 20, 8, 4, DELETE)
+  assert(windowAt(screen, stylePool, 5).includes(PAYLOAD), 'drawn while in view')
+
+  assertEqual(windowAt(screen, stylePool, 22), '', 'its top leaves the window: nothing sent')
+  assertEqual(windowAt(screen, stylePool, 40), '', 'wholly in history: still left alone')
+  assertEqual(
+    windowAt(screen, stylePool, 40, WHOLE_FRAME),
+    '',
+    'damage alone, with its cells unchanged, does not disturb it',
+  )
+})
+
+test('an image in history is still deleted when it unmounts', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 20, 8, 4, DELETE)
+  windowAt(screen, stylePool, 5)
+  windowAt(screen, stylePool, 40)
+
+  setGraphicsPlacement('a', null)
+  assert(
+    windowAt(screen, stylePool, 40).includes(DELETE),
+    'deleting by id reaches it in history too',
+  )
+})
+
+test('an image in history is still taken down by a resize or a move', () => {
+  reset()
+  const resized = makeScreenOf(60, 80, 'X')
+  place('a', 4, 20, 8, 4, DELETE)
+  windowAt(resized.screen, resized.stylePool, 5)
+  windowAt(resized.screen, resized.stylePool, 22)
+  forceGraphicsRedraw()
+  assert(
+    windowAt(resized.screen, resized.stylePool, 22).includes(DELETE),
+    'a resize epoch no longer trusts where the pixels are',
+  )
+
+  reset()
+  const moved = makeScreenOf(60, 80, 'X')
+  const node = place('a', 4, 20, 8, 4, DELETE)
+  windowAt(moved.screen, moved.stylePool, 5)
+  windowAt(moved.screen, moved.stylePool, 22)
+  nodeCache.set(node, { x: 4, y: 18, width: 8, height: 4 })
+  assert(
+    windowAt(moved.screen, moved.stylePool, 22).includes(DELETE),
+    'a move within the transcript leaves the pixels in the wrong cells',
+  )
+})
+
+test('text written under an image leaving the window falls back to the erase', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 20, 8, 4, DELETE)
+  windowAt(screen, stylePool, 5)
+
+  setCellAt(screen, 5, 23, {
+    char: 'Z',
+    styleId: stylePool.none,
+    width: CellWidth.Narrow,
+    hyperlink: undefined,
+  })
+  assert(
+    windowAt(screen, stylePool, 22, { x: 4, y: 20, width: 8, height: 4 }).includes(DELETE),
+    'a rewritten cell cleared the pixels there, so the image is taken down',
+  )
+})
+
+test('a scroll keeps the checksum, so later damage alone re-sends nothing', () => {
+  // Following the scroll used to record a zero checksum, so the next frame
+  // whose damage touched the image re-sent the whole payload while the pixels
+  // were still on screen.
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 20)
+  windowAt(screen, stylePool, 5)
+  assertEqual(windowAt(screen, stylePool, 7), '', 'a pure scroll sends nothing')
+  assertEqual(
+    windowAt(screen, stylePool, 7, WHOLE_FRAME),
+    '',
+    'and neither does the next damaged frame while its cells are unchanged',
+  )
+})
+
+test('a re-encode after a scroll deletes the image that was drawn', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  const node = place('a', 4, 20, 8, 4, DELETE)
+  windowAt(screen, stylePool, 5)
+
+  const nextPayload = '\x1bPq#0;2;0;100;0#0~~~~\x1b\\'
+  const nextDelete = '\x1b_Ga=d,d=I,i=4243,q=2\x1b\\'
+  setGraphicsPlacement('a', {
+    node,
+    sequence: nextPayload,
+    eraseSequence: nextDelete,
+    rows: 4,
+    columns: 8,
+    cellWidth: CELL.width,
+    cellHeight: CELL.height,
+  })
+  const out = windowAt(screen, stylePool, 7)
+  assert(out.includes(DELETE), 'the drawn image is deleted by its own id')
+  assert(!out.includes(nextDelete), 'not by the id of the image about to replace it')
+  assert(out.includes(nextPayload), 'and the new payload goes out')
+  assert(out.indexOf(DELETE) < out.indexOf(nextPayload), 'after the delete')
+})
+
+// --- Drawing with the rows ---------------------------------------------------
+
+// The planner reads the measured cell size rather than taking it as an argument.
+setCellPixelSize({ width: CELL.width, height: CELL.height })
+
+/** What the frame writer is handed while writing rows of a 24-row window. */
+const plan = (request: {
+  startY: number
+  endY: number
+  topY?: number
+  afterClear?: boolean
+  budgetChars?: number
+}) =>
+  planRowGraphics({
+    topY: 0,
+    viewportRows: 24,
+    viewportColumns: 60,
+    afterClear: false,
+    ...request,
+  })
+
+const ids = (graphics: ReadonlyArray<{ id: string }>): string =>
+  graphics.map(graphic => graphic.id).join(',')
+
+/** A main-screen frame, where rows above the window are terminal history. */
+const historyAt = (
+  screen: Screen,
+  stylePool: StylePool,
+  viewportTop: number,
+  damage?: any,
+): string =>
+  buildGraphicsSequence({
+    cursor: { x: 0, y: viewportTop + 23 },
+    viewportTop,
+    viewportRows: 24,
+    viewportColumns: 60,
+    damage,
+    cell: CELL,
+    screen,
+    stylePool,
+    scrollback: true,
+  })
+
+test('the writer is handed the boxes whose last row it writes, in row order', () => {
+  reset()
+  place('a', 4, 10)
+  place('b', 4, 2)
+  place('c', 4, 30)
+  const planned = plan({ startY: 0, endY: 20 })
+  assertEqual(ids(planned), 'b,a', 'boxes ending in range, ordered by last row')
+  assertEqual(planned[0]!.y, 2, 'with the top row to move up to')
+  assertEqual(planned[0]!.rows, 4, 'and the height to move by')
+  discardRowGraphics()
+  assertEqual(
+    ids(plan({ startY: 0, endY: 13 })),
+    'b',
+    'a box whose last row is not written yet waits',
+  )
+})
+
+test('a box already drawn, or whose top already scrolled away, is left to the other paths', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 10)
+  assertEqual(
+    ids(plan({ startY: 0, endY: 20, topY: 11 })),
+    '',
+    'its top is no longer on screen',
+  )
+
+  windowAt(screen, stylePool, 0)
+  assertEqual(ids(plan({ startY: 0, endY: 20 })), '', 'drawn already: still on screen')
+  assertEqual(
+    ids(plan({ startY: 0, endY: 20, afterClear: true })),
+    'a',
+    'unless the screen was just wiped',
+  )
+})
+
+test('nothing is handed over that the writer could not place exactly', () => {
+  reset()
+  markCellGeometryStale()
+  place('a', 4, 2)
+  assertEqual(
+    ids(plan({ startY: 0, endY: 20 })),
+    '',
+    'not while the cell size is being re-measured',
+  )
+  clearCellGeometryStale()
+  assertEqual(ids(plan({ startY: 0, endY: 20 })), 'a', 'and again once it is known')
+
+  reset()
+  place('a', 4, 0, 8, 24)
+  assertEqual(
+    ids(plan({ startY: 0, endY: 30 })),
+    '',
+    'a box as tall as the window: its top is gone by its last row',
+  )
+
+  reset()
+  const node = place('a', 4, 2)
+  nodeCache.set(node, { x: 4, y: 2, width: 8, height: 3 })
+  assertEqual(
+    ids(plan({ startY: 0, endY: 20 })),
+    '',
+    'layout granted less than the payload covers',
+  )
+
+  reset()
+  place('a', 56, 2)
+  assertEqual(ids(plan({ startY: 0, endY: 20 })), '', 'it would run past the right edge')
+
+  reset()
+  const other = {} as DOMElement
+  nodeCache.set(other, { x: 4, y: 2, width: 8, height: 4 })
+  setGraphicsPlacement('a', {
+    node: other,
+    sequence: PAYLOAD,
+    rows: 4,
+    columns: 8,
+    cellWidth: CELL.width + 1,
+    cellHeight: CELL.height,
+  })
+  assertEqual(ids(plan({ startY: 0, endY: 20 })), '', 'encoded against another cell size')
+})
+
+test('a reprint over budget sends the newest images, and asks nothing for the rest', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 2)
+  place('b', 4, 30)
+  takeGraphicsReprintRequest()
+  const planned = plan({
+    startY: 0,
+    endY: 80,
+    afterClear: true,
+    budgetChars: PAYLOAD.length,
+  })
+  assertEqual(ids(planned), 'b', 'the newest image fits the budget, the older one does not')
+  commitRowGraphics(screen, 30)
+  historyAt(screen, stylePool, 30)
+  assert(
+    !takeGraphicsReprintRequest(),
+    'a reprint would leave it out again, so none is asked for',
+  )
+})
+
+test('what the writer drew counts as drawn: not re-sent in view, kept in history', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 10, 8, 4, DELETE)
+  assertEqual(ids(plan({ startY: 0, endY: 20 })), 'a', 'planned')
+  commitRowGraphics(screen, 0)
+  assertEqual(historyAt(screen, stylePool, 0), '', 'in view: the pixels are already there')
+  assertEqual(historyAt(screen, stylePool, 12), '', 'scrolled into history: left alone')
+  assert(!takeGraphicsReprintRequest(), 'and nothing asks for the rows again')
+})
+
+test('a plan that was never written is forgotten', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 10)
+  plan({ startY: 0, endY: 20 })
+  discardRowGraphics()
+  commitRowGraphics(screen, 0)
+  assert(
+    windowAt(screen, stylePool, 0).includes(PAYLOAD),
+    'nothing was recorded, so the post-frame pass still draws it',
+  )
+})
+
+test('an image left undrawn in history asks once for its rows to be written again', () => {
+  // Erasing it and falling back to blocks was the only option before, and it
+  // was permanent: nothing can draw above the window.
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 2)
+  historyAt(screen, stylePool, 10)
+  assert(takeGraphicsReprintRequest(), 'asked')
+  assert(isGraphicsReprintOwed(), 'and owed')
+  assertEqual(
+    getPlacementRowLimit('a'),
+    undefined,
+    'not shrunk: that would shift every row below it',
+  )
+
+  historyAt(screen, stylePool, 10)
+  historyAt(screen, stylePool, 11)
+  assert(!takeGraphicsReprintRequest(), 'the same image in the same place asks only once')
+
+  plan({ startY: 0, endY: 80, afterClear: true })
+  invalidateGraphicsPlacements()
+  commitRowGraphics(screen, 10)
+  assert(!isGraphicsReprintOwed(), 'the reprint drew it, so nothing is owed')
+  assertEqual(historyAt(screen, stylePool, 10), '', 'and the next frame keeps it')
+  assert(!takeGraphicsReprintRequest(), 'without asking again')
+})
+
+test('a new payload or a resize asks again, and an unmount drops what was owed', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  const node = place('a', 4, 2)
+  historyAt(screen, stylePool, 10)
+  assert(takeGraphicsReprintRequest(), 'first ask')
+
+  setGraphicsPlacement('a', {
+    node,
+    sequence: '\x1bPq#0;2;0;100;0#0~~~~\x1b\\',
+    rows: 4,
+    columns: 8,
+    cellWidth: CELL.width,
+    cellHeight: CELL.height,
+  })
+  historyAt(screen, stylePool, 10)
+  assert(takeGraphicsReprintRequest(), 'a re-encode is a new question')
+
+  forceGraphicsRedraw()
+  historyAt(screen, stylePool, 10)
+  assert(takeGraphicsReprintRequest(), 'so is a new viewport')
+
+  setGraphicsPlacement('a', null)
+  assert(!isGraphicsReprintOwed(), 'an unmounted image is owed nothing')
+})
+
+test('an image taller than the window shrinks instead of asking', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  place('a', 4, 2, 8, 30)
+  historyAt(screen, stylePool, 10)
+  assert(!takeGraphicsReprintRequest(), 'no reprint could draw it')
+  assertEqual(
+    getPlacementRowLimit('a'),
+    23,
+    'so it is told the most rows a window can draw',
   )
 })
 

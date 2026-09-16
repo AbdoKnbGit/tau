@@ -21,6 +21,8 @@ import {
 } from './screen.js'
 import {
   CURSOR_HOME,
+  cursorMove,
+  cursorTo,
   scrollDown as csiScrollDown,
   scrollUp as csiScrollUp,
   RESET_SCROLL_REGION,
@@ -32,21 +34,102 @@ type State = {
   previousOutput: string
 }
 
+/**
+ * An inline image to draw while the rows of its box are being written.
+ * Structural, so this module stays independent of ink/graphicsPlacement.
+ */
+type RowGraphic = {
+  readonly x: number
+  /** Logical row of the box's top edge. */
+  readonly y: number
+  readonly rows: number
+  readonly sequence: string
+}
+
+/** Supplies the images whose boxes end in a range of rows about to be written. */
+type RowGraphicsPlanner = (request: {
+  startY: number
+  endY: number
+  /** First logical row still on screen while these rows are written. */
+  topY: number
+  viewportRows: number
+  viewportColumns: number
+  /** A full-reset reprint: the screen was just wiped. */
+  afterClear: boolean
+}) => readonly RowGraphic[]
+
 type Options = {
   isTTY: boolean
   stylePool: StylePool
+  /** Main-screen inline graphics, drawn in the same pass as their rows. */
+  rowGraphics?: RowGraphicsPlanner
 }
 
 const CARRIAGE_RETURN = { type: 'carriageReturn' } as const
 const NEWLINE = { type: 'stdout', content: '\n' } as const
+/** DECSC / DECRC: an image is drawn without moving the writer's cursor. */
+const SAVE_CURSOR = '\x1b7'
+const RESTORE_CURSOR = '\x1b8'
 
 export class LogUpdate {
   private state: State
+  /** Reason for a full reset owed to the next main-screen render, if any. */
+  private pendingFullReset: FlickerReason | null = null
 
   constructor(private readonly options: Options) {
     this.state = {
       previousOutput: '',
     }
+  }
+
+  /**
+   * Make the next main-screen render a full reset.
+   *
+   * Rows in terminal history cannot be rewritten in place, so an inline image
+   * that could not be drawn when its rows went out can only be drawn by writing
+   * them all again. See ink.tsx.
+   */
+  requestFullReset(reason: FlickerReason): void {
+    this.pendingFullReset = reason
+  }
+
+  /** Images to draw within `[startY, endY)`, or undefined when there are none. */
+  private rowGraphicsFor(
+    frame: Frame,
+    altScreen: boolean,
+    startY: number,
+    endY: number,
+    topY: number,
+    afterClear: boolean,
+  ): readonly RowGraphic[] | undefined {
+    const plan = this.options.rowGraphics
+    // The alt screen redraws visible images every frame by itself and has no
+    // history to write into.
+    if (plan === undefined || altScreen || startY >= endY) return undefined
+    const graphics = plan({
+      startY,
+      endY,
+      topY,
+      viewportRows: frame.viewport.height,
+      viewportColumns: frame.viewport.width,
+      afterClear,
+    })
+    return graphics.length > 0 ? graphics : undefined
+  }
+
+  private fullReset(
+    frame: Frame,
+    reason: FlickerReason,
+    altScreen: boolean,
+    debug?: { triggerY: number; prevLine: string; nextLine: string },
+  ): Diff {
+    return fullResetSequence_CAUSES_FLICKER(
+      frame,
+      reason,
+      this.options.stylePool,
+      debug,
+      this.rowGraphicsFor(frame, altScreen, 0, frame.screen.height, 0, true),
+    )
   }
 
   renderPreviousOutput_DEPRECATED(prevFrame: Frame): Diff {
@@ -60,6 +143,8 @@ export class LogUpdate {
   // Called when process resumes from suspension (SIGCONT) to prevent clobbering terminal content
   reset(): void {
     this.state.previousOutput = ''
+    // The next render writes everything from scratch anyway.
+    this.pendingFullReset = null
   }
 
   private renderFullFrame(frame: Frame): Diff {
@@ -130,6 +215,12 @@ export class LogUpdate {
       return this.renderFullFrame(next)
     }
 
+    const owedReset = this.pendingFullReset
+    this.pendingFullReset = null
+    if (owedReset !== null && !altScreen) {
+      return this.fullReset(next, owedReset, altScreen)
+    }
+
     const startTime = performance.now()
     const stylePool = this.options.stylePool
 
@@ -143,7 +234,7 @@ export class LogUpdate {
       next.viewport.height < prev.viewport.height ||
       (prev.viewport.width !== 0 && next.viewport.width !== prev.viewport.width)
     ) {
-      return fullResetSequence_CAUSES_FLICKER(next, 'resize', stylePool)
+      return this.fullReset(next, 'resize', altScreen)
     }
 
     // DECSTBM scroll optimization: when a ScrollBox's scrollTop changed,
@@ -215,7 +306,7 @@ export class LogUpdate {
       logForDebugging(
         `Full reset (shrink->below): prevHeight=${prev.screen.height}, nextHeight=${next.screen.height}, viewport=${prev.viewport.height}`,
       )
-      return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool)
+      return this.fullReset(next, 'offscreen', altScreen)
     }
 
     if (
@@ -239,7 +330,7 @@ export class LogUpdate {
       if (scrollbackChangeY >= 0) {
         const prevLine = readLine(prev.screen, scrollbackChangeY)
         const nextLine = readLine(next.screen, scrollbackChangeY)
-        return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool, {
+        return this.fullReset(next, 'offscreen', altScreen, {
           triggerY: scrollbackChangeY,
           prevLine,
           nextLine,
@@ -263,11 +354,7 @@ export class LogUpdate {
       // If we need to clear more lines than fit in the viewport, some are in
       // scrollback, so we need a full reset.
       if (linesToClear > prev.viewport.height) {
-        return fullResetSequence_CAUSES_FLICKER(
-          next,
-          'offscreen',
-          this.options.stylePool,
-        )
+        return this.fullReset(next, 'offscreen', altScreen)
       }
 
       // clear(N) moves cursor UP by N-1 lines and to column 0
@@ -380,7 +467,7 @@ export class LogUpdate {
       }
     })
     if (needsFullReset) {
-      return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool, {
+      return this.fullReset(next, 'offscreen', altScreen, {
         triggerY: resetTriggerY,
         prevLine: readLine(prev.screen, resetTriggerY),
         nextLine: readLine(next.screen, resetTriggerY),
@@ -400,6 +487,20 @@ export class LogUpdate {
       undefined,
     )
 
+    // Inline images whose boxes this pass left complete on screen: draw them now,
+    // before the rows written below can push them into history.
+    const completed = this.rowGraphicsFor(
+      next,
+      altScreen,
+      viewportY,
+      Math.min(prev.screen.height, next.screen.height),
+      viewportY,
+      false,
+    )
+    if (completed !== undefined) {
+      for (const graphic of completed) emitRowGraphic(screen, graphic)
+    }
+
     // Handle growth: render new rows directly (they naturally scroll the terminal)
     if (growing) {
       renderFrameSlice(
@@ -408,6 +509,14 @@ export class LogUpdate {
         prev.screen.height,
         next.screen.height,
         stylePool,
+        this.rowGraphicsFor(
+          next,
+          altScreen,
+          prev.screen.height,
+          next.screen.height,
+          viewportY,
+          false,
+        ),
       )
     }
 
@@ -505,10 +614,11 @@ function fullResetSequence_CAUSES_FLICKER(
   reason: FlickerReason,
   stylePool: StylePool,
   debug?: { triggerY: number; prevLine: string; nextLine: string },
+  graphics?: readonly RowGraphic[],
 ): Diff {
   // After clearTerminal, cursor is at (0, 0)
   const screen = new VirtualScreen({ x: 0, y: 0 }, frame.viewport.width)
-  renderFrame(screen, frame, stylePool)
+  renderFrame(screen, frame, stylePool, graphics)
   return [{ type: 'clearTerminal', reason, debug }, ...screen.diff]
 }
 
@@ -516,13 +626,36 @@ function renderFrame(
   screen: VirtualScreen,
   frame: Frame,
   stylePool: StylePool,
+  graphics?: readonly RowGraphic[],
 ): void {
-  renderFrameSlice(screen, frame, 0, frame.screen.height, stylePool)
+  renderFrameSlice(screen, frame, 0, frame.screen.height, stylePool, graphics)
+}
+
+/**
+ * Draw an inline image over rows already written, leaving the cursor as it was.
+ *
+ * The box's rows are on screen at this moment — the caller guarantees it — so a
+ * relative move from the writer's own cursor reaches the top row exactly. The
+ * image then scrolls into history with those rows as later ones are written.
+ */
+function emitRowGraphic(screen: VirtualScreen, graphic: RowGraphic): void {
+  screen.diff.push({
+    type: 'stdout',
+    content:
+      SAVE_CURSOR +
+      cursorMove(0, graphic.y - screen.cursor.y) +
+      cursorTo(graphic.x + 1) +
+      graphic.sequence +
+      RESTORE_CURSOR,
+  })
 }
 
 /**
  * Render a slice of rows from the frame's screen.
  * Each row is rendered followed by a newline. Cursor ends at (0, endY).
+ *
+ * `graphics`, ordered by the last row of their boxes, are drawn right after
+ * that row's newline: its box is complete and its top still on screen.
  */
 function renderFrameSlice(
   screen: VirtualScreen,
@@ -530,12 +663,14 @@ function renderFrameSlice(
   startY: number,
   endY: number,
   stylePool: StylePool,
+  graphics?: readonly RowGraphic[],
 ): VirtualScreen {
   let currentStyleId = stylePool.none
   let currentHyperlink: Hyperlink = undefined
   // Track the styleId of the last rendered cell on this line (-1 if none).
   // Passed to visibleCellAtIndex to enable fg-only space optimization.
   let lastRenderedStyleId = -1
+  let nextGraphic = 0
 
   const { width: screenWidth, cells, charPool, hyperlinkPool } = frame.screen
 
@@ -613,6 +748,16 @@ function renderFrameSlice(
     // Without \r, the terminal cursor stays at whatever column content ended
     // (since we skip trailing spaces, this can be mid-row).
     screen.txn(prev => [[CARRIAGE_RETURN, NEWLINE], { dx: -prev.x, dy: 1 }])
+
+    if (graphics !== undefined) {
+      while (
+        nextGraphic < graphics.length &&
+        graphics[nextGraphic]!.y + graphics[nextGraphic]!.rows - 1 <= y
+      ) {
+        emitRowGraphic(screen, graphics[nextGraphic]!)
+        nextGraphic++
+      }
+    }
   }
 
   // Reset any open style/hyperlink at end of slice

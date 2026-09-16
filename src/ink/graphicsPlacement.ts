@@ -8,7 +8,7 @@ import type { Rectangle } from './layout/geometry.js'
 import { nodeCache } from './node-cache.js'
 import { cellAt, CellWidth, type Screen, type StylePool } from './screen.js'
 import { logForDebugging } from '../utils/debug.js'
-import { isCellGeometryStale } from '../utils/terminalGraphics.js'
+import { getCellPixelSize, isCellGeometryStale } from '../utils/terminalGraphics.js'
 import { cursorMove, cursorTo } from './termio/csi.js'
 
 /**
@@ -44,6 +44,20 @@ import { cursorMove, cursorTo } from './termio/csi.js'
  * fixed number of pixels, so once the cell size changes it no longer matches
  * the box the layout reserves, and when the new cell is smaller it spills past
  * the rectangle the erase is computed from, where nothing can ever clear it.
+ *
+ * One exception to the viewport rule: an image already drawn that leaves
+ * through the top, unmoved and unchanged, is not erased. The terminal carried
+ * its pixels into history along with the text, and taking them down there is
+ * permanent — nothing can draw above the viewport again.
+ *
+ * Which is why, on the main screen, this post-frame pass is not the only
+ * drawer. Rows go out one after another and scroll as they do, so a box can be
+ * pushed past the top by the very frame that created it — images arriving
+ * together, a reply streaming in behind one, a full reset reprinting the whole
+ * transcript. The frame writer therefore draws each image as it writes the
+ * box's last row, while its top is still on screen ({@link planRowGraphics}),
+ * and a box that ends up in history undrawn anyway asks for the rows to be
+ * written again ({@link takeGraphicsReprintRequest}).
  */
 export type GraphicsPlacement = {
   /** Node whose {@link nodeCache} rect supplies the absolute screen origin. */
@@ -197,11 +211,255 @@ export function setGraphicsPlacement(
 ): void {
   if (placement === null) {
     placements.delete(id)
+    reprintAsked.delete(id)
+    reprintOwed.delete(id)
     // Deliberately keeps `lastDrawn`: the pixels are still on screen, and the
     // next frame has to erase them even though the placement is gone.
     return
   }
   placements.set(id, placement)
+}
+
+/**
+ * A graphic drawn by the frame writer in the same pass that writes the rows it
+ * covers. See {@link planRowGraphics}.
+ */
+export type RowGraphic = {
+  readonly id: string
+  readonly x: number
+  /** Logical row of the box's top edge. */
+  readonly y: number
+  readonly rows: number
+  readonly columns: number
+  readonly sequence: string
+  readonly eraseSequence?: string
+}
+
+/**
+ * Most image payload the writer sends in one pass, newest images first.
+ *
+ * A full reset reprints the whole transcript and every image goes back out with
+ * its rows — that is what keeps history sharp. Without a bound, a session with
+ * hundreds of images would hand the terminal tens of megabytes in one frame.
+ * An image past the budget keeps its block render, as every image did before.
+ */
+const ROW_GRAPHICS_BUDGET_CHARS = 16 * 1024 * 1024
+
+/** Graphics planned for the frame being written, until it is committed. */
+let pendingRowGraphics: RowGraphic[] = []
+
+/**
+ * What each placement last asked a reprint for, by payload and position.
+ *
+ * A placement asks at most once per state per viewport epoch, which is what
+ * makes a reprint loop impossible. A reprint that did not draw it will not draw
+ * it the next time either, and once drawn it can only be lost again in the
+ * same state to a full reset, which draws it by itself. A new payload, a new
+ * position, or a resize is a new question.
+ */
+const reprintAsked = new Map<string, { sequence: string; x: number; y: number }>()
+/** Placements a reprint is still owed to; see {@link isGraphicsReprintOwed}. */
+const reprintOwed = new Set<string>()
+/** A request arrived since {@link takeGraphicsReprintRequest} last looked. */
+let reprintWanted = false
+
+/**
+ * Whether the frame writer can draw this placement as its rows go out.
+ *
+ * The writer draws an image right after the box's last row, moving up by the
+ * box height, so the top row is reachable only while the box is shorter than
+ * the window. The payload fits its box only while the cell geometry it was
+ * encoded against still holds and layout granted the whole box.
+ */
+function drawableWhileWriting(
+  placement: GraphicsPlacement,
+  rect: { x: number; width: number; height: number },
+  viewportRows: number,
+  viewportColumns: number,
+  cell: { width: number; height: number },
+): boolean {
+  return (
+    !isCellGeometryStale() &&
+    placement.cellWidth === cell.width &&
+    placement.cellHeight === cell.height &&
+    placement.rows > 0 &&
+    placement.rows < viewportRows &&
+    rect.width >= placement.columns &&
+    rect.height >= placement.rows &&
+    rect.x >= 0 &&
+    rect.x + placement.columns <= viewportColumns
+  )
+}
+
+/**
+ * Graphics the frame writer should draw inside the rows it is writing.
+ *
+ * The post-frame pass ({@link buildGraphicsSequence}) only reaches a box still
+ * wholly inside the viewport after everything below it has been written.
+ * Images arriving together, or a reply streaming right behind one, push boxes
+ * past the top first — those were never drawn at all. The writer has no such
+ * limit: when a box's last row goes out its top row is still on screen, so the
+ * image lands there and scrolls into history with the text, pixels and all.
+ *
+ * Returns boxes whose last row is in `[startY, endY)` and whose top row is at or
+ * below `topY` (the first row still on screen), ordered by last row.
+ * `afterClear` is a full-reset reprint: the screen was wiped, so every box goes
+ * out again. Otherwise only boxes with nothing drawn yet qualify; one already
+ * drawn is still on screen, or is the post-frame pass's to move.
+ */
+export function planRowGraphics(request: {
+  startY: number
+  endY: number
+  topY: number
+  viewportRows: number
+  viewportColumns: number
+  afterClear: boolean
+  budgetChars?: number
+}): RowGraphic[] {
+  if (placements.size === 0 || request.startY >= request.endY) return []
+  const cell = getCellPixelSize()
+  const candidates: RowGraphic[] = []
+  for (const [id, placement] of placements) {
+    const rect = nodeCache.get(placement.node)
+    if (rect === undefined) continue
+    const bottom = rect.y + placement.rows - 1
+    if (bottom < request.startY || bottom >= request.endY) continue
+    if (rect.y < request.topY) continue
+    if (!request.afterClear && lastDrawn.has(id)) continue
+    if (
+      !drawableWhileWriting(
+        placement,
+        rect,
+        request.viewportRows,
+        request.viewportColumns,
+        cell,
+      )
+    ) {
+      continue
+    }
+    candidates.push({
+      id,
+      x: rect.x,
+      y: rect.y,
+      rows: placement.rows,
+      columns: placement.columns,
+      sequence: placement.sequence,
+      eraseSequence: placement.eraseSequence,
+    })
+  }
+  if (candidates.length === 0) return []
+
+  // Newest first against the budget, then back into row order for the writer.
+  const budget = request.budgetChars ?? ROW_GRAPHICS_BUDGET_CHARS
+  candidates.sort((a, b) => b.y - a.y)
+  const planned: RowGraphic[] = []
+  let spent = 0
+  for (const graphic of candidates) {
+    if (planned.length > 0 && spent + graphic.sequence.length > budget) {
+      // A reprint would skip it again, so never ask for one on its behalf.
+      reprintAsked.set(graphic.id, {
+        sequence: graphic.sequence,
+        x: graphic.x,
+        y: graphic.y,
+      })
+      reprintOwed.delete(graphic.id)
+      continue
+    }
+    spent += graphic.sequence.length
+    planned.push(graphic)
+  }
+  planned.sort((a, b) => a.y + a.rows - (b.y + b.rows))
+  pendingRowGraphics.push(...planned)
+  return planned
+}
+
+/** Forget graphics planned for a frame, before planning the next one. */
+export function discardRowGraphics(): void {
+  pendingRowGraphics = []
+}
+
+/**
+ * Record what the frame writer drew, as the frame goes out.
+ *
+ * Called after a screen wipe has invalidated the old rectangles, so these
+ * records describe exactly the pixels this frame put on screen, and the
+ * post-frame pass treats them as drawn: left alone in view, kept in history.
+ */
+export function commitRowGraphics(screen: Screen, viewportTop: number): void {
+  if (pendingRowGraphics.length === 0) return
+  const written: string[] = []
+  for (const graphic of pendingRowGraphics) {
+    const rect = {
+      x: graphic.x,
+      y: graphic.y,
+      columns: graphic.columns,
+      rows: graphic.rows,
+    }
+    lastDrawn.set(graphic.id, {
+      ...rect,
+      viewportTop,
+      eraseSequence: graphic.eraseSequence,
+      sequence: graphic.sequence,
+      checksum: checksumRect(screen, rect),
+      redrawGeneration,
+    })
+    written.push(`${graphic.id} at ${graphic.x},${graphic.y}`)
+  }
+  pendingRowGraphics = []
+  logForDebugging(`graphics: written with rows — ${written.join(' | ')}`)
+}
+
+/**
+ * Ask for the transcript to be written again, for a placement that can only be
+ * drawn that way. Returns whether this is a new request.
+ */
+function askForReprint(
+  id: string,
+  placement: GraphicsPlacement,
+  rect: { x: number; y: number },
+): boolean {
+  const asked = reprintAsked.get(id)
+  if (
+    asked !== undefined &&
+    asked.x === rect.x &&
+    asked.y === rect.y &&
+    asked.sequence === placement.sequence
+  ) {
+    return false
+  }
+  reprintAsked.set(id, { sequence: placement.sequence, x: rect.x, y: rect.y })
+  reprintOwed.add(id)
+  reprintWanted = true
+  return true
+}
+
+/** Whether a reprint was asked for since the last call. Clears the flag. */
+export function takeGraphicsReprintRequest(): boolean {
+  const wanted = reprintWanted
+  reprintWanted = false
+  return wanted
+}
+
+/**
+ * Whether a placement that asked for a reprint is still mounted and undrawn.
+ *
+ * Checked when the reprint comes due rather than trusted from the request: a
+ * full reset for some other reason in the meantime draws every image with its
+ * rows, and a second one right behind it would only flicker.
+ */
+export function isGraphicsReprintOwed(): boolean {
+  for (const id of reprintOwed) {
+    if (placements.has(id) && !lastDrawn.has(id)) return true
+    reprintOwed.delete(id)
+  }
+  return false
+}
+
+/** Drop every request: the screen they were made for is about to be replaced. */
+export function forgetGraphicsReprintRequests(): void {
+  reprintAsked.clear()
+  reprintOwed.clear()
+  reprintWanted = false
 }
 
 export function hasGraphicsPlacements(): boolean {
@@ -272,6 +530,10 @@ export function invalidateGraphicsPlacements(): void {
 export function forceGraphicsRedraw(): void {
   redrawGeneration++
   beginViewportEpoch()
+  // A new viewport is a new question for every placement a reprint was asked
+  // for under the old one, and a reprint owed under it would run against
+  // geometry still being re-measured.
+  forgetGraphicsReprintRequests()
 }
 
 
@@ -449,6 +711,12 @@ export function buildGraphicsSequence(options: {
   cell: { width: number; height: number }
   screen: Screen
   stylePool: StylePool
+  /**
+   * Main screen: rows above the viewport are terminal history rather than a
+   * scrolled region. A box there cannot be brought back by shrinking it, only
+   * by writing its rows again — see {@link takeGraphicsReprintRequest}.
+   */
+  scrollback?: boolean
 }): string {
   if (placements.size === 0 && lastDrawn.size === 0) return ''
   const {
@@ -460,6 +728,7 @@ export function buildGraphicsSequence(options: {
     cell,
     screen,
     stylePool,
+    scrollback = false,
   } = options
 
   let body = ''
@@ -537,6 +806,11 @@ export function buildGraphicsSequence(options: {
    * back to blocks anyway. An image genuinely scrolled into history yields a
    * number below `MIN_PLACEMENT_ROWS`, which `reportRowLimit` declines, so the
    * two cases separate themselves.
+   *
+   * With `scrollback` set this is not used any more: the frame writer draws a
+   * box as its rows go out, so a box shorter than the window never needs to
+   * shrink to be drawn. Shrinking it there moved every row below it, forcing a
+   * full reset, and left the image smaller than the window allows.
    */
   const reportOverflow = (id: string, target: DrawnRect): void => {
     if (target.y >= viewportTop && target.y + target.rows > viewportBottom) {
@@ -634,6 +908,8 @@ export function buildGraphicsSequence(options: {
       continue
     }
 
+    const previous = lastDrawn.get(id)
+
     // The cursor cannot address rows outside the viewport, so a box that is
     // partly scrolled away would draw at the wrong origin.
     if (
@@ -642,11 +918,56 @@ export function buildGraphicsSequence(options: {
       target.y + target.rows > viewportBottom ||
       target.x + target.columns > viewportColumns
     ) {
+      // Drawing up there is impossible, but erasing is not required either. An
+      // image already drawn, still the same payload in the same transcript
+      // cells, that is leaving through the top was carried there by the
+      // terminal: the pixels belong to buffer cells, and cells scroll into
+      // history with the text. Erasing it here was what turned every image
+      // blocky one turn later, for good. Anything that breaks the match — a
+      // move, a re-encode, a resize epoch, new cell geometry, text written
+      // under it — still falls through to the erase below.
+      const leftThroughTop =
+        previous !== undefined &&
+        previous.redrawGeneration === redrawGeneration &&
+        previous.sequence === placement.sequence &&
+        sameLogicalRect(previous, target) &&
+        placement.cellWidth === cell.width &&
+        placement.cellHeight === cell.height &&
+        target.y < viewportTop &&
+        target.x >= 0 &&
+        target.x + target.columns <= viewportColumns &&
+        target.y + target.rows <= viewportBottom &&
+        (!overlaps(target, damage) ||
+          checksumRect(screen, target) === previous.checksum)
+      if (leftThroughTop && previous !== undefined) {
+        if (previous.viewportTop !== viewportTop) {
+          if (previous.y >= previous.viewportTop) {
+            trace.push(`keep ${id}: scrolled above viewport ${viewportTop}`)
+          }
+          lastDrawn.set(id, { ...previous, viewportTop })
+        }
+        continue
+      }
       trace.push(
         `skip ${id}: rows ${target.y}-${target.y + target.rows} ` +
           `outside viewport ${viewportTop}-${viewportBottom}`,
       )
-      reportOverflow(id, target)
+      if (scrollback) {
+        if (placement.rows >= viewportRows) {
+          // Taller than the window, so no pass can ever draw it: shrink it.
+          reportRowLimit(id, viewportRows - 1)
+        } else if (
+          // Anything shorter only has to be written again with its rows. The
+          // top-overflow shrink below would shift the whole transcript under
+          // history for nothing, and leave the image smaller for good.
+          drawableWhileWriting(placement, rect, viewportRows, viewportColumns, cell) &&
+          askForReprint(id, placement, target)
+        ) {
+          trace.push(`reprint asked for ${id}`)
+        }
+      } else {
+        reportOverflow(id, target)
+      }
       erase(id)
       continue
     }
@@ -661,7 +982,6 @@ export function buildGraphicsSequence(options: {
       continue
     }
 
-    const previous = lastDrawn.get(id)
     // An epoch bump means the pixels are still on screen but nothing about
     // where they sit can be trusted — the window was resized under them. Treat
     // it as a move: the record is kept, so the erase below can still reach the
@@ -673,9 +993,13 @@ export function buildGraphicsSequence(options: {
     // Same cells, new viewport origin: the transcript scrolled and the terminal
     // moved the pixels with it. Nothing to send — but the record has to follow,
     // or the erase that eventually runs would target the row the image sat on
-    // several screens ago.
+    // several screens ago. Only the origin follows: the checksum and payload of
+    // what is actually on screen stay. Recording the fresh target zeroed the
+    // checksum, so the next damaged frame re-sent the whole payload, and a
+    // re-encode landing in the same frame erased by the new image's id instead
+    // of the one drawn.
     if (!moved && previous !== undefined && previous.viewportTop !== viewportTop) {
-      lastDrawn.set(id, target)
+      lastDrawn.set(id, { ...previous, viewportTop })
     }
     // A fresh encode of the same image at the same size and place. Rare, but
     // the old payload is a different image as far as the terminal is concerned,

@@ -20,6 +20,7 @@ import {
 import { Box, RawAnsi, Text } from '../ink.js'
 import type { GraphicsOverlay } from '../utils/terminalGraphics.js'
 import {
+  allocateKittyImageId,
   getCellPixelSize,
   getGraphicsGeneration,
   hasMeasuredCellSize,
@@ -34,6 +35,12 @@ import {
   maxRowsForViewport,
   renderInlineImage,
 } from '../utils/terminalImage.js'
+import {
+  applyWithBatch,
+  beginImageRender,
+  createImageRenderToken,
+  endImageRender,
+} from './inlineImageBatch.js'
 
 /** Distinguishes concurrent placements; only needs to be unique per process. */
 let nextPlacementId = 0
@@ -124,6 +131,20 @@ export function InlineImage({
   if (placementId.current === null) {
     placementId.current = `inline-image-${nextPlacementId++}`
   }
+  // One Kitty id for the life of this image. Re-encoding the same pixels then
+  // yields the same payload, which is not mistaken for a different image — a
+  // fresh id per encode made every resize or re-measure look like a change.
+  const kittyImageId = useRef<number | null>(null)
+  if (kittyImageId.current === null) {
+    kittyImageId.current = allocateKittyImageId()
+  }
+  // This image's identity among renders landing together; see inlineImageBatch.
+  const renderToken = useRef<number | null>(null)
+  if (renderToken.current === null) {
+    renderToken.current = createImageRenderToken()
+  }
+  // Whether the render started by the effect below has yet to land.
+  const renderPending = useRef(false)
   // How many rows the renderer found available last time this image was too
   // tall to draw. Without it the component would keep re-encoding the same
   // oversized box, be withheld every frame, and leave the block-glyph fallback
@@ -148,8 +169,7 @@ export function InlineImage({
   )
 
   useEffect(() => {
-    // Guards a setState after unmount, and an earlier decode resolving after a
-    // later one and overwriting it.
+    const token = renderToken.current!
     if (!imagesEnabled) {
       // Clearing the state is what removes the box, and removing the box is
       // what erases the pixels. Doing it here rather than by returning early
@@ -159,7 +179,13 @@ export function InlineImage({
       setWithheld(false)
       return
     }
+    // Guards a setState after unmount, and an earlier decode resolving after a
+    // later one and overwriting it.
     let active = true
+    renderPending.current = true
+    // Registered in the effect, never during render: a render React throws away
+    // would leave an entry nothing ends, and every image would wait out the cap.
+    beginImageRender(token)
     void (async () => {
       try {
         const data = Buffer.from(base64, 'base64')
@@ -181,7 +207,13 @@ export function InlineImage({
         const overlay =
           !wantsGraphics || unsettled
             ? null
-            : await renderGraphicsOverlay(data, maxColumns, effectiveRowBudget)
+            : await renderGraphicsOverlay(
+                data,
+                maxColumns,
+                effectiveRowBudget,
+                undefined,
+                kittyImageId.current!,
+              )
         if (!active) return
 
         // With a graphic the box is already chosen, and the blocks have to fill
@@ -207,21 +239,31 @@ export function InlineImage({
         const outdated =
           overlay !== null &&
           (overlay.cellWidth !== cell.width || overlay.cellHeight !== cell.height)
-        setImage(rendered)
-        setOverlay(rendered ? overlay : null)
-        setWithheld(rendered !== null && (unsettled || outdated))
+        // Lands together with the other images rendering right now, so a batch
+        // of reads, or every image re-encoding after a resize, changes the
+        // transcript once instead of once per image.
+        applyWithBatch(token, () => {
+          if (!active) return
+          renderPending.current = false
+          setImage(rendered)
+          setOverlay(rendered ? overlay : null)
+          setWithheld(rendered !== null && (unsettled || outdated))
+        })
       } catch {
         // renderInlineImage already swallows decode failures; this only catches
         // a malformed base64 payload. The summary line stands on its own.
-        if (active) {
-          setImage(null)
-          setOverlay(null)
-          setWithheld(false)
-        }
+        if (!active) return
+        renderPending.current = false
+        endImageRender(token)
+        setImage(null)
+        setOverlay(null)
+        setWithheld(false)
       }
     })()
     return () => {
       active = false
+      renderPending.current = false
+      endImageRender(token)
     }
   }, [
     base64,
@@ -237,9 +279,22 @@ export function InlineImage({
   // `withheld` can only be true while the cell geometry is unsettled or a
   // payload disagrees with it, and both resolve on their own — the stale mark
   // carries a deadline, and a re-encode against the current cell matches it.
+  //
+  // It only looks again once nothing is still rendering. A render under way
+  // lands by itself, and restarting it throws its encode away: after a resize,
+  // every encode slower than the retry interval was restarted over and over,
+  // and the images stayed blocky for seconds.
   useEffect(() => {
     if (!withheld || !imagesEnabled) return
-    const timer = setTimeout(() => setAttempt(n => n + 1), GRAPHICS_RETRY_MS)
+    let timer: ReturnType<typeof setTimeout>
+    const retry = (): void => {
+      if (renderPending.current) {
+        timer = setTimeout(retry, GRAPHICS_RETRY_MS)
+        return
+      }
+      setAttempt(n => n + 1)
+    }
+    timer = setTimeout(retry, GRAPHICS_RETRY_MS)
     return () => clearTimeout(timer)
   }, [withheld, attempt, imagesEnabled])
 

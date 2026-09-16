@@ -33,7 +33,7 @@ export function emptyFrame(
   }
 }
 
-export type FlickerReason = 'resize' | 'offscreen' | 'clear'
+export type FlickerReason = 'resize' | 'offscreen' | 'clear' | 'graphics'
 
 export type FrameEvent = {
   durationMs: number

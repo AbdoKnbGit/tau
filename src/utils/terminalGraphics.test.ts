@@ -26,6 +26,7 @@ import {
   fitGraphicsToCells,
   getCellPixelSize,
   getGraphicsGeneration,
+  graphicsEncodeQuietFor,
   isCellGeometryCurrent,
   type GraphicsProtocol,
   isCellGeometryStale,
@@ -619,6 +620,54 @@ await asyncTest('no graphic is encoded while the cell size is unknown', async ()
   )
   clearCellGeometryStale()
   assertEqual(overlay, null, 'withheld until the re-measure answers')
+})
+
+await asyncTest('encoding reports itself busy while it runs, and how long it has been quiet', async () => {
+  // Ink holds back a reprint of the transcript while images are still being
+  // encoded, so a resize that re-encodes every image costs one full reset.
+  setCellPixelSize({ width: 10, height: 20 })
+  const pending = renderGraphicsOverlay(
+    Buffer.from('not really a png'),
+    40,
+    20,
+    'sixel',
+  )
+  assertEqual(graphicsEncodeQuietFor(), 0, 'busy while the encode runs')
+  await pending
+  const quiet = graphicsEncodeQuietFor()
+  assert(Number.isFinite(quiet) && quiet >= 0, 'quiet once it ends, even in failure')
+  await new Promise(resolve => setTimeout(resolve, 40))
+  assert(graphicsEncodeQuietFor() >= 30, 'measured from when it ended')
+
+  markCellGeometryStale()
+  const refused = renderGraphicsOverlay(Buffer.from('x'), 40, 20, 'sixel')
+  assert(graphicsEncodeQuietFor() >= 30, 'a refused encode never counts as busy')
+  await refused
+  clearCellGeometryStale()
+})
+
+test('a re-measure that only confirms the record announces nothing', () => {
+  // A resize is measured two or three times over, and every announcement
+  // re-encoded every image, restarting encodes still in flight. Only a change
+  // is news.
+  setCellPixelSize({ width: 10, height: 20 }, { columns: 120, rows: 40 })
+  const before = getGraphicsGeneration()
+  setCellPixelSize({ width: 10, height: 20 }, { columns: 120, rows: 40 })
+  assertEqual(getGraphicsGeneration(), before, 'the same cell on the same grid')
+
+  setCellPixelSize({ width: 12, height: 24 }, { columns: 120, rows: 40 })
+  const zoomed = getGraphicsGeneration()
+  assert(zoomed > before, 'a new cell size is announced')
+  setCellPixelSize({ width: 12, height: 24 }, { columns: 100, rows: 33 })
+  const regridded = getGraphicsGeneration()
+  assert(regridded > zoomed, 'so is the same cell on a new grid')
+
+  markCellGeometryStale()
+  const marked = getGraphicsGeneration()
+  setCellPixelSize({ width: 12, height: 24 }, { columns: 100, rows: 33 })
+  assert(getGraphicsGeneration() > marked, 'and any answer that lifts a stale mark')
+  assert(!isCellGeometryStale(), 'which it does')
+  setCellPixelSize({ width: 10, height: 20 }, { columns: 120, rows: 40 })
 })
 
 test('a measurement stops being usable once the grid moves under it', () => {
