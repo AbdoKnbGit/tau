@@ -20,8 +20,13 @@ export type RemoteState = {
   host: string
   /** Full scan URL, fragment included. */
   url: string
-  /** In global mode the LAN URL still works too; null in local mode. */
+  /**
+   * In global mode the LAN URL still works too; null in local mode, and null
+   * when no LAN address is reachable (WSL 2 NAT).
+   */
   lanUrl: string | null
+  /** Local mode: this machine's other real LAN addresses, for a phone elsewhere. */
+  otherHosts: string[]
   /** Set when cloudflared died after startup — the public URL is dead. */
   tunnelDown?: boolean
   /** Live phone/browser connections. */

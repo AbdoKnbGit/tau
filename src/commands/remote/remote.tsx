@@ -1,18 +1,20 @@
 import { toString as qrToString } from 'qrcode'
 import * as React from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { Box, Text, useInput } from '../../ink.js'
 import { subscribeClients } from '../../services/remote/bus.js'
 import {
+  InvalidRemoteHostError,
   isOn,
   NoLanError,
   RemoteCancelledError,
   turnOff,
   turnOn,
+  WslNatError,
   type RemoteMode,
 } from '../../services/remote/lifecycle.js'
-import { listLanCandidates } from '../../services/remote/lan.js'
+import { resolveLanReach, type LanReach } from '../../services/remote/reach.js'
 import { getRemoteState } from '../../services/remote/state.js'
 import { TunnelUnavailableError } from '../../services/remote/tunnel.js'
 import type {
@@ -36,7 +38,11 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args = '') => 
       state
         ? [
             `remote: ${state.mode}`,
-            state.tunnelDown ? 'tunnel DOWN (LAN only)' : state.url,
+            state.tunnelDown
+              ? state.lanUrl
+                ? 'tunnel DOWN (LAN only)'
+                : 'tunnel DOWN'
+              : state.url,
             state.lanUrl ? `lan: ${state.lanUrl}` : null,
             `${state.clients} device(s)`,
           ]
@@ -56,18 +62,45 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args = '') => 
 
 // ─── Mode picker ─────────────────────────────────────────────────────
 
+function localHint(reach: LanReach | null): string {
+  if (!reach) return 'Looking for your Wi-Fi address…'
+  switch (reach.kind) {
+    case 'lan':
+      return `Serves on ${reach.address}. Instant, nothing leaves your network.`
+    case 'wsl-nat':
+      return 'Your phone cannot reach it: WSL 2 networking hides this session from your Wi-Fi.'
+    case 'invalid-override':
+      return 'TAU_REMOTE_HOST is not a bare IP address or hostname.'
+    case 'none':
+      return 'No Wi-Fi/Ethernet address found right now.'
+  }
+}
+
 function ModePicker({ onDone }: { onDone: LocalJSXCommandOnDone }): React.ReactNode {
   const [idx, setIdx] = useState(0)
   const [mode, setMode] = useState<RemoteMode | null>(null)
-  const lan = listLanCandidates()[0]?.address ?? null
+  const [reach, setReach] = useState<LanReach | null>(null)
+  const moved = useRef(false)
+
+  useEffect(() => {
+    let live = true
+    void resolveLanReach().then(result => {
+      if (!live) return
+      setReach(result)
+      // Under WSL 2 NAT only global can work, so start on it — unless the
+      // user has already picked a row while this was resolving.
+      if (result.kind === 'wsl-nat' && !moved.current) setIdx(1)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
 
   const items: { id: RemoteMode; label: string; hint: string }[] = [
     {
       id: 'local',
       label: 'Local  ·  same Wi-Fi',
-      hint: lan
-        ? `Serves on ${lan}. Instant, nothing leaves your network.`
-        : 'No Wi-Fi/Ethernet address found right now.',
+      hint: localHint(reach),
     },
     {
       id: 'global',
@@ -81,8 +114,14 @@ function ModePicker({ onDone }: { onDone: LocalJSXCommandOnDone }): React.ReactN
       onDone('')
       return
     }
-    if (key.upArrow || input === 'k') setIdx(i => (i + items.length - 1) % items.length)
-    if (key.downArrow || input === 'j') setIdx(i => (i + 1) % items.length)
+    if (key.upArrow || input === 'k') {
+      moved.current = true
+      setIdx(i => (i + items.length - 1) % items.length)
+    }
+    if (key.downArrow || input === 'j') {
+      moved.current = true
+      setIdx(i => (i + 1) % items.length)
+    }
     if (key.return) setMode(items[idx]!.id)
   })
 
@@ -111,17 +150,23 @@ function ModePicker({ onDone }: { onDone: LocalJSXCommandOnDone }): React.ReactN
 // ─── Pairing ─────────────────────────────────────────────────────────
 
 function Pairing({
-  mode,
+  mode: requested,
   onDone,
 }: {
   mode: RemoteMode
   onDone: LocalJSXCommandOnDone
 }): React.ReactNode {
+  // State rather than the prop: local mode's error screen can hand over to
+  // global without closing the dialog.
+  const [mode, setMode] = useState<RemoteMode>(requested)
   const [qrAscii, setQrAscii] = useState('')
   const [url, setUrl] = useState('')
   const [lanUrl, setLanUrl] = useState<string | null>(null)
+  const [otherHosts, setOtherHosts] = useState<string[]>([])
   const [clients, setClients] = useState(getRemoteState()?.clients ?? 0)
   const [error, setError] = useState<string | null>(null)
+  // Local mode cannot work here but global can (WSL 2 NAT).
+  const [offerGlobal, setOfferGlobal] = useState(false)
   const [stage, setStage] = useState('')
 
   useEffect(() => {
@@ -134,6 +179,7 @@ function Pairing({
         if (cancelled) return
         setUrl(state.url)
         setLanUrl(state.lanUrl)
+        setOtherHosts(state.otherHosts)
         setClients(state.clients)
         return qrToString(state.url, { type: 'utf8', errorCorrectionLevel: 'L' })
       })
@@ -149,8 +195,12 @@ function Pairing({
         // The user asked for /remote off mid-start; closing quietly is the
         // answer, not an error dialog.
         if (cancelled || err instanceof RemoteCancelledError) return
+        setOfferGlobal(err instanceof WslNatError)
         setError(
-          err instanceof NoLanError || err instanceof TunnelUnavailableError
+          err instanceof NoLanError ||
+            err instanceof WslNatError ||
+            err instanceof InvalidRemoteHostError ||
+            err instanceof TunnelUnavailableError
             ? err.message
             : `Could not start: ${err?.message ?? err}`,
         )
@@ -175,8 +225,17 @@ function Pairing({
 
   // Esc closes the pane and leaves the server running — the point is to scan,
   // pocket the phone, and let the agent carry on.
-  useInput((_input, key) => {
-    if (key.escape) onDone(url ? `remote: ${mode} · ${url}` : '')
+  useInput((input, key) => {
+    if (key.escape) {
+      onDone(url ? `remote: ${mode} · ${url}` : '')
+      return
+    }
+    if (offerGlobal && input.toLowerCase() === 'g') {
+      setOfferGlobal(false)
+      setError(null)
+      setStage('')
+      setMode('global')
+    }
   })
 
   if (error) {
@@ -188,8 +247,18 @@ function Pairing({
               {line}
             </Text>
           ))}
+          {offerGlobal && (
+            <Box marginTop={1} flexDirection="column">
+              <Text>Press G to use Global instead. It works from anywhere, including cellular.</Text>
+              <Text dimColor>
+                To stay on Wi-Fi: switch WSL to mirrored networking (Windows 11 22H2+) and allow
+                port 7777 in the Hyper-V firewall, or forward port 7777 from Windows and start
+                Tau with TAU_REMOTE_HOST set to the Wi-Fi address of this PC.
+              </Text>
+            </Box>
+          )}
           <Box marginTop={1}>
-            <Text dimColor>Esc to close</Text>
+            <Text dimColor>{offerGlobal ? 'G for Global · Esc to close' : 'Esc to close'}</Text>
           </Box>
         </Box>
       </Dialog>
@@ -224,6 +293,11 @@ function Pairing({
           <Box marginTop={1} flexDirection="column">
             <Text dimColor>{url}</Text>
             {lanUrl && <Text dimColor>also on this Wi-Fi: {lanUrl}</Text>}
+            {otherHosts.length > 0 && (
+              <Text dimColor>
+                phone on another network? this PC also answers on {otherHosts.join(', ')}
+              </Text>
+            )}
           </Box>
         )}
         <Box marginTop={1}>

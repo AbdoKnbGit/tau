@@ -19,7 +19,7 @@ import { isRemoteActive, setBroadcastSink } from './bus.js'
 import type { RemoteCommand } from './commands.js'
 import { clearImages } from './images.js'
 import type { RemoteAsk } from './interactive.js'
-import { pickLanAddress } from './lan.js'
+import { resolveLanReach } from './reach.js'
 import { startRemoteServer, type RemoteServer, type ServerHooks } from './server.js'
 import { getRemoteState, newToken, setRemoteState, type RemoteState } from './state.js'
 import { startTunnel, type Tunnel } from './tunnel.js'
@@ -93,6 +93,24 @@ export class NoLanError extends Error {
   }
 }
 
+/** Local mode under WSL 2 networking that nothing on the Wi-Fi can reach. */
+export class WslNatError extends Error {
+  constructor(readonly networkingMode: string) {
+    const label = networkingMode === 'nat' ? 'NAT' : networkingMode
+    super(
+      `Tau is running inside WSL 2 with ${label} networking, which hides it from your Wi-Fi.`,
+    )
+    this.name = 'WslNatError'
+  }
+}
+
+export class InvalidRemoteHostError extends Error {
+  constructor(value: string) {
+    super(`TAU_REMOTE_HOST must be a bare IP address or hostname, not "${value}".`)
+    this.name = 'InvalidRemoteHostError'
+  }
+}
+
 /**
  * Serializes starts. Two `/remote` invocations racing — a second one typed
  * while a tunnel is still opening, say — would each bind a listener, and the
@@ -146,19 +164,27 @@ async function start(
   // Already serving in the requested mode — hand back the same link rather
   // than minting a second token and orphaning whatever is already paired.
   if (server && existing && existing.mode === mode) return existing
+
+  // Fail before binding anything — and before a mode switch tears down a
+  // session that works — when local mode has no address a phone can reach.
+  // Global mode still reports the LAN address when there is one: the listener
+  // binds 0.0.0.0 either way, so a tunnelled session is reachable on Wi-Fi too.
+  const reach = await resolveLanReach()
+  if (superseded()) throw new RemoteCancelledError()
+  if (mode === 'local') {
+    if (reach.kind === 'wsl-nat') throw new WslNatError(reach.networkingMode)
+    if (reach.kind === 'invalid-override') throw new InvalidRemoteHostError(reach.value)
+    if (reach.kind === 'none') throw new NoLanError()
+  }
+  const lan = reach.kind === 'lan' ? reach : null
+  const host = lan?.address ?? '127.0.0.1'
+
   if (server) {
     // Our own stop for a mode switch — re-baseline so it doesn't read as
     // someone else cancelling us.
     turnOff()
     epoch = stopEpoch
   }
-
-  // Fail before binding anything when local mode has no address to offer.
-  // Global mode still reports the LAN address when there is one: the listener
-  // binds 0.0.0.0 either way, so a tunnelled session is reachable on Wi-Fi too.
-  const lan = pickLanAddress()
-  const host = mode === 'local' ? lan : (lan ?? '127.0.0.1')
-  if (!host) throw new NoLanError()
 
   const token = newToken()
   const hooks: ServerHooks = {
@@ -183,7 +209,7 @@ async function start(
     })
   }
 
-  const lanUrl = lan ? `http://${lan}:${started.port}/#${token}` : null
+  const lanUrl = lan ? `http://${lan.address}:${started.port}/#${token}` : null
 
   let origin: string
   if (mode === 'global') {
@@ -220,6 +246,7 @@ async function start(
     host,
     url: `${origin}/#${token}`,
     lanUrl: mode === 'global' ? lanUrl : null,
+    otherHosts: mode === 'local' && lan ? lan.others : [],
     clients: 0,
   }
   setRemoteState(state)

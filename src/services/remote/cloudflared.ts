@@ -15,6 +15,7 @@
 
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
+import { getPlatform } from '../../utils/platform.js'
 
 const BIN = 'cloudflared'
 
@@ -132,6 +133,11 @@ export function installHint(): string {
   }
   if (process.platform === 'darwin') {
     return 'Install it with:  brew install cloudflared'
+  }
+  if (getPlatform() === 'wsl') {
+    // Tau is a Linux process here and looks for `cloudflared`, so a winget
+    // install on the Windows side (`cloudflared.exe`) is never found.
+    return 'Install the Linux build inside WSL (a Windows install is not visible here):  https://pkg.cloudflare.com'
   }
   return 'Install it from:  https://pkg.cloudflare.com'
 }
