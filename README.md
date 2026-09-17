@@ -45,6 +45,8 @@ tau --dangerously-skip-permissions
 tau update
 ```
 
+See what changed in each version in **[CHANGELOG.md](CHANGELOG.md)**.
+
 <p align="center">
   <img src="tau_docs.PNG" alt="Tau start screen" width="720">
 </p>
