@@ -49,6 +49,7 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
 } from './model/providers.js'
+import { stripObservableBackfill } from './observableInput.js'
 import {
   getFileReadIgnorePatterns,
   normalizePatternsToPath,
@@ -741,6 +742,9 @@ export function normalizeToolInputForAPI<T extends Tool>(
       return input
     }
     default:
-      return input
+      // The REPL keeps the observer copy of a tool call (see query.ts), so
+      // backfilled fields would otherwise reach the provider from the next
+      // turn on and change the bytes of an already-cached turn.
+      return stripObservableBackfill(tool, input)
   }
 }

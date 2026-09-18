@@ -2,7 +2,11 @@
  * Run: bun run src/lanes/openai-compat/cache_debug.test.ts
  */
 
-import { compatCacheDebugKey, firstDivergingSegment } from './cache_debug.js'
+import {
+  compatCacheDebugKey,
+  compatCacheDebugStream,
+  firstDivergingSegment,
+} from './cache_debug.js'
 
 let passed = 0
 let failed = 0
@@ -68,6 +72,42 @@ test('debug key separates side no-tool requests from toolful main-loop requests'
     tools: [{ type: 'function', function: { name: 'Bash', description: '', parameters: {} } }],
   } as any)
   assert(noTools !== tools, `${noTools} should not equal ${tools}`)
+})
+
+const body = (...messages: Array<{ role: string; content: string }>) => ({ messages }) as any
+
+test('main-thread query sources share one stream', () => {
+  const history = body({ role: 'system', content: 's' }, { role: 'user', content: 'hi' })
+  const a = compatCacheDebugStream('repl_main_thread', history)
+  const b = compatCacheDebugStream('repl_main_thread:outputStyle:x', history)
+  const c = compatCacheDebugStream(undefined, history)
+  assert(a === b && b === c && a.startsWith('main#'), `${a} / ${b} / ${c}`)
+})
+
+test('parallel agents of one type are separate streams', () => {
+  const alpha = compatCacheDebugStream('agent:builtin:general-purpose', body({ role: 'user', content: 'read a' }))
+  const beta = compatCacheDebugStream('agent:builtin:general-purpose', body({ role: 'user', content: 'read b' }))
+  assert(alpha !== beta, `${alpha} should not equal ${beta}`)
+})
+
+test('a resumed agent stays on its stream', () => {
+  const first = body({ role: 'user', content: 'read a' }, { role: 'assistant', content: 'A' })
+  const resumed = body(
+    { role: 'user', content: 'read a' },
+    { role: 'assistant', content: 'A' },
+    { role: 'user', content: 'now read c' },
+  )
+  const s1 = compatCacheDebugStream('agent:builtin:general-purpose', first)
+  const s2 = compatCacheDebugStream('agent:builtin:general-purpose', resumed)
+  assert(s1 === s2, `${s1} should equal ${s2}`)
+})
+
+test('a side query is its own stream but anchored to the same conversation', () => {
+  const history = body({ role: 'user', content: 'hi' })
+  const main = compatCacheDebugStream('repl_main_thread', history)
+  const side = compatCacheDebugStream('prompt_suggestion', history)
+  assert(main !== side, 'side query must not overwrite the main baseline')
+  assert(main.split('#')[1] === side.split('#')[1], `${main} / ${side}`)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

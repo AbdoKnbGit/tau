@@ -633,6 +633,49 @@ function main(): void {
     assert(firstUser.userInputMessage.content.includes('System rules'), 'expected system-bearing first user turn to be preserved')
   })
 
+  test('a grid cut keeps the trimmed history prefix stable while the conversation grows', () => {
+    const budget = 20_000
+    const pair = (n: number) => [
+      { userInputMessage: { content: `Turn ${n} ` + 'U'.repeat(400), modelId: 'deepseek-3.2' } },
+      { assistantResponseMessage: { content: `Answer ${n} ` + 'A'.repeat(400) } },
+    ]
+    // Each turn appends one ~1 KB pair; count how often the first kept entry
+    // after the preserved prefix changes (each change is a prompt-cache miss).
+    const cutMoves = (grid: number | undefined): { moves: number; maxSize: number } => {
+      let moves = 0
+      let maxSize = 0
+      let previousFirst: string | undefined
+      for (let turns = 1; turns <= 80; turns++) {
+        const history: any[] = [
+          { userInputMessage: { content: 'System rules ' + 'S'.repeat(300), modelId: 'deepseek-3.2' } },
+          { assistantResponseMessage: { content: 'ok' } },
+        ]
+        for (let n = 1; n <= turns; n++) history.push(...pair(n))
+        const payload = {
+          conversationState: {
+            chatTriggerType: 'MANUAL' as const,
+            conversationId: 'grid',
+            currentMessage: { userInputMessage: { content: 'Current', modelId: 'deepseek-3.2' } },
+            history,
+          },
+        }
+        const stats = trimKiroPayloadToLimit(payload as any, budget, { preserveLeadingEntries: 2, cutGridBytes: grid })
+        maxSize = Math.max(maxSize, checkKiroPayloadSize(payload as any))
+        if (!stats.trimmed) continue
+        const first = JSON.stringify(payload.conversationState.history[2] ?? null)
+        if (previousFirst !== undefined && first !== previousFirst) moves++
+        previousFirst = first
+      }
+      return { moves, maxSize }
+    }
+    const minimal = cutMoves(undefined)
+    const grid = cutMoves(budget / 4)
+    assert(minimal.maxSize <= budget && grid.maxSize <= budget, `over budget: ${minimal.maxSize} / ${grid.maxSize}`)
+    assert(minimal.moves > 50, `expected the minimal cut to move almost every turn, got ${minimal.moves}`)
+    assert(grid.moves <= 16, `expected the grid cut to move rarely, got ${grid.moves}`)
+    console.log(`      cut moves over 80 turns: minimal=${minimal.moves} grid=${grid.moves}`)
+  })
+
   test('soft-trims Kiro payloads during build to control per-turn token spend', () => {
     const previousTarget = process.env.CLAUDEX_KIRO_TARGET_PAYLOAD_BYTES
     const previousMax = process.env.CLAUDEX_KIRO_MAX_PAYLOAD_BYTES

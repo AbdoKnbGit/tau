@@ -60,7 +60,10 @@ import {
 import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterHooks.js'
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
-import { createUserMessage } from '../../utils/messages.js'
+import {
+  createUserMessage,
+  getMessagesAfterCompactBoundary,
+} from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
@@ -90,6 +93,10 @@ import {
 } from '../../utils/forcedProvider.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import {
+  refuseToolsOutsideRunPolicy,
+  rememberAgentConversation,
+} from './resumeParity.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import {
   getAPIProvider,
@@ -309,6 +316,7 @@ async function* runAgentWithoutProviderOverride({
   toolUseContext,
   canUseTool,
   isAsync,
+  spawnedAsync,
   canShowPermissionPrompts,
   forkContextMessages,
   querySource,
@@ -331,6 +339,12 @@ async function* runAgentWithoutProviderOverride({
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
   isAsync: boolean
+  /** Whether the agent was spawned to run in the background. Defaults to
+   * isAsync. A resume always runs in the background but passes the spawn's
+   * value: the tool pool and CLI identity line are part of the prompt prefix,
+   * so building them for the background run would change the request from
+   * byte 0 and miss every provider's prompt cache. */
+  spawnedAsync?: boolean
   /** Whether this agent can show permission prompts. Defaults to !isAsync.
    * Set to true for in-process teammates that run async but share the terminal. */
   canShowPermissionPrompts?: boolean
@@ -573,9 +587,23 @@ async function* runAgentWithoutProviderOverride({
     }
   }
 
-  const resolvedTools = useExactTools
+  // Declare the tools the agent was spawned with. A foreground agent resumed
+  // in the background keeps its foreground declarations (same prompt prefix);
+  // the tools the background policy excludes stay declared but refuse to run,
+  // as they could not run in a background spawn either.
+  const spawnShapeAsync = spawnedAsync ?? isAsync
+  const declaredTools = useExactTools
     ? availableTools
-    : resolveAgentTools(agentDefinition, availableTools, isAsync).resolvedTools
+    : resolveAgentTools(agentDefinition, availableTools, spawnShapeAsync)
+        .resolvedTools
+  const resolvedTools =
+    !useExactTools && isAsync && !spawnShapeAsync
+      ? refuseToolsOutsideRunPolicy(
+          declaredTools,
+          resolveAgentTools(agentDefinition, availableTools, true).resolvedTools,
+          'is not available while this agent runs in the background.',
+        )
+      : declaredTools
 
   const additionalWorkingDirectories = Array.from(
     appState.toolPermissionContext.additionalWorkingDirectories.keys(),
@@ -741,9 +769,11 @@ async function* runAgentWithoutProviderOverride({
 
   // Build agent-specific options
   const agentOptions: ToolUseContext['options'] = {
+    // Picks the CLI identity line at byte 0 of the system prompt, so it follows
+    // the spawn's shape. Permission prompts still follow isAsync.
     isNonInteractiveSession: useExactTools
       ? toolUseContext.options.isNonInteractiveSession
-      : isAsync
+      : spawnShapeAsync
         ? true
         : (toolUseContext.options.isNonInteractiveSession ?? false),
     appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
@@ -815,10 +845,17 @@ async function* runAgentWithoutProviderOverride({
     agentType: agentDefinition.agentType,
     ...(worktreePath && { worktreePath }),
     ...(description && { description }),
+    spawnedAsync: spawnShapeAsync,
+    ...(model && { model }),
   }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
+
+  // The conversation exactly as the query loop runs it, attachments included
+  // (the sidechain transcript drops those), so a resume in this process sends
+  // the same prefix. See resumeParity.ts.
+  const liveConversation: Message[] = [...initialMessages]
 
   // Serialize Antigravity Gemini agents: the backend keeps ~one implicit
   // cache slot per account, so concurrent agent streams evict each other
@@ -864,6 +901,17 @@ async function* runAgentWithoutProviderOverride({
         continue
       }
 
+      // A streaming fallback discards the partial assistant message it had
+      // already yielded. Drop it from the live conversation too (as the REPL
+      // does), or a resume would replay a message the agent stopped sending.
+      if (message.type === 'tombstone') {
+        const orphan = liveConversation.findIndex(
+          m => m.uuid === message.message.uuid,
+        )
+        if (orphan !== -1) liveConversation.splice(orphan, 1)
+        continue
+      }
+
       // Yield attachment messages (e.g., structured_output) without recording them
       if (message.type === 'attachment') {
         // Handle max turns reached signal from query.ts
@@ -882,6 +930,7 @@ async function* runAgentWithoutProviderOverride({
           )
           break
         }
+        liveConversation.push(message)
         yield message
         continue
       }
@@ -897,6 +946,7 @@ async function* runAgentWithoutProviderOverride({
         )
         if (message.type !== 'progress') {
           lastRecordedUuid = message.uuid
+          liveConversation.push(message)
         }
         yield message
       }
@@ -926,6 +976,12 @@ async function* runAgentWithoutProviderOverride({
     }
     // Release cloned file state cache memory
     agentToolUseContext.readFileState.clear()
+    // Kept for a SendMessage resume, cut at the last compaction the way the
+    // transcript chain is.
+    rememberAgentConversation(
+      agentId,
+      getMessagesAfterCompactBoundary(liveConversation),
+    )
     // Release the cloned fork context messages
     initialMessages.length = 0
     // Release perfetto agent registry entry

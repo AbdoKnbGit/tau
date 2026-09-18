@@ -209,7 +209,12 @@ function _optimizeKiroPayload(
   )
 
   if (targetBytes > 0 && checkKiroPayloadSize(payload) > targetBytes) {
-    trimKiroPayloadToLimit(payload, targetBytes, { preserveLeadingEntries })
+    trimKiroPayloadToLimit(payload, targetBytes, {
+      preserveLeadingEntries,
+      // A quarter of the budget per step: the cut moves about once per
+      // quarter-budget of growth instead of every turn.
+      cutGridBytes: Math.floor(targetBytes / 4),
+    })
   }
 
   const effectiveHardLimit = maxBytes > 0 ? maxBytes : KIRO_DEFAULT_MAX_PAYLOAD_BYTES

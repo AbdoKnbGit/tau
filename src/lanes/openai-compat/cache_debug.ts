@@ -7,7 +7,8 @@
  * between turns?" This instrument answers it: it fingerprints every prefix
  * segment (each tool, the system message, then each conversation message) with
  * cache_control normalized OUT (gateways strip it before the upstream, so it is
- * not real content churn), diffs against the previous same-session request, and
+ * not real content churn), diffs against the previous request of the same
+ * stream (main thread, one agent, or a side query against the main thread), and
  * reports the FIRST diverging segment — the exact point the cache goes cold.
  *
  * Enable with TAU_CACHE_DEBUG=1. Output: a one-line verdict on stderr plus a
@@ -100,6 +101,34 @@ export function compatCacheDebugKey(
 }
 
 /**
+ * The request stream within a session: its query source plus its first user
+ * message (an agent's task prompt, unchanged by a resume). Most providers give
+ * agents the root session id, and some send none, so the session alone mixes
+ * the main thread, every agent and side queries, and each verdict diffs
+ * against whichever of them sent last.
+ */
+export function compatCacheDebugStream(
+  querySource: string | undefined,
+  body: Pick<OpenAIChatRequest, 'messages'>,
+): string {
+  const source =
+    !querySource || querySource.startsWith('repl_main_thread') || querySource === 'sdk'
+      ? 'main'
+      : querySource
+  const firstUser = body.messages?.find(m => m.role === 'user')
+  return `${source}#${firstUser ? shortHash(normalizeMessage(firstUser)) : '-'}`
+}
+
+/** Side queries (prompt suggestions, compaction, ...) reuse the main thread's
+ *  prefix: diff them against it, without replacing its baseline. */
+function parentStream(stream: string, querySource: string | undefined): string | undefined {
+  if (stream.startsWith('main#') || querySource?.startsWith('agent:')) return undefined
+  return `main#${stream.slice(stream.indexOf('#') + 1)}`
+}
+
+const MAX_TRACKED_STREAMS = 256
+
+/**
  * Compare `segments` against the previous request for `key`. Returns the index
  * of the first diverging segment, or -1 when the new request is a clean prefix
  * extension of the previous one (every shared segment identical).
@@ -124,10 +153,19 @@ export function recordCompatCacheDebug(
 ): void {
   if (!isCompatCacheDebugEnabled()) return
   try {
-    const key = compatCacheDebugKey(provider, model, sessionId, body)
+    const base = compatCacheDebugKey(provider, model, sessionId, body)
+    const stream = compatCacheDebugStream(querySource, body)
+    const key = `${base}:${stream}`
+    const parent = parentStream(stream, querySource)
     const segments = buildSegments(body)
-    const prev = prevBySession.get(key)
+    const parentPrev = parent ? prevBySession.get(`${base}:${parent}`) : undefined
+    const prev = parentPrev ?? prevBySession.get(key)
+    prevBySession.delete(key)
     prevBySession.set(key, segments)
+    if (prevBySession.size > MAX_TRACKED_STREAMS) {
+      const oldest = prevBySession.keys().next().value
+      if (oldest !== undefined) prevBySession.delete(oldest)
+    }
 
     let diverge = -1
     let verdict: string
@@ -148,6 +186,7 @@ export function recordCompatCacheDebug(
       querySource,
       session: sessionId ?? 'no-session',
       cacheKey: key,
+      baseline: parentPrev ? 'main' : 'self',
       nSegments: segments.length,
       prevSegments: prev?.length ?? 0,
       firstDiverging: diverge,

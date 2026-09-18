@@ -18,6 +18,7 @@ import {
   filterWhitespaceOnlyAssistantMessages,
 } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
+import type { ModelAlias } from '../../utils/model/aliases.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
 import {
   getAgentTranscript,
@@ -35,6 +36,7 @@ import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runWithAgentProvider } from '../../utils/forcedProvider.js'
 import { setAgentResolvedModel } from './agentModelManager.js'
+import { getAgentConversation } from './resumeParity.js'
 import { runAgent } from './runAgent.js'
 
 export type ResumeAgentResult = {
@@ -70,11 +72,24 @@ export async function resumeAgentBackground({
   if (!transcript) {
     throw new Error(`No transcript found for agent ID: ${agentId}`)
   }
-  const resumedMessages = filterWhitespaceOnlyAssistantMessages(
-    filterOrphanedThinkingOnlyMessages(
-      filterUnresolvedToolUses(transcript.messages),
-    ),
+  // Prefer the conversation this process ran the agent with: it keeps the
+  // attachments the transcript drops, so the resumed request repeats the
+  // prefix the agent last sent (see resumeParity.ts).
+  const liveConversation = getAgentConversation(agentId)
+  const withoutOrphans = filterOrphanedThinkingOnlyMessages(
+    filterUnresolvedToolUses(liveConversation ?? transcript.messages),
   )
+  // The whitespace filter judges each streamed block alone, so it would drop
+  // a whitespace text block (some models emit "\n\n\n" before every tool
+  // call) that the agent's requests sent merged into the tool_use turn:
+  // normalizeMessagesForAPI filters only after that merge. The live
+  // conversation already went through it on every request of the run.
+  const resumedMessages = liveConversation
+    ? withoutOrphans
+    : filterWhitespaceOnlyAssistantMessages(withoutOrphans)
+  // The model the spawn asked for; without it a resumed agent would switch to
+  // the main-loop model (a different model is a different prompt cache).
+  const spawnModel = meta?.model as ModelAlias | undefined
   const resumedReplacementState = reconstructForSubagentResume(
     toolUseContext.contentReplacementState,
     resumedMessages,
@@ -157,7 +172,7 @@ export async function resumeAgentBackground({
     getAgentModel(
       selectedAgent.model,
       toolUseContext.options.mainLoopModel,
-      undefined,
+      spawnModel,
       permissionMode,
       selectedAgent.provider,
     ),
@@ -188,11 +203,14 @@ export async function resumeAgentBackground({
     toolUseContext,
     canUseTool,
     isAsync: true,
+    // Rebuild the tools and CLI identity the way the spawn did (they are part
+    // of the prompt prefix). Older metadata lacks it: background shape, as before.
+    spawnedAsync: meta?.spawnedAsync,
     querySource: getQuerySourceForAgent(
       selectedAgent.agentType,
       isBuiltInAgent(selectedAgent),
     ),
-    model: undefined,
+    model: spawnModel,
     // Fork resume: pass parent's system prompt (cache-identical prefix).
     // Non-fork: undefined → runAgent recomputes under wrapWithCwd so
     // getCwd() sees resumedWorktreePath.

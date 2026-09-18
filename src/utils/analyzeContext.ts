@@ -57,6 +57,7 @@ import { errorMessage, toError } from './errors.js'
 import { logError } from './log.js'
 import { normalizeMessagesForAPI } from './messages.js'
 import { getRuntimeMainLoopModel } from './model/model.js'
+import { getAPIProvider, isThirdPartyProvider } from './model/providers.js'
 import type { SettingSource } from './settings/constants.js'
 import { jsonStringify } from './slowOperations.js'
 import { buildEffectiveSystemPrompt } from './systemPrompt.js'
@@ -85,6 +86,11 @@ async function countTokensWithFallback(
   messages: Anthropic.Beta.Messages.BetaMessageParam[],
   tools: Anthropic.Beta.Messages.BetaToolUnion[],
 ): Promise<number | null> {
+  // Providers behind the provider shim have no token-count endpoint, so the
+  // fallback below becomes a real generation request per category (one
+  // /context on Antigravity: ~25 full-price requests and a burst of 429s).
+  // Callers estimate locally instead, as the startup context baseline does.
+  if (isThirdPartyProvider(getAPIProvider())) return null
   try {
     const result = await countMessagesTokensWithAPI(messages, tools)
     if (result !== null) {

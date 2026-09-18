@@ -269,6 +269,14 @@ export type AgentMetadata = {
    * resumed agent's notification can show the original description instead
    * of a placeholder. Optional — older metadata files lack this field. */
   description?: string
+  /** Whether the agent was spawned to run in the background. A resume always
+   * runs in the background, but the tool pool and CLI identity line are part
+   * of the prompt prefix, so resume rebuilds them the way the spawn did.
+   * Optional — older metadata files lack it and keep the background shape. */
+  spawnedAsync?: boolean
+  /** Model the caller asked for at spawn (AgentTool `model`), so a resumed
+   * agent keeps running on it instead of switching to the main-loop model. */
+  model?: string
 }
 
 /**

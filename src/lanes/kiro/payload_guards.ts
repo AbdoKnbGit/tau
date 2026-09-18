@@ -19,6 +19,8 @@ export function trimKiroPayloadToLimit(
   maxBytes: number,
   options: {
     preserveLeadingEntries?: number
+    /** Round the bytes to drop up to a multiple of this. See below. */
+    cutGridBytes?: number
   } = {},
 ): KiroPayloadTrimStats {
   const history = payload.conversationState.history
@@ -42,6 +44,25 @@ export function trimKiroPayloadToLimit(
     Math.min(options.preserveLeadingEntries ?? 0, history.length),
   )
 
+  // History only grows at the tail, so the minimal cut would move forward by
+  // about one pair every turn and change the prompt right after the preserved
+  // entries on every request: a full prompt-cache miss each turn once a long
+  // conversation passes the budget. Rounding the bytes to drop up to a grid
+  // keeps the cut on the same entry until the conversation has grown by a
+  // grid step, and the turns in between keep their cache.
+  const grid = Math.floor(options.cutGridBytes ?? 0)
+  const excess = checkKiroPayloadSize(payload) - maxBytes
+  if (grid > 0 && excess > 0) {
+    const goal = Math.ceil(excess / grid) * grid
+    let freed = 0
+    let end = preserveLeadingEntries
+    while (end + 2 <= history.length && freed < goal) {
+      freed += _entryBytes(history[end]!) + _entryBytes(history[end + 1]!)
+      end += 2
+    }
+    history.splice(preserveLeadingEntries, end - preserveLeadingEntries)
+  }
+
   while (history.length >= preserveLeadingEntries + 2 && checkKiroPayloadSize(payload) > maxBytes) {
     history.splice(preserveLeadingEntries, 2)
   }
@@ -60,6 +81,11 @@ export function trimKiroPayloadToLimit(
     finalEntries: history.length,
     trimmed: originalEntries !== history.length,
   }
+}
+
+/** Bytes one history entry adds to the serialized payload (plus its comma). */
+function _entryBytes(entry: KiroHistoryEntry): number {
+  return Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1
 }
 
 function _stripEmptyToolUses(history: KiroHistoryEntry[]): void {

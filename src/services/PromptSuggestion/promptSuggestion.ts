@@ -3,6 +3,7 @@ import type { AppState } from '../../state/AppState.js'
 import type { Message } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { count } from '../../utils/array.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 import { toError } from '../../utils/errors.js'
 import {
@@ -16,6 +17,7 @@ import {
   createUserMessage,
   getLastAssistantMessage,
 } from '../../utils/messages.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { isTeammate } from '../../utils/teammate.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
@@ -24,6 +26,7 @@ import {
   logEvent,
 } from '../analytics/index.js'
 import { currentLimits } from '../claudeAiLimits.js'
+import { getForkCacheSuppressReason } from './forkCacheGuard.js'
 import { isSpeculationEnabled, startSpeculation } from './speculation.js'
 
 let currentAbortController: AbortController | null = null
@@ -159,6 +162,18 @@ export async function tryGenerateSuggestion(
   const suppressReason = getSuggestionSuppressReason(appState)
   if (suppressReason) {
     logSuggestionSuppressed(suppressReason, undefined, undefined, source)
+    return null
+  }
+
+  // Judged on the model the fork will run on: the parent-cache check above
+  // assumes the fork reads its parent's cache, which not every provider does.
+  const forkCacheReason = getForkCacheSuppressReason(
+    getAPIProvider(),
+    cacheSafeParams.toolUseContext.options.mainLoopModel,
+  )
+  if (forkCacheReason) {
+    logForDebugging(`[PromptSuggestion] suppressed: ${forkCacheReason}`)
+    logSuggestionSuppressed(forkCacheReason, undefined, undefined, source)
     return null
   }
 
