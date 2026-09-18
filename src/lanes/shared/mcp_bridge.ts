@@ -19,6 +19,7 @@
  */
 
 import type { ProviderTool } from '../../services/api/providers/base_provider.js'
+import { sanitizeGeminiToolParameters } from './gemini_schema.js'
 
 export type LaneSchemaProfile =
   | 'gemini'
@@ -41,21 +42,13 @@ export type LaneSchemaProfile =
 // on field research: what the provider either 400s on or silently ignores
 // in a way that breaks schema matching downstream.
 //
-// NOTE on Gemini: the full Gemini pipeline is more than a drop list —
-// composition keywords (anyOf/oneOf/allOf, type arrays) must be
-// FLATTENED before stripping, empty `required: []` must be removed, and
-// the drop list has to be comprehensive enough to cover the full
-// OpenAPI 3.0 subset Gemini accepts (type, format, description,
-// nullable, enum, items, properties, required, minimum, maximum,
-// minItems, maxItems, minLength, maxLength). The `gemini` profile
-// below lists the DROPs used by the drop-list walk, but lanes should
-// call `sanitizeSchemaForLane(..., 'gemini')` which internally routes
-// through `sanitizeSchemaForGeminiDeep` to also do flattening. See that
-// function below.
+// NOTE on Gemini: a drop list cannot make Gemini schemas valid (arrays need
+// `items`, implicit types must be spelled out, `required` must match
+// `properties`, refs must be inlined, depth is capped). The `gemini` profile
+// never uses this walk: `sanitizeSchemaForLane(..., 'gemini')` routes to the
+// allowlist converter in gemini_schema.ts. Its entry below only documents the
+// keywords Gemini rejects.
 const DROP_BY_PROFILE: Record<LaneSchemaProfile, Set<string>> = {
-  // Gemini: minimal JSON-Schema subset. Uppercase type enum enforced elsewhere.
-  // Covers everything the legacy `anthropic_to_gemini:sanitizeSchemaForGemini`
-  // drop list handled, so MCP tools with arbitrary JSON Schema don't 400.
   gemini: new Set([
     // JSON Schema identifiers & references
     '$schema', '$id', '$ref', '$comment', '$defs', 'definitions',
@@ -113,19 +106,16 @@ const DROP_BY_PROFILE: Record<LaneSchemaProfile, Set<string>> = {
  * Sanitize a JSON Schema for the target lane. Returns a fresh object —
  * never mutates the input. Safe to call on MCP schemas before forwarding.
  *
- * For the `gemini` profile this routes through `sanitizeSchemaForGeminiDeep`
- * which additionally flattens composition keywords (anyOf/oneOf/allOf),
- * handles type arrays like `["string","null"]`, removes empty `required`
- * arrays, and recurses into properties/items. Drop-list walk alone is
- * insufficient because Gemini 400s on `const`, `anyOf`, etc. even when
- * the fields are nested deep inside a property schema.
+ * The `gemini` profile goes through `sanitizeGeminiToolParameters`, an
+ * allowlist converter whose output was verified against the live
+ * Antigravity validators (Gemini and Claude). See gemini_schema.ts.
  */
 export function sanitizeSchemaForLane(
   schema: unknown,
   profile: LaneSchemaProfile,
 ): Record<string, unknown> {
   if (profile === 'gemini') {
-    return sanitizeSchemaForGeminiDeep(schema)
+    return sanitizeGeminiToolParameters(schema)
   }
   const drop = DROP_BY_PROFILE[profile]
   // Kiro 400s on empty required arrays at any nesting level.
@@ -158,82 +148,6 @@ export function sanitizeSchemaForLane(
     return { type: 'object', properties: {} }
   }
   return result as Record<string, unknown>
-}
-
-// ─── Gemini deep sanitizer ───────────────────────────────────────
-//
-// Gemini's tool-param schema follows OpenAPI 3.0 — a narrower subset
-// of JSON Schema than most MCP servers emit. The drop-list walk alone
-// misses: composition keywords that must be flattened, type arrays
-// that must collapse to `type + nullable`, and empty `required: []`
-// arrays that Gemini rejects.
-//
-// Ported from the legacy adapter at
-// `src/services/api/adapters/anthropic_to_gemini.ts:sanitizeSchemaForGemini`
-// which is battle-tested against real MCP tool schemas.
-
-/**
- * Flatten JSON Schema composition keywords Gemini cannot express:
- *   - type arrays like ["string", "null"]  →  type: "string", nullable: true
- *   - anyOf / oneOf with a null branch     →  non-null branch + nullable
- *   - anyOf / oneOf without null           →  first branch
- *   - allOf                                 →  shallow-merge all branches
- * Runs BEFORE the drop-list strip so downstream walk cleans normally.
- */
-function flattenComposition(schema: Record<string, unknown>): Record<string, unknown> {
-  const result = { ...schema }
-
-  if (Array.isArray(result.type)) {
-    const types = result.type as string[]
-    const nonNull = types.filter(t => t !== 'null')
-    if (types.includes('null')) result.nullable = true
-    result.type = nonNull.length === 1 ? nonNull[0] : nonNull[0] ?? 'string'
-  }
-
-  for (const keyword of ['anyOf', 'oneOf'] as const) {
-    const variants = result[keyword] as Record<string, unknown>[] | undefined
-    if (!Array.isArray(variants) || variants.length === 0) continue
-
-    const nonNull = variants.filter(v => v && v.type !== 'null')
-    const hasNull = variants.some(v => v && v.type === 'null')
-    const picked = nonNull[0] ?? variants[0]!
-
-    delete result[keyword]
-    if (hasNull) result.nullable = true
-    for (const [k, v] of Object.entries(picked)) {
-      if (v !== undefined && !(k in result && k !== keyword)) {
-        result[k] = v
-      }
-    }
-  }
-
-  if (Array.isArray(result.allOf)) {
-    const branches = result.allOf as Record<string, unknown>[]
-    delete result.allOf
-    for (const branch of branches) {
-      if (!branch) continue
-      for (const [k, v] of Object.entries(branch)) {
-        if (v === undefined) continue
-        if (k === 'properties' && result.properties) {
-          result.properties = {
-            ...(result.properties as Record<string, unknown>),
-            ...(v as Record<string, unknown>),
-          }
-        } else if (k === 'required' && result.required) {
-          result.required = [
-            ...new Set([
-              ...(result.required as string[]),
-              ...(v as string[]),
-            ]),
-          ]
-        } else if (!(k in result)) {
-          result[k] = v
-        }
-      }
-    }
-  }
-
-  return result
 }
 
 // ─── Gemini tool-description hardening ───────────────────────────
@@ -447,55 +361,6 @@ export function appendStrictParamsHint(
   return base.length > 0
     ? `${base}\n\nSTRICT PARAMETERS: ${summary}`
     : `STRICT PARAMETERS: ${summary}`
-}
-
-function sanitizeSchemaForGeminiDeep(schema: unknown): Record<string, unknown> {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
-    return { type: 'object', properties: {} }
-  }
-
-  const flattened = flattenComposition(schema as Record<string, unknown>)
-  const drop = DROP_BY_PROFILE.gemini
-  const result: Record<string, unknown> = {}
-
-  for (const [key, value] of Object.entries(flattened)) {
-    if (drop.has(key)) continue
-    // OpenAPI 3.0 vendor extensions (x-google-enum-descriptions, x-google-quota,
-    // x-stripe-*, …) leak in from MCP tool schemas. Gemini's validator 400s on
-    // unknown fields, so strip the whole x-* family.
-    if (key.startsWith('x-')) continue
-    if (value === undefined) continue
-
-    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
-      result[key] = Object.fromEntries(
-        Object.entries(value as Record<string, unknown>)
-          .filter(([, v]) => v !== undefined)
-          .map(([propName, propSchema]) => [
-            propName,
-            propSchema && typeof propSchema === 'object' && !Array.isArray(propSchema)
-              ? sanitizeSchemaForGeminiDeep(propSchema)
-              : propSchema,
-          ]),
-      )
-    } else if (key === 'items' && value && typeof value === 'object' && !Array.isArray(value)) {
-      result[key] = sanitizeSchemaForGeminiDeep(value)
-    } else if (key === 'required' && Array.isArray(value)) {
-      // Gemini rejects empty required arrays — only include if non-empty.
-      if (value.length > 0) result[key] = value
-    } else if (Array.isArray(value)) {
-      result[key] = value.map(item =>
-        item && typeof item === 'object' && !Array.isArray(item)
-          ? sanitizeSchemaForGeminiDeep(item)
-          : item,
-      )
-    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-      result[key] = sanitizeSchemaForGeminiDeep(value)
-    } else {
-      result[key] = value
-    }
-  }
-
-  return result
 }
 
 /**

@@ -24,10 +24,12 @@
  *   - google-gemini/gemini-cli packages/core/src/agent/event-translator.ts
  */
 
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import type {
   AnthropicStreamEvent,
+  ProviderTool,
 } from '../../services/api/providers/base_provider.js'
+import { logForDebugging } from '../../utils/debug.js'
 import type {
   Lane,
   LaneRunContext,
@@ -76,6 +78,7 @@ import {
   appendStrictParamsHint,
   GEMINI_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
+import { geminiSafeToolName } from '../shared/gemini_schema.js'
 import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
 import { selectGeminiToolsForRequest } from './lazy_tools.js'
 import {
@@ -202,7 +205,9 @@ export class GeminiLane implements Lane {
       providerHint,
       sessionId,
     })
-    const functionDeclarations = buildLaneFunctionDeclarations(requestTools)
+    const schemaFamily = geminiSchemaFamily(model)
+    const laneTools = buildLaneFunctionDeclarations(requestTools, schemaFamily)
+    const functionDeclarations = laneTools.declarations
 
     // Keep real system/tool/history prefixes stable. Padding is an optional
     // legacy policy, not necessary to make current 3.8 agents cacheable;
@@ -402,7 +407,11 @@ export class GeminiLane implements Lane {
       if (!currentCall) return
       const nativeArgs = finalizeCurrentArgs()
       const reg = getRegistrationByNativeName(currentCall.nativeName)
-      const implId = reg?.implId ?? currentCall.nativeName
+      // MCP tools whose names had to be aliased for Gemini map back to the
+      // real tool name so the dispatcher resolves them.
+      const implId = reg?.implId
+        ?? laneTools.originalNames.get(currentCall.nativeName)
+        ?? currentCall.nativeName
       const adaptedInput = reg ? reg.adaptInput(nativeArgs) : nativeArgs
 
       toolCalls.push({
@@ -658,6 +667,21 @@ export class GeminiLane implements Lane {
         currentCall = null
         throw err
       }
+      // The backend rejected an MCP/custom tool's schema. Nothing was
+      // emitted yet, so leave that tool out and let the shared controller
+      // retry: the retry rebuilds the declarations without it, and the
+      // retry notice tells the user which tool was skipped.
+      if (!messageStartEmitted && !isAbortError(err, signal)) {
+        const skipped = quarantineRejectedDeclarations(err, laneTools, schemaFamily)
+        if (skipped.length > 0) {
+          currentCall = null
+          const providerName = isAntigravityRequest ? 'Antigravity' : 'Gemini'
+          throw createRetryableConnectionError(
+            `${providerName} rejected the tool schema of ${skipped.join(', ')}; retrying without ${skipped.length === 1 ? 'that tool' : 'those tools'}`,
+            err,
+          )
+        }
+      }
       if (
         !messageStartEmitted
         && !isAbortError(err, signal)
@@ -737,6 +761,9 @@ export class GeminiLane implements Lane {
       // The caller does not have permission" isn't actionable — replace
       // with a concrete next-step message so the user knows to run /provider.
       const errKind = (err as { kind?: string } | null)?.kind
+      // A 400 is the request's shape, not the account: never answer it with
+      // login / switch-model advice (it used to fall under non-retryable).
+      const isRequestRejected = err?.status === 400 && errKind !== 'validation-required'
       const isTerminalAuth = errKind === 'auth-stale'
         || errKind === 'non-retryable'
         || (err?.status === 401 || err?.status === 403)
@@ -745,11 +772,13 @@ export class GeminiLane implements Lane {
         || err?.status === 429
       const errText = isPTL
         ? (err?.message ?? String(err))
-        : isTerminalAuth
-          ? buildAuthErrorMessage(err, model)
-          : isQuotaOrCapacity
-            ? buildQuotaErrorMessage(err, model)
-            : `\n\nGemini API error (model: ${model}): ${err?.message ?? String(err)}`
+        : isRequestRejected
+          ? buildRequestRejectedMessage(err, model, laneTools)
+          : isTerminalAuth
+            ? buildAuthErrorMessage(err, model)
+            : isQuotaOrCapacity
+              ? buildQuotaErrorMessage(err, model)
+              : `\n\nGemini API error (model: ${model}): ${err?.message ?? String(err)}`
       yield {
         type: 'content_block_delta',
         index: blockIndex,
@@ -1049,8 +1078,9 @@ function buildToolUseIdToNativeMap(
     for (const block of msg.content) {
       if (block.type === 'tool_use' && block.id && block.name) {
         // Resolve the block's name → native name. If name is an implId, look
-        // up the first native registration; otherwise treat it as already-native.
-        const native = implIdToNative(block.name) ?? block.name
+        // up the first native registration; otherwise it is an MCP/custom
+        // tool and uses the same wire name as its declaration.
+        const native = implIdToNative(block.name) ?? geminiSafeToolName(block.name)
         map.set(block.id, native)
       }
     }
@@ -1083,7 +1113,7 @@ function convertHistoryToGemini(
             break
           case 'tool_use':
             if (block.name) {
-              const nativeName = implIdToNative(block.name) ?? block.name
+              const nativeName = implIdToNative(block.name) ?? geminiSafeToolName(block.name)
               const nativeInput = implToNativeInput(block.name, block.input ?? {})
               // thoughtSignature lives on the Part (sibling of functionCall),
               // NOT inside functionCall — the proto has it at Part level.
@@ -1361,20 +1391,128 @@ function implToNativeInput(
   }
 }
 
+type LaneFunctionDeclaration = { name: string; description: string; parameters: Record<string, unknown> }
+
+interface LaneToolDeclarations {
+  declarations: LaneFunctionDeclaration[]
+  /** Wire names of MCP / custom tools — the only ones that can be quarantined. */
+  externalNames: Set<string>
+  /** Wire name → original tool name, for names that had to be aliased. */
+  originalNames: Map<string, string>
+}
+
+/**
+ * Which validator a request meets: Claude resold through Antigravity is
+ * checked by Anthropic's rules, everything else by Gemini's, so a tool one
+ * rejects can still be offered to the other.
+ */
+type GeminiSchemaFamily = 'gemini' | 'claude'
+
+function geminiSchemaFamily(model: string): GeminiSchemaFamily {
+  return model.toLowerCase().includes('claude') ? 'claude' : 'gemini'
+}
+
+// ─── Rejected-tool quarantine ────────────────────────────────────
+//
+// Last line of defence behind the schema converter: if the backend still
+// rejects an MCP/custom tool's declaration (a rule it adds later, a shape
+// no test anticipated), that one tool is left out and the request retried,
+// instead of every turn failing. Keyed by the exact declaration bytes, so
+// a server that fixes its schema is offered again. Process-lifetime and
+// only ever grows, so the tool block changes once per rejection and then
+// stays byte-stable for the prompt cache. Built-in tools are never
+// quarantined — a rejection there is a Tau bug and must surface.
+
+const quarantinedDeclarations = new Map<string, string>()
+
+function declarationHash(decl: LaneFunctionDeclaration): string {
+  return createHash('sha256').update(JSON.stringify(decl)).digest('hex').slice(0, 16)
+}
+
+function isQuarantinedDeclaration(family: GeminiSchemaFamily, decl: LaneFunctionDeclaration): boolean {
+  if (quarantinedDeclarations.size === 0) return false
+  return quarantinedDeclarations.get(`${family}|${decl.name}`) === declarationHash(decl)
+}
+
+/** Indices of `tools[0].functionDeclarations` a 400 names (Gemini or Anthropic wording). */
+function rejectedDeclarationIndices(errorText: string): number[] {
+  const indices = new Set<number>()
+  for (const m of errorText.matchAll(/function_declarations\[(\d+)\]/g)) indices.add(Number(m[1]))
+  // Claude via Antigravity: "tools.24.custom.input_schema: Field required".
+  for (const m of errorText.matchAll(/\btools\.(\d+)\./g)) indices.add(Number(m[1]))
+  return [...indices].sort((a, b) => a - b)
+}
+
+function geminiErrorText(err: any): string {
+  return `${typeof err?.body === 'string' ? err.body : ''}\n${err?.message ?? ''}`
+}
+
+/**
+ * Quarantine the MCP/custom declarations a 400 names. Returns the wire names
+ * newly quarantined; empty when the error is not a tool-schema rejection or
+ * only names built-in tools.
+ */
+function quarantineRejectedDeclarations(
+  err: any,
+  tools: LaneToolDeclarations,
+  family: GeminiSchemaFamily,
+): string[] {
+  if (err?.status !== 400) return []
+  const text = geminiErrorText(err)
+  const newlyQuarantined: string[] = []
+  for (const index of rejectedDeclarationIndices(text)) {
+    const decl = tools.declarations[index]
+    if (!decl || !tools.externalNames.has(decl.name)) continue
+    const key = `${family}|${decl.name}`
+    const hash = declarationHash(decl)
+    if (quarantinedDeclarations.get(key) === hash) continue
+    quarantinedDeclarations.set(key, hash)
+    newlyQuarantined.push(decl.name)
+  }
+  if (newlyQuarantined.length > 0) {
+    logForDebugging(
+      `[gemini-lane] ${family} backend rejected tool schema(s) ${newlyQuarantined.join(', ')}; `
+      + `leaving them out for this process. Server said: ${text.replace(/\s+/g, ' ').slice(0, 600)}`,
+      { level: 'warn' },
+    )
+  }
+  return newlyQuarantined
+}
+
+/** Test-only: reset the rejected-tool quarantine. */
+export function _resetGeminiToolQuarantineForTest(): void {
+  quarantinedDeclarations.clear()
+}
+
 // Build function declarations from the active tool list passed in by the
 // caller. Tools matching our native registry use the native schema the
-// model was trained on; unknown tools (MCP, custom) pass through with
-// their provider-shaped schema, after light sanitization for Gemini.
+// model was trained on; unknown tools (MCP, custom) are converted by the
+// Gemini schema converter and sent under a wire name both Antigravity
+// validators accept (identical to the original for every valid name).
+// Quarantined tools are left out, and a repeated wire name keeps only its
+// first declaration (Claude via Antigravity rejects duplicates).
 function buildLaneFunctionDeclarations(
-  tools: import('../../services/api/providers/base_provider.js').ProviderTool[],
-): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
-  const decls: Array<{ name: string; description: string; parameters: Record<string, unknown> }> = []
+  tools: ProviderTool[],
+  family: GeminiSchemaFamily,
+): LaneToolDeclarations {
+  const result: LaneToolDeclarations = {
+    declarations: [],
+    externalNames: new Set(),
+    originalNames: new Map(),
+  }
+  const seen = new Set<string>()
+  const push = (decl: LaneFunctionDeclaration): boolean => {
+    if (seen.has(decl.name)) return false
+    seen.add(decl.name)
+    result.declarations.push(decl)
+    return true
+  }
 
   for (const tool of tools) {
     // Try to match by impl id first (how claude.ts names tools).
     const byImpl = GEMINI_TOOL_REGISTRY.find(r => r.implId === tool.name)
     if (byImpl) {
-      decls.push({
+      push({
         name: byImpl.nativeName,
         description: appendStrictParamsHint(byImpl.nativeDescription, byImpl.nativeSchema),
         parameters: byImpl.nativeSchema,
@@ -1385,7 +1523,7 @@ function buildLaneFunctionDeclarations(
     // Maybe the caller already gave us a native name.
     const byNative = getRegistrationByNativeName(tool.name)
     if (byNative) {
-      decls.push({
+      push({
         name: byNative.nativeName,
         description: appendStrictParamsHint(byNative.nativeDescription, byNative.nativeSchema),
         parameters: byNative.nativeSchema,
@@ -1402,14 +1540,18 @@ function buildLaneFunctionDeclarations(
       tool.input_schema ?? { type: 'object', properties: {} },
       'gemini',
     )
-    decls.push({
-      name: tool.name,
+    const decl: LaneFunctionDeclaration = {
+      name: geminiSafeToolName(tool.name),
       description: appendStrictParamsHint(tool.description ?? '', parameters),
       parameters,
-    })
+    }
+    if (isQuarantinedDeclaration(family, decl)) continue
+    if (!push(decl)) continue
+    result.externalNames.add(decl.name)
+    if (decl.name !== tool.name) result.originalNames.set(decl.name, tool.name)
   }
 
-  return decls
+  return result
 }
 
 // ─── Request Builder ─────────────────────────────────────────────
@@ -1418,7 +1560,7 @@ interface GeminiRequestConfig {
   model: string
   contents: GeminiContent[]
   systemText: string
-  functionDeclarations: Array<{ name: string; description: string; parameters: Record<string, unknown> }>
+  functionDeclarations: LaneFunctionDeclaration[]
   maxOutputTokens: number
   thinkingBudget: number
   thinking?: LaneProviderCallParams['thinking']
@@ -1501,6 +1643,45 @@ function buildGeminiRequest(config: GeminiRequestConfig): Record<string, unknown
   }
 
   return request
+}
+
+// ─── Request-rejected (400) message formatting ───────────────────
+//
+// A 400 means the backend refused the request's shape before any model
+// ran. Show the whole server text (the auth wording cut it to 180 chars
+// and blamed the login) and name the tool when the error points at one.
+
+function googleErrorMessage(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body)
+    const entry = Array.isArray(parsed) ? parsed[0] : parsed
+    const message = entry?.error?.message
+    return typeof message === 'string' && message.trim() ? message.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function buildRequestRejectedMessage(err: any, model: string, tools: LaneToolDeclarations): string {
+  const body = typeof err?.body === 'string' ? err.body : ''
+  const detail = (googleErrorMessage(body) ?? (body || err?.message || String(err))).trim()
+  const shown = detail.length > 1500 ? `${detail.slice(0, 1500)}...` : detail
+  const named = [...new Set(
+    rejectedDeclarationIndices(geminiErrorText(err))
+      .map(index => tools.declarations[index]?.name)
+      .filter((name): name is string => typeof name === 'string'),
+  )]
+  const lines = [
+    '',
+    '',
+    `Gemini 400: the request was rejected before it reached the model (model: ${model}).`,
+    '',
+    `Server said: ${shown}`,
+    '',
+  ]
+  if (named.length > 0) lines.push(`The rejected schema belongs to: ${named.join(', ')}.`)
+  lines.push('This is a request-format problem, not a login, quota or model-access problem.')
+  return lines.join('\n')
 }
 
 // ─── Auth-error message formatting ───────────────────────────────

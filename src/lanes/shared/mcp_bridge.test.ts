@@ -93,14 +93,25 @@ function main(): void {
 
   test('oneOf picks first variant', () => {
     const s = {
-      oneOf: [
-        { type: 'string', description: 'picked' },
-        { type: 'number' },
-      ],
+      type: 'object',
+      properties: {
+        v: {
+          oneOf: [
+            { type: 'string', description: 'picked' },
+            { type: 'number' },
+          ],
+        },
+      },
     }
     const out = sanitizeSchemaForLane(s, 'gemini') as any
-    assert(out.type === 'string', 'wanted first variant')
-    assert(!('oneOf' in out), 'oneOf should be gone')
+    assert(out.properties.v.type === 'string', 'wanted first variant')
+    assert(out.properties.v.description === 'picked', 'first variant description kept')
+    assert(!deepContainsKey(out, 'oneOf'), 'oneOf should be gone')
+  })
+
+  test('parameters root is always an object schema', () => {
+    const out = sanitizeSchemaForLane({ oneOf: [{ type: 'string' }, { type: 'number' }] }, 'gemini') as any
+    assert(out.type === 'object', 'function-call arguments must be an object')
   })
 
   test('allOf merges branches', () => {
