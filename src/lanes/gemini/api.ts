@@ -305,23 +305,24 @@ async function fetchCodeAssistEndpoint(
     })
   }
 
-  const controller = new AbortController()
-  const onAbort = (): void => controller.abort(opts.signal?.reason)
-  if (opts.signal) {
-    if (opts.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-    opts.signal.addEventListener('abort', onAbort, { once: true })
-  }
+  if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  // The timeout bounds the wait for response headers only. The caller's
+  // signal stays linked for the whole response: an abort after the headers
+  // (Esc during a long generation) cancels the body and frees the connection
+  // instead of waiting for the server's next chunk or its end.
+  const timeout = new AbortController()
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout.signal]) : timeout.signal
 
   let timedOut = false
   const timer = setTimeout(() => {
     timedOut = true
-    controller.abort()
+    timeout.abort()
   }, opts.timeoutMs)
 
   try {
     return await fetch(url, {
       ...init,
-      signal: controller.signal,
+      signal,
     })
   } catch (err) {
     if (timedOut && !opts.signal?.aborted) {
@@ -332,7 +333,6 @@ async function fetchCodeAssistEndpoint(
     throw err
   } finally {
     clearTimeout(timer)
-    opts.signal?.removeEventListener('abort', onAbort)
   }
 }
 
