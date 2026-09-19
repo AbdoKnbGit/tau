@@ -302,6 +302,7 @@ export class GeminiLane implements Lane {
       // never delayed. Subsumes the opt-in maxCache agent pacing (padded
       // agent prompts pass the size gate). Gemini-only: Claude-on-Antigravity
       // uses a low-minimum cache that never needs this.
+      const heldFrom = Date.now()
       await guardAntigravityCommitWindow(
         sessionId,
         signal,
@@ -309,6 +310,7 @@ export class GeminiLane implements Lane {
         querySource,
         model,
       )
+      if (cacheContext) cacheContext.pacingMs = Date.now() - heldFrom
     }
 
     // Track usage across the stream.
@@ -317,6 +319,9 @@ export class GeminiLane implements Lane {
     let outputTokens = 0
     let thinkingTokens = 0
     let cacheReadTokens = 0
+    // Proto3 JSON omits a zero count, so a response that never carried
+    // cachedContentTokenCount is an inferred zero, not an explicit one.
+    let cacheFieldSeen = false
 
     // Stream state per turn.
     const messageId = `gemini-${Date.now()}`
@@ -500,6 +505,7 @@ export class GeminiLane implements Lane {
           outputTokens = u.candidatesTokenCount ?? outputTokens
           thinkingTokens = u.thoughtsTokenCount ?? thinkingTokens
           cacheReadTokens = u.cachedContentTokenCount ?? cacheReadTokens
+          if (u.cachedContentTokenCount !== undefined) cacheFieldSeen = true
           inputTokens = uncachedInputTokens(promptTokens, cacheReadTokens)
         }
 
@@ -814,7 +820,14 @@ export class GeminiLane implements Lane {
     // Folding that provisional zero into the guard used up its cold-recovery
     // budget on successful hits. Aborted/failed streams must not arm it either.
     if (cacheContext && !signal.aborted) {
-      recordAntigravityCacheRead(sessionId, cacheReadTokens, promptTokens, querySource, cacheContext)
+      recordAntigravityCacheRead(
+        sessionId,
+        cacheReadTokens,
+        promptTokens,
+        querySource,
+        cacheContext,
+        cacheFieldSeen ? 'explicit' : 'omitted',
+      )
     }
 
     // Make sure message_start was emitted (edge case: empty response).

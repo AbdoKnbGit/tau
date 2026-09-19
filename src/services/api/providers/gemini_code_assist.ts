@@ -1661,9 +1661,13 @@ export function warmupCodeAssist(
  * the accumulator (handling shape 1); a failure keeps buffering until a
  * later fragment closes the JSON (handling shape 2). Blank lines and
  * end-of-stream flush whatever remains.
+ *
+ * `onEnvelope` sees each parsed event before unwrapping, for diagnostics
+ * that need its `traceId` or an in-band `error`. It cannot change the chunks.
  */
 export async function* parseCodeAssistSSE(
   body: ReadableStream<Uint8Array>,
+  onEnvelope?: (envelope: object) => void,
 ): AsyncGenerator<GeminiStreamChunk> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
@@ -1688,6 +1692,13 @@ export async function* parseCodeAssistSSE(
         response?: GeminiStreamChunk
       }
       dataLines = []
+      if (onEnvelope && wrapped && typeof wrapped === 'object') {
+        try {
+          onEnvelope(wrapped)
+        } catch {
+          // An observer must never drop or alter a chunk.
+        }
+      }
       return {
         done: false,
         chunks: wrapped.response ? [wrapped.response] : [],

@@ -41,6 +41,10 @@ import {
   writeAntigravityEndpointDebugEvent,
 } from './antigravity_cache.js'
 import {
+  startAntigravityDispatchTrace,
+  type AntigravityDispatchAttempt,
+} from './antigravity_trace.js'
+import {
   classifyGeminiError,
   type ClassifiedGeminiError,
   type GeminiErrorKind,
@@ -496,6 +500,8 @@ class GeminiApiClient {
     const tauStableSessionId = takeTauStableSessionId(body)
     const tauQuerySource = takeTauQuerySource(body)
     const logEndpoint = antigravityEndpointLogger(request, tauStableSessionId)
+    // TAU_CACHE_DEBUG only: one row per HTTP dispatch of this request.
+    const trace = startAntigravityDispatchTrace(request, tauStableSessionId)
 
     // OAuth path → Code Assist proxy (cloudcode-pa.googleapis.com). Uses the
     // same request envelopes and header sets that CLIProxyAPI emits so quota
@@ -514,6 +520,8 @@ class GeminiApiClient {
       const _ttftStart = Date.now()
       const rotation = getAntigravityRotation()
       let attemptNo = 0
+      // The traced dispatch whose response body the stream below reads.
+      const served: { attempt?: AntigravityDispatchAttempt } = {}
 
       const response = await retryWithBackoff(
         async () => {
@@ -559,37 +567,49 @@ class GeminiApiClient {
           // rotation applied) instead of hopping to the sibling cache pool.
           const pinnedFirstAttempt = onPinnedHost && attemptNo <= 1
           let lastEndpointError: unknown
+          let dispatch: AntigravityDispatchAttempt | undefined
+          let hopReason: string | undefined
           for (let i = 0; i < urls.length; i++) {
+            dispatch = fastAntigravityGemini
+              ? trace?.attempt({ attempt: attemptNo, hop: i, hopReason, url: urls[i]!, serialized, accountEmail })
+              : undefined
+            const send = () => fetchCodeAssistEndpoint(
+              urls[i]!,
+              {
+                method: 'POST',
+                headers,
+                body: serialized,
+              },
+              {
+                signal,
+                timeoutMs: fastAntigravityGemini
+                  ? antigravityGeminiEndpointTimeoutMs(i, urls.length, i === 0 && onPinnedHost)
+                  : 0,
+              },
+            )
             try {
-              resp = await fetchCodeAssistEndpoint(
-                urls[i]!,
-                {
-                  method: 'POST',
-                  headers,
-                  body: serialized,
-                },
-                {
-                  signal,
-                  timeoutMs: fastAntigravityGemini
-                    ? antigravityGeminiEndpointTimeoutMs(i, urls.length, i === 0 && onPinnedHost)
-                    : 0,
-                },
-              )
+              resp = await (dispatch ? dispatch.send(send) : send())
             } catch (err) {
+              dispatch?.end(
+                signal?.aborted ? 'aborted' : err instanceof EndpointTimeoutError ? 'timeout' : 'network-error',
+                { error: err },
+              )
               if (signal?.aborted) throw err
               lastEndpointError = err
               if (fastAntigravityGemini && i < urls.length - 1) {
+                hopReason = err instanceof EndpointTimeoutError
+                  ? 'timeout'
+                  : String((err as any)?.code ?? (err as any)?.message ?? err).slice(0, 120)
                 logEndpoint('hop', {
                   from: bases[i],
-                  reason: err instanceof EndpointTimeoutError
-                    ? 'timeout'
-                    : String((err as any)?.code ?? (err as any)?.message ?? err).slice(0, 120),
+                  reason: hopReason,
                   attempt: attemptNo,
                 })
                 continue
               }
               throw err
             }
+            dispatch?.headers(resp)
             if (resp.ok) {
               if (fastAntigravityGemini) {
                 // A report can sweep away from the conversation's warm host.
@@ -607,6 +627,7 @@ class GeminiApiClient {
               break
             }
             errText = await resp.text().catch(() => '')
+            dispatch?.end('http-error', { status: resp.status, errorBody: errText })
             // Hosts meter quota separately. Remember a refusal so the next
             // request — especially a one-shot like /report, which cannot
             // afford to re-probe a dead host — starts somewhere that serves.
@@ -617,9 +638,10 @@ class GeminiApiClient {
               )
             }
             if (shouldTryNextAntigravityGeminiEndpoint(executor, model, resp.status, i, urls.length, pinnedFirstAttempt)) {
+              hopReason = `status ${resp.status}`
               logEndpoint('hop', {
                 from: bases[i],
-                reason: `status ${resp.status}`,
+                reason: hopReason,
                 attempt: attemptNo,
               })
               continue
@@ -716,6 +738,7 @@ class GeminiApiClient {
             throw new GeminiApiError(resp.status, errText, retryAfterMs, cls)
           }
           if (!resp.body) {
+            dispatch?.end('failed', { error: 'no response body' })
             throw new GeminiApiError(0, 'No response body', undefined, {
               kind: 'transient',
               details: {},
@@ -728,6 +751,7 @@ class GeminiApiClient {
             if (account) rotation.recordSuccess(account)
           }
 
+          served.attempt = dispatch
           return resp
         },
         antigravityGeminiRetryOptions(
@@ -741,19 +765,31 @@ class GeminiApiClient {
       let _firstChunk = true
       let _thoughts = 0
       let _output = 0
-      for await (const chunk of parseCodeAssistSSE(response.body!)) {
-        if (_firstChunk) {
-          _firstChunk = false
-          if (process.env.TAU_CACHE_DEBUG) {
-            console.error(`[tau-timing] model=${model} fetchMs=${_fetchMs} ttftMs=${Date.now() - _ttftStart}`)
+      const tracedAttempt = served.attempt
+      try {
+        const observeEnvelope = tracedAttempt && ((envelope: object) => tracedAttempt.envelope(envelope))
+        for await (const chunk of parseCodeAssistSSE(response.body!, observeEnvelope)) {
+          tracedAttempt?.chunk(chunk)
+          if (_firstChunk) {
+            _firstChunk = false
+            if (process.env.TAU_CACHE_DEBUG) {
+              console.error(`[tau-timing] model=${model} fetchMs=${_fetchMs} ttftMs=${Date.now() - _ttftStart}`)
+            }
           }
+          const u = (chunk as GeminiStreamChunk).usageMetadata
+          if (u) {
+            _thoughts = u.thoughtsTokenCount ?? _thoughts
+            _output = u.candidatesTokenCount ?? _output
+          }
+          yield chunk as GeminiStreamChunk
         }
-        const u = (chunk as GeminiStreamChunk).usageMetadata
-        if (u) {
-          _thoughts = u.thoughtsTokenCount ?? _thoughts
-          _output = u.candidatesTokenCount ?? _output
-        }
-        yield chunk as GeminiStreamChunk
+        tracedAttempt?.end('completed')
+      } catch (err) {
+        tracedAttempt?.end(signal?.aborted ? 'aborted' : 'failed', { error: err })
+        throw err
+      } finally {
+        // Reached without an outcome only when the consumer stopped reading.
+        tracedAttempt?.end(signal?.aborted ? 'aborted' : 'abandoned')
       }
       if (process.env.TAU_CACHE_DEBUG) {
         console.error(`[tau-timing] model=${model} totalMs=${Date.now() - _ttftStart} thoughtsTokens=${_thoughts} outputTokens=${_output}`)
@@ -809,6 +845,7 @@ class GeminiApiClient {
     const tauStableSessionId = takeTauStableSessionId(body)
     const tauQuerySource = takeTauQuerySource(body)
     const logEndpoint = antigravityEndpointLogger(request, tauStableSessionId)
+    const trace = startAntigravityDispatchTrace(request, tauStableSessionId)
 
     // OAuth → Code Assist (unwraps the `{ response: ... }` envelope).
     const oauthRouting = this._tokenForModel(model)
@@ -860,37 +897,49 @@ class GeminiApiClient {
           // rotation applied) instead of hopping to the sibling cache pool.
           const pinnedFirstAttempt = onPinnedHost && attemptNo <= 1
           let lastEndpointError: unknown
+          let dispatch: AntigravityDispatchAttempt | undefined
+          let hopReason: string | undefined
           for (let i = 0; i < urls.length; i++) {
+            dispatch = fastAntigravityGemini
+              ? trace?.attempt({ attempt: attemptNo, hop: i, hopReason, url: urls[i]!, serialized, accountEmail })
+              : undefined
+            const send = () => fetchCodeAssistEndpoint(
+              urls[i]!,
+              {
+                method: 'POST',
+                headers,
+                body: serialized,
+              },
+              {
+                signal,
+                timeoutMs: fastAntigravityGemini
+                  ? antigravityGeminiEndpointTimeoutMs(i, urls.length, i === 0 && onPinnedHost)
+                  : 0,
+              },
+            )
             try {
-              resp = await fetchCodeAssistEndpoint(
-                urls[i]!,
-                {
-                  method: 'POST',
-                  headers,
-                  body: serialized,
-                },
-                {
-                  signal,
-                  timeoutMs: fastAntigravityGemini
-                    ? antigravityGeminiEndpointTimeoutMs(i, urls.length, i === 0 && onPinnedHost)
-                    : 0,
-                },
-              )
+              resp = await (dispatch ? dispatch.send(send) : send())
             } catch (err) {
+              dispatch?.end(
+                signal?.aborted ? 'aborted' : err instanceof EndpointTimeoutError ? 'timeout' : 'network-error',
+                { error: err },
+              )
               if (signal?.aborted) throw err
               lastEndpointError = err
               if (fastAntigravityGemini && i < urls.length - 1) {
+                hopReason = err instanceof EndpointTimeoutError
+                  ? 'timeout'
+                  : String((err as any)?.code ?? (err as any)?.message ?? err).slice(0, 120)
                 logEndpoint('hop', {
                   from: bases[i],
-                  reason: err instanceof EndpointTimeoutError
-                    ? 'timeout'
-                    : String((err as any)?.code ?? (err as any)?.message ?? err).slice(0, 120),
+                  reason: hopReason,
                   attempt: attemptNo,
                 })
                 continue
               }
               throw err
             }
+            dispatch?.headers(resp)
             if (resp.ok) {
               if (fastAntigravityGemini) {
                 // Reports share the wire session, but have no cache equity
@@ -908,6 +957,7 @@ class GeminiApiClient {
               break
             }
             errText = await resp.text().catch(() => '')
+            dispatch?.end('http-error', { status: resp.status, errorBody: errText })
             // Hosts meter quota separately. Remember a refusal so the next
             // request — especially a one-shot like /report, which cannot
             // afford to re-probe a dead host — starts somewhere that serves.
@@ -918,9 +968,10 @@ class GeminiApiClient {
               )
             }
             if (shouldTryNextAntigravityGeminiEndpoint(executor, model, resp.status, i, urls.length, pinnedFirstAttempt)) {
+              hopReason = `status ${resp.status}`
               logEndpoint('hop', {
                 from: bases[i],
-                reason: `status ${resp.status}`,
+                reason: hopReason,
                 attempt: attemptNo,
               })
               continue
@@ -1004,7 +1055,7 @@ class GeminiApiClient {
             if (account) rotation.recordSuccess(account)
           }
 
-          return resp.json()
+          return dispatch ? dispatch.readJson(resp, signal) : resp.json()
         },
         antigravityGeminiRetryOptions(
           signal,

@@ -123,6 +123,11 @@ try {
   const finals = rows.filter(r => r.kind === 'usage' && r.requestId !== 'seed')
   assert.equal(finals.length, 6, 'must log exactly one final usage for each completed Antigravity Gemini response')
   assert.equal(finals.filter(r => r.cacheRead === 0).length, 1, 'provisional zeros were logged as completed misses')
+  assert.deepEqual(
+    finals.map(r => r.cacheField),
+    ['explicit', 'explicit', 'explicit', 'explicit', 'explicit', 'omitted'],
+    'a cold response without the cached count must read as an inferred (omitted) zero',
+  )
   for (const row of finals) {
     assert.equal(row.final, true)
     assert.ok(rows.some(r => r.requestId === row.requestId && r.break), 'final usage cannot be joined to its request')

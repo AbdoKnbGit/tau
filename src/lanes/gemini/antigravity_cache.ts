@@ -16,13 +16,16 @@
  * Prefix padding and extra agent pacing remain opt-in via
  * TAU_ANTIGRAVITY_MAX_CACHE=1. They are not a guarantee of lower total cost.
  * TAU_CACHE_DEBUG=1 records request hashes and final usage with correlation
- * IDs kept out of the wire payload. No diagnostic calls the model itself.
+ * IDs kept out of the wire payload; antigravity_trace.ts adds a row per HTTP
+ * dispatch describing the final wire body, its timing and its connection.
+ * scripts/analyze-antigravity-cache.mjs reads the log. No diagnostic calls
+ * the model itself.
  *
  * Callers restrict recovery/padding to Antigravity Gemini; Claude on
  * Antigravity and other providers retain their existing behavior.
  */
 
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { appendFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -30,6 +33,73 @@ import {
   _resetSessionVolatileFreezeForTest,
   freezeSessionVolatileText,
 } from '../shared/volatile_freeze.js'
+
+// Build-time define (build.mjs); absent when a test runs the source directly.
+declare const MACRO: { VERSION: string; BUILD_TIME: string }
+
+// ─── Debug log ───────────────────────────────────────────────────
+//
+// Every TAU_CACHE_DEBUG row carries this process's run id, so analysis can
+// join on run + request + attempt and never merges two tau processes (or a
+// resumed conversation's old and new process) into one stream. The first
+// row of a run records the build and the cache/transport knobs it ran with.
+
+export const ANTIGRAVITY_CACHE_DEBUG_RUN_ID = randomUUID()
+
+const CACHE_DEBUG_FILE = 'tau-cache-debug.jsonl'
+
+// Knobs that change what a measured request looks like. Recorded per run so
+// experimental arms can be checked for equal pacing and endpoint policy.
+const RUN_FLAG_NAMES = [
+  'TAU_ANTIGRAVITY_MAX_CACHE',
+  'TAU_ANTIGRAVITY_NO_PACING',
+  'TAU_ANTIGRAVITY_PACING_MS',
+  'TAU_ANTIGRAVITY_NO_PREFIX_PAD',
+  'TAU_ANTIGRAVITY_GEMINI_ENDPOINT',
+  'TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS',
+  'TAU_ANTIGRAVITY_GEMINI_ENDPOINT_TIMEOUT_MS',
+  'TAU_ANTIGRAVITY_PROMPT_SUGGESTIONS',
+  'TAU_ANTIGRAVITY_TRAJECTORY',
+  'TAU_ANTIGRAVITY_KEEPALIVE',
+] as const
+
+let _runRowWritten = false
+
+export function antigravityBuildId(): string {
+  try {
+    return `${MACRO.VERSION}+${MACRO.BUILD_TIME}`
+  } catch {
+    return 'source'
+  }
+}
+
+/** Append one TAU_CACHE_DEBUG row. Never throws. */
+export function appendAntigravityCacheDebugRow(row: Record<string, unknown>): void {
+  try {
+    const file = join(tmpdir(), CACHE_DEBUG_FILE)
+    if (!_runRowWritten) {
+      _runRowWritten = true
+      const flags: Record<string, string> = {}
+      for (const name of RUN_FLAG_NAMES) {
+        const value = process.env[name]
+        if (value !== undefined) flags[name] = value
+      }
+      appendFileSync(file, JSON.stringify({
+        ts: new Date().toISOString(),
+        kind: 'run',
+        build: antigravityBuildId(),
+        runtime: typeof Bun !== 'undefined' ? `bun ${Bun.version}` : `node ${process.version}`,
+        platform: `${process.platform}-${process.arch}`,
+        pid: process.pid,
+        flags,
+        runId: ANTIGRAVITY_CACHE_DEBUG_RUN_ID,
+      }) + '\n')
+    }
+    appendFileSync(file, JSON.stringify({ ...row, runId: ANTIGRAVITY_CACHE_DEBUG_RUN_ID }) + '\n')
+  } catch {
+    // Diagnostics must never break the request path.
+  }
+}
 
 // ─── Opt-in switch ───────────────────────────────────────────────
 //
@@ -202,7 +272,16 @@ export interface AntigravityCacheRequestContext {
   model: string
   querySource?: string
   requestId: string
+  /** How long the commit-window guard held this request before dispatch. */
+  pacingMs?: number
 }
+
+/**
+ * How a completed response reported its cached-token count. Proto3 JSON
+ * omits zero-valued fields, so `omitted` is an inferred zero rather than an
+ * explicit one; the log keeps the two apart.
+ */
+export type AntigravityCacheField = 'explicit' | 'omitted'
 
 // Out-of-band correlation: never serialize a diagnostic ID into the prompt or
 // change upstream affinity just to distinguish a helper from its parent.
@@ -374,6 +453,7 @@ export function recordAntigravityCacheRead(
   promptTokens: number,
   querySource?: string,
   context?: AntigravityCacheRequestContext,
+  cacheField?: AntigravityCacheField,
 ): void {
   // A bounded report shares Antigravity routing affinity with its live chat,
   // but it is not part of that conversation's prompt-cache lineage. Do not let
@@ -382,28 +462,22 @@ export function recordAntigravityCacheRead(
   const scope = sessionId ? antigravityCacheScope(sessionId, context?.model, querySource) : undefined
   const previous = scope ? _agentPace.get(scope) : undefined
   if (process.env.TAU_CACHE_DEBUG && sessionId && promptTokens > 0) {
-    try {
-      appendFileSync(
-        join(tmpdir(), 'tau-cache-debug.jsonl'),
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          kind: 'usage',
-          sessionId,
-          model: context?.model,
-          querySource,
-          requestId: context?.requestId,
-          final: true,
-          cacheRead: cacheReadTokens,
-          prompt: promptTokens,
-          uncached: Math.max(0, promptTokens - cacheReadTokens),
-          promptDelta: previous?.promptTokens === undefined ? undefined : promptTokens - previous.promptTokens,
-          cacheReadDelta: previous?.cacheReadTokens === undefined ? undefined : cacheReadTokens - previous.cacheReadTokens,
-          hitPct: Math.round((cacheReadTokens / promptTokens) * 100),
-        }) + '\n',
-      )
-    } catch {
-      // never break the request path
-    }
+    appendAntigravityCacheDebugRow({
+      ts: new Date().toISOString(),
+      kind: 'usage',
+      sessionId,
+      model: context?.model,
+      querySource,
+      requestId: context?.requestId,
+      final: true,
+      cacheRead: cacheReadTokens,
+      cacheField,
+      prompt: promptTokens,
+      uncached: Math.max(0, promptTokens - cacheReadTokens),
+      promptDelta: previous?.promptTokens === undefined ? undefined : promptTokens - previous.promptTokens,
+      cacheReadDelta: previous?.cacheReadTokens === undefined ? undefined : cacheReadTokens - previous.cacheReadTokens,
+      hitPct: Math.round((cacheReadTokens / promptTokens) * 100),
+    })
   }
   if (!scope || promptTokens <= 0) return
 
@@ -460,20 +534,13 @@ export function writeAntigravityEndpointDebugEvent(
   detail: Record<string, unknown> = {},
 ): void {
   if (!process.env.TAU_CACHE_DEBUG) return
-  try {
-    appendFileSync(
-      join(tmpdir(), 'tau-cache-debug.jsonl'),
-      JSON.stringify({
-        ts: new Date().toISOString(),
-        kind: 'endpoint',
-        event,
-        sessionId,
-        ...detail,
-      }) + '\n',
-    )
-  } catch {
-    // Diagnostics must never break the request path.
-  }
+  appendAntigravityCacheDebugRow({
+    ts: new Date().toISOString(),
+    kind: 'endpoint',
+    event,
+    sessionId,
+    ...detail,
+  })
 }
 
 // ─── Diagnostics ─────────────────────────────────────────────────
@@ -606,21 +673,18 @@ export function writeAntigravityCacheDebugEntry(
     // DEBUG_MIN_CACHEABLE_CHARS).
     if (!context && bytes < DEBUG_MIN_CACHEABLE_CHARS) {
       const verdict = 'n/a: small request (cache eligibility unknown)'
-      appendFileSync(
-        join(tmpdir(), 'tau-cache-debug.jsonl'),
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          model,
-          sessionId,
-          break: verdict,
-          system: snapshot.system,
-          tools: snapshot.tools,
-          genCfg: h(request.generationConfig),
-          nContents: contents.length,
-          nTools: Object.keys(toolsByName).length,
-          bytes,
-        }) + '\n',
-      )
+      appendAntigravityCacheDebugRow({
+        ts: new Date().toISOString(),
+        model,
+        sessionId,
+        break: verdict,
+        system: snapshot.system,
+        tools: snapshot.tools,
+        genCfg: h(request.generationConfig),
+        nContents: contents.length,
+        nTools: Object.keys(toolsByName).length,
+        bytes,
+      })
       return verdict
     }
 
@@ -669,10 +733,7 @@ export function writeAntigravityCacheDebugEntry(
         }
       }
     }
-    appendFileSync(
-      join(tmpdir(), 'tau-cache-debug.jsonl'),
-      JSON.stringify(entry) + '\n',
-    )
+    appendAntigravityCacheDebugRow(entry)
     return verdict
   } catch {
     // Diagnostics must never break the request path.
