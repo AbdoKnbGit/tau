@@ -205,3 +205,23 @@ test('parseLog skips malformed lines instead of failing', () => {
   assert.equal(rows.length, 1)
   assert.equal(malformed, 2)
 })
+
+test('a requested but skipped keep-alive is its own arm, never control or treatment', () => {
+  const skipped = { trajectory: 'off', transport: 'baseline', transportSkipped: 'proxy' }
+  const rows = [
+    ...traced('k1', { t: 0, verdict: 'cold', prompt: 20_000, cached: 0 }),
+    ...traced('k2', { t: 10, verdict: 'ok: clean prefix extension', prompt: 24_000, cached: 16_384, gapMs: 8000 }),
+    ...traced('k3', { run: 'run-k', session: 's9', t: 0, verdict: 'cold', prompt: 20_000, cached: 0, profile: skipped }),
+    ...traced('k4', { run: 'run-k', session: 's9', t: 10, verdict: 'ok: clean prefix extension', prompt: 24_000, cached: 0, gapMs: 8000, profile: skipped }),
+    ...traced('k5', { run: 'run-c', session: 's8', t: 0, verdict: 'cold', prompt: 20_000, cached: 0, profile: { trajectory: 'off', transport: 'keepalive' } }),
+    ...traced('k6', { run: 'run-c', session: 's8', t: 10, verdict: 'ok: clean prefix extension', prompt: 24_000, cached: 16_384, gapMs: 8000, profile: { trajectory: 'off', transport: 'keepalive' } }),
+  ]
+  const result = analyze(rows)
+  assert.deepEqual(Object.keys(result.arms).sort(), ['off/baseline', 'off/baseline (keepalive skipped: proxy)', 'off/keepalive'])
+  assert.equal(result.arms['off/baseline'].primary.n, 1)
+  assert.equal(result.arms['off/baseline (keepalive skipped: proxy)'].primary.n, 1)
+  // Only the planned arms are compared.
+  const compared = result.comparisons.map(c => c.treatment)
+  assert.deepEqual(compared.filter(arm => arm.includes('skipped')), [])
+  assert.ok(compared.includes('off/keepalive'))
+})

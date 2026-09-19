@@ -50,6 +50,11 @@ import {
   rejectAntigravityTrajectoryOn,
   type AntigravityTrajectoryAttempt,
 } from './antigravity_trajectory.js'
+import { antigravityKeepAliveRequested } from './antigravity_keepalive.js'
+import {
+  antigravityTransportFor,
+  type AntigravityTransport,
+} from './antigravity_transport.js'
 import {
   classifyGeminiError,
   type ClassifiedGeminiError,
@@ -121,11 +126,24 @@ function antigravityTrajectoryFor(
   })
 }
 
-function experimentProfile(trajectory: AntigravityTrajectoryAttempt | undefined): AntigravityExperimentProfile {
+// Diagnostics and the keep-alive experiment need the transport; the default
+// path sends exactly what it always has.
+function antigravityTransportIfNeeded(url: string, traced: boolean): AntigravityTransport | undefined {
+  return traced || antigravityKeepAliveRequested() ? antigravityTransportFor(url) : undefined
+}
+
+// Effective experiment arm of one dispatch. A requested keep-alive that was
+// skipped (proxy, Bun) is marked so it never counts as a treated sample.
+function experimentProfile(
+  trajectory: AntigravityTrajectoryAttempt | undefined,
+  transport: AntigravityTransport | undefined,
+): AntigravityExperimentProfile {
+  const skipped = transport?.profile.keepAlive?.skipped
   return {
     trajectory: trajectory?.profile ?? 'off',
-    transport: 'baseline',
+    transport: transport?.profile.dispatcher === 'keepalive' ? 'keepalive' : 'baseline',
     ...(trajectory?.state && { trajectoryState: trajectory.state }),
+    ...(skipped && { transportSkipped: skipped }),
   }
 }
 
@@ -608,6 +626,7 @@ class GeminiApiClient {
           let dispatch: AntigravityDispatchAttempt | undefined
           let hopReason: string | undefined
           for (let i = 0; i < urls.length; i++) {
+            const transport = fastAntigravityGemini ? antigravityTransportIfNeeded(urls[i]!, !!trace) : undefined
             dispatch = fastAntigravityGemini
               ? trace?.attempt({
                 attempt: attemptNo,
@@ -616,7 +635,8 @@ class GeminiApiClient {
                 url: urls[i]!,
                 serialized,
                 accountEmail,
-                profile: experimentProfile(trajectory),
+                profile: experimentProfile(trajectory, transport),
+                transport: transport?.profile,
               })
               : undefined
             const send = () => fetchCodeAssistEndpoint(
@@ -625,7 +645,9 @@ class GeminiApiClient {
                 method: 'POST',
                 headers,
                 body: serialized,
-              },
+                // Only the opt-in keep-alive experiment brings its own dispatcher.
+                ...(transport?.dispatcher && { dispatcher: transport.dispatcher }),
+              } as RequestInit,
               {
                 signal,
                 timeoutMs: fastAntigravityGemini
@@ -954,6 +976,7 @@ class GeminiApiClient {
           let dispatch: AntigravityDispatchAttempt | undefined
           let hopReason: string | undefined
           for (let i = 0; i < urls.length; i++) {
+            const transport = fastAntigravityGemini ? antigravityTransportIfNeeded(urls[i]!, !!trace) : undefined
             dispatch = fastAntigravityGemini
               ? trace?.attempt({
                 attempt: attemptNo,
@@ -962,7 +985,8 @@ class GeminiApiClient {
                 url: urls[i]!,
                 serialized,
                 accountEmail,
-                profile: experimentProfile(trajectory),
+                profile: experimentProfile(trajectory, transport),
+                transport: transport?.profile,
               })
               : undefined
             const send = () => fetchCodeAssistEndpoint(
@@ -971,7 +995,9 @@ class GeminiApiClient {
                 method: 'POST',
                 headers,
                 body: serialized,
-              },
+                // Only the opt-in keep-alive experiment brings its own dispatcher.
+                ...(transport?.dispatcher && { dispatcher: transport.dispatcher }),
+              } as RequestInit,
               {
                 signal,
                 timeoutMs: fastAntigravityGemini

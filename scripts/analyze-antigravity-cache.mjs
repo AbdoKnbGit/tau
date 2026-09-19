@@ -35,6 +35,9 @@ export const DEFAULT_CUTOFF_TOKENS = 8192
 // Blocks the implicit cache stores in; used by the severe-partial heuristic.
 const CACHE_BLOCK_TOKENS = 4096
 const CONTROL_ARM = 'off/baseline'
+// The plan's treatment arms B, C and D. Skipped or rejected profiles and
+// legacy rows are reported, never compared.
+const TREATMENT_ARMS = ['minimal/baseline', 'off/keepalive', 'minimal/keepalive']
 const SCREENING_FOLLOW_UPS = 100
 const SCREENING_CLUSTERS = 5
 const TARGET_RELATIVE_REDUCTION = 0.5
@@ -89,8 +92,11 @@ export function roleOf(source) {
   return 'helper'
 }
 
+// A requested keep-alive that was skipped (proxy, Bun) is its own arm: it is
+// neither a treated sample nor a planned control.
 function armOf(profile) {
-  return `${profile?.trajectory ?? 'off'}/${profile?.transport ?? 'baseline'}`
+  const skipped = profile?.transportSkipped ? ` (keepalive skipped: ${profile.transportSkipped})` : ''
+  return `${profile?.trajectory ?? 'off'}/${profile?.transport ?? 'baseline'}${skipped}`
 }
 
 // ─── Parsing ─────────────────────────────────────────────────────
@@ -372,7 +378,7 @@ function compareArms(primaryByArm) {
   const control = primaryByArm[CONTROL_ARM]
   const comparisons = []
   for (const [arm, followUps] of Object.entries(primaryByArm)) {
-    if (arm === CONTROL_ARM || arm === 'legacy' || !control) continue
+    if (!control || !TREATMENT_ARMS.includes(arm)) continue
     const c = clustersOf(control)
     const t = clustersOf(followUps)
     const cn = control.length

@@ -35,7 +35,10 @@ import {
   withAntigravityConnectionProbe,
   type AntigravityConnectionProbe,
 } from './antigravity_connection.js'
-import { describeAntigravityTransport } from './antigravity_transport.js'
+import {
+  describeAntigravityTransport,
+  type AntigravityTransportProfile,
+} from './antigravity_transport.js'
 
 // Listen before the first request so early sockets can be classified too.
 if (process.env.TAU_CACHE_DEBUG) observeAntigravityConnections()
@@ -266,6 +269,8 @@ export interface AntigravityDispatchInput {
   serialized: string
   accountEmail?: string
   profile?: AntigravityExperimentProfile
+  /** The transport the dispatch actually used. */
+  transport?: AntigravityTransportProfile
 }
 
 export interface AntigravityDispatchAttempt {
@@ -431,7 +436,7 @@ class DispatchAttempt implements AntigravityDispatchAttempt {
         ...(this.context.pacingMs !== undefined && { pacingMs: this.context.pacingMs }),
         inflight,
         streamInflight,
-        transport: describeAntigravityTransport(this.input.url),
+        transport: this.input.transport ?? describeAntigravityTransport(this.input.url),
         build: antigravityBuildId(),
       })
     } catch {

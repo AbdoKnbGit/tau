@@ -33,14 +33,14 @@ type Reply =
   | { kind: 'status'; status: number; body?: string }
   | { kind: 'throw' }
 let replies: Reply[] = []
-const calls: Array<{ url: string; headers: Record<string, string>; body: string }> = []
+const calls: Array<{ url: string; headers: Record<string, string>; body: string; initKeys: string[] }> = []
 
 function sse(events: unknown[]): string {
   return events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('')
 }
 
 globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-  calls.push({ url: String(url), headers: { ...(init?.headers as Record<string, string>) }, body: String(init?.body) })
+  calls.push({ url: String(url), headers: { ...(init?.headers as Record<string, string>) }, body: String(init?.body), initKeys: Object.keys(init ?? {}).sort() })
   const reply = replies.shift() ?? { kind: 'ok', cached: 16_384 }
   if (reply.kind === 'throw') throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } })
   if (reply.kind === 'status') {
@@ -129,13 +129,14 @@ try {
     replies = [{ kind: 'status', status: 503 }, { kind: 'status', status: 503 }, { kind: 'ok', cached: 0 }, { kind: 'ok', cached: 16_384 }]
     await stream(makeRequest([user(USER_TEXT), signedCall, toolResult]).request)
     await geminiApi.generateContent(makeRequest([user(USER_TEXT)]).request)
-    return calls.map(call => ({ url: call.url, headers: call.headers, body: normalize(call.body) }))
+    return calls.map(call => ({ url: call.url, headers: call.headers, body: normalize(call.body), initKeys: call.initKeys }))
   }
   const plain = await capture(false)
   assert.equal(rows().length, 0, 'diagnostics wrote rows with TAU_CACHE_DEBUG unset')
   const traced = await capture(true)
   assert.equal(plain.length, 4)
-  assert.deepEqual(traced, plain, 'tracing changed an outgoing URL, header or body')
+  assert.deepEqual(traced, plain, 'tracing changed an outgoing URL, header, body or fetch option')
+  assert.ok(plain.every(call => !call.initKeys.includes('dispatcher')), 'the default path must not bring its own dispatcher')
   assert.ok(plain[0]!.body.includes('"thought_signature"'), 'fixture must exercise the wire rename')
 
   // ── 2. Correlation of a hop and a retry. ──
@@ -251,7 +252,21 @@ try {
   const concurrent = rows().filter(r => r.kind === 'dispatch')
   assert.deepEqual(concurrent.map(r => [r.inflight, r.streamInflight]), [[0, 0], [1, 0]])
 
-  // ── 7. The transport profile follows proxy routing and TLS settings. ──
+  // ── 7. A requested keep-alive that cannot apply (Bun) is logged as skipped. ──
+  reset()
+  process.env.TAU_ANTIGRAVITY_KEEPALIVE = '1'
+  try {
+    await stream(makeRequest(base).request)
+  } finally {
+    delete process.env.TAU_ANTIGRAVITY_KEEPALIVE
+  }
+  assert.ok(!calls[0]!.initKeys.includes('dispatcher'), 'Bun cannot take an undici dispatcher')
+  const skippedRow = rows().find(r => r.kind === 'dispatch')
+  assert.deepEqual(skippedRow.profile, { trajectory: 'off', transport: 'baseline', transportSkipped: 'bun-runtime' })
+  assert.deepEqual(skippedRow.transport.keepAlive, { effective: 'baseline', skipped: 'bun-runtime' })
+  assert.equal(skippedRow.transport.dispatcher, 'global')
+
+  // ── 8. The transport profile follows proxy routing and TLS settings. ──
   const { describeAntigravityTransport } = await import('./antigravity_transport.js')
   const savedEnv = { ...process.env }
   try {
