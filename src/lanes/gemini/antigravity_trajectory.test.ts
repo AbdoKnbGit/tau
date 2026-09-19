@@ -89,9 +89,9 @@ try {
   ;(geminiApi as any).antigravityOAuthToken = 'trajectory-token'
   delete process.env.TAU_CACHE_DEBUG
 
-  // ── 1. Flag off: today's envelope, byte for byte. ──
+  // ── 1. Switched off: the plain envelope, byte for byte. ──
   reset()
-  delete process.env.TAU_ANTIGRAVITY_TRAJECTORY
+  process.env.TAU_ANTIGRAVITY_TRAJECTORY = '0'
   await stream(request())
   await geminiApi.generateContent(request())
   for (const body of bodies) {
@@ -100,9 +100,9 @@ try {
   }
   const offBody = bodies[0]
 
-  // ── 2. Flag on: structured id + verified labels, prompt bytes unchanged. ──
+  // ── 2. On by default: structured id + verified labels, prompt bytes unchanged. ──
   reset()
-  process.env.TAU_ANTIGRAVITY_TRAJECTORY = '1'
+  delete process.env.TAU_ANTIGRAVITY_TRAJECTORY
   await stream(request())
   await stream(request({ text: 'Question.' }))
   await geminiApi.generateContent(request())
@@ -173,12 +173,12 @@ try {
 
   // ── 6. The profile is chosen once per stream. ──
   reset()
-  delete process.env.TAU_ANTIGRAVITY_TRAJECTORY
+  process.env.TAU_ANTIGRAVITY_TRAJECTORY = '0'
   await stream(request({ session: 'started-off' }))
   process.env.TAU_ANTIGRAVITY_TRAJECTORY = '1'
   await stream(request({ session: 'started-off' }))
   await stream(request({ session: 'started-on' }))
-  delete process.env.TAU_ANTIGRAVITY_TRAJECTORY
+  process.env.TAU_ANTIGRAVITY_TRAJECTORY = '0'
   await stream(request({ session: 'started-on' }))
   assert.equal(bodies[1].request.labels, undefined, 'a stream switched profile mid-conversation')
   assert.ok(bodies[2].request.labels && bodies[3].request.labels, 'a stream switched profile mid-conversation')
@@ -195,28 +195,32 @@ try {
   assert.notEqual(again.identity!.labels.trajectory_id, first.identity!.labels.trajectory_id)
   assert.equal(trajectory.antigravityTrajectoryForAttempt(scope(0)).state, 'continued')
 
-  // ── 8. A 400 naming an envelope field disables the experiment; no retry. ──
+  // ── 8. A 400 naming an envelope field turns it off; that request is resent once without it. ──
   reset()
+  delete process.env.TAU_ANTIGRAVITY_TRAJECTORY
   process.env.TAU_CACHE_DEBUG = '1'
   replies = [{ kind: 'status', status: 400, body: JSON.stringify({ error: { code: 400, message: 'Corrupted thought signature.', status: 'INVALID_ARGUMENT' } }) }]
   await stream(request())
-  assert.equal(trajectory.antigravityTrajectoryRejection(), undefined, 'an unrelated 400 disabled the experiment')
+  assert.equal(trajectory.antigravityTrajectoryRejection(), undefined, 'an unrelated 400 disabled the envelope')
   replies = [{ kind: 'status', status: 400, body: JSON.stringify({ error: { code: 400, message: 'Invalid JSON payload received. Unknown name "labels" at \'request\': Cannot find field.', status: 'INVALID_ARGUMENT' } }) }]
   const before = bodies.length
-  await assert.rejects(stream(request()), /400/)
-  assert.equal(bodies.length - before, 1, 'the rejected request was retried')
+  await stream(request())
+  assert.equal(bodies.length - before, 2, 'the rejected request must be resent exactly once')
+  assert.ok(bodies[before].request.labels, 'the first attempt carried the envelope')
+  assert.equal(bodies[before + 1].request.labels, undefined, 'the resend must drop the envelope')
+  assert.match(bodies[before + 1].requestId, new RegExp(`^agent-${UUID}$`))
   assert.deepEqual(trajectory.antigravityTrajectoryRejection(), { status: 400, fields: ['labels'] })
   await stream(request())
   assert.match(bodies.at(-1).requestId, new RegExp(`^agent-${UUID}$`))
   assert.equal(bodies.at(-1).request.labels, undefined)
   const rows = readFileSync(LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line))
   const profiles = rows.filter(r => r.kind === 'dispatch').map(r => r.profile.trajectory)
-  assert.deepEqual(profiles, ['minimal', 'minimal', 'minimal', 'rejected'])
+  assert.deepEqual(profiles, ['minimal', 'minimal', 'minimal', 'rejected', 'rejected'])
   assert.ok(rows.some(r => r.kind === 'endpoint' && r.event === 'trajectory-rejected'))
   const rejectedDispatch = rows.filter(r => r.kind === 'dispatch')[2]
   assert.equal(rejectedDispatch.labels.trajectory_id, idParts(bodies[before]).trajectoryId, 'dispatch rows must show the labels that were sent')
 
-  console.log('Antigravity trajectory envelope passed: flag-off parity, prompt bytes, id/labels contract, agent/helper isolation, hops/retries/failures, scope, sticky profile, reset, rejection')
+  console.log('Antigravity trajectory envelope passed: switched-off parity, on by default, prompt bytes, id/labels contract, agent/helper isolation, hops/retries/failures, scope, sticky profile, reset, rejection resend')
 } finally {
   globalThis.fetch = originalFetch
   ;(geminiApi as any).antigravityOAuthToken = previousToken

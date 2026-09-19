@@ -27,6 +27,14 @@ const LOG = join(sandbox, 'tau-cache-debug.jsonl')
 const originalFetch = globalThis.fetch
 const previousToken = (geminiApi as any).antigravityOAuthToken
 const previousDebug = process.env.TAU_CACHE_DEBUG
+const previousSwitches = {
+  TAU_ANTIGRAVITY_TRAJECTORY: process.env.TAU_ANTIGRAVITY_TRAJECTORY,
+  TAU_ANTIGRAVITY_KEEPALIVE: process.env.TAU_ANTIGRAVITY_KEEPALIVE,
+}
+// This test checks the diagnostics against the plain envelope; the
+// trajectory envelope has its own test.
+process.env.TAU_ANTIGRAVITY_TRAJECTORY = '0'
+process.env.TAU_ANTIGRAVITY_KEEPALIVE = '0'
 
 type Reply =
   | { kind: 'ok'; cached?: number; stall?: boolean }
@@ -258,7 +266,7 @@ try {
   try {
     await stream(makeRequest(base).request)
   } finally {
-    delete process.env.TAU_ANTIGRAVITY_KEEPALIVE
+    process.env.TAU_ANTIGRAVITY_KEEPALIVE = '0'
   }
   assert.ok(!calls[0]!.initKeys.includes('dispatcher'), 'Bun cannot take an undici dispatcher')
   const skippedRow = rows().find(r => r.kind === 'dispatch')
@@ -292,6 +300,10 @@ try {
   ;(geminiApi as any).antigravityOAuthToken = previousToken
   if (previousDebug === undefined) delete process.env.TAU_CACHE_DEBUG
   else process.env.TAU_CACHE_DEBUG = previousDebug
+  for (const [name, value] of Object.entries(previousSwitches)) {
+    if (value === undefined) delete process.env[name]
+    else process.env[name] = value
+  }
   codeAssist._resetAntigravityGeminiAffinityForTest()
   codeAssist._resetAntigravityGeminiHostCooldownForTest()
   mock.restore()

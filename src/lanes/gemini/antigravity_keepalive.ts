@@ -1,12 +1,13 @@
 /**
- * Antigravity Gemini connection persistence: an opt-in experiment
- * (TAU_ANTIGRAVITY_KEEPALIVE=1). A leaf module so Node tests can load it.
+ * Antigravity Gemini connection persistence. On by default;
+ * TAU_ANTIGRAVITY_KEEPALIVE=0 turns it off. A leaf module so Node tests can
+ * load it.
  *
  * Node's fetch closes a connection 4 s after its last response unless the
  * server sends a keep-alive hint, so a conversation that pauses longer opens
- * a new TCP + TLS connection for its next request. Whether that changes
- * access to a warm prompt cache is not known. This keeps Antigravity Gemini
- * connections open through 60 s of idleness so it can be measured.
+ * a new TCP + TLS connection for its next request. This keeps Antigravity
+ * Gemini connections open through 60 s of idleness. Measured on real
+ * sessions it neither helped nor hurt cache reads; it saves the reconnects.
  *
  * Everything else matches the default dispatcher: HTTP/1.1, pipelining 1,
  * no cap on connections per origin, the same timeouts (undici 7 defaults,
@@ -19,6 +20,8 @@
  * keep-alive would then apply to the proxy tunnel, a different variable) and
  * the Bun runtime (its fetch does not take undici dispatchers).
  */
+
+import { antigravitySwitchOn } from './antigravity_flags.js'
 
 export const ANTIGRAVITY_KEEPALIVE_IDLE_MS = 60_000
 
@@ -67,7 +70,7 @@ function loadNpmUndici(): { module: UndiciLike; version?: string } {
 }
 
 export function antigravityKeepAliveRequested(): boolean {
-  return process.env.TAU_ANTIGRAVITY_KEEPALIVE === '1'
+  return antigravitySwitchOn('TAU_ANTIGRAVITY_KEEPALIVE')
 }
 
 interface CurrentDispatcher {

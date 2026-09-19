@@ -44,6 +44,7 @@ async function main(): Promise<void> {
   // Pad + pacing are opt-in (default off). Exercise the ENABLED behavior
   // here; the default-off path is covered by dedicated tests that clear it.
   process.env.TAU_ANTIGRAVITY_MAX_CACHE = '1'
+  process.env.TAU_ANTIGRAVITY_NO_PACING = '0'
 
   console.log('antigravity prefix pad:')
 
@@ -245,7 +246,7 @@ async function main(): Promise<void> {
       await paceAntigravityAgentRequest('tau-agent-abc')
       assert(Date.now() - start < 25, 'env override must disable pacing')
     } finally {
-      delete process.env.TAU_ANTIGRAVITY_NO_PACING
+      process.env.TAU_ANTIGRAVITY_NO_PACING = '0'
     }
   })
 
@@ -268,7 +269,23 @@ async function main(): Promise<void> {
   // Over the guard's cacheable-size gate (~90k chars ≈ 16.4k tokens).
   const BIG_PROMPT_CHARS = 120_000
 
-  await test('guard holds the second over-minimum request by default', async () => {
+  await test('pacing and the guard are off by default (TAU_ANTIGRAVITY_NO_PACING unset)', async () => {
+    delete process.env.TAU_ANTIGRAVITY_NO_PACING
+    try {
+      _resetAntigravityCacheStateForTest()
+      _setAntigravityCommitWindowForTest(60)
+      await guardAntigravityCommitWindow('main-session', undefined, BIG_PROMPT_CHARS)
+      await paceAntigravityAgentRequest('tau-agent-abc')
+      const start = Date.now()
+      await guardAntigravityCommitWindow('main-session', undefined, BIG_PROMPT_CHARS)
+      await paceAntigravityAgentRequest('tau-agent-abc')
+      assert(Date.now() - start < 25, 'nothing may wait unless pacing is turned on')
+    } finally {
+      process.env.TAU_ANTIGRAVITY_NO_PACING = '0'
+    }
+  })
+
+  await test('guard holds the second over-minimum request when pacing is on', async () => {
     delete process.env.TAU_ANTIGRAVITY_MAX_CACHE
     try {
       _resetAntigravityCacheStateForTest()
@@ -416,7 +433,7 @@ async function main(): Promise<void> {
       await guardAntigravityCommitWindow('main-session', undefined, BIG_PROMPT_CHARS)
       assert(Date.now() - start < 25, 'env off-switch must disable the guard')
     } finally {
-      delete process.env.TAU_ANTIGRAVITY_NO_PACING
+      process.env.TAU_ANTIGRAVITY_NO_PACING = '0'
     }
   })
 
@@ -651,6 +668,7 @@ async function main(): Promise<void> {
 
 
   delete process.env.TAU_CACHE_DEBUG
+  delete process.env.TAU_ANTIGRAVITY_NO_PACING
   for (const [k, v] of Object.entries(_realTemp)) {
     if (v === undefined) delete process.env[k]
     else process.env[k] = v

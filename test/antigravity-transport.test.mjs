@@ -240,3 +240,23 @@ test('a TLS change builds a new dispatcher and closes the old one only after its
     await keepAlive.closeAntigravityKeepAlive()
   }
 })
+
+test('keep-alive is on unless TAU_ANTIGRAVITY_KEEPALIVE is 0, false, no or off', () => {
+  const keepAlive = load(keepAliveBundle)
+  const saved = process.env.TAU_ANTIGRAVITY_KEEPALIVE
+  try {
+    delete process.env.TAU_ANTIGRAVITY_KEEPALIVE
+    assert.equal(keepAlive.antigravityKeepAliveRequested(), true)
+    for (const on of ['1', 'true', 'yes']) {
+      process.env.TAU_ANTIGRAVITY_KEEPALIVE = on
+      assert.equal(keepAlive.antigravityKeepAliveRequested(), true, on)
+    }
+    for (const off of ['0', 'false', 'no', 'off', ' OFF ']) {
+      process.env.TAU_ANTIGRAVITY_KEEPALIVE = off
+      assert.equal(keepAlive.antigravityKeepAliveRequested(), false, off)
+    }
+  } finally {
+    if (saved === undefined) delete process.env.TAU_ANTIGRAVITY_KEEPALIVE
+    else process.env.TAU_ANTIGRAVITY_KEEPALIVE = saved
+  }
+})

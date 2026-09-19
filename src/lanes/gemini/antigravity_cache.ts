@@ -7,11 +7,13 @@
  * returned 16,353 cached tokens after 20s, with no tools or history changes.
  * A stable prefix permits reuse; it does not guarantee full token coverage.
  *
- * The default guard waits after a completed cold response, with bounded
- * retries. Its local state is scoped by session, model and query source;
- * upstream routing IDs and prompt bytes remain untouched. Actual token
- * counts override character estimates for dense agent prompts. Streaming
- * usage must be finalized before it can consume a recovery opportunity.
+ * The commit-window guard can wait after a completed cold response, with
+ * bounded retries. It is off by default (TAU_ANTIGRAVITY_NO_PACING=0 turns it
+ * back on): measured holds read the cache no more often than unheld requests.
+ * Its local state is scoped by session, model and query source; upstream
+ * routing IDs and prompt bytes remain untouched. Actual token counts override
+ * character estimates for dense agent prompts. Streaming usage must be
+ * finalized before it can consume a recovery opportunity.
  *
  * Prefix padding and extra agent pacing remain opt-in via
  * TAU_ANTIGRAVITY_MAX_CACHE=1. They are not a guarantee of lower total cost.
@@ -33,6 +35,7 @@ import {
   _resetSessionVolatileFreezeForTest,
   freezeSessionVolatileText,
 } from '../shared/volatile_freeze.js'
+import { antigravitySwitchOn } from './antigravity_flags.js'
 
 // Build-time define (build.mjs); absent when a test runs the source directly.
 declare const MACRO: { VERSION: string; BUILD_TIME: string }
@@ -61,6 +64,8 @@ const RUN_FLAG_NAMES = [
   'TAU_ANTIGRAVITY_PROMPT_SUGGESTIONS',
   'TAU_ANTIGRAVITY_TRAJECTORY',
   'TAU_ANTIGRAVITY_KEEPALIVE',
+  // Whether the claude.ai connectors (about 40 tools) join the prompt.
+  'ENABLE_CLAUDEAI_MCP_SERVERS',
 ] as const
 
 let _runRowWritten = false
@@ -344,11 +349,22 @@ function _prunePaceMap(): void {
   }
 }
 
+/**
+ * Whether Tau may hold a request after a cold response. Off by default:
+ * the 2026-09 measurements found writes readable at once (a request 0-5 s
+ * after a cold one read its blocks) and held requests hitting no more often
+ * than unheld ones, so a hold only added 10-15 s. TAU_ANTIGRAVITY_NO_PACING=0
+ * turns pacing back on.
+ */
+export function antigravityPacingEnabled(): boolean {
+  return !antigravitySwitchOn('TAU_ANTIGRAVITY_NO_PACING')
+}
+
 export async function paceAntigravityAgentRequest(
   sessionId: string | undefined,
   signal?: AbortSignal,
 ): Promise<void> {
-  if (process.env.TAU_ANTIGRAVITY_NO_PACING === '1') return
+  if (!antigravityPacingEnabled()) return
   // Default OFF — see antigravityMaxCacheEnabled(). The default guard below
   // uses model-specific size policy and observed usage for recovery.
   if (!antigravityMaxCacheEnabled()) return
@@ -376,7 +392,8 @@ const GUARD_MIN_PROMPT_CHARS = 90_000
 // most misses while capping the worst added latency (2 paced turns max) at
 // ~30s per pacing episode — and a hold only ever happens when the next
 // request fires faster than the window, i.e. agent loops, not humans typing.
-// TAU_ANTIGRAVITY_PACING_MS overrides, TAU_ANTIGRAVITY_NO_PACING=1 disables.
+// Off by default (see antigravityPacingEnabled); with pacing on,
+// TAU_ANTIGRAVITY_PACING_MS overrides the window.
 const GUARD_COMMIT_WINDOW_MS = 15_000
 
 export async function guardAntigravityCommitWindow(
@@ -387,7 +404,7 @@ export async function guardAntigravityCommitWindow(
   model?: string,
 ): Promise<void> {
   if (querySource === 'report') return
-  if (process.env.TAU_ANTIGRAVITY_NO_PACING === '1') return
+  if (!antigravityPacingEnabled()) return
   if (!sessionId) return
   const scope = antigravityCacheScope(sessionId, model, querySource)
   const minimumTokens = guardMinimumPromptTokens(model)

@@ -1,11 +1,12 @@
 /**
- * Antigravity Gemini trajectory envelope: an opt-in experiment
- * (TAU_ANTIGRAVITY_TRAJECTORY=1), minimal profile.
+ * Antigravity Gemini trajectory envelope, minimal profile. On by default;
+ * TAU_ANTIGRAVITY_TRAJECTORY=0 turns it off.
  *
  * The native Antigravity client tags every generation with its conversation's
- * trajectory. Whether the backend uses those tags for cache routing is not
- * known. This sends only the parts whose names, formats and lifetimes are
- * verified against the native client:
+ * trajectory. Google accepts the same tags from Tau, though they did not by
+ * themselves stop the cold follow-ups seen on 3.8 Flash. This sends only the
+ * parts whose names, formats and lifetimes are verified against the native
+ * client:
  *   - requestId  agent/<uuid>/<epoch ms>/<trajectory id>/<n>
  *   - labels     trajectory_id, used_claude=false, used_claude_conservative=false
  * last_execution_id, last_step_index, model_enum and the request_id label are
@@ -19,6 +20,7 @@
  */
 
 import { randomUUID } from 'crypto'
+import { antigravitySwitchOn } from './antigravity_flags.js'
 
 export type AntigravityTrajectoryProfile = 'off' | 'minimal' | 'rejected'
 
@@ -57,7 +59,7 @@ const _evicted = new Set<string>()
 let _rejection: { status: number; fields: string[] } | undefined
 
 export function antigravityTrajectoryRequested(): boolean {
-  return process.env.TAU_ANTIGRAVITY_TRAJECTORY === '1'
+  return antigravitySwitchOn('TAU_ANTIGRAVITY_TRAJECTORY')
 }
 
 /** Main thread and agents only; helpers keep their current requests. */
@@ -130,9 +132,10 @@ export function antigravityTrajectoryForAttempt(
 const EXPERIMENT_FIELDS = /\b(labels|request_?id|requestId|trajectory_id)\b/gi
 
 /**
- * A 400 that names an envelope field means the backend refuses the
- * experiment: disable it for the process. The failing request is not
- * retried. Returns the named fields when it disabled the profile.
+ * A 400 that names an envelope field means the backend refuses the envelope:
+ * disable it for the process (later requests are logged as `rejected`). The
+ * caller retries the failed request once, without it. Returns the named
+ * fields when it disabled the profile.
  */
 export function rejectAntigravityTrajectoryOn(
   status: number,

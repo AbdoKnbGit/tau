@@ -1442,8 +1442,8 @@ export interface CodeAssistWrapperBody {
  *   - request.safetySettings deleted (Antigravity executor strips these)
  *
  * `identity` replaces the per-request id and adds `request.labels` for the
- * opt-in trajectory experiment (lanes/gemini/antigravity_trajectory.ts); the
- * prompt and generation fields are the same either way.
+ * trajectory envelope (lanes/gemini/antigravity_trajectory.ts); the prompt
+ * and generation fields are the same either way.
  */
 export function wrapForCodeAssist(
   model: string,

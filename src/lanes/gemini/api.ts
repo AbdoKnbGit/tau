@@ -104,8 +104,9 @@ function withTauStableSessionId(
 }
 
 /**
- * Opt-in trajectory envelope for one dispatched attempt (see
- * antigravity_trajectory.ts): Antigravity Gemini conversation streams only.
+ * Trajectory envelope for one dispatched attempt (see
+ * antigravity_trajectory.ts; on unless TAU_ANTIGRAVITY_TRAJECTORY=0):
+ * Antigravity Gemini conversation streams only.
  */
 function antigravityTrajectoryFor(
   request: object,
@@ -126,8 +127,8 @@ function antigravityTrajectoryFor(
   })
 }
 
-// Diagnostics and the keep-alive experiment need the transport; the default
-// path sends exactly what it always has.
+// Diagnostics and keep-alive (on unless TAU_ANTIGRAVITY_KEEPALIVE=0) need
+// the transport; with both off, requests go out exactly as before.
 function antigravityTransportIfNeeded(url: string, traced: boolean): AntigravityTransport | undefined {
   return traced || antigravityKeepAliveRequested() ? antigravityTransportFor(url) : undefined
 }
@@ -625,6 +626,7 @@ class GeminiApiClient {
           let lastEndpointError: unknown
           let dispatch: AntigravityDispatchAttempt | undefined
           let hopReason: string | undefined
+          let envelopeRejected = false
           for (let i = 0; i < urls.length; i++) {
             const transport = fastAntigravityGemini ? antigravityTransportIfNeeded(urls[i]!, !!trace) : undefined
             dispatch = fastAntigravityGemini
@@ -645,7 +647,7 @@ class GeminiApiClient {
                 method: 'POST',
                 headers,
                 body: serialized,
-                // Only the opt-in keep-alive experiment brings its own dispatcher.
+                // Only keep-alive brings its own dispatcher.
                 ...(transport?.dispatcher && { dispatcher: transport.dispatcher }),
               } as RequestInit,
               {
@@ -696,11 +698,11 @@ class GeminiApiClient {
             }
             errText = await resp.text().catch(() => '')
             dispatch?.end('http-error', { status: resp.status, errorBody: errText })
-            // The backend refusing an experimental envelope field disables the
-            // experiment for the process. This request still fails as is: no
-            // silent retry without the envelope.
+            // The backend refusing an envelope field turns the envelope off for
+            // the process; this request is sent again without it below.
             const rejectedFields = rejectAntigravityTrajectoryOn(resp.status, errText, trajectory)
             if (rejectedFields) {
+              envelopeRejected = true
               logEndpoint('trajectory-rejected', { status: resp.status, fields: rejectedFields, attempt: attemptNo })
             }
             // Hosts meter quota separately. Remember a refusal so the next
@@ -734,6 +736,16 @@ class GeminiApiClient {
             const cls = classifyGeminiError(resp.status, errText)
             const retryAfterMs = cls.retryAfterMs
               ?? parseRetryAfter(resp.headers.get('retry-after'))
+
+            // A refused trajectory envelope is not the account's fault: retry
+            // once without it (it is now off) instead of failing the turn.
+            if (envelopeRejected) {
+              throw new GeminiApiError(resp.status, errText, 0, {
+                kind: 'transient',
+                details: cls.details,
+                retryAfterMs: 0,
+              })
+            }
 
             // Record feedback against the rotation (no-op when the token
             // came from the legacy single-token path).
@@ -975,6 +987,7 @@ class GeminiApiClient {
           let lastEndpointError: unknown
           let dispatch: AntigravityDispatchAttempt | undefined
           let hopReason: string | undefined
+          let envelopeRejected = false
           for (let i = 0; i < urls.length; i++) {
             const transport = fastAntigravityGemini ? antigravityTransportIfNeeded(urls[i]!, !!trace) : undefined
             dispatch = fastAntigravityGemini
@@ -995,7 +1008,7 @@ class GeminiApiClient {
                 method: 'POST',
                 headers,
                 body: serialized,
-                // Only the opt-in keep-alive experiment brings its own dispatcher.
+                // Only keep-alive brings its own dispatcher.
                 ...(transport?.dispatcher && { dispatcher: transport.dispatcher }),
               } as RequestInit,
               {
@@ -1046,11 +1059,11 @@ class GeminiApiClient {
             }
             errText = await resp.text().catch(() => '')
             dispatch?.end('http-error', { status: resp.status, errorBody: errText })
-            // The backend refusing an experimental envelope field disables the
-            // experiment for the process. This request still fails as is: no
-            // silent retry without the envelope.
+            // The backend refusing an envelope field turns the envelope off for
+            // the process; this request is sent again without it below.
             const rejectedFields = rejectAntigravityTrajectoryOn(resp.status, errText, trajectory)
             if (rejectedFields) {
+              envelopeRejected = true
               logEndpoint('trajectory-rejected', { status: resp.status, fields: rejectedFields, attempt: attemptNo })
             }
             // Hosts meter quota separately. Remember a refusal so the next
@@ -1084,6 +1097,16 @@ class GeminiApiClient {
             const cls = classifyGeminiError(resp.status, errText)
             const retryAfterMs = cls.retryAfterMs
               ?? parseRetryAfter(resp.headers.get('retry-after'))
+
+            // A refused trajectory envelope is not the account's fault: retry
+            // once without it (it is now off) instead of failing the turn.
+            if (envelopeRejected) {
+              throw new GeminiApiError(resp.status, errText, 0, {
+                kind: 'transient',
+                details: cls.details,
+                retryAfterMs: 0,
+              })
+            }
 
             if (accountEmail && executor === 'antigravity') {
               const account = rotation.list().find(a => a.email === accountEmail)

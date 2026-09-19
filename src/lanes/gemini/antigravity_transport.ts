@@ -1,8 +1,8 @@
 /**
  * Antigravity Gemini transport profile: how a request left the process
  * (dispatcher, proxy routing, TLS material), as recorded on every traced
- * dispatch, and the dispatcher of the opt-in keep-alive experiment
- * (antigravity_keepalive.ts). Connection identity lives in
+ * dispatch, and the keep-alive dispatcher (antigravity_keepalive.ts, on
+ * unless TAU_ANTIGRAVITY_KEEPALIVE=0). Connection identity lives in
  * antigravity_connection.ts.
  */
 
@@ -25,7 +25,7 @@ export interface AntigravityTransportProfile {
   /** Custom TLS material configured for the process. */
   tls: 'default' | 'custom-ca' | 'mtls'
   runtime: 'node' | 'bun'
-  /** Present when TAU_ANTIGRAVITY_KEEPALIVE=1 asked for the experiment. */
+  /** Present when keep-alive is on (the default). */
   keepAlive?: {
     effective: 'keepalive' | 'baseline'
     idleMs?: number
@@ -64,8 +64,8 @@ function customTlsMaterial(): AntigravityTlsMaterial | undefined {
 }
 
 /**
- * Transport for one Antigravity Gemini request. Without
- * TAU_ANTIGRAVITY_KEEPALIVE=1 this is always the default dispatcher.
+ * Transport for one Antigravity Gemini request. With
+ * TAU_ANTIGRAVITY_KEEPALIVE=0 this is always the default dispatcher.
  */
 export function antigravityTransportFor(url: string): AntigravityTransport {
   const profile = describeAntigravityTransport(url)
