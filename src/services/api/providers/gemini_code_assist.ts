@@ -1440,12 +1440,17 @@ export interface CodeAssistWrapperBody {
  *   - requestId "agent-<uuid>" — per-request identifier
  *   - request.sessionId — stable hash for dedup (derived from first user msg)
  *   - request.safetySettings deleted (Antigravity executor strips these)
+ *
+ * `identity` replaces the per-request id and adds `request.labels` for the
+ * opt-in trajectory experiment (lanes/gemini/antigravity_trajectory.ts); the
+ * prompt and generation fields are the same either way.
  */
 export function wrapForCodeAssist(
   model: string,
   projectId: string | null,
   innerRequest: Record<string, unknown>,
   sessionId?: string,
+  identity?: { requestId: string; labels: Record<string, string> },
 ): CodeAssistWrapperBody {
   // Strip safetySettings — the Antigravity executor always removes them.
   // Also strip maxOutputTokens for non-Claude models (Antigravity executor
@@ -1481,15 +1486,16 @@ export function wrapForCodeAssist(
     : null
   const providedSessionId = explicitSessionId ?? bodySessionId
   request.sessionId = providedSessionId ?? _stableSessionId(request)
+  if (identity) request.labels = { ...identity.labels }
 
   return {
     model: wireModel,
     userAgent: 'antigravity',
     requestType: wireModel.includes('image') ? 'image_gen' : 'agent',
     project: projectId ?? _randomProjectId(),
-    requestId: wireModel.includes('image')
+    requestId: identity?.requestId ?? (wireModel.includes('image')
       ? `image_gen/${Date.now()}/${randomUUID()}/12`
-      : `agent-${randomUUID()}`,
+      : `agent-${randomUUID()}`),
     request,
   }
 }

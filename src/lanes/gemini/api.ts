@@ -43,7 +43,13 @@ import {
 import {
   startAntigravityDispatchTrace,
   type AntigravityDispatchAttempt,
+  type AntigravityExperimentProfile,
 } from './antigravity_trace.js'
+import {
+  antigravityTrajectoryForAttempt,
+  rejectAntigravityTrajectoryOn,
+  type AntigravityTrajectoryAttempt,
+} from './antigravity_trajectory.js'
 import {
   classifyGeminiError,
   type ClassifiedGeminiError,
@@ -90,6 +96,37 @@ function withTauStableSessionId(
   sessionId: string | undefined,
 ): Record<string, unknown> {
   return sessionId ? { ...body, sessionId } : body
+}
+
+/**
+ * Opt-in trajectory envelope for one dispatched attempt (see
+ * antigravity_trajectory.ts): Antigravity Gemini conversation streams only.
+ */
+function antigravityTrajectoryFor(
+  request: object,
+  executor: 'cli' | 'antigravity',
+  model: string,
+  accountEmail: string | undefined,
+  projectId: string | null,
+): AntigravityTrajectoryAttempt | undefined {
+  if (!isAntigravityGeminiRoute(executor, model)) return undefined
+  const context = getAntigravityCacheRequestContext(request)
+  if (!context) return undefined
+  return antigravityTrajectoryForAttempt({
+    sessionId: context.sessionId,
+    querySource: context.querySource,
+    model: context.model,
+    account: accountEmail ?? 'active-token',
+    project: projectId,
+  })
+}
+
+function experimentProfile(trajectory: AntigravityTrajectoryAttempt | undefined): AntigravityExperimentProfile {
+  return {
+    trajectory: trajectory?.profile ?? 'off',
+    transport: 'baseline',
+    ...(trajectory?.state && { trajectoryState: trajectory.state }),
+  }
 }
 
 function antigravityEndpointLogger(request: object, wireSessionId: string | undefined) {
@@ -538,8 +575,9 @@ class GeminiApiClient {
           }
           const { token, executor, accountEmail } = routing
           const projectId = await ensureCodeAssistReady(token, executor)
+          const trajectory = antigravityTrajectoryFor(request, executor, model, accountEmail, projectId)
           const wrappedBody = executor === 'antigravity'
-            ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId))
+            ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId), undefined, trajectory?.identity)
             : wrapForGeminiCLI(model, projectId, body)
           const headers = executor === 'antigravity'
             ? antigravityApiHeaders(token)
@@ -571,7 +609,15 @@ class GeminiApiClient {
           let hopReason: string | undefined
           for (let i = 0; i < urls.length; i++) {
             dispatch = fastAntigravityGemini
-              ? trace?.attempt({ attempt: attemptNo, hop: i, hopReason, url: urls[i]!, serialized, accountEmail })
+              ? trace?.attempt({
+                attempt: attemptNo,
+                hop: i,
+                hopReason,
+                url: urls[i]!,
+                serialized,
+                accountEmail,
+                profile: experimentProfile(trajectory),
+              })
               : undefined
             const send = () => fetchCodeAssistEndpoint(
               urls[i]!,
@@ -628,6 +674,13 @@ class GeminiApiClient {
             }
             errText = await resp.text().catch(() => '')
             dispatch?.end('http-error', { status: resp.status, errorBody: errText })
+            // The backend refusing an experimental envelope field disables the
+            // experiment for the process. This request still fails as is: no
+            // silent retry without the envelope.
+            const rejectedFields = rejectAntigravityTrajectoryOn(resp.status, errText, trajectory)
+            if (rejectedFields) {
+              logEndpoint('trajectory-rejected', { status: resp.status, fields: rejectedFields, attempt: attemptNo })
+            }
             // Hosts meter quota separately. Remember a refusal so the next
             // request — especially a one-shot like /report, which cannot
             // afford to re-probe a dead host — starts somewhere that serves.
@@ -870,8 +923,9 @@ class GeminiApiClient {
           }
           const { token, executor, accountEmail } = routing
           const projectId = await ensureCodeAssistReady(token, executor)
+          const trajectory = antigravityTrajectoryFor(request, executor, model, accountEmail, projectId)
           const wrappedBody = executor === 'antigravity'
-            ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId))
+            ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId), undefined, trajectory?.identity)
             : wrapForGeminiCLI(model, projectId, body)
           const headers = executor === 'antigravity'
             ? antigravityApiHeaders(token)
@@ -901,7 +955,15 @@ class GeminiApiClient {
           let hopReason: string | undefined
           for (let i = 0; i < urls.length; i++) {
             dispatch = fastAntigravityGemini
-              ? trace?.attempt({ attempt: attemptNo, hop: i, hopReason, url: urls[i]!, serialized, accountEmail })
+              ? trace?.attempt({
+                attempt: attemptNo,
+                hop: i,
+                hopReason,
+                url: urls[i]!,
+                serialized,
+                accountEmail,
+                profile: experimentProfile(trajectory),
+              })
               : undefined
             const send = () => fetchCodeAssistEndpoint(
               urls[i]!,
@@ -958,6 +1020,13 @@ class GeminiApiClient {
             }
             errText = await resp.text().catch(() => '')
             dispatch?.end('http-error', { status: resp.status, errorBody: errText })
+            // The backend refusing an experimental envelope field disables the
+            // experiment for the process. This request still fails as is: no
+            // silent retry without the envelope.
+            const rejectedFields = rejectAntigravityTrajectoryOn(resp.status, errText, trajectory)
+            if (rejectedFields) {
+              logEndpoint('trajectory-rejected', { status: resp.status, fields: rejectedFields, attempt: attemptNo })
+            }
             // Hosts meter quota separately. Remember a refusal so the next
             // request — especially a one-shot like /report, which cannot
             // afford to re-probe a dead host — starts somewhere that serves.
