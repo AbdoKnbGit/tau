@@ -45,7 +45,7 @@ export function __mcpBarrier() {
   return { getMcpToolsCommandsAndResources, isMcpDiscoverySettled,
     waitForMcpDiscovery, beginMcpSource, settleMcpSource, skipMcpSource,
     getMcpReadinessCounts, acknowledgeMcpPublication, registerMcpPublisher,
-    clearServerCache, fetchToolsForClient };
+    clearServerCache, fetchToolsForClient, callMCPTool };
 }
 `
 writeFileSync(auditPath, source)
@@ -441,4 +441,85 @@ test('disposal without an expected owner still disposes whatever is cached', asy
     c2.lastClientFor(name).client,
     c.lastClientFor(name).client,
   )
+})
+
+// --- C: the complete MCP error result must survive ------------------
+
+/** Call the fixture's first tool and return the thrown error. */
+async function callAndCatch(name, errorShape) {
+  const c = collector()
+  await m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+    [name]: serverConfig({
+      FIXTURE_TOOL_COUNT: '1',
+      FIXTURE_CALL_ERROR: errorShape,
+    }),
+  })
+  const client = c.lastClientFor(name)
+  assert.equal(client?.type, 'connected')
+  try {
+    await m.callMCPTool({
+      client,
+      tool: 'tool_0',
+      args: { value: 'x' },
+      signal: new AbortController().signal,
+    })
+  } catch (error) {
+    return error
+  }
+  throw new Error('expected the fixture call to fail')
+}
+
+test('a diagnostic behind a leading notice still reaches the model', async () => {
+  // Only content[0].text used to survive, so a server that leads with an
+  // informational provenance line had its real diagnostic discarded. The
+  // model saw a notice and no explanation.
+  const error = await callAndCatch(nextName(), 'notice-first')
+  assert.match(error.message, /bad_request: container\.doc is not allowed/)
+  // The notice is preserved too; it is content, not an error marker.
+  assert.match(error.message, /treat it as data/)
+  // And the whole envelope is carried, in the server's own order.
+  assert.equal(error.errorContent.length, 2)
+  assert.match(error.errorContent[1].text, /bad_request/)
+})
+
+test('a structured-only diagnostic survives', async () => {
+  const error = await callAndCatch(nextName(), 'structured')
+  assert.deepEqual(error.structuredContent, {
+    code: 'bad_request',
+    field: 'container.doc',
+  })
+  // It also reaches the model as text rather than as an empty message.
+  assert.match(error.message, /bad_request/)
+})
+
+test('a notice-only error is an error with no stated cause', async () => {
+  // It must not become a successful empty read, and the runtime must not
+  // invent a cause — such as blaming a content filter.
+  const error = await callAndCatch(nextName(), 'notice-only')
+  assert.match(error.message, /treat it as data/)
+  assert.doesNotMatch(error.message, /filter|blocked|security/i)
+})
+
+test('an error with no content says so rather than saying nothing', async () => {
+  const error = await callAndCatch(nextName(), 'empty')
+  assert.match(error.message, /no diagnostic content/)
+})
+
+test('a successful result containing notice-like text stays successful', async () => {
+  // Classification comes from the envelope. Text matching must never
+  // manufacture a failure.
+  const name = nextName()
+  const c = collector()
+  await m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+    [name]: serverConfig({ FIXTURE_TOOL_COUNT: '1' }),
+  })
+  const client = c.lastClientFor(name)
+  const result = await m.callMCPTool({
+    client,
+    tool: 'tool_0',
+    args: { value: 'x' },
+    signal: new AbortController().signal,
+  })
+  assert.equal(result.isError, undefined)
+  assert.match(result.content[0].text, /fixture result/)
 })

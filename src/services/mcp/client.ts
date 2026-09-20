@@ -177,19 +177,50 @@ class McpSessionExpiredError extends Error {
 }
 
 /**
- * Thrown when an MCP tool returns `isError: true`. Carries the result's `_meta`
- * so SDK consumers can still receive it — per the MCP spec, `_meta` is on the
- * base Result type and is valid on error results.
+ * Thrown when an MCP tool returns `isError: true`.
+ *
+ * Carries the whole error envelope, not just a message. Only
+ * `result.content[0].text` used to survive, so a server whose first block is
+ * an informational notice — an authorship or provenance line, which several
+ * return — had its actual diagnostic in a later block discarded. The model
+ * then saw a notice and no explanation, and could not correct the call.
+ *
+ * `_meta` is carried because, per the MCP spec, it is on the base Result type
+ * and valid on error results.
  */
 export class McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS extends TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
   constructor(
     message: string,
     telemetryMessage: string,
     readonly mcpMeta?: { _meta?: Record<string, unknown> },
+    /** Every content block the server returned, in its original order. */
+    readonly errorContent?: unknown[],
+    /** The server's structured diagnostic, when it supplied one. */
+    readonly structuredContent?: unknown,
   ) {
     super(message, telemetryMessage)
     this.name = 'McpToolCallError'
   }
+}
+
+/**
+ * A short human-readable summary of an MCP error result, for logs and for the
+ * error's `message`.
+ *
+ * Joins the text blocks rather than taking the first, so a leading notice
+ * cannot hide the diagnostic behind it. This is a summary: the complete
+ * envelope travels on the error itself.
+ */
+function summarizeMcpErrorContent(content: unknown[]): string {
+  const texts: string[] = []
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue
+    const text = (block as { text?: unknown }).text
+    if (typeof text === 'string' && text.trim().length > 0) {
+      texts.push(text.trim())
+    }
+  }
+  return texts.join('\n\n')
 }
 
 /**
@@ -3330,29 +3361,43 @@ async function callMCPTool({
     })
 
     if ('isError' in result && result.isError) {
-      let errorDetails = 'Unknown error'
-      if (
-        'content' in result &&
-        Array.isArray(result.content) &&
-        result.content.length > 0
-      ) {
-        const firstContent = result.content[0]
-        if (
-          firstContent &&
-          typeof firstContent === 'object' &&
-          'text' in firstContent
-        ) {
-          errorDetails = firstContent.text
-        }
-      } else if ('error' in result) {
+      const errorContent =
+        'content' in result && Array.isArray(result.content)
+          ? (result.content as unknown[])
+          : []
+      const structuredContent =
+        'structuredContent' in result ? result.structuredContent : undefined
+
+      // Summarize across every text block. Taking only the first discarded
+      // the real diagnostic whenever a server led with an informational
+      // notice.
+      let errorDetails = summarizeMcpErrorContent(errorContent)
+      if (!errorDetails && 'error' in result) {
         // Fallback for legacy error format
         errorDetails = String(result.error)
       }
+      if (!errorDetails && structuredContent !== undefined) {
+        // A structured-only diagnostic still has to reach the model as text.
+        try {
+          errorDetails = jsonStringify(structuredContent)
+        } catch {
+          errorDetails = ''
+        }
+      }
+      if (!errorDetails) {
+        // The server reported failure without saying why. Say exactly that,
+        // rather than inventing a cause.
+        errorDetails =
+          'The server reported an error but returned no diagnostic content.'
+      }
+
       logMCPError(name, errorDetails)
       throw new McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
         errorDetails,
         'MCP tool returned error',
         '_meta' in result && result._meta ? { _meta: result._meta } : undefined,
+        errorContent.length > 0 ? errorContent : undefined,
+        structuredContent,
       )
     }
     const elapsed = Date.now() - toolStartTime
