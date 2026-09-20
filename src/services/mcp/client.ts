@@ -2234,7 +2234,14 @@ export async function reconnectMcpServerImpl(
 
     const supportsResources = !!client.capabilities?.resources
 
-    const { tools, commands, resources } = await gatherServerCatalog(client)
+    const { tools, commands, resources } = await gatherServerCatalog(
+      client,
+    ).catch(async error => {
+      // Same as the batch path: a connection whose listing failed is
+      // published failed, so dispose it rather than orphan its child.
+      await clearServerCache(name, config).catch(() => {})
+      throw error
+    })
 
     // Check if we need to add resource tools
     const resourceTools: Tool[] = []
@@ -2464,7 +2471,17 @@ export async function getMcpToolsCommandsAndResources(
 
       const supportsResources = !!client.capabilities?.resources
 
-      const { tools, commands, resources } = await gatherServerCatalog(client)
+      const { tools, commands, resources } = await gatherServerCatalog(
+        client,
+      ).catch(async error => {
+        // The handshake succeeded but the tool listing did not, so this
+        // server is about to be published as failed. Its connection is live
+        // and held by the memoize cache, and nothing else will ever close
+        // it — a stdio server would leave a child process running for the
+        // rest of the session. Dispose it before reporting the failure.
+        await clearServerCache(name, config).catch(() => {})
+        throw error
+      })
 
       // If this server resources and we haven't added resource tools yet,
       // include our resource tools with this client's tools
