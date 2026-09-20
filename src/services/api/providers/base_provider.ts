@@ -33,6 +33,10 @@ export interface AnthropicContentBlock {
   signature?: string
   // Gemini round-trip: thought_signature on functionCall parts
   _gemini_thought_signature?: string
+  // Set by a lane decoder when this call's streamed arguments could not be
+  // decoded. On the block, not in `input`, because native adaptation
+  // rebuilds `input`. See services/mcp/decodeStatus.ts.
+  _tau_decode_status?: { category: string; fragmentLength?: number }
 }
 
 export interface AnthropicMessage {
@@ -193,6 +197,8 @@ export interface ProviderContentBlock {
   signature?: string
   // Gemini round-trip: thought_signature on tool_use blocks
   _gemini_thought_signature?: string
+  // See services/mcp/decodeStatus.ts.
+  _tau_decode_status?: { category: string; fragmentLength?: number }
 }
 
 export interface ProviderTool {

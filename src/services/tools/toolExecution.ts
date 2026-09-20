@@ -130,10 +130,11 @@ import {
 } from '../../utils/blindToolCallValidation.js'
 import { isEnvDefinedFalsy } from '../../utils/envUtils.js'
 import { coerceMcpInput } from '../mcp/coerceMcpInput.js'
+import { checkMcpArguments } from '../mcp/contractValidation.js'
 import {
-  INCOMPLETE_TOOL_ARGUMENTS,
-  checkMcpArguments,
-} from '../mcp/contractValidation.js'
+  decodeStatusOf,
+  describeDecodeFailure,
+} from '../mcp/decodeStatus.js'
 import { blindCallRecoveryHint } from '../../utils/toolSearchCallDecision.js'
 import { getLazyToolCallDecision } from '../../utils/toolSearchCallGuard.js'
 import { normalizeToolSearchInput } from '../../utils/toolSearchInput.js'
@@ -481,6 +482,10 @@ async function* runToolUseInner(
   toolUseContext: ToolUseContext,
 ): AsyncGenerator<MessageUpdateLazy, void> {
   const toolName = toolUse.name
+  // Read before anything can rewrite the block: a decoder reports a call
+  // whose arguments never arrived complete here, outside `input`, because
+  // native adaptation replaces `input` wholesale.
+  const decodeFailure = decodeStatusOf(toolUse)
   // First try to find in the available tools (what the model sees)
   let tool = findToolByName(toolUseContext.options.tools, toolName)
 
@@ -922,21 +927,11 @@ async function checkPermissionsAndCallTool(
   const validateEveryMcpCall =
     (tool.isMcp ?? false) && !isEnvDefinedFalsy(process.env.TAU_MCP_ARG_VALIDATION)
   const isBlindCall = lazyCallDecision.action === 'execute_unverified'
-  // A lane decoder marks arguments that never arrived complete. That has to
-  // be refused for every tool, not only MCP ones: for a built-in tool Zod
-  // would strip the marker and execute whatever fragment did arrive.
-  const argumentsIncomplete =
-    coercedInput !== null &&
-    typeof coercedInput === 'object' &&
-    !Array.isArray(coercedInput) &&
-    Object.hasOwn(coercedInput, INCOMPLETE_TOOL_ARGUMENTS)
-  const blindCheck: BlindCallCheck = argumentsIncomplete
-    ? {
-        ok: false,
-        message:
-          `${tool.name}'s arguments did not arrive complete — the streamed JSON was truncated or malformed, ` +
-          `so the call was not run. Send the call again with its full arguments.`,
-      }
+  // A lane decoder reports arguments that never arrived complete on the
+  // tool_use block. Refuse them for every tool, not only MCP ones: a
+  // built-in tool's Zod schema would accept the fragment that did arrive.
+  const blindCheck: BlindCallCheck = decodeFailure
+    ? { ok: false, message: describeDecodeFailure(tool.name, decodeFailure) }
     : validateEveryMcpCall || isBlindCall
       ? (tool.isMcp ?? false)
         ? checkMcpArguments(tool, coercedInput, { blind: isBlindCall })

@@ -43,19 +43,6 @@ export type McpArgumentFailure =
   | 'decode_error'
 
 /**
- * Marker a lane decoder sets when a tool call's arguments never arrived
- * complete — a truncated or malformed streamed concatenation.
- *
- * Without it, a decoder that dropped the unparseable fragment dispatched
- * whatever earlier deltas had assembled, and an argument the stream never
- * finished delivering just went missing. Validation cannot tell that from
- * the model omitting an optional field, so the call executed silently and
- * wrongly. Carried in the argument object so it survives to the shared
- * check, which refuses it.
- */
-export const INCOMPLETE_TOOL_ARGUMENTS = '__tauIncompleteArguments'
-
-/**
  * Which JSON Schema dialect a contract is written in.
  *
  * This used to delete `$schema` and validate everything with Ajv's default,
@@ -309,19 +296,6 @@ export function checkMcpArguments(
     input && typeof input === 'object' && !Array.isArray(input)
       ? (input as Record<string, unknown>)
       : {}
-
-  if (Object.hasOwn(record, INCOMPLETE_TOOL_ARGUMENTS)) {
-    // The arguments never arrived complete. Refuse rather than execute what
-    // did arrive: the missing part is unknowable, so no validation result
-    // here would mean anything.
-    return {
-      ok: false,
-      reason: 'decode_error',
-      message:
-        `${tool.name}'s arguments did not arrive complete — the streamed JSON was truncated or malformed, ` +
-        `so the call was not run. Send the call again with its full arguments.`,
-    }
-  }
 
   if (options.blind && !isDeliberatelyOpen(schema)) {
     const properties =

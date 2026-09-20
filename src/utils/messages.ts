@@ -1,3 +1,4 @@
+import { TOOL_DECODE_STATUS_KEY } from '../services/mcp/decodeStatus.js'
 import { feature } from 'bun:bundle'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type {
@@ -2655,6 +2656,13 @@ export function mergeUserContentBlocks(
 
 // Sometimes the API returns empty messages (eg. "\n\n"). We need to filter these out,
 // otherwise they will give an API error when we send them to the API next time we call query().
+/** Did this tool-input JSON stop mid-value rather than being complete junk? */
+function looksTruncatedJson(input: string): boolean {
+  const trimmed = input.trimEnd()
+  if (trimmed.length === 0) return true
+  return !trimmed.endsWith('}')
+}
+
 export function normalizeContentFromAPI(
   contentBlocks: BetaMessage['content'],
   tools: Tools,
@@ -2666,6 +2674,9 @@ export function normalizeContentFromAPI(
   return contentBlocks.map(contentBlock => {
     switch (contentBlock.type) {
       case 'tool_use': {
+        let decodeFailure:
+          | { category: string; fragmentLength: number }
+          | undefined
         if (
           typeof contentBlock.input !== 'string' &&
           !isObject(contentBlock.input)
@@ -2684,9 +2695,8 @@ export function normalizeContentFromAPI(
           const parsed = safeParseJSON(contentBlock.input)
           if (parsed === null && contentBlock.input.length > 0) {
             // TET/FC-v3 diagnostic: the streamed tool input JSON failed to
-            // parse. We fall back to {} which means downstream validation
-            // sees empty input. The raw prefix goes to debug log only — no
-            // PII-tagged proto column exists for it yet.
+            // parse. The raw prefix goes to debug log only — no PII-tagged
+            // proto column exists for it yet.
             logEvent('tengu_tool_input_json_parse_fail', {
               toolName: sanitizeToolNameForAnalytics(contentBlock.name),
               inputLen: contentBlock.input.length,
@@ -2696,6 +2706,18 @@ export function normalizeContentFromAPI(
                 `tool input JSON parse fail: ${contentBlock.input.slice(0, 200)}`,
                 { level: 'warn' },
               )
+            }
+            // Falling back to {} here used to dispatch the call with empty
+            // input, which a parameterless or all-optional schema accepts —
+            // so a call whose arguments never arrived ran as if the model
+            // had deliberately sent none. Record the failure on the block so
+            // the executor refuses it. This is the shared path, so it covers
+            // every provider, not only the lane that assembled the stream.
+            decodeFailure = {
+              category: looksTruncatedJson(contentBlock.input)
+                ? 'truncated'
+                : 'malformed',
+              fragmentLength: contentBlock.input.length,
             }
           }
           normalizedInput = parsed ?? {}
@@ -2723,6 +2745,7 @@ export function normalizeContentFromAPI(
         return {
           ...contentBlock,
           input: normalizedInput,
+          ...(decodeFailure && { [TOOL_DECODE_STATUS_KEY]: decodeFailure }),
         }
       }
       case 'text':

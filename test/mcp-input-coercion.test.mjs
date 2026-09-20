@@ -24,7 +24,7 @@ source = source.replace(/\nvoid main\d*\(\);\r?\n/, '\n')
 source += `
 export function __mcpCoerce() {
   init_coerceMcpInput(); init_contractValidation();
-  return { coerceMcpInput, checkMcpArguments, INCOMPLETE_TOOL_ARGUMENTS };
+  return { coerceMcpInput, checkMcpArguments };
 }
 `
 writeFileSync(auditPath, source)
@@ -428,29 +428,4 @@ test('two contracts sharing an $id both remain callable', () => {
   // Each still enforces its own contract.
   assert.equal(c.checkMcpArguments(v1, { v: 7 }).ok, false)
   assert.equal(c.checkMcpArguments(v2, { v: 'text' }).ok, false)
-})
-
-test('arguments that never arrived complete are refused, not executed', () => {
-  // F13. A truncated or malformed streamed concatenation used to be dropped,
-  // and whatever earlier deltas had assembled was dispatched as the whole
-  // call — so an argument the stream never finished delivering simply went
-  // missing. Validation cannot tell that from the model omitting an optional
-  // field, so the call executed silently and wrongly.
-  const schema = {
-    type: 'object',
-    properties: { container: { type: 'object' }, batch: { type: 'array' } },
-    required: ['container'],
-  }
-  const tool = { name: 'mcp__docs__batch', isMcp: true, inputJSONSchema: schema }
-
-  // The fragment that did arrive satisfies the schema on its own, which is
-  // exactly why the marker is needed: nothing else here looks wrong.
-  const partial = { container: { id: 'x' } }
-  assert.equal(c.checkMcpArguments(tool, partial).ok, true)
-
-  const marked = { ...partial, [c.INCOMPLETE_TOOL_ARGUMENTS]: 21 }
-  const result = c.checkMcpArguments(tool, marked)
-  assert.equal(result.ok, false)
-  assert.equal(result.reason, 'decode_error')
-  assert.match(result.message, /did not arrive complete/)
 })

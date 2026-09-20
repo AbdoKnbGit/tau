@@ -24,7 +24,10 @@
  *   - google-gemini/gemini-cli packages/core/src/agent/event-translator.ts
  */
 
-import { INCOMPLETE_TOOL_ARGUMENTS } from '../../services/mcp/contractValidation.js'
+import {
+  TOOL_DECODE_STATUS_KEY,
+  type ToolDecodeFailureCategory,
+} from '../../services/mcp/decodeStatus.js'
 import { createHash, randomUUID } from 'crypto'
 import type {
   AnthropicStreamEvent,
@@ -377,31 +380,67 @@ export class GeminiLane implements Lane {
       }
     }
 
-    function finalizeCurrentArgs(): Record<string, unknown> {
-      if (!currentCall) return {}
-      let merged: Record<string, unknown> = { ...currentCall.args }
-      if (currentCall.argsString.length > 0) {
-        try {
-          const parsed = JSON.parse(currentCall.argsString)
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            merged = { ...merged, ...(parsed as Record<string, unknown>) }
-          }
-        } catch {
-          // A malformed or truncated concatenation used to be dropped here,
-          // and whatever had been assembled from earlier deltas was
-          // dispatched as if it were the whole call. An argument the stream
-          // never finished delivering simply went missing: validation cannot
-          // tell that from the model choosing to omit an optional field, so
-          // a wrong call executed silently.
-          //
-          // Mark the arguments as incomplete instead. The shared MCP
-          // argument check refuses the sentinel and reports a decode
-          // failure, so the model is told to resend rather than having a
-          // partial call made on its behalf.
-          merged[INCOMPLETE_TOOL_ARGUMENTS] = currentCall.argsString.length
+    function finalizeCurrentArgs(): {
+      args: Record<string, unknown>
+      decodeFailure?: {
+        category: ToolDecodeFailureCategory
+        fragmentLength: number
+      }
+    } {
+      if (!currentCall) return { args: {} }
+      const merged: Record<string, unknown> = { ...currentCall.args }
+      if (currentCall.argsString.length === 0) return { args: merged }
+
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(currentCall.argsString)
+      } catch {
+        // A malformed or truncated concatenation used to be dropped here,
+        // and whatever earlier deltas had assembled was dispatched as if it
+        // were the whole call. An argument the stream never finished
+        // delivering simply went missing: validation cannot tell that from
+        // the model choosing to omit an optional field, so a wrong call
+        // executed silently.
+        //
+        // Report the failure instead, on the block rather than in the
+        // arguments — a native adapter rebuilds the argument object and
+        // would drop anything it does not map.
+        return {
+          args: merged,
+          decodeFailure: {
+            // An unterminated value leaves the parser mid-token; a complete
+            // but invalid payload is malformed. Both refuse dispatch, and
+            // the distinction is only for the message the model sees.
+            category: looksTruncated(currentCall.argsString)
+              ? 'truncated'
+              : 'malformed',
+            fragmentLength: currentCall.argsString.length,
+          },
         }
       }
-      return merged
+
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        // Syntactically valid JSON that is not an argument object. Merging
+        // nothing and proceeding would dispatch the earlier fields as a
+        // complete call.
+        return {
+          args: merged,
+          decodeFailure: {
+            category: 'invalid_root',
+            fragmentLength: currentCall.argsString.length,
+          },
+        }
+      }
+
+      return { args: { ...merged, ...(parsed as Record<string, unknown>) } }
+    }
+
+    /** Did this fragment stop mid-value rather than being complete junk? */
+    function looksTruncated(fragment: string): boolean {
+      const trimmed = fragment.trimEnd()
+      if (trimmed.length === 0) return true
+      // A complete JSON object would end here; anything else ran out.
+      return !trimmed.endsWith('}')
     }
 
     // Emit the accumulated tool call as the THREE-event sequence the
@@ -420,7 +459,7 @@ export class GeminiLane implements Lane {
     // legacy gemini_to_anthropic adapter's structure avoided.
     function* commitCurrentCall(): Generator<AnthropicStreamEvent, void> {
       if (!currentCall) return
-      const nativeArgs = finalizeCurrentArgs()
+      const { args: nativeArgs, decodeFailure } = finalizeCurrentArgs()
       const reg = getRegistrationByNativeName(currentCall.nativeName)
       // MCP tools whose names had to be aliased for Gemini map back to the
       // real tool name so the dispatcher resolves them.
@@ -446,6 +485,11 @@ export class GeminiLane implements Lane {
           id: currentCall.anthropicToolUseId,
           name: implId,
           input: {}, // placeholder — real args arrive via input_json_delta
+          // Decode failure rides on the block, beside the thought signature,
+          // because `input` is replaced by native adaptation.
+          ...(decodeFailure && {
+            [TOOL_DECODE_STATUS_KEY]: decodeFailure,
+          }),
           // Stash the thought signature so we can thread it back on the
           // next turn (Antigravity + thinking-enabled models need this
           // for multi-turn reasoning coherence).
