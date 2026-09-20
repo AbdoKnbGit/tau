@@ -128,6 +128,8 @@ import {
   type BlindCallCheck,
   checkBlindDeferredCallInput,
 } from '../../utils/blindToolCallValidation.js'
+import { isEnvDefinedFalsy } from '../../utils/envUtils.js'
+import { checkMcpArguments } from '../mcp/contractValidation.js'
 import { blindCallRecoveryHint } from '../../utils/toolSearchCallDecision.js'
 import { getLazyToolCallDecision } from '../../utils/toolSearchCallGuard.js'
 import { normalizeToolSearchInput } from '../../utils/toolSearchInput.js'
@@ -892,15 +894,24 @@ async function checkPermissionsAndCallTool(
     normalizedInput as Record<string, unknown>,
     tool.inputSchema,
   )
-  // A blind deferred call — one produced by a request that did not carry this
-  // tool's schema — runs like any other call, provided its arguments match the
-  // schema Tau holds locally. Zod's .strip() would drop an invented parameter
-  // silently, so unknown keys (and MCP argument shapes, which Zod cannot see)
-  // are checked here instead.
+  // MCP tools stand in for their servers' real schemas with a passthrough
+  // Zod object, so Zod checks nothing about their arguments. Every MCP call
+  // is therefore validated against the server's own JSON Schema here — not
+  // only the blind ones, which is all that used to be checked.
+  //
+  // A blind call — produced by a request that never carried this tool's
+  // schema — additionally has unnamed properties rejected, since there they
+  // are more likely inventions than deliberate extras. TAU_MCP_ARG_VALIDATION=0
+  // falls back to checking blind calls only.
+  const validateEveryMcpCall =
+    (tool.isMcp ?? false) && !isEnvDefinedFalsy(process.env.TAU_MCP_ARG_VALIDATION)
+  const isBlindCall = lazyCallDecision.action === 'execute_unverified'
   const blindCheck: BlindCallCheck =
-    lazyCallDecision.action === 'execute_unverified'
-      ? checkBlindDeferredCallInput(tool, coercedInput)
-      : { ok: true }
+    validateEveryMcpCall || isBlindCall
+      ? (tool.isMcp ?? false)
+        ? checkMcpArguments(tool, coercedInput, { blind: isBlindCall })
+        : checkBlindDeferredCallInput(tool, coercedInput)
+      : { ok: true as const }
 
   const parsedInput = strippedSchema.safeParse(coercedInput)
   if (!parsedInput.success || !blindCheck.ok) {
