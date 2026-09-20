@@ -218,12 +218,73 @@ export function checkMcpArguments(
     const details = getAjv().errorsText(validate.errors, {
       dataVar: tool.name,
     })
+    const note = describeUnparseableJsonArguments(record, validate.errors)
     return fail(
       'invalid_arguments',
       schema,
-      `${tool.name} arguments are invalid: ${details}.`,
+      `${tool.name} arguments are invalid: ${details}.${note}`,
     )
   }
 
   return { ok: true }
+}
+
+/**
+ * Explain a string that was clearly meant to be a structure.
+ *
+ * Arguments are repaired toward the schema before they get here (see
+ * coerceMcpInput), so a string still sitting where an array or object belongs
+ * is one whose JSON did not parse. "must be array" alone leaves the model to
+ * guess whether it picked the wrong field, the wrong type, or simply mangled
+ * its escaping — the parser's own complaint says which, and is the one piece
+ * of information that lets it fix the call in one attempt.
+ */
+function describeUnparseableJsonArguments(
+  record: Record<string, unknown>,
+  errors: ValidateFunction['errors'],
+): string {
+  if (!errors) return ''
+  const notes: string[] = []
+  const seen = new Set<string>()
+
+  for (const error of errors) {
+    if (error.keyword !== 'type') continue
+    const expected = (error.params as { type?: unknown }).type
+    const wants =
+      typeof expected === 'string'
+        ? [expected]
+        : Array.isArray(expected)
+          ? expected.filter((t): t is string => typeof t === 'string')
+          : []
+    if (!wants.includes('array') && !wants.includes('object')) continue
+
+    // instancePath is a JSON pointer like `/batch`; only top-level arguments
+    // are reported, which is where a stringified payload actually lands.
+    const field = error.instancePath.replace(/^\//, '')
+    if (!field || field.includes('/') || seen.has(field)) continue
+    const value = record[field]
+    if (typeof value !== 'string') continue
+
+    const trimmed = value.trim()
+    const first = trimmed[0]
+    const looksJson = first === '[' || first === '{'
+    if (!looksJson) continue
+
+    seen.add(field)
+    try {
+      JSON.parse(trimmed)
+      // It parses, so coercion would have taken it; the shape must be wrong.
+      notes.push(
+        `\`${field}\` was sent as a JSON string whose parsed value is still not a ${wants.join(' or ')}.`,
+      )
+    } catch (parseError) {
+      notes.push(
+        `\`${field}\` was sent as a JSON string, but it does not parse: ${
+          parseError instanceof Error ? parseError.message : 'invalid JSON'
+        }. Send it as a real ${wants.join(' or ')} value rather than a quoted string.`,
+      )
+    }
+  }
+
+  return notes.length > 0 ? `\n${notes.join('\n')}` : ''
 }

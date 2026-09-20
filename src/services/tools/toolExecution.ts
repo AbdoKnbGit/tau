@@ -129,6 +129,7 @@ import {
   checkBlindDeferredCallInput,
 } from '../../utils/blindToolCallValidation.js'
 import { isEnvDefinedFalsy } from '../../utils/envUtils.js'
+import { coerceMcpInput } from '../mcp/coerceMcpInput.js'
 import { checkMcpArguments } from '../mcp/contractValidation.js'
 import { blindCallRecoveryHint } from '../../utils/toolSearchCallDecision.js'
 import { getLazyToolCallDecision } from '../../utils/toolSearchCallGuard.js'
@@ -890,10 +891,22 @@ async function checkPermissionsAndCallTool(
     tool.name === TOOL_SEARCH_TOOL_NAME
       ? normalizeToolSearchInput(input)
       : input
-  const coercedInput = coerceToolInput(
+  const zodCoercedInput = coerceToolInput(
     normalizedInput as Record<string, unknown>,
     tool.inputSchema,
   )
+  // coerceToolInput reads the expected types off the tool's Zod schema, and
+  // every MCP tool shares MCPTool's placeholder `z.object({}).passthrough()`,
+  // which declares none — so for MCP it does nothing at all. Run the same
+  // recovery against the server's JSON Schema, which is where an MCP tool's
+  // real types live. Without it, a model emitting `{"batch": "[{...}]"` was
+  // repaired only on the Cline lane, which grew a private copy of this logic.
+  const coercedInput = (tool.isMcp ?? false)
+    ? (coerceMcpInput(zodCoercedInput, tool.inputJSONSchema) as Record<
+        string,
+        unknown
+      >)
+    : zodCoercedInput
   // MCP tools stand in for their servers' real schemas with a passthrough
   // Zod object, so Zod checks nothing about their arguments. Every MCP call
   // is therefore validated against the server's own JSON Schema here — not
