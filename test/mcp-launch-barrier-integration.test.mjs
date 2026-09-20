@@ -45,7 +45,8 @@ export function __mcpBarrier() {
   return { getMcpToolsCommandsAndResources, isMcpDiscoverySettled,
     waitForMcpDiscovery, beginMcpSource, settleMcpSource, skipMcpSource,
     getMcpReadinessCounts, acknowledgeMcpPublication, registerMcpPublisher,
-    clearServerCache, fetchToolsForClient, callMCPTool };
+    clearServerCache, fetchToolsForClient, callMCPTool,
+    connectToServer, getServerCacheKey };
 }
 `
 writeFileSync(auditPath, source)
@@ -522,4 +523,126 @@ test('a successful result containing notice-like text stays successful', async (
   })
   assert.equal(result.isError, undefined)
   assert.match(result.content[0].text, /fixture result/)
+})
+
+// --- A: ownership across the whole disposal, not just at its start ---
+//
+// clearServerCache awaits twice: once resolving the captured entry, once on
+// cleanup(). A replacement can be installed during either suspension, and
+// resolving the promise captured earlier says nothing about what the cache
+// holds afterwards.
+//
+// The suspension is what has to be controlled, so these drive the connection
+// cache directly with a promise the test resolves. Connecting a second real
+// server would not reproduce it: disposal deletes the key first, so the new
+// connection lands on a vacant slot and never collides.
+
+/** A promise plus the handles to settle it. */
+function deferred() {
+  let resolve
+  const promise = new Promise(r => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
+
+/** A stand-in connection whose cleanup the test controls. */
+function fakeConnection(name, config, cleanupGate) {
+  return {
+    name,
+    type: 'connected',
+    client: { id: `client-${name}` },
+    capabilities: { tools: {} },
+    config,
+    cleanup: () => cleanupGate ?? Promise.resolve(),
+  }
+}
+
+test('a replacement installed during the ownership check is not deleted', async () => {
+  const name = nextName()
+  const config = serverConfig()
+  const key = m.getServerCacheKey(name, config)
+
+  // The entry disposal will capture, resolving only when the test says so.
+  const oldEntry = deferred()
+  const oldConnection = fakeConnection(name, config)
+  m.connectToServer.cache.set(key, oldEntry.promise)
+
+  // Disposal captures the entry and suspends on it.
+  const disposing = m.clearServerCache(name, config, oldConnection.client)
+  await Promise.resolve()
+
+  // A replacement takes the key while disposal is suspended.
+  const replacement = Promise.resolve(fakeConnection(name, config))
+  m.connectToServer.cache.set(key, replacement)
+
+  // Now let the captured entry resolve to the old connection.
+  oldEntry.resolve(oldConnection)
+  await disposing
+
+  assert.equal(
+    m.connectToServer.cache.get(key),
+    replacement,
+    'the replacement was evicted by its predecessor’s disposal',
+  )
+})
+
+test('a replacement catalog survives an older disposal finishing', async () => {
+  // Disposal discarded the discovery cache by name after awaiting cleanup.
+  // A replacement that connected and published while cleanup ran had its
+  // catalog thrown away by work belonging to the connection it replaced.
+  //
+  // The replacement here is a real fixture connection, so its catalog is
+  // genuinely in the discovery cache; only the old connection's cleanup is
+  // gated, to hold the disposal open across that publication.
+  const name = nextName()
+  const config = serverConfig({ FIXTURE_TOOL_COUNT: '3' })
+  const key = m.getServerCacheKey(name, config)
+
+  const cleanupGate = deferred()
+  const oldConnection = fakeConnection(name, config, cleanupGate.promise)
+  m.connectToServer.cache.set(key, Promise.resolve(oldConnection))
+
+  const disposing = m.clearServerCache(name, config, oldConnection.client)
+  // Let disposal past its ownership check and into the cleanup await.
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+
+  // The replacement connects and publishes its catalog while cleanup runs.
+  const c = collector()
+  await m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+    [name]: config,
+  })
+  const replacement = c.lastClientFor(name)
+  assert.equal(replacement?.type, 'connected')
+  assert.equal(
+    m.fetchToolsForClient.cache.get(name)?.length,
+    3,
+    'expected the replacement to have published a catalog',
+  )
+
+  cleanupGate.resolve()
+  await disposing
+
+  assert.equal(
+    m.fetchToolsForClient.cache.get(name)?.length,
+    3,
+    "the replacement's catalog was discarded by an older disposal",
+  )
+})
+
+test('an explicit removal still clears the catalog', async () => {
+  // The conditional discard must not stop a deliberate disable or remove
+  // from clearing what it is removing.
+  const name = nextName()
+  const c = collector()
+  const config = serverConfig({ FIXTURE_TOOL_COUNT: '2' })
+  await m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+    [name]: config,
+  })
+  assert.equal((await m.fetchToolsForClient(c.lastClientFor(name))).length, 2)
+
+  await m.clearServerCache(name, config)
+  assert.equal(m.fetchToolsForClient.cache.get(name), undefined)
 })

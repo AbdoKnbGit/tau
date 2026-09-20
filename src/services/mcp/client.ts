@@ -1785,6 +1785,18 @@ export async function clearServerCache(
       )
       return
     }
+
+    // The await above suspended, and a replacement may have been installed
+    // while it did. Resolving the promise we captured tells us nothing about
+    // what the cache holds now, so compare the entry itself — synchronously,
+    // with no await between this check and the delete below.
+    if (connectToServer.cache.get(key) !== owned) {
+      logMCPDebug(
+        name,
+        `Skipping disposal: a replacement was installed during the ownership check`,
+      )
+      return
+    }
   }
 
   // Delete before awaiting: a caller that reconnects as soon as this resolves
@@ -1803,7 +1815,18 @@ export async function clearServerCache(
     }
   }
 
-  discardServerDiscoveryCache(name)
+  // Cleanup above suspended too, and a replacement can have connected and
+  // published its catalog in the meantime. Discarding by name alone would
+  // throw away the catalog that replacement just published, so only discard
+  // while this key is still vacant — the state this disposal left it in.
+  if (connectToServer.cache.get(key) === undefined) {
+    discardServerDiscoveryCache(name)
+  } else {
+    logMCPDebug(
+      name,
+      `Keeping the catalog: a replacement connected while this one was closing`,
+    )
+  }
 }
 
 /**
