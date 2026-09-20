@@ -1718,12 +1718,44 @@ export function discardServerDiscoveryCache(name: string): void {
 export async function clearServerCache(
   name: string,
   serverRef: ScopedMcpServerConfig,
+  /**
+   * Dispose only if the cached entry is still this exact SDK client.
+   *
+   * The cache key is name plus config, so a reconnect under an unchanged
+   * config produces a new handle at the same key. A caller reacting to an
+   * old connection's close — which is the common case — must pass the handle
+   * it is closing, or it will dispose whatever now holds that key and orphan
+   * a live connection's tools.
+   *
+   * Omit it to dispose whatever is cached, which is what an explicit
+   * disable, remove or config replacement wants.
+   */
+  expectedClient?: ConnectedMCPServer['client'],
 ): Promise<void> {
   const key = getServerCacheKey(name, serverRef)
 
   const owned = connectToServer.cache.get(key) as
     | Promise<MCPServerConnection>
     | undefined
+
+  if (owned && expectedClient) {
+    let stillOurs = false
+    try {
+      const entry = await owned
+      stillOurs = entry.type === 'connected' && entry.client === expectedClient
+    } catch {
+      // The cached attempt failed, so nothing of ours is cached.
+      stillOurs = false
+    }
+    if (!stillOurs) {
+      logMCPDebug(
+        name,
+        `Skipping disposal: the cached connection belongs to a newer owner`,
+      )
+      return
+    }
+  }
+
   // Delete before awaiting: a caller that reconnects as soon as this resolves
   // must not be handed back the handle being closed.
   connectToServer.cache.delete(key)

@@ -44,7 +44,8 @@ export function __mcpBarrier() {
   ${initMcpClient}(); ${initMcpConfig}(); init_readiness();
   return { getMcpToolsCommandsAndResources, isMcpDiscoverySettled,
     waitForMcpDiscovery, beginMcpSource, settleMcpSource, skipMcpSource,
-    getMcpReadinessCounts, acknowledgeMcpPublication, registerMcpPublisher };
+    getMcpReadinessCounts, acknowledgeMcpPublication, registerMcpPublisher,
+    clearServerCache, fetchToolsForClient };
 }
 `
 writeFileSync(auditPath, source)
@@ -383,4 +384,61 @@ test('a server that never publishes still settles when it fails', async () => {
     [name]: serverConfig({ FIXTURE_LIST_FAILS: '1' }),
   })
   assert.equal(m.isMcpDiscoverySettled(), true)
+})
+
+test('an old connection closing does not dispose the one that replaced it', async () => {
+  // F04. The connection cache is keyed by name plus config, so a reconnect
+  // under an unchanged config produces a new handle at the same key. The
+  // hook's onclose disposed by name and config with no identity check, so an
+  // old connection's close tore down the live one that had replaced it and
+  // orphaned its tools.
+  const name = nextName()
+  const c = collector()
+  const config = serverConfig({ FIXTURE_TOOL_COUNT: '2' })
+
+  await m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+    [name]: config,
+  })
+  const first = c.lastClientFor(name)
+  assert.equal(first?.type, 'connected')
+
+  // Replace it: dispose, then connect again under the same config.
+  await m.clearServerCache(name, config)
+  const c2 = collector()
+  await m.getMcpToolsCommandsAndResources(c2.onConnectionAttempt, {
+    [name]: config,
+  })
+  const second = c2.lastClientFor(name)
+  assert.equal(second?.type, 'connected')
+  assert.notEqual(second.client, first.client, 'expected a new handle')
+
+  // The old handle's close arrives late and must be ignored.
+  await m.clearServerCache(name, config, first.client)
+
+  // The replacement is still usable: its tools list without reconnecting.
+  const stillThere = await m.fetchToolsForClient(second)
+  assert.equal(stillThere.length, 2)
+})
+
+test('disposal without an expected owner still disposes whatever is cached', async () => {
+  // An explicit disable or config replacement passes no handle and must
+  // dispose unconditionally.
+  const name = nextName()
+  const c = collector()
+  const config = serverConfig({ FIXTURE_TOOL_COUNT: '1' })
+  await m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+    [name]: config,
+  })
+  assert.equal(c.lastClientFor(name)?.type, 'connected')
+
+  await m.clearServerCache(name, config)
+  // Reconnecting produces a genuinely new handle, proving the old one went.
+  const c2 = collector()
+  await m.getMcpToolsCommandsAndResources(c2.onConnectionAttempt, {
+    [name]: config,
+  })
+  assert.notEqual(
+    c2.lastClientFor(name).client,
+    c.lastClientFor(name).client,
+  )
 })

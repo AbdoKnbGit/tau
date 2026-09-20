@@ -377,7 +377,15 @@ export function useManageMCPConnections(
           client.client.onclose = () => {
             const configType = client.config.type ?? 'stdio'
 
-            clearServerCache(client.name, client.config).catch(() => {
+            // Dispose only if this handle is still the cached one. The cache
+            // key is name plus config, so a reconnect under an unchanged
+            // config reuses it — without this, an old connection's close
+            // disposed the live one that had replaced it.
+            clearServerCache(
+              client.name,
+              client.config,
+              client.client,
+            ).catch(() => {
               logForDebugging(
                 `Failed to invalidate the server cache: ${client.name}`,
               )
