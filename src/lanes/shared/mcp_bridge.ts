@@ -20,6 +20,7 @@
 
 import type { ProviderTool } from '../../services/api/providers/base_provider.js'
 import { sanitizeGeminiToolParameters } from './gemini_schema.js'
+import { walkSchemaByPosition } from './schema_positions.js'
 
 export type LaneSchemaProfile =
   | 'gemini'
@@ -106,6 +107,10 @@ const DROP_BY_PROFILE: Record<LaneSchemaProfile, Set<string>> = {
  * Sanitize a JSON Schema for the target lane. Returns a fresh object —
  * never mutates the input. Safe to call on MCP schemas before forwarding.
  *
+ * The walk is schema-position aware (see schema_positions.ts): drop-list
+ * filtering applies only where a key really is a schema keyword, so a tool
+ * parameter called `default` or `x-label` is not deleted as if it were one.
+ *
  * The `gemini` profile goes through `sanitizeGeminiToolParameters`, an
  * allowlist converter whose output was verified against the live
  * Antigravity validators (Gemini and Claude). See gemini_schema.ts.
@@ -120,30 +125,25 @@ export function sanitizeSchemaForLane(
   const drop = DROP_BY_PROFILE[profile]
   // Kiro 400s on empty required arrays at any nesting level.
   const dropEmptyRequired = profile === 'kiro'
-  function walk(v: unknown): unknown {
-    if (Array.isArray(v)) return v.map(walk)
-    if (v && typeof v === 'object') {
-      const out: Record<string, unknown> = {}
-      for (const [k, value] of Object.entries(v as Record<string, unknown>)) {
-        if (drop.has(k)) continue
-        // OpenAPI 3.0 vendor extensions (x-google-enum-descriptions, x-stripe-*,
-        // x-aws-*, …) leak in from MCP tool schemas. Strict validators on
-        // Gemini/Mistral/OpenAI-strict 400 on unknown fields, so strip the
-        // whole x-* family for every non-gemini profile too.
-        if (k.startsWith('x-')) continue
-        if (
-          dropEmptyRequired &&
-          k === 'required' &&
-          Array.isArray(value) &&
-          value.length === 0
-        ) continue
-        out[k] = walk(value)
-      }
-      return out
+
+  const result = walkSchemaByPosition(schema, (key, value, recurse) => {
+    if (drop.has(key)) return undefined
+    // OpenAPI 3.0 vendor extensions (x-google-enum-descriptions, x-stripe-*,
+    // x-aws-*, …) leak in from MCP tool schemas. Strict validators on
+    // Gemini/Mistral/OpenAI-strict 400 on unknown fields, so strip the
+    // whole x-* family for every non-gemini profile too.
+    if (key.startsWith('x-')) return undefined
+    if (
+      dropEmptyRequired &&
+      key === 'required' &&
+      Array.isArray(value) &&
+      value.length === 0
+    ) {
+      return undefined
     }
-    return v
-  }
-  const result = walk(schema)
+    return recurse(value)
+  })
+
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     return { type: 'object', properties: {} }
   }

@@ -51,6 +51,7 @@ import {
   laneStopReason,
 } from '../shared/truncation.js'
 import { renderMediaForTextLane } from '../shared/media_extract.js'
+import { walkSchemaByPosition } from '../shared/schema_positions.js'
 import { decideImageSupport, recordModelVision } from '../shared/vision_capability.js'
 import { recordOpenRouterServedProvider } from './transformers/openrouter.js'
 import {
@@ -3188,24 +3189,19 @@ function sanitizeToolSchema(
   const transformer = getTransformer(provider as ProviderId)
   const drop = transformer.schemaDropList()
 
-  function walk(v: unknown): unknown {
-    if (Array.isArray(v)) return v.map(walk)
-    if (v && typeof v === 'object') {
-      const out: Record<string, unknown> = {}
-      for (const [k, value] of Object.entries(v as Record<string, unknown>)) {
-        if (drop.has(k)) continue
-        // OpenAPI 3.0 vendor extensions (x-google-enum-descriptions, x-stripe-*,
-        // …) leak in from MCP tool schemas. OpenAI-strict, Mistral, Groq, and
-        // other validators 400 on unknown fields, so strip the whole x-* family
-        // for every transformer.
-        if (k.startsWith('x-')) continue
-        out[k] = walk(value)
-      }
-      return out
-    }
-    return v
-  }
-  const dropped = walk(schema) as Record<string, unknown>
+  // Schema-position aware: the drop list applies to keywords only. Applying
+  // it to every key deleted tool parameters literally named `default`,
+  // `format` or `x-label`, while `required` still named them — see
+  // lanes/shared/schema_positions.ts.
+  const dropped = walkSchemaByPosition(schema, (key, value, recurse) => {
+    if (drop.has(key)) return undefined
+    // OpenAPI 3.0 vendor extensions (x-google-enum-descriptions, x-stripe-*,
+    // …) leak in from MCP tool schemas. OpenAI-strict, Mistral, Groq, and
+    // other validators 400 on unknown fields, so strip the whole x-* family
+    // for every transformer.
+    if (key.startsWith('x-')) return undefined
+    return recurse(value)
+  }) as Record<string, unknown>
   if (transformer.sanitizeToolSchemaExtra) {
     return transformer.sanitizeToolSchemaExtra(dropped, model)
   }
