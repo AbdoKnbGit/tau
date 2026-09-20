@@ -24,6 +24,7 @@
  *   - google-gemini/gemini-cli packages/core/src/agent/event-translator.ts
  */
 
+import { INCOMPLETE_TOOL_ARGUMENTS } from '../../services/mcp/contractValidation.js'
 import { createHash, randomUUID } from 'crypto'
 import type {
   AnthropicStreamEvent,
@@ -386,9 +387,18 @@ export class GeminiLane implements Lane {
             merged = { ...merged, ...(parsed as Record<string, unknown>) }
           }
         } catch {
-          // Malformed concatenation — drop silently; downstream validation
-          // surfaces the missing-field error with the object we did
-          // manage to assemble.
+          // A malformed or truncated concatenation used to be dropped here,
+          // and whatever had been assembled from earlier deltas was
+          // dispatched as if it were the whole call. An argument the stream
+          // never finished delivering simply went missing: validation cannot
+          // tell that from the model choosing to omit an optional field, so
+          // a wrong call executed silently.
+          //
+          // Mark the arguments as incomplete instead. The shared MCP
+          // argument check refuses the sentinel and reports a decode
+          // failure, so the model is told to resend rather than having a
+          // partial call made on its behalf.
+          merged[INCOMPLETE_TOOL_ARGUMENTS] = currentCall.argsString.length
         }
       }
       return merged
