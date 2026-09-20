@@ -103,7 +103,7 @@ const kairosGate = feature('KAIROS') ? require('./assistant/gate.js') as typeof 
 import { checkQuotaStatus } from './services/claudeAiLimits.js';
 import { getMcpToolsCommandsAndResources, prefetchAllMcpResources } from './services/mcp/client.js';
 import { MCP_SOURCE_CLAUDEAI_CONNECTORS, MCP_SOURCE_LOCAL_CONFIG, acknowledgeMcpPublication, beginMcpSource, registerMcpPublisher, settleMcpSource, skipMcpSource } from './services/mcp/readiness.js';
-import { disarmMcpLaunchBarrier } from './services/mcp/launchBarrier.js';
+import { waitForMcpLaunchBarrier } from './services/mcp/launchBarrier.js';
 import { VALID_INSTALLABLE_SCOPES, VALID_UPDATE_SCOPES } from './services/plugins/pluginCliCommands.js';
 import { initBundledSkills } from './skills/bundled/index.js';
 import type { AgentColorName } from './tools/AgentTool/agentColorManager.js';
@@ -2871,21 +2871,23 @@ async function run(): Promise<CommanderCommand> {
       // (processBatched with Promise.all). claude.ai is awaited too — its
       // fetch was kicked off early (line ~2558) so only residual time blocks
       // here. --bare skips claude.ai entirely for perf-sensitive scripts.
-      // Print mode does its own blocking wait here (regular servers fully,
-      // connectors up to CLAUDE_AI_MCP_TIMEOUT_MS below), so the launch
-      // barrier must not add a second one on top of it.
-      disarmMcpLaunchBarrier();
       profileCheckpoint('before_connectMcp');
-      await connectMcpBatch(regularMcpConfigs, 'regular');
-      profileCheckpoint('after_connectMcp');
+      // Start the local servers, but do not await them here. Print mode used
+      // to block on the full local batch and then add a separate fixed wait
+      // for connectors, so one slow stdio server could hold up startup with
+      // no bound at all, and the total was unrelated to the launch budget.
+      // Both now share the barrier's single deadline, measured from launch,
+      // exactly as interactive mode does. That caps a wait that previously
+      // had no bound, so a script whose servers are legitimately slower than
+      // the default raises TAU_MCP_LAUNCH_WAIT_MS; setting it to 0 turns the
+      // wait off entirely, which for -p means turn 1 may see no MCP tools.
+      const localMcpConnect = connectMcpBatch(regularMcpConfigs, 'regular');
       // Dedup: suppress plugin MCP servers that duplicate a claude.ai
       // connector (connector wins), then connect claude.ai servers.
-      // Bounded wait — #23725 made this blocking so single-turn -p sees
-      // connectors, but with 40+ slow connectors tengu_startup_perf p99
-      // climbed to 76s. If fetch+connect doesn't finish in time, proceed;
-      // the promise keeps running and updates headlessStore in the
-      // background so turn 2+ still sees connectors.
-      const CLAUDE_AI_MCP_TIMEOUT_MS = 5_000;
+      // #23725 made this blocking so single-turn -p sees connectors, but with
+      // 40+ slow connectors tengu_startup_perf p99 climbed to 76s. Whatever
+      // is not ready by the shared deadline keeps running in the background
+      // and updates headlessStore, so turn 2+ still sees it.
       const claudeaiConnect = claudeaiConfigPromise.then(claudeaiConfigs => {
         if (Object.keys(claudeaiConfigs).length > 0) {
           const claudeaiSigs = new Set<string>();
@@ -2956,14 +2958,17 @@ async function run(): Promise<CommanderCommand> {
         skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS);
         logForDebugging(`[MCP] claude.ai connector setup failed: ${err}`);
       });
-      let claudeaiTimer: ReturnType<typeof setTimeout> | undefined;
-      const claudeaiTimedOut = await Promise.race([claudeaiConnect.then(() => false), new Promise<boolean>(resolve => {
-        claudeaiTimer = setTimeout(r => r(true), CLAUDE_AI_MCP_TIMEOUT_MS, resolve);
-      })]);
-      if (claudeaiTimer) clearTimeout(claudeaiTimer);
-      if (claudeaiTimedOut) {
-        logForDebugging(`[MCP] claude.ai connectors not ready after ${CLAUDE_AI_MCP_TIMEOUT_MS}ms — proceeding; background connection continues`);
+      // Neither batch is awaited directly: both report into the readiness
+      // registry, and the barrier waits on that under the remaining launch
+      // budget. Claim their rejections so an unawaited failure cannot
+      // surface as an unhandled rejection.
+      localMcpConnect.catch(() => {});
+      claudeaiConnect.catch(() => {});
+      const mcpWait = await waitForMcpLaunchBarrier();
+      if (mcpWait.outcome === 'deadline') {
+        logForDebugging(`[MCP] not all servers ready after ${mcpWait.waitedMs}ms — proceeding; background connection continues`);
       }
+      profileCheckpoint('after_connectMcp');
       profileCheckpoint('after_connectMcp_claudeai');
 
       // In headless mode, start deferred prefetches immediately (no user typing delay)

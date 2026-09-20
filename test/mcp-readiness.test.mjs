@@ -30,7 +30,7 @@ export function __mcpReadiness() {
     beginMcpServer, settleMcpServer, isMcpDiscoverySettled,
     getMcpReadinessCounts, waitForMcpDiscovery,
     getMcpLaunchBudgetMs, waitForMcpLaunchBarrier,
-    shouldWaitForMcpAtLaunch, disarmMcpLaunchBarrier,
+    shouldWaitForMcpAtLaunch,
     launchElapsedMs };
 }
 `

@@ -48,14 +48,6 @@ export function getMcpLaunchBudgetMs(): number {
 
 let armed = true
 
-/**
- * Disarm the barrier for the rest of the process. Called once it has been
- * consumed, and by entry points that must never add a wait.
- */
-export function disarmMcpLaunchBarrier(): void {
-  armed = false
-}
-
 export function isMcpLaunchBarrierArmed(): boolean {
   return armed
 }
