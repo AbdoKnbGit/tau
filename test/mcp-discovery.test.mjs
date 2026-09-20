@@ -428,3 +428,65 @@ test('concurrent waiters with nothing known-good all see the failure', async () 
     ['rejected', 'rejected', 'rejected'],
   )
 })
+
+test('a discard during an active listing is not undone by its result', async () => {
+  // F02. The in-flight listing published on completion regardless, so a
+  // removed server or a switched account had its old catalog resurrected by
+  // a listing that was already running.
+  let generation = 0
+  const fetch = d.memoizeDiscovery(
+    async () => {
+      generation++
+      await new Promise(r => setTimeout(r, 50))
+      return [`gen${generation}`]
+    },
+    () => 'server',
+    10,
+  )
+  const inflight = fetch()
+  fetch.cache.discard('server')
+  await inflight
+  assert.equal(fetch.cache.get('server'), undefined)
+})
+
+test('a notification during a refresh is not lost', async () => {
+  // F02. A list_changed arriving mid-refresh marked the entry stale, and
+  // the in-flight result then overwrote that mark as fresh — so the changed
+  // tools were never fetched.
+  let generation = 0
+  const fetch = d.memoizeDiscovery(
+    async () => {
+      generation++
+      await new Promise(r => setTimeout(r, 50))
+      return [`v${generation}`]
+    },
+    () => 'server',
+    10,
+  )
+  const inflight = fetch()
+  // The notification lands while the first listing is still running.
+  fetch.cache.delete('server')
+  await inflight
+
+  // The result is published — it is the best complete knowledge available —
+  // but a later read refetches rather than serving it as current.
+  assert.deepEqual(await fetch(), ['v2'])
+  assert.equal(generation, 2)
+})
+
+test('a result that crossed no invalidation stays fresh', async () => {
+  // The counterpart: an undisturbed refresh must not be marked stale, or
+  // every call would refetch.
+  let calls = 0
+  const fetch = d.memoizeDiscovery(
+    async () => {
+      calls++
+      return ['tool']
+    },
+    () => 'server',
+    10,
+  )
+  await fetch()
+  await fetch()
+  assert.equal(calls, 1)
+})

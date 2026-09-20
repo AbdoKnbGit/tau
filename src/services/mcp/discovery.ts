@@ -166,6 +166,18 @@ export async function listAllPages<T>(
  * refresh into a server whose tools vanished. `cache.clear` is the real
  * discard, for when the previous answer is no longer ours to serve.
  *
+ * Publication is revision-guarded, because invalidation can land while a list
+ * is already in flight:
+ *
+ * - a `discard` revokes the in-flight operation's right to publish, so a
+ *   removed server or a switched account cannot have its old catalog
+ *   resurrected by a listing that was already running;
+ * - a `delete` during a refresh means the result the refresh returns predates
+ *   the change that prompted it. It is published, because it is still the
+ *   best complete knowledge available, but left marked stale so the next
+ *   call refetches instead of treating it as current. Otherwise a
+ *   `list_changed` arriving mid-refresh was simply lost.
+ *
  * In-flight work is kept in its own map rather than in the bounded cache: an
  * LRU that evicts completed values would otherwise be able to evict an
  * unresolved operation and let a duplicate one start.
@@ -191,6 +203,18 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
   type Entry = { value: Result; stale: boolean }
   const lastGood = new Map<string, Entry>()
   const inFlight = new Map<string, Promise<Result>>()
+  /**
+   * Bumped by every invalidation. An operation captures it at the start and
+   * compares on publication, so it can tell whether the world changed while
+   * it was listing.
+   */
+  const revisions = new Map<string, number>()
+  /** Keys whose in-flight work has been revoked by a discard. */
+  const revoked = new Set<string>()
+
+  const bumpRevision = (key: string) => {
+    revisions.set(key, (revisions.get(key) ?? 0) + 1)
+  }
 
   const evictOldest = () => {
     while (lastGood.size > maxEntries) {
@@ -213,13 +237,27 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
     // the last-good catalog while the others received the raw rejection — so
     // one caller could dispose a connection while another published success
     // from the very same refresh.
+    const startedAt = revisions.get(key) ?? 0
     const operation = (async () => {
       try {
         const value = await fetch(...args)
+        const currentRevision = revisions.get(key) ?? 0
+        if (revoked.has(key)) {
+          // Discarded while this was listing: the entry is no longer ours to
+          // serve. Hand the value to the callers waiting on this operation,
+          // but publish nothing.
+          return value
+        }
         // Re-insert so the key moves to the end: Map iterates in insertion
         // order, which is what makes evictOldest least-recently-succeeded.
         lastGood.delete(key)
-        lastGood.set(key, { value, stale: false })
+        lastGood.set(key, {
+          value,
+          // Invalidated while this was listing, so the result predates the
+          // change that prompted it: publish it, but keep it stale so the
+          // next call refetches.
+          stale: currentRevision !== startedAt,
+        })
         evictOldest()
         return value
       } catch (error) {
@@ -240,7 +278,10 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
     void operation
       .catch(() => {})
       .then(() => {
-        if (inFlight.get(key) === operation) inFlight.delete(key)
+        if (inFlight.get(key) === operation) {
+          inFlight.delete(key)
+          revoked.delete(key)
+        }
       })
 
     return operation
@@ -248,15 +289,24 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
 
   memoized.cache = {
     clear: () => {
+      for (const key of lastGood.keys()) bumpRevision(key)
+      for (const key of inFlight.keys()) revoked.add(key)
       lastGood.clear()
     },
     delete: (key: string) => {
+      bumpRevision(key)
       const entry = lastGood.get(key)
       if (!entry) return false
       entry.stale = true
       return true
     },
-    discard: (key: string) => lastGood.delete(key),
+    discard: (key: string) => {
+      bumpRevision(key)
+      // Revoke any listing already running for this key, so its result
+      // cannot reinsert the entry being discarded.
+      if (inFlight.has(key)) revoked.add(key)
+      return lastGood.delete(key)
+    },
     get: (key: string) => lastGood.get(key)?.value,
   }
 
