@@ -166,8 +166,28 @@ export function useManageMCPConnections(
   const powerMode = useAppState(s => getPowerModeFromSettings(s.settings))
   const setAppState = useSetAppState()
 
-  // Track active reconnection attempts to allow cancellation
-  const reconnectTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
+  // Active reconnection attempts, keyed by server name, so they can be
+  // cancelled.
+  //
+  // This used to hold the raw backoff timer. The backoff slept on a promise
+  // that only its timer's callback resolved, and every cancel path merely
+  // cleared that timer — so cancelling stranded the retry loop on a promise
+  // that could never settle, holding its closure (and its now-obsolete
+  // config) alive for the rest of the session. Cancelling has to settle the
+  // wait and end the operation, not just stop the clock.
+  type ReconnectOperation = {
+    /** Ends the wait and stops the retry loop. Idempotent. */
+    cancel: () => void
+  }
+  const reconnectOpsRef = useRef<Map<string, ReconnectOperation>>(new Map())
+
+  // Cancel the active reconnection for a server, if any.
+  const cancelReconnect = useCallback((serverName: string) => {
+    const operation = reconnectOpsRef.current.get(serverName)
+    if (!operation) return
+    reconnectOpsRef.current.delete(serverName)
+    operation.cancel()
+  }, [])
 
   // Dedup the --channels blocked warning per skip kind so that a user who
   // sees "run /login" (auth skip), logs in, then hits the policy gate
@@ -280,15 +300,16 @@ export function useManageMCPConnections(
                 ...commands,
               ]
 
+        // omit() returns a copy WITHOUT the key, so spreading it over the
+        // full map put the old entry straight back: a server that lost its
+        // resources kept publishing the ones it no longer had. Take the
+        // omitted copy as the whole new map instead of merging into the old.
         const updatedResources =
           resources === undefined
             ? mcp.resources
-            : {
-                ...mcp.resources,
-                ...(resources.length > 0
-                  ? { [client.name]: resources }
-                  : omit(mcp.resources, client.name)),
-              }
+            : resources.length > 0
+              ? { ...mcp.resources, [client.name]: resources }
+              : omit(mcp.resources, client.name)
 
         mcp = {
           ...mcp,
@@ -373,11 +394,22 @@ export function useManageMCPConnections(
                 `${transportType} transport closed/disconnected, attempting automatic reconnection`,
               )
 
-              // Cancel any existing reconnection attempt for this server
-              const existingTimer = reconnectTimersRef.current.get(client.name)
-              if (existingTimer) {
-                clearTimeout(existingTimer)
-                reconnectTimersRef.current.delete(client.name)
+              // Cancel any existing reconnection attempt for this server.
+              // Only the newest generation may publish for it.
+              cancelReconnect(client.name)
+
+              // Abort signal for this generation: cancelling settles the
+              // backoff wait and ends the loop, instead of leaving it parked
+              // on a promise nothing will resolve.
+              const generation = new AbortController()
+              const operation = { cancel: () => generation.abort() }
+              reconnectOpsRef.current.set(client.name, operation)
+              // Drop our own registration, but only while it is still ours:
+              // a newer generation may already have replaced it.
+              const releaseOperation = () => {
+                if (reconnectOpsRef.current.get(client.name) === operation) {
+                  reconnectOpsRef.current.delete(client.name)
+                }
               }
 
               // Attempt reconnection with exponential backoff
@@ -387,13 +419,21 @@ export function useManageMCPConnections(
                   attempt <= MAX_RECONNECT_ATTEMPTS;
                   attempt++
                 ) {
+                  if (generation.signal.aborted) {
+                    logMCPDebug(
+                      client.name,
+                      `Reconnection superseded or cancelled, stopping retry`,
+                    )
+                    return
+                  }
+
                   // Check if server was disabled while we were waiting
                   if (isMcpServerDisabled(client.name)) {
                     logMCPDebug(
                       client.name,
                       `Server disabled during reconnection, stopping retry`,
                     )
-                    reconnectTimersRef.current.delete(client.name)
+                    releaseOperation()
                     return
                   }
 
@@ -412,13 +452,19 @@ export function useManageMCPConnections(
                     )
                     const elapsed = Date.now() - reconnectStartTime
 
+                    // A newer generation took over while this attempt was
+                    // in flight. Its result is the authoritative one;
+                    // publishing ours would overwrite it with older state.
+                    if (generation.signal.aborted) return
+
                     if (result.client.type === 'connected') {
                       logMCPDebug(
                         client.name,
                         `${transportType} reconnection successful after ${elapsed}ms (attempt ${attempt})`,
                       )
-                      reconnectTimersRef.current.delete(client.name)
+                      releaseOperation()
                       onConnectionAttempt(result)
+                      settleMcpServer(client.name)
                       return
                     }
 
@@ -433,8 +479,9 @@ export function useManageMCPConnections(
                         client.name,
                         `Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached, giving up`,
                       )
-                      reconnectTimersRef.current.delete(client.name)
+                      releaseOperation()
                       onConnectionAttempt(result)
+                      settleMcpServer(client.name)
                       return
                     }
                   } catch (error) {
@@ -444,14 +491,17 @@ export function useManageMCPConnections(
                       `${transportType} reconnection attempt ${attempt} failed after ${elapsed}ms: ${error}`,
                     )
 
+                    if (generation.signal.aborted) return
+
                     // On final attempt, mark as failed
                     if (attempt === MAX_RECONNECT_ATTEMPTS) {
                       logMCPDebug(
                         client.name,
                         `Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached, giving up`,
                       )
-                      reconnectTimersRef.current.delete(client.name)
+                      releaseOperation()
                       updateServer({ ...client, type: 'failed' })
+                      settleMcpServer(client.name)
                       return
                     }
                   }
@@ -466,12 +516,27 @@ export function useManageMCPConnections(
                     `Scheduling reconnection attempt ${attempt + 1} in ${backoffMs}ms`,
                   )
 
+                  // Always settles: on the timer, or at once when this
+                  // generation is aborted. Both outcomes clear the timer and
+                  // drop the listener.
                   await new Promise<void>(resolve => {
-                    // eslint-disable-next-line no-restricted-syntax -- timer stored in ref for cancellation; sleep() doesn't expose the handle
-                    const timer = setTimeout(resolve, backoffMs)
-                    reconnectTimersRef.current.set(client.name, timer)
+                    const onAbort = () => {
+                      clearTimeout(timer)
+                      resolve()
+                    }
+                    // eslint-disable-next-line no-restricted-syntax -- needs its own handle so an abort can clear it
+                    const timer = setTimeout(() => {
+                      generation.signal.removeEventListener('abort', onAbort)
+                      resolve()
+                    }, backoffMs)
+                    generation.signal.addEventListener('abort', onAbort, {
+                      once: true,
+                    })
                   })
                 }
+                // Every exit above returns, so falling out of the loop means
+                // the attempts ran out without one of them claiming it.
+                releaseOperation()
               }
 
               void reconnectWithBackoff()
@@ -637,37 +702,26 @@ export function useManageMCPConnections(
                   `Received tools/list_changed notification, refreshing tools`,
                 )
                 try {
-                  // Grab cached promise before invalidating to log previous count
-                  const previousToolsPromise = fetchToolsForClient.cache.get(
+                  // Read the last known-good list before invalidating, to log
+                  // how the count changed.
+                  const previousTools = fetchToolsForClient.cache.get(
                     client.name,
                   )
                   fetchToolsForClient.cache.delete(client.name)
                   const newTools = await fetchToolsForClient(client)
-                  const newCount = newTools.length
-                  if (previousToolsPromise) {
-                    previousToolsPromise.then(
-                      (previousTools: Tool[]) => {
-                        logEvent('tengu_mcp_list_changed', {
-                          type: 'tools' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-                          previousCount: previousTools.length,
-                          newCount,
-                        })
-                      },
-                      () => {
-                        logEvent('tengu_mcp_list_changed', {
-                          type: 'tools' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-                          newCount,
-                        })
-                      },
-                    )
-                  } else {
-                    logEvent('tengu_mcp_list_changed', {
-                      type: 'tools' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-                      newCount,
-                    })
-                  }
+                  logEvent('tengu_mcp_list_changed', {
+                    type: 'tools' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    ...(previousTools
+                      ? { previousCount: previousTools.length }
+                      : {}),
+                    newCount: newTools.length,
+                  })
                   updateServer({ ...client, tools: newTools })
                 } catch (error) {
+                  // The refresh failed. Keep the tools already published —
+                  // a failed refresh is not evidence that the server's tools
+                  // are gone, and removing them here would both break calls
+                  // in flight and churn the request's tool block.
                   logMCPError(
                     client.name,
                     `Failed to refresh tools after list_changed notification: ${errorMessage(error)}`,
@@ -772,7 +826,7 @@ export function useManageMCPConnections(
           break
       }
     },
-    [updateServer],
+    [updateServer, cancelReconnect],
   )
 
   // Initialize all servers to pending state if they don't exist in appState.
@@ -817,11 +871,7 @@ export function useManageMCPConnections(
         //      cache is empty → real connect attempt → spawn/OAuth just to
         //      immediately kill it. Only connected servers need cleanup.
         for (const s of stale) {
-          const timer = reconnectTimersRef.current.get(s.name)
-          if (timer) {
-            clearTimeout(timer)
-            reconnectTimersRef.current.delete(s.name)
-          }
+          cancelReconnect(s.name)
           if (s.type === 'connected') {
             s.client.onclose = undefined
             void clearServerCache(s.name, s.config).catch(() => {})
@@ -1102,12 +1152,14 @@ export function useManageMCPConnections(
 
   // Cleanup all timers on unmount
   useEffect(() => {
-    const timers = reconnectTimersRef.current
+    const operations = reconnectOpsRef.current
     return () => {
-      for (const timer of timers.values()) {
-        clearTimeout(timer)
+      // Cancel, not just clear: each cancel settles its backoff wait so the
+      // retry loop ends instead of being abandoned mid-sleep.
+      for (const operation of [...operations.values()]) {
+        operation.cancel()
       }
-      timers.clear()
+      operations.clear()
       // Flush any pending batched MCP updates before unmount
       if (flushTimerRef.current !== null) {
         clearTimeout(flushTimerRef.current)
@@ -1129,12 +1181,9 @@ export function useManageMCPConnections(
         throw new Error(`MCP server ${serverName} not found`)
       }
 
-      // Cancel any pending automatic reconnection attempt
-      const existingTimer = reconnectTimersRef.current.get(serverName)
-      if (existingTimer) {
-        clearTimeout(existingTimer)
-        reconnectTimersRef.current.delete(serverName)
-      }
+      // Cancel any pending automatic reconnection attempt, so its result
+      // cannot land on top of this one.
+      cancelReconnect(serverName)
 
       const result = await reconnectMcpServerImpl(serverName, client.config)
 
@@ -1147,7 +1196,7 @@ export function useManageMCPConnections(
       // (Detailed logs are within the reconnectMcpServerImpl via --debug)
       return result
     },
-    [store, onConnectionAttempt],
+    [store, onConnectionAttempt, cancelReconnect],
   )
 
   // Expose function to toggle server enabled/disabled state
@@ -1164,11 +1213,7 @@ export function useManageMCPConnections(
 
       if (!isCurrentlyDisabled) {
         // Cancel any pending automatic reconnection attempt
-        const existingTimer = reconnectTimersRef.current.get(serverName)
-        if (existingTimer) {
-          clearTimeout(existingTimer)
-          reconnectTimersRef.current.delete(serverName)
-        }
+        cancelReconnect(serverName)
 
         // Persist disabled state to disk FIRST before clearing cache
         // This is important because the onclose handler checks disk state
@@ -1202,7 +1247,7 @@ export function useManageMCPConnections(
         onConnectionAttempt(result)
       }
     },
-    [store, updateServer, onConnectionAttempt],
+    [store, updateServer, onConnectionAttempt, cancelReconnect],
   )
 
   return { reconnectMcpServer, toggleMcpServer }

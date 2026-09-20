@@ -27,7 +27,13 @@ type ClaudeAIMcpServersResponse = {
   next_page: string | null
 }
 
+// Per-request timeout. The whole listing is bounded separately by
+// TOTAL_FETCH_BUDGET_MS, so a paginated list cannot multiply this by the
+// page count and stall startup for a minute.
 const FETCH_TIMEOUT_MS = 5000
+const TOTAL_FETCH_BUDGET_MS = 15_000
+const CONNECTOR_PAGE_SIZE = 1000
+const MAX_CONNECTOR_PAGES = 20
 const MCP_SERVERS_BETA_HEADER = 'mcp-servers-2025-12-04'
 
 /**
@@ -75,19 +81,51 @@ export const fetchClaudeAIMcpConfigsIfEligible = memoize(
       }
 
       const baseUrl = getOauthConfig().BASE_API_URL
-      const url = `${baseUrl}/v1/mcp_servers?limit=1000`
 
-      logForDebugging(`[claudeai-mcp] Fetching from ${url}`)
+      // Follow has_more/next_page. `limit=1000` is a page size, not a promise
+      // that one page is the whole list: an org past that many connectors had
+      // the rest silently missing.
+      const servers: ClaudeAIMcpServer[] = []
+      const listingDeadline = Date.now() + TOTAL_FETCH_BUDGET_MS
+      let page: string | undefined
+      for (let requests = 1; ; requests++) {
+        const url =
+          `${baseUrl}/v1/mcp_servers?limit=${CONNECTOR_PAGE_SIZE}` +
+          (page ? `&page=${encodeURIComponent(page)}` : '')
 
-      const response = await axios.get<ClaudeAIMcpServersResponse>(url, {
-        headers: {
-          Authorization: `Bearer ${tokens.accessToken}`,
-          'Content-Type': 'application/json',
-          'anthropic-beta': MCP_SERVERS_BETA_HEADER,
-          'anthropic-version': '2023-06-01',
-        },
-        timeout: FETCH_TIMEOUT_MS,
-      })
+        logForDebugging(`[claudeai-mcp] Fetching from ${url}`)
+
+        const response = await axios.get<ClaudeAIMcpServersResponse>(url, {
+          headers: {
+            Authorization: `Bearer ${tokens.accessToken}`,
+            'Content-Type': 'application/json',
+            'anthropic-beta': MCP_SERVERS_BETA_HEADER,
+            'anthropic-version': '2023-06-01',
+          },
+          timeout: FETCH_TIMEOUT_MS,
+        })
+        servers.push(...response.data.data)
+
+        const next = response.data.next_page
+        // Bounded, and a repeated page token ends the loop rather than
+        // spinning on it: the cursor comes from the server.
+        const outOfBudget = Date.now() >= listingDeadline
+        if (
+          !response.data.has_more ||
+          !next ||
+          next === page ||
+          requests >= MAX_CONNECTOR_PAGES ||
+          outOfBudget
+        ) {
+          if (response.data.has_more && (outOfBudget || requests >= MAX_CONNECTOR_PAGES)) {
+            logForDebugging(
+              `[claudeai-mcp] Stopped after ${requests} page(s) with ${servers.length} server(s); listing is incomplete`,
+            )
+          }
+          break
+        }
+        page = next
+      }
 
       const configs: Record<string, ScopedMcpServerConfig> = {}
       // Track used normalized names to detect collisions and assign (2), (3), etc. suffixes.
@@ -96,7 +134,7 @@ export const fetchClaudeAIMcpConfigsIfEligible = memoize(
       // colliding with "Example Server! (2)" which both normalize to claude_ai_Example_Server_2).
       const usedNormalizedNames = new Set<string>()
 
-      for (const server of response.data.data) {
+      for (const server of servers) {
         const baseName = `claude.ai ${server.display_name}`
 
         // Try without suffix first, then increment until we find an unused normalized name
