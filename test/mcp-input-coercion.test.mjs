@@ -99,8 +99,12 @@ test('an unparseable structure argument is explained, not just rejected', () => 
     container: { id: 'x' },
   })
   assert.equal(result.ok, false)
-  assert.match(result.message, /does not parse/)
+  assert.match(result.message, /not valid JSON/)
   assert.match(result.message, /real array value rather than a quoted string/)
+  // The parser's own message never appears: this string is also copied into
+  // analytics errorDetails, and a parser that quoted the offending fragment
+  // would put argument content into telemetry.
+  assert.doesNotMatch(result.message, /Expected .* in JSON at position/)
 })
 
 test('a value the schema already accepts is untouched', () => {
@@ -249,4 +253,179 @@ test('a deeply nested schema terminates', () => {
   const wrapper = { type: 'object', properties: { deep: schema } }
   // The point is that this returns at all.
   assert.ok(c.coerceMcpInput(input, wrapper))
+})
+
+// --- Findings from the follow-up review (F05, F09-F12) ----------
+//
+// The governing rule these enforce: an already valid argument object is
+// returned untouched. An earlier walk repaired each node on its own, which
+// rewrote valid input into a different operation.
+
+test('an already valid union value is never rewritten', () => {
+  // F09. `{n: "5"}` satisfies the string branch exactly as sent. Rewriting
+  // it to `{n: 5}` makes a different call that also validates - which is
+  // precisely why "it validates afterwards" is not a safety argument.
+  const schema = {
+    type: 'object',
+    properties: {
+      p: {
+        anyOf: [
+          { type: 'object', properties: { n: { type: 'integer' } }, required: ['n'] },
+          { type: 'object', properties: { n: { type: 'string' } }, required: ['n'] },
+        ],
+      },
+    },
+  }
+  assert.deepEqual(c.coerceMcpInput({ p: { n: '5' } }, schema), { p: { n: '5' } })
+})
+
+test('a zero-padded identifier keeps its padding', () => {
+  // F09. "007" is a valid string; turning it into 7 loses the padding that
+  // may be exactly what identifies the record.
+  const schema = {
+    type: 'object',
+    properties: { id: { anyOf: [{ type: 'integer' }, { type: 'string' }] } },
+  }
+  assert.equal(c.coerceMcpInput({ id: '007' }, schema).id, '007')
+})
+
+test('an unsatisfiable oneOf is not forced through', () => {
+  // F09. oneOf requires exactly one match; [1,2] matches both branches, so
+  // no repair can rescue it and the value is returned as sent.
+  const schema = {
+    type: 'object',
+    properties: {
+      v: {
+        oneOf: [
+          { type: 'array', items: { type: 'integer' } },
+          { type: 'array', items: { type: 'number' } },
+        ],
+      },
+    },
+  }
+  assert.equal(c.coerceMcpInput({ v: '[1,2]' }, schema).v, '[1,2]')
+})
+
+test('allOf conjuncts are all applied, never treated as alternatives', () => {
+  // F09. Satisfying the first conjunct while breaking the second would
+  // produce an invalid call; candidates are checked against the whole
+  // contract, so that one is refused.
+  const schema = {
+    type: 'object',
+    properties: { v: { allOf: [{ type: 'array' }, { minItems: 2 }] } },
+  }
+  assert.equal(c.coerceMcpInput({ v: '[1]' }, schema).v, '[1]')
+  assert.deepEqual(c.coerceMcpInput({ v: '[1,2]' }, schema).v, [1, 2])
+})
+
+test('an integer beyond double precision is never silently rounded', () => {
+  // F10. JSON.parse turns "9007199254740993" into ...992, which then
+  // validates as an integer - a corrupted identifier reaching the server
+  // looking correct.
+  const schema = { type: 'object', properties: { n: { type: 'integer' } } }
+  assert.equal(
+    c.coerceMcpInput({ n: '9007199254740993' }, schema).n,
+    '9007199254740993',
+  )
+  assert.equal(c.coerceMcpInput({ n: '42' }, schema).n, 42)
+})
+
+test('a large integer inside a stringified structure is not rounded', () => {
+  // F10. The rounding can happen inside an otherwise valid array, where
+  // validating the parsed result would never notice.
+  const schema = {
+    type: 'object',
+    properties: { ids: { type: 'array', items: { type: 'integer' } } },
+  }
+  assert.equal(
+    c.coerceMcpInput({ ids: '[9007199254740993]' }, schema).ids,
+    '[9007199254740993]',
+  )
+  assert.deepEqual(c.coerceMcpInput({ ids: '[1,2]' }, schema).ids, [1, 2])
+})
+
+test('digits inside a quoted string do not block a parse', () => {
+  // F10. The precision scan is token-aware: an opaque id that happens to be
+  // a long digit string is not a numeric literal.
+  const schema = {
+    type: 'object',
+    properties: { ids: { type: 'array', items: { type: 'string' } } },
+  }
+  assert.deepEqual(
+    c.coerceMcpInput({ ids: '["9007199254740993"]' }, schema).ids,
+    ['9007199254740993'],
+  )
+})
+
+test('a patternProperties field is not repaired as an additional property', () => {
+  // F11. `x_a` matches ^x_ and must be a string; the additionalProperties
+  // array schema does not apply to it.
+  const schema = {
+    type: 'object',
+    patternProperties: { '^x_': { type: 'string' } },
+    additionalProperties: { type: 'array' },
+  }
+  assert.equal(c.coerceMcpInput({ x_a: '[1]' }, schema).x_a, '[1]')
+  // A property the pattern does not cover still uses additionalProperties.
+  assert.deepEqual(c.coerceMcpInput({ other: '[1]' }, schema).other, [1])
+})
+
+test('repair follows a local $ref', () => {
+  // F12. The contract is resolved by the validator, so a referenced array
+  // type is honoured without the repair engine reimplementing $ref.
+  const schema = {
+    type: 'object',
+    $defs: { Tags: { type: 'array', items: { type: 'string' } } },
+    properties: { tags: { $ref: '#/$defs/Tags' } },
+  }
+  assert.deepEqual(c.coerceMcpInput({ tags: '["a"]' }, schema).tags, ['a'])
+})
+
+test('a 2020-12 keyword is enforced, not silently ignored', () => {
+  // F05. Deleting $schema and validating under Ajv's Draft-07 default made
+  // dependentRequired a no-op, so arguments the server rejects passed.
+  const tool = {
+    name: 'mcp__fixture__dependent',
+    isMcp: true,
+    inputJSONSchema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: { a: { type: 'string' }, b: { type: 'string' } },
+      dependentRequired: { a: ['b'] },
+    },
+  }
+  assert.equal(c.checkMcpArguments(tool, { a: 'x' }).ok, false)
+  assert.equal(c.checkMcpArguments(tool, { a: 'x', b: 'y' }).ok, true)
+})
+
+test('two contracts sharing an $id both remain callable', () => {
+  // F05. A shared Ajv registers by $id, so a server that updated its schema
+  // - or a second server reusing an $id - was reported unsupported and its
+  // tool could not be called at all.
+  const shared = 'https://example.invalid/shared'
+  const v1 = {
+    name: 'mcp__fixture__shared_id',
+    isMcp: true,
+    inputJSONSchema: {
+      $id: shared,
+      type: 'object',
+      properties: { v: { type: 'string' } },
+      required: ['v'],
+    },
+  }
+  const v2 = {
+    name: 'mcp__fixture__shared_id',
+    isMcp: true,
+    inputJSONSchema: {
+      $id: shared,
+      type: 'object',
+      properties: { v: { type: 'integer' } },
+      required: ['v'],
+    },
+  }
+  assert.equal(c.checkMcpArguments(v1, { v: 'text' }).ok, true)
+  assert.equal(c.checkMcpArguments(v2, { v: 7 }).ok, true)
+  // Each still enforces its own contract.
+  assert.equal(c.checkMcpArguments(v1, { v: 7 }).ok, false)
+  assert.equal(c.checkMcpArguments(v2, { v: 'text' }).ok, false)
 })

@@ -26,6 +26,8 @@
  */
 
 import { Ajv, type ValidateFunction } from 'ajv'
+import Ajv2019 from 'ajv/dist/2019.js'
+import Ajv2020 from 'ajv/dist/2020.js'
 import { createHash } from 'crypto'
 import type { Tool } from '../../Tool.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -39,25 +41,70 @@ export type McpArgumentFailure =
   | 'unsupported_contract'
   | 'schema_not_exposed'
 
-let ajvInstance: Ajv | null = null
+/**
+ * Which JSON Schema dialect a contract is written in.
+ *
+ * This used to delete `$schema` and validate everything with Ajv's default,
+ * which is Draft-07. That silently reinterprets a newer contract: a 2020-12
+ * schema's `dependentRequired` was not a keyword Draft-07 knows, so Ajv
+ * ignored it and arguments the server would reject passed validation. The
+ * dialect is read rather than discarded.
+ *
+ * MCP's own schemas are 2020-12, and a server that states no dialect is far
+ * more likely to be writing 2020-12 than Draft-07, so that is the default for
+ * an unstated dialect.
+ */
+type SchemaDialect = 'draft2020' | 'draft2019' | 'draft07'
+
+function dialectOf(schema: Record<string, unknown>): {
+  dialect: SchemaDialect
+  /** True when `$schema` names something no shipped dialect recognizes. */
+  unrecognized: boolean
+} {
+  const declared = schema.$schema
+  if (typeof declared !== 'string') {
+    return { dialect: 'draft2020', unrecognized: false }
+  }
+  if (declared.includes('2020-12')) {
+    return { dialect: 'draft2020', unrecognized: false }
+  }
+  if (declared.includes('2019-09')) {
+    return { dialect: 'draft2019', unrecognized: false }
+  }
+  if (declared.includes('draft-07') || declared.includes('draft-06')) {
+    return { dialect: 'draft07', unrecognized: false }
+  }
+  // A dialect URI no shipped meta-schema matches. Ajv cannot resolve it, so
+  // compiling with it would fail and make the tool uncallable. The structural
+  // keywords are shared across dialects, so validate under the newest — but
+  // say the dialect was unrecognized, so the caller drops it rather than
+  // handing Ajv a meta-schema it will reject.
+  return { dialect: 'draft2020', unrecognized: true }
+}
+
+const ajvByDialect = new Map<SchemaDialect, Ajv>()
+
+function getAjv(dialect: SchemaDialect = 'draft2020'): Ajv {
+  const existing = ajvByDialect.get(dialect)
+  if (existing) return existing
+  // Schemas come from third-party MCP servers and from Zod v4's 2020-12
+  // output. Neither is worth failing a call over, so stay permissive about
+  // strict-mode metadata and formats and let the structural keywords do the
+  // work — but under the right dialect, so newer keywords are enforced.
+  const options = { allErrors: true, strict: false, validateFormats: false }
+  const created =
+    dialect === 'draft07'
+      ? new Ajv(options)
+      : dialect === 'draft2019'
+        ? (new Ajv2019(options) as unknown as Ajv)
+        : (new Ajv2020(options) as unknown as Ajv)
+  ajvByDialect.set(dialect, created)
+  return created
+}
+
 /** Compiled validators, keyed by contract hash rather than by tool name. */
 const validators = new Map<string, ValidateFunction | null>()
 const MAX_CACHED_VALIDATORS = 500
-
-function getAjv(): Ajv {
-  if (!ajvInstance) {
-    // Schemas come from third-party MCP servers and from Zod v4's 2020-12
-    // output. Neither is worth failing a call over, so stay permissive about
-    // dialect and format metadata and let the structural keywords
-    // (type/required/properties/enum/additionalProperties) do the work.
-    ajvInstance = new Ajv({
-      allErrors: true,
-      strict: false,
-      validateFormats: false,
-    })
-  }
-  return ajvInstance
-}
 
 /**
  * Stable identity for one input contract.
@@ -78,13 +125,29 @@ function getValidator(
   const cached = validators.get(key)
   if (cached !== undefined) return cached
 
+  const { dialect, unrecognized } = dialectOf(schema)
+  // Keep `$schema` for a dialect Ajv ships, so the instance and the contract
+  // agree. Drop only an unresolvable one, which Ajv would refuse outright.
+  const compilable = unrecognized
+    ? (() => {
+        const { $schema: _unknownDialect, ...rest } = schema
+        return rest
+      })()
+    : schema
   let compiled: ValidateFunction | null = null
   try {
-    // `$schema` may name a dialect Ajv 8 does not ship. The structural
-    // keywords are dialect-independent, so drop it rather than refuse to
-    // validate the contract at all.
-    const { $schema: _dialect, ...rest } = schema
-    compiled = getAjv().compile(rest)
+    // Compile in an isolated Ajv so two contracts may share an `$id`.
+    //
+    // A shared instance registers each compiled schema under its `$id`, so a
+    // server that updated its schema — or a second server that happened to
+    // reuse the same `$id` — hit "schema with key or id already exists" and
+    // its contract was reported unsupported. The tool then could not be
+    // called at all. Compilation is cheap next to a round-trip to the server,
+    // and the compiled validator is still cached by contract hash.
+    //
+    // `$schema` is kept: dialectOf read it, and Ajv needs it to agree with
+    // the instance it is compiled by.
+    compiled = createIsolatedAjv(dialect).compile(compilable)
   } catch {
     compiled = null
   }
@@ -92,11 +155,20 @@ function getValidator(
   if (validators.size >= MAX_CACHED_VALIDATORS) {
     // Bounded: schemas change, agents come and go, and a validator per
     // contract seen in a long session would otherwise grow without limit.
+    // Deleting the entry also drops the only reference to its isolated Ajv,
+    // so the compiled state it retains is released with it.
     const oldest = validators.keys().next()
     if (!oldest.done) validators.delete(oldest.value)
   }
   validators.set(key, compiled)
   return compiled
+}
+
+function createIsolatedAjv(dialect: SchemaDialect): Ajv {
+  const options = { allErrors: true, strict: false, validateFormats: false }
+  if (dialect === 'draft07') return new Ajv(options)
+  if (dialect === 'draft2019') return new Ajv2019(options) as unknown as Ajv
+  return new Ajv2020(options) as unknown as Ajv
 }
 
 function summarizeSchema(schema: Record<string, unknown>): string | null {
@@ -155,6 +227,45 @@ function isDeliberatelyOpen(schema: Record<string, unknown>): boolean {
  * `blind` marks a call produced by a request that never carried this tool's
  * schema. Such a call gets the extra unnamed-property check described above.
  */
+/**
+ * Pure structural check against a contract: does this value satisfy it?
+ *
+ * No mutation, no defaults, no coercion — the repair engine needs to ask
+ * "was this already valid?" before it proposes anything, and needs an
+ * unbiased verdict on each candidate it proposes.
+ *
+ * Returns `null` when the contract could not be compiled, which is different
+ * from "invalid": the caller must not treat an uncompilable contract as a
+ * failed value.
+ */
+export function isValidAgainstContract(
+  schema: Record<string, unknown>,
+  value: unknown,
+): boolean | null {
+  const validate = getValidator(schema)
+  if (!validate) return null
+  return validate(value) === true
+}
+
+/**
+ * The JSON-pointer paths of every validation error for this value.
+ *
+ * Lets the repair engine ask whether a proposal improved the one field it
+ * touches, which is the only question it can answer when several fields are
+ * wrong at once and no single change makes the whole object valid.
+ *
+ * Returns `null` when the contract could not be compiled.
+ */
+export function contractErrors(
+  schema: Record<string, unknown>,
+  value: unknown,
+): string[] | null {
+  const validate = getValidator(schema)
+  if (!validate) return null
+  if (validate(value) === true) return []
+  return (validate.errors ?? []).map(error => error.instancePath)
+}
+
 export function checkMcpArguments(
   tool: Tool,
   input: unknown,
@@ -215,7 +326,7 @@ export function checkMcpArguments(
   }
 
   if (!validate(record)) {
-    const details = getAjv().errorsText(validate.errors, {
+    const details = getAjv(dialectOf(schema).dialect).errorsText(validate.errors, {
       dataVar: tool.name,
     })
     const note = describeUnparseableJsonArguments(record, validate.errors)
@@ -239,6 +350,20 @@ export function checkMcpArguments(
  * its escaping — the parser's own complaint says which, and is the one piece
  * of information that lets it fix the call in one attempt.
  */
+/**
+ * The character offset a JSON parse error reports, if it states one.
+ *
+ * Extracted rather than passing the message through, so nothing but a number
+ * can reach a model-facing string or telemetry.
+ */
+function parsePositionOf(error: unknown): number | undefined {
+  if (!(error instanceof Error)) return undefined
+  const match = /position (\d+)/.exec(error.message)
+  if (!match) return undefined
+  const position = Number(match[1])
+  return Number.isFinite(position) ? position : undefined
+}
+
 function describeUnparseableJsonArguments(
   record: Record<string, unknown>,
   errors: ValidateFunction['errors'],
@@ -278,10 +403,16 @@ function describeUnparseableJsonArguments(
         `\`${field}\` was sent as a JSON string whose parsed value is still not a ${wants.join(' or ')}.`,
       )
     } catch (parseError) {
+      // Report only the position, never the parser's raw message. V8's text
+      // happens to be positional today, but that is an implementation
+      // detail, and this string is also copied into analytics errorDetails
+      // — a parser that quoted the offending fragment would put argument
+      // content into telemetry.
+      const position = parsePositionOf(parseError)
       notes.push(
-        `\`${field}\` was sent as a JSON string, but it does not parse: ${
-          parseError instanceof Error ? parseError.message : 'invalid JSON'
-        }. Send it as a real ${wants.join(' or ')} value rather than a quoted string.`,
+        `\`${field}\` was sent as a JSON string, but it is not valid JSON` +
+          (position === undefined ? '' : ` (first error at position ${position})`) +
+          `. Send it as a real ${wants.join(' or ')} value rather than a quoted string.`,
       )
     }
   }
