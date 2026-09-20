@@ -260,3 +260,56 @@ test('several servers settle independently and none is lost', async () => {
   assert.equal(c.toolsFor(names[1]).length, 1)
   assert.equal(m.isMcpDiscoverySettled(), true)
 })
+
+test('ready tools publish without waiting for a slow prompts list', async () => {
+  // F08. Tools and the ancillary collections were awaited together, so a
+  // server whose prompts/list was slow kept its ready tools out of the
+  // catalog for as long as the slowest collection took — time the launch
+  // barrier then spent waiting for tools that had already arrived.
+  const name = nextName()
+  const c = collector()
+  const started = Date.now()
+
+  const sourceId = `source_${name}`
+  m.beginMcpSource(sourceId)
+  m.settleMcpSource(sourceId, [name])
+
+  const discovery = m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+    [name]: serverConfig({
+      FIXTURE_TOOL_COUNT: '2',
+      FIXTURE_WITH_PROMPTS: '1',
+      FIXTURE_PROMPTS_DELAY_MS: '1200',
+    }),
+  })
+
+  // Readiness releases on the tools, not on the whole catalog.
+  assert.equal(await m.waitForMcpDiscovery(10_000), 'settled')
+  const waited = Date.now() - started
+  assert.equal(
+    waited < 900,
+    true,
+    `tools waited ${waited}ms on the ancillary listing`,
+  )
+  assert.equal(c.toolsFor(name).length, 2)
+
+  await discovery
+  assert.equal(c.lastClientFor(name)?.type, 'connected')
+})
+
+test('a publication carrying only tools does not erase commands', async () => {
+  // The incremental publish leaves commands undefined, which the reducer
+  // reads as "unchanged" — it must not be read as "none".
+  const name = nextName()
+  const c = collector()
+  await m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+    [name]: serverConfig({ FIXTURE_TOOL_COUNT: '1', FIXTURE_WITH_PROMPTS: '1' }),
+  })
+  const updates = c.published.filter(u => u.client.name === name)
+  const toolsOnly = updates.find(u => u.tools !== undefined)
+  assert.ok(toolsOnly, 'expected a tools publication')
+  assert.equal(toolsOnly.commands, undefined)
+  // And a later publication carries the ancillary results.
+  const ancillary = updates.find(u => u.commands !== undefined)
+  assert.ok(ancillary, 'expected an ancillary publication')
+  assert.equal(ancillary.tools, undefined)
+})

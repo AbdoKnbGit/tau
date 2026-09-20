@@ -9,6 +9,8 @@
 //   FIXTURE_TOOL_COUNT        how many tools to publish (default 2)
 //   FIXTURE_PAGE_SIZE         tools per `tools/list` page (default: all)
 //   FIXTURE_LIST_FAILS        `tools/list` returns a JSON-RPC error
+//   FIXTURE_PROMPTS_DELAY_MS  wait this long before answering `prompts/list`
+//   FIXTURE_WITH_PROMPTS      advertise the prompts capability
 //   FIXTURE_NAME              server name reported in `initialize`
 
 import { createInterface } from 'node:readline'
@@ -25,6 +27,8 @@ const LIST_DELAY_MS = num('FIXTURE_LIST_DELAY_MS', 0)
 const TOOL_COUNT = num('FIXTURE_TOOL_COUNT', 2)
 const PAGE_SIZE = num('FIXTURE_PAGE_SIZE', TOOL_COUNT || 1)
 const LIST_FAILS = process.env.FIXTURE_LIST_FAILS === '1'
+const PROMPTS_DELAY_MS = num('FIXTURE_PROMPTS_DELAY_MS', 0)
+const WITH_PROMPTS = process.env.FIXTURE_WITH_PROMPTS === '1'
 const NAME = process.env.FIXTURE_NAME ?? 'slow-fixture'
 
 const tools = Array.from({ length: TOOL_COUNT }, (_, i) => ({
@@ -64,7 +68,7 @@ rl.on('line', async line => {
         id,
         result: {
           protocolVersion: params?.protocolVersion ?? '2025-06-18',
-          capabilities: { tools: {} },
+          capabilities: { tools: {}, ...(WITH_PROMPTS ? { prompts: {} } : {}) },
           serverInfo: { name: NAME, version: '1.0.0' },
         },
       })
@@ -86,6 +90,11 @@ rl.on('line', async line => {
           ...(next < tools.length ? { nextCursor: String(next) } : {}),
         },
       })
+      return
+    }
+    case 'prompts/list': {
+      if (PROMPTS_DELAY_MS > 0) await delay(PROMPTS_DELAY_MS)
+      send({ id, result: { prompts: [] } })
       return
     }
     case 'tools/call': {

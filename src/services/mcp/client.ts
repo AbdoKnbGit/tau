@@ -2234,14 +2234,18 @@ export async function reconnectMcpServerImpl(
 
     const supportsResources = !!client.capabilities?.resources
 
-    const { tools, commands, resources } = await gatherServerCatalog(
-      client,
-    ).catch(async error => {
+    // A reconnect returns one result to its caller, so both parts are
+    // awaited here; the split matters for startup, where tools publish
+    // incrementally.
+    const discovery = startServerDiscovery(client)
+    discovery.ancillary.catch(() => {})
+    const tools = await discovery.tools.catch(async error => {
       // Same as the batch path: a connection whose listing failed is
       // published failed, so dispose it rather than orphan its child.
       await clearServerCache(name, config).catch(() => {})
       throw error
     })
+    const { commands, resources } = await discovery.ancillary
 
     // Check if we need to add resource tools
     const resourceTools: Tool[] = []
@@ -2284,14 +2288,26 @@ export async function reconnectMcpServerImpl(
  * failure there is logged and treated as an empty collection for this
  * attempt, not allowed to withhold the tools.
  */
-async function gatherServerCatalog(client: ConnectedMCPServer): Promise<{
-  tools: Tool[]
-  commands: Command[]
-  resources: ServerResource[]
-}> {
+/**
+ * Start a connected server's discovery, with tools awaitable on their own.
+ *
+ * Tools and the ancillary collections are separate milestones. Awaiting all
+ * four together meant a server whose `prompts/list` was slow kept its ready
+ * tools out of the catalog for as long as the slowest collection took — and
+ * during startup that is time the launch barrier spends waiting for tools
+ * that already arrived.
+ *
+ * A failure in an ancillary collection is logged and treated as empty for
+ * this attempt; a failure listing tools propagates, because an empty tool
+ * list and a failed one are different states.
+ */
+function startServerDiscovery(client: ConnectedMCPServer): {
+  tools: Promise<Tool[]>
+  ancillary: Promise<{ commands: Command[]; resources: ServerResource[] }>
+} {
   const supportsResources = !!client.capabilities?.resources
 
-  const ancillary = async <T>(
+  const tolerate = async <T>(
     label: string,
     work: () => Promise<T[]>,
   ): Promise<T[]> => {
@@ -2306,22 +2322,25 @@ async function gatherServerCatalog(client: ConnectedMCPServer): Promise<{
     }
   }
 
-  const [tools, mcpCommands, mcpSkills, resources] = await Promise.all([
-    fetchToolsForClient(client),
-    ancillary('commands', () => fetchCommandsForClient(client)),
+  // All four requests are issued now; only the awaiting is split.
+  const tools = fetchToolsForClient(client)
+  const commands = tolerate('commands', () => fetchCommandsForClient(client))
+  const skills =
     feature('MCP_SKILLS') && supportsResources
-      ? ancillary('skills', () => fetchMcpSkillsForClient!(client))
-      : Promise.resolve([] as Command[]),
-    supportsResources
-      ? ancillary('resources', () => fetchResourcesForClient(client))
-      : Promise.resolve([] as ServerResource[]),
-  ])
+      ? tolerate('skills', () => fetchMcpSkillsForClient!(client))
+      : Promise.resolve([] as Command[])
+  const resources = supportsResources
+    ? tolerate('resources', () => fetchResourcesForClient(client))
+    : Promise.resolve([] as ServerResource[])
 
-  return {
-    tools,
-    commands: [...mcpCommands, ...mcpSkills],
-    resources,
-  }
+  const ancillary = Promise.all([commands, skills, resources]).then(
+    ([mcpCommands, mcpSkills, serverResources]) => ({
+      commands: [...mcpCommands, ...mcpSkills],
+      resources: serverResources,
+    }),
+  )
+
+  return { tools, ancillary }
 }
 
 // Replaced 2026-03: previous implementation ran fixed-size sequential batches
@@ -2471,9 +2490,12 @@ export async function getMcpToolsCommandsAndResources(
 
       const supportsResources = !!client.capabilities?.resources
 
-      const { tools, commands, resources } = await gatherServerCatalog(
-        client,
-      ).catch(async error => {
+      const discovery = startServerDiscovery(client)
+      // Nothing awaits the ancillary promise until after tools publish, so
+      // claim its rejection now; it already reports its own failures.
+      discovery.ancillary.catch(() => {})
+
+      const tools = await discovery.tools.catch(async error => {
         // The handshake succeeded but the tool listing did not, so this
         // server is about to be published as failed. Its connection is live
         // and held by the memoize cache, and nothing else will ever close
@@ -2491,9 +2513,24 @@ export async function getMcpToolsCommandsAndResources(
         resourceTools.push(ListMcpResourcesTool, ReadMcpResourceTool)
       }
 
+      // Publish the tools as soon as they are ready. A slow prompts or
+      // resources listing must not keep them out of the catalog: leaving
+      // commands and resources undefined here preserves whatever the store
+      // already holds for them.
       onConnectionAttempt({
         client,
         tools: [...tools, ...resourceTools],
+        commands: undefined,
+      })
+      // The server's tools are usable now, so readiness must not wait for
+      // the rest. settleMcpServer is idempotent; processServer settles again
+      // once this whole attempt returns.
+      settleMcpServer(name)
+
+      const { commands, resources } = await discovery.ancillary
+      onConnectionAttempt({
+        client,
+        tools: undefined,
         commands,
         resources: resources.length > 0 ? resources : undefined,
       })
