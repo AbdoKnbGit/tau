@@ -38,15 +38,44 @@ export type PaginatedListResult<T> = {
   truncatedBy?: DiscoveryTruncation
 }
 
+/**
+ * A listing stopped early by one of the bounds.
+ *
+ * Thrown rather than returned so an incomplete list cannot be mistaken for a
+ * complete one. Every caller of `listAllPages` publishes its result as the
+ * server's catalog, so returning a partial list would cache a truncated
+ * subset as though the server had nothing more — and a later complete
+ * listing could be replaced by a truncated one with no way to tell. The
+ * discovery cache keeps the previous complete catalog on a throw, which is
+ * the right outcome here.
+ */
+export class IncompleteDiscoveryError extends Error {
+  constructor(
+    readonly serverName: string,
+    readonly collection: string,
+    readonly truncatedBy: DiscoveryTruncation,
+    readonly partialCount: number,
+  ) {
+    super(
+      `${collection} for "${serverName}" is incomplete (${truncatedBy}); ` +
+        `stopped after ${partialCount} item(s)`,
+    )
+    this.name = 'IncompleteDiscoveryError'
+  }
+}
+
 type PageFetcher<T> = (
   cursor: string | undefined,
 ) => Promise<{ items: T[]; nextCursor?: string }>
 
 /**
- * Follow `nextCursor` until the server stops supplying one or a bound is hit.
+ * Follow `nextCursor` until the server stops supplying one.
  *
  * Rejects if a page request rejects: a failed page is a discovery failure, not
  * an empty catalog. The caller decides whether to keep a previous good result.
+ *
+ * Also rejects with `IncompleteDiscoveryError` when a bound stops the listing
+ * early, for the same reason — see that class.
  */
 export async function listAllPages<T>(
   serverName: string,
@@ -73,7 +102,12 @@ export async function listAllPages<T>(
         serverName,
         `${collection}: server repeated a cursor after ${pages} page(s); stopping with ${items.length} item(s)`,
       )
-      return { items, pages, truncatedBy: 'repeated-cursor' }
+      throw new IncompleteDiscoveryError(
+        serverName,
+        collection,
+        'repeated-cursor',
+        items.length,
+      )
     }
     seenCursors.add(next)
 
@@ -82,7 +116,12 @@ export async function listAllPages<T>(
         serverName,
         `${collection}: stopped after ${MAX_DISCOVERY_PAGES} pages with ${items.length} item(s); listing is incomplete`,
       )
-      return { items, pages, truncatedBy: 'page-limit' }
+      throw new IncompleteDiscoveryError(
+        serverName,
+        collection,
+        'page-limit',
+        items.length,
+      )
     }
 
     if (items.length >= MAX_DISCOVERY_ITEMS) {
@@ -90,7 +129,12 @@ export async function listAllPages<T>(
         serverName,
         `${collection}: stopped at ${items.length} items; listing is incomplete`,
       )
-      return { items, pages, truncatedBy: 'item-limit' }
+      throw new IncompleteDiscoveryError(
+        serverName,
+        collection,
+        'item-limit',
+        items.length,
+      )
     }
 
     cursor = next
@@ -163,14 +207,29 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
     const cached = lastGood.get(key)
     if (cached && !cached.stale) return cached.value
 
+    // The fallback is decided inside the shared operation, not by each
+    // caller after awaiting it. Deciding it per caller gave concurrent
+    // waiters on one failing refresh different answers — the first received
+    // the last-good catalog while the others received the raw rejection — so
+    // one caller could dispose a connection while another published success
+    // from the very same refresh.
     const operation = (async () => {
-      const value = await fetch(...args)
-      // Re-insert so the key moves to the end: Map iterates in insertion
-      // order, which is what makes evictOldest least-recently-succeeded.
-      lastGood.delete(key)
-      lastGood.set(key, { value, stale: false })
-      evictOldest()
-      return value
+      try {
+        const value = await fetch(...args)
+        // Re-insert so the key moves to the end: Map iterates in insertion
+        // order, which is what makes evictOldest least-recently-succeeded.
+        lastGood.delete(key)
+        lastGood.set(key, { value, stale: false })
+        evictOldest()
+        return value
+      } catch (error) {
+        // A failed refresh is not evidence that the catalog is empty. Serve
+        // the last complete one and leave it marked stale, so the next call
+        // tries again rather than settling for it permanently.
+        const known = lastGood.get(key)
+        if (known) return known.value
+        throw error
+      }
     })()
 
     // Registered before anything awaits it, and cleared from a separate
@@ -184,16 +243,7 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
         if (inFlight.get(key) === operation) inFlight.delete(key)
       })
 
-    try {
-      return await operation
-    } catch (error) {
-      // A failed refresh is not evidence that the catalog is empty. Serve the
-      // last complete one and leave it marked stale, so the next call tries
-      // again rather than settling for it permanently.
-      const known = lastGood.get(key)
-      if (known) return known.value
-      throw error
-    }
+    return operation
   }
 
   memoized.cache = {

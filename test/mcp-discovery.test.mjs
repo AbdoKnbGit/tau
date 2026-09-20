@@ -19,7 +19,7 @@ source = source.replace(/\nvoid main\d*\(\);\r?\n/, '\n')
 source += `
 export function __mcpDiscovery() {
   init_discovery();
-  return { listAllPages, memoizeDiscovery,
+  return { listAllPages, memoizeDiscovery, IncompleteDiscoveryError,
     MAX_DISCOVERY_PAGES, MAX_DISCOVERY_ITEMS };
 }
 `
@@ -94,49 +94,90 @@ test('an empty-string cursor ends the listing', async () => {
 })
 
 test('a repeated cursor stops the listing instead of looping', async () => {
+  // An incomplete listing rejects rather than returning a partial list:
+  // every caller publishes the result as the server's catalog, so a
+  // truncated subset must not be cacheable as a complete one.
   let calls = 0
-  const result = await d.listAllPages('fixture', 'tools/list', async () => {
-    calls++
-    return { items: [`item-${calls}`], nextCursor: 'same' }
-  })
-  assert.equal(result.truncatedBy, 'repeated-cursor')
+  await assert.rejects(
+    d.listAllPages('fixture', 'tools/list', async () => {
+      calls++
+      return { items: [`item-${calls}`], nextCursor: 'same' }
+    }),
+    error => {
+      assert.equal(error.name, 'IncompleteDiscoveryError')
+      assert.equal(error.truncatedBy, 'repeated-cursor')
+      assert.equal(error.partialCount, 2)
+      return true
+    },
+  )
   // Two requests: the first supplies the cursor, the second repeats it.
   assert.equal(calls, 2)
-  assert.deepEqual(result.items, ['item-1', 'item-2'])
 })
 
 test('a cursor that cycles between two values stops the listing', async () => {
   let calls = 0
-  const result = await d.listAllPages('fixture', 'tools/list', async () => {
-    calls++
-    return { items: ['x'], nextCursor: calls % 2 === 0 ? 'a' : 'b' }
-  })
-  assert.equal(result.truncatedBy, 'repeated-cursor')
+  await assert.rejects(
+    d.listAllPages('fixture', 'tools/list', async () => {
+      calls++
+      return { items: ['x'], nextCursor: calls % 2 === 0 ? 'a' : 'b' }
+    }),
+    { name: 'IncompleteDiscoveryError', truncatedBy: 'repeated-cursor' },
+  )
   assert.equal(calls < 10, true, `looped ${calls} times`)
 })
 
 test('a server that always returns a fresh cursor stops at the page limit', async () => {
   let calls = 0
-  const result = await d.listAllPages('fixture', 'tools/list', async () => {
-    calls++
-    return { items: ['x'], nextCursor: `cursor-${calls}` }
-  })
-  assert.equal(result.truncatedBy, 'page-limit')
-  assert.equal(result.pages, d.MAX_DISCOVERY_PAGES)
+  await assert.rejects(
+    d.listAllPages('fixture', 'tools/list', async () => {
+      calls++
+      return { items: ['x'], nextCursor: `cursor-${calls}` }
+    }),
+    { name: 'IncompleteDiscoveryError', truncatedBy: 'page-limit' },
+  )
   assert.equal(calls, d.MAX_DISCOVERY_PAGES)
 })
 
 test('a server returning huge pages stops at the item limit', async () => {
   const page = Array.from({ length: 6_000 }, (_, i) => `t${i}`)
   let calls = 0
-  const result = await d.listAllPages('fixture', 'tools/list', async () => {
-    calls++
-    return { items: page, nextCursor: `cursor-${calls}` }
-  })
-  assert.equal(result.truncatedBy, 'item-limit')
-  assert.equal(result.items.length >= d.MAX_DISCOVERY_ITEMS, true)
+  await assert.rejects(
+    d.listAllPages('fixture', 'tools/list', async () => {
+      calls++
+      return { items: page, nextCursor: `cursor-${calls}` }
+    }),
+    error => {
+      assert.equal(error.truncatedBy, 'item-limit')
+      assert.equal(error.partialCount >= d.MAX_DISCOVERY_ITEMS, true)
+      return true
+    },
+  )
   // The item limit, not the page limit, is what stopped it.
   assert.equal(calls < d.MAX_DISCOVERY_PAGES, true)
+})
+
+test('a truncated listing cannot replace a complete catalog', async () => {
+  // F07. Callers publish whatever listAllPages returns as the server's
+  // catalog. A partial list returned as a value would cache a truncated
+  // subset as complete, and could overwrite a larger complete catalog.
+  let mode = 'complete'
+  const fetch = d.memoizeDiscovery(
+    async () => {
+      if (mode === 'complete') return ['a', 'b', 'c']
+      return d.listAllPages('fixture', 'tools/list', async () => ({
+        items: ['a'],
+        nextCursor: 'same',
+      }))
+    },
+    () => 'server',
+    10,
+  )
+  assert.deepEqual(await fetch(), ['a', 'b', 'c'])
+
+  mode = 'truncated'
+  fetch.cache.delete('server')
+  // The incomplete refresh throws, so the last complete catalog stands.
+  assert.deepEqual(await fetch(), ['a', 'b', 'c'])
 })
 
 test('a failed later page rejects rather than returning a partial catalog', async () => {
@@ -335,4 +376,55 @@ test('different keys do not share a catalog', async () => {
   assert.deepEqual(await fetch('alpha'), ['alpha-tool'])
   assert.deepEqual(await fetch('beta'), ['beta-tool'])
   assert.deepEqual(await fetch('alpha'), ['alpha-tool'])
+})
+
+test('concurrent waiters on a failing refresh all get the same outcome', async () => {
+  // F03. The fallback used to be applied by each caller after awaiting the
+  // shared operation, so the first waiter received the last-good catalog
+  // while the others received the raw rejection. One caller could then
+  // dispose a connection while another published success from the same
+  // refresh.
+  let mode = 'ok'
+  const fetch = d.memoizeDiscovery(
+    async () => {
+      if (mode === 'fail') {
+        await new Promise(r => setTimeout(r, 20))
+        throw new Error('boom')
+      }
+      return ['tool']
+    },
+    () => 'server',
+    10,
+  )
+  await fetch()
+  fetch.cache.delete('server')
+  mode = 'fail'
+
+  const settled = await Promise.allSettled([fetch(), fetch(), fetch()])
+  assert.deepEqual(
+    settled.map(r => r.status),
+    ['fulfilled', 'fulfilled', 'fulfilled'],
+  )
+  for (const result of settled) {
+    assert.deepEqual(result.value, ['tool'])
+  }
+})
+
+test('concurrent waiters with nothing known-good all see the failure', async () => {
+  // The same agreement in the other direction: with no previous catalog to
+  // fall back to, every waiter must see the rejection rather than one of
+  // them receiving an empty success.
+  const fetch = d.memoizeDiscovery(
+    async () => {
+      await new Promise(r => setTimeout(r, 20))
+      throw new Error('cold failure')
+    },
+    () => 'server',
+    10,
+  )
+  const settled = await Promise.allSettled([fetch(), fetch(), fetch()])
+  assert.deepEqual(
+    settled.map(r => r.status),
+    ['rejected', 'rejected', 'rejected'],
+  )
 })
