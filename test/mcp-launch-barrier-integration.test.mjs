@@ -44,7 +44,7 @@ export function __mcpBarrier() {
   ${initMcpClient}(); ${initMcpConfig}(); init_readiness();
   return { getMcpToolsCommandsAndResources, isMcpDiscoverySettled,
     waitForMcpDiscovery, beginMcpSource, settleMcpSource, skipMcpSource,
-    getMcpReadinessCounts };
+    getMcpReadinessCounts, acknowledgeMcpPublication, registerMcpPublisher };
 }
 `
 writeFileSync(auditPath, source)
@@ -274,7 +274,15 @@ test('ready tools publish without waiting for a slow prompts list', async () => 
   m.beginMcpSource(sourceId)
   m.settleMcpSource(sourceId, [name])
 
-  const discovery = m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+  // A registered publisher acknowledges as soon as its write is readable,
+  // which is what lets the tools settle ahead of the ancillary listing.
+  const acknowledging = update => {
+    c.onConnectionAttempt(update)
+    m.acknowledgeMcpPublication(update.client.name)
+  }
+  const release = m.registerMcpPublisher(acknowledging)
+
+  const discovery = m.getMcpToolsCommandsAndResources(acknowledging, {
     [name]: serverConfig({
       FIXTURE_TOOL_COUNT: '2',
       FIXTURE_WITH_PROMPTS: '1',
@@ -293,6 +301,7 @@ test('ready tools publish without waiting for a slow prompts list', async () => 
   assert.equal(c.toolsFor(name).length, 2)
 
   await discovery
+  release()
   assert.equal(c.lastClientFor(name)?.type, 'connected')
 })
 
@@ -312,4 +321,66 @@ test('a publication carrying only tools does not erase commands', async () => {
   const ancillary = updates.find(u => u.commands !== undefined)
   assert.ok(ancillary, 'expected an ancillary publication')
   assert.equal(ancillary.tools, undefined)
+})
+
+test('readiness waits for the catalog to be readable, not just discovered', async () => {
+  // F01. Discovery settled the server immediately, but the UI publishes its
+  // updates on a batching timer, so a request released by the barrier could
+  // still read zero tools — the one outcome the barrier exists to prevent.
+  //
+  // This models that publisher: updates land in `store` only after a delay,
+  // and only then is publication acknowledged.
+  const name = nextName()
+  const store = { tools: [] }
+  const PUBLISH_DELAY_MS = 250
+  const pending = []
+
+  const publisher = update => {
+    if (update.client.type === 'connected') openClients.push(update.client)
+    const timer = setTimeout(() => {
+      if (update.tools !== undefined) store.tools.push(...update.tools)
+      m.acknowledgeMcpPublication(update.client.name)
+    }, PUBLISH_DELAY_MS)
+    pending.push(timer)
+  }
+  // Only a registered publisher defers a server's settle, so that a caller
+  // which never acknowledges cannot hold the barrier open.
+  const release = m.registerMcpPublisher(publisher)
+
+  const sourceId = `source_${name}`
+  m.beginMcpSource(sourceId)
+  m.settleMcpSource(sourceId, [name])
+
+  const discovery = m.getMcpToolsCommandsAndResources(publisher, {
+    [name]: serverConfig({ FIXTURE_TOOL_COUNT: '2' }),
+  })
+
+  assert.equal(await m.waitForMcpDiscovery(10_000), 'settled')
+  // The whole point: by the time readiness says so, the catalog a request
+  // would read actually holds the tools.
+  assert.equal(
+    store.tools.length,
+    2,
+    'readiness released before the catalog was readable',
+  )
+
+  await discovery
+  release()
+  for (const timer of pending) clearTimeout(timer)
+})
+
+test('a server that never publishes still settles when it fails', async () => {
+  // The counterpart: only a published result defers settling. A terminal
+  // outcome must settle immediately or it would hold the barrier to its
+  // deadline.
+  const name = nextName()
+  const c = collector()
+  const sourceId = `source_${name}`
+  m.beginMcpSource(sourceId)
+  m.settleMcpSource(sourceId, [name])
+
+  await m.getMcpToolsCommandsAndResources(c.onConnectionAttempt, {
+    [name]: serverConfig({ FIXTURE_LIST_FAILS: '1' }),
+  })
+  assert.equal(m.isMcpDiscoverySettled(), true)
 })

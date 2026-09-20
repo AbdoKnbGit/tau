@@ -102,7 +102,7 @@ const kairosGate = feature('KAIROS') ? require('./assistant/gate.js') as typeof 
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { checkQuotaStatus } from './services/claudeAiLimits.js';
 import { getMcpToolsCommandsAndResources, prefetchAllMcpResources } from './services/mcp/client.js';
-import { MCP_SOURCE_CLAUDEAI_CONNECTORS, MCP_SOURCE_LOCAL_CONFIG, beginMcpSource, settleMcpSource, skipMcpSource } from './services/mcp/readiness.js';
+import { MCP_SOURCE_CLAUDEAI_CONNECTORS, MCP_SOURCE_LOCAL_CONFIG, acknowledgeMcpPublication, beginMcpSource, registerMcpPublisher, settleMcpSource, skipMcpSource } from './services/mcp/readiness.js';
 import { disarmMcpLaunchBarrier } from './services/mcp/launchBarrier.js';
 import { VALID_INSTALLABLE_SCOPES, VALID_UPDATE_SCOPES } from './services/plugins/pluginCliCommands.js';
 import { initBundledSkills } from './skills/bundled/index.js';
@@ -2823,6 +2823,10 @@ async function run(): Promise<CommanderCommand> {
       // connected/failed as each server settles.
       const connectMcpBatch = (configs: Record<string, ScopedMcpServerConfig>, label: string): Promise<void> => {
         if (Object.keys(configs).length === 0) return Promise.resolve();
+        // This callback writes straight into headlessStore and acknowledges,
+        // so discovery may defer a server's settle until its tools are
+        // readable there.
+        const releasePublisher = registerMcpPublisher(publishMcpToHeadlessStore);
         headlessStore.setState(prev => ({
           ...prev,
           mcp: {
@@ -2834,21 +2838,30 @@ async function run(): Promise<CommanderCommand> {
             }))]
           }
         }));
-        return getMcpToolsCommandsAndResources(({
+        return getMcpToolsCommandsAndResources(publishMcpToHeadlessStore, configs).catch(err => logForDebugging(`[MCP] ${label} connect error: ${err}`)).finally(releasePublisher);
+
+        function publishMcpToHeadlessStore({
           client,
           tools,
           commands
-        }) => {
+        }: Parameters<Parameters<typeof getMcpToolsCommandsAndResources>[0]>[0]) {
+          // tools and commands publish separately, so a server's ready tools
+          // are not held back by a slow prompts or resources listing. An
+          // undefined collection means "unchanged", not "none".
           headlessStore.setState(prev => ({
             ...prev,
             mcp: {
               ...prev.mcp,
               clients: prev.mcp.clients.some(c => c.name === client.name) ? prev.mcp.clients.map(c => c.name === client.name ? client : c) : [...prev.mcp.clients, client],
-              tools: uniqBy([...prev.mcp.tools, ...tools], 'name'),
-              commands: uniqBy([...prev.mcp.commands, ...commands], 'name')
+              tools: tools === undefined ? prev.mcp.tools : uniqBy([...prev.mcp.tools, ...tools], 'name'),
+              commands: commands === undefined ? prev.mcp.commands : uniqBy([...prev.mcp.commands, ...commands], 'name')
             }
           }));
-        }, configs).catch(err => logForDebugging(`[MCP] ${label} connect error: ${err}`));
+          // The store a request reads now holds this update. Print mode
+          // writes directly rather than through the hook's batched flush, so
+          // it acknowledges publication itself.
+          acknowledgeMcpPublication(client.name);
+        }
       };
       // Await all MCP configs — print mode is often single-turn, so
       // "late-connecting servers visible next turn" doesn't help. SDK init

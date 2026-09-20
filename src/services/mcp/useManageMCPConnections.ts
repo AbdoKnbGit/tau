@@ -86,7 +86,9 @@ import { getMcpPrefix } from './mcpStringUtils.js'
 import {
   MCP_SOURCE_CLAUDEAI_CONNECTORS,
   MCP_SOURCE_LOCAL_CONFIG,
+  acknowledgeMcpPublication,
   beginMcpSource,
+  registerMcpPublisher,
   forgetMcpServer,
   settleMcpServer,
   settleMcpSource,
@@ -322,6 +324,14 @@ export function useManageMCPConnections(
 
       return { ...prevState, mcp }
     })
+
+    // The store a request reads now holds these updates, so any server
+    // waiting on publication is genuinely ready. Acknowledging here rather
+    // than when discovery finished is what stops the launch barrier
+    // releasing during this batching window into an empty catalog.
+    for (const update of updates) {
+      acknowledgeMcpPublication(update.name)
+    }
   }, [setAppState])
 
   // Update server state, tools, commands, and resources.
@@ -1148,6 +1158,13 @@ export function useManageMCPConnections(
     sessionId,
     _pluginReconnectKey,
     powerMode,
+  ])
+
+  // This hook's flush acknowledges publication, so discovery may defer a
+  // server's settle until its tools are readable rather than settling as
+  // soon as they are discovered.
+  useEffect(() => registerMcpPublisher(onConnectionAttempt), [
+    onConnectionAttempt,
   ])
 
   // Cleanup all timers on unmount

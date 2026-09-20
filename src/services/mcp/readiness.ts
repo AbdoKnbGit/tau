@@ -36,7 +36,16 @@ export type McpSourceId = string
 export const MCP_SOURCE_LOCAL_CONFIG = 'local-config'
 export const MCP_SOURCE_CLAUDEAI_CONNECTORS = 'claudeai-connectors'
 
-type ServerState = 'discovering' | 'settled'
+/**
+ * `discovering` — no result yet.
+ * `publishing` — a result exists but has not reached the store a request
+ *   reads. The UI batches its updates, so there is a window in which the
+ *   tools are discovered but `computeTools()` would still see none of them.
+ *   Settling here would release the launch barrier into an empty catalog,
+ *   which is the one thing the barrier exists to prevent.
+ * `settled` — published, or terminal (failed, needs-auth, disabled).
+ */
+type ServerState = 'discovering' | 'publishing' | 'settled'
 
 type Waiter = {
   resolve: () => void
@@ -105,6 +114,63 @@ export function beginMcpServer(name: string): void {
 export function settleMcpServer(name: string): void {
   servers.set(name, 'settled')
   notifyIfSettled()
+}
+
+/**
+ * Publishers that acknowledge when their writes become readable.
+ *
+ * Deferring a server's settle until publication is only safe when someone
+ * will actually acknowledge it. A publisher that does not participate — a
+ * caller that consumes the results directly rather than writing them to a
+ * store a request reads — must not be able to hold the barrier open, so
+ * participation is explicit rather than assumed.
+ */
+const participatingPublishers = new Set<object>()
+
+/**
+ * Declare that this publisher calls {@link acknowledgeMcpPublication} once
+ * its writes are readable. Returns a release function.
+ */
+export function registerMcpPublisher(publisher: object): () => void {
+  participatingPublishers.add(publisher)
+  return () => {
+    participatingPublishers.delete(publisher)
+  }
+}
+
+/**
+ * A server's discovery produced a result that is on its way to the store.
+ *
+ * Holds readiness open until {@link acknowledgeMcpPublication} confirms the
+ * result is readable, so the barrier cannot release between discovery and
+ * publication — the UI coalesces its updates on a timer, and a request
+ * released inside that window would read a catalog without these tools.
+ *
+ * Only defers for a registered publisher; anyone else settles normally.
+ * Ignored once the server has settled, so a later reconnect does not reopen
+ * the barrier.
+ */
+export function beginMcpPublication(name: string, publisher: object): boolean {
+  if (servers.get(name) === 'settled') return false
+  if (!participatingPublishers.has(publisher)) return false
+  servers.set(name, 'publishing')
+  return true
+}
+
+/** Is this server waiting for its discovered result to reach the store? */
+export function isMcpServerPublishing(name: string): boolean {
+  return servers.get(name) === 'publishing'
+}
+
+/**
+ * The store a request reads now holds this server's result.
+ *
+ * Called by whatever owns publication — the connection hook's batched flush,
+ * or print mode's direct store write.
+ */
+export function acknowledgeMcpPublication(name: string): void {
+  if (!servers.has(name)) return
+  settleMcpServer(name)
 }
 
 /** Forget a server entirely (removed from config, disabled before connecting). */

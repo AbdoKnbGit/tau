@@ -112,7 +112,12 @@ import {
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { listAllPages, memoizeDiscovery } from './discovery.js'
 import { normalizeNameForMCP } from './normalization.js'
-import { beginMcpServer, settleMcpServer } from './readiness.js'
+import {
+  beginMcpPublication,
+  beginMcpServer,
+  isMcpServerPublishing,
+  settleMcpServer,
+} from './readiness.js'
 import { getLoggingSafeMcpBaseUrl } from './utils.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -2420,11 +2425,15 @@ export async function getMcpToolsCommandsAndResources(
   // connected with tools, terminal (failed/needs-auth/disabled), or thrown.
   // The launch barrier waits on that registry, so a path that forgets to
   // settle would hold the first request until the deadline.
+  //
+  // A server whose tools were published is left to its publisher to settle:
+  // marking it settled here would defeat that wait. Everything else — a
+  // failure, a terminal state, a throw — settles immediately.
   const processServer = async (entry: [string, ScopedMcpServerConfig]) => {
     try {
       await connectAndPublishServer(entry)
     } finally {
-      settleMcpServer(entry[0])
+      if (!isMcpServerPublishing(entry[0])) settleMcpServer(entry[0])
     }
   }
 
@@ -2523,9 +2532,11 @@ export async function getMcpToolsCommandsAndResources(
         commands: undefined,
       })
       // The server's tools are usable now, so readiness must not wait for
-      // the rest. settleMcpServer is idempotent; processServer settles again
-      // once this whole attempt returns.
-      settleMcpServer(name)
+      // the rest of its catalog. It must still wait for these tools to reach
+      // the store a request reads: the UI batches its updates, so settling
+      // here would release the barrier into a catalog that does not yet
+      // contain them. The publisher acknowledges when they land.
+      beginMcpPublication(name, onConnectionAttempt)
 
       const { commands, resources } = await discovery.ancillary
       onConnectionAttempt({
