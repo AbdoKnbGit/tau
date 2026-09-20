@@ -112,6 +112,7 @@ import {
 } from './elicitationHandler.js'
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
+import { beginMcpServer, settleMcpServer } from './readiness.js'
 import { getLoggingSafeMcpBaseUrl } from './utils.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -2250,6 +2251,9 @@ export async function getMcpToolsCommandsAndResources(
         commands: [],
       })
     } else {
+      // Register before any awaiting starts: a request that arrives between
+      // here and the first connection must see these servers as unsettled.
+      beginMcpServer(entry[0])
       configEntries.push(entry)
     }
   }
@@ -2280,7 +2284,19 @@ export async function getMcpToolsCommandsAndResources(
     wsIdeCount,
   }
 
-  const processServer = async ([name, config]: [
+  // Settle the server in the readiness registry however this attempt ends —
+  // connected with tools, terminal (failed/needs-auth/disabled), or thrown.
+  // The launch barrier waits on that registry, so a path that forgets to
+  // settle would hold the first request until the deadline.
+  const processServer = async (entry: [string, ScopedMcpServerConfig]) => {
+    try {
+      await connectAndPublishServer(entry)
+    } finally {
+      settleMcpServer(entry[0])
+    }
+  }
+
+  const connectAndPublishServer = async ([name, config]: [
     string,
     ScopedMcpServerConfig,
   ]): Promise<void> => {

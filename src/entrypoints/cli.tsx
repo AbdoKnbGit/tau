@@ -12,6 +12,13 @@ const trace = (m: string) => {
 
 trace('Module evaluation started');
 
+// Launch origin for the MCP launch barrier's 10 s budget (see
+// src/utils/launchClock.ts). Captured here, before the winpty re-exec below,
+// so the child continues this launch's budget instead of starting a new one.
+// Inlined rather than imported: this file runs before the module graph loads.
+const LAUNCH_ORIGIN_ENV = 'CLAUDE_CODE_LAUNCH_ORIGIN_MS';
+const launchOriginEpochMs = Date.now() - Math.round(performance.now());
+
 trace('Checking platform...');
 const isWin = process.platform === 'win32';
 trace(`isWin = ${isWin}`);
@@ -107,7 +114,11 @@ if (isWin) {
               [process.execPath, ...process.argv.slice(1)],
               {
                 stdio: 'inherit',
-                env: { ...process.env, __CLAUDEX_WINPTY: '1' },
+                env: {
+                  ...process.env,
+                  __CLAUDEX_WINPTY: '1',
+                  [LAUNCH_ORIGIN_ENV]: String(launchOriginEpochMs),
+                },
                 windowsHide: true,
               },
             );

@@ -33,6 +33,7 @@ import { createFileStateCacheWithSizeLimit, mergeFileStateCaches, READ_FILE_STAT
 import { updateLastInteractionTime, getLastInteractionTime, getOriginalCwd, getProjectRoot, getSessionId, switchSession, setCostStateForRestore, getTurnHookDurationMs, getTurnHookCount, resetTurnHookDuration, getTurnToolDurationMs, getTurnToolCount, resetTurnToolDuration, getTurnClassifierDurationMs, getTurnClassifierCount, resetTurnClassifierDuration } from '../bootstrap/state.js';
 import { asSessionId, asAgentId } from '../types/ids.js';
 import { logForDebugging } from '../utils/debug.js';
+import { shouldWaitForMcpAtLaunch, waitForMcpLaunchBarrier } from '../services/mcp/launchBarrier.js';
 import { QueryGuard } from '../utils/QueryGuard.js';
 import { isEnvTruthy } from '../utils/envUtils.js';
 import { formatTokens, truncateToWidth } from '../utils/format.js';
@@ -2875,6 +2876,18 @@ export function REPL({
       resetLoadingState();
       setAbortController(null);
       return;
+    }
+    // MCP launch barrier: the first MCP-capable request of the process waits
+    // for startup discovery to settle, bounded by the remaining launch budget
+    // (see src/services/mcp/launchBarrier.ts). It must run BEFORE
+    // getToolUseContext — computeTools() reads the store when called, so
+    // waiting here is what puts late-connecting servers' tools into turn 1.
+    // Esc aborts the wait like any other part of the turn.
+    if (shouldWaitForMcpAtLaunch(true)) {
+      const barrier = await waitForMcpLaunchBarrier(abortController.signal);
+      if (barrier.waitedMs > 0) {
+        logForDebugging(`[MCP launch barrier] turn 1 waited ${barrier.waitedMs}ms (${barrier.outcome})`);
+      }
     }
     const toolUseContext = getToolUseContext(messagesIncludingNewMessages, newMessages, abortController, mainLoopModelParam);
     // getToolUseContext reads tools/mcpClients fresh from store.getState()

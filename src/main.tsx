@@ -102,6 +102,8 @@ const kairosGate = feature('KAIROS') ? require('./assistant/gate.js') as typeof 
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { checkQuotaStatus } from './services/claudeAiLimits.js';
 import { getMcpToolsCommandsAndResources, prefetchAllMcpResources } from './services/mcp/client.js';
+import { MCP_SOURCE_CLAUDEAI_CONNECTORS, MCP_SOURCE_LOCAL_CONFIG, beginMcpSource, settleMcpSource, skipMcpSource } from './services/mcp/readiness.js';
+import { disarmMcpLaunchBarrier } from './services/mcp/launchBarrier.js';
 import { VALID_INSTALLABLE_SCOPES, VALID_UPDATE_SCOPES } from './services/plugins/pluginCliCommands.js';
 import { initBundledSkills } from './skills/bundled/index.js';
 import type { AgentColorName } from './tools/AgentTool/agentColorManager.js';
@@ -153,7 +155,7 @@ import { registerMcpXaaIdpCommand } from 'src/commands/mcp/xaaIdpCommand.js';
 import { logPermissionContextForAnts } from 'src/services/internalLogging.js';
 import { fetchClaudeAIMcpConfigsIfEligible } from 'src/services/mcp/claudeai.js';
 import { clearServerCache } from 'src/services/mcp/client.js';
-import { areMcpConfigsAllowedWithEnterpriseMcpConfig, dedupClaudeAiMcpServers, doesEnterpriseMcpConfigExist, filterMcpServersByPolicy, getClaudeCodeMcpConfigs, getMcpServerSignature, parseMcpConfig, parseMcpConfigFromFilePath } from 'src/services/mcp/config.js';
+import { areMcpConfigsAllowedWithEnterpriseMcpConfig, dedupClaudeAiMcpServers, doesEnterpriseMcpConfigExist, filterMcpServersByPolicy, getClaudeCodeMcpConfigs, getMcpServerSignature, isMcpServerDisabled, parseMcpConfig, parseMcpConfigFromFilePath } from 'src/services/mcp/config.js';
 import { excludeCommandsByServer, excludeResourcesByServer } from 'src/services/mcp/utils.js';
 import { isXaaEnabled } from 'src/services/mcp/xaaIdpLogin.js';
 import { getRelevantTips } from 'src/services/tips/tipRegistry.js';
@@ -1866,6 +1868,16 @@ async function run(): Promise<CommanderCommand> {
     // two-phase loading). Kicked off here to overlap with setup(); awaited
     // before runHeadless so single-turn -p sees connectors. Skipped under
     // enterprise/strict MCP to preserve policy boundaries.
+    // The connector source is registered here, at launch, even though
+    // interactive mode does not fetch it until the REPL mounts: the launch
+    // barrier can be reached before that mount, and a connector list still in
+    // flight is the case that released the wait too early (see
+    // docs/mcp-tool-loading-investigation.md §2, the 12:31 session).
+    if (strictMcpConfig || isBareMode() || doesEnterpriseMcpConfigExist()) {
+      skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS);
+    } else {
+      beginMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS);
+    }
     const claudeaiConfigPromise: Promise<Record<string, ScopedMcpServerConfig>> = isNonInteractiveSession && !strictMcpConfig && !doesEnterpriseMcpConfigExist() &&
     // --bare / SIMPLE: skip claude.ai proxy servers (datadog, Gmail,
     // Slack, BigQuery, PubMed — 6-14s each to connect). Scripted calls
@@ -1886,6 +1898,10 @@ async function run(): Promise<CommanderCommand> {
     // The local promise is awaited later (before prefetchAllMcpResources) to
     // overlap config I/O with setup(), commands loading, and trust dialog.
     logForDebugging('[STARTUP] Loading MCP configs...');
+    // Register the local-config source before its read starts. Until it
+    // settles, the launch barrier knows servers may still be coming, so an
+    // empty registry is not mistaken for "nothing configured".
+    beginMcpSource(MCP_SOURCE_LOCAL_CONFIG);
     const mcpConfigStart = Date.now();
     let mcpConfigResolvedMs: number | undefined;
     // --bare skips auto-discovered MCP (.mcp.json, user settings, plugins) —
@@ -2512,6 +2528,12 @@ async function run(): Promise<CommanderCommand> {
     }
     profileCheckpoint('action_mcp_configs_loaded');
 
+    // Settle the local-config source together with the servers it found.
+    // prefetchAllMcpResources below registers each of them as discovering
+    // (via getMcpToolsCommandsAndResources), and the hook converges on the
+    // same memoized connections, so naming them here is not double counting.
+    settleMcpSource(MCP_SOURCE_LOCAL_CONFIG, Object.keys(regularMcpConfigs).filter(name => !isMcpServerDisabled(name)));
+
     // Prefetch MCP resources after trust dialog (this is where execution happens).
     // Interactive mode only: print mode defers connects until headlessStore exists
     // and pushes per-server (below), so ToolSearch's pending-client handling works
@@ -2836,6 +2858,10 @@ async function run(): Promise<CommanderCommand> {
       // (processBatched with Promise.all). claude.ai is awaited too — its
       // fetch was kicked off early (line ~2558) so only residual time blocks
       // here. --bare skips claude.ai entirely for perf-sensitive scripts.
+      // Print mode does its own blocking wait here (regular servers fully,
+      // connectors up to CLAUDE_AI_MCP_TIMEOUT_MS below), so the launch
+      // barrier must not add a second one on top of it.
+      disarmMcpLaunchBarrier();
       profileCheckpoint('before_connectMcp');
       await connectMcpBatch(regularMcpConfigs, 'regular');
       profileCheckpoint('after_connectMcp');
@@ -2907,7 +2933,15 @@ async function run(): Promise<CommanderCommand> {
         const {
           servers: dedupedClaudeAi
         } = dedupClaudeAiMcpServers(claudeaiConfigs, nonPluginConfigs);
+        settleMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS, Object.keys(dedupedClaudeAi));
         return connectMcpBatch(dedupedClaudeAi, 'claudeai');
+      }).catch(err => {
+        // Settle regardless: an unsettled source would leave the readiness
+        // registry permanently unsettled for anything else reading it.
+        // Swallowed, not rethrown — this promise is raced below, so a late
+        // rejection would surface as an unhandled rejection.
+        skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS);
+        logForDebugging(`[MCP] claude.ai connector setup failed: ${err}`);
       });
       let claudeaiTimer: ReturnType<typeof setTimeout> | undefined;
       const claudeaiTimedOut = await Promise.race([claudeaiConnect.then(() => false), new Promise<boolean>(resolve => {

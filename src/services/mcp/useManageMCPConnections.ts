@@ -83,6 +83,15 @@ import {
 } from './claudeai.js'
 import { registerElicitationHandler } from './elicitationHandler.js'
 import { getMcpPrefix } from './mcpStringUtils.js'
+import {
+  MCP_SOURCE_CLAUDEAI_CONNECTORS,
+  MCP_SOURCE_LOCAL_CONFIG,
+  beginMcpSource,
+  forgetMcpServer,
+  settleMcpServer,
+  settleMcpSource,
+  skipMcpSource,
+} from './readiness.js'
 import { commandBelongsToServer, excludeStalePluginClients } from './utils.js'
 
 // Constants for reconnection with exponential backoff
@@ -817,6 +826,11 @@ export function useManageMCPConnections(
             s.client.onclose = undefined
             void clearServerCache(s.name, s.config).catch(() => {})
           }
+          // Its config is gone or changed. Whatever the old identity was
+          // still discovering, nothing will finish it, so it must not hold
+          // the launch barrier. The replacement re-registers under the new
+          // config when it starts connecting.
+          forgetMcpServer(s.name)
         }
 
         const existingServerNames = new Set(
@@ -866,8 +880,26 @@ export function useManageMCPConnections(
   // Two-phase loading: Tau configs first (fast), then claude.ai configs (may be slow)
   useEffect(() => {
     // Cheap power mode: never connect to MCP servers (local or claude.ai).
-    if (powerMode === 'cheap') return
+    // Nothing will ever enumerate, so settle both sources rather than leaving
+    // the launch barrier waiting for work that will not happen.
+    if (powerMode === 'cheap') {
+      skipMcpSource(MCP_SOURCE_LOCAL_CONFIG)
+      skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
+      return
+    }
     let cancelled = false
+
+    // Registered synchronously, before any await: a request reaching the
+    // launch barrier between this mount and the first connection must see
+    // both sources as still enumerating. Idempotent with main.tsx, which
+    // registers them at launch — this covers mounts that main.tsx did not
+    // precede (the SDK's in-process REPL, a remounted REPL).
+    beginMcpSource(MCP_SOURCE_LOCAL_CONFIG)
+    if (isStrictMcpConfig || doesEnterpriseMcpConfigExist()) {
+      skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
+    } else {
+      beginMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
+    }
 
     async function loadAndConnectMcpConfigs() {
       // Clear claude.ai MCP cache so we fetch fresh configs with current auth
@@ -902,6 +934,11 @@ export function useManageMCPConnections(
       const enabledConfigs = Object.fromEntries(
         Object.entries(configs).filter(([name]) => !isMcpServerDisabled(name)),
       )
+      // Settle the local-config source with the servers it found, as one
+      // transition: getMcpToolsCommandsAndResources registers each of them
+      // before it awaits anything, so the barrier never sees a settled
+      // source whose servers have not been registered yet.
+      settleMcpSource(MCP_SOURCE_LOCAL_CONFIG, Object.keys(enabledConfigs))
       getMcpToolsCommandsAndResources(
         onConnectionAttempt,
         enabledConfigs,
@@ -914,11 +951,19 @@ export function useManageMCPConnections(
 
       // Phase 2: Await claude.ai configs (started above; memoized — no second fetch)
       let claudeaiConfigs: Record<string, ScopedMcpServerConfig> = {}
-      if (!isStrictMcpConfig) {
+      if (isStrictMcpConfig) {
+        skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
+      } else {
         claudeaiConfigs = filterMcpServersByPolicy(
           await claudeaiPromise,
         ).allowed
-        if (cancelled) return
+        if (cancelled) {
+          // The effect is being torn down. Nothing else will settle this
+          // source, and an unsettled source holds the barrier to its
+          // deadline for the rest of the process.
+          skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
+          return
+        }
 
         // Suppress claude.ai connectors that duplicate an enabled manual server.
         // Keys never collide (`slack` vs `claude.ai Slack`) so the merge below
@@ -929,6 +974,12 @@ export function useManageMCPConnections(
             configs,
           )
           claudeaiConfigs = dedupedClaudeAi
+        }
+
+        if (Object.keys(claudeaiConfigs).length === 0) {
+          // No connectors, none eligible, or all deduped against manual
+          // servers: the source is settled with nothing to discover.
+          skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
         }
 
         if (Object.keys(claudeaiConfigs).length > 0) {
@@ -961,6 +1012,10 @@ export function useManageMCPConnections(
             Object.entries(claudeaiConfigs).filter(
               ([name]) => !isMcpServerDisabled(name),
             ),
+          )
+          settleMcpSource(
+            MCP_SOURCE_CLAUDEAI_CONNECTORS,
+            Object.keys(enabledClaudeaiConfigs),
           )
           getMcpToolsCommandsAndResources(
             onConnectionAttempt,
@@ -1019,7 +1074,17 @@ export function useManageMCPConnections(
       })
     }
 
-    void loadAndConnectMcpConfigs()
+    void loadAndConnectMcpConfigs().catch(error => {
+      // A source that never settles holds the launch barrier to its full
+      // deadline for the rest of the process. Settle both here: whatever
+      // failed, nothing further is going to enumerate on this run.
+      logMCPError(
+        'useManageMcpConnections',
+        `Failed to load MCP configs: ${errorMessage(error)}`,
+      )
+      skipMcpSource(MCP_SOURCE_LOCAL_CONFIG)
+      skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
+    })
 
     return () => {
       cancelled = true
@@ -1074,6 +1139,9 @@ export function useManageMCPConnections(
       const result = await reconnectMcpServerImpl(serverName, client.config)
 
       onConnectionAttempt(result)
+      // Whatever this reconnect produced is a terminal outcome for readiness:
+      // the launch barrier must not wait on a server the user is retrying.
+      settleMcpServer(serverName)
 
       // Don't throw, just let UI handle the client type in case the reconnect failed
       // (Detailed logs are within the reconnectMcpServerImpl via --debug)
