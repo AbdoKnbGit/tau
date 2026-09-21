@@ -212,6 +212,24 @@ async function invoke(
       : await invoke()
   const block = tool.mapToolResultToToolResultBlockParam(result.data, toolUseId)
   const { text, images } = textFromContent(block.content)
+  // A tool can report failure by RETURNING an error result instead of throwing
+  // — an interrupted Bash/PowerShell, a failed PtyTool/SnapshotTool/FileDiff,
+  // and several others set `is_error` on the block they map. Those used to come
+  // back through the bridge as an ordinary string, so a cell saw a failure as a
+  // successful return value and carried on with it.
+  //
+  // Raise instead, on the one error channel the kernel already has: the cell
+  // gets a catchable ToolBridgeError exactly as it does for a thrown failure,
+  // and `handle` records the call as failed. The server's own diagnostic is the
+  // message, so the evidence survives rather than being replaced by a generic
+  // one. MCP failures do not arrive here — they throw McpToolCallError from
+  // callMCPTool — so this is not a second path for them.
+  if (block.is_error) {
+    throw new Error(
+      text.trim() ||
+        `tool.${name}(...) reported an error but returned no diagnostic content.`,
+    )
+  }
   if (images.length > 0) return { text, images }
   return text
 }
