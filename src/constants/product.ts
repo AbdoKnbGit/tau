@@ -1,5 +1,14 @@
 export const PRODUCT_URL = 'https://claude.com/claude-code'
 
+/**
+ * The CLI's own name, as `program.name()` reports it and as the user types it.
+ *
+ * Shared so the commands we describe to the model cannot drift from the
+ * commands that actually exist: both read this. `package.json` also ships
+ * `claudex` as an alias, but this is the canonical spelling.
+ */
+export const PRODUCT_COMMAND = 'tau'
+
 // Tau Remote session URLs
 export const CLAUDE_AI_BASE_URL = 'https://claude.ai'
 export const CLAUDE_AI_STAGING_BASE_URL = 'https://claude-ai.staging.ant.dev'

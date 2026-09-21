@@ -113,6 +113,7 @@ const skillSearchFeatureCheck = feature('EXPERIMENTAL_SKILL_SEARCH')
 /* eslint-enable @typescript-eslint/no-require-imports */
 import type { OutputStyleConfig } from './outputStyles.js'
 import { CYBER_RISK_INSTRUCTION } from './cyberRiskInstruction.js'
+import { PRODUCT_COMMAND } from './product.js'
 
 export const CLAUDE_CODE_DOCS_MAP_URL =
   'https://code.claude.com/docs/en/claude_code_docs_map.md'
@@ -494,14 +495,41 @@ function getDiscoverSkillsGuidance(): string | null {
  * tooling — rather than a full tutorial the model can read from `--help`.
  */
 function getMcpAndPluginSetupGuidance(): string {
+  // Derived from PRODUCT_COMMAND, never spelled out, so renaming the binary
+  // cannot leave the model describing a command that no longer exists.
+  const cli = PRODUCT_COMMAND
   return [
-    `To install or manage an MCP server, use the \`tau mcp\` CLI (\`tau mcp add\`, \`list\`, \`get\`, \`remove\`), not hand-edited config.`,
+    `To install or manage an MCP server, use the \`${cli} mcp\` CLI (\`${cli} mcp add\`, \`list\`, \`get\`, \`remove\`), not hand-edited config. Run \`${cli} mcp add --help\` when unsure of a flag rather than guessing.`,
     `MCP servers live in .mcp.json / .claude.json — NOT in settings.json, which holds permissions, hooks and env vars. Writing an \`mcpServers\` block into settings.json does nothing.`,
-    `For a stdio server, Tau's own flags go BEFORE \`--\` and the server's own flags after it: \`tau mcp add <name> -s user -- npx -y <package> <args>\`. Put \`-y\` before \`--\` and the CLI rejects it as an unknown option.`,
-    `For a remote server: \`tau mcp add --transport http <name> <url>\`, with \`--header\` for auth and \`-e KEY=value\` for environment variables. Pass the URL once — repeating the name as a second positional registers the name as the URL.`,
-    `Verify with \`tau mcp list\` (connection health for every server) or \`tau mcp get <name>\`. "Needs authentication" on an OAuth server is expected until the user completes the flow via /mcp; "Failed to connect" usually means the command does not speak MCP over stdio.`,
-    `Plugins are a SEPARATE system, not MCP servers: \`tau plugin install|list|enable|disable|uninstall <name>@<marketplace>\` and \`tau plugin marketplace add|list|remove\`. A plugin can bundle skills, agents, hooks and MCP servers, so it is not reducible to MCP config.`,
+    `For a stdio server, the CLI's own flags go BEFORE \`--\` and the server's own flags after it: \`${cli} mcp add <name> -s user -- <command> <args>\`. A flag like \`-y\` placed before \`--\` is rejected as an unknown option.`,
+    `For a remote server: \`${cli} mcp add --transport http <name> <url>\`, with \`--header\` for auth and \`-e KEY=value\` for environment variables. Pass the URL once — repeating the name as a second positional registers the name as the URL.`,
+    `Verify with \`${cli} mcp list\` (connection health for every server) or \`${cli} mcp get <name>\`. "Needs authentication" on an OAuth server is expected until the user completes the flow via /mcp; "Failed to connect" usually means the command does not speak MCP over stdio.`,
+    `Plugins are a SEPARATE system, not MCP servers: \`${cli} plugin install|list|enable|disable|uninstall <name>@<marketplace>\` and \`${cli} plugin marketplace add|list|remove\`. A plugin can bundle skills, agents, hooks and MCP servers, so it is not reducible to MCP config.`,
     `Never guess a package name, repo, marketplace or slash command. Ask the user which server or plugin they mean, confirm the identifier, then run the real command and show its output.`,
+  ].join(' ')
+}
+
+/**
+ * How to call an MCP tool whose arguments are more than a flat bag of strings.
+ *
+ * Servers publish their real JSON Schema and it reaches the model, but a model
+ * that has an approximate idea of an API tends to send the shape it expects
+ * and correct by trial. That goes badly exactly where it costs most: nested
+ * operation objects, embedded document grammars, and mutually exclusive
+ * addressing fields. Observed failures were all the same mistake — a shape
+ * invented rather than read — and each retry invented a new one.
+ *
+ * Deliberately server-agnostic. No server name, tool name or field name
+ * appears here: the rules are about reading the contract you were given and
+ * believing the diagnostic you got back, which holds for any server.
+ */
+function getMcpCallShapeGuidance(): string {
+  return [
+    `When calling an MCP tool, build arguments from that tool's own JSON Schema, which you were given. Do not pattern-match from a similar API or from prose in a guide: a description tells you what a tool does, the schema tells you what it accepts, and only the schema is authoritative.`,
+    `Send exactly the fields the schema declares. Adding a field it does not list is rejected by strict servers rather than ignored, and supplying two ways of addressing the same thing when the contract wants one is a conflict, not a helpful extra.`,
+    `A string argument that carries its own nested format (JSON in a string, a markup or template grammar, a query language) is still governed by the server's rules for that format. If those rules are not stated, ask or read them first; do not infer them from how the text renders.`,
+    `An MCP error is evidence, not noise. Servers commonly name the offending path, the accepted keys, or a complete working payload; read that and correct from it. Two failures with the same cause means the assumption is wrong — re-read the schema or ask the user instead of trying a third variation.`,
+    `Never invent a field, identifier, enum member or nested shape to get past a rejection, and never present a guessed call as verified. If the contract does not say what a value should be, that is a question for the user.`,
   ].join(' ')
 }
 
@@ -560,6 +588,12 @@ function getSessionSpecificGuidanceSection(
       ? `/<skill-name> (e.g., /commit) is shorthand for users to invoke a user-invocable skill. When executed, the skill gets expanded to a full prompt. Use the ${SKILL_TOOL_NAME} tool to execute them. IMPORTANT: Only use ${SKILL_TOOL_NAME} for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.`
       : null,
     getMcpAndPluginSetupGuidance(),
+    // Unconditional on purpose. This section is cached per session by name and
+    // only rebuilt on /mode or post-compact, so gating it on "are MCP tools
+    // present right now" would freeze the answer from the first build: a
+    // server connected later in the session would never get the guidance,
+    // which is exactly when a model is most likely to guess at its schema.
+    getMcpCallShapeGuidance(),
     DISCOVER_SKILLS_TOOL_NAME !== null &&
     hasSkills &&
     enabledTools.has(DISCOVER_SKILLS_TOOL_NAME)
