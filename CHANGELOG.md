@@ -3,6 +3,46 @@
 All notable changes to **Tau**, from the first release to the latest.
 Each version lists what was fixed or added, newest first.
 
+## v0.92.36 (2026-09-21)
+
+MCP reliability: tool calls that failed are now reported as failures, a
+cancelled or timed-out write says so instead of reading as success, and a
+call that keeps failing the same way stops instead of looping.
+
+- Stop a tool call that keeps failing with the same argument shape (4a2dc303)
+- Derive the CLI name, and say how to call an unfamiliar MCP tool (f98aa4e9)
+- Tell the model how MCP servers and plugins are actually installed (e2ef0580)
+- Refuse an MCP_TOOL_TIMEOUT a timer cannot wait (d806385c)
+- Re-check MCP arguments after hooks and permissions change them (06319b40)
+- Keep tool-failure machinery out of the conversation view (26038965)
+- Make MCP tool outcomes authoritative at the transport boundary (10adc06b)
+- Fail an Eval bridge call whose tool returned an error (d343e492)
+- Check MCP connection ownership across the whole disposal (3c9aa8e3)
+- Keep the whole MCP error result, not just its first content block (11aae3b2)
+- Carry tool-call decode failure outside the arguments (fe3767e1)
+- Refuse a tool call whose arguments never arrived complete (263145ac)
+- Dispose an MCP connection only when it is still the cached one (4a44991a)
+- Give print mode the same MCP launch deadline as interactive (55e8459f)
+- Make MCP readiness mean the catalog is readable (210a9b95)
+- Guard MCP catalog publication by revision (20f6fcc5)
+- Stop a truncated MCP listing from being cached as a complete catalog (762331db)
+- Publish MCP tools as soon as they are ready (a6c3fb18)
+- Never rewrite a valid MCP argument, and validate under the right dialect (bec4ad77)
+- Repair MCP arguments against the server schema, on every lane (0be42ddc)
+- Close a connection whose tool listing failed, and cover MCP with a fixture server (57bfb5ad)
+- Stop deleting MCP tool parameters that are named like schema keywords (73560cf5)
+- Validate every MCP call against the server's own schema (74061854)
+- Discover MCP catalogs completely, and stop failures reading as empty ones (aeff832b)
+- Wait for MCP discovery before the first request, bounded from launch (22db7bed)
+- Turn on the Antigravity trajectory, keep-alive and no pacing by default (ecb3b175)
+- Let an abort cancel an Antigravity Gemini stream after its headers (6bbdb80f)
+- Add an opt-in Antigravity keep-alive experiment (2b899034)
+- Add an opt-in Antigravity trajectory envelope experiment (fc83abc4)
+- Trace Antigravity Gemini requests at the dispatch boundary (b02ed076)
+- Fix prompt cache misses on agent resume and across lanes (3cec2c81)
+- Fix Antigravity MCP Claude Code docs tool (a281f2d3)
+- Add the changelog and link it from the README (8d44e152)
+
 ## v0.92.35 (2026-09-17)
 
 - Stop shipping docs in the npm package (03afa3b7)
