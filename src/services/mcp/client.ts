@@ -260,6 +260,15 @@ export function isMcpSessionExpiredError(error: Error): boolean {
 const DEFAULT_MCP_TOOL_TIMEOUT_MS = 100_000_000
 
 /**
+ * Largest delay `setTimeout` can represent (2^31-1 ms, about 24.8 days).
+ *
+ * Node clamps anything larger to 1ms and warns, so a timeout above this does
+ * not mean "wait longer" — it means "fire immediately", the opposite of what
+ * the setting asks for.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
+/**
  * Cap on MCP tool descriptions and server instructions sent to the model.
  * OpenAPI-generated MCP servers have been observed dumping 15-60KB of endpoint
  * docs into tool.description; this caps the p95 tail without losing the intent.
@@ -268,14 +277,52 @@ const MAX_MCP_DESCRIPTION_LENGTH = 2048
 
 /**
  * Gets the timeout for MCP tool calls in milliseconds.
- * Uses MCP_TOOL_TIMEOUT environment variable if set, otherwise defaults to ~27.8 hours.
+ *
+ * Uses MCP_TOOL_TIMEOUT when it names a usable duration, otherwise the
+ * default (~27.8 hours). Only a finite, positive, timer-representable number
+ * of milliseconds is usable, because the alternatives are worse than the
+ * default rather than merely different:
+ *
+ *   - `-1` and values above 2^31-1 are clamped by Node to a 1ms delay, so
+ *     every call would fail instantly. `parseInt(...) || DEFAULT` let the
+ *     negative through, and the overflow with it.
+ *   - `1e9` parsed to `1` — `parseInt` stops at the `e` — giving a one
+ *     millisecond timeout to someone asking for a long one.
+ *   - `0` and `abc` already fell back, but only because `||` treats `0` and
+ *     `NaN` alike; that was luck rather than a decision.
+ *
+ * A rejected value is reported once, because silently substituting a
+ * 27-hour timeout for the one the user configured is how a hung call looks
+ * like a hang rather than a misconfiguration.
  */
+let reportedInvalidToolTimeout = false
+
 function getMcpToolTimeoutMs(): number {
-  return (
-    parseInt(process.env.MCP_TOOL_TIMEOUT || '', 10) ||
-    DEFAULT_MCP_TOOL_TIMEOUT_MS
-  )
+  const raw = process.env.MCP_TOOL_TIMEOUT
+  if (raw === undefined || raw.trim() === '') return DEFAULT_MCP_TOOL_TIMEOUT_MS
+
+  // `Number` rather than `parseInt`: it rejects trailing garbage instead of
+  // silently truncating it, and understands exponent notation.
+  const parsed = Number(raw.trim())
+  const usable =
+    Number.isFinite(parsed) && parsed > 0 && parsed <= MAX_TIMER_DELAY_MS
+
+  if (!usable) {
+    if (!reportedInvalidToolTimeout) {
+      reportedInvalidToolTimeout = true
+      logForDebugging(
+        `Ignoring MCP_TOOL_TIMEOUT="${raw}": expected a positive number of ` +
+          `milliseconds no greater than ${MAX_TIMER_DELAY_MS}. ` +
+          `Using the default instead.`,
+        { level: 'error' },
+      )
+    }
+    return DEFAULT_MCP_TOOL_TIMEOUT_MS
+  }
+
+  return Math.floor(parsed)
 }
+
 
 import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
 
