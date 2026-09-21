@@ -1682,6 +1682,57 @@ async function checkPermissionsAndCallTool(
   } else if (processedInput !== backfilledClone) {
     callInput = processedInput
   }
+
+  // Final contract guard, immediately before the send.
+  //
+  // MCP arguments were checked against the server's JSON Schema far earlier,
+  // on the input as it arrived. Hooks and permission handlers may replace it
+  // wholesale (`updatedInput`), and that replacement reached `tool.call`
+  // unverified — a handler could substitute arguments the server never
+  // agreed to, missing required fields and carrying forbidden ones.
+  //
+  // Re-check the ACTUAL object being sent. Reuses `checkMcpArguments`, the
+  // existing owner, rather than adding a second validator that could drift
+  // from it. Only runs when the input actually changed since that check, so
+  // an untouched call pays nothing and behaviour is unchanged for it.
+  if ((tool.isMcp ?? false) && callInput !== coercedInput) {
+    const finalCheck = checkMcpArguments(tool, callInput, {
+      blind: isBlindCall,
+    })
+    if (!finalCheck.ok) {
+      const message =
+        `${finalCheck.message} (the arguments were changed after they were ` +
+        `validated, so the call was not sent)`
+      logForDebugging(`Final MCP guard refused ${tool.name}: ${toolUseID}`)
+      logEvent('tengu_tool_use_error', {
+        error:
+          'McpFinalGuardRefused' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        errorDetails:
+          finalCheck.reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        toolName: sanitizeToolNameForAnalytics(tool.name),
+        toolUseID:
+          toolUseID as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        isMcp: true,
+      })
+      return [
+        {
+          message: createUserMessage({
+            content: [
+              {
+                type: 'tool_result',
+                content: `<tool_use_error>${message}</tool_use_error>`,
+                is_error: true,
+                tool_use_id: toolUseID,
+              },
+            ],
+            toolUseResult: message,
+            sourceToolAssistantUUID: assistantMessage.uuid,
+          }),
+        },
+      ]
+    }
+  }
+
   try {
     const result = await tool.call(
       callInput,
