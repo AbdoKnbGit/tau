@@ -1,5 +1,64 @@
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages/messages.mjs'
 
+/**
+ * What the normal (non-transcript) view may show for a failed tool call.
+ *
+ * A tool failure reaches the user as whatever the tool or server happened to
+ * emit: a JSON body, a stack trace, a schema dump, a base64 blob. None of it
+ * is actionable in the conversation view, and a wall of it buries the one
+ * line that is. Ctrl+O still shows the original in full — this hides, it
+ * never discards.
+ *
+ * Deliberately pure and string-only: the renderers it serves are React
+ * compiler output whose cache slots must not be hand-edited, so the policy
+ * lives here and they keep calling one function.
+ */
+
+/** A line that is machinery rather than explanation. */
+function isTechnicalNoise(line: string): boolean {
+  const trimmed = line.trim()
+  if (!trimmed) return false
+  // Stack frames, in the shapes Node, V8 and Python produce.
+  if (/^at\s+\S+.*\(?.*:\d+:\d+\)?$/.test(trimmed)) return true
+  if (/^File ".*", line \d+/.test(trimmed)) return true
+  if (/^\s*\.\.\.\s*\d+ more$/.test(trimmed)) return true
+  // A bare JSON or schema fragment: structure with no sentence around it.
+  if (/^[[{]/.test(trimmed) && /[\]}],?$/.test(trimmed)) return true
+  if (/^"[^"]+":\s/.test(trimmed)) return true
+  // Long unbroken tokens are blobs, digests or base64 payloads.
+  if (/^[A-Za-z0-9+/=_-]{120,}$/.test(trimmed)) return true
+  return false
+}
+
+/**
+ * Collapse technical noise in an error for the normal view.
+ *
+ * Keeps the first explanatory lines, replaces a removed run with one honest
+ * count, and says where the rest is. Returns the input unchanged when there
+ * is nothing to hide, so an ordinary one-line failure is untouched.
+ */
+export function redactToolErrorForNormalView(error: string): string {
+  const lines = error.split('\n')
+  const kept: string[] = []
+  let hidden = 0
+
+  for (const line of lines) {
+    if (isTechnicalNoise(line)) {
+      hidden += 1
+      continue
+    }
+    kept.push(line)
+  }
+
+  if (hidden === 0) return error
+
+  const body = kept.join('\n').trimEnd()
+  const noun = hidden === 1 ? 'line' : 'lines'
+  // Stated, not silently dropped: a user who needs the detail must know it
+  // exists and where to find it.
+  return `${body}\n[${hidden} technical ${noun} hidden]`.trimStart()
+}
+
 export function normalizeToolError(result: ToolResultBlockParam['content']): string {
   if (typeof result !== 'string') {
     return 'Tool execution failed'

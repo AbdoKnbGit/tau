@@ -17,10 +17,15 @@ import { RejectedToolUseMessage } from './RejectedToolUseMessage.js';
  * Shown in place of a schema-validation error. Amber, not red: red is a tool
  * that ran and failed, green is one that ran and worked, and this one never
  * ran at all — the arguments never matched the schema, so nothing was written
- * and nothing was executed. The model receives the full error and reissues
- * the call, which is what the word describes.
+ * and nothing was executed.
+ *
+ * States what is known — the call did not run — rather than predicting a
+ * retry. The model usually does reissue the call, but nothing here can see
+ * that: if the user interrupts or the turn ends, "retrying" is left on screen
+ * describing something that never happens. No renderer has access to real
+ * retry state, so the honest row is the one about the past.
  */
-const RETRYING_NOTICE = <MessageResponse height={1}><Text color="warning">{REFRESH_ARROW} retrying</Text></MessageResponse>;
+const NOT_RUN_NOTICE = <MessageResponse height={1}><Text color="warning">{REFRESH_ARROW} invalid arguments {BULLET_OPERATOR} not run</Text></MessageResponse>;
 type Props = {
   progressMessagesForMessage: ProgressMessage[];
   tool?: Tool; // undefined when resuming an old conversation that uses an old tool
@@ -97,7 +102,7 @@ export function UserToolErrorMessage(t0) {
   // was ever attempted. Returns a shared element and touches no `$` slot, so
   // the compiler cache above is unaffected. ctrl+o still shows the real error.
   if (isTranscriptMode !== true && isToolInputValidationError(param.content)) {
-    return RETRYING_NOTICE;
+    return NOT_RUN_NOTICE;
   }
   let t1;
   if ($[7] !== isTranscriptMode || $[8] !== param.content || $[9] !== progressMessagesForMessage || $[10] !== tool || $[11] !== tools || $[12] !== verbose) {
@@ -106,7 +111,7 @@ export function UserToolErrorMessage(t0) {
       tools,
       verbose,
       isTranscriptMode
-    }) ?? <FallbackToolUseErrorMessage result={param.content} verbose={verbose} />;
+    }) ?? <FallbackToolUseErrorMessage result={param.content} verbose={verbose} isTranscriptMode={isTranscriptMode} />;
     $[7] = isTranscriptMode;
     $[8] = param.content;
     $[9] = progressMessagesForMessage;
