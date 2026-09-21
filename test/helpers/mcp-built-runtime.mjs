@@ -20,6 +20,7 @@ export async function loadMcpRuntime() {
     'src/services/api/adapters/gemini_to_anthropic.ts',
     'src/tools/EvalTool/toolBridge.ts',
     'src/services/mcp/outcomes.ts',
+    'src/constants/prompts.ts',
   ]
   const inits = paths.map(path => {
     const match = source.match(new RegExp('var (init_\\w+) = __esm\\(\\{\\s*"' + path.replaceAll('.', '\\.') + '"\\(\\)'))
@@ -38,7 +39,7 @@ export async function loadMcpRuntime() {
       fetchToolsForClient, getMcpToolsCommandsAndResources, memoizeDiscovery, ensureToolBridge, registerBridgeSession,
       getToolResultsDir, sanitizeErrorToolResultContent,
       outcomeOf, isOutcomeRecord, describeOutcome, mayHaveExecuted,
-      getMcpToolTimeoutMs,
+      getMcpToolTimeoutMs, getSystemPrompt,
       attachOutcome, OUTCOME_RECORD_VERSION,
       disposeToolBridge: async () => {
         if (serverPromise) { const { server } = await serverPromise; await new Promise(resolve => server.close(resolve)); }

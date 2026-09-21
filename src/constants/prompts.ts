@@ -479,6 +479,32 @@ function getDiscoverSkillsGuidance(): string | null {
  * outputStyleConfig intentionally NOT moved here — identity framing lives
  * in the static intro pending eval.
  */
+/**
+ * How MCP servers and plugins are actually installed here.
+ *
+ * Without this, the model reconstructs a procedure from general knowledge and
+ * gets it wrong in ways that fail the moment a user acts on them: hand-editing
+ * `mcpServers` into settings.json (the wrong file — MCP config lives in
+ * .mcp.json and .claude.json, so the edit silently does nothing), claiming
+ * plugins are "just MCP servers" with no separate system, and inventing slash
+ * commands and package names that do not exist.
+ *
+ * Every command named here is real and was checked against the CLI. The
+ * emphasis is on the two mistakes actually observed — wrong file, invented
+ * tooling — rather than a full tutorial the model can read from `--help`.
+ */
+function getMcpAndPluginSetupGuidance(): string {
+  return [
+    `To install or manage an MCP server, use the \`tau mcp\` CLI (\`tau mcp add\`, \`list\`, \`get\`, \`remove\`), not hand-edited config.`,
+    `MCP servers live in .mcp.json / .claude.json — NOT in settings.json, which holds permissions, hooks and env vars. Writing an \`mcpServers\` block into settings.json does nothing.`,
+    `For a stdio server, Tau's own flags go BEFORE \`--\` and the server's own flags after it: \`tau mcp add <name> -s user -- npx -y <package> <args>\`. Put \`-y\` before \`--\` and the CLI rejects it as an unknown option.`,
+    `For a remote server: \`tau mcp add --transport http <name> <url>\`, with \`--header\` for auth and \`-e KEY=value\` for environment variables. Pass the URL once — repeating the name as a second positional registers the name as the URL.`,
+    `Verify with \`tau mcp list\` (connection health for every server) or \`tau mcp get <name>\`. "Needs authentication" on an OAuth server is expected until the user completes the flow via /mcp; "Failed to connect" usually means the command does not speak MCP over stdio.`,
+    `Plugins are a SEPARATE system, not MCP servers: \`tau plugin install|list|enable|disable|uninstall <name>@<marketplace>\` and \`tau plugin marketplace add|list|remove\`. A plugin can bundle skills, agents, hooks and MCP servers, so it is not reducible to MCP config.`,
+    `Never guess a package name, repo, marketplace or slash command. Ask the user which server or plugin they mean, confirm the identifier, then run the real command and show its output.`,
+  ].join(' ')
+}
+
 function getSessionSpecificGuidanceSection(
   enabledTools: Set<string>,
   skillToolCommands: Command[],
@@ -533,6 +559,7 @@ function getSessionSpecificGuidanceSection(
     hasSkills
       ? `/<skill-name> (e.g., /commit) is shorthand for users to invoke a user-invocable skill. When executed, the skill gets expanded to a full prompt. Use the ${SKILL_TOOL_NAME} tool to execute them. IMPORTANT: Only use ${SKILL_TOOL_NAME} for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.`
       : null,
+    getMcpAndPluginSetupGuidance(),
     DISCOVER_SKILLS_TOOL_NAME !== null &&
     hasSkills &&
     enabledTools.has(DISCOVER_SKILLS_TOOL_NAME)
