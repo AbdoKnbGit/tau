@@ -230,6 +230,66 @@ export function outcomeOf(error: unknown): OutcomeRecord | undefined {
 }
 
 /**
+ * How many consecutive failures of one tool are tolerated before the runtime
+ * stops accepting another near-identical attempt.
+ *
+ * Two is the point where the evidence says the assumption is wrong rather
+ * than the keystroke: one failure is a typo, two is a misunderstanding. The
+ * third attempt is the one that starts a loop.
+ */
+export const REPEATED_FAILURE_LIMIT = 2
+
+/**
+ * Detect a model correcting one field at a time against a contract it has not
+ * re-read.
+ *
+ * The observed shape: a strict server rejects a call, the model patches only
+ * the key the diagnostic named, sends again, is rejected for the next key,
+ * and repeats. Each payload differs, so exact-match detection sees nothing,
+ * while the call is going nowhere and every attempt costs a round trip — and
+ * against a mutating tool, risks a partial effect.
+ *
+ * What counts as progress is deliberately narrow: a failing call is a repeat
+ * unless the arguments changed in a way that could plausibly answer the last
+ * refusal, meaning a key was added or removed. Editing a value the server
+ * never objected to is the loop, not an escape from it.
+ *
+ * Server-agnostic by construction. It reads argument keys and failure counts,
+ * never error text, so no server's wording or field names are baked in.
+ */
+export function isRepeatedFailingCall(
+  previousAttempts: ReadonlyArray<{ input: unknown; failed: boolean }>,
+  nextInput: unknown,
+  limit: number = REPEATED_FAILURE_LIMIT,
+): boolean {
+  // Only an unbroken run of failures counts. A success in between means the
+  // model recovered, and the next failure starts a fresh run.
+  let consecutive = 0
+  for (let i = previousAttempts.length - 1; i >= 0; i--) {
+    if (!previousAttempts[i]?.failed) break
+    consecutive += 1
+  }
+  if (consecutive < limit) return false
+
+  const recent = previousAttempts.slice(-consecutive)
+  const nextKeys = topLevelKeys(nextInput)
+  // If the key set never changes across the run and still does not change
+  // now, the model is editing values while the server objects to shape.
+  return recent.every(
+    attempt => sameKeySet(topLevelKeys(attempt.input), nextKeys),
+  )
+}
+
+function topLevelKeys(input: unknown): string[] {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return []
+  return Object.keys(input as Record<string, unknown>).sort()
+}
+
+function sameKeySet(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((key, index) => key === b[index])
+}
+
+/**
  * One short line of evidence for the model, derived from the record.
  *
  * Phrased so an uncertain write reads as uncertain. Never says "failed" for

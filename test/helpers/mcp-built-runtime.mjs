@@ -39,7 +39,7 @@ export async function loadMcpRuntime() {
       fetchToolsForClient, getMcpToolsCommandsAndResources, memoizeDiscovery, ensureToolBridge, registerBridgeSession,
       getToolResultsDir, sanitizeErrorToolResultContent,
       outcomeOf, isOutcomeRecord, describeOutcome, mayHaveExecuted,
-      getMcpToolTimeoutMs, getSystemPrompt,
+      getMcpToolTimeoutMs, getSystemPrompt, isRepeatedFailingCall,
       attachOutcome, OUTCOME_RECORD_VERSION,
       disposeToolBridge: async () => {
         if (serverPromise) { const { server } = await serverPromise; await new Promise(resolve => server.close(resolve)); }

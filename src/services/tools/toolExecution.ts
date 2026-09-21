@@ -151,6 +151,7 @@ import {
   describeOutcome,
   failedOutcome,
   finalizeOutcome,
+  isRepeatedFailingCall,
   refusedOutcome,
 } from '../mcp/outcomes.js'
 import {
@@ -880,6 +881,43 @@ export function buildSchemaNotSentHint(
     `\n\nThis tool's schema was not sent to the API for the attempted call — it was not loaded in the request that produced this tool_use. ` +
     `This failed direct call will load ${tool.name}'s schema for the next request. Retry ${tool.name} directly using the expected schema above; do not call ${TOOL_SEARCH_TOOL_NAME} first.`
   )
+}
+
+/**
+ * Prior attempts at one tool in this conversation, oldest first.
+ *
+ * Pairs each `tool_use` block with the `tool_result` that answered it, so a
+ * caller can tell a run of failures from a recovered one. A `tool_use` with
+ * no result yet is skipped: it is in flight, not an outcome.
+ */
+function collectPriorAttempts(
+  messages: Message[],
+  toolName: string,
+): Array<{ input: unknown; failed: boolean }> {
+  const failedByToolUseId = new Map<string, boolean>()
+  for (const message of messages) {
+    if (message.type !== 'user') continue
+    const content = message.message.content
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      if (block.type !== 'tool_result') continue
+      failedByToolUseId.set(block.tool_use_id, block.is_error === true)
+    }
+  }
+
+  const attempts: Array<{ input: unknown; failed: boolean }> = []
+  for (const message of messages) {
+    if (message.type !== 'assistant') continue
+    const content = message.message.content
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      if (block.type !== 'tool_use' || block.name !== toolName) continue
+      const failed = failedByToolUseId.get(block.id)
+      if (failed === undefined) continue
+      attempts.push({ input: block.input, failed })
+    }
+  }
+  return attempts
 }
 
 function appendToolInputValidationRecoveryHint(
@@ -1681,6 +1719,56 @@ async function checkPermissionsAndCallTool(
     } as typeof processedInput
   } else if (processedInput !== backfilledClone) {
     callInput = processedInput
+  }
+
+  // Loop guard, before the send.
+  //
+  // A strict server rejects a call, the model patches only the key the
+  // diagnostic named, sends again, is rejected for the next key, and repeats.
+  // Each payload differs, so nothing downstream sees a duplicate, while the
+  // call goes nowhere: observed as seven near-identical attempts, the last
+  // five with an identical top-level key set, ended only by the user
+  // interrupting. The prompt already asks the model to stop after two
+  // same-cause failures; this is the part that does not depend on it obeying.
+  //
+  // Refuses the attempt rather than the operation: the model is told to
+  // re-read the contract, and a genuinely different call still goes through.
+  if (tool.isMcp ?? false) {
+    const priorAttempts = collectPriorAttempts(
+      toolUseContext.messages,
+      tool.name,
+    )
+    if (isRepeatedFailingCall(priorAttempts, callInput)) {
+      const message =
+        `${tool.name} has failed ${priorAttempts.length} times in a row and this call repeats the same argument shape, so it was not sent. ` +
+        `Re-read the tool's schema and the last error together before trying again — the failures are about the shape of the call, not the values in it. ` +
+        `If the contract does not say what is expected, ask the user rather than trying another variation.`
+      logForDebugging(`Repeated failing call refused ${tool.name}: ${toolUseID}`)
+      logEvent('tengu_tool_use_error', {
+        error:
+          'RepeatedFailingCall' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        toolName: sanitizeToolNameForAnalytics(tool.name),
+        toolUseID:
+          toolUseID as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        isMcp: true,
+      })
+      return [
+        {
+          message: createUserMessage({
+            content: [
+              {
+                type: 'tool_result',
+                content: `<tool_use_error>${message}</tool_use_error>`,
+                is_error: true,
+                tool_use_id: toolUseID,
+              },
+            ],
+            toolUseResult: message,
+            sourceToolAssistantUUID: assistantMessage.uuid,
+          }),
+        },
+      ]
+    }
   }
 
   // Final contract guard, immediately before the send.
