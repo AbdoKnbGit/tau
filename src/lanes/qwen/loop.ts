@@ -15,6 +15,7 @@
  */
 
 import { randomUUID } from 'crypto'
+import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
 import type {
   AnthropicStreamEvent,
   ModelInfo,
@@ -253,15 +254,11 @@ export class QwenLane implements Lane {
             for (const buf of toolCallsByIndex.values()) {
               if (buf.emitted) continue
               buf.emitted = true
-              let parsedArgs: Record<string, unknown> = {}
-              try {
-                parsedArgs = buf.args ? JSON.parse(buf.args) : {}
-              } catch {
-                parsedArgs = {}
-              }
+              const decoded = decodeToolArguments(buf.args)
+              const parsedArgs = decoded.input
               const reg = getQwenRegistrationByNativeName(buf.nativeName)
               const implId = reg?.implId ?? buf.nativeName
-              const adapted = reg ? reg.adaptInput(parsedArgs) : parsedArgs
+              const adapted = reg && !decoded.status ? reg.adaptInput(parsedArgs) : parsedArgs
               // Three-event sequence: start (empty input) + input_json_delta
               // carrying JSON-stringified args + stop. Required for the
               // claude.ts accumulator to capture the args.
@@ -273,6 +270,7 @@ export class QwenLane implements Lane {
                   id: buf.anthropicToolUseId,
                   name: implId,
                   input: {},
+                  ...toolDecodeFields(decoded),
                 },
               }
               yield {

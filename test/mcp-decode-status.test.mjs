@@ -119,7 +119,7 @@ test('a block with no decode status reports none', () => {
 })
 
 test('an unparseable streamed tool input is not turned into an empty call', () => {
-  // The shared path, so this covers every provider rather than one lane.
+  // This covers the shared normalizer; lane adapters have separate coverage.
   // `parsed ?? {}` used to dispatch a call whose arguments never arrived as
   // though the model had deliberately sent none — which a parameterless or
   // all-optional schema accepts.
@@ -130,7 +130,7 @@ test('an unparseable streamed tool input is not turned into an empty call', () =
   )
   const status = d.decodeStatusOf(block)
   assert.ok(status, 'an unparseable tool input was accepted as a complete call')
-  assert.equal(status.category, 'truncated')
+  assert.equal(status.category, 'malformed')
 })
 
 test('a complete streamed tool input carries no decode status', () => {

@@ -1,3 +1,4 @@
+import { decodeToolArguments, toolDecodeFields } from '../../mcp/decodeStatus.js'
 /**
  * Adapters for the OpenAI Responses API (POST /v1/responses).
  *
@@ -520,19 +521,16 @@ export function responsesMessageToAnthropic(
       }
     } else if (item.type === 'function_call') {
       hasToolCalls = true
-      let input: Record<string, unknown> = {}
-      try {
-        input = JSON.parse(item.arguments ?? '{}')
-      } catch {
-        input = { _raw: item.arguments }
-      }
+      const decoded = decodeToolArguments(item.arguments)
+      let input = decoded.input
       const name = item.name ?? ''
-      input = (coerceToolCallArgs(name, input) ?? input) as Record<string, unknown>
+      input = decoded.status ? input : (coerceToolCallArgs(name, input) ?? input) as Record<string, unknown>
       content.push({
         type: 'tool_use',
         id: item.call_id ?? item.id ?? `toolu_${Math.random().toString(36).slice(2, 11)}`,
         name,
         input,
+        ...toolDecodeFields(decoded),
       })
     }
   }

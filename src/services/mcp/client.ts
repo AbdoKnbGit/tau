@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import { pathToFileURL } from 'url'
+import { randomUUID } from 'crypto'
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -113,6 +114,14 @@ import { buildMcpToolName } from './mcpStringUtils.js'
 import { listAllPages, memoizeDiscovery } from './discovery.js'
 import { normalizeNameForMCP } from './normalization.js'
 import {
+  attachOutcome,
+  cancelledBeforeSendOutcome,
+  describeOutcome,
+  succeededOutcome,
+  unknownOutcome,
+  type OutcomeRecord,
+} from './outcomes.js'
+import {
   beginMcpPublication,
   beginMcpServer,
   isMcpServerPublishing,
@@ -192,11 +201,13 @@ export class McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS extends T
   constructor(
     message: string,
     telemetryMessage: string,
-    readonly mcpMeta?: { _meta?: Record<string, unknown> },
+    readonly mcpMeta?: { _meta?: Record<string, unknown>; structuredContent?: Record<string, unknown> },
     /** Every content block the server returned, in its original order. */
     readonly errorContent?: unknown[],
     /** The server's structured diagnostic, when it supplied one. */
     readonly structuredContent?: unknown,
+    /** Normalized and bounded through the same storage path as successful results. */
+    readonly modelContent?: MCPToolResult,
   ) {
     super(message, telemetryMessage)
     this.name = 'McpToolCallError'
@@ -1429,6 +1440,7 @@ export const connectToServer = memoize(
           const cached = connectToServer.cache.get(key) as
             | Promise<MCPServerConnection>
             | undefined
+          if (!cached) return
           if (cached) {
             let stillOurs = false
             try {
@@ -1438,7 +1450,7 @@ export const connectToServer = memoize(
               // The cached attempt failed; nothing of ours is cached.
               stillOurs = false
             }
-            if (!stillOurs) {
+            if (!stillOurs || connectToServer.cache.get(key) !== cached) {
               logMCPDebug(
                 name,
                 `Ignoring close from a superseded connection; cache belongs to a newer one`,
@@ -1450,7 +1462,7 @@ export const connectToServer = memoize(
           // Also clear fetch caches (keyed by server name). Reconnection
           // creates a new connection object; without clearing, the next
           // fetch would return stale tools/resources from the old connection.
-          invalidateServerDiscoveryCache(name)
+          invalidateServerDiscoveryCache(name, serverRef)
           connectToServer.cache.delete(key)
           logMCPDebug(name, `Cleared connection cache for reconnection`)
         })()
@@ -1707,10 +1719,11 @@ export const connectToServer = memoize(
  * for a refetch that fails — a server that closed and is reconnecting has not
  * told us its tools are gone.
  */
-export function invalidateServerDiscoveryCache(name: string): void {
-  fetchToolsForClient.cache.delete(name)
-  fetchResourcesForClient.cache.delete(name)
-  fetchCommandsForClient.cache.delete(name)
+export function invalidateServerDiscoveryCache(name: string, config: ScopedMcpServerConfig): void {
+  const key = getServerCacheKey(name, config)
+  fetchToolsForClient.cache.delete(key)
+  fetchResourcesForClient.cache.delete(key)
+  fetchCommandsForClient.cache.delete(key)
   if (feature('MCP_SKILLS')) {
     fetchMcpSkillsForClient!.cache.delete(name)
   }
@@ -1722,10 +1735,11 @@ export function invalidateServerDiscoveryCache(name: string): void {
  * For a server being disposed — disabled, removed, or replaced by a different
  * config. Its catalog is no longer ours to serve.
  */
-export function discardServerDiscoveryCache(name: string): void {
-  fetchToolsForClient.cache.discard(name)
-  fetchResourcesForClient.cache.discard(name)
-  fetchCommandsForClient.cache.discard(name)
+export function discardServerDiscoveryCache(name: string, config: ScopedMcpServerConfig): void {
+  const key = getServerCacheKey(name, config)
+  fetchToolsForClient.cache.discard(key)
+  fetchResourcesForClient.cache.discard(key)
+  fetchCommandsForClient.cache.discard(key)
   if (feature('MCP_SKILLS')) {
     fetchMcpSkillsForClient!.cache.discard(name)
   }
@@ -1762,13 +1776,14 @@ export async function clearServerCache(
    * disable, remove or config replacement wants.
    */
   expectedClient?: ConnectedMCPServer['client'],
-): Promise<void> {
+): Promise<boolean> {
   const key = getServerCacheKey(name, serverRef)
 
   const owned = connectToServer.cache.get(key) as
     | Promise<MCPServerConnection>
     | undefined
 
+  if (expectedClient && !owned) return false
   if (owned && expectedClient) {
     let stillOurs = false
     try {
@@ -1783,7 +1798,7 @@ export async function clearServerCache(
         name,
         `Skipping disposal: the cached connection belongs to a newer owner`,
       )
-      return
+      return false
     }
 
     // The await above suspended, and a replacement may have been installed
@@ -1795,13 +1810,16 @@ export async function clearServerCache(
         name,
         `Skipping disposal: a replacement was installed during the ownership check`,
       )
-      return
+      return false
     }
   }
 
   // Delete before awaiting: a caller that reconnects as soon as this resolves
   // must not be handed back the handle being closed.
   connectToServer.cache.delete(key)
+  // Revoke discovery publication before cleanup suspends. A late listing
+  // cannot repopulate this revision, and later cleanup cannot erase a replacement.
+  discardServerDiscoveryCache(name, serverRef)
 
   if (owned) {
     try {
@@ -1815,17 +1833,20 @@ export async function clearServerCache(
     }
   }
 
-  // Cleanup above suspended too, and a replacement can have connected and
-  // published its catalog in the meantime. Discarding by name alone would
-  // throw away the catalog that replacement just published, so only discard
-  // while this key is still vacant — the state this disposal left it in.
-  if (connectToServer.cache.get(key) === undefined) {
-    discardServerDiscoveryCache(name)
-  } else {
-    logMCPDebug(
-      name,
-      `Keeping the catalog: a replacement connected while this one was closing`,
-    )
+  return true
+}
+
+/** Verify both the SDK handle and the cache entry after the await. */
+export async function isCurrentMcpConnection(connection: ConnectedMCPServer): Promise<boolean> {
+  const key = getServerCacheKey(connection.name, connection.config)
+  const cached = connectToServer.cache.get(key) as Promise<MCPServerConnection> | undefined
+  if (!cached) return false
+  try {
+    const entry = await cached
+    return connectToServer.cache.get(key) === cached &&
+      entry.type === 'connected' && entry.client === connection.client
+  } catch {
+    return false
   }
 }
 
@@ -1878,8 +1899,8 @@ export function areMcpConfigsEqual(
   return jsonStringify(configA) === jsonStringify(configB)
 }
 
-// Max cache size for fetch* caches. Keyed by server name (stable across
-// reconnects), bounded to prevent unbounded growth with many MCP servers.
+// Share the connection's name/config identity. Different configurations with
+// the same display name must never share a last-good catalog.
 const MCP_FETCH_CACHE_SIZE = 20
 
 /**
@@ -2048,8 +2069,14 @@ export const fetchToolsForClient = memoizeDiscovery(
                   handleElicitation: context.handleElicitation,
                 })
 
-                // Emit progress when tool completes successfully
-                if (onProgress && toolUseId) {
+                // Emit progress when the tool actually completed. An aborted
+                // call returns this same empty shape, and reporting that as
+                // "completed" told the user an operation had finished when
+                // nobody had confirmed it.
+                const completedNormally =
+                  mcpResult.outcome === undefined ||
+                  mcpResult.outcome.outcome === 'success'
+                if (onProgress && toolUseId && completedNormally) {
                   onProgress({
                     toolUseID: toolUseId,
                     data: {
@@ -2062,8 +2089,16 @@ export const fetchToolsForClient = memoizeDiscovery(
                   })
                 }
 
+                // An operation that may have been carried out must say so.
+                // Empty content alone reads as "nothing happened", which is
+                // the one conclusion the boundary cannot support here.
+                const data =
+                  mcpResult.outcome && mcpResult.outcome.outcome !== 'success'
+                    ? describeOutcome(mcpResult.outcome)
+                    : mcpResult.content
+
                 return {
-                  data: mcpResult.content,
+                  data,
                   ...((mcpResult._meta || mcpResult.structuredContent) && {
                     mcpMeta: {
                       ...(mcpResult._meta && {
@@ -2157,7 +2192,7 @@ export const fetchToolsForClient = memoizeDiscovery(
       })
       .filter(isIncludedMcpTool)
   },
-  (client: MCPServerConnection) => client.name,
+  (client: MCPServerConnection) => getServerCacheKey(client.name, client.config),
   MCP_FETCH_CACHE_SIZE,
 )
 
@@ -2187,7 +2222,7 @@ export const fetchResourcesForClient = memoizeDiscovery(
       server: client.name,
     }))
   },
-  (client: MCPServerConnection) => client.name,
+  (client: MCPServerConnection) => getServerCacheKey(client.name, client.config),
   MCP_FETCH_CACHE_SIZE,
 )
 
@@ -2259,7 +2294,7 @@ export const fetchCommandsForClient = memoizeDiscovery(
       }
     })
   },
-  (client: MCPServerConnection) => client.name,
+  (client: MCPServerConnection) => getServerCacheKey(client.name, client.config),
   MCP_FETCH_CACHE_SIZE,
 )
 
@@ -2333,7 +2368,7 @@ export async function reconnectMcpServerImpl(
     const tools = await discovery.tools.catch(async error => {
       // Same as the batch path: a connection whose listing failed is
       // published failed, so dispose it rather than orphan its child.
-      await clearServerCache(name, config).catch(() => {})
+      await clearServerCache(name, config, client.client).catch(() => {})
       throw error
     })
     const { commands, resources } = await discovery.ancillary
@@ -2527,6 +2562,7 @@ export async function getMcpToolsCommandsAndResources(
     string,
     ScopedMcpServerConfig,
   ]): Promise<void> => {
+    let connected: ConnectedMCPServer | undefined
     try {
       // Check if server is disabled - if so, just add it to state without connecting
       if (isMcpServerDisabled(name)) {
@@ -2579,6 +2615,8 @@ export async function getMcpToolsCommandsAndResources(
         return
       }
 
+      connected = client
+
       if (config.type === 'claudeai-proxy') {
         markClaudeAiMcpConnected(name)
       }
@@ -2596,9 +2634,10 @@ export async function getMcpToolsCommandsAndResources(
         // and held by the memoize cache, and nothing else will ever close
         // it — a stdio server would leave a child process running for the
         // rest of the session. Dispose it before reporting the failure.
-        await clearServerCache(name, config).catch(() => {})
+        await clearServerCache(name, config, client.client).catch(() => {})
         throw error
       })
+      if (!await isCurrentMcpConnection(client)) return
 
       // If this server resources and we haven't added resource tools yet,
       // include our resource tools with this client's tools
@@ -2625,6 +2664,7 @@ export async function getMcpToolsCommandsAndResources(
       beginMcpPublication(name, onConnectionAttempt)
 
       const { commands, resources } = await discovery.ancillary
+      if (!await isCurrentMcpConnection(client)) return
       onConnectionAttempt({
         client,
         tools: undefined,
@@ -2632,6 +2672,9 @@ export async function getMcpToolsCommandsAndResources(
         resources: resources.length > 0 ? resources : undefined,
       })
     } catch (error) {
+      // A failed old listing may finish after replacement discovery started.
+      // Its own disposal is identity-checked; its failed publication must be too.
+      if (connected && connectToServer.cache.get(getServerCacheKey(name, config))) return
       // Handle errors gracefully - connection might have closed during fetch
       logMCPError(
         name,
@@ -2863,7 +2906,7 @@ async function persistBlobToTextBlock(
   serverName: string,
   sourceDescription: string,
 ): Promise<Array<ContentBlockParam>> {
-  const persistId = `mcp-${normalizeNameForMCP(serverName)}-blob-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const persistId = `mcp-${normalizeNameForMCP(serverName)}-blob-${randomUUID()}`
   const result = await persistBinaryContent(bytes, mimeType, persistId)
 
   if ('error' in result) {
@@ -3026,9 +3069,8 @@ export async function processMCPResult(
     return await truncateMcpContentIfNeeded(content)
   }
 
-  // Generate a unique ID for the persisted file (server__tool-timestamp)
-  const timestamp = Date.now()
-  const persistId = `mcp-${normalizeNameForMCP(name)}-${normalizeNameForMCP(tool)}-${timestamp}`
+  // Parallel calls can finish within one clock tick; each result owns its file.
+  const persistId = `mcp-${normalizeNameForMCP(name)}-${normalizeNameForMCP(tool)}-${randomUUID()}`
   // Convert to string for persistence (persistToolResult expects string or specific block types)
   const contentStr =
     typeof content === 'string' ? content : jsonStringify(content, null, 2)
@@ -3069,6 +3111,12 @@ type MCPToolCallResult = {
   content: MCPToolResult
   _meta?: Record<string, unknown>
   structuredContent?: Record<string, unknown>
+  /**
+   * What the transport boundary knows about this call. Additive: existing
+   * readers ignore it. Present so an abort after send is distinguishable from
+   * an ordinary empty result, which otherwise share this shape exactly.
+   */
+  outcome?: OutcomeRecord
 }
 
 /** @internal Exported for testing. */
@@ -3302,13 +3350,13 @@ async function callMCPTool({
   meta?: Record<string, unknown>
   signal: AbortSignal
   onProgress?: (data: MCPProgress) => void
-}): Promise<{
-  content: MCPToolResult
-  _meta?: Record<string, unknown>
-  structuredContent?: Record<string, unknown>
-}> {
+}): Promise<MCPToolCallResult> {
   const toolStartTime = Date.now()
   let progressInterval: NodeJS.Timeout | undefined
+  // Flipped the moment the request is handed to the SDK. After this point a
+  // timeout or an abort cannot claim the call did not run: the bytes may
+  // already be on the wire and the server may have finished the work.
+  let requestHandedToTransport = false
 
   try {
     logMCPDebug(name, `Calling MCP tool: ${tool}`)
@@ -3335,12 +3383,16 @@ async function callMCPTool({
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
         (reject, name, tool, timeoutMs) => {
-          reject(
+          // This timer only ever races a request that has already gone out,
+          // so the operation may have completed on the server with the
+          // response lost. Say so rather than implying it did not run.
+          const timeoutError =
             new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-              `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
+              `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s. It is unknown whether the server carried the operation out; check the current state before repeating it.`,
               'MCP tool timeout',
-            ),
-          )
+            )
+          attachOutcome(timeoutError, unknownOutcome('timeout', timeoutMs))
+          reject(timeoutError)
         },
         timeoutMs,
         reject,
@@ -3350,6 +3402,7 @@ async function callMCPTool({
       )
     })
 
+    requestHandedToTransport = true
     const result = await Promise.race([
       client.callTool(
         {
@@ -3414,13 +3467,44 @@ async function callMCPTool({
           'The server reported an error but returned no diagnostic content.'
       }
 
+      // Text notices and structured diagnostics are complementary. Normalize
+      // them together, rather than letting either representation hide the other.
+      const diagnosticBlocks = (await Promise.all(errorContent.map(async block => {
+        // Error tool_results must contain text. Persist binary evidence using
+        // the existing blob store so outbound sanitization cannot discard it.
+        if (block && typeof block === 'object') {
+          const item = block as Record<string, unknown>
+          const resource = item.type === 'resource' && item.resource && typeof item.resource === 'object'
+            ? item.resource as Record<string, unknown> : undefined
+          const data = item.type === 'image' ? item.data : resource?.blob
+          if (typeof data === 'string') {
+            const mime = resource?.mimeType ?? item.mimeType
+            return persistBlobToTextBlock(Buffer.from(data, 'base64'),
+              typeof mime === 'string' ? mime : undefined, name,
+              `[Error attachment from ${name}${resource?.uri ? ` at ${resource.uri}` : ''}] `)
+          }
+        }
+        return [block]
+      }))).flat()
+      if (structuredContent !== undefined) {
+        diagnosticBlocks.push({ type: 'text', text: jsonStringify(structuredContent) })
+      }
+      if (diagnosticBlocks.length === 0) diagnosticBlocks.push({ type: 'text', text: errorDetails })
+      const modelContent = await processMCPResult({ content: diagnosticBlocks }, tool, name)
+      const message = typeof modelContent === 'string'
+        ? modelContent
+        : modelContent?.map(block => block.type === 'text' ? block.text : jsonStringify(block)).join('\n\n') || errorDetails
       logMCPError(name, errorDetails)
       throw new McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-        errorDetails,
+        message,
         'MCP tool returned error',
-        '_meta' in result && result._meta ? { _meta: result._meta } : undefined,
+        {
+          ...('_meta' in result && result._meta ? { _meta: result._meta } : {}),
+          ...(structuredContent !== undefined ? { structuredContent: structuredContent as Record<string, unknown> } : {}),
+        },
         errorContent.length > 0 ? errorContent : undefined,
         structuredContent,
+        modelContent,
       )
     }
     const elapsed = Date.now() - toolStartTime
@@ -3451,6 +3535,7 @@ async function callMCPTool({
       structuredContent: result.structuredContent as
         | Record<string, unknown>
         | undefined,
+      outcome: succeededOutcome(elapsed),
     }
   } catch (e) {
     // Clear intervals on error
@@ -3502,7 +3587,7 @@ async function callMCPTool({
           `MCP session expired during tool call (${isSessionExpired ? '404/-32001' : 'connection closed'}), clearing connection cache for re-initialization`,
         )
         logEvent('tengu_mcp_session_expired', {})
-        await clearServerCache(name, config)
+        await clearServerCache(name, config, client)
         throw new McpSessionExpiredError(name)
       }
     }
@@ -3511,7 +3596,17 @@ async function callMCPTool({
     if (!(e instanceof Error) || e.name !== 'AbortError') {
       throw e
     }
-    return { content: undefined }
+    // An abort returns the same shape as an ordinary empty result, so the
+    // outcome is the only thing that distinguishes them. If the request had
+    // already been handed to the transport, the server may have carried the
+    // operation out, and saying "cancelled, did not run" would be a guess
+    // that invites a duplicate retry.
+    return {
+      content: undefined,
+      outcome: requestHandedToTransport
+        ? unknownOutcome('aborted_after_send', Date.now() - toolStartTime)
+        : cancelledBeforeSendOutcome(),
+    }
   } finally {
     // Always clear intervals
     if (progressInterval !== undefined) {

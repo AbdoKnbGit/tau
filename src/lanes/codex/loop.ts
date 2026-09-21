@@ -1,3 +1,4 @@
+import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
 /**
  * Codex Lane — Agent Loop + Provider-Shim Entry
  *
@@ -397,24 +398,23 @@ export class CodexLane implements Lane {
           // raw text (apply_patch is the canonical example). We preserve
           // the raw text by wrapping it in a { patch: text } shape for
           // apply_patch specifically — matching the native schema.
+          const decoded = buf.isCustom ? undefined : decodeToolArguments(buf.args)
           let input: Record<string, unknown>
           if (buf.isCustom) {
             input = buf.name === 'apply_patch'
               ? { patch: buf.args }
               : { input: buf.args }
           } else {
-            try {
-              input = stripNullToolArguments(buf.args ? JSON.parse(buf.args) : {})
-            } catch {
-              input = { _raw: buf.args }
-            }
+            // Native built-ins retain their existing projection handling. MCP
+            // values must not lose meaningful nulls before shared validation.
+            input = reg && !decoded!.status ? stripNullToolArguments(decoded!.input) : decoded!.input
           }
 
           // Pass through the lane's adaptInput — apply_patch validates
           // the patch; others may rename fields.
           const repairedToolCall = repairCodexToolCall(
             implId,
-            reg ? reg.adaptInput(input) : input,
+            reg && !decoded?.status ? reg.adaptInput(input) : input,
           )
 
           const anthropicToolUseId = buf.callId.startsWith('toolu_')
@@ -434,6 +434,7 @@ export class CodexLane implements Lane {
               id: anthropicToolUseId,
               name: repairedToolCall.toolName,
               input: {},
+              ...(decoded && toolDecodeFields(decoded)),
             },
           }
           yield {

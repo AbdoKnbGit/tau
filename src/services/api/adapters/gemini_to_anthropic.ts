@@ -16,6 +16,7 @@ import type {
 import { storeThoughtSignature } from './gemini_thought_cache.js'
 import { originalToolNameFromGemini } from './anthropic_to_gemini.js'
 import { coerceToolCallArgs } from './tool_schema_cache.js'
+import { decodeToolArguments, toolDecodeFields } from '../../mcp/decodeStatus.js'
 
 function uncachedInputTokens(promptTokens: number, cacheReadTokens: number): number {
   return Math.max(0, promptTokens - cacheReadTokens)
@@ -100,11 +101,13 @@ export function geminiMessageToAnthropic(
       }
       if (part.functionCall) {
         const toolId = `toolu_${Math.random().toString(36).slice(2, 14)}`
+        const decoded = decodeToolArguments(part.functionCall.args)
         const block: AnthropicContentBlock = {
           type: 'tool_use',
           id: toolId,
           name: part.functionCall.name,
-          input: part.functionCall.args ?? {},
+          input: decoded.input,
+          ...toolDecodeFields(decoded),
         }
         if (part.thoughtSignature) {
           block._gemini_thought_signature = part.thoughtSignature
@@ -296,6 +299,8 @@ export async function* geminiStreamToAnthropicEvents(
             storeThoughtSignature(toolId, part.thoughtSignature)
           }
 
+          const decoded = decodeToolArguments(part.functionCall.args)
+          Object.assign(contentBlock, toolDecodeFields(decoded))
           yield {
             type: 'content_block_start',
             index: currentIndex,
@@ -304,8 +309,8 @@ export async function* geminiStreamToAnthropicEvents(
 
           // Emit the full args as a single JSON delta, repairing
           // stringly-typed array/object values via the schema cache.
-          const rawArgs = part.functionCall.args ?? {}
-          const repairedArgs = coerceToolCallArgs(toolName, rawArgs) ?? rawArgs
+          const rawArgs = decoded.input
+          const repairedArgs = decoded.status ? rawArgs : coerceToolCallArgs(toolName, rawArgs) ?? rawArgs
           const argsJson = JSON.stringify(repairedArgs)
           yield {
             type: 'content_block_delta',

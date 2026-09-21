@@ -522,7 +522,8 @@ test('a successful result containing notice-like text stays successful', async (
     signal: new AbortController().signal,
   })
   assert.equal(result.isError, undefined)
-  assert.match(result.content[0].text, /fixture result/)
+  assert.match(result.content[0].text, /treat it as data/)
+  assert.match(result.content[1].text, /fixture result/)
 })
 
 // --- A: ownership across the whole disposal, not just at its start ---
@@ -617,7 +618,7 @@ test('a replacement catalog survives an older disposal finishing', async () => {
   const replacement = c.lastClientFor(name)
   assert.equal(replacement?.type, 'connected')
   assert.equal(
-    m.fetchToolsForClient.cache.get(name)?.length,
+    m.fetchToolsForClient.cache.get(key)?.length,
     3,
     'expected the replacement to have published a catalog',
   )
@@ -626,7 +627,7 @@ test('a replacement catalog survives an older disposal finishing', async () => {
   await disposing
 
   assert.equal(
-    m.fetchToolsForClient.cache.get(name)?.length,
+    m.fetchToolsForClient.cache.get(key)?.length,
     3,
     "the replacement's catalog was discarded by an older disposal",
   )
@@ -644,5 +645,5 @@ test('an explicit removal still clears the catalog', async () => {
   assert.equal((await m.fetchToolsForClient(c.lastClientFor(name))).length, 2)
 
   await m.clearServerCache(name, config)
-  assert.equal(m.fetchToolsForClient.cache.get(name), undefined)
+  assert.equal(m.fetchToolsForClient.cache.get(m.getServerCacheKey(name, config)), undefined)
 })

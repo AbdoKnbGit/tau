@@ -1,6 +1,9 @@
 import { feature } from 'bun:bundle'
+import { randomUUID } from 'node:crypto'
 import type {
   ContentBlockParam,
+  ImageBlockParam,
+  TextBlockParam,
   ToolResultBlockParam,
   ToolUseBlock,
 } from '@anthropic-ai/sdk/resources/index.mjs'
@@ -144,6 +147,16 @@ import {
 } from '../mcp/client.js'
 import { mcpInfoFromString } from '../mcp/mcpStringUtils.js'
 import { normalizeNameForMCP } from '../mcp/normalization.js'
+import {
+  describeOutcome,
+  failedOutcome,
+  finalizeOutcome,
+  refusedOutcome,
+} from '../mcp/outcomes.js'
+import {
+  getBinaryBlobSavedMessage,
+  persistBinaryContent,
+} from '../../utils/mcpOutputStorage.js'
 import type { MCPServerConnection } from '../mcp/types.js'
 import {
   getLoggingSafeMcpBaseUrl,
@@ -362,6 +375,46 @@ function getMcpServerBaseUrlFromToolName(
 }
 
 /**
+ * Turn an image block bound for an error tool_result into a saved-file
+ * reference.
+ *
+ * An error tool_result must be text-only, and the outbound sanitizer drops
+ * non-text blocks without saying so — an image left in place would vanish
+ * between the executor and the model. `callMCPTool` already persists binary
+ * evidence this way for the normal path; this keeps the failure path's
+ * evidence equally durable.
+ *
+ * Falls back to describing the image inline. A failure to save evidence must
+ * not replace the server's diagnostic with a storage error.
+ */
+async function persistErrorImageBlock(
+  source: Extract<ImageBlockParam['source'], { type: 'base64' }>,
+  toolName: string,
+): Promise<string> {
+  const { media_type: mediaType, data } = source
+  const sourceDescription = `[Error attachment from ${toolName}] `
+  try {
+    const bytes = Buffer.from(data, 'base64')
+    const result = await persistBinaryContent(
+      bytes,
+      mediaType,
+      `error-${normalizeNameForMCP(toolName)}-${randomUUID()}`,
+    )
+    if ('error' in result) {
+      return `${sourceDescription}Image evidence (${mediaType || 'unknown type'}, ${bytes.length} bytes) could not be saved to disk: ${result.error}`
+    }
+    return getBinaryBlobSavedMessage(
+      result.filepath,
+      mediaType,
+      result.size,
+      sourceDescription,
+    )
+  } catch (persistError) {
+    return `${sourceDescription}Image evidence could not be saved: ${formatError(persistError)}`
+  }
+}
+
+/**
  * Append the repeat-guard reminder to a tool_result block, in place.
  *
  * Mirrors the existing in-place `content.content = withMemoryCorrectionHint(...)`
@@ -486,6 +539,48 @@ async function* runToolUseInner(
   // whose arguments never arrived complete here, outside `input`, because
   // native adaptation replaces `input` wholesale.
   const decodeFailure = decodeStatusOf(toolUse)
+  if (decodeFailure) {
+    // Refuse here, in the one function that holds the status, and before any
+    // tool lookup, input normalization, hook or permission work — all of
+    // which can have side effects. Threading the status down the ten-argument
+    // permission/call chain instead is what produced a read of an
+    // out-of-scope variable, and a ReferenceError on every tool call.
+    //
+    // Not gated on TAU_MCP_ARG_VALIDATION: a call whose arguments never
+    // arrived is not an argument-validation question, and it applies to
+    // built-in tools too, whose Zod schemas would accept the fragment that
+    // did arrive.
+    const content = describeDecodeFailure(toolName, decodeFailure)
+    logForDebugging(`Incomplete tool arguments ${toolName}: ${toolUse.id}`)
+    logEvent('tengu_tool_use_error', {
+      error:
+        'ToolArgumentsIncomplete' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      errorDetails:
+        decodeFailure.category as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      toolName: sanitizeToolNameForAnalytics(toolName),
+      toolUseID:
+        toolUse.id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      isMcp: toolName.startsWith('mcp__'),
+      queryChainId: toolUseContext.queryTracking
+        ?.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      queryDepth: toolUseContext.queryTracking?.depth,
+    })
+    yield {
+      message: createUserMessage({
+        content: [
+          {
+            type: 'tool_result',
+            content,
+            is_error: true,
+            tool_use_id: toolUse.id,
+          },
+        ],
+        toolUseResult: content,
+        sourceToolAssistantUUID: assistantMessage.uuid,
+      }),
+    }
+    return
+  }
   // First try to find in the available tools (what the model sees)
   let tool = findToolByName(toolUseContext.options.tools, toolName)
 
@@ -526,6 +621,12 @@ async function* runToolUseInner(
           content: [
             {
               type: 'tool_result',
+              // `content` is already the plain sentence declared above, and
+              // this result is informational (`is_error: false`), not a
+              // failure envelope. The text-only rule that applies to MCP error
+              // results is enforced where those are built, in
+              // `checkPermissionsAndCallTool`; its `errorText` is a local there
+              // and is not in scope in this function.
               content,
               is_error: false,
               tool_use_id: toolUse.id,
@@ -641,7 +742,19 @@ async function* runToolUseInner(
     logError(error)
     const errorMessage = error instanceof Error ? error.message : String(error)
     const toolInfo = tool ? ` (${tool.name})` : ''
-    const detailedError = `Error calling tool${toolInfo}: ${errorMessage}`
+    // Execution failures are handled by `checkPermissionsAndCallTool`'s own
+    // catch, so what reaches here is normally scaffolding that ran BEFORE
+    // dispatch — hence the `not_run` fallback rather than assuming a send.
+    // An error that crossed the transport carries its own outcome, and that
+    // always wins: the alternative is telling the model a timed-out write
+    // definitely did not happen.
+    const outcome = finalizeOutcome(
+      error,
+      refusedOutcome('validation', 'tool_setup_failed'),
+    )
+    const uncertainty =
+      outcome.outcome === 'unknown' ? ` ${describeOutcome(outcome)}` : ''
+    const detailedError = `Error calling tool${toolInfo}: ${errorMessage}${uncertainty}`
 
     yield {
       message: createUserMessage({
@@ -927,12 +1040,10 @@ async function checkPermissionsAndCallTool(
   const validateEveryMcpCall =
     (tool.isMcp ?? false) && !isEnvDefinedFalsy(process.env.TAU_MCP_ARG_VALIDATION)
   const isBlindCall = lazyCallDecision.action === 'execute_unverified'
-  // A lane decoder reports arguments that never arrived complete on the
-  // tool_use block. Refuse them for every tool, not only MCP ones: a
-  // built-in tool's Zod schema would accept the fragment that did arrive.
-  const blindCheck: BlindCallCheck = decodeFailure
-    ? { ok: false, message: describeDecodeFailure(tool.name, decodeFailure) }
-    : validateEveryMcpCall || isBlindCall
+  // A call whose arguments never arrived complete is refused earlier, in
+  // runToolUseInner, which is where that status is in scope.
+  const blindCheck: BlindCallCheck =
+    validateEveryMcpCall || isBlindCall
       ? (tool.isMcp ?? false)
         ? checkMcpArguments(tool, coercedInput, { blind: isBlindCall })
         : checkBlindDeferredCallInput(tool, coercedInput)
@@ -2056,7 +2167,64 @@ async function checkPermissionsAndCallTool(
         ...(mcpServerScope && { mcp_server_scope: mcpServerScope }),
       })
     }
-    const content = formatError(error)
+    const content = error instanceof McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+      ? error.modelContent ?? String(error)
+      : formatError(error)
+    // A failure that may already have been carried out (a timeout, a dropped
+    // connection) must not read as a plain failure: the model would retry a
+    // mutation that already landed. The transport attaches that fact to the
+    // error; nothing else can tell the two apart from here.
+    const carriedOutcome = finalizeOutcome(
+      error,
+      failedOutcome('transport', 'tool_call_failed'),
+    )
+    // An error tool_result must be text-only: the API rejects anything else
+    // ("all content must be type text if is_error is true"), and
+    // `sanitizeErrorToolResultContent` drops non-text blocks on the way out,
+    // which would lose the evidence silently.
+    //
+    // `modelContent` is a general MCP result, so it can hold blocks that rule
+    // forbids. `callMCPTool` already converts binary evidence to a saved-file
+    // reference for the normal path; do the equivalent here so this defensive
+    // conversion keeps the same evidence instead of discarding it.
+    const errorContent: string | TextBlockParam[] =
+      typeof content === 'string'
+        ? content
+        : await Promise.all(
+            content.map(async (block): Promise<TextBlockParam> => {
+              if (block.type === 'text') return block
+              if (block.type === 'image' && block.source.type === 'base64') {
+                return {
+                  type: 'text',
+                  text: await persistErrorImageBlock(block.source, tool.name),
+                }
+              }
+              return { type: 'text', text: jsonStringify(block) }
+            }),
+          )
+    // Hooks and the transcript record take one flat string. Join the block
+    // text rather than JSON-encoding the envelope, which would have shown the
+    // model `[{"type":"text",...}]` instead of the server's diagnostic.
+    const errorDiagnostic =
+      typeof errorContent === 'string'
+        ? errorContent
+        : errorContent.map(block => block.text).join('\n\n')
+    // Appended rather than substituted: the server's diagnostic is still the
+    // useful part, and the uncertainty qualifies it instead of replacing it.
+    // Kept in the same shape it arrived in — a string stays a string, blocks
+    // stay blocks — so downstream readers see no change but the added note.
+    const uncertaintyNote =
+      carriedOutcome.outcome === 'unknown'
+        ? describeOutcome(carriedOutcome)
+        : undefined
+    const errorText = uncertaintyNote
+      ? `${errorDiagnostic}\n\n${uncertaintyNote}`
+      : errorDiagnostic
+    const finalErrorContent: string | TextBlockParam[] = !uncertaintyNote
+      ? errorContent
+      : typeof errorContent === 'string'
+        ? errorText
+        : [...errorContent, { type: 'text', text: uncertaintyNote }]
 
     // Determine if this was a user interrupt
     const isInterrupt = error instanceof AbortError
@@ -2071,7 +2239,7 @@ async function checkPermissionsAndCallTool(
       toolUseID,
       messageId,
       processedInput,
-      content,
+      errorText,
       isInterrupt,
       requestId,
       mcpServerType,
@@ -2086,12 +2254,14 @@ async function checkPermissionsAndCallTool(
           content: [
             {
               type: 'tool_result',
-              content,
+              // Text-only by construction, with any uncertainty note appended
+              // as its own block so the original shape is preserved.
+              content: finalErrorContent,
               is_error: true,
               tool_use_id: toolUseID,
             },
           ],
-          toolUseResult: `Error: ${content}`,
+          toolUseResult: `Error: ${errorText}`,
           mcpMeta: toolUseContext.agentId
             ? undefined
             : error instanceof

@@ -1,4 +1,4 @@
-import { TOOL_DECODE_STATUS_KEY } from '../services/mcp/decodeStatus.js'
+import { decodeToolArguments, toolDecodeFields } from '../services/mcp/decodeStatus.js'
 import { feature } from 'bun:bundle'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type {
@@ -2656,13 +2656,6 @@ export function mergeUserContentBlocks(
 
 // Sometimes the API returns empty messages (eg. "\n\n"). We need to filter these out,
 // otherwise they will give an API error when we send them to the API next time we call query().
-/** Did this tool-input JSON stop mid-value rather than being complete junk? */
-function looksTruncatedJson(input: string): boolean {
-  const trimmed = input.trimEnd()
-  if (trimmed.length === 0) return true
-  return !trimmed.endsWith('}')
-}
-
 export function normalizeContentFromAPI(
   contentBlocks: BetaMessage['content'],
   tools: Tools,
@@ -2674,59 +2667,11 @@ export function normalizeContentFromAPI(
   return contentBlocks.map(contentBlock => {
     switch (contentBlock.type) {
       case 'tool_use': {
-        let decodeFailure:
-          | { category: string; fragmentLength: number }
-          | undefined
-        if (
-          typeof contentBlock.input !== 'string' &&
-          !isObject(contentBlock.input)
-        ) {
-          // we stream tool use inputs as strings, but when we fall back, they're objects
-          throw new Error('Tool use input must be a string or object')
-        }
-
-        // With fine-grained streaming on, we are getting a stringied JSON back from the API.
-        // The API has strange behaviour, where it returns nested stringified JSONs, and so
-        // we need to recursively parse these. If the top-level value returned from the API is
-        // an empty string, this should become an empty object (nested values should be empty string).
-        // TODO: This needs patching as recursive fields can still be stringified
-        let normalizedInput: unknown
-        if (typeof contentBlock.input === 'string') {
-          const parsed = safeParseJSON(contentBlock.input)
-          if (parsed === null && contentBlock.input.length > 0) {
-            // TET/FC-v3 diagnostic: the streamed tool input JSON failed to
-            // parse. The raw prefix goes to debug log only — no PII-tagged
-            // proto column exists for it yet.
-            logEvent('tengu_tool_input_json_parse_fail', {
-              toolName: sanitizeToolNameForAnalytics(contentBlock.name),
-              inputLen: contentBlock.input.length,
-            })
-            if (process.env.USER_TYPE === 'ant') {
-              logForDebugging(
-                `tool input JSON parse fail: ${contentBlock.input.slice(0, 200)}`,
-                { level: 'warn' },
-              )
-            }
-            // Falling back to {} here used to dispatch the call with empty
-            // input, which a parameterless or all-optional schema accepts —
-            // so a call whose arguments never arrived ran as if the model
-            // had deliberately sent none. Record the failure on the block so
-            // the executor refuses it. This is the shared path, so it covers
-            // every provider, not only the lane that assembled the stream.
-            decodeFailure = {
-              category: looksTruncatedJson(contentBlock.input)
-                ? 'truncated'
-                : 'malformed',
-              fragmentLength: contentBlock.input.length,
-            }
-          }
-          normalizedInput = parsed ?? {}
-        } else {
-          normalizedInput = contentBlock.input
-        }
+        const decoded = decodeToolArguments(contentBlock.input)
+        let normalizedInput: unknown = decoded.input
 
         // Then apply tool-specific corrections
-        if (typeof normalizedInput === 'object' && normalizedInput !== null) {
+        if (!decoded.status && typeof normalizedInput === 'object' && normalizedInput !== null) {
           const tool = findToolByName(tools, contentBlock.name)
           if (tool) {
             try {
@@ -2745,7 +2690,7 @@ export function normalizeContentFromAPI(
         return {
           ...contentBlock,
           input: normalizedInput,
-          ...(decodeFailure && { [TOOL_DECODE_STATUS_KEY]: decodeFailure }),
+          ...toolDecodeFields(decoded),
         }
       }
       case 'text':

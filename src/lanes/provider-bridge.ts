@@ -29,6 +29,7 @@ import type {
   ProviderStreamResult,
 } from '../services/api/providers/base_provider.js'
 import { buildProviderStreamResult } from '../services/api/providers/base_provider.js'
+import { decodeToolArguments, toolDecodeFields } from '../services/mcp/decodeStatus.js'
 import {
   providerUsesStableRequestSession,
   resolveProviderRequestSessionId,
@@ -399,6 +400,7 @@ async function assembleFinalMessage(
   model: string,
 ): Promise<AnthropicMessage> {
   const blocks: AnthropicContentBlock[] = []
+  const blocksByIndex = new Map<number, AnthropicContentBlock>()
   let currentBlock: AnthropicContentBlock | null = null
   let stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | null = 'end_turn'
   let outputTokens = 0
@@ -428,9 +430,11 @@ async function assembleFinalMessage(
         if (ev.content_block) {
           currentBlock = { ...ev.content_block }
           blocks.push(currentBlock)
+          blocksByIndex.set(ev.index!, currentBlock)
         }
         break
       case 'content_block_delta':
+        currentBlock = blocksByIndex.get(ev.index!) ?? null
         if (currentBlock && ev.delta) {
           if (ev.delta.type === 'text_delta' && typeof ev.delta.text === 'string') {
             currentBlock.text = (currentBlock.text ?? '') + ev.delta.text
@@ -455,16 +459,13 @@ async function assembleFinalMessage(
         }
         break
       case 'content_block_stop':
+        currentBlock = blocksByIndex.get(ev.index!) ?? null
         // Finalize tool_use input from the accumulated partial_json string.
         if (currentBlock && currentBlock.type === 'tool_use') {
           const raw = (currentBlock as any)._partialJson
-          if (typeof raw === 'string' && raw.length > 0) {
-            try {
-              currentBlock.input = JSON.parse(raw) as Record<string, unknown>
-            } catch {
-              // Malformed JSON — keep empty input, shared tool will report.
-            }
-          }
+          const decoded = decodeToolArguments(raw)
+          currentBlock.input = decoded.input
+          Object.assign(currentBlock, toolDecodeFields(decoded))
           delete (currentBlock as any)._partialJson
           ;(currentBlock as any)._finalized = true
         }

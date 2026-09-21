@@ -24,6 +24,7 @@
  *   contextUsageEvent       → estimates input tokens when metrics absent
  */
 
+import { decodeToolArguments, decodeStatusOf, describeDecodeFailure, type ToolDecodeStatus } from '../../services/mcp/decodeStatus.js'
 import type {
   AnthropicStreamEvent,
   ModelInfo,
@@ -290,6 +291,8 @@ export class KiroLane implements Lane {
         id: string
         name: string
         inputJson: string
+        status?: ToolDecodeStatus
+        completed: boolean
       }>()
       let done = false
       let stopReason: 'end_turn' | 'tool_use' = 'end_turn'
@@ -330,6 +333,8 @@ export class KiroLane implements Lane {
             id: event.content_block.id,
             name: event.content_block.name,
             inputJson: '',
+            status: decodeStatusOf(event.content_block),
+            completed: false,
           })
         }
 
@@ -344,21 +349,19 @@ export class KiroLane implements Lane {
           }
         }
 
+        if (event.type === 'content_block_stop') {
+          const call = toolUsesByIndex.get(event.index!)
+          if (call) call.completed = true
+        }
         if (event.type === 'message_delta' && event.delta?.stop_reason === 'tool_use') {
           stopReason = 'tool_use'
         }
       }
 
-      const collectedToolUses = Array.from(toolUsesByIndex.values()).map(toolUse => {
-        let input: Record<string, unknown> = {}
-        if (toolUse.inputJson) {
-          try {
-            input = JSON.parse(toolUse.inputJson) as Record<string, unknown>
-          } catch {
-            input = {}
-          }
-        }
-        return { id: toolUse.id, name: toolUse.name, input }
+      if (signal.aborted) return { stopReason: 'aborted', usage: totalUsage }
+      const collectedToolUses = Array.from(toolUsesByIndex.values()).filter(call => call.completed).map(toolUse => {
+        const decoded = decodeToolArguments(toolUse.inputJson)
+        return { id: toolUse.id, name: toolUse.name, ...decoded, status: toolUse.status ?? decoded.status }
       })
 
       if (stopReason !== 'tool_use' || collectedToolUses.length === 0) {
@@ -368,6 +371,7 @@ export class KiroLane implements Lane {
       const toolResults = await Promise.all(
         collectedToolUses.map(async toolUse => {
           try {
+            if (toolUse.status) throw new Error(describeDecodeFailure(toolUse.name, toolUse.status))
             const result = await context.executeTool(toolUse.name, toolUse.input)
             return {
               type: 'tool_result' as const,

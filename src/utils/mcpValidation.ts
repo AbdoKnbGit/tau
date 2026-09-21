@@ -169,11 +169,14 @@ export async function mcpContentNeedsTruncation(
         : [{ role: 'user' as const, content }]
 
     const tokenCount = await countMessagesTokensWithAPI(messages, [])
-    return !!(tokenCount && tokenCount > getMaxMcpOutputTokens())
+    // Some providers have no token-count endpoint. Falling back to the local
+    // estimate keeps the output budget effective on those routes too.
+    return typeof tokenCount === 'number' && Number.isFinite(tokenCount) && tokenCount > 0
+      ? tokenCount > getMaxMcpOutputTokens()
+      : contentSizeEstimate > getMaxMcpOutputTokens()
   } catch (error) {
     logError(error)
-    // Assume no truncation needed on error
-    return false
+    return contentSizeEstimate > getMaxMcpOutputTokens()
   }
 }
 

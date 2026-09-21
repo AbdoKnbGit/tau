@@ -17,6 +17,7 @@
  */
 
 import { APIConnectionError } from '@anthropic-ai/sdk'
+import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
 import type {
   AnthropicStreamEvent,
   ModelInfo,
@@ -999,14 +1000,11 @@ export class OpenAICompatLane implements Lane {
             // Emit final tool_use blocks with the accumulated arguments.
             for (const buf of toolCallBuffers.values()) {
               const implId = normalizeToolName(buf.name)
-              let input: Record<string, unknown>
-              try {
-                input = buf.args ? JSON.parse(buf.args) : {}
-              } catch {
-                input = { _raw: buf.args }
-              }
-              const repaired = repairCompatToolCall(implId, input)
-              input = repaired.input
+              const decoded = decodeToolArguments(buf.args)
+              const repaired = decoded.status
+                ? { toolName: implId, input: decoded.input }
+                : repairCompatToolCall(implId, decoded.input)
+              const input = repaired.input
               const anthropicToolUseId = buf.id.startsWith('toolu_') ? buf.id : `toolu_compat_${buf.id}`
               // Three-event sequence: start (empty input) + input_json_delta
               // (args as JSON string) + stop. claude.ts's accumulator reads
@@ -1020,6 +1018,7 @@ export class OpenAICompatLane implements Lane {
                   id: anthropicToolUseId,
                   name: repaired.toolName,
                   input: {},
+                  ...toolDecodeFields(decoded),
                 },
               }
               yield {
@@ -1096,14 +1095,11 @@ export class OpenAICompatLane implements Lane {
           const toolName = toolCall.function?.name
           if (!toolName) continue
           const implId = normalizeToolName(toolName)
-          let input: Record<string, unknown>
-          try {
-            input = toolCall.function?.arguments ? JSON.parse(toolCall.function.arguments) : {}
-          } catch {
-            input = { _raw: toolCall.function?.arguments ?? '' }
-          }
-          const repaired = repairCompatToolCall(implId, input)
-          input = repaired.input
+          const decoded = decodeToolArguments(toolCall.function?.arguments)
+          const repaired = decoded.status
+            ? { toolName: implId, input: decoded.input }
+            : repairCompatToolCall(implId, decoded.input)
+          const input = repaired.input
           const toolId = toolCall.id?.startsWith('toolu_') ? toolCall.id : `toolu_compat_${toolCall.id ?? `lmstudio_${currentBlockIndex}`}`
           yield {
             type: 'content_block_start',
@@ -1113,6 +1109,7 @@ export class OpenAICompatLane implements Lane {
               id: toolId,
               name: repaired.toolName,
               input: {},
+              ...toolDecodeFields(decoded),
             },
           }
           yield {
@@ -3013,7 +3010,7 @@ async function* streamOllamaNative(
             const name = fn.name ?? ''
             const argsStr = typeof fn.arguments === 'string'
               ? fn.arguments
-              : JSON.stringify(fn.arguments ?? {})
+              : fn.arguments === undefined ? '' : JSON.stringify(fn.arguments)
             const id = tc.id ?? `call_${toolCallBuffers.length}`
             toolCallBuffers.push({
               id,
@@ -3038,16 +3035,16 @@ async function* streamOllamaNative(
           if (outputCapTruncated) toolCallBuffers.pop()
           for (const buf of toolCallBuffers) {
             const implId = normalizeToolName(buf.name)
-            let input: Record<string, unknown>
-            try { input = buf.args ? JSON.parse(buf.args) : {} }
-            catch { input = { _raw: buf.args } }
-            const repaired = repairCompatToolCall(implId, input)
-            input = repaired.input
+            const decoded = decodeToolArguments(buf.args)
+            const repaired = decoded.status
+              ? { toolName: implId, input: decoded.input }
+              : repairCompatToolCall(implId, decoded.input)
+            const input = repaired.input
             const anthropicToolUseId = buf.id.startsWith('toolu_') ? buf.id : `toolu_ollama_${buf.id}`
             yield {
               type: 'content_block_start',
               index: buf.anthropicIndex,
-              content_block: { type: 'tool_use', id: anthropicToolUseId, name: repaired.toolName, input: {} },
+              content_block: { type: 'tool_use', id: anthropicToolUseId, name: repaired.toolName, input: {}, ...toolDecodeFields(decoded) },
             }
             yield {
               type: 'content_block_delta',

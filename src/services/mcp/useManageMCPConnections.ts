@@ -6,6 +6,8 @@ import type { Command } from '../../commands.js'
 import type { Tool } from '../../Tool.js'
 import {
   clearServerCache,
+  getServerCacheKey,
+  isCurrentMcpConnection,
   fetchCommandsForClient,
   fetchResourcesForClient,
   fetchToolsForClient,
@@ -241,6 +243,9 @@ export function useManageMCPConnections(
   // connection callbacks arrive at different times due to network I/O.
   const MCP_BATCH_FLUSH_MS = 16
   type PendingUpdate = MCPServerConnection & {
+    /** Recheck lifecycle ownership when this batched update is applied. */
+    expectedClient?: Extract<MCPServerConnection, { type: 'connected' }>['client']
+    isCurrent?: () => boolean
     tools?: Tool[]
     commands?: Command[]
     resources?: ServerResource[]
@@ -253,12 +258,26 @@ export function useManageMCPConnections(
     const updates = pendingUpdatesRef.current
     if (updates.length === 0) return
     pendingUpdatesRef.current = []
+    const published: PendingUpdate[] = []
 
     setAppState(prevState => {
       let mcp = prevState.mcp
 
       for (const update of updates) {
+        if (update.isCurrent && !update.isCurrent()) continue
+        if (update.expectedClient) {
+          // Annotated because `AppState` does not resolve in this tree, so
+          // `mcp.clients` widens to `any` and the callback parameter would be
+          // implicitly `any`. The `'client' in current` narrowing below needs
+          // the real union.
+          const current = mcp.clients.find(
+            (c: MCPServerConnection) => c.name === update.name,
+          )
+          if (!current || !('client' in current) || current.client !== update.expectedClient) continue
+        }
         const {
+          expectedClient: _expectedClient,
+          isCurrent: _isCurrent,
           tools: rawTools,
           commands: rawCmds,
           resources: rawRes,
@@ -320,6 +339,7 @@ export function useManageMCPConnections(
           commands: updatedCommands,
           resources: updatedResources,
         }
+        published.push(update)
       }
 
       return { ...prevState, mcp }
@@ -329,7 +349,7 @@ export function useManageMCPConnections(
     // waiting on publication is genuinely ready. Acknowledging here rather
     // than when discovery finished is what stops the launch barrier
     // releasing during this batching window into an empty catalog.
-    for (const update of updates) {
+    for (const update of published) {
       acknowledgeMcpPublication(update.name)
     }
   }, [setAppState])
@@ -362,26 +382,42 @@ export function useManageMCPConnections(
       tools: Tool[]
       commands: Command[]
       resources?: ServerResource[]
-    }) => {
-      updateServer({ ...client, tools, commands, resources })
+    }, isCurrent?: () => boolean) => {
+      if (isCurrent && !isCurrent()) return
+      updateServer({ ...client, tools, commands, resources, isCurrent })
 
       // Handle side effects based on client state
       switch (client.type) {
         case 'connected': {
+          cancelReconnect(client.name)
+          const cacheKey = getServerCacheKey(client.name, client.config)
+          // Include queued publications: the store may still be one batch behind.
+          const isActiveClient = () => {
+            if (isCurrent && !isCurrent()) return false
+            const pending = pendingUpdatesRef.current.filter(update => update.name === client.name).at(-1)
+            const current =
+              pending ??
+              store
+                .getState()
+                .mcp.clients.find((c: MCPServerConnection) => c.name === client.name)
+            return !!current && 'client' in current && current.client === client.client &&
+              current.type !== 'disabled' && current.type !== 'failed'
+          }
           // Overwrite the default elicitation handler registered in connectToServer
           // with the real one (queues elicitation in AppState for UI). Registering
           // here (once per connect) instead of in a [mcpClients] effect avoids
           // re-running for every already-connected server on each state change.
           registerElicitationHandler(client.client, client.name, setAppState)
 
-          client.client.onclose = () => {
+          client.client.onclose = async () => {
+            if (!isActiveClient()) return
             const configType = client.config.type ?? 'stdio'
 
             // Dispose only if this handle is still the cached one. The cache
             // key is name plus config, so a reconnect under an unchanged
             // config reuses it — without this, an old connection's close
             // disposed the live one that had replaced it.
-            clearServerCache(
+            const retired = await clearServerCache(
               client.name,
               client.config,
               client.client,
@@ -389,7 +425,9 @@ export function useManageMCPConnections(
               logForDebugging(
                 `Failed to invalidate the server cache: ${client.name}`,
               )
+              return false
             })
+            if (!retired || !isActiveClient()) return
 
             // TODO: This really isn't great: ideally we'd check appstate as the source of truth
             // as to whether it was disconnected due to a disable, but appstate is stale at this
@@ -559,7 +597,7 @@ export function useManageMCPConnections(
 
               void reconnectWithBackoff()
             } else {
-              updateServer({ ...client, type: 'failed' })
+              updateServer({ ...client, type: 'failed', expectedClient: client.client })
             }
           }
 
@@ -715,6 +753,7 @@ export function useManageMCPConnections(
             client.client.setNotificationHandler(
               ToolListChangedNotificationSchema,
               async () => {
+                if (!isActiveClient() || !await isCurrentMcpConnection(client)) return
                 logMCPDebug(
                   client.name,
                   `Received tools/list_changed notification, refreshing tools`,
@@ -723,10 +762,11 @@ export function useManageMCPConnections(
                   // Read the last known-good list before invalidating, to log
                   // how the count changed.
                   const previousTools = fetchToolsForClient.cache.get(
-                    client.name,
+                    cacheKey,
                   )
-                  fetchToolsForClient.cache.delete(client.name)
+                  fetchToolsForClient.cache.delete(cacheKey)
                   const newTools = await fetchToolsForClient(client)
+                  if (!isActiveClient() || !await isCurrentMcpConnection(client)) return
                   logEvent('tengu_mcp_list_changed', {
                     type: 'tools' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                     ...(previousTools
@@ -734,7 +774,7 @@ export function useManageMCPConnections(
                       : {}),
                     newCount: newTools.length,
                   })
-                  updateServer({ ...client, tools: newTools })
+                  updateServer({ ...client, tools: newTools, expectedClient: client.client })
                 } catch (error) {
                   // The refresh failed. Keep the tools already published —
                   // a failed refresh is not evidence that the server's tools
@@ -753,6 +793,7 @@ export function useManageMCPConnections(
             client.client.setNotificationHandler(
               PromptListChangedNotificationSchema,
               async () => {
+                if (!isActiveClient() || !await isCurrentMcpConnection(client)) return
                 logMCPDebug(
                   client.name,
                   `Received prompts/list_changed notification, refreshing prompts`,
@@ -763,15 +804,17 @@ export function useManageMCPConnections(
                 try {
                   // Skills come from resources, not prompts — don't invalidate their
                   // cache here. fetchMcpSkillsForClient returns the cached result.
-                  fetchCommandsForClient.cache.delete(client.name)
+                  fetchCommandsForClient.cache.delete(cacheKey)
                   const [mcpPrompts, mcpSkills] = await Promise.all([
                     fetchCommandsForClient(client),
                     feature('MCP_SKILLS')
                       ? fetchMcpSkillsForClient!(client)
                       : Promise.resolve([]),
                   ])
+                  if (!isActiveClient() || !await isCurrentMcpConnection(client)) return
                   updateServer({
                     ...client,
+                    expectedClient: client.client,
                     commands: [...mcpPrompts, ...mcpSkills],
                   })
                   // MCP skills changed — invalidate skill-search index so
@@ -791,6 +834,7 @@ export function useManageMCPConnections(
             client.client.setNotificationHandler(
               ResourceListChangedNotificationSchema,
               async () => {
+                if (!isActiveClient() || !await isCurrentMcpConnection(client)) return
                 logMCPDebug(
                   client.name,
                   `Received resources/list_changed notification, refreshing resources`,
@@ -799,22 +843,24 @@ export function useManageMCPConnections(
                   type: 'resources' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                 })
                 try {
-                  fetchResourcesForClient.cache.delete(client.name)
+                  fetchResourcesForClient.cache.delete(cacheKey)
                   if (feature('MCP_SKILLS')) {
                     // Skills are discovered from resources, so refresh them too.
                     // Invalidate prompts cache as well: we write commands here,
                     // and a concurrent prompts/list_changed could otherwise have
                     // us stomp its fresh result with our cached stale one.
                     fetchMcpSkillsForClient!.cache.delete(client.name)
-                    fetchCommandsForClient.cache.delete(client.name)
+                    fetchCommandsForClient.cache.delete(cacheKey)
                     const [newResources, mcpPrompts, mcpSkills] =
                       await Promise.all([
                         fetchResourcesForClient(client),
                         fetchCommandsForClient(client),
                         fetchMcpSkillsForClient!(client),
                       ])
+                    if (!isActiveClient() || !await isCurrentMcpConnection(client)) return
                     updateServer({
                       ...client,
+                      expectedClient: client.client,
                       resources: newResources,
                       commands: [...mcpPrompts, ...mcpSkills],
                     })
@@ -823,7 +869,8 @@ export function useManageMCPConnections(
                     clearSkillIndexCache?.()
                   } else {
                     const newResources = await fetchResourcesForClient(client)
-                    updateServer({ ...client, resources: newResources })
+                    if (!isActiveClient() || !await isCurrentMcpConnection(client)) return
+                    updateServer({ ...client, resources: newResources, expectedClient: client.client })
                   }
                 } catch (error) {
                   logMCPError(
@@ -844,7 +891,7 @@ export function useManageMCPConnections(
           break
       }
     },
-    [updateServer, cancelReconnect],
+    [updateServer, cancelReconnect, store],
   )
 
   // Initialize all servers to pending state if they don't exist in appState.
@@ -956,6 +1003,10 @@ export function useManageMCPConnections(
       return
     }
     let cancelled = false
+    const publishIfCurrent: typeof onConnectionAttempt = update => {
+      if (!cancelled) onConnectionAttempt(update, () => !cancelled)
+    }
+    const releasePublisher = registerMcpPublisher(publishIfCurrent)
 
     // Registered synchronously, before any await: a request reaching the
     // launch barrier between this mount and the first connection must see
@@ -1008,7 +1059,7 @@ export function useManageMCPConnections(
       // source whose servers have not been registered yet.
       settleMcpSource(MCP_SOURCE_LOCAL_CONFIG, Object.keys(enabledConfigs))
       getMcpToolsCommandsAndResources(
-        onConnectionAttempt,
+        publishIfCurrent,
         enabledConfigs,
       ).catch(error => {
         logMCPError(
@@ -1086,7 +1137,7 @@ export function useManageMCPConnections(
             Object.keys(enabledClaudeaiConfigs),
           )
           getMcpToolsCommandsAndResources(
-            onConnectionAttempt,
+            publishIfCurrent,
             enabledClaudeaiConfigs,
           ).catch(error => {
             logMCPError(
@@ -1143,6 +1194,7 @@ export function useManageMCPConnections(
     }
 
     void loadAndConnectMcpConfigs().catch(error => {
+      if (cancelled) return
       // A source that never settles holds the launch barrier to its full
       // deadline for the rest of the process. Settle both here: whatever
       // failed, nothing further is going to enumerate on this run.
@@ -1156,6 +1208,7 @@ export function useManageMCPConnections(
 
     return () => {
       cancelled = true
+      releasePublisher()
     }
   }, [
     isStrictMcpConfig,

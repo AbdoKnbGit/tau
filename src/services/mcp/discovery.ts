@@ -202,15 +202,13 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
 } {
   type Entry = { value: Result; stale: boolean }
   const lastGood = new Map<string, Entry>()
-  const inFlight = new Map<string, Promise<Result>>()
+  const inFlight = new Map<string, { promise: Promise<Result>; revoked: boolean }>()
   /**
    * Bumped by every invalidation. An operation captures it at the start and
    * compares on publication, so it can tell whether the world changed while
    * it was listing.
    */
   const revisions = new Map<string, number>()
-  /** Keys whose in-flight work has been revoked by a discard. */
-  const revoked = new Set<string>()
 
   const bumpRevision = (key: string) => {
     revisions.set(key, (revisions.get(key) ?? 0) + 1)
@@ -227,7 +225,7 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
   const memoized = async (...args: Args): Promise<Result> => {
     const key = keyOf(...args)
     const pending = inFlight.get(key)
-    if (pending) return pending
+    if (pending) return pending.promise
     const cached = lastGood.get(key)
     if (cached && !cached.stale) return cached.value
 
@@ -238,11 +236,12 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
     // one caller could dispose a connection while another published success
     // from the very same refresh.
     const startedAt = revisions.get(key) ?? 0
+    const owner = { promise: undefined as unknown as Promise<Result>, revoked: false }
     const operation = (async () => {
       try {
         const value = await fetch(...args)
         const currentRevision = revisions.get(key) ?? 0
-        if (revoked.has(key)) {
+        if (owner.revoked) {
           // Discarded while this was listing: the entry is no longer ours to
           // serve. Hand the value to the callers waiting on this operation,
           // but publish nothing.
@@ -264,7 +263,7 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
         // A failed refresh is not evidence that the catalog is empty. Serve
         // the last complete one and leave it marked stale, so the next call
         // tries again rather than settling for it permanently.
-        const known = lastGood.get(key)
+        const known = !owner.revoked ? lastGood.get(key) : undefined
         if (known) return known.value
         throw error
       }
@@ -274,13 +273,13 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
     // callback rather than a finally inside the operation: a fetch that threw
     // synchronously would otherwise run its cleanup before this set and
     // strand the entry.
-    inFlight.set(key, operation)
+    owner.promise = operation
+    inFlight.set(key, owner)
     void operation
       .catch(() => {})
       .then(() => {
-        if (inFlight.get(key) === operation) {
+        if (inFlight.get(key) === owner) {
           inFlight.delete(key)
-          revoked.delete(key)
         }
       })
 
@@ -290,7 +289,8 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
   memoized.cache = {
     clear: () => {
       for (const key of lastGood.keys()) bumpRevision(key)
-      for (const key of inFlight.keys()) revoked.add(key)
+      for (const owner of inFlight.values()) owner.revoked = true
+      inFlight.clear()
       lastGood.clear()
     },
     delete: (key: string) => {
@@ -304,7 +304,9 @@ export function memoizeDiscovery<Args extends unknown[], Result>(
       bumpRevision(key)
       // Revoke any listing already running for this key, so its result
       // cannot reinsert the entry being discarded.
-      if (inFlight.has(key)) revoked.add(key)
+      const owner = inFlight.get(key)
+      if (owner) owner.revoked = true
+      inFlight.delete(key)
       return lastGood.delete(key)
     },
     get: (key: string) => lastGood.get(key)?.value,

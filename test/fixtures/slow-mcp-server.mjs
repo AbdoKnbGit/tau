@@ -141,7 +141,7 @@ rl.on('line', async line => {
       }
       send({
         id,
-        result: { content: [{ type: 'text', text: 'fixture result' }] },
+        result: { content: [{ type: 'text', text: NOTICE }, { type: 'text', text: 'fixture result' }] },
       })
       return
     }

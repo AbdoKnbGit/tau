@@ -4,6 +4,7 @@ import type {
 } from '../../services/api/providers/base_provider.js'
 import type { OpenAIMessage } from '../../services/api/adapters/anthropic_to_openai.js'
 import { buildStrictParamsSummary } from '../shared/mcp_bridge.js'
+import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
 
 export interface ClineInvalidToolCall {
   toolName: string
@@ -86,10 +87,22 @@ export function normalizeClineToolCallArgumentEvents(
   let next: AnthropicStreamEvent[] | null = null
 
   for (const state of states.values()) {
+    const decoded = decodeToolArguments(
+      state.deltaIndexes.length > 0 ? state.partialJson : state.initialInput,
+    )
+    if (decoded.status) {
+      next ??= [...events]
+      const start = next[state.startEventIndex]!
+      next[state.startEventIndex] = {
+        ...start,
+        content_block: { ...start.content_block!, ...toolDecodeFields(decoded) },
+      }
+      continue
+    }
     const schema = schemaByTool.get(state.toolName)
     if (!schema) continue
 
-    const received = parseClineToolInput(state.partialJson, state.initialInput)
+    const received = decoded.input
     const coercedValue = coerceClineToolInputBySchema(received, schema)
     const normalizedValue = stripSchemaOptionalNulls(coercedValue, schema)
     const normalized = isPlainRecord(normalizedValue) ? normalizedValue : received

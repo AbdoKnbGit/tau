@@ -26,7 +26,10 @@
 
 import {
   TOOL_DECODE_STATUS_KEY,
-  type ToolDecodeFailureCategory,
+  decodeToolArguments,
+  decodeStatusOf,
+  describeDecodeFailure,
+  type ToolDecodeStatus,
 } from '../../services/mcp/decodeStatus.js'
 import { createHash, randomUUID } from 'crypto'
 import type {
@@ -363,6 +366,9 @@ export class GeminiLane implements Lane {
       nativeName: string
       args: Record<string, unknown>
       argsString: string
+      hasArgs: boolean
+      hasStringArgs: boolean
+      invalidArgs?: ToolDecodeStatus
       thoughtSignature?: string
       blockIndex: number
       anthropicToolUseId: string
@@ -371,76 +377,34 @@ export class GeminiLane implements Lane {
 
     function mergeArgsIntoCurrent(raw: unknown): void {
       if (!currentCall) return
+      if (raw === undefined) return // A name/id-only continuation is not an argument fragment.
+      currentCall.hasArgs = true
       if (typeof raw === 'string') {
+        currentCall.hasStringArgs = true
         currentCall.argsString += raw
         return
       }
       if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
         Object.assign(currentCall.args, raw as Record<string, unknown>)
+      } else {
+        currentCall.invalidArgs = { category: 'invalid_root' }
       }
     }
 
     function finalizeCurrentArgs(): {
       args: Record<string, unknown>
-      decodeFailure?: {
-        category: ToolDecodeFailureCategory
-        fragmentLength: number
-      }
+      decodeFailure?: ToolDecodeStatus
     } {
       if (!currentCall) return { args: {} }
       const merged: Record<string, unknown> = { ...currentCall.args }
-      if (currentCall.argsString.length === 0) return { args: merged }
-
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(currentCall.argsString)
-      } catch {
-        // A malformed or truncated concatenation used to be dropped here,
-        // and whatever earlier deltas had assembled was dispatched as if it
-        // were the whole call. An argument the stream never finished
-        // delivering simply went missing: validation cannot tell that from
-        // the model choosing to omit an optional field, so a wrong call
-        // executed silently.
-        //
-        // Report the failure instead, on the block rather than in the
-        // arguments — a native adapter rebuilds the argument object and
-        // would drop anything it does not map.
-        return {
-          args: merged,
-          decodeFailure: {
-            // An unterminated value leaves the parser mid-token; a complete
-            // but invalid payload is malformed. Both refuse dispatch, and
-            // the distinction is only for the message the model sees.
-            category: looksTruncated(currentCall.argsString)
-              ? 'truncated'
-              : 'malformed',
-            fragmentLength: currentCall.argsString.length,
-          },
-        }
+      const decoded = decodeToolArguments(currentCall.hasStringArgs
+        ? currentCall.argsString
+        : currentCall.hasArgs ? merged : undefined)
+      const decodeFailure = currentCall.invalidArgs ?? decoded.status
+      return {
+        args: decodeFailure ? merged : { ...merged, ...decoded.input },
+        decodeFailure,
       }
-
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        // Syntactically valid JSON that is not an argument object. Merging
-        // nothing and proceeding would dispatch the earlier fields as a
-        // complete call.
-        return {
-          args: merged,
-          decodeFailure: {
-            category: 'invalid_root',
-            fragmentLength: currentCall.argsString.length,
-          },
-        }
-      }
-
-      return { args: { ...merged, ...(parsed as Record<string, unknown>) } }
-    }
-
-    /** Did this fragment stop mid-value rather than being complete junk? */
-    function looksTruncated(fragment: string): boolean {
-      const trimmed = fragment.trimEnd()
-      if (trimmed.length === 0) return true
-      // A complete JSON object would end here; anything else ran out.
-      return !trimmed.endsWith('}')
     }
 
     // Emit the accumulated tool call as the THREE-event sequence the
@@ -466,7 +430,7 @@ export class GeminiLane implements Lane {
       const implId = reg?.implId
         ?? laneTools.originalNames.get(currentCall.nativeName)
         ?? currentCall.nativeName
-      const adaptedInput = reg ? reg.adaptInput(nativeArgs) : nativeArgs
+      const adaptedInput = reg && !decodeFailure ? reg.adaptInput(nativeArgs) : nativeArgs
 
       toolCalls.push({
         implId,
@@ -697,6 +661,8 @@ export class GeminiLane implements Lane {
                 nativeName: name,
                 args: {},
                 argsString: '',
+                hasArgs: false,
+                hasStringArgs: false,
                 thoughtSignature,
                 blockIndex,
                 anthropicToolUseId,
@@ -981,7 +947,11 @@ export class GeminiLane implements Lane {
       if (signal.aborted) return { stopReason: 'aborted', usage: totalUsage }
       turnCount++
 
-      const collectedToolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = []
+      const callsByIndex = new Map<number, {
+        id: string; name: string; input: Record<string, unknown>
+        inputJson: string; status?: ToolDecodeStatus
+        completed: boolean
+      }>()
 
       const gen = this.streamAsProvider({
         model,
@@ -1015,17 +985,33 @@ export class GeminiLane implements Lane {
           && ev.content_block.id
           && ev.content_block.name
         ) {
-          collectedToolUses.push({
+          callsByIndex.set(ev.index!, {
             id: ev.content_block.id,
             name: ev.content_block.name,
-            input: (ev.content_block.input ?? {}) as Record<string, unknown>,
+            input: {},
+            inputJson: '',
+            status: decodeStatusOf(ev.content_block),
+            completed: false,
           })
+        }
+        if (ev.type === 'content_block_delta' && ev.delta?.type === 'input_json_delta') {
+          const call = callsByIndex.get(ev.index!)
+          if (call) call.inputJson += ev.delta.partial_json ?? ''
+        }
+        if (ev.type === 'content_block_stop') {
+          const call = callsByIndex.get(ev.index!)
+          if (call) call.completed = true
         }
         if (ev.type === 'message_delta' && ev.delta?.stop_reason === 'tool_use') {
           stopReason = 'tool_use'
         }
       }
 
+      if (signal.aborted) return { stopReason: 'aborted', usage: totalUsage }
+      const collectedToolUses = [...callsByIndex.values()].filter(call => call.completed).map(call => {
+        const decoded = decodeToolArguments(call.inputJson)
+        return { ...call, input: decoded.input, status: call.status ?? decoded.status }
+      })
       if (stopReason !== 'tool_use' || collectedToolUses.length === 0) {
         return { stopReason: 'end_turn', usage: totalUsage }
       }
@@ -1034,6 +1020,7 @@ export class GeminiLane implements Lane {
       const toolResultBlocks = await Promise.all(
         collectedToolUses.map(async tu => {
           try {
+            if (tu.status) throw new Error(describeDecodeFailure(tu.name, tu.status))
             const result = await context.executeTool(tu.name, tu.input)
             return {
               type: 'tool_result' as const,

@@ -134,6 +134,31 @@ async function main(): Promise<void> {
     assert(getParamType('B', 'findings') === 'string', 'B unaffected by A')
   })
 
+  await test('an MCP tool cannot collide with a same-named prebuilt tool', () => {
+    // MCP tools reach the cache under their prefixed identity, so a server
+    // exposing `search` and a prebuilt `search` occupy different keys and
+    // neither can rewrite the other's payload.
+    recordToolSchema('Search', schema({ query: { type: 'object' } }))
+    recordToolSchema('mcp__docs__Search', schema({ query: { type: 'array' } }))
+
+    assert(getParamType('Search', 'query') === 'object', 'prebuilt keeps its own type')
+    assert(
+      getParamType('mcp__docs__Search', 'query') === 'array',
+      'the MCP tool keeps its own type',
+    )
+    // Neither is marked ambiguous: they never shared an entry to conflict in.
+    const prebuiltArgs = { query: '{"k":1}' }
+    const mcpArgs = { query: '["a"]' }
+    assert(
+      coerceToolCallArgs('Search', prebuiltArgs) !== prebuiltArgs,
+      'prebuilt repair still works',
+    )
+    assert(
+      coerceToolCallArgs('mcp__docs__Search', mcpArgs) !== mcpArgs,
+      'MCP repair still works',
+    )
+  })
+
   await test('nested shape changes alone are not a conflict', () => {
     // Only top-level types drive coercion, so two schemas that differ deeper
     // still coerce identically — treating them as a conflict would disable
