@@ -46,7 +46,7 @@ import {
   freezeOpenRouterTools,
   openRouterContextKey,
 } from './openrouter_context.js'
-import { OpenRouterToolCallError, OpenRouterToolStream, openRouterHttpError } from './openrouter_tools.js'
+import { OpenRouterToolCallError, OpenRouterToolStream, OpenRouterUpstreamError, openRouterHttpError } from './openrouter_tools.js'
 import { openRouterInputUsage } from './openrouter_usage.js'
 import { retryOpenRouterStream } from './openrouter_retry.js'
 import { openRouterReasoningForBlocks, type OpenRouterReasoning } from './openrouter_reasoning.js'
@@ -65,7 +65,7 @@ import {
 import { renderMediaForTextLane } from '../shared/media_extract.js'
 import { walkSchemaByPosition } from '../shared/schema_positions.js'
 import { decideImageSupport, recordModelVision } from '../shared/vision_capability.js'
-import { recordOpenRouterServedProvider } from './transformers/openrouter.js'
+import { forgetOpenRouterServedProvider, recordOpenRouterServedProvider } from './transformers/openrouter.js'
 import {
   OPENROUTER_VOLATILE_CONTEXT,
   applyGeminiOpenRouterCacheAnchor,
@@ -786,8 +786,10 @@ export class OpenAICompatLane implements Lane {
         const lowered = errText.toLowerCase()
         const isPromptTooLong = getTransformer(provider).contextExceededMarkers()
           .some(m => lowered.includes(m.toLowerCase()))
-        throw openRouterHttpError(response.status, errText, response.headers,
+        const error = openRouterHttpError(response.status, errText, response.headers,
           formatProviderHttpError(provider, response.status, errText, isPromptTooLong, model))
+        if (error.canRetryBeforeOutput) forgetOpenRouterServedProvider(cacheSessionId, model, error.provider)
+        throw error
       }
       throwRetryableProviderHttpError(provider, response, errText)
       if (!messageStartEmitted) {
@@ -884,7 +886,16 @@ export class OpenAICompatLane implements Lane {
             continue
           }
           if (openRouterToolStream) {
-            chunk = openRouterToolStream.accept(chunk)
+            try {
+              chunk = openRouterToolStream.accept(chunk)
+            } catch (error) {
+              // OpenRouter cannot switch providers mid-answer. Stop asking for
+              // the pinned one first, so the retry can be routed elsewhere.
+              if (error instanceof OpenRouterUpstreamError && error.canRetryBeforeOutput) {
+                forgetOpenRouterServedProvider(cacheSessionId, model, error.provider)
+              }
+              throw error
+            }
             yield { type: 'openrouter_progress' }
           }
 

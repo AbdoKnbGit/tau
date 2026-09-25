@@ -224,7 +224,8 @@ function resolveOpenRouterCacheRetention(): OpenRouterCacheRetention {
 // name the provider that actually served each request, so the lane records it
 // and PINS the next request via provider.order. allow_fallbacks stays ON so
 // availability is never sacrificed — if OR falls back anyway, the fallback
-// provider is recorded and becomes the new pin. Explicit
+// provider is recorded and becomes the new pin. A retryable provider failure
+// drops the pin (forgetOpenRouterServedProvider). Explicit
 // OPENROUTER_PROVIDER_ORDER always wins; disable with TAU_OPENROUTER_AUTO_PIN=0.
 const _servedProviderBySession = new Map<string, string>()
 
@@ -252,6 +253,32 @@ export async function recordOpenRouterServedProvider(
   if (_servedProviderBySession.size > 512) {
     const oldest = _servedProviderBySession.keys().next().value
     if (oldest !== undefined) _servedProviderBySession.delete(oldest)
+  }
+}
+
+/**
+ * The pinned provider may be the one that just failed, and OpenRouter cannot
+ * switch providers once one has started answering. Stop asking for it first:
+ * without a pin, OpenRouter's own health-aware routing picks, and the next
+ * success pins whichever provider actually served it. A provider is never
+ * named as one to avoid — for a model with a single provider that would make
+ * the model unavailable.
+ *
+ * An error that names no provider is OpenRouter's own, such as its per-minute
+ * limit on free models. No provider failed, so the pin and its warm cache stay.
+ */
+export function forgetOpenRouterServedProvider(
+  sessionId: string | undefined,
+  model: string,
+  failedProvider: string | undefined,
+): void {
+  if (!sessionId || !failedProvider) return
+  const key = `${sessionId}:${model.toLowerCase()}`
+  const pinned = _servedProviderBySession.get(key)
+  if (pinned === undefined) return
+  _servedProviderBySession.delete(key)
+  if (process.env.TAU_CACHE_DEBUG) {
+    console.error(`[tau-or] ${model} unpinned from "${pinned}" after "${failedProvider}" failed`)
   }
 }
 

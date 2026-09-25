@@ -931,4 +931,58 @@ await test('routing uses directory slugs rather than guessed display-name normal
     assert.equal(await resolveOpenRouterProviderSlug('AtlasCloud'), 'atlas-cloud', 'malformed directory cannot erase verified data')
   } finally { globalThis.fetch = oldFetch; _resetOpenRouterAutoPinForTest() }
 })
+await test('native: a provider that failed mid-answer is not asked for first again; the next success re-pins', async () => {
+  _resetOpenRouterAutoPinForTest()
+  recordOpenRouterProviderDirectory({ data: [{ name: 'Provider A', slug: 'provider-a' }, { name: 'Provider B', slug: 'provider-b' }] })
+  await recordOpenRouterServedProvider('pin-session', 'example/model', 'Provider A')
+  const failedAtA = [fragment(0, '{"location":"unfinished', tool.name),
+    { id: 'gen-a', provider: 'Provider A', choices: [{ delta: {}, finish_reason: 'error' }] }]
+  const servedByB = [{ id: 'gen-b', provider: 'Provider B', ...fragment(0, JSON.stringify(originalInput), tool.name) }, finish()]
+  const result = await request('native', clean, { sessionId: 'pin-session', attempts: [failedAtA, servedByB] })
+  assert.equal(result.error, undefined)
+  assert.deepEqual(result.bodies[0].provider, { order: ['provider-a'] })
+  assert.equal(result.bodies[1].provider, undefined, 'the retry leaves routing to OpenRouter')
+  // Only the routing preference and the cut-off note differ; the prompt does not.
+  const { provider: _pinned, stream: _stream, stream_options: _options, ...first } = result.bodies[0]
+  const { stream: _recovery, ...retry } = result.bodies[1]
+  assert.deepEqual({ ...retry, messages: retry.messages.slice(0, -1) }, first)
+  const next = await request('native', clean, { sessionId: 'pin-session' })
+  assert.deepEqual(next.bodies[0].provider, { order: ['provider-b'] }, 'the provider that served the success is pinned')
+})
+await test('native: provider rate limits unpin too; limits from OpenRouter itself, rejections and explicit orders are left alone', async () => {
+  _resetOpenRouterAutoPinForTest()
+  await recordOpenRouterServedProvider('pin-capacity', 'example/model', 'Provider A')
+  const limited = rejection(429, { code: 429, message: 'Provider returned error',
+    metadata: { raw: 'Rate limited upstream.', provider_name: 'Provider A' } })
+  const waited = await request('native', clean, { sessionId: 'pin-capacity', http: [limited] })
+  assert.equal(waited.error, undefined)
+  assert.deepEqual(waited.bodies.map(body => body.provider), [{ order: ['provider-a'] }, undefined])
+
+  await recordOpenRouterServedProvider('pin-own-limit', 'example/model', 'Provider A')
+  const ownLimit = rejection(429, { code: 429, message: 'Rate limit exceeded: free-models-per-min.' })
+  const own = await request('native', clean, { sessionId: 'pin-own-limit', http: [ownLimit] })
+  assert.equal(own.error, undefined)
+  assert.deepEqual(own.bodies.map(body => body.provider), [{ order: ['provider-a'] }, { order: ['provider-a'] }],
+    'an OpenRouter limit that names no provider is not the provider failing')
+
+  await recordOpenRouterServedProvider('pin-terminal', 'example/model', 'Provider A')
+  const unpaid = await request('native', clean, { sessionId: 'pin-terminal',
+    http: [rejection(402, { code: 402, message: 'Insufficient credits' })] })
+  assert(unpaid.error instanceof OpenRouterUpstreamError)
+  const after = await request('native', clean, { sessionId: 'pin-terminal' })
+  assert.deepEqual(after.bodies[0].provider, { order: ['provider-a'] }, 'a 402 is not the provider failing')
+
+  process.env.OPENROUTER_PROVIDER_ORDER = 'provider-a'
+  try {
+    const explicit = await request('native', clean, { sessionId: 'pin-explicit', attempts: [[{ id: 'gen-x',
+      provider: 'Provider A', error: { code: 502, message: 'Upstream error' },
+      choices: [{ delta: {}, finish_reason: 'error' }] }], clean] })
+    assert.equal(explicit.error, undefined)
+    assert.deepEqual(explicit.bodies.map(body => body.provider.order), [['provider-a'], ['provider-a']],
+      'an explicit order always applies')
+  } finally {
+    delete process.env.OPENROUTER_PROVIDER_ORDER
+    _resetOpenRouterAutoPinForTest()
+  }
+})
 console.log(`\n${passed} passed`)
