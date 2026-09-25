@@ -10,7 +10,7 @@
  * command therefore showed a fraction of the real figure. Both rows now read
  * this one function, so they cannot disagree.
  *
- * Nothing here depends on the platform or the provider. The count is whatever
+ * The count does not depend on the platform. The count is whatever
  * the provider metered for the last request; the window is whatever
  * getContextWindowForModel resolves for the model actually running.
  */
@@ -30,6 +30,7 @@ import {
 } from './contextBaseline.js'
 import { getMessagesAfterCompactBoundary } from './messages.js'
 import { getCurrentUsage } from './tokens.js'
+import { getAPIProvider } from './model/providers.js'
 
 export type SessionContextUsage = {
   /** Window the percentages are measured against. */
@@ -60,8 +61,11 @@ export function getSessionContextUsage(
   // before a compact boundary for scrollback, and the last usage among them
   // describes a context the summary has since replaced.
   const liveMessages = getMessagesAfterCompactBoundary(messages)
+  // OpenRouter's per-block messages initially carry zero usage. Keep the last
+  // measurement until the new generation's trailing usage frame replaces it.
+  // Otherwise every thinking/tool block temporarily restores the rough baseline.
   const currentUsage = applyInitialContextFloor(
-    getCurrentUsage(liveMessages),
+    getCurrentUsage(liveMessages, { skipUnmeasured: getAPIProvider() === 'openrouter' }),
     getContextBaselineTokens(runtimeModel),
     () => roughTokenCountEstimationForMessages(liveMessages),
   )

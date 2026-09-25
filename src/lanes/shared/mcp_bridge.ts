@@ -251,7 +251,8 @@ When a command fails, diagnose first — read the exit code (127=not found, 2=mi
  * Ollama, OpenRouter + long tail. Kept general because the same text
  * ships to every provider.
  */
-export const OPENAI_COMPAT_TOOL_USAGE_RULES = `<tool_usage_rules>
+export function buildOpenAICompatToolUsageRules(discovery = true): string {
+  return `<tool_usage_rules>
 Tool parameter schemas are authoritative. Before every tool call:
 - Fill in every parameter listed in "required". Never send empty {} when the schema requires fields.
 - Use parameter names exactly as they appear in "properties" (case-sensitive).
@@ -260,11 +261,16 @@ Tool parameter schemas are authoritative. Before every tool call:
 
 The "STRICT PARAMETERS:" line appended to each tool description summarizes required-vs-optional + types for quick reference.
 
-Deferred tool names may appear in system reminders before their schemas are declared in the current tool list. Do not call a deferred tool from memory. First call ToolSearch with query "select:<ExactToolName>", then call the tool only after its schema is loaded.
+${discovery
+  ? 'Deferred tool names may appear in system reminders before their schemas are declared in the current tool list. Do not call a deferred tool from memory. First call ToolSearch with query "select:<ExactToolName>", then call the tool only after its schema is loaded.'
+  : 'Every available callable tool has its full schema in this request. Call it directly using that schema. A name mentioned in prior context without a current schema is unavailable; do not guess its parameters or invent a discovery call.'}
 
 When a tool call fails, diagnose first (exit code, error text, what actually exists) before retrying. Don't iterate cosmetic variants of the same call; blind retries burn input tokens. After two same-cause failures, stop and investigate. For unfamiliar CLIs/APIs, check \`--help\` once before invoking — don't guess flags.
 </tool_usage_rules>
 `
+}
+
+export const OPENAI_COMPAT_TOOL_USAGE_RULES = buildOpenAICompatToolUsageRules()
 
 /**
  * Walk a parameter schema and emit a compact human-readable summary of

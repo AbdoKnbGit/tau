@@ -23,6 +23,7 @@
  */
 
 import type { ProviderMessage } from '../../services/api/providers/base_provider.js'
+import { resetOpenRouterContext } from '../openai-compat/openrouter_context.js'
 
 const _volatileBySession = new Map<string, string>()
 
@@ -104,6 +105,7 @@ function hashText(text: string): string {
  */
 export function resetSessionVolatileFreeze(): void {
   _volatileBySession.clear()
+  resetOpenRouterContext()
 }
 
 export function _resetSessionVolatileFreezeForTest(): void {

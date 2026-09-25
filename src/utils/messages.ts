@@ -1,4 +1,6 @@
 import { decodeToolArguments, toolDecodeFields } from '../services/mcp/decodeStatus.js'
+import { getAPIProvider } from './model/providers.js'
+import { restoreOpenRouterToolIdMetadata } from '../lanes/openai-compat/openrouter_tool_ids.js'
 import { feature } from 'bun:bundle'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type {
@@ -1995,6 +1997,7 @@ export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
 ): (UserMessage | AssistantMessage)[] {
+  const preserveOpenRouterReasoning = getAPIProvider() === 'openrouter'
   // Build set of available tool names for filtering unavailable tool references
   const availableToolNames = new Set(tools.map(t => t.name))
 
@@ -2215,6 +2218,15 @@ export function normalizeMessagesForAPI(
               ...message.message,
               content: message.message.content.map(block => {
                 if (block.type === 'tool_use') {
+                  // OpenRouter state is stored in the transcript but is not a
+                  // valid Anthropic tool_use field after a provider switch.
+                  // Strip only this metadata on the outbound copy.
+                  if (preserveOpenRouterReasoning) {
+                    block = restoreOpenRouterToolIdMetadata(block, message.message.id)
+                  } else if ('_openrouter_reasoning' in block || '_openrouter_tool_call_id' in block) {
+                    const { _openrouter_reasoning: _state, _openrouter_tool_call_id: _id, ...rest } = block
+                    block = rest
+                  }
                   const tool = tools.find(t => toolMatchesName(t, block.name))
                   const normalizedInput = tool
                     ? normalizeToolInputForAPI(

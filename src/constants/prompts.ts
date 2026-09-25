@@ -41,6 +41,7 @@ import { hasEmbeddedSearchTools } from 'src/utils/embeddedTools.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
+import { getAPIProvider } from '../utils/model/providers.js'
 import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/constants.js'
 import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
 import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
@@ -288,6 +289,9 @@ When you encounter an obstacle, do not use destructive actions as a shortcut to 
 }
 
 function getUsingYourToolsSection(enabledTools: Set<string>): string {
+  const openRouterEager = getAPIProvider() === 'openrouter'
+  const useWorkflowTool = (name: string) => openRouterEager
+    ? `call ${name}` : `load ${name} with ${TOOL_SEARCH_TOOL_NAME}`
   const taskToolName = [TASK_CREATE_TOOL_NAME, TODO_WRITE_TOOL_NAME].find(n =>
     enabledTools.has(n),
   )
@@ -348,7 +352,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const providedToolSubitems = [
     ...(workflowToolOrientationItems.length > 0
       ? [
-          `Workflow-first orientation: when one of these triggers matches, load the named deferred tool with ${TOOL_SEARCH_TOOL_NAME} before defaulting to the generic ${FILE_READ_TOOL_NAME}/${GREP_TOOL_NAME}/${GLOB_TOOL_NAME}/${BASH_TOOL_NAME} path. These workflow tools are read-only or narrowly scoped unless their description says they write artifacts; use standard tools afterward for exact evidence, edits, and command execution. Skip this ladder only for trivial exact-file reads/edits, a simple literal search, or when the needed workflow tool is unavailable.`,
+          `Workflow-first orientation: when one of these triggers matches, ${openRouterEager ? 'call the named tool using its declared schema' : `load the named deferred tool with ${TOOL_SEARCH_TOOL_NAME}`} before defaulting to the generic ${FILE_READ_TOOL_NAME}/${GREP_TOOL_NAME}/${GLOB_TOOL_NAME}/${BASH_TOOL_NAME} path. These workflow tools are read-only or narrowly scoped unless their description says they write artifacts; use standard tools afterward for exact evidence, edits, and command execution. Skip this ladder only for trivial exact-file reads/edits, a simple literal search, or when the needed workflow tool is unavailable.`,
           ...workflowToolOrientationItems,
         ]
       : []),
@@ -363,7 +367,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
         ]),
     ...(hasProjectWorkflowTool
       ? [
-          `Before guessing build, lint, test, dev-server, package, or deploy commands in an unfamiliar project, load ${PROJECT_WORKFLOW_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME}. It reads local manifests and returns repo-native commands without running them.`,
+          `Before guessing build, lint, test, dev-server, package, or deploy commands in an unfamiliar project, ${useWorkflowTool(PROJECT_WORKFLOW_TOOL_NAME)}. It reads local manifests and returns repo-native commands without running them.`,
         ]
       : []),
     ...(hasCodebaseRetrievalTool
@@ -373,32 +377,32 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
       : []),
     ...(hasGitHistorySearchTool
       ? [
-          `When the user asks how something was solved before, when a regression may have history, or when mature code has prior patterns, load ${GIT_HISTORY_SEARCH_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} before editing. It is read-only and uses git log/show without changing refs.`,
+          `When the user asks how something was solved before, when a regression may have history, or when mature code has prior patterns, ${useWorkflowTool(GIT_HISTORY_SEARCH_TOOL_NAME)} before editing. It is read-only and uses git log/show without changing refs.`,
         ]
       : []),
     ...(hasInspectSiteTool
       ? [
-          `For local web-app verification, after starting a dev server, load ${INSPECT_SITE_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to verify HTTP reachability, expected text, forms, and same-origin assets. Use real browser/Chrome/Playwright MCP tools when screenshots, console errors, clicks, tabs, or authenticated state matter.`,
+          `For local web-app verification, after starting a dev server, ${useWorkflowTool(INSPECT_SITE_TOOL_NAME)} to verify HTTP reachability, expected text, forms, and same-origin assets. Use real browser/Chrome/Playwright MCP tools when screenshots, console errors, clicks, tabs, or authenticated state matter.`,
         ]
       : []),
     ...(hasWebBrowserTool
       ? [
-          `For local HTML artifacts, load ${WEB_BROWSER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} when you need a compact page snapshot. Pass the artifact tool's absolute path or canonical htmlUrl/fileUrl directly; do not construct relative file URLs like file://.tau/... yourself.`,
+          `For local HTML artifacts, ${useWorkflowTool(WEB_BROWSER_TOOL_NAME)} when you need a compact page snapshot. Pass the artifact tool's absolute path or canonical htmlUrl/fileUrl directly; do not construct relative file URLs like file://.tau/... yourself.`,
         ]
       : []),
     ...(hasBrowserTool
       ? [
-          `When a task needs to read a live page, a page's rendered (post-JavaScript) content, clicking, typing, forms, multi-step web flows, file uploads, tabs, screenshots, scraping repeated rows, checking how a UI actually rendered, or debugging a web app via its console/network activity, load ${BROWSER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME}. Its get action reads over plain HTTP first and starts Chrome only when the page turns out to be client-rendered or walled, so reading is cheap; then open once, observe for numbered element refs, and click/fill/type/hover/drag by ref. measure reports what actually painted (colors, fonts that fell back, contrast, broken images, overflow) and extract returns rows with the selector each value came from; console/network expose the tab's logs and requests when verifying frontend changes. Prefer it over ${WEB_BROWSER_TOOL_NAME}/${INSPECT_SITE_TOOL_NAME} (static HTML only) for interactive or SPA pages.`,
+          `When a task needs to read a live page, a page's rendered (post-JavaScript) content, clicking, typing, forms, multi-step web flows, file uploads, tabs, screenshots, scraping repeated rows, checking how a UI actually rendered, or debugging a web app via its console/network activity, ${useWorkflowTool(BROWSER_TOOL_NAME)}. Its get action reads over plain HTTP first and starts Chrome only when the page turns out to be client-rendered or walled, so reading is cheap; then open once, observe for numbered element refs, and click/fill/type/hover/drag by ref. measure reports what actually painted (colors, fonts that fell back, contrast, broken images, overflow) and extract returns rows with the selector each value came from; console/network expose the tab's logs and requests when verifying frontend changes. Prefer it over ${WEB_BROWSER_TOOL_NAME}/${INSPECT_SITE_TOOL_NAME} (static HTML only) for interactive or SPA pages.`,
         ]
       : []),
     ...(hasPackageManagerTool
       ? [
-          `Before dependency changes or package scripts, load ${PACKAGE_MANAGER_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to detect the package manager and produce safe commands. Ask before major upgrades, removals, or registry/auth changes.`,
+          `Before dependency changes or package scripts, ${useWorkflowTool(PACKAGE_MANAGER_TOOL_NAME)} to detect the package manager and produce safe commands. Ask before major upgrades, removals, or registry/auth changes.`,
         ]
       : []),
     ...(hasVisualDesignAuditTool
       ? [
-          `For frontend/design changes, load ${VISUAL_DESIGN_AUDIT_TOOL_NAME} with ${TOOL_SEARCH_TOOL_NAME} to scan styling, assets, responsive signals, and visual verification needs; pair it with ${hasInspectSiteTool ? `${INSPECT_SITE_TOOL_NAME} or ` : ''}browser tools when the app can run.`,
+          `For frontend/design changes, ${useWorkflowTool(VISUAL_DESIGN_AUDIT_TOOL_NAME)} to scan styling, assets, responsive signals, and visual verification needs; pair it with ${hasInspectSiteTool ? `${INSPECT_SITE_TOOL_NAME} or ` : ''}browser tools when the app can run.`,
         ]
       : []),
     `Reserve using the ${BASH_TOOL_NAME} exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the ${BASH_TOOL_NAME} tool for these if it is absolutely necessary.`,

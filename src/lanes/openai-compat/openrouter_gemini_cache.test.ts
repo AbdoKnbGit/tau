@@ -43,7 +43,7 @@ async function test(name: string, fn: () => Promise<void> | void): Promise<void>
   }
 }
 
-function assert(cond: unknown, hint: string): void {
+function assert(cond: unknown, hint: string): asserts cond {
   if (!cond) throw new Error(hint)
 }
 
@@ -333,7 +333,7 @@ await test('applyGeminiOpenRouterCacheAnchor strips stray stamps and walks back 
   }
 })
 
-await test('reports OpenRouter Gemini cached_tokens as read without double-subtracting overlapping writes', async () => {
+await test('reports disjoint Gemini cache buckets without inflating context', async () => {
   _resetSessionVolatileFreezeForTest()
   const { events } = await captureGeminiOpenRouter()
   const finalDelta = events.findLast(event => event.type === 'message_delta') as
@@ -344,10 +344,12 @@ await test('reports OpenRouter Gemini cached_tokens as read without double-subtr
   // fresh input = prompt - cached, NOT prompt - cached - write.
   assert(finalDelta?.usage?.input_tokens === 30,
     `fresh input=${JSON.stringify(finalDelta?.usage)}`)
-  assert(finalDelta?.usage?.cache_read_input_tokens === 90,
+  assert(finalDelta?.usage?.cache_read_input_tokens === 70,
     `cache read=${JSON.stringify(finalDelta?.usage)}`)
   assert(finalDelta?.usage?.cache_creation_input_tokens === 20,
     `cache write=${JSON.stringify(finalDelta?.usage)}`)
+  assert(finalDelta.usage.input_tokens + finalDelta.usage.cache_read_input_tokens +
+    finalDelta.usage.cache_creation_input_tokens === 120, 'input buckets must equal prompt_tokens')
 })
 
 await test('advance-turn usage (write === read) still reports true fresh input', async () => {
@@ -365,8 +367,12 @@ await test('advance-turn usage (write === read) still reports true fresh input',
     | undefined
   assert(finalDelta?.usage?.input_tokens === 4_790,
     `advance turn fresh input must not clamp to 0: ${JSON.stringify(finalDelta?.usage)}`)
-  assert(finalDelta?.usage?.cache_read_input_tokens === 11_137,
+  assert(finalDelta?.usage?.cache_read_input_tokens === 0,
     `advance turn read=${JSON.stringify(finalDelta?.usage)}`)
+  assert(finalDelta?.usage?.cache_creation_input_tokens === 11_137,
+    `advance turn write=${JSON.stringify(finalDelta?.usage)}`)
+  assert(finalDelta.usage.input_tokens + finalDelta.usage.cache_read_input_tokens +
+    finalDelta.usage.cache_creation_input_tokens === 15_927, 'cache advance must not enlarge context')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

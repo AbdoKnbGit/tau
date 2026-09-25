@@ -104,8 +104,16 @@ function hasProviderLimitOrAuthText(text: string): boolean {
  * error text. This covers third-party providers that throw plain Error objects
  * and later become synthetic AssistantMessages with `error: 'unknown'`.
  */
+function isTerminalOpenRouterToolError(text: string): boolean {
+  // These errors already passed OpenRouter's bounded recovery controller.
+  // Embedded HTTP status text must not start a second fallback/retry chain.
+  const trimmed = text.trim()
+  return /^(?:API Error:\s*)?OpenRouter (?:tool-call|upstream) error\b/i.test(trimmed) ||
+    /^(?:API Error:\s*)?openrouter API error \d{3}\b[^]*\bRecovery failed after \d+ attempts\b[^]*\bNo further recovery was attempted\.$/i.test(trimmed)
+}
+
 function hasFallbackEligibleProviderText(text: string): boolean {
-  if (!text || hasOperationalFailureText(text)) {
+  if (!text || isTerminalOpenRouterToolError(text) || hasOperationalFailureText(text)) {
     return false
   }
   const status = extractFallbackStatusFromText(text)
@@ -188,6 +196,7 @@ export function isFallbackEligibleAPIErrorMessage(
   if (!message || message.isApiErrorMessage !== true) {
     return false
   }
+  if (isTerminalOpenRouterToolError(getAssistantErrorText(message) || message.errorDetails || '')) return false
   const errorKind = String(message.error ?? '')
   if (FALLBACK_ELIGIBLE_API_ERRORS.has(errorKind)) {
     return true

@@ -11,7 +11,7 @@
  */
 
 import { OpenAIProvider } from './openai_provider.js'
-import type { ModelInfo, ProviderConfig, ProviderRequestParams } from './base_provider.js'
+import type { ModelInfo, ProviderConfig, ProviderRequestParams, ProviderTool } from './base_provider.js'
 import type { OpenAIMessage, OpenAITool } from '../adapters/anthropic_to_openai.js'
 import {
   toOpenRouterModelInfo,
@@ -25,6 +25,20 @@ import {
   recordOpenRouterCatalogPayload,
 } from '../../../utils/model/openrouterReasoningCatalog.js'
 import { resolveOpenRouterReasoningField } from '../../../utils/model/openrouterThinking.js'
+import { freezeOpenRouterSystem, freezeOpenRouterTools, openRouterContextKey } from '../../../lanes/openai-compat/openrouter_context.js'
+import { guardOpenRouterToolStream, OpenRouterToolStream } from '../../../lanes/openai-compat/openrouter_tools.js'
+import type { OpenAIChatCompletion, OpenAIChatCompletionChunk } from '../adapters/openai_to_anthropic.js'
+import { selectOpenAICompatToolsForRequest } from '../../../lanes/openai-compat/lazy_tools.js'
+import { retryOpenRouterStream } from '../../../lanes/openai-compat/openrouter_retry.js'
+import { openRouterCompletionAsSSE } from '../../../lanes/openai-compat/openrouter_sse.js'
+import { buildProviderStreamResult, type AnthropicStreamEvent, type ProviderStreamResult } from './base_provider.js'
+
+const requestToolContracts = Symbol('openrouterRequestToolContracts')
+const recoveryCompletion = Symbol('openrouterRecoveryCompletion')
+const recoveryNote = Symbol('openrouterRecoveryNote')
+type OpenRouterRequestParams = ProviderRequestParams & {
+  [requestToolContracts]?: ProviderTool[]; [recoveryCompletion]?: boolean; [recoveryNote]?: string
+}
 
 export class OpenRouterProvider extends OpenAIProvider {
   readonly name = 'openrouter'
@@ -68,7 +82,81 @@ export class OpenRouterProvider extends OpenAIProvider {
    * send the full tool set so all claudex features work.
    */
   protected optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
-    return params
+    const text = typeof params.system === 'string'
+      ? params.system : (params.system ?? []).map(block => block.text).join('\n\n')
+    return { ...params,
+      system: freezeOpenRouterSystem(this.contextKey(params), text),
+      tools: params.tools && selectOpenAICompatToolsForRequest(
+        params.tools, params.messages, params.sessionId, 'openrouter',
+      ),
+    }
+  }
+
+  override async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
+    params.signal?.throwIfAborted()
+    const controller = new AbortController()
+    // Preserve setup-time HTTP errors for the existing transport retry policy.
+    let current = await super.stream(params)
+    const request = (recovery: boolean, note?: string) => super.stream({ ...params, signal: controller.signal,
+      ...(recovery && { [recoveryCompletion]: true }), ...(note && { [recoveryNote]: note }) } as OpenRouterRequestParams)
+    const abort = () => { controller.abort(); current.abort() }
+    params.signal?.addEventListener('abort', abort, { once: true })
+    controller.signal.addEventListener('abort', () => current.abort(), { once: true })
+    if (params.signal?.aborted) abort()
+    let first = true
+    const events = retryOpenRouterStream(async function* ({ recovery, note }): AsyncGenerator<AnthropicStreamEvent, void> {
+      if (!first) current = await request(recovery, note)
+      first = false
+      try { yield* current } finally { current.abort() }
+    }, controller.signal, { bufferText: !!params.tools?.length })
+    const cleaned = (async function* () {
+      try { yield* events } finally { params.signal?.removeEventListener('abort', abort) }
+    })()
+    return buildProviderStreamResult(cleaned, controller)
+  }
+
+  private contextKey(params: ProviderRequestParams): string {
+    return openRouterContextKey('legacy', this.resolveModel(params.model),
+      params.sessionId ?? this.cacheSessionKey, params.querySource, params.messages)
+  }
+
+  protected override async *parseChatCompletionStream(
+    response: Response, params: ProviderRequestParams,
+  ): AsyncGenerator<OpenAIChatCompletionChunk> {
+    const source = (params as OpenRouterRequestParams)[recoveryCompletion]
+      ? await openRouterCompletionAsSSE(response) : response
+    yield* super.parseChatCompletionStream(source, params)
+  }
+
+  protected override transformChatCompletionStream(
+    stream: AsyncIterable<OpenAIChatCompletionChunk>, params: ProviderRequestParams,
+  ): AsyncIterable<OpenAIChatCompletionChunk> {
+    return guardOpenRouterToolStream(stream, params.messages,
+      (params as OpenRouterRequestParams)[requestToolContracts] ?? params.tools ?? [], params.tools ?? [],
+      !!(params as OpenRouterRequestParams)[recoveryCompletion])
+  }
+
+  protected override transformChatCompletionResponse(
+    response: OpenAIChatCompletion, params: ProviderRequestParams,
+  ): OpenAIChatCompletion {
+    const choice = response.choices?.[0]
+    const guard = new OpenRouterToolStream(params.messages,
+      (params as OpenRouterRequestParams)[requestToolContracts] ?? params.tools ?? [], params.tools ?? [], true)
+    if (!choice) {
+      // HTTP 200 can still contain OpenRouter's top-level error envelope.
+      guard.accept(response)
+      guard.end()
+      return response
+    }
+    const chunk = guard.accept({ ...response, choices: [{ ...choice, delta: {
+      ...choice.message,
+      tool_calls: choice.message.tool_calls?.map((call, index) => ({ ...call, index })),
+    } }] })
+    guard.end()
+    return { ...response, choices: [{ ...choice,
+      message: chunk.choices[0].delta,
+      finish_reason: chunk.choices[0].finish_reason,
+    }] }
   }
 
   protected override finalizeChatCompletionsBody(
@@ -93,8 +181,22 @@ export class OpenRouterProvider extends OpenAIProvider {
     moveOpenRouterVolatileSystemTail(messages)
     applyOpenRouterMessageCacheBreakpoints(messages, model)
     normalizeOpenRouterGPTToolSchemas(tools, model)
+    if (tools) tools.splice(0, tools.length, ...freezeOpenRouterTools(this.contextKey(params), tools))
     applyOpenRouterToolCacheBreakpoint(tools, model)
+    // Keep this request-local and off the wire; concurrent sessions can have
+    // different contracts. Validation must match the final advertised schema.
+    const openRouterParams = params as OpenRouterRequestParams
+    openRouterParams[requestToolContracts] = (tools ?? []).map(tool => ({
+      name: tool.function.name, description: tool.function.description ?? '', input_schema: tool.function.parameters,
+    }))
     applyOpenRouterContextCompressionPlugin(body)
+    if ((params as OpenRouterRequestParams)[recoveryCompletion]) {
+      body.stream = false
+      delete body.stream_options
+    }
+    // Appended after every cached message, so the prefix stays byte-identical.
+    const note = (params as OpenRouterRequestParams)[recoveryNote]
+    if (note) messages.push({ role: 'user', content: note })
   }
 
   /**
@@ -224,12 +326,7 @@ function moveOpenRouterVolatileSystemTail(messages: OpenAIMessage[]): void {
   }
   ;(dynamicMessage as OpenAIMessage & { [OPENROUTER_VOLATILE_CONTEXT]?: true })[OPENROUTER_VOLATILE_CONTEXT] = true
 
-  const last = messages[messages.length - 1]
-  if (last?.role === 'user') {
-    messages.splice(messages.length - 1, 0, dynamicMessage)
-  } else {
-    messages.push(dynamicMessage)
-  }
+  messages.splice(messages.indexOf(system) + 1, 0, dynamicMessage)
 }
 
 function applyOpenRouterMessageCacheBreakpoints(messages: OpenAIMessage[], model = ''): void {

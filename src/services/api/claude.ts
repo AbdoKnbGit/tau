@@ -19,6 +19,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Stream } from '@anthropic-ai/sdk/streaming.mjs'
+import { OpenRouterToolCallError } from '../../lanes/openai-compat/openrouter_tools.js'
 import { randomUUID } from 'crypto'
 import {
   getAPIProvider,
@@ -2587,6 +2588,10 @@ async function* queryModel(
 
       for await (const part of stream) {
         resetStreamIdleTimer()
+        // OpenRouter buffers a preamble until its tool batch is complete.
+        // Network progress resets the watchdog without leaking partial output
+        // into the transcript, UI or public SDK stream.
+        if (streamProvider === 'openrouter' && (part as { type: string }).type === 'openrouter_progress') continue
         const now = Date.now()
 
         // Detect and log streaming stalls (only after first event to avoid counting TTFB)
@@ -3231,6 +3236,7 @@ async function* queryModel(
         // the agent (via getAssistantMessageFromError below) so it can retry
         // safely instead of silently running the tool twice.
         toolUseStartedThisAttempt ||
+        streamingError instanceof OpenRouterToolCallError ||
         // Our idle watchdog aborted a SILENT stream. The non-streaming fallback
         // re-requests the same gateway that just went dark — and on a streaming
         // lane it is re-streamed with no idle watchdog, so it re-hangs for the

@@ -42,7 +42,7 @@ const EXCLUDED: APIProvider[] = [
 
 // Explicit cache_control breakpoints, or no prefix-cache pin at all.
 const STILL_LAZY: APIProvider[] = [
-  'openrouter', 'opencode', 'vercel', 'requesty', 'copilot', 'iflow',
+  'opencode', 'vercel', 'requesty', 'copilot', 'iflow',
   'minimax', 'glm', 'ollama', 'lmstudio',
 ] as APIProvider[]
 
@@ -107,6 +107,16 @@ test('cheap mode still disables deferral everywhere', () => {
       true,
       `${p} deferred tools in cheap mode`,
     )
+  }
+})
+
+test('OpenRouter exposes schemas from the initial request in every mode', () => {
+  assert.equal(providerSupportsClientSideToolDiscovery('openrouter'), false)
+  for (const model of [undefined, 'anthropic/claude-sonnet-4', 'openai/gpt-5', 'example/model']) {
+    assert.equal(providerModelSupportsClientSideToolDiscovery('openrouter', model), false)
+  }
+  for (const mode of ['cheap', 'normal', 'full'] as const) {
+    assert.equal(shouldDisableToolDeferralForProvider('openrouter', mode), true)
   }
 })
 

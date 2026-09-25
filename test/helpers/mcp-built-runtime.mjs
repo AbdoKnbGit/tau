@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 // Exercise the shipped bundle, without launching the CLI or copying production functions.
-export async function loadMcpRuntime() {
+export async function loadMcpRuntime({ paths: extraPaths = [], exports: extraExports = [] } = {}) {
   const distPath = resolve(process.env.TAU_MCP_TEST_BUNDLE ?? 'dist/tau.mjs')
   const auditPath = join(dirname(distPath), `.mcp-boundaries-${process.pid}-${Date.now()}.mjs`)
   let source = readFileSync(distPath, 'utf8').replace(/\nvoid main\d*\(\);\r?\n/, '\n')
@@ -21,6 +21,7 @@ export async function loadMcpRuntime() {
     'src/tools/EvalTool/toolBridge.ts',
     'src/services/mcp/outcomes.ts',
     'src/constants/prompts.ts',
+    ...extraPaths,
   ]
   const inits = paths.map(path => {
     const match = source.match(new RegExp('var (init_\\w+) = __esm\\(\\{\\s*"' + path.replaceAll('.', '\\.') + '"\\(\\)'))
@@ -30,6 +31,7 @@ export async function loadMcpRuntime() {
   source += `\nexport function __boundaries() {
     init_analytics(); ${inits.join('\n')}
     return { runToolUse, normalizeContentFromAPI, decodeToolArguments, decodeStatusOf,
+      ${extraExports.length ? extraExports.join(', ') + ',' : ''}
       CodexLane, codexApi, QwenLane, qwenApi, GeminiLane, geminiApi, KiroLane,
       OpenAICompatLane, assembleFinalMessage, normalizeClineToolCallArgumentEvents,
       responsesMessageToAnthropic, openAIMessageToAnthropic, geminiMessageToAnthropic,

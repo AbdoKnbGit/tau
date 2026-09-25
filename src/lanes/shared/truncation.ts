@@ -38,6 +38,10 @@
  * `openai_responses`, `gemini_to_anthropic`) all mapped truncation to
  * `max_tokens`; the native lanes dropped that mapping on the way over. This
  * module is where it lives now.
+ *
+ * OpenRouter additionally buffers the entire batch in openrouter_tools.ts:
+ * interleaved call fragments share one finish signal, so a cutoff discards all
+ * pending calls there before this lane-level tracker ever sees them.
  */
 
 /** Stop reasons a lane may report on the Anthropic IR. */

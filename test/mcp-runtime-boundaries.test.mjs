@@ -64,7 +64,9 @@ const routes = {
       return await patched(globalThis, 'fetch', async () => new Response(
         chatChunks(raw).map(c => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n',
         { headers: { 'content-type': 'text/event-stream' } }),
-      () => assembled(lane.streamAsProvider(params('openrouter', 'fixture'))))
+      () => assembled(lane.streamAsProvider({ ...params('openrouter', 'fixture'),
+        tools: [{ name, description: 'fixture', input_schema: { type: 'object', additionalProperties: true } }],
+      })))
     } finally { lane.unregisterProvider('openrouter') }
   },
   cline: raw => assembled(iterable(r.normalizeClineToolCallArgumentEvents([

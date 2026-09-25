@@ -311,7 +311,7 @@ test('provider matrix enables only implemented discovery transports', () => {
   for (const provider of ['firstParty', 'bedrock', 'vertex', 'foundry'] as const) {
     assert(providerSupportsSafeToolDiscovery(provider), provider)
   }
-  for (const provider of ['gemini', 'openrouter', 'opencode', 'deepseek'] as const) {
+  for (const provider of ['gemini', 'opencode', 'deepseek'] as const) {
     assert(providerSupportsClientSideToolDiscovery(provider), provider)
     assert(providerSupportsSafeToolDiscovery(provider), provider)
   }
@@ -319,7 +319,7 @@ test('provider matrix enables only implemented discovery transports', () => {
     !providerSupportsClientSideToolDiscovery('agentrouter'),
     'AgentRouter bypass path must stay eager',
   )
-  for (const provider of ['cursor', 'openai', 'commandcode', 'kiro'] as const) {
+  for (const provider of ['cursor', 'openai', 'commandcode', 'kiro', 'openrouter'] as const) {
     assert(!providerSupportsSafeToolDiscovery(provider), provider)
   }
 })

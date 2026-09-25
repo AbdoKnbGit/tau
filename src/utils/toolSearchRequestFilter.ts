@@ -20,6 +20,11 @@ export function resolveToolSearchRequestTransports(options: {
   provider: APIProvider
   model?: string
 }): ToolSearchRequestTransports {
+  // Old session decisions and cross-provider helpers may still request lazy
+  // discovery. OpenRouter must expose the full schema pool from turn one.
+  if (options.provider === 'openrouter') {
+    return { useToolSearch: false, useNativeLaneToolSearch: false }
+  }
   return {
     useToolSearch:
       options.useToolSearch &&

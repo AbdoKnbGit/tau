@@ -1,4 +1,7 @@
 import { decodeToolArguments, toolDecodeFields } from '../../mcp/decodeStatus.js'
+import type { ToolDecodeStatus } from '../../mcp/decodeStatus.js'
+import { openRouterInputUsage } from '../../../lanes/openai-compat/openrouter_usage.js'
+import type { OpenRouterReasoning } from '../../../lanes/openai-compat/openrouter_reasoning.js'
 /**
  * Inbound adapter: Converts OpenAI Chat Completions responses → Anthropic format.
  *
@@ -32,6 +35,8 @@ export interface OpenAIChatCompletion {
       reasoning_content?: string | null
       tool_calls?: Array<{
         id: string
+        _tau_decode_status?: ToolDecodeStatus
+        _openrouter_reasoning?: OpenRouterReasoning
         type: 'function'
         function: { name: string; arguments: string }
       }>
@@ -42,7 +47,7 @@ export interface OpenAIChatCompletion {
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
-    prompt_tokens_details?: { cached_tokens?: number }
+    prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number }
     completion_tokens_details?: { reasoning_tokens?: number }
   }
 }
@@ -59,6 +64,8 @@ export interface OpenAIChatCompletionChunk {
       reasoning_content?: string | null
       tool_calls?: Array<{
         index: number
+        _tau_decode_status?: ToolDecodeStatus
+        _openrouter_reasoning?: OpenRouterReasoning
         id?: string
         type?: string
         function?: { name?: string; arguments?: string }
@@ -70,7 +77,7 @@ export interface OpenAIChatCompletionChunk {
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
-    prompt_tokens_details?: { cached_tokens?: number }
+    prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number }
     completion_tokens_details?: { reasoning_tokens?: number }
   } | null
 }
@@ -79,6 +86,7 @@ export interface OpenAIChatCompletionChunk {
 
 export function openAIMessageToAnthropic(
   response: OpenAIChatCompletion,
+  options: { openRouter?: boolean } = {},
 ): AnthropicMessage {
   const choice = response.choices[0]
   if (!choice) {
@@ -116,6 +124,7 @@ export function openAIMessageToAnthropic(
   if (choice.message.tool_calls) {
     for (const tc of choice.message.tool_calls) {
       const decoded = decodeToolArguments(tc.function.arguments)
+      if (tc._tau_decode_status) decoded.status = tc._tau_decode_status
       let input = decoded.input
       const coerced = decoded.status ? input : coerceToolCallArgs(tc.function.name, input)
       content.push({
@@ -124,6 +133,8 @@ export function openAIMessageToAnthropic(
         name: tc.function.name,
         input: (coerced ?? input) as Record<string, unknown>,
         ...toolDecodeFields(decoded),
+        ...(options.openRouter && tc._openrouter_reasoning && { _openrouter_reasoning: tc._openrouter_reasoning }),
+        ...(options.openRouter && { _openrouter_tool_call_id: tc.id }),
       })
     }
   }
@@ -155,6 +166,8 @@ export function openAIMessageToAnthropic(
         cache_read_input_tokens: cachedTokens,
         cache_creation_input_tokens: 0,
       }),
+      ...(options.openRouter && openRouterInputUsage(response.model, promptTokens, cachedTokens,
+        response.usage?.prompt_tokens_details?.cache_write_tokens ?? 0)),
     },
   }
 }
@@ -173,6 +186,7 @@ export function openAIMessageToAnthropic(
  */
 export async function* openAIStreamToAnthropicEvents(
   openAIStream: AsyncIterable<OpenAIChatCompletionChunk>,
+  options: { openRouter?: boolean } = {},
 ): AsyncGenerator<AnthropicStreamEvent> {
   let messageStarted = false
   let currentModel = ''
@@ -193,11 +207,20 @@ export async function* openAIStreamToAnthropicEvents(
   let totalInputTokens = 0
   let totalOutputTokens = 0
   let totalCachedTokens = 0
+  let totalWrittenTokens = 0
+  let openRouterStopReason: string | undefined
   let finishedCleanly = false
   // Output-cap truncation: see lanes/shared/truncation.ts.
   const inFlightToolCall = new InFlightToolCall<number>()
 
   for await (const chunk of openAIStream) {
+    if (options.openRouter) yield { type: 'openrouter_progress' }
+    if (options.openRouter && chunk.usage) {
+      totalInputTokens = chunk.usage.prompt_tokens ?? totalInputTokens
+      totalOutputTokens = chunk.usage.completion_tokens ?? totalOutputTokens
+      totalCachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? totalCachedTokens
+      totalWrittenTokens = chunk.usage.prompt_tokens_details?.cache_write_tokens ?? totalWrittenTokens
+    }
     if (!chunk.choices || chunk.choices.length === 0) {
       // Usage-only chunk (some providers send this at the end)
       if (chunk.usage) {
@@ -273,6 +296,15 @@ export async function* openAIStreamToAnthropicEvents(
 
     // Handle tool calls
     if (choice.delta.tool_calls) {
+      // OpenRouter's guarded batch arrives only at completion. A reasoning
+      // block still owns blockIndex until it closes; reusing that index for
+      // the first tool overwrites the block in the downstream accumulator.
+      if (options.openRouter && hasThinkingBlock) {
+        yield { type: 'content_block_stop', index: blockIndex }
+        blockIndex++
+        hasThinkingBlock = false
+      }
+
       // Close text block before tool calls start
       if (hasTextBlock) {
         yield { type: 'content_block_stop', index: blockIndex }
@@ -315,6 +347,9 @@ export async function* openAIStreamToAnthropicEvents(
               id: state.id,
               name: state.name,
               input: {},
+              ...(tc._tau_decode_status && { _tau_decode_status: tc._tau_decode_status }),
+              ...(options.openRouter && tc._openrouter_reasoning && { _openrouter_reasoning: tc._openrouter_reasoning }),
+              ...(options.openRouter && { _openrouter_tool_call_id: state.id }),
             },
           }
         }
@@ -376,6 +411,14 @@ export async function* openAIStreamToAnthropicEvents(
         totalCachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? totalCachedTokens
       }
 
+      // OpenRouter sends accounting after the first finish chunk. Closing
+      // here would publish zero usage and drop the following cache counters.
+      if (options.openRouter) {
+        openRouterStopReason = stopReason
+        finishedCleanly = true
+        continue
+      }
+
       // message_delta with stop reason. Input + cache tokens are piggy-
       // backed so downstream (claude.ts updateUsage, provider-bridge
       // assembler) picks them up — OpenAI only ships usage in the final
@@ -399,6 +442,13 @@ export async function* openAIStreamToAnthropicEvents(
       yield { type: 'message_stop' }
       finishedCleanly = true
     }
+  }
+
+  if (options.openRouter && messageStarted && openRouterStopReason) {
+    yield { type: 'message_delta', delta: { stop_reason: openRouterStopReason, stop_sequence: null },
+      usage: { output_tokens: totalOutputTokens,
+        ...openRouterInputUsage(currentModel, totalInputTokens, totalCachedTokens, totalWrittenTokens) } }
+    yield { type: 'message_stop' }
   }
 
   // Safety: if stream ended without finish_reason, close gracefully

@@ -47,6 +47,9 @@ export function getAPIUserAbortError(
 }
 
 export function isRetryableNetworkError(error: unknown): boolean {
+  if (error instanceof Error &&
+    (error.name === 'OpenRouterToolCallError' || error.name === 'OpenRouterUpstreamError') &&
+    (error as Error & { isRetryable?: unknown }).isRetryable === false) return false
   if (error instanceof APIConnectionError) return true
   const code = getNetworkErrorCode(error)
   if (code && RETRYABLE_NETWORK_CODES.has(code)) return true

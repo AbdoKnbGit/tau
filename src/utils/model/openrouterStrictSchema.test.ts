@@ -11,9 +11,12 @@ import {
   isStrictToolSchemaOnOpenRouter,
   normalizeOpenAIStrictToolSchema,
   normalizeOpenRouterGPTToolSchemas,
+  restoreOpenRouterOptionalArguments,
   recordOpenRouterStrictToolSchemaModel,
   _resetOpenRouterStrictToolSchemaForTests,
 } from './openrouterStrictSchema.js'
+import { isValidAgainstContract } from '../../services/mcp/contractValidation.js'
+import strictAssert from 'node:assert/strict'
 
 let passed = 0
 let failed = 0
@@ -206,6 +209,26 @@ await test('leaves an unlearned model’s tool schemas untouched', () => {
     JSON.stringify(['prompt']),
     'optional parameters stay optional where nothing demands otherwise',
   )
+})
+
+await test('strict optional fields round-trip without fabricated values or lost explicit nulls', () => {
+  const original = { type: 'object', properties: {
+    key: { type: 'string' }, unset: { type: 'string', enum: ['a', 'b'] },
+    explicitNull: { type: ['string', 'null'] }, flag: { type: 'boolean' }, count: { type: 'number' },
+    nested: { type: 'object', properties: { optional: { type: 'string' } } },
+    rows: { type: 'array', items: { type: 'object', properties: { optional: { type: 'string' } } } },
+  }, required: ['key'], additionalProperties: false }
+  const advertised = normalizeOpenAIStrictToolSchema(original)
+  const wire = { key: 'record', unset: null, explicitNull: null, flag: false, count: 0,
+    nested: { optional: null }, rows: [{ optional: null }, { optional: '' }] }
+  strictAssert.equal(isValidAgainstContract(advertised, wire), true)
+  const restored = restoreOpenRouterOptionalArguments(wire, original, advertised)
+  strictAssert.deepEqual(restored, { key: 'record', explicitNull: null, flag: false, count: 0,
+    nested: {}, rows: [{}, { optional: '' }] })
+  strictAssert.equal(isValidAgainstContract(original, restored), true)
+  strictAssert.deepEqual(restoreOpenRouterOptionalArguments({ key: null }, original, advertised), { key: null })
+  strictAssert.deepEqual(restoreOpenRouterOptionalArguments({ unset: null }, original, original), { unset: null })
+  strictAssert.equal(wire.unset, null, 'projection must not mutate caller arguments')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

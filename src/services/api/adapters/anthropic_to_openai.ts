@@ -11,6 +11,8 @@ import type {
   SystemBlock,
 } from '../providers/base_provider.js'
 import { recordToolSchema } from './tool_schema_cache.js'
+import { openRouterReasoningForBlocks } from '../../../lanes/openai-compat/openrouter_reasoning.js'
+import { openRouterToolIdMap } from '../../../lanes/openai-compat/openrouter_tool_ids.js'
 
 // ─── OpenAI types (minimal, no SDK dependency) ─────────────────────
 
@@ -20,6 +22,9 @@ export interface OpenAIMessage {
   tool_calls?: OpenAIToolCall[]
   tool_call_id?: string
   name?: string
+  // OpenRouter-only reasoning replay, enabled explicitly in AdapterOptions.
+  reasoning?: string
+  reasoning_details?: Record<string, unknown>[]
 }
 
 export interface OpenAIContentPart {
@@ -94,6 +99,8 @@ export interface AdapterOptions {
    * enabling prompt caching and reducing per-request token usage.
    */
   preserveCacheControl?: boolean
+  preserveOpenRouterReasoning?: boolean
+  preserveOpenRouterToolIds?: boolean
 }
 
 export function anthropicMessagesToOpenAI(
@@ -103,6 +110,7 @@ export function anthropicMessagesToOpenAI(
 ): OpenAIMessage[] {
   const result: OpenAIMessage[] = []
   const keepCache = options?.preserveCacheControl === true
+  const openRouterIds = options?.preserveOpenRouterToolIds ? openRouterToolIdMap(messages) : undefined
 
   // System prompt → system message
   if (system) {
@@ -154,6 +162,7 @@ export function anthropicMessagesToOpenAI(
       const toolUses = blocks.filter(b => b.type === 'tool_use')
 
       const openAIMsg: OpenAIMessage = { role: 'assistant' }
+      if (options?.preserveOpenRouterReasoning) Object.assign(openAIMsg, openRouterReasoningForBlocks(blocks))
 
       if (textParts.length > 0) {
         openAIMsg.content = textParts.map(t => t.text ?? '').join('')
@@ -163,7 +172,7 @@ export function anthropicMessagesToOpenAI(
 
       if (toolUses.length > 0) {
         openAIMsg.tool_calls = toolUses.map(t => ({
-          id: t.id ?? `call_${Math.random().toString(36).slice(2, 11)}`,
+          id: (t.id && openRouterIds?.get(t.id)) ?? t.id ?? `call_${Math.random().toString(36).slice(2, 11)}`,
           type: 'function' as const,
           function: {
             name: t.name ?? '',
@@ -185,7 +194,7 @@ export function anthropicMessagesToOpenAI(
         toolResultImageParts.push(...imagePartsFromContent(tr.content))
         result.push({
           role: 'tool',
-          tool_call_id: tr.tool_use_id ?? '',
+          tool_call_id: (tr.tool_use_id && openRouterIds?.get(tr.tool_use_id)) ?? tr.tool_use_id ?? '',
           content,
         })
       }

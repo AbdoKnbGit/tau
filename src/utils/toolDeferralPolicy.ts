@@ -14,10 +14,12 @@ import { isOpenCodeAnthropicRouteModel } from '../lanes/openai-compat/opencode_a
  * Keep this list narrower than `isThirdPartyProvider()`. A provider belongs
  * here only when its active lane calls the shared lazy-tool selector. Unknown
  * and dedicated lanes deliberately fall back to eager schemas.
+ * OpenRouter deliberately stays eager: exposing names without contracts lets
+ * routed models guess arguments, and loading contracts later changes the
+ * cached prefix. Its full permitted toolset is sent from the initial request.
  */
 const CLIENT_SIDE_TOOL_DISCOVERY_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'gemini',
-  'openrouter',
   'modelrouter',
   'vercel',
   'requesty',

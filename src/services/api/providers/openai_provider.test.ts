@@ -6,6 +6,7 @@
 
 import { OpenAIProvider } from './openai_provider.js'
 import { OpenRouterProvider } from './openrouter_provider.js'
+import { resetOpenRouterContext } from '../../../lanes/openai-compat/openrouter_context.js'
 import { MiniMaxProvider } from './minimax_provider.js'
 import { MoonshotProvider } from './moonshot_provider.js'
 import { PROVIDER_CONFIGS } from '../../../utils/model/configs.js'
@@ -22,6 +23,7 @@ let failed = 0
 
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
   try {
+    resetOpenRouterContext()
     await fn()
     passed++
     console.log(`  ok  ${name}`)
@@ -224,7 +226,7 @@ async function main(): Promise<void> {
         `gpt required=${JSON.stringify(gptParams?.required)}`)
       assert(gptParams?.additionalProperties === false,
         `gpt additionalProperties=${JSON.stringify(gptParams?.additionalProperties)}`)
-      const gptMetadata = gptParams?.properties?.metadata
+      const gptMetadata = gptParams?.properties?.metadata?.anyOf?.find((schema: any) => schema.type === 'object')
       assert(gptMetadata?.propertyNames === undefined,
         `gpt metadata propertyNames=${JSON.stringify(gptMetadata?.propertyNames)}`)
       assert(gptMetadata?.properties?.source?.minLength === undefined,

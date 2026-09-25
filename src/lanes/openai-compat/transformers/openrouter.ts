@@ -28,6 +28,7 @@ import {
 } from '../../../utils/model/openrouterStrictSchema.js'
 import { resolveOpenRouterReasoningField } from '../../../utils/model/openrouterThinking.js'
 import { getOpenRouterReasoningMeta } from '../../../utils/model/openrouterReasoningCatalog.js'
+import { resolveOpenRouterProviderSlug } from '../../../utils/model/openrouterProviders.js'
 
 export const openrouterTransformer: Transformer = {
   id: 'openrouter',
@@ -37,12 +38,9 @@ export const openrouterTransformer: Transformer = {
   supportsStrictMode: () => true,
 
   clampMaxTokens(requested: number): number {
-    // OpenRouter reserves credit = max_tokens * price upfront. The upstream
-    // 32k default from context.ts triggers 402 "requires more credits, or
-    // fewer max_tokens" on free/low-credit accounts. 8192 fits typical
-    // free credit allowances and still leaves room for long tool arguments
-    // and multi-line code emissions.
-    return requested > 8192 ? 8192 : requested
+    // Honor the caller's budget, including an escalated truncation retry.
+    // Re-clamping every attempt to 8192 silently made recovery impossible.
+    return requested
   },
 
   buildHeaders(_apiKey: string, ctx?: HeaderContext): Record<string, string> {
@@ -230,15 +228,18 @@ function resolveOpenRouterCacheRetention(): OpenRouterCacheRetention {
 // OPENROUTER_PROVIDER_ORDER always wins; disable with TAU_OPENROUTER_AUTO_PIN=0.
 const _servedProviderBySession = new Map<string, string>()
 
-export function recordOpenRouterServedProvider(
+export async function recordOpenRouterServedProvider(
   sessionId: string | undefined,
   model: string,
   servedProvider: string,
-): void {
+): Promise<void> {
   if (!sessionId) return
-  const slug = normalizeOpenRouterProviderSlug(servedProvider)
-  if (!slug) return
+  const slug = await resolveOpenRouterProviderSlug(servedProvider)
   const key = `${sessionId}:${model.toLowerCase()}`
+  if (!slug) {
+    _servedProviderBySession.delete(key)
+    return
+  }
   const prev = _servedProviderBySession.get(key)
   if (prev !== slug && process.env.TAU_CACHE_DEBUG) {
     // A provider switch means this request ran against a cold upstream
@@ -252,15 +253,6 @@ export function recordOpenRouterServedProvider(
     const oldest = _servedProviderBySession.keys().next().value
     if (oldest !== undefined) _servedProviderBySession.delete(oldest)
   }
-}
-
-/**
- * The response `provider` field is a display name ("DeepSeek",
- * "Amazon Bedrock"); `provider.order` wants slugs ("deepseek",
- * "amazon-bedrock").
- */
-function normalizeOpenRouterProviderSlug(name: string): string {
-  return name.trim().toLowerCase().replace(/\s+/g, '-')
 }
 
 export function _resetOpenRouterAutoPinForTest(): void {

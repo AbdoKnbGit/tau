@@ -4,8 +4,7 @@ import {
   getSystemPromptSectionCache,
   setSystemPromptSectionCacheEntry,
 } from '../bootstrap/state.js'
-// Dependency-light by construction: volatile_freeze has no runtime imports
-// (its only import is a type), so this cannot introduce an import cycle.
+// Dependency-light snapshot stores; neither imports prompt construction.
 import { resetSessionVolatileFreeze } from '../lanes/shared/volatile_freeze.js'
 
 type ComputeFn = () => string | null | Promise<string | null>

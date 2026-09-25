@@ -42,6 +42,17 @@ import {
 } from './opencode_anthropic_route.js'
 import { recordCompatCacheDebug } from './cache_debug.js'
 import {
+  freezeOpenRouterSystem,
+  freezeOpenRouterTools,
+  openRouterContextKey,
+} from './openrouter_context.js'
+import { OpenRouterToolCallError, OpenRouterToolStream, openRouterHttpError } from './openrouter_tools.js'
+import { openRouterInputUsage } from './openrouter_usage.js'
+import { retryOpenRouterStream } from './openrouter_retry.js'
+import { openRouterReasoningForBlocks, type OpenRouterReasoning } from './openrouter_reasoning.js'
+import { openRouterToolIdMap } from './openrouter_tool_ids.js'
+import { OpenRouterSSEDecoder, openRouterCompletionAsSSE } from './openrouter_sse.js'
+import {
   freezeSessionVolatileText,
   volatileFreezeKey,
 } from '../shared/volatile_freeze.js'
@@ -64,6 +75,7 @@ import { getPlatform } from '../../utils/platform.js'
 import { getPowerShellEdition } from '../../utils/shell/powershellDetection.js'
 import {
   appendStrictParamsHint,
+  buildOpenAICompatToolUsageRules,
   OPENAI_COMPAT_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
 import { getTransformer, type ProviderId } from './transformers/index.js'
@@ -421,6 +433,20 @@ export class OpenAICompatLane implements Lane {
   async *streamAsProvider(
     params: LaneProviderCallParams,
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
+    const model = !params.providerHint || params.providerHint === 'openrouter'
+      ? resolveOpenRouterVirtualModelId(params.model) : params.model
+    if (this.getConfigForModel(model, params.providerHint)?.provider === 'openrouter') {
+      return yield* retryOpenRouterStream(({ recovery, note }) => this.streamAsProviderOnce(params, recovery, note),
+        params.signal, { bufferText: params.tools.length > 0 })
+    }
+    return yield* this.streamAsProviderOnce(params)
+  }
+
+  private async *streamAsProviderOnce(
+    params: LaneProviderCallParams,
+    openRouterRecovery = false,
+    openRouterNote?: string,
+  ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
     const { model: requestedModel, messages, system, tools, max_tokens, thinking, temperature, stop_sequences, signal, sessionId, providerHint, querySource } = params
     const model = !providerHint || providerHint === 'openrouter'
       ? resolveOpenRouterVirtualModelId(requestedModel)
@@ -484,6 +510,9 @@ export class OpenAICompatLane implements Lane {
     const rawSystemText = typeof system === 'string'
       ? system
       : (system ?? []).map(b => b.text).join('\n\n')
+    const openRouterSnapshotKey = provider === 'openrouter'
+      ? openRouterContextKey('native', model, cacheSessionId, querySource, messages)
+      : ''
 
     // Per-model tool filter: small-tier models (e.g. Groq Llama on free
     // TPM) get a curated subset so the request fits the budget.
@@ -499,6 +528,7 @@ export class OpenAICompatLane implements Lane {
       filterToSingleShell(perModelFilteredTools),
       messages,
       sessionId,
+      provider,
     )
 
     // Resolve the PowerShell edition once per request (memoized in
@@ -518,7 +548,7 @@ export class OpenAICompatLane implements Lane {
       platform: getPlatform() === 'windows' ? 'win32' : (process.platform),
       psEdition,
     }
-    const openaiTools = buildOpenAITools(filteredTools, provider, model, buildToolsCtx)
+    const builtTools = buildOpenAITools(filteredTools, provider, model, buildToolsCtx)
 
     // Prepend OPENAI_COMPAT_TOOL_USAGE_RULES to the system message when
     // tools are present — in-context reminder of schema authority for
@@ -526,11 +556,19 @@ export class OpenAICompatLane implements Lane {
     // generic long-tail). Small-tier models (Groq Llama free TPM) can
     // opt out via `skipToolUsagePreamble` to save input tokens.
     const skipPreamble = transformerForTools.skipToolUsagePreamble?.(model) ?? false
-    const systemText = openaiTools.length > 0 && !skipPreamble
+    const toolUsageRules = provider === 'openrouter'
+      ? buildOpenAICompatToolUsageRules(false) : OPENAI_COMPAT_TOOL_USAGE_RULES
+    const assembledSystemText = builtTools.length > 0 && !skipPreamble
       ? (rawSystemText
-          ? `${OPENAI_COMPAT_TOOL_USAGE_RULES}\n${rawSystemText}`
-          : OPENAI_COMPAT_TOOL_USAGE_RULES)
+          ? `${toolUsageRules}\n${rawSystemText}`
+          : toolUsageRules)
       : rawSystemText
+    const systemText = provider === 'openrouter'
+      ? freezeOpenRouterSystem(openRouterSnapshotKey, assembledSystemText)
+      : assembledSystemText
+    const openaiTools = provider === 'openrouter'
+      ? freezeOpenRouterTools(openRouterSnapshotKey, builtTools)
+      : builtTools
 
     // History conversion → OpenAI Chat Completions messages.
     //
@@ -545,7 +583,6 @@ export class OpenAICompatLane implements Lane {
           messages,
           systemText,
           model,
-          cacheSessionId,
         )
       : provider === 'deepseek'
         ? buildDeepSeekCacheStableMessages(
@@ -590,6 +627,15 @@ export class OpenAICompatLane implements Lane {
       cacheSessionId,
     )
 
+    if (provider === 'openrouter' && openRouterRecovery) {
+      // Request one complete response for recovery instead of another stream.
+      // Keep the model, messages, schemas and cache identity identical.
+      body.stream = false
+      delete body.stream_options
+    }
+    // Appended after every cached message, so the prefix stays byte-identical.
+    if (provider === 'openrouter' && openRouterNote) body.messages.push({ role: 'user', content: openRouterNote })
+
     // TAU_CACHE_DEBUG: fingerprint the prefix and report the first segment that
     // diverged from the previous turn — the exact point the upstream cache goes
     // cold. No-op unless the env var is set. See cache_debug.ts.
@@ -620,13 +666,6 @@ export class OpenAICompatLane implements Lane {
     let cacheWriteTokens = 0
     let reasoningTokens = 0
 
-    // Gemini explicit cache writes cover the SAME prefix bytes the request
-    // reads back (live-measured: advance turns report cached_tokens ===
-    // cache_write_tokens), unlike Anthropic where read and write buckets are
-    // disjoint slices of the prompt. Subtracting both from prompt_tokens
-    // would clamp fresh input to 0 on every advance turn.
-    const geminiOverlapCacheUsage = provider === 'openrouter' && isGeminiOnOpenRouter(model)
-
     const cacheReadTokens = () =>
       cacheWriteTokens > 0
         ? Math.max(0, reportedCachedInputTokens - cacheWriteTokens)
@@ -636,7 +675,11 @@ export class OpenAICompatLane implements Lane {
     let currentBlockIndex = 0
     let inTextBlock = false
     let inThinkingBlock = false
-    const toolCallBuffers = new Map<number, { id: string; name: string; args: string; anthropicIndex: number }>()
+    const toolCallBuffers = new Map<number, {
+      id: string; name: string; args: string; anthropicIndex: number
+      decodeStatus?: ReturnType<typeof decodeToolArguments>['status']
+      reasoning?: OpenRouterReasoning
+    }>()
     let emittedAnyToolUse = false
     let emittedAnyAssistantOutput = false
     // Output-cap truncation state. `inFlightToolCall` names the buffer that
@@ -659,10 +702,12 @@ export class OpenAICompatLane implements Lane {
           stop_reason: null,
           stop_sequence: null,
           usage: {
-            input_tokens: inputTokens,
+            // OpenRouter totals arrive at the end. Do not seed the additive
+            // accumulator with a total that already includes cached tokens.
+            input_tokens: provider === 'openrouter' ? 0 : inputTokens,
             output_tokens: 0,
-            ...(cacheReadTokens() > 0 && { cache_read_input_tokens: cacheReadTokens() }),
-            ...(cacheWriteTokens > 0 && { cache_creation_input_tokens: cacheWriteTokens }),
+            ...(provider !== 'openrouter' && cacheReadTokens() > 0 && { cache_read_input_tokens: cacheReadTokens() }),
+            ...(provider !== 'openrouter' && cacheWriteTokens > 0 && { cache_creation_input_tokens: cacheWriteTokens }),
           },
         },
       }
@@ -733,6 +778,17 @@ export class OpenAICompatLane implements Lane {
     }
 
     if (!response.ok) {
+      if (provider === 'openrouter') {
+        // A rejection is not the assistant's reply. Emitted as text it was
+        // saved as the model's own words and replayed on every later turn.
+        // The stream wrapper retries what waiting can fix; the rest surfaces
+        // as an API error, which never re-enters the conversation.
+        const lowered = errText.toLowerCase()
+        const isPromptTooLong = getTransformer(provider).contextExceededMarkers()
+          .some(m => lowered.includes(m.toLowerCase()))
+        throw openRouterHttpError(response.status, errText, response.headers,
+          formatProviderHttpError(provider, response.status, errText, isPromptTooLong, model))
+      }
       throwRetryableProviderHttpError(provider, response, errText)
       if (!messageStartEmitted) {
         const mst = emitMessageStart()
@@ -776,25 +832,38 @@ export class OpenAICompatLane implements Lane {
       return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
     }
 
+    if (provider === 'openrouter' && openRouterRecovery) response = await openRouterCompletionAsSSE(response)
     if (!response.body) {
       throw new Error('OpenAI-compat: empty response body')
     }
 
+    // Check the exact contracts sent, including strict-schema normalization
+    // and any HTTP 400 schema retry. Optional nullable fields on the wire
+    // must not be mistaken for repeated invalid arguments before execution.
+    const openRouterToolStream = provider === 'openrouter'
+      ? new OpenRouterToolStream(messages, (body.tools ?? []).map(tool => ({
+          name: tool.function.name, description: tool.function.description ?? '',
+          input_schema: tool.function.parameters,
+        })), filteredTools, openRouterRecovery)
+      : undefined
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    const openRouterFrames = openRouterToolStream ? new OpenRouterSSEDecoder() : undefined
+    let openRouterServedProvider: string | undefined
 
     try {
       reading: while (true) {
         const { done, value } = await reader.read()
-        if (!done) {
-          buffer += decoder.decode(value, { stream: true })
+        const decodedText = done ? decoder.decode() : decoder.decode(value, { stream: true })
+        let lines: string[]
+        if (openRouterFrames) {
+          lines = openRouterFrames.feed(decodedText, done).map(payload => `data:${payload}`)
         } else {
-          buffer += decoder.decode()
+          buffer += decodedText
+          lines = buffer.split('\n')
+          buffer = done ? '' : (lines.pop() ?? '')
         }
-
-        const lines = buffer.split('\n')
-        buffer = done ? '' : (lines.pop() ?? '')
 
         for (const rawLine of lines) {
           const line = rawLine.trim()
@@ -807,7 +876,17 @@ export class OpenAICompatLane implements Lane {
           let chunk: any
           try {
             chunk = JSON.parse(payload)
-          } catch { continue }
+          } catch {
+            if (openRouterToolStream) {
+              // Dropping an invalid SSE payload could drop part of a write.
+              throw new OpenRouterToolCallError('The stream contained an invalid JSON event; pending tools were not dispatched.')
+            }
+            continue
+          }
+          if (openRouterToolStream) {
+            chunk = openRouterToolStream.accept(chunk)
+            yield { type: 'openrouter_progress' }
+          }
 
           // OpenRouter chunks name the upstream provider that actually served
           // this request — top-level `provider` on older responses, or under
@@ -823,7 +902,7 @@ export class OpenAICompatLane implements Lane {
                   ? chunk.openrouter_metadata.provider
                   : undefined
             if (served) {
-              recordOpenRouterServedProvider(cacheSessionId, model, served)
+              openRouterServedProvider = served
             }
           }
 
@@ -958,6 +1037,8 @@ export class OpenAICompatLane implements Lane {
                 emittedAnyToolUse = true
               }
               if (tc.id) buf.id = tc.id
+              if (openRouterToolStream && tc._tau_decode_status) buf.decodeStatus = tc._tau_decode_status
+              if (openRouterToolStream && tc._openrouter_reasoning) buf.reasoning = tc._openrouter_reasoning
               if (tc.function?.name) buf.name = tc.function.name
               if (typeof tc.function?.arguments === 'string') {
                 buf.args += tc.function.arguments
@@ -1001,6 +1082,7 @@ export class OpenAICompatLane implements Lane {
             for (const buf of toolCallBuffers.values()) {
               const implId = normalizeToolName(buf.name)
               const decoded = decodeToolArguments(buf.args)
+              if (buf.decodeStatus) decoded.status = buf.decodeStatus
               const repaired = decoded.status
                 ? { toolName: implId, input: decoded.input }
                 : repairCompatToolCall(implId, decoded.input)
@@ -1019,6 +1101,8 @@ export class OpenAICompatLane implements Lane {
                   name: repaired.toolName,
                   input: {},
                   ...toolDecodeFields(decoded),
+                  ...(buf.reasoning && { _openrouter_reasoning: buf.reasoning }),
+                  ...(openRouterToolStream && { _openrouter_tool_call_id: buf.id }),
                 },
               }
               yield {
@@ -1039,8 +1123,12 @@ export class OpenAICompatLane implements Lane {
         if (done) break
       }
     } finally {
+      if (openRouterToolStream) await reader.cancel().catch(() => {})
       reader.releaseLock()
     }
+    openRouterToolStream?.end()
+    // A failed attempt must not pin later traffic to the provider that failed.
+    if (openRouterServedProvider) await recordOpenRouterServedProvider(cacheSessionId, model, openRouterServedProvider)
 
     if (provider === 'lmstudio' && !emittedAnyAssistantOutput) {
       const fallback = await fetchLmStudioNonStreamingCompletion(cfg, body, model, signal).catch(() => null)
@@ -1165,6 +1253,7 @@ export class OpenAICompatLane implements Lane {
     // owns this case and returns on every path it handles.
     if (
       !emittedAnyAssistantOutput &&
+      (provider !== 'openrouter' || !outputCapTruncated) &&
       !signal?.aborted &&
       provider !== 'lmstudio'
     ) {
@@ -1190,14 +1279,13 @@ export class OpenAICompatLane implements Lane {
         output_tokens: outputTokens,
         // OpenAI-style `prompt_tokens` is total (fresh + cached). Split
         // into fresh + cache_read to match Anthropic's additive buckets.
-        // Gemini-on-OpenRouter cache writes overlap the read bytes, so they
-        // are not subtracted a second time.
         input_tokens: Math.max(
           0,
-          inputTokens - cacheReadTokens() - (geminiOverlapCacheUsage ? 0 : cacheWriteTokens),
+          inputTokens - cacheReadTokens() - cacheWriteTokens,
         ),
         ...(cacheReadTokens() > 0 && { cache_read_input_tokens: cacheReadTokens() }),
         ...(cacheWriteTokens > 0 && { cache_creation_input_tokens: cacheWriteTokens }),
+        ...(provider === 'openrouter' && openRouterInputUsage(model, inputTokens, cacheReadTokens(), cacheWriteTokens)),
       },
     }
     yield { type: 'message_stop' }
@@ -2020,6 +2108,8 @@ function formatProviderHttpError(
   if (provider === 'openrouter' && !isPromptTooLong) {
     const guardrail = formatOpenRouterGuardrailError(status, errText, model)
     if (guardrail) return guardrail
+    const detail = formatOpenRouterErrorDetail(errText)
+    if (detail) return `openrouter API error ${status}${detail}`
   }
   if ((provider === 'opencode' || provider === 'opencodego') && status === 429 && errText.includes('FreeUsageLimitError')) {
     // FreeUsageLimitError comes from the gateway's IP-based anonymous
@@ -2099,6 +2189,35 @@ function formatOpenRouterGuardrailError(
     'Either change the setting above, or pick a model whose endpoints match your policy with /models.',
   )
   return lines.join('\n')
+}
+
+/**
+ * OpenRouter wraps a provider's own rejection as "Provider returned error",
+ * with the provider's words in `metadata.raw` (sometimes itself JSON). Show
+ * those words and the provider's name instead of the escaped envelope, which
+ * the 500-character cut often ends before the part that explains anything.
+ */
+function formatOpenRouterErrorDetail(errText: string): string | null {
+  let error: Record<string, unknown> | undefined
+  try {
+    error = (JSON.parse(errText) as { error?: Record<string, unknown> })?.error
+  } catch {
+    return null
+  }
+  if (!error || typeof error !== 'object') return null
+  const metadata = (error.metadata && typeof error.metadata === 'object'
+    ? error.metadata : {}) as Record<string, unknown>
+  let raw = typeof metadata.raw === 'string' ? metadata.raw.trim() : ''
+  try {
+    const nested = (JSON.parse(raw) as { error?: { message?: unknown } })?.error?.message
+    if (typeof nested === 'string') raw = nested
+  } catch { /* already plain text */ }
+  const message = typeof error.message === 'string' ? error.message.trim() : ''
+  const text = raw && (!message || /^provider returned error$/i.test(message))
+    ? raw : [message, raw].filter(Boolean).join(' ')
+  if (!text) return null
+  const provider = typeof metadata.provider_name === 'string' ? ` (${metadata.provider_name})` : ''
+  return `${provider}: ${text.replace(/\s+/g, ' ').slice(0, 500)}`
 }
 
 function formatGlmHttpError(
@@ -3270,21 +3389,12 @@ function convertHistoryToOpenAIForOpenRouter(
   messages: ProviderMessage[],
   systemText: string,
   model: string,
-  cacheSessionId?: string,
 ): OpenAIChatMessage[] {
   const { stable, volatile } = splitSystemPromptForCache(systemText)
   const out = convertHistoryToOpenAI(messages, stable, 'openrouter', model)
-  // Freeze the volatile block to its first non-empty value for the session.
-  // OpenRouter's upstreams cache on the exact prompt prefix (DeepSeek
-  // automatic caching, Gemini implicit, Anthropic breakpoints all anchor on
-  // it), so the block must replay byte-identically every turn — fresh git
-  // status or a late MCP connect must NOT rewrite an already-cached message.
-  // Fresh state still reaches the model through the conversation tail.
-  const frozen = freezeSessionVolatileText(
-    volatileFreezeKey('openrouter', model, cacheSessionId, messages),
-    volatile,
-  )
-  if (frozen) insertOpenRouterVolatileContext(out, frozen)
+  // The entire initial system was frozen before this split, including an
+  // initially empty dynamic tail. New state belongs in conversation messages.
+  if (volatile) insertOpenRouterVolatileContext(out, volatile)
   return out
 }
 
@@ -3356,6 +3466,7 @@ function convertHistoryToOpenAIDefault(
   model?: string,
 ): OpenAIChatMessage[] {
   const out: OpenAIChatMessage[] = []
+  const openRouterIds = provider === 'openrouter' ? openRouterToolIdMap(messages) : undefined
   if (systemText) out.push({ role: 'system', content: systemText })
 
   // Only send pixels when the provider's own catalog said this model takes
@@ -3392,7 +3503,7 @@ function convertHistoryToOpenAIDefault(
         case 'tool_use':
           if (block.id && block.name) {
             toolCalls.push({
-              id: block.id,
+              id: openRouterIds?.get(block.id) ?? block.id,
               type: 'function',
               function: {
                 name: block.name,
@@ -3412,7 +3523,7 @@ function convertHistoryToOpenAIDefault(
             }
             toolResults.push({
               role: 'tool',
-              tool_call_id: block.tool_use_id,
+              tool_call_id: openRouterIds?.get(block.tool_use_id) ?? block.tool_use_id,
               content: typeof block.content === 'string'
                 ? block.content
                 : stringifyToolContent(block.content, forwardImages),
@@ -3452,7 +3563,9 @@ function convertHistoryToOpenAIDefault(
     // order: their own results follow their own tool_calls.
     const resultsAnswerPriorTurn = msg.role !== 'assistant'
     if (resultsAnswerPriorTurn) out.push(...toolResults)
-    if (texts.length > 0 || toolCalls.length > 0 || imageParts.length > 0) {
+    const openRouterReasoning = provider === 'openrouter' && msg.role === 'assistant'
+      ? openRouterReasoningForBlocks(msg.content) : {}
+    if (texts.length > 0 || toolCalls.length > 0 || imageParts.length > 0 || Object.keys(openRouterReasoning).length > 0) {
       const role = msg.role === 'assistant' ? 'assistant' : 'user'
       // Assistant turns can't carry image parts; only user input does.
       const sendParts = imageParts.length > 0 && role === 'user'
@@ -3467,6 +3580,7 @@ function convertHistoryToOpenAIDefault(
             ]
           : texts.length > 0 ? texts.join('\n') : null,
         ...(toolCalls.length > 0 && { tool_calls: toolCalls }),
+        ...openRouterReasoning,
       })
     }
     if (!resultsAnswerPriorTurn) out.push(...toolResults)

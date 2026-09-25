@@ -27,7 +27,13 @@ export function selectOpenAICompatToolsForRequest(
   tools: ProviderTool[],
   messages: ProviderMessage[],
   sessionId?: string,
+  provider?: string,
 ): ProviderTool[] {
+  // Do not trust deferred flags carried by a resumed or cross-provider
+  // session. OpenRouter always receives every available callable contract.
+  if (provider === 'openrouter') {
+    return tools.filter(tool => tool.name !== TOOL_SEARCH_TOOL_NAME)
+  }
   if (!shouldUseOpenAICompatLazyTools(tools)) return tools
   // Sticky per-session registry: compaction can erase the history evidence of
   // a load, and the tool block must never shrink or reorder mid-session.

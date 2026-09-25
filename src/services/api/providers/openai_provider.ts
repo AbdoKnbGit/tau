@@ -47,6 +47,7 @@ import {
   type OpenAIChatCompletion,
   type OpenAIChatCompletionChunk,
 } from '../adapters/openai_to_anthropic.js'
+import { parseOpenRouterSSE } from '../../../lanes/openai-compat/openrouter_sse.js'
 import {
   anthropicToResponsesInput,
   anthropicToolsToResponsesTools,
@@ -302,7 +303,10 @@ export class OpenAIProvider extends BaseProvider {
       return this._streamResponses(optimized, model)
     }
 
-    let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system, { preserveCacheControl: this.preserveCacheControl })
+    let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system, {
+      preserveCacheControl: this.preserveCacheControl, preserveOpenRouterReasoning: this.name === 'openrouter',
+      preserveOpenRouterToolIds: this.name === 'openrouter',
+    })
     if (this.needsMessageCoalescing(model)) {
       messages = coalesceConsecutiveMessages(messages)
     }
@@ -348,7 +352,8 @@ export class OpenAIProvider extends BaseProvider {
       method: 'POST',
       headers: this._headers(model),
       body: JSON.stringify(body),
-      signal: ac.signal,
+      signal: this.name === 'openrouter' && optimized.signal
+        ? AbortSignal.any([ac.signal, optimized.signal]) : ac.signal,
     })
 
     if (!response.ok) {
@@ -363,8 +368,11 @@ export class OpenAIProvider extends BaseProvider {
     // Extract rate limit headers from the response
     this._extractRateLimits(response.headers)
 
-    const sseStream = this._parseSSE(response.body)
-    const anthropicEvents = openAIStreamToAnthropicEvents(sseStream)
+    const sseStream = this.parseChatCompletionStream(response, optimized)
+    const anthropicEvents = openAIStreamToAnthropicEvents(
+      this.transformChatCompletionStream(sseStream, optimized),
+      { openRouter: this.name === 'openrouter' },
+    )
     return buildProviderStreamResult(anthropicEvents, ac)
   }
 
@@ -378,7 +386,10 @@ export class OpenAIProvider extends BaseProvider {
       return this._createResponses(optimized, model)
     }
 
-    let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system, { preserveCacheControl: this.preserveCacheControl })
+    let messages = anthropicMessagesToOpenAI(optimized.messages, optimized.system, {
+      preserveCacheControl: this.preserveCacheControl, preserveOpenRouterReasoning: this.name === 'openrouter',
+      preserveOpenRouterToolIds: this.name === 'openrouter',
+    })
     if (this.needsMessageCoalescing(model)) {
       messages = coalesceConsecutiveMessages(messages)
     }
@@ -427,7 +438,27 @@ export class OpenAIProvider extends BaseProvider {
     this._extractRateLimits(response.headers)
 
     const data = (await response.json()) as OpenAIChatCompletion
-    return openAIMessageToAnthropic(data)
+    return openAIMessageToAnthropic(this.transformChatCompletionResponse(data, optimized), { openRouter: this.name === 'openrouter' })
+  }
+
+  protected parseChatCompletionStream(
+    response: Response, _params: ProviderRequestParams,
+  ): AsyncIterable<OpenAIChatCompletionChunk> {
+    return this._parseSSE(response.body!)
+  }
+
+  protected transformChatCompletionStream(
+    stream: AsyncIterable<OpenAIChatCompletionChunk>,
+    _params: ProviderRequestParams,
+  ): AsyncIterable<OpenAIChatCompletionChunk> {
+    return stream
+  }
+
+  protected transformChatCompletionResponse(
+    response: OpenAIChatCompletion,
+    _params: ProviderRequestParams,
+  ): OpenAIChatCompletion {
+    return response
   }
 
   async listModels(): Promise<ModelInfo[]> {
@@ -831,6 +862,10 @@ export class OpenAIProvider extends BaseProvider {
   protected async *_parseSSE(
     body: ReadableStream<Uint8Array>,
   ): AsyncGenerator<OpenAIChatCompletionChunk> {
+    if (this.name === 'openrouter') {
+      yield* parseOpenRouterSSE(body)
+      return
+    }
     const reader = body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''

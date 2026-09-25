@@ -298,7 +298,16 @@ test('OpenRouter GPT sanitizer requires every declared object property', () => {
   )
   assertEq(out.additionalProperties, false, 'root object must reject extra properties')
 
-  const options = (out.properties as Record<string, any>).options
+  // Strict mode lists every property as required, so an optional one stays
+  // optional by also accepting null; required ones are left unwrapped.
+  const nullable = (node: any) => {
+    assert(Array.isArray(node?.anyOf) && node.anyOf.length === 2 && node.anyOf.some((n: any) => n.type === 'null'),
+      `optional property must accept null: ${JSON.stringify(node)}`)
+    return node.anyOf.find((n: any) => n.type !== 'null')
+  }
+  assertEq(JSON.stringify(nullable((out.properties as Record<string, any>).subagent_type)),
+    JSON.stringify({ type: 'string' }), 'optional root property keeps its type')
+  const options = nullable((out.properties as Record<string, any>).options)
   assertEq(
     JSON.stringify(options.required),
     JSON.stringify(['cwd', 'timeout_ms', 'metadata']),
@@ -306,8 +315,9 @@ test('OpenRouter GPT sanitizer requires every declared object property', () => {
   )
   assertEq(options.additionalProperties, false, 'nested object must reject extra properties')
   assert((options.properties as Record<string, any>).cwd.minLength === undefined, 'minLength must be stripped')
-  assert((options.properties as Record<string, any>).timeout_ms.minimum === undefined, 'minimum must be stripped')
-  const metadata = (options.properties as Record<string, any>).metadata
+  assert((options.properties as Record<string, any>).cwd.anyOf === undefined, 'a required property is not made nullable')
+  assert(nullable((options.properties as Record<string, any>).timeout_ms).minimum === undefined, 'minimum must be stripped')
+  const metadata = nullable((options.properties as Record<string, any>).metadata)
   assert(metadata.propertyNames === undefined, 'propertyNames must be stripped')
   assert(metadata.patternProperties === undefined, 'patternProperties must be stripped')
   assertEq(JSON.stringify(metadata.required), JSON.stringify(['source']), 'metadata required must be normalized')

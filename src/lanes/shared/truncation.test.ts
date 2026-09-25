@@ -86,7 +86,10 @@ async function runCompatLane(chunks: unknown[]): Promise<AnthropicStreamEvent[]>
       model: 'test-model',
       messages: [{ role: 'user', content: 'scaffold the project' }],
       system: 'You are a coding agent.',
-      tools: [],
+      tools: [{ name: 'Write', description: 'Write a file', input_schema: { type: 'object',
+        properties: { file_path: { type: 'string' }, content: { type: 'string' } },
+        required: ['file_path', 'content'], additionalProperties: false,
+      } }],
       max_tokens: 8192,
       thinking: { type: 'disabled' },
       signal: new AbortController().signal,
@@ -196,7 +199,7 @@ test('InFlightToolCall.noteSettled only clears the call it names', () => {
 
 // ─── openai-compat lane, end to end over a mocked SSE stream ───────
 
-test('compat lane drops the tool call that was still being written at the cap', async () => {
+test('OpenRouter drops the entire tool batch at the cap', async () => {
   const events = await runCompatLane([
     argsChunk(0, '{"file_path":"a.py",', 'Write'),
     argsChunk(0, '"content":"done"}'),
@@ -205,13 +208,7 @@ test('compat lane drops the tool call that was still being written at the cap', 
   ])
 
   const starts = toolUseStarts(events)
-  assert.equal(starts.length, 1, 'the half-written call was emitted anyway')
-  assert.equal(starts[0]!.name, 'Write')
-  assert.equal(
-    toolInputs(events).get(starts[0]!.index),
-    '{"file_path":"a.py","content":"done"}',
-    'the completed call must survive untouched',
-  )
+  assert.equal(starts.length, 0, 'a choice-level cutoff cannot certify individual calls')
   assert.equal(
     stopReasonOf(events),
     'max_tokens',
@@ -230,7 +227,7 @@ test('compat lane leaves a clean tool_calls turn exactly as it was', async () =>
   assert.equal(stopReasonOf(events), 'tool_use')
 })
 
-test('compat lane keeps a tool call the model finished before the cut', async () => {
+test('OpenRouter does not mistake interleaved text for a tool completion signal', async () => {
   const events = await runCompatLane([
     argsChunk(0, '{"file_path":"a.py","content":"done"}', 'Write'),
     textChunk('now let me explain what I did at some length'),
@@ -239,8 +236,8 @@ test('compat lane keeps a tool call the model finished before the cut', async ()
 
   assert.equal(
     toolUseStarts(events).length,
-    1,
-    'text after the call proves it was complete',
+    0,
+    'text is not a protocol-level tool completion signal',
   )
   assert.equal(stopReasonOf(events), 'max_tokens')
 })
@@ -272,7 +269,7 @@ test('compat lane keeps emitted block indices contiguous after a drop', async ()
     .map(e => (e as any).index as number)
   assert.deepEqual(
     indices,
-    [0, 1],
+    [0],
     `block indices left a gap: ${JSON.stringify(indices)}`,
   )
 })

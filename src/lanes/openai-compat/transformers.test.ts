@@ -31,6 +31,7 @@ import {
   _resetOpenRouterAutoPinForTest,
   recordOpenRouterServedProvider,
 } from './transformers/openrouter.js'
+import { recordOpenRouterProviderDirectory } from '../../utils/model/openrouterProviders.js'
 import type { Transformer, TransformContext } from './transformers/base.js'
 import type { OpenAIChatMessage, OpenAIChatRequest } from './transformers/shared_types.js'
 import { selectEditToolSet, OPENAI_COMPAT_TOOL_REGISTRY } from './tools.js'
@@ -80,6 +81,12 @@ function test(name: string, fn: () => void): void {
 
 function assert(cond: unknown, hint: string): void {
   if (!cond) throw new Error(hint)
+}
+
+async function testAsync(name: string, fn: () => Promise<void>): Promise<void> {
+  let error: unknown
+  try { await fn() } catch (caught) { error = caught }
+  test(name, () => { if (error) throw error })
 }
 
 function mkCtx(model: string, isReasoning = false): TransformContext {
@@ -150,7 +157,7 @@ function withTempOpencodeThinkingStore(fn: () => void): void {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   console.log('openai-compat transformers:')
 
   // ── Registry invariants ─────────────────────────────────────────
@@ -1083,13 +1090,16 @@ function main(): void {
       else process.env.OPENROUTER_ALLOW_FALLBACKS = oldFallbacks
     }
   })
-  test('openrouter auto-pins the provider that served the session', () => {
+  await testAsync('openrouter auto-pins the provider that served the session', async () => {
     const oldOrder = process.env.OPENROUTER_PROVIDER_ORDER
     const oldAutoPin = process.env.TAU_OPENROUTER_AUTO_PIN
     delete process.env.OPENROUTER_PROVIDER_ORDER
     delete process.env.TAU_OPENROUTER_AUTO_PIN
     try {
       _resetOpenRouterAutoPinForTest()
+      recordOpenRouterProviderDirectory({ data: [
+        { name: 'DeepSeek', slug: 'deepseek' }, { name: 'Amazon Bedrock', slug: 'amazon-bedrock' },
+      ] })
       const ctx = {
         model: 'deepseek/deepseek-v4-flash',
         isReasoning: false,
@@ -1105,7 +1115,7 @@ function main(): void {
 
       // Stream chunk reported the serving provider (display name) → next
       // request pins its slug, fallbacks left available.
-      recordOpenRouterServedProvider('sess-pin', 'deepseek/deepseek-v4-flash', 'DeepSeek')
+      await recordOpenRouterServedProvider('sess-pin', 'deepseek/deepseek-v4-flash', 'DeepSeek')
       const second = mkBody('deepseek/deepseek-v4-flash')
       TRANSFORMERS.openrouter.transformRequest(second, ctx)
       const pin = (second as any).provider
@@ -1114,8 +1124,8 @@ function main(): void {
       assert(pin?.allow_fallbacks === undefined,
         `auto-pin must keep fallbacks available: ${JSON.stringify(pin)}`)
 
-      // Display names with spaces normalize to slugs.
-      recordOpenRouterServedProvider('sess-pin', 'deepseek/deepseek-v4-flash', 'Amazon Bedrock')
+      // Display names resolve through the provider directory.
+      await recordOpenRouterServedProvider('sess-pin', 'deepseek/deepseek-v4-flash', 'Amazon Bedrock')
       const third = mkBody('deepseek/deepseek-v4-flash')
       TRANSFORMERS.openrouter.transformRequest(third, ctx)
       assert(JSON.stringify((third as any).provider?.order) === JSON.stringify(['amazon-bedrock']),

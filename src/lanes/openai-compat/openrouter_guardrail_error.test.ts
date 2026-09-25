@@ -58,7 +58,9 @@ function assert(cond: unknown, hint: string): void {
   if (!cond) throw new Error(hint)
 }
 
-/** Run one turn against a stubbed 404 and return the text the user sees. */
+/** Run one turn against a stubbed 404 and return the text the user sees.
+ * The rejection is thrown, so it surfaces as an API error rather than
+ * being saved as the assistant's own reply. */
 async function errorText(body: string, status = 404): Promise<string> {
   const lane = new OpenAICompatLane()
   lane.registerProvider('openrouter', 'sk-test', 'https://openrouter.ai/api/v1')
@@ -78,11 +80,13 @@ async function errorText(body: string, status = 404): Promise<string> {
       signal: new AbortController().signal,
       providerHint: 'openrouter',
     })
-    for await (const ev of stream) events.push(ev)
-    return events
-      .filter((e: any) => e.type === 'content_block_delta')
-      .map((e: any) => e.delta?.text ?? '')
-      .join('')
+    try {
+      for await (const ev of stream) events.push(ev)
+    } catch (error) {
+      assert(events.length === 0, 'no assistant text may precede the error')
+      return error instanceof Error ? error.message : String(error)
+    }
+    throw new Error('the rejection must be thrown, not emitted as assistant text')
   } finally {
     globalThis.fetch = oldFetch
     lane.unregisterProvider('openrouter')

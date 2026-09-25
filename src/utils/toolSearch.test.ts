@@ -126,7 +126,7 @@ test('every provider is eager in cheap and lazy only in normal/full modes', () =
       `${provider}/cheap deferred a schema`,
     )
   }
-  for (const provider of ['gemini', 'openrouter', 'opencode', 'deepseek'] as const) {
+  for (const provider of ['gemini', 'opencode', 'deepseek'] as const) {
     assert(providerSupportsClientSideToolDiscovery(provider), provider)
     assert(providerSupportsSafeToolDiscovery(provider), provider)
     assert(
@@ -153,7 +153,7 @@ test('AgentRouter bypass path does not opt into client-side discovery', () => {
 })
 
 test('unknown or dedicated lanes fall back to eager schemas', () => {
-  for (const provider of ['cursor', 'openai', 'commandcode', 'kiro'] as const) {
+  for (const provider of ['cursor', 'openai', 'commandcode', 'kiro', 'openrouter'] as const) {
     assert(!providerSupportsSafeToolDiscovery(provider), provider)
     for (const mode of ['cheap', 'normal', 'full'] as const) {
       assert(

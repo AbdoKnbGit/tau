@@ -26,6 +26,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { isValidAgainstContract } from '../../services/mcp/contractValidation.js'
 
 export interface OpenRouterStrictTool {
   function: {
@@ -181,9 +182,18 @@ function normalizeOpenAIStrictSchema(node: unknown): unknown {
   }
 
   if (schemaNodeAllowsObject(result)) {
-    const props = normalizeProperties(result.properties)
-    result.properties = props ?? {}
-    result.required = Object.keys(result.properties)
+    const props = normalizeProperties(result.properties) ?? {}
+    result.properties = props
+    const required = new Set(Array.isArray(obj.required) ? obj.required : [])
+    for (const [name, property] of Object.entries(props)) {
+      if (!required.has(name) && isPlainRecord(property)) {
+        // Strict requires every key, but optional does not mean "invent a
+        // value". Null represents omission and is restored against the exact
+        // original contract before the executor sees the arguments.
+        props[name] = { anyOf: [property, { type: 'null' }] }
+      }
+    }
+    result.required = Object.keys(props)
     result.additionalProperties = false
   } else if (result.type && !hasCombiner(result)) {
     delete result.properties
@@ -192,6 +202,38 @@ function normalizeOpenAIStrictSchema(node: unknown): unknown {
   }
 
   return result
+}
+
+/** Reverse only the optional-null encoding introduced by strict projection.
+ * Required nulls, explicitly nullable values, empty strings, false, and zero
+ * retain their meaning. Unknown/unsupported contracts are never guessed.
+ */
+export function restoreOpenRouterOptionalArguments(
+  input: unknown, original: Record<string, unknown>, advertised: Record<string, unknown>,
+): unknown {
+  const alternatives = advertised.anyOf
+  const isNullBranch = (node: unknown) => isPlainRecord(node) && node.type === 'null' && Object.keys(node).length === 1
+  const wire = Array.isArray(alternatives) && alternatives.length === 2 && alternatives.some(isNullBranch)
+    ? alternatives.find(node => !isNullBranch(node)) : advertised
+  if (!isPlainRecord(wire)) return input
+  if (Array.isArray(input)) {
+    const sourceItems = original.items
+    const wireItems = wire.items
+    if (!isPlainRecord(sourceItems) || !isPlainRecord(wireItems)) return input
+    return input.map(value => restoreOpenRouterOptionalArguments(value, sourceItems, wireItems))
+  }
+  const sourceProperties = original.properties
+  const wireProperties = wire.properties
+  if (!isPlainRecord(input) || !isPlainRecord(sourceProperties) || !isPlainRecord(wireProperties)) return input
+  const required = new Set(Array.isArray(original.required) ? original.required : [])
+  return Object.fromEntries(Object.entries(input).flatMap(([name, value]) => {
+    const source = sourceProperties[name]
+    const sent = wireProperties[name]
+    if (!isPlainRecord(source) || !isPlainRecord(sent)) return [[name, value]]
+    if (value === null && !required.has(name) &&
+      isValidAgainstContract(source, null) === false && isValidAgainstContract(sent, null) === true) return []
+    return [[name, restoreOpenRouterOptionalArguments(value, source, sent)]]
+  }))
 }
 
 function normalizeProperties(value: unknown): Record<string, unknown> | undefined {
