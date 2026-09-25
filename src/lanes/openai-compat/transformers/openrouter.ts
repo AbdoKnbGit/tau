@@ -6,6 +6,8 @@
  * - cache_control is PASSED THROUGH on OpenRouter broadly. OpenRouter's chat
  *   schema accepts cache_control on content parts and function tools, and
  *   drops/normalizes it for upstreams that do not use explicit breakpoints.
+ * - ENABLE_PROMPT_CACHING_1H_OPENROUTER gives Claude's breakpoints a one-hour
+ *   lifetime instead of five minutes.
  * - Accepts `reasoning: { effort }` for reasoning-capable upstreams.
  * - Sends OpenRouter session affinity/cache fields when a stable session id is present.
  * - OPENROUTER_PROVIDER_ORDER can pin upstream provider routing. OpenRouter's
@@ -29,6 +31,7 @@ import {
 import { resolveOpenRouterReasoningField } from '../../../utils/model/openrouterThinking.js'
 import { getOpenRouterReasoningMeta } from '../../../utils/model/openrouterReasoningCatalog.js'
 import { resolveOpenRouterProviderSlug } from '../../../utils/model/openrouterProviders.js'
+import { isEnvTruthy } from '../../../utils/envUtils.js'
 
 export const openrouterTransformer: Transformer = {
   id: 'openrouter',
@@ -69,6 +72,7 @@ export const openrouterTransformer: Transformer = {
     }
 
     applyOpenRouterToolCacheBreakpoint(body)
+    applyOpenRouterClaudeCacheTtl(body)
     applyOpenRouterContextCompressionPlugin(body)
     applyOpenRouterProviderRouting(body, ctx.sessionId)
 
@@ -181,6 +185,28 @@ function applyOpenRouterToolCacheBreakpoint(body: OpenAIChatRequest): void {
   const lastTool = body.tools[body.tools.length - 1]
   if (lastTool && !lastTool.cache_control) {
     lastTool.cache_control = { type: 'ephemeral' }
+  }
+}
+
+/**
+ * Opt-in one-hour cache for Claude, like ENABLE_PROMPT_CACHING_1H_BEDROCK does
+ * for Bedrock. A five-minute cache write costs 1.25x the input price and a
+ * one-hour write 2x, so it pays off when replies are more than five minutes
+ * apart. Every breakpoint gets the same lifetime because Anthropic requires
+ * one-hour breakpoints to come before five-minute ones. Other model families
+ * keep their own cache lifetimes.
+ */
+function applyOpenRouterClaudeCacheTtl(body: OpenAIChatRequest): void {
+  if (!isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_OPENROUTER)) return
+  if (!/^~?anthropic\//i.test(body.model)) return
+  for (const tool of body.tools ?? []) {
+    if (tool.cache_control) tool.cache_control = { ...tool.cache_control, ttl: '1h' }
+  }
+  for (const message of body.messages) {
+    if (!Array.isArray(message.content)) continue
+    for (const part of message.content) {
+      if (part.cache_control) part.cache_control = { ...part.cache_control, ttl: '1h' }
+    }
   }
 }
 

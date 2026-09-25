@@ -4,9 +4,15 @@
  * potential circular dep between loop.ts and the transformers.
  */
 
+/** A prompt-cache breakpoint. `ttl` is set only for Claude on OpenRouter. */
+export interface CacheControl {
+  type: string
+  ttl?: '1h'
+}
+
 export interface OpenAIChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content?: string | null | Array<{ type: string; text?: string; image_url?: unknown }>
+  content?: string | null | Array<{ type: string; text?: string; image_url?: unknown; cache_control?: CacheControl }>
   reasoning_content?: string
   reasoning?: string
   reasoning_details?: Record<string, unknown>[]
@@ -27,7 +33,7 @@ export interface OpenAIChatRequest {
   usage?: { include?: boolean; [key: string]: unknown }
   tools?: Array<{
     type: 'function'
-    cache_control?: { type: string }
+    cache_control?: CacheControl
     function: {
       name: string
       description: string

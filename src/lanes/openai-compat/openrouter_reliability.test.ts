@@ -985,4 +985,24 @@ await test('native: provider rate limits unpin too; limits from OpenRouter itsel
     _resetOpenRouterAutoPinForTest()
   }
 })
+await test('native: ENABLE_PROMPT_CACHING_1H_OPENROUTER gives every Claude breakpoint a one-hour lifetime', async () => {
+  const stamps = (body: any) => [
+    ...(body.tools ?? []).map((tool: any) => tool.cache_control),
+    ...body.messages.flatMap((message: any) =>
+      Array.isArray(message.content) ? message.content.map((part: any) => part.cache_control) : []),
+  ].filter(Boolean)
+  const claude = 'anthropic/claude-sonnet-4.6'
+  const before = stamps((await request('native', clean, { model: claude })).body)
+  assert(before.length >= 3 && before.every(cc => cc.ttl === undefined), 'five minutes stays the default')
+  process.env.ENABLE_PROMPT_CACHING_1H_OPENROUTER = '1'
+  try {
+    const after = stamps((await request('native', clean, { model: claude })).body)
+    assert.equal(after.length, before.length, 'the option changes lifetimes, not breakpoints')
+    assert(after.every(cc => cc.type === 'ephemeral' && cc.ttl === '1h'), JSON.stringify(after))
+    const other = stamps((await request('native', clean, { model: 'deepseek/deepseek-v4-flash' })).body)
+    assert(other.length >= 3 && other.every(cc => cc.ttl === undefined), 'only Claude takes the one-hour lifetime')
+  } finally {
+    delete process.env.ENABLE_PROMPT_CACHING_1H_OPENROUTER
+  }
+})
 console.log(`\n${passed} passed`)

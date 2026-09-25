@@ -253,7 +253,7 @@ function hasOpencodeAccountKey(): boolean {
 //   Haiku → gemini-3.1-flash-lite-preview (cost-efficient, high-volume)
 //
 // OpenRouter (April 2026):
-//   free  → tencent/hy3-preview:free / inclusionai/ling-2.6-1t:free
+//   free  → poolside/laguna-s-2.1:free / nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
 //   pro   → anthropic/claude-opus-4.7 / openai/gpt-5.5
 //   plus  → anthropic/claude-opus-4.7 (best stable Opus on OR)
 //
@@ -375,15 +375,18 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         // Mapping every tier to a real free model with a consistent ID
         // makes spawn behavior deterministic.
         //
-        // Capability ranking (highest → lowest), all 256K+ context:
-        //   ling-2.6-1t      — trillion-param flagship; best for opus/sonnet
-        //   nemotron-nano    — 30B / 3B-active reasoning model; small + fast
-        //   poolside-laguna  — efficient coding-focused agent
+        // Free models come and go: opus/sonnet used to be
+        // inclusionai/ling-2.6-1t:free until it stopped being free.
+        // Current picks, all 256K+ context:
+        //   laguna-s-2.1   — Poolside's coding-agent model; passed both the
+        //                    short and the long tool-call check of a live
+        //                    free-model audit (2026-09-24)
+        //   nemotron-nano  — 30B / 3B-active reasoning model; small + fast
         //
-        // Override per-tier via OR_MODEL_OPUS / OR_MODEL_SONNET /
-        // OR_MODEL_HAIKU.
-        opus:   process.env.OR_MODEL_OPUS_FREE   ?? 'inclusionai/ling-2.6-1t:free',
-        sonnet: process.env.OR_MODEL_SONNET_FREE ?? 'inclusionai/ling-2.6-1t:free',
+        // Override per-tier via OR_MODEL_OPUS_FREE / OR_MODEL_SONNET_FREE /
+        // OR_MODEL_HAIKU_FREE.
+        opus:   process.env.OR_MODEL_OPUS_FREE   ?? 'poolside/laguna-s-2.1:free',
+        sonnet: process.env.OR_MODEL_SONNET_FREE ?? 'poolside/laguna-s-2.1:free',
         haiku:  process.env.OR_MODEL_HAIKU_FREE  ?? 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
       },
       pro: {
