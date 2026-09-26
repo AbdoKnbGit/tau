@@ -85,6 +85,8 @@ test('the recorded zero-filled Browser call runs without the zeros its schema re
   assert.notEqual(results.at(-1).is_error, true)
   assert.match(text, /`nth` = 0/)
   assert.match(text, /Leave out optional parameters/)
+  // First, so a preview of a result cut down to its beginning still carries it.
+  assert.ok(text.startsWith('[Ignored optional'), text.slice(0, 80))
 })
 
 test('a strict-lane Browser call with null for every unused field runs silently', async () => {
@@ -122,6 +124,7 @@ test('the recorded Read call with pages "" reads the file', async () => {
     assert.equal(read.calls[0].limit, 2000)
     assert.notEqual(results.at(-1).is_error, true)
     assert.match(text, /`pages` = ""/)
+    assert.ok(text.startsWith('[Ignored empty optional'), text.slice(0, 80))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

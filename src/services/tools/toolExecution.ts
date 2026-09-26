@@ -1085,17 +1085,23 @@ async function validateWithoutEmptyOptionalArguments(
   }
 }
 
-function appendNoteToToolResult(
+/**
+ * The note goes first. When a message's tool results outgrow the per-message
+ * budget — much sooner in cheap mode — the largest are replaced by a saved file
+ * and a preview of their beginning, so a note at the end was the first thing
+ * lost.
+ */
+function prependNoteToToolResult(
   block: ToolResultBlockParam,
   note: string,
 ): ToolResultBlockParam {
   const text = `[${note}]`
   if (Array.isArray(block.content)) {
-    return { ...block, content: [...block.content, { type: 'text', text }] }
+    return { ...block, content: [{ type: 'text', text }, ...block.content] }
   }
   return {
     ...block,
-    content: block.content ? `${block.content}\n\n${text}` : text,
+    content: block.content ? `${text}\n\n${block.content}` : text,
   }
 }
 
@@ -2201,7 +2207,7 @@ async function checkPermissionsAndCallTool(
           )
         : await processToolResultBlock(tool, toolUseResult, toolUseID)
       const toolResultBlock = argumentNote
-        ? appendNoteToToolResult(mappedResultBlock, argumentNote)
+        ? prependNoteToToolResult(mappedResultBlock, argumentNote)
         : mappedResultBlock
 
       // Build content blocks - tool result first, then optional feedback
