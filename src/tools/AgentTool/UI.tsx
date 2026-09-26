@@ -31,6 +31,7 @@ import { inputSchema } from './AgentTool.js';
 import { getAgentColor } from './agentColorManager.js';
 import { getAgentResolvedModel } from './agentModelManager.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
+import { parseToolInputForDisplay } from '../../utils/toolInputForDisplay.js';
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
 
 /**
@@ -848,7 +849,7 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
           return toolUseBlock.name; // Fallback to raw name
         }
         const input = toolUseBlock.input as Record<string, unknown>;
-        const parsedInput = tool.inputSchema.safeParse(input);
+        const parsedInput = parseToolInputForDisplay(tool, input);
 
         // Get user-facing tool name
         const userFacingToolName = tool.userFacingName(parsedInput.success ? parsedInput.data : undefined);

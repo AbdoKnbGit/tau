@@ -857,11 +857,17 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    // Inline skill result (default)
+    // Inline skill result (default). A skill adds no tools; its allowed-tools
+    // only pre-approve existing ones while it runs. Say so, or the model reads
+    // "5 tools allowed" on the user's screen as tools the skill brought.
+    const preApproved =
+      'allowedTools' in result && result.allowedTools?.length
+        ? `\nWhile it runs, these existing tools need no permission prompt: ${result.allowedTools.join(', ')}. The skill adds no tools of its own.`
+        : ''
     return {
       type: 'tool_result' as const,
       tool_use_id: toolUseID,
-      content: `Launching skill: ${result.commandName}`,
+      content: `Launching skill: ${result.commandName}${preApproved}`,
     }
   },
 

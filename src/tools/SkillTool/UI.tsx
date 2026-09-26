@@ -17,6 +17,21 @@ import type { inputSchema, Output, Progress } from './SkillTool.js';
 type Input = z.infer<ReturnType<typeof inputSchema>>;
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
 const INITIALIZING_TEXT = 'Initializing…';
+const MAX_TOOL_NAMES_CHARS = 60;
+
+/** "Read, Write, Edit" — the list cut to one short line, with the rest counted. */
+export function summarizeToolNames(names: readonly string[]): string {
+  let shown = '';
+  let count = 0;
+  for (const name of names) {
+    const next = shown ? `${shown}, ${name}` : name;
+    if (count > 0 && next.length > MAX_TOOL_NAMES_CHARS) break;
+    shown = next;
+    count++;
+  }
+  const rest = names.length - count;
+  return rest > 0 ? `${shown} +${rest} more` : shown;
+}
 export function renderToolResultMessage(output: Output): React.ReactNode {
   // Handle forked skill result
   if ('status' in output && output.status === 'forked') {
@@ -28,10 +43,11 @@ export function renderToolResultMessage(output: Output): React.ReactNode {
   }
   const parts: string[] = ['Successfully loaded skill'];
 
-  // Show tools count (only for inline skills)
+  // A skill's allowed-tools pre-approve existing tools while it runs; the skill
+  // adds no tools. "5 tools allowed" read as five tools the skill provided, so
+  // a Bash failure shown beside it was taken for the skill's own. Name them.
   if ('allowedTools' in output && output.allowedTools && output.allowedTools.length > 0) {
-    const count = output.allowedTools.length;
-    parts.push(`${count} ${plural(count, 'tool')} allowed`);
+    parts.push(`pre-approved: ${summarizeToolNames(output.allowedTools)}`);
   }
 
   // Show model if non-default (only for inline skills)

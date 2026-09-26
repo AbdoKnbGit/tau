@@ -258,48 +258,49 @@ const KILO_FILE_PATH_KEYS = [
   'file',
 ] as const
 
-function normalizeKiloReadInput(native: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    file_path: firstDefined(native, KILO_FILE_PATH_KEYS),
+/**
+ * The model's arguments with each alias group replaced by its canonical name.
+ * Every other argument is kept: the tool's own schema decides what it takes.
+ * Rebuilding the input from a fixed list silently dropped parameters the list
+ * did not name — Read's `pages` and `skeleton` never reached the tool on this
+ * lane, so a page range read the whole document.
+ */
+function withCanonicalArguments(
+  native: Record<string, unknown>,
+  canonical: ReadonlyArray<readonly [name: string, aliases: readonly string[]]>,
+): Record<string, unknown> {
+  const aliases = new Set(canonical.flatMap(([name, group]) => [name, ...group]))
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(native)) {
+    if (!aliases.has(key)) out[key] = value
   }
-  if (native.offset != null) out.offset = native.offset
-  if (native.limit != null) out.limit = native.limit
+  for (const [name, group] of canonical) {
+    const value = firstDefined(native, [name, ...group])
+    if (value !== undefined) out[name] = value
+  }
   return out
+}
+
+function normalizeKiloReadInput(native: Record<string, unknown>): Record<string, unknown> {
+  return withCanonicalArguments(native, [['file_path', KILO_FILE_PATH_KEYS]])
 }
 
 function normalizeKiloWriteInput(native: Record<string, unknown>): Record<string, unknown> {
-  return {
-    file_path: firstDefined(native, KILO_FILE_PATH_KEYS),
-    content: firstDefined(native, ['content', 'contents', 'text', 'source', 'data']),
-  }
+  return withCanonicalArguments(native, [
+    ['file_path', KILO_FILE_PATH_KEYS],
+    ['content', ['contents', 'text', 'source', 'data']],
+  ])
 }
 
 function normalizeKiloEditInput(native: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    file_path: firstDefined(native, KILO_FILE_PATH_KEYS),
-    old_string: firstDefined(native, [
-      'old_string',
-      'old_str',
-      'old_text',
-      'search',
-      'find',
-      'original',
-    ]),
-    new_string: firstDefined(native, [
-      'new_string',
-      'new_str',
-      'new_text',
-      'replace',
-      'replacement',
-    ]),
-  }
-  const replaceAll = firstDefined(native, ['replace_all', 'replaceAll', 'all', 'allow_multiple'])
-  if (replaceAll != null) out.replace_all = replaceAll
-  return out
+  return withCanonicalArguments(native, [
+    ['file_path', KILO_FILE_PATH_KEYS],
+    ['old_string', ['old_str', 'old_text', 'search', 'find', 'original']],
+    ['new_string', ['new_str', 'new_text', 'replace', 'replacement']],
+    ['replace_all', ['replaceAll', 'all', 'allow_multiple']],
+  ])
 }
 
 function normalizeKiloTaskGetInput(native: Record<string, unknown>): Record<string, unknown> {
-  return {
-    taskId: firstDefined(native, ['taskId', 'task_id', 'id', 'task']),
-  }
+  return withCanonicalArguments(native, [['taskId', ['task_id', 'id', 'task']]])
 }

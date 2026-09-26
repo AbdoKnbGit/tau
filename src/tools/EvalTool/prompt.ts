@@ -48,7 +48,10 @@ export const DESCRIPTION =
  * count; a hand-written POSIX root matched nothing, silently, on Windows; an
  * unscoped walk counted one source tree three times and reported 1,736 where
  * the answer was 590; and a helper was written to disk and re-imported every
- * cell, in a kernel that already keeps it.
+ * cell, in a kernel that already keeps it. A PDF read by shelling out to the
+ * pdftotext that Bash had found failed twice in a cell on Windows — first not
+ * on the kernel's PATH, then tried by its MSYS path — while pypdf sat in the
+ * kernel unused.
  *
  * Register is deliberately telegraphic: fragments, arrows, capitals for the
  * imperative. It says more than the prose version it replaced in fewer bytes,
@@ -136,6 +139,10 @@ Arguments are the tool's own parameters, dict or kwargs:
   work; magics fire only at line start, so bind before printing.
 - Check a package from a cell (\`import x\`), never through Bash: Bash's
   \`python\` can be another install. \`%pip install x\` puts it in this kernel.
+- File formats → a library this kernel has (\`pypdf\`, \`fitz\`, \`openpyxl\`,
+  \`pptx\`, \`zipfile\`) before a program. A program you do need: find it from
+  the cell (\`shutil.which\`); a path Bash printed can be in Bash's own form
+  (\`/c/…\`, \`/mingw64/…\` on Windows), not this Python's.
 
 ## Long, looping and failed cells are safe
 

@@ -14,6 +14,7 @@ import {
   ensureRunnerOnDisk,
   resolvePythonInterpreter,
 } from './pythonRuntime.js'
+import { bashToolPathEntries, withAppendedPath } from './shellPath.js'
 import type { DeadlineBudget } from './toolBridge.js'
 
 export type KernelDisplay = { mime: string; data: string }
@@ -109,16 +110,21 @@ export class PythonKernel {
     const interpreter = resolvePythonInterpreter()
     if (!interpreter) throw new Error('No Python interpreter available.')
     const runner = ensureRunnerOnDisk()
+    // A program the Bash tool finds must be findable from a cell as well.
+    const bashPath = await bashToolPathEntries()
 
     const proc = spawn(interpreter, ['-u', runner], {
       cwd: this.options.cwd,
-      env: buildKernelEnv({
-        TAU_EVAL_CWD: this.options.cwd,
-        TAU_EVAL_CANCEL_TOKEN: this.#cancelToken,
-        TAU_EVAL_BRIDGE_URL: this.options.bridgeUrl,
-        TAU_EVAL_BRIDGE_TOKEN: this.options.bridgeToken,
-        TAU_EVAL_BRIDGE_SESSION: this.options.bridgeSession,
-      }),
+      env: withAppendedPath(
+        buildKernelEnv({
+          TAU_EVAL_CWD: this.options.cwd,
+          TAU_EVAL_CANCEL_TOKEN: this.#cancelToken,
+          TAU_EVAL_BRIDGE_URL: this.options.bridgeUrl,
+          TAU_EVAL_BRIDGE_TOKEN: this.options.bridgeToken,
+          TAU_EVAL_BRIDGE_SESSION: this.options.bridgeSession,
+        }),
+        bashPath,
+      ),
       stdio: ['pipe', 'pipe', 'pipe'],
       // NOT windowsHide. CREATE_NO_WINDOW detaches the child from the console,
       // and NumPy's native extensions (OpenBLAS thread-pool init inside

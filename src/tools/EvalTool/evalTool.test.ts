@@ -618,6 +618,37 @@ async function live(): Promise<void> {
     }
   })
 
+  await asyncTest('a program the Bash tool can run is found from a cell', async () => {
+    // On Windows, Bash's MSYS-only directories used to be missing here, so
+    // `subprocess` raised FileNotFoundError for what `which` had just found.
+    if (process.platform !== 'win32') return
+    const { findGitBashPath } = await import('../../utils/windowsPaths.js')
+    const bash = findGitBashPath()
+    if (!bash) return
+    const { execFileSync } = await import('child_process')
+    const names = ['ls', 'sed', 'file', 'pdftotext'].filter(name => {
+      try {
+        return execFileSync(bash, ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim() !== ''
+      } catch {
+        return false
+      }
+    })
+    const kernel = make()
+    try {
+      const outcome = await kernel.execute(
+        `import json, shutil\nprint(json.dumps({n: shutil.which(n) for n in ${JSON.stringify(names)}}))`,
+        { timeoutMs: 15_000 },
+      )
+      assert(outcome.ok, `cell failed: ${outcome.error?.evalue}`)
+      const found = JSON.parse(outcome.stdout.trim()) as Record<string, string | null>
+      for (const name of names) {
+        assert(found[name], `Bash runs ${name}, a cell cannot find it`)
+      }
+    } finally {
+      await kernel.shutdown()
+    }
+  })
+
   await asyncTest('secrets are kept out of the kernel environment', async () => {
     process.env.TAU_TEST_FAKE_API_KEY = 'sk-should-never-appear'
     process.env.ANTHROPIC_AUTH_TOKEN = 'oauth-should-never-appear'

@@ -25,11 +25,15 @@
  *   a correction round-trip rather than a silent dispatch.
  */
 
-import { Ajv, type ValidateFunction } from 'ajv'
+import { Ajv, type ErrorObject, type ValidateFunction } from 'ajv'
 import Ajv2019 from 'ajv/dist/2019.js'
 import Ajv2020 from 'ajv/dist/2020.js'
 import { createHash } from 'crypto'
 import type { Tool } from '../../Tool.js'
+import type {
+  ArgumentIssue,
+  ArgumentJudge,
+} from '../../utils/placeholderArguments.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 
 export type McpArgumentCheck =
@@ -265,6 +269,54 @@ export function contractErrors(
   if (!validate) return null
   if (validate(value) === true) return []
   return (validate.errors ?? []).map(error => error.instancePath)
+}
+
+/**
+ * Every validation issue for this value, with the path of the value at fault.
+ *
+ * Ajv reports some issues on the object rather than on the property that
+ * caused them — an unexpected property, a dependent one. Those paths are
+ * extended by the property's name, so a caller can tell which argument is
+ * wrong and not just that the object is.
+ *
+ * Returns `null` when the contract could not be compiled.
+ */
+export function contractIssues(
+  schema: Record<string, unknown>,
+  value: unknown,
+): ArgumentIssue[] | null {
+  const validate = getValidator(schema)
+  if (!validate) return null
+  if (validate(value) === true) return []
+  return (validate.errors ?? []).map(error => ({
+    path: issuePath(error),
+    message: error.message ?? error.keyword,
+  }))
+}
+
+function issuePath(error: ErrorObject): string[] {
+  const segments = error.instancePath
+    ? error.instancePath
+        .slice(1)
+        .split('/')
+        .map(segment => segment.replace(/~1/g, '/').replace(/~0/g, '~'))
+    : []
+  const params = (error.params ?? {}) as Record<string, unknown>
+  const named =
+    params.additionalProperty ??
+    params.unevaluatedProperty ??
+    params.propertyName ??
+    (error.keyword === 'dependentRequired' || error.keyword === 'dependencies'
+      ? params.property
+      : undefined)
+  return typeof named === 'string' ? [...segments, named] : segments
+}
+
+/** A contract as an argument judge (see utils/placeholderArguments.ts). */
+export function contractArgumentJudge(
+  schema: Record<string, unknown>,
+): ArgumentJudge {
+  return value => contractIssues(schema, value)
 }
 
 export function checkMcpArguments(

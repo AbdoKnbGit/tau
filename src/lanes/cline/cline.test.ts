@@ -6,6 +6,7 @@
 
 import { buildClineToolsForRequest } from './tools.js'
 import {
+  buildClineAdvisoryFieldMap,
   buildClineBlockedInvalidToolCallText,
   buildClineRequiredParamMap,
   buildClineToolArgRepairMessage,
@@ -606,6 +607,68 @@ function main(): void {
     const nameOnly = [{ function: { name: 'Read' } }] as any
     assert(coerceClineToolCallArguments(nameOnly)[0]!.function!.arguments === undefined,
       'undefined arguments should stay undefined')
+  })
+
+  test('does not bounce a call whose only problem is an optional placeholder', () => {
+    // Shared execution reads a rejected optional placeholder as omitted, so
+    // asking the model to resend that call is a wasted round trip.
+    const browser = {
+      name: 'Browser',
+      description: 'Drive a browser',
+      input_schema: {
+        type: 'object',
+        required: ['action'],
+        properties: {
+          action: { type: 'string', enum: ['observe', 'click'] },
+          direction: { type: 'string', enum: ['up', 'down'] },
+          nth: { type: 'integer', minimum: 1 },
+        },
+      },
+    }
+    const bash = {
+      name: 'Bash',
+      description: 'Run shell',
+      input_schema: {
+        type: 'object',
+        required: ['command'],
+        properties: {
+          command: { type: 'string' },
+          command_parts: {
+            type: 'object',
+            required: ['executable'],
+            additionalProperties: false,
+            properties: { executable: { type: 'string' } },
+          },
+        },
+      },
+    }
+    Object.defineProperty(bash, '__tau_advisory_fields', { value: ['command_parts'], enumerable: false })
+    const providerTools = [browser, bash] as any
+    const call = (id: string, name: string, args: unknown) => [
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name, input: {} } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(args) } },
+      { type: 'content_block_stop', index: 0 },
+    ] as any
+    const required = buildClineRequiredParamMap(providerTools)
+    const opts = {
+      knownToolNames: new Set(required.keys()),
+      schemaByTool: buildClineToolSchemaMap(providerTools),
+      advisoryFieldsByTool: buildClineAdvisoryFieldMap(providerTools),
+    }
+
+    const placeholder = findClineToolCallsMissingRequiredArgs(
+      call('c1', 'Browser', { action: 'observe', direction: '', nth: 0 }), required, opts)
+    assert(placeholder.length === 0, `placeholder call bounced: ${JSON.stringify(placeholder)}`)
+
+    const advisory = findClineToolCallsMissingRequiredArgs(
+      call('c2', 'Bash', { command: 'ls', command_parts: { executable: 5, extra: true } }), required, opts)
+    assert(advisory.length === 0, `advisory-only problem bounced: ${JSON.stringify(advisory)}`)
+
+    // A real mistake still gets the repair round trip.
+    const wrong = findClineToolCallsMissingRequiredArgs(
+      call('c3', 'Browser', { action: 'scroll', direction: '' }), required, opts)
+    assert(wrong.length === 1 && wrong[0]?.reason === 'invalid_arguments',
+      `invalid action not reported: ${JSON.stringify(wrong)}`)
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

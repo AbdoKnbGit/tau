@@ -66,6 +66,7 @@ import {
   buildClineBlockedInvalidToolCallText,
   buildClineRequiredParamMap,
   buildClineToolArgRepairMessage,
+  buildClineAdvisoryFieldMap,
   buildClineToolSchemaMap,
   findClineToolCallsMissingRequiredArgs,
   normalizeClineToolCallArgumentEvents,
@@ -554,6 +555,7 @@ export class ClineLane implements Lane {
     ])
     const requiredParams = buildClineRequiredParamMap(params.tools)
     const schemaByTool = buildClineToolSchemaMap(params.tools)
+    const advisoryFieldsByTool = buildClineAdvisoryFieldMap(params.tools)
     const knownToolNames = new Set(requiredParams.keys())
 
     let response = await this._send(
@@ -578,7 +580,7 @@ export class ClineLane implements Lane {
     let invalidToolCalls = findClineToolCallsMissingRequiredArgs(
       collected.events,
       requiredParams,
-      { knownToolNames, schemaByTool },
+      { knownToolNames, schemaByTool, advisoryFieldsByTool },
     )
 
     for (
@@ -609,7 +611,7 @@ export class ClineLane implements Lane {
       invalidToolCalls = findClineToolCallsMissingRequiredArgs(
         collected.events,
         requiredParams,
-        { knownToolNames, schemaByTool },
+        { knownToolNames, schemaByTool, advisoryFieldsByTool },
       )
     }
 

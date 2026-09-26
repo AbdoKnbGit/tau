@@ -847,6 +847,30 @@ await test('changing schema-valid arguments after repeated execution failures re
   history.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'inspection', content: 'Current state' }] })
   assert.doesNotThrow(() => assertOpenRouterToolProgress(history, [tool], tool.name, changed))
 })
+await test('optional placeholders are judged the way shared execution runs them', () => {
+  // Shared execution reads a placeholder the contract rejects as omitted. The
+  // guard has to agree, both ways round.
+  const withOptional: ProviderTool = { ...tool, input_schema: {
+    ...tool.input_schema,
+    properties: { ...(tool.input_schema.properties as object), nth: { type: 'integer', minimum: 1 } },
+  } }
+  const filled = { ...originalInput, nth: 0 }
+  const executionFailures = (input: Record<string, unknown>) => failures(input).map(message =>
+    message.role === 'assistant' && Array.isArray(message.content)
+      ? { ...message, content: message.content.map(block => ({ ...block, name: withOptional.name })) }
+      : message)
+
+  // Execution failures of a call that runs are not invalid attempts: after a
+  // fresh read, a changed call goes through.
+  const history = executionFailures(filled)
+  history.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'fresh-read', content: 'Current state' }] })
+  assert.doesNotThrow(() => assertOpenRouterToolProgress(history, [withOptional], withOptional.name,
+    JSON.stringify({ ...filled, value: 'changed after reading' })))
+
+  // Adding placeholders does not make a repeated call a new one.
+  assert.throws(() => assertOpenRouterToolProgress(executionFailures(originalInput), [withOptional],
+    withOptional.name, JSON.stringify(filled)), OpenRouterToolCallError)
+})
 await test('DeepSeek keeps its existing context and stream behavior', async () => {
   await request('native', [finish('stop')], { system: 'Original rules', provider: 'deepseek' })
   const result = await request('native', clean, { system: 'Changed rules', provider: 'deepseek' })

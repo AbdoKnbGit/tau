@@ -5,6 +5,8 @@ import type {
 import type { OpenAIMessage } from '../../services/api/adapters/anthropic_to_openai.js'
 import { buildStrictParamsSummary } from '../shared/mcp_bridge.js'
 import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
+import { contractArgumentJudge } from '../../services/mcp/contractValidation.js'
+import { dropInvalidPlaceholderArguments } from '../../utils/placeholderArguments.js'
 
 export interface ClineInvalidToolCall {
   toolName: string
@@ -134,6 +136,7 @@ export function findClineToolCallsMissingRequiredArgs(
   opts: {
     knownToolNames?: ReadonlySet<string>
     schemaByTool?: ReadonlyMap<string, JsonSchemaRecord>
+    advisoryFieldsByTool?: ReadonlyMap<string, readonly string[]>
   } = {},
 ): ClineInvalidToolCall[] {
   const states = collectClineToolCallStates(events)
@@ -172,7 +175,14 @@ export function findClineToolCallsMissingRequiredArgs(
     const schema = schemaByTool?.get(state.toolName)
     if (!schema) continue
 
-    const problems = validateClineToolInputAgainstSchema(received, schema)
+    // Judge the call shared tool execution will run: an optional placeholder
+    // the contract rejects reads as omitted there, and a malformed advisory
+    // field is dropped (utils/placeholderArguments.ts). Asking the model to
+    // resend a call that would run is a wasted round trip.
+    const executed = dropInvalidPlaceholderArguments(received, contractArgumentJudge(schema), {
+      advisoryFields: opts.advisoryFieldsByTool?.get(state.toolName),
+    }).input
+    const problems = validateClineToolInputAgainstSchema(executed, schema)
     if (problems.length > 0) {
       invalid.push({
         toolName: state.toolName,
@@ -196,6 +206,17 @@ export function buildClineToolSchemaMap(
   const byName = new Map<string, JsonSchemaRecord>()
   for (const tool of tools) {
     if (isPlainRecord(tool.input_schema)) byName.set(tool.name, tool.input_schema)
+  }
+  return byName
+}
+
+/** Each tool's advisory fields (ProviderTool.__tau_advisory_fields). */
+export function buildClineAdvisoryFieldMap(
+  tools: readonly ProviderTool[],
+): Map<string, readonly string[]> {
+  const byName = new Map<string, readonly string[]>()
+  for (const tool of tools) {
+    if (tool.__tau_advisory_fields?.length) byName.set(tool.name, tool.__tau_advisory_fields)
   }
   return byName
 }

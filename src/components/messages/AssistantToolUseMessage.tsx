@@ -12,6 +12,7 @@ import { findToolByName, type Tool, type ToolProgressData, type Tools } from '..
 import type { ProgressMessage } from '../../types/message.js';
 import { useIsClassifierChecking } from '../../utils/classifierApprovalsHook.js';
 import { logError } from '../../utils/log.js';
+import { parseToolInputForDisplay } from '../../utils/toolInputForDisplay.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 import { MessageResponse } from '../MessageResponse.js';
 import { useSelectedMessageBg } from '../messageActions.js';
@@ -69,7 +70,7 @@ export function AssistantToolUseMessage(t0) {
         t1 = null;
         break bb0;
       }
-      const input = tool.inputSchema.safeParse(param.input);
+      const input = parseToolInputForDisplay(tool, param.input);
       const data = input.success ? input.data : undefined;
       t1 = {
         tool,
@@ -176,7 +177,13 @@ export function AssistantToolUseMessage(t0) {
     t4 = $[30];
   }
   const renderedToolUseMessage = t4;
-  if (renderedToolUseMessage === null) {
+  // A call whose arguments failed the schema keeps its row, name only, once it
+  // has its error result. Hiding the row left its "invalid arguments · not
+  // run" notice under the previous tool's row, where it read as that tool's
+  // failure: a malformed Bash call looked like a skill that had loaded fine
+  // failing. A call still streaming its arguments stays hidden, as before.
+  const shownToolUseMessage = renderedToolUseMessage === null && !input_0.success && lookups.erroredToolUseIDs.has(param.id) ? "" : renderedToolUseMessage;
+  if (shownToolUseMessage === null) {
     return null;
   }
   const t5 = addMargin ? 1 : 0;
@@ -206,9 +213,9 @@ export function AssistantToolUseMessage(t0) {
     t9 = $[41];
   }
   let t10;
-  if ($[42] !== renderedToolUseMessage) {
-    t10 = renderedToolUseMessage !== "" && <Box flexWrap="nowrap"><Text color="textMuted">(</Text><Text>{renderedToolUseMessage}</Text><Text color="textMuted">)</Text></Box>;
-    $[42] = renderedToolUseMessage;
+  if ($[42] !== shownToolUseMessage) {
+    t10 = shownToolUseMessage !== "" && <Box flexWrap="nowrap"><Text color="textMuted">(</Text><Text>{shownToolUseMessage}</Text><Text color="textMuted">)</Text></Box>;
+    $[42] = shownToolUseMessage;
     $[43] = t10;
   } else {
     t10 = $[43];

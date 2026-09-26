@@ -4,13 +4,14 @@ import type { Tools } from '../../Tool.js';
 import { findToolByName } from '../../Tool.js';
 import type { ToolActivity } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import type { ThemeName } from '../../utils/theme.js';
+import { parseToolInputForDisplay } from '../../utils/toolInputForDisplay.js';
 export function renderToolActivity(activity: ToolActivity, tools: Tools, theme: ThemeName): React.ReactNode {
   const tool = findToolByName(tools, activity.toolName);
   if (!tool) {
     return activity.toolName;
   }
   try {
-    const parsed = tool.inputSchema.safeParse(activity.input);
+    const parsed = parseToolInputForDisplay(tool, activity.input);
     const parsedInput = parsed.success ? parsed.data : {};
     const userFacingName = tool.userFacingName(parsedInput);
     if (!userFacingName) {

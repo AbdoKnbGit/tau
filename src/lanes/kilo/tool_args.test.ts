@@ -91,6 +91,30 @@ function main(): void {
     assert(normalized.taskId === '7', 'taskId missing')
   })
 
+  test('keeps the optional arguments the alias map does not name', () => {
+    // A rebuilt input used to drop them: a PDF page range read the whole file.
+    const read = normalizeKiloToolCallArguments('Read', {
+      path: '/repo/doc.pdf',
+      pages: '1-3',
+      skeleton: false,
+      offset: 10,
+    })
+    assert(read.file_path === '/repo/doc.pdf', 'file_path missing')
+    assert(read.pages === '1-3', 'pages dropped')
+    assert(read.skeleton === false, 'skeleton dropped')
+    assert(read.offset === 10, 'offset dropped')
+    assert(!('path' in read), 'path alias should not be forwarded')
+
+    const edit = normalizeKiloToolCallArguments('Edit', {
+      file_path: '/repo/a.ts',
+      search: 'a',
+      replace: 'b',
+      allow_multiple: true,
+    })
+    assert(edit.replace_all === true, 'replace_all alias lost')
+    assert(!('allow_multiple' in edit) && !('search' in edit) && !('replace' in edit), 'alias forwarded')
+  })
+
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed > 0) process.exit(1)
 }

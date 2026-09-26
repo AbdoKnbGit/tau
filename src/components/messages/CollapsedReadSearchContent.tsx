@@ -18,6 +18,7 @@ import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { useSelectedMessageBg } from '../messageActions.js';
 import { PrBadge } from '../PrBadge.js';
 import { ToolUseLoader } from '../ToolUseLoader.js';
+import { parseToolInputForDisplay } from '../../utils/toolInputForDisplay.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemCollapsed = feature('TEAMMEM') ? require('./teamMemCollapsed.js') as typeof import('./teamMemCollapsed.js') : null;
@@ -94,7 +95,7 @@ function VerboseToolUse(t0) {
       const rawToolResult = resultMsg?.type === "user" ? resultMsg.toolUseResult : undefined;
       const parsedOutput = tool.outputSchema?.safeParse(rawToolResult);
       const toolResult = parsedOutput?.success ? parsedOutput.data : undefined;
-      const parsedInput = tool.inputSchema.safeParse(content.input);
+      const parsedInput = parseToolInputForDisplay(tool, content.input);
       const input = parsedInput.success ? parsedInput.data : undefined;
       const userFacingName = tool.userFacingName(input);
       const toolUseMessage = input ? tool.renderToolUseMessage(input, {

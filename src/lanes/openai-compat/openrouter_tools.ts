@@ -1,6 +1,7 @@
 import type { ProviderContentBlock, ProviderMessage, ProviderTool } from '../../services/api/providers/base_provider.js'
 import { decodeStatusOf, decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
-import { isValidAgainstContract } from '../../services/mcp/contractValidation.js'
+import { contractArgumentJudge, isValidAgainstContract } from '../../services/mcp/contractValidation.js'
+import { dropInvalidPlaceholderArguments } from '../../utils/placeholderArguments.js'
 import { isOutputCapTruncation } from '../shared/truncation.js'
 import { restoreOpenRouterOptionalArguments } from '../../utils/model/openrouterStrictSchema.js'
 import { OpenRouterReasoningCollector } from './openrouter_reasoning.js'
@@ -102,12 +103,23 @@ export function openRouterHttpError(
 }
 
 /** Advisory fields (ProviderTool.__tau_advisory_fields) never change what a
- * call does, and shared tool execution drops a malformed one instead of
- * failing the call, so contract checks and repeat detection ignore them. */
+ * call does, so repeat detection ignores them: two calls that differ only
+ * there are the same call. */
 function withoutAdvisoryFields(tool: ProviderTool | undefined, input: unknown): unknown {
   const fields = tool?.__tau_advisory_fields
   if (!fields?.length || !input || typeof input !== 'object' || Array.isArray(input)) return input
   return Object.fromEntries(Object.entries(input).filter(([key]) => !fields.includes(key)))
+}
+
+/** The arguments as shared tool execution runs them: an optional placeholder
+ * the contract rejects reads as omitted, and a malformed advisory field is
+ * dropped (utils/placeholderArguments.ts). The guard has to judge that same
+ * call, or one the executor runs is counted as an invalid attempt. */
+function asExecuted(tool: ProviderTool | undefined, input: unknown): unknown {
+  const schema = tool?.input_schema
+  if (!schema || !input || typeof input !== 'object' || Array.isArray(input)) return input
+  return dropInvalidPlaceholderArguments(input as Record<string, unknown>, contractArgumentJudge(schema),
+    { advisoryFields: tool?.__tau_advisory_fields }).input
 }
 
 function canonical(value: unknown): string {
@@ -134,7 +146,7 @@ export function assertOpenRouterToolProgress(
   const tool = tools.find(candidate => candidate.name === name)
   const schema = tool?.input_schema
   const invalid = (input: unknown) =>
-    schema && isValidAgainstContract(schema, withoutAdvisoryFields(tool, input)) === false
+    schema && isValidAgainstContract(schema, asExecuted(tool, input)) === false
   const reset = () => { failed.length = 0; contractFailures.length = 0 }
   for (const message of messages) {
     if (typeof message.content === 'string') {
@@ -162,9 +174,10 @@ export function assertOpenRouterToolProgress(
   }
   const decoded = decodeToolArguments(raw)
   const valid = (input: unknown) =>
-    schema && isValidAgainstContract(schema, withoutAdvisoryFields(tool, input)) === true
+    schema && isValidAgainstContract(schema, asExecuted(tool, input)) === true
   const same = (a: unknown, b: unknown) =>
-    canonical(withoutAdvisoryFields(tool, a)) === canonical(withoutAdvisoryFields(tool, b))
+    canonical(withoutAdvisoryFields(tool, asExecuted(tool, a))) ===
+      canonical(withoutAdvisoryFields(tool, asExecuted(tool, b)))
   const recent = failed.slice(-2)
   const repeated = ((decoded.status || invalid(decoded.input)) && contractFailures.length >= 2) ||
     (!decoded.status && failed.length >= 2 && (
@@ -298,7 +311,7 @@ export class OpenRouterToolStream {
             decoded.status ? call.function.arguments : decoded.input)
           const original = this.originals.find(tool => tool.name === call.function.name) ?? tool
           if (decoded.status ||
-            isValidAgainstContract(original.input_schema, withoutAdvisoryFields(original, decoded.input)) === false) {
+            isValidAgainstContract(original.input_schema, asExecuted(original, decoded.input)) === false) {
             // Model-generated batches can repeat the same contract error before
             // the executor records any results. Count those known failures too,
             // without mutating conversation history or repairing arguments.

@@ -37,6 +37,7 @@ import {
   type ToolProgress,
   type ToolProgressData,
   type ToolUseContext,
+  type ValidationResult,
 } from '../../Tool.js'
 import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
@@ -116,6 +117,15 @@ import {
   startToolSpan,
 } from '../../utils/telemetry/sessionTracing.js'
 import { coerceToolInput } from '../../utils/coerceToolInput.js'
+import {
+  type ArgumentRepair,
+  describeDroppedArguments,
+  describeRefusedEmptyArguments,
+  dropEmptyOptionalArguments,
+  dropInvalidPlaceholderArguments,
+  zodArgumentJudge,
+} from '../../utils/placeholderArguments.js'
+import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { formatError, formatZodValidationError } from '../../utils/toolErrors.js'
 import { TOOL_INPUT_VALIDATION_ERROR_PREFIX } from '../../utils/toolValidationError.js'
 import {
@@ -133,7 +143,10 @@ import {
 } from '../../utils/blindToolCallValidation.js'
 import { isEnvDefinedFalsy } from '../../utils/envUtils.js'
 import { coerceMcpInput } from '../mcp/coerceMcpInput.js'
-import { checkMcpArguments } from '../mcp/contractValidation.js'
+import {
+  checkMcpArguments,
+  contractArgumentJudge,
+} from '../mcp/contractValidation.js'
 import {
   decodeStatusOf,
   describeDecodeFailure,
@@ -970,52 +983,105 @@ function bashInputMissingCommand(value: unknown): boolean {
   return typeof command !== 'string' || command.trim().length === 0
 }
 
-type SchemaIssue = { path: ReadonlyArray<PropertyKey>; message: string }
-type SafeParser = {
-  safeParse(
-    input: unknown,
-  ):
-    | { success: true }
-    | { success: false; error: { issues: ReadonlyArray<SchemaIssue> } }
+type ArgumentSchema = {
+  safeParse(input: unknown): {
+    success: boolean
+    data?: unknown
+    error?: { issues?: unknown }
+  }
 }
 
 /**
- * A malformed advisory field (Tool.advisoryInputFields) must not reject a call
- * whose real arguments are fine. When every schema problem sits inside such
- * fields, returns the input without them plus a note for the model. Otherwise
- * returns the input untouched, so the usual validation error reports it all.
+ * Read optional arguments that the contract rejects as the omissions they
+ * stand for (see utils/placeholderArguments.ts), for every tool on every
+ * lane. A built-in tool is judged by its Zod schema; an MCP tool by its
+ * server's JSON Schema, with schema coercion rerun once a placeholder is out
+ * of the way. A malformed advisory field (Tool.advisoryInputFields) that is
+ * the only problem with a call is dropped the same way. Anything else comes
+ * back untouched, so the usual validation error still reports it.
  */
-export function dropMalformedAdvisoryFields(
-  advisoryFields: readonly string[] | undefined,
-  schema: SafeParser,
+export function repairOptionalToolArguments(
+  tool: Pick<Tool, 'advisoryInputFields'>,
+  schema: ArgumentSchema,
   input: Record<string, unknown>,
-): { input: Record<string, unknown>; note?: string } {
-  if (!advisoryFields?.length || !isPlainObject(input)) return { input }
-  const parsed = schema.safeParse(input)
-  if (parsed.success) return { input }
-  const dropped = new Map<string, string>()
-  for (const issue of parsed.error.issues) {
-    const field = issue.path[0]
-    if (
-      typeof field !== 'string' ||
-      !advisoryFields.includes(field) ||
-      !(field in input)
-    ) {
-      return { input }
-    }
-    if (!dropped.has(field)) {
-      dropped.set(field, `${issue.path.map(String).join('.')}: ${issue.message}`)
-    }
-  }
-  if (dropped.size === 0) return { input }
-  const kept = Object.fromEntries(
-    Object.entries(input).filter(([key]) => !dropped.has(key)),
+  mcpContract?: Record<string, unknown>,
+): ArgumentRepair {
+  return dropInvalidPlaceholderArguments(
+    input,
+    mcpContract ? contractArgumentJudge(mcpContract) : zodArgumentJudge(schema),
+    {
+      advisoryFields: tool.advisoryInputFields,
+      ...(mcpContract && {
+        normalize: (value: Record<string, unknown>) =>
+          coerceMcpInput(value, mcpContract) as Record<string, unknown>,
+      }),
+    },
   )
-  const plural = dropped.size > 1
-  const names = [...dropped.keys()].map(name => `\`${name}\``).join(' and ')
+}
+
+/** The top-level arguments a tool's contract requires, or null if unreadable. */
+function requiredArgumentNames(tool: Tool): ReadonlySet<string> | null {
+  try {
+    const schema = isPlainObject(tool.inputJSONSchema)
+      ? tool.inputJSONSchema
+      : zodToJsonSchema(tool.inputSchema)
+    const required = (schema as { required?: unknown }).required
+    return new Set(
+      Array.isArray(required)
+        ? required.filter((name): name is string => typeof name === 'string')
+        : [],
+    )
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A tool's own validation can refuse a value its schema admits — Read refuses
+ * `pages: ""` — and it names no path, so nothing says which argument it
+ * means. When dropping the empty optional arguments makes the same
+ * validation pass, the call runs without them.
+ *
+ * The first check may have changed state: a read-first refusal records the
+ * read it shows. So the original is checked again after the retry, and the
+ * retry counts only if the original still fails with the same message. A pass
+ * owed to that state change rather than to the dropped arguments keeps the
+ * original refusal.
+ */
+async function validateWithoutEmptyOptionalArguments(
+  tool: Tool,
+  schema: ArgumentSchema,
+  input: Record<string, unknown>,
+  refusal: string,
+  context: ToolUseContext,
+): Promise<{
+  data: unknown
+  verdict: ValidationResult | undefined
+  note?: string
+} | null> {
+  if (!tool.validateInput || !isPlainObject(input)) return null
+  const required = requiredArgumentNames(tool)
+  if (!required) return null
+  const repair = dropEmptyOptionalArguments(input, required)
+  if (repair.dropped.length === 0) return null
+  const retried = schema.safeParse(repair.input)
+  if (!retried.success) return null
+  const verdict = await tool.validateInput(
+    retried.data as Parameters<NonNullable<Tool['validateInput']>>[0],
+    context,
+  )
+  if (verdict?.result === false) return null
+  const original = schema.safeParse(input)
+  if (!original.success) return null
+  const again = await tool.validateInput(
+    original.data as Parameters<NonNullable<Tool['validateInput']>>[0],
+    context,
+  )
+  if (again?.result !== false || again.message !== refusal) return null
   return {
-    input: kept,
-    note: `The optional ${names} argument${plural ? 's were' : ' was'} ignored because ${plural ? 'they do' : 'it does'} not match the tool's schema (${[...dropped.values()].join('; ')}); the call ran without ${plural ? 'them' : 'it'}.`,
+    data: retried.data,
+    verdict,
+    note: describeRefusedEmptyArguments(repair.dropped, refusal),
   }
 }
 
@@ -1129,18 +1195,6 @@ async function checkPermissionsAndCallTool(
         unknown
       >)
     : zodCoercedInput
-  // Advisory fields never change what a tool does, so a malformed one is
-  // dropped (and the model told, below) instead of rejecting the call. Any
-  // other schema problem still fails the call exactly as before.
-  const advisory = dropMalformedAdvisoryFields(
-    tool.advisoryInputFields,
-    strippedSchema,
-    coercedInput,
-  )
-  const validatedInput = advisory.input
-  if (advisory.note) {
-    logForDebugging(`${tool.name}: ${advisory.note}`)
-  }
   // MCP tools stand in for their servers' real schemas with a passthrough
   // Zod object, so Zod checks nothing about their arguments. Every MCP call
   // is therefore validated against the server's own JSON Schema here — not
@@ -1153,6 +1207,31 @@ async function checkPermissionsAndCallTool(
   const validateEveryMcpCall =
     (tool.isMcp ?? false) && !isEnvDefinedFalsy(process.env.TAU_MCP_ARG_VALIDATION)
   const isBlindCall = lazyCallDecision.action === 'execute_unverified'
+  // Models fill optional parameters they do not use with placeholders (null,
+  // "", 0, false, [], {}), and strict-mode lanes make them send null for every
+  // one. A placeholder the contract rejects is read as the omission it stands
+  // for rather than failing the whole call, and a malformed advisory field is
+  // dropped the same way; the model is told what was ignored (see
+  // addToolResult). Every other problem still fails the call exactly as before.
+  const mcpContract =
+    (tool.isMcp ?? false) &&
+    (validateEveryMcpCall || isBlindCall) &&
+    isPlainObject(tool.inputJSONSchema)
+      ? tool.inputJSONSchema
+      : undefined
+  const argumentRepair = repairOptionalToolArguments(
+    tool,
+    strippedSchema,
+    coercedInput,
+    mcpContract,
+  )
+  const validatedInput = argumentRepair.input
+  let argumentNote = describeDroppedArguments(argumentRepair.dropped)
+  if (argumentRepair.dropped.length > 0) {
+    logForDebugging(
+      `${tool.name}: ${argumentNote ?? `${argumentRepair.dropped.length} null optional argument(s) read as omitted`}`,
+    )
+  }
   // A call whose arguments never arrived complete is refused earlier, in
   // runToolUseInner, which is where that status is in scope.
   const blindCheck: BlindCallCheck =
@@ -1162,7 +1241,7 @@ async function checkPermissionsAndCallTool(
         : checkBlindDeferredCallInput(tool, validatedInput)
       : { ok: true as const }
 
-  const parsedInput = strippedSchema.safeParse(validatedInput)
+  let parsedInput = strippedSchema.safeParse(validatedInput)
   if (!parsedInput.success || !blindCheck.ok) {
     let errorContent = !parsedInput.success
       ? appendToolInputValidationRecoveryHint(
@@ -1270,10 +1349,25 @@ async function checkPermissionsAndCallTool(
   }
 
   // Validate input values. Each tool has its own validation logic
-  const isValidCall = await tool.validateInput?.(
+  let isValidCall = await tool.validateInput?.(
     parsedInput.data,
     toolUseContext,
   )
+  if (isValidCall?.result === false) {
+    const retried = await validateWithoutEmptyOptionalArguments(
+      tool,
+      strippedSchema,
+      validatedInput,
+      isValidCall.message,
+      toolUseContext,
+    )
+    if (retried) {
+      logForDebugging(`${tool.name}: ${retried.note ?? 'empty optional arguments read as omitted'}`)
+      parsedInput = { success: true, data: retried.data }
+      isValidCall = retried.verdict
+      argumentNote = [argumentNote, retried.note].filter(Boolean).join(' ') || undefined
+    }
+  }
   if (isValidCall?.result === false) {
     logForDebugging(
       `${tool.name} tool validation error: ${isValidCall.message?.slice(0, 200)}`,
@@ -2106,8 +2200,8 @@ async function checkPermissionsAndCallTool(
             tool.maxResultSizeChars,
           )
         : await processToolResultBlock(tool, toolUseResult, toolUseID)
-      const toolResultBlock = advisory.note
-        ? appendNoteToToolResult(mappedResultBlock, advisory.note)
+      const toolResultBlock = argumentNote
+        ? appendNoteToToolResult(mappedResultBlock, argumentNote)
         : mappedResultBlock
 
       // Build content blocks - tool result first, then optional feedback
