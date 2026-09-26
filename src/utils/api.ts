@@ -78,11 +78,18 @@ type BetaToolWithExtras = BetaTool & {
   }
   eager_input_streaming?: boolean
   __tau_should_defer?: boolean
+  __tau_advisory_fields?: readonly string[]
 }
 
-function markTauDeferredToolSchema<T extends object>(schema: T, tool: Tool): T {
+// Non-enumerable, so neither marker is ever serialized onto the wire.
+function markTauToolSchema<T extends object>(schema: T, tool: Tool): T {
   Object.defineProperty(schema, '__tau_should_defer', {
     value: isDeferredTool(tool),
+    enumerable: false,
+    configurable: true,
+  })
+  Object.defineProperty(schema, '__tau_advisory_fields', {
+    value: tool.advisoryInputFields,
     enumerable: false,
     configurable: true,
   })
@@ -270,7 +277,7 @@ export async function toolToAPISchema(
     const stripped = Object.keys(schema).filter(k => !allowed.has(k))
     if (stripped.length > 0) {
       logStripOnce(stripped)
-      return markTauDeferredToolSchema({
+      return markTauToolSchema({
         name: schema.name,
         description: schema.description,
         input_schema: schema.input_schema,
@@ -282,7 +289,7 @@ export async function toolToAPISchema(
   // Note: We cast to BetaTool but the extra fields are still present at runtime
   // and will be serialized in the API request, even though they're not in the SDK's
   // BetaTool type definition. This is intentional for beta features.
-  return markTauDeferredToolSchema(schema, tool) as BetaTool
+  return markTauToolSchema(schema, tool) as BetaTool
 }
 
 let loggedStrip = false

@@ -7,7 +7,11 @@ import type { PermissionResult } from '../../utils/permissions/PermissionResult.
 import { EVAL_TOOL_NAME } from './constants.js'
 import { clampOutput, resolveTimeoutMs, summarizeBridgeCalls } from './format.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
-import { isEvalToolEnabled } from './pythonRuntime.js'
+import {
+  describeMissingPythonModule,
+  missingPythonModule,
+} from '../../utils/pythonModuleHelp.js'
+import { isEvalToolEnabled, resolvePythonInterpreter } from './pythonRuntime.js'
 import { acquireKernel, discardKernel } from './registry.js'
 import { DeadlineBudget, registerBridgeSession } from './toolBridge.js'
 import {
@@ -69,6 +73,19 @@ const outputSchema = lazySchema(() =>
 )
 type OutputSchema = ReturnType<typeof outputSchema>
 export type EvalOutput = z.infer<OutputSchema>
+
+// Side-channel from call() to mapToolResultToToolResultBlockParam, keyed by
+// the result object (like FileReadTool's notes), so the output schema and the
+// SDK types built from it stay unchanged.
+const moduleNotes = new WeakMap<object, string>()
+
+/** The module a failed cell could not import, from the kernel's error. */
+function missingModuleOf(error: { ename: string; evalue: string } | undefined): string | undefined {
+  if (!error || (error.ename !== 'ModuleNotFoundError' && error.ename !== 'ImportError')) {
+    return undefined
+  }
+  return missingPythonModule(`${error.ename}: ${error.evalue}`)
+}
 
 export const EvalTool = buildTool({
   name: EVAL_TOOL_NAME,
@@ -210,23 +227,40 @@ export const EvalTool = buildTool({
             : '(no output)'),
       )
 
-      return {
-        data: {
-          ok: outcome.ok,
-          text: clamped.text,
-          images: outcome.displays
-            .filter(display => display.mime.startsWith('image/'))
-            .map(display => ({ mime: display.mime, data: display.data })),
-          bridgeCalls,
-          durationMs: Date.now() - startedAt,
-          cancelled: outcome.cancelled,
-          timedOut: outcome.timedOut,
-          kernelRestarted: restarted || outcome.crashed,
-          truncated: clamped.truncated,
-          syntaxError: outcome.error?.ename === 'SyntaxError' ||
-            outcome.error?.ename === 'IndentationError',
-        } satisfies EvalOutput,
+      const data = {
+        ok: outcome.ok,
+        text: clamped.text,
+        images: outcome.displays
+          .filter(display => display.mime.startsWith('image/'))
+          .map(display => ({ mime: display.mime, data: display.data })),
+        bridgeCalls,
+        durationMs: Date.now() - startedAt,
+        cancelled: outcome.cancelled,
+        timedOut: outcome.timedOut,
+        kernelRestarted: restarted || outcome.crashed,
+        truncated: clamped.truncated,
+        syntaxError: outcome.error?.ename === 'SyntaxError' ||
+          outcome.error?.ename === 'IndentationError',
+      } satisfies EvalOutput
+
+      // A failed import: check every Python here before the model guesses,
+      // and say which one the kernel runs and what fixes it.
+      const missing = missingModuleOf(outcome.error)
+      const interpreter = missing ? resolvePythonInterpreter() : null
+      if (missing && interpreter) {
+        try {
+          const note = await describeMissingPythonModule({
+            module: missing,
+            tool: 'eval',
+            interpreter,
+            cwd,
+          })
+          if (note) moduleNotes.set(data, note)
+        } catch {
+          // The note is a help, never a reason to fail the call.
+        }
       }
+      return { data }
     } finally {
       unregister()
     }
@@ -253,6 +287,8 @@ export const EvalTool = buildTool({
         'The cell failed to parse, so NOTHING in it ran and the kernel namespace is unchanged. Fix the syntax and re-send only this cell — do not repeat setup from earlier cells.',
       )
     }
+    const moduleNote = moduleNotes.get(output)
+    if (moduleNote) notes.push(moduleNote)
 
     const text = notes.length > 0 ? `${output.text}\n\n${notes.join('\n')}` : output.text
 

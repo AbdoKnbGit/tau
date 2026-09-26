@@ -59,14 +59,23 @@ import {
   readNotebook,
 } from '../../utils/notebook.js'
 import {
+  canReadOfficeLocally,
   hasApprovedOfficeUpload,
+  isFirecrawlOfficeExtension,
   isOfficeDocExtension,
   isOfficeParseEnabled,
-  officeParseDisabledMessage,
-  parseOfficeDocument,
+  readOfficeDocument,
 } from '../../utils/officeDocs.js'
 import { expandPath } from '../../utils/path.js'
-import { extractPDFPages, getPDFPageCount, readPDF } from '../../utils/pdf.js'
+import { recordFileRead } from '../../utils/readHistory.js'
+import {
+  extractPDFPages,
+  extractPDFText,
+  getPDFPageCount,
+  getPopplerInstallHint,
+  type PDFTextResult,
+  readPDF,
+} from '../../utils/pdf.js'
 import {
   isPDFExtension,
   isPDFSupported,
@@ -490,22 +499,25 @@ export const FileReadTool = buildTool({
       appState.toolPermissionContext,
     )
 
-    // Reading an office document uploads it to Firecrawl to be converted —
-    // the only path in this tool that sends file contents off the machine. A
-    // filesystem read rule grants local access and cannot speak to egress, so
-    // ask once per session on top of whatever those rules decided. A denial
-    // still wins. parseOfficeDocument records the approval on its first
-    // success, so this asks once and then stays quiet.
+    // Reading an office document with no local Python library for it uploads
+    // it to Firecrawl to be converted — the only path in this tool that sends
+    // file contents off the machine. A filesystem read rule grants local
+    // access and cannot speak to egress, so ask once per session on top of
+    // whatever those rules decided. A denial still wins. parseOfficeDocument
+    // records the approval on its first success, so this asks once and then
+    // stays quiet. With a local library nothing leaves the machine: no ask.
+    const officeExt = path.extname(input.file_path).toLowerCase()
     if (
       decision.behavior === 'allow' &&
       isOfficeParseEnabled() &&
       !hasApprovedOfficeUpload() &&
-      isOfficeDocExtension(path.extname(input.file_path).toLowerCase())
+      isFirecrawlOfficeExtension(officeExt) &&
+      !(await canReadOfficeLocally(officeExt))
     ) {
       const decisionReason = {
         type: 'other' as const,
         reason:
-          'Office documents have no local parser; reading one uploads it to Firecrawl for conversion to markdown',
+          'No local Python library reads this Office document; reading it uploads it to Firecrawl for conversion to markdown',
       }
       return {
         behavior: 'ask',
@@ -584,22 +596,19 @@ export const FileReadTool = buildTool({
     // Binary extension check (string check on extension only, no I/O).
     // PDF, images, and SVG are excluded - this tool renders them natively.
     const ext = path.extname(fullFilePath).toLowerCase()
-    // Office documents are binary containers with no local parser, but the
-    // office branch in callInner converts them to markdown. They stay rejected
-    // when the user has turned conversion off.
+    // Office documents are binary containers, but the office branch in
+    // callInner converts them to markdown: with a local Python library, else
+    // Firecrawl. When neither can, it says what to install, so they pass here.
     const isOfficeDoc = isOfficeDocExtension(ext)
-    const isConvertibleOfficeDoc = isOfficeDoc && isOfficeParseEnabled()
     if (
       hasBinaryExtension(fullFilePath) &&
       !isPDFExtension(ext) &&
-      !isConvertibleOfficeDoc &&
+      !isOfficeDoc &&
       !IMAGE_EXTENSIONS.has(ext.slice(1))
     ) {
       return {
         result: false,
-        message: isOfficeDoc
-          ? officeParseDisabledMessage(ext)
-          : `This tool cannot read binary files. The file appears to be a binary ${ext} file. Please use appropriate tools for binary file analysis.`,
+        message: `This tool cannot read binary files. The file appears to be a binary ${ext} file. Please use appropriate tools for binary file analysis.`,
         errorCode: 4,
       }
     }
@@ -911,7 +920,11 @@ export const FileReadTool = buildTool({
         let content: string
 
         if (data.file.content) {
+          const pdfTextNote = pdfTextOnlyNotes.get(data)
           content =
+            (pdfTextNote
+              ? `<system-reminder>${pdfTextNote}</system-reminder>\n`
+              : '') +
             memoryFileFreshnessPrefix(data) +
             formatFileLines(data.file) +
             (shouldIncludeFileReadMitigation()
@@ -974,6 +987,26 @@ const memoryFileMtimes = new WeakMap<object, number>()
 const pagesIgnoredResults = new WeakSet<object>()
 const PAGES_IGNORED_NUDGE =
   '\n\n<system-reminder>Note: the "pages" parameter applies only to PDF files and was ignored for this read. To read a specific part of a text or code file, use offset/limit (1-indexed line numbers); for a large code file, skeleton: true returns a structural overview.</system-reminder>'
+
+// Side-channel marking a PDF page read that fell back to extracted text
+// because the pages could not be rendered as images. The mapper puts the note
+// first, so the model knows nothing visual was inspected.
+const pdfTextOnlyNotes = new WeakMap<object, string>()
+
+/** Label each page of pdftotext output, which ends every page with a form feed. */
+function formatPDFTextPages({ text, firstPage }: PDFTextResult): {
+  content: string
+  hasText: boolean
+} {
+  const pages = text.replaceAll('\r\n', '\n').split('\f')
+  if (pages.length > 1 && pages.at(-1)!.trim() === '') pages.pop()
+  return {
+    content: pages
+      .map((page, i) => `--- Page ${firstPage + i} ---\n${page.trimEnd()}`)
+      .join('\n\n'),
+    hasText: pages.some(page => page.trim() !== ''),
+  }
+}
 
 function memoryFileFreshnessPrefix(data: object): string {
   const mtimeMs = memoryFileMtimes.get(data)
@@ -1084,6 +1117,7 @@ async function callInner(
       offset,
       limit,
     })
+    recordFileRead(fullFilePath, context.agentId)
     context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
 
     const data = {
@@ -1138,7 +1172,54 @@ async function callInner(
         parsedRange ?? undefined,
       )
       if (!extractResult.success) {
-        throw new Error(extractResult.error.message)
+        const { reason, message } = extractResult.error
+        // Page images need pdftoppm or PyMuPDF. When neither works, the text
+        // layer can still be read (pdftotext or a Python PDF library), and the
+        // note says plainly that nothing visual was inspected. Problems with
+        // the file itself (password, damage, size) would fail the same way,
+        // so they surface.
+        if (reason !== 'unavailable' && reason !== 'unknown') {
+          throw new Error(message)
+        }
+        const textResult = await extractPDFText(
+          resolvedFilePath,
+          parsedRange ?? undefined,
+        )
+        if (!textResult.success) {
+          const pythonInstall =
+            textResult.error.pythonInstall ?? extractResult.error.pythonInstall
+          throw new Error(
+            reason === 'unavailable' && textResult.error.reason === 'unavailable'
+              ? `Cannot read PDF pages ${pages}: nothing here can read PDFs — neither Poppler (pdftoppm for page images, pdftotext for text) nor a Python with a PDF library. Either: ${getPopplerInstallHint()}${pythonInstall ? ` Or: ${pythonInstall}` : ''}${isPDFSupported() ? ' If the PDF is small, Read it without `pages` to attach the whole document instead.' : ''}`
+              : `${message} Extracting the text instead also failed: ${textResult.error.message}${pythonInstall ? ` ${pythonInstall}` : ''}`,
+          )
+        }
+        const { content, hasText } = formatPDFTextPages(textResult.data)
+        await validateContentTokens(content, ext, maxTokens)
+        const lineCount = content.split('\n').length
+        const data = {
+          type: 'text' as const,
+          file: {
+            filePath: file_path,
+            content,
+            numLines: lineCount,
+            startLine: 1,
+            totalLines: lineCount,
+          },
+        }
+        pdfTextOnlyNotes.set(
+          data,
+          hasText
+            ? `This is only the text layer of PDF pages ${pages}, extracted with ${textResult.data.tool}, because the pages could not be rendered as images. Images, charts, scanned pages and layout were not inspected. ${message}`
+            : `PDF pages ${pages} have no text layer (they are probably scanned images) and could not be rendered as images, so their content was not inspected. ${message}`,
+        )
+        logFileOperation({
+          operation: 'read',
+          tool: 'FileReadTool',
+          filePath: fullFilePath,
+          content: `PDF text of pages ${pages}`,
+        })
+        return { data }
       }
       logEvent('tengu_pdf_page_extraction', {
         success: true,
@@ -1153,7 +1234,8 @@ async function callInner(
         content: `PDF pages ${pages}`,
       })
       const entries = await readdir(extractResult.data.file.outputDir)
-      const imageFiles = entries.filter(f => f.endsWith('.jpg')).sort()
+      // pdftoppm and current PyMuPDF write JPEG; an old PyMuPDF writes PNG.
+      const imageFiles = entries.filter(f => /\.(jpg|png)$/.test(f)).sort()
       const imageBlocks = await Promise.all(
         imageFiles.map(async f => {
           const imgPath = path.join(extractResult.data.file.outputDir, f)
@@ -1161,7 +1243,7 @@ async function callInner(
           const resized = await maybeResizeAndDownsampleImageBuffer(
             imgBuffer,
             imgBuffer.length,
-            'jpeg',
+            f.endsWith('.png') ? 'png' : 'jpeg',
           )
           return {
             type: 'image' as const,
@@ -1199,7 +1281,8 @@ async function callInner(
       !isPDFSupported() || stats.size > PDF_EXTRACT_SIZE_THRESHOLD
 
     if (shouldExtractPages) {
-      const extractResult = await extractPDFPages(resolvedFilePath)
+      // Only logged: no Python fallback, which would render every page.
+      const extractResult = await extractPDFPages(resolvedFilePath, undefined, false)
       if (extractResult.success) {
         logEvent('tengu_pdf_page_extraction', {
           success: true,
@@ -1219,7 +1302,7 @@ async function callInner(
       throw new Error(
         'Reading full PDFs is not supported with this model. Use a newer model (Sonnet 3.5 v2 or later), ' +
           `or use the pages parameter to read specific page ranges (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
-          'Page extraction requires poppler-utils: install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.',
+          `Page extraction needs Poppler or a Python with PyMuPDF. ${getPopplerInstallHint()}`,
       )
     }
 
@@ -1255,12 +1338,13 @@ async function callInner(
     }
   }
 
-  // --- Office document (Word / Excel / OpenDocument) ---
+  // --- Office document (Word / Excel / PowerPoint / OpenDocument) ---
   // Placed after the PDF branch on purpose: .pdf keeps its native, on-machine
   // path and must never reach the uploader. These formats are binary
-  // containers with no local parser, so they are converted to markdown.
+  // containers, converted to markdown by a local Python library when one is
+  // installed, else by Firecrawl.
   if (isOfficeDocExtension(ext)) {
-    const parsed = await parseOfficeDocument(
+    const parsed = await readOfficeDocument(
       resolvedFilePath,
       context.abortController.signal,
     )
@@ -1300,7 +1384,7 @@ async function callInner(
     })
 
     const notes = [
-      `Converted ${path.basename(fullFilePath)} to markdown${parsed.cached ? ' (cached from an earlier read)' : ' using Firecrawl'}.`,
+      `Converted ${path.basename(fullFilePath)} to markdown with ${parsed.source}${parsed.cached ? ' (cached from an earlier read)' : ''}.`,
       'This is a text rendering of a binary document, so it cannot be modified with Edit or Write.',
     ]
     if (parsed.warning) {
@@ -1358,6 +1442,7 @@ async function callInner(
         limit: undefined,
         isPartialView: true,
       })
+      recordFileRead(fullFilePath, context.agentId)
       context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
 
       logFileOperation({
@@ -1425,6 +1510,7 @@ async function callInner(
     offset,
     limit,
   })
+  recordFileRead(fullFilePath, context.agentId)
   context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
 
   // Snapshot before iterating — a listener that unsubscribes mid-callback

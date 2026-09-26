@@ -1,13 +1,13 @@
 /**
- * Read-before-Edit loop-guard unit tests.
+ * Read-before-Edit refusal counter unit tests.
  *
  * Run: bun run src/tools/FileEditTool/readFirstGuard.test.ts
  */
 
 import {
   noteFileRead,
+  recordUnreadEditRefusal,
   resetReadFirstGuard,
-  shouldBlockUnreadEdit,
 } from './readFirstGuard.js'
 
 let passed = 0
@@ -32,79 +32,43 @@ function assert(cond: unknown, hint: string): void {
 const FILE = '/repo/src/app.ts'
 const OTHER = '/repo/src/other.ts'
 
-console.log('read-first loop guard:')
+console.log('read-first refusal counter:')
 
-test('blocks the first blind edit', () => {
-  assert(shouldBlockUnreadEdit(FILE) === true, 'first blind edit must block')
+test('counts the first blind edit as attempt 1', () => {
+  assert(recordUnreadEditRefusal(FILE) === 1, 'first refusal is attempt 1')
 })
 
-test('a repeated blind edit stops blocking (no infinite loop)', () => {
-  // The whole point: even if the model ignores the error and keeps re-issuing
-  // the identical blind edit, the guard must eventually let it through so the
-  // agent loop cannot spin forever.
-  const decisions: boolean[] = []
-  for (let i = 0; i < 25; i++) decisions.push(shouldBlockUnreadEdit(FILE))
-  assert(decisions.includes(false), 'guard must stop blocking at some point')
-  // And it must stop EARLY (bounded), not after dozens of round-trips.
-  const firstProceed = decisions.indexOf(false)
+test('keeps counting repeated blind edits; there is no bypass attempt', () => {
+  const counts: number[] = []
+  for (let i = 0; i < 25; i++) counts.push(recordUnreadEditRefusal(FILE))
   assert(
-    firstProceed >= 0 && firstProceed <= 3,
-    `expected to proceed within a few attempts, got index ${firstProceed}`,
+    counts.every((count, i) => count === i + 1),
+    `expected 1..25, got ${counts.join(',')}`,
   )
 })
 
-test('allows at least one retry before degrading', () => {
-  assert(shouldBlockUnreadEdit(FILE) === true, 'attempt 1 blocks')
-  assert(shouldBlockUnreadEdit(FILE) === true, 'attempt 2 (a retry) still blocks')
-  assert(
-    shouldBlockUnreadEdit(FILE) === false,
-    'attempt 3 must proceed so it cannot loop',
-  )
-})
-
-test('reading the file resets enforcement', () => {
-  shouldBlockUnreadEdit(FILE) // count = 1
-  noteFileRead(FILE) // model read the file — clear the counter
-  // A later blind edit of the same file must be enforced from scratch.
-  assert(
-    shouldBlockUnreadEdit(FILE) === true,
-    'after a read, a new blind edit blocks again',
-  )
+test('reading the file resets the count', () => {
+  recordUnreadEditRefusal(FILE)
+  recordUnreadEditRefusal(FILE)
+  noteFileRead(FILE)
+  assert(recordUnreadEditRefusal(FILE) === 1, 'after a read, counting restarts')
 })
 
 test('counters are per-file, not global', () => {
-  // Exhaust FILE's budget entirely.
-  shouldBlockUnreadEdit(FILE)
-  shouldBlockUnreadEdit(FILE)
-  shouldBlockUnreadEdit(FILE) // FILE now degraded
-  // A different file must still be enforced independently.
-  assert(
-    shouldBlockUnreadEdit(OTHER) === true,
-    'a different file has its own budget',
-  )
-})
-
-test('degrade path clears state so the file re-enforces later', () => {
-  shouldBlockUnreadEdit(FILE) // 1: block
-  shouldBlockUnreadEdit(FILE) // 2: block
-  assert(shouldBlockUnreadEdit(FILE) === false, '3: degrade/proceed')
-  // The degrade cleared the entry, so a fresh blind edit blocks again rather
-  // than being permanently degraded.
-  assert(
-    shouldBlockUnreadEdit(FILE) === true,
-    'after degrade, enforcement restarts',
-  )
+  recordUnreadEditRefusal(FILE)
+  recordUnreadEditRefusal(FILE)
+  assert(recordUnreadEditRefusal(OTHER) === 1, 'a different file counts separately')
 })
 
 test('stale counters age out via TTL', () => {
   const t0 = 1_000_000
-  assert(shouldBlockUnreadEdit(FILE, t0) === true, 'block at t0')
-  // Six minutes later (> 5 min TTL) the prior count is purged, so this counts
-  // as a fresh first attempt (blocks) rather than an escalation.
+  recordUnreadEditRefusal(FILE, t0)
+  recordUnreadEditRefusal(FILE, t0)
+  // Six minutes later (> 5 min TTL) the prior count is purged.
   const t1 = t0 + 6 * 60_000
   assert(
-    shouldBlockUnreadEdit(FILE, t1) === true,
-    'after TTL the counter resets to a fresh block',
+    recordUnreadEditRefusal(FILE, t1) === 1,
+    'after TTL the count restarts at 1',
   )
 })
 

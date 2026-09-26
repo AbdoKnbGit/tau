@@ -9,7 +9,7 @@ import { getCwd } from '../../../utils/cwd.js';
 import { getPatchForDisplay } from '../../../utils/diff.js';
 import { getFsImplementation } from '../../../utils/fsOperations.js';
 import { safeParseJSON } from '../../../utils/json.js';
-import { parseCellId } from '../../../utils/notebook.js';
+import { findNotebookCellIndex } from '../../../utils/notebookCellId.js';
 import { HighlightedCode } from '../../HighlightedCode.js';
 import { StructuredDiff } from '../../StructuredDiff.js';
 type Props = {
@@ -82,33 +82,9 @@ function NotebookEditToolDiffInner(t0) {
         t2 = "";
         break bb0;
       }
-      const cellIndex = parseCellId(cell_id);
-      if (cellIndex !== undefined) {
-        if (notebookData.cells[cellIndex]) {
-          const source = notebookData.cells[cellIndex].source;
-          let t3;
-          if ($[3] !== source) {
-            t3 = Array.isArray(source) ? source.join("") : source;
-            $[3] = source;
-            $[4] = t3;
-          } else {
-            t3 = $[4];
-          }
-          t2 = t3;
-          break bb0;
-        }
-        t2 = "";
-        break bb0;
-      }
-      let t3;
-      if ($[5] !== cell_id) {
-        t3 = cell => cell.id === cell_id;
-        $[5] = cell_id;
-        $[6] = t3;
-      } else {
-        t3 = $[6];
-      }
-      const cell_0 = notebookData.cells.find(t3);
+      // Same lookup as the tool itself, so the diff shows the cell it edits.
+      const cellIndex = findNotebookCellIndex(notebookData.cells, cell_id);
+      const cell_0 = cellIndex === -1 ? undefined : notebookData.cells[cellIndex];
       if (!cell_0) {
         t2 = "";
         break bb0;

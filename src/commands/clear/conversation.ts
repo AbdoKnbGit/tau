@@ -45,6 +45,7 @@ import {
 } from '../../utils/task/diskOutput.js'
 import { getCurrentWorktreeSession } from '../../utils/worktree.js'
 import { clearSessionCaches } from './caches.js'
+import { resetReadHistory } from '../../utils/readHistory.js'
 
 export async function clearConversation({
   setMessages,
@@ -128,6 +129,7 @@ export async function clearConversation({
 
   setCwd(getOriginalCwd())
   readFileState.clear()
+  resetReadHistory()
   discoveredSkillNames?.clear()
   loadedNestedMemoryPaths?.clear()
 

@@ -487,6 +487,13 @@ export type Tool<
    * Only applied when the tengu_tool_pear is enabled.
    */
   readonly strict?: boolean
+  /**
+   * Optional top-level input fields that only add advice and never change
+   * what the tool does. When every schema problem in a call is inside these
+   * fields, tool execution drops them, runs the call, and tells the model what
+   * was ignored, instead of rejecting the whole call.
+   */
+  readonly advisoryInputFields?: readonly string[]
 
   /**
    * Called on copies of tool_use input before observers see it (SDK stream,

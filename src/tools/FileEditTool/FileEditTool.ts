@@ -68,7 +68,11 @@ import {
   resolveFlexibleMatch,
 } from './matchResolver.js'
 import { getEditToolDescription } from './prompt.js'
-import { noteFileRead, shouldBlockUnreadEdit } from './readFirstGuard.js'
+import { noteFileRead, recordUnreadEditRefusal } from './readFirstGuard.js'
+import {
+  refuseWithCurrentContent,
+  unreadFileRefusal,
+} from '../../utils/readHistory.js'
 import {
   type FileEditInput,
   type FileEditOutput,
@@ -300,36 +304,54 @@ export const FileEditTool = buildTool({
 
     let readTimestamp = toolUseContext.readFileState.get(fullFilePath)
     if (readTimestamp) {
-      // A real read exists (full or windowed) — clear any stale blind-edit block
-      // counter so a future blind edit of this file starts enforcement fresh.
+      // A real read exists (full or windowed) — reset the blind-edit refusal
+      // count so a later blind edit of this file is counted from zero.
       noteFileRead(fullFilePath)
-    } else if (shouldBlockUnreadEdit(fullFilePath)) {
-      // Read-before-Edit (matches FileWriteTool/NotebookEditTool). A blind edit —
-      // no prior Read of this file this session — is blocked so the model reads
-      // first and its old_string is copied from real content instead of guessed,
-      // which prevents the wrong-old_string "String to replace not found" churn.
-      // This returns to the MODEL as a <tool_use_error> tool_result (never a user
-      // prompt), so the model self-corrects by reading, then retrying. The block
-      // is BOUNDED by shouldBlockUnreadEdit: after a couple of blocks on the same
-      // file it returns false and we fall through to seeding below — so a model
-      // that ignores the error can never loop forever. New-file creation
-      // (old_string === '') returned earlier, so it never reaches here.
+    } else {
+      // Read-before-Edit (matches FileWriteTool/NotebookEditTool). A blind edit
+      // — no current read of this file — is never applied. The refusal shows
+      // the current content, recorded as the model's read, so its next edit is
+      // grounded and the refusal cannot repeat into a loop. This returns to the
+      // MODEL as a <tool_use_error> tool_result (never a user prompt). Only a
+      // file too large to show, with nothing close to old_string, falls back to
+      // asking for a Read; repeats of that are counted to make it firmer.
+      // New-file creation (old_string === '') returned earlier.
+      const shown = refuseWithCurrentContent(
+        fullFilePath,
+        toolUseContext,
+        {
+          content: fileContent,
+          timestamp: getFileModificationTime(fullFilePath),
+        },
+        'Base old_string on the current content below and edit again',
+        { window: () => describeClosestMatch(fileContent, old_string) },
+      )
+      if (shown) {
+        noteFileRead(fullFilePath)
+        return { result: false, message: shown, errorCode: 6 }
+      }
+      const attempt = recordUnreadEditRefusal(fullFilePath)
       return {
         result: false,
         message:
-          "File has not been read yet. Read it first with the Read tool before editing it — your old_string must match the file's exact current contents character-for-character.",
+          unreadFileRefusal(fullFilePath, toolUseContext.agentId, {
+            neverRead:
+              "Read it first with the Read tool before editing it — your old_string must match the file's exact current contents character-for-character.",
+            action: 'before editing it',
+          }) +
+          (attempt > 1
+            ? ' Edits to this file are refused until you read it; repeating the edit without a Read fails the same way.'
+            : ''),
         errorCode: 6,
       }
     }
 
-    // Seed a full read-state when there is no full read yet: either the model
-    // read only a window (Read with offset/limit), or it never read the file but
-    // the loop guard above is exhausted (degrade-to-proceed so repeated blind
-    // edits can't loop). Both proceed; safety is still enforced by the old_string
-    // match below — a region the model never saw fails with "String to replace
-    // not found", never a silent clobber. Preserves the prior read-state cache
-    // behavior for the partial-view case.
-    if (!readTimestamp || readTimestamp.isPartialView) {
+    // The model has seen only a partial view (a skeleton, or content injected
+    // with parts removed): seed a full read-state from disk and proceed. Safety
+    // is still enforced by the old_string match below — a region the model
+    // never saw fails with "String to replace not found", never a silent
+    // clobber.
+    if (readTimestamp.isPartialView) {
       const seeded = {
         content: fileContent,
         timestamp: getFileModificationTime(fullFilePath),

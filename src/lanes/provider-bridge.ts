@@ -38,6 +38,7 @@ import type { Lane } from './types.js'
 import { getSessionId } from '../bootstrap/state.js'
 import { filterProviderToolsForLane } from './tool_filter.js'
 import { prefetchMediaText } from './shared/media_extract.js'
+import { markFailedToolResults } from './shared/tool_error_text.js'
 import { decideImageSupport } from './shared/vision_capability.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { createRetryableConnectionError } from '../services/api/transport_error.js'
@@ -61,6 +62,13 @@ import { isAntigravityModelId } from '../services/api/providers/gemini_code_assi
  * decide per-model, exactly like openai-compat.
  */
 const LANES_WITH_NATIVE_MEDIA = new Set(['gemini', 'codex'])
+
+/**
+ * Lanes whose wire flags a failed tool result itself: Anthropic's `is_error`,
+ * Kiro's `status: 'error'`, Cursor's `isError`. Every other lane gets failed
+ * results marked in their text instead (see shared/tool_error_text.ts).
+ */
+const LANES_WITH_NATIVE_TOOL_ERRORS = new Set(['claude', 'kiro', 'cursor'])
 import type { APIProvider } from '../utils/model/providers.js'
 import type { QuerySource } from '../constants/querySource.js'
 
@@ -273,7 +281,9 @@ export class LaneBackedProvider implements BaseProvider {
 
       const gen = streamAsProvider({
         model: resolvedModel,
-        messages: params.messages,
+        messages: LANES_WITH_NATIVE_TOOL_ERRORS.has(lane.name)
+          ? params.messages
+          : markFailedToolResults(params.messages),
         system: params.system ?? '',
         tools,
         max_tokens: params.max_tokens,

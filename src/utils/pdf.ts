@@ -9,6 +9,7 @@ import { errorMessage } from './errors.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { formatFileSize } from './format.js'
 import { getFsImplementation } from './fsOperations.js'
+import { runPythonDocReader } from './pythonDocs.js'
 import { getToolResultsDir } from './toolResultStorage.js'
 
 export type PDFError = {
@@ -20,6 +21,11 @@ export type PDFError = {
     | 'unknown'
     | 'unavailable'
   message: string
+  /**
+   * Set when no Python here has a PDF library: which interpreters were
+   * checked and the command that installs one (pythonDocs.ts).
+   */
+  pythonInstall?: string
 }
 
 export type PDFResult<T> =
@@ -144,39 +150,188 @@ export type PDFExtractPagesResult = {
   }
 }
 
-let pdftoppmAvailable: boolean | undefined
+type PdfTool = 'pdftoppm' | 'pdftotext'
+
+const pdfToolAvailability = new Map<PdfTool, Promise<boolean>>()
 
 /**
- * Reset the pdftoppm availability cache. Used by tests only.
+ * Reset the PDF tool availability cache. Used by tests only.
  */
 export function resetPdftoppmCache(): void {
-  pdftoppmAvailable = undefined
+  pdfToolAvailability.clear()
+}
+
+/**
+ * True when `-v` output proves the tool ran. Poppler prints
+ * "pdftoppm version 24.02.0" and exits 0; Xpdf prints
+ * "pdftotext version 4.06" and exits 99. A launch failure writes to stderr
+ * too (cmd.exe's "'pdftoppm' is not recognized..." on Windows), so stderr
+ * alone proves nothing; the version banner does.
+ */
+export function isPdfToolVersionBanner(tool: PdfTool, output: string): boolean {
+  return new RegExp(`\\b${tool}\\s+version\\s+\\d`, 'i').test(output)
+}
+
+/** Probe once per process whether `tool` (Poppler or Xpdf) can run. */
+function isPdfToolAvailable(tool: PdfTool): Promise<boolean> {
+  let available = pdfToolAvailability.get(tool)
+  if (!available) {
+    available = execFileNoThrow(tool, ['-v'], {
+      timeout: 5000,
+      useCwd: false,
+    }).then(
+      ({ code, stdout, stderr }) =>
+        code === 0 || isPdfToolVersionBanner(tool, `${stdout}\n${stderr}`),
+    )
+    pdfToolAvailability.set(tool, available)
+  }
+  return available
+}
+
+// Signals that mean the program itself crashed, as opposed to being stopped.
+const CRASH_SIGNALS = new Set(['SIGSEGV', 'SIGBUS', 'SIGILL', 'SIGFPE', 'SIGABRT'])
+
+/**
+ * Why a PDF tool run failed, in words that do not depend on the OS. A crash
+ * shows as an NTSTATUS exit code on Windows (0xC0000005 is an access
+ * violation) and as a signal elsewhere; both say "crashed", so the model does
+ * not blame the PDF. The tool's stderr is the detail when it has any, else
+ * execa's reason (timeout, kill, launch failure) without the command it
+ * echoes.
+ */
+export function describePdfToolFailure(
+  tool: PdfTool,
+  result: { code: number; stderr: string; error?: string },
+): string {
+  const { code, stderr, error } = result
+  const signal = error?.match(/\b(SIG[A-Z0-9]+)\b/)?.[1]
+  const unsigned = code >>> 0
+  const how =
+    unsigned >= 0xc0000000
+      ? `crashed (Windows error 0x${unsigned.toString(16).toUpperCase()})`
+      : signal && CRASH_SIGNALS.has(signal)
+        ? `crashed (${signal})`
+        : `failed (exit code ${code})`
+  const reason = error?.split(/:\s/)[0]?.trim() ?? ''
+  const detail =
+    stderr.trim() ||
+    (/^Command failed with exit code -?\d+$/.test(reason) ? '' : reason)
+  return detail ? `${tool} ${how}: ${detail}` : `${tool} ${how}.`
 }
 
 /**
  * Check whether the `pdftoppm` binary (from poppler-utils) is available.
  * The result is cached for the lifetime of the process.
  */
-export async function isPdftoppmAvailable(): Promise<boolean> {
-  if (pdftoppmAvailable !== undefined) return pdftoppmAvailable
-  const { code, stderr } = await execFileNoThrow('pdftoppm', ['-v'], {
-    timeout: 5000,
-    useCwd: false,
-  })
-  // pdftoppm prints version info to stderr and exits 0 (or sometimes 99 on older versions)
-  pdftoppmAvailable = code === 0 || stderr.length > 0
-  return pdftoppmAvailable
+export function isPdftoppmAvailable(): Promise<boolean> {
+  return isPdfToolAvailable('pdftoppm')
 }
 
 /**
- * Extract PDF pages as JPEG images using pdftoppm.
- * Produces page-01.jpg, page-02.jpg, etc. in an output directory.
- * This enables reading large PDFs and works with all API providers.
+ * How to get Poppler's command-line tools here. A running Tau keeps the PATH
+ * it started with, so the tools appear only after a restart.
+ */
+export function getPopplerInstallHint(
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === 'win32') {
+    return 'Install Poppler for Windows (for example `winget install oschwartz10612.Poppler`), make sure its bin folder is on PATH, and restart Tau.'
+  }
+  if (platform === 'darwin') {
+    return 'Install Poppler with `brew install poppler` and restart Tau.'
+  }
+  return 'Install poppler-utils (`sudo apt-get install poppler-utils` on Debian/Ubuntu, `sudo dnf install poppler-utils` on Fedora) and restart Tau.'
+}
+
+/** A page range as the Python reader takes it: 0 for "to the end". */
+function pythonPageArgs(options?: { firstPage?: number; lastPage?: number }): string[] {
+  const last =
+    options?.lastPage && options.lastPage !== Infinity ? options.lastPage : 0
+  return [String(options?.firstPage ?? 1), String(last)]
+}
+
+/**
+ * Extract PDF pages as images: pdftoppm (Poppler) when it is installed and
+ * works, else PyMuPDF from whichever Python here has it. Produces page-NN
+ * JPEG (or PNG, on an old PyMuPDF) files in an output directory. This enables
+ * reading large PDFs and works with all API providers.
  *
  * @param filePath Path to the PDF file
  * @param options Optional page range (1-indexed, inclusive)
  */
 export async function extractPDFPages(
+  filePath: string,
+  options?: { firstPage?: number; lastPage?: number },
+  /**
+   * Set false where the pages are not actually used (the whole-PDF read only
+   * logs whether extraction works): a Python fallback would render every page
+   * of a large PDF for nothing.
+   */
+  pythonFallback = true,
+): Promise<PDFResult<PDFExtractPagesResult>> {
+  const poppler = await extractPDFPagesWithPoppler(filePath, options)
+  // Problems with the file itself fail every renderer the same way.
+  if (
+    !pythonFallback ||
+    poppler.success ||
+    !['unavailable', 'unknown'].includes(poppler.error.reason)
+  ) {
+    return poppler
+  }
+  try {
+    const outputDir = join(getToolResultsDir(), `pdf-${randomUUID()}`)
+    await mkdir(outputDir, { recursive: true })
+    const viaPython = await runPythonDocReader('pdf-render', filePath, [
+      ...pythonPageArgs(options),
+      outputDir,
+      '100',
+    ])
+    if (viaPython.ok) {
+      const count = Number(viaPython.data.count ?? 0)
+      if (count > 0) {
+        const { size } = await getFsImplementation().stat(filePath)
+        return {
+          success: true,
+          data: { type: 'parts', file: { filePath, originalSize: size, outputDir, count } },
+        }
+      }
+      return {
+        success: false,
+        error: { reason: 'corrupted', message: 'PyMuPDF rendered no pages: the range may be past the end of the PDF.' },
+      }
+    }
+    if (viaPython.reason === 'password') {
+      return {
+        success: false,
+        error: { reason: 'password_protected', message: 'PDF is password-protected. Please provide an unprotected version.' },
+      }
+    }
+    const popplerPart =
+      poppler.error.reason === 'unavailable'
+        ? 'pdftoppm is not installed'
+        : poppler.error.message.replace(/\.$/, '')
+    return viaPython.reason === 'missing'
+      ? {
+          success: false,
+          error: {
+            reason: poppler.error.reason,
+            message: `${popplerPart} and no Python here has PyMuPDF, so PDF pages cannot be rendered as images.`,
+            pythonInstall: viaPython.message,
+          },
+        }
+      : {
+          success: false,
+          error: {
+            reason: 'unknown',
+            message: `${popplerPart}, and rendering the pages with PyMuPDF failed too: ${viaPython.message}`,
+          },
+        }
+  } catch (e: unknown) {
+    return { success: false, error: { reason: 'unknown', message: errorMessage(e) } }
+  }
+}
+
+async function extractPDFPagesWithPoppler(
   filePath: string,
   options?: { firstPage?: number; lastPage?: number },
 ): Promise<PDFResult<PDFExtractPagesResult>> {
@@ -208,8 +363,7 @@ export async function extractPDFPages(
         success: false,
         error: {
           reason: 'unavailable',
-          message:
-            'pdftoppm is not installed. Install poppler-utils (e.g. `brew install poppler` or `apt-get install poppler-utils`) to enable PDF page rendering.',
+          message: `pdftoppm is not installed, so PDF pages cannot be rendered as images. ${getPopplerInstallHint()}`,
         },
       }
     }
@@ -228,7 +382,7 @@ export async function extractPDFPages(
       args.push('-l', String(options.lastPage))
     }
     args.push(filePath, prefix)
-    const { code, stderr } = await execFileNoThrow('pdftoppm', args, {
+    const { code, stderr, error } = await execFileNoThrow('pdftoppm', args, {
       timeout: 120_000,
       useCwd: false,
     })
@@ -255,7 +409,10 @@ export async function extractPDFPages(
       }
       return {
         success: false,
-        error: { reason: 'unknown', message: `pdftoppm failed: ${stderr}` },
+        error: {
+          reason: 'unknown',
+          message: describePdfToolFailure('pdftoppm', { code, stderr, error }),
+        },
       }
     }
 
@@ -288,6 +445,146 @@ export async function extractPDFPages(
         },
       },
     }
+  } catch (e: unknown) {
+    return {
+      success: false,
+      error: {
+        reason: 'unknown',
+        message: errorMessage(e),
+      },
+    }
+  }
+}
+
+export type PDFTextResult = {
+  /** Pages separated by form feeds, as pdftotext writes them. */
+  text: string
+  firstPage: number
+  /** What extracted it: pdftotext, or the Python library used. */
+  tool: string
+}
+
+/**
+ * Extract the text layer of PDF pages, for when the pages cannot be rendered
+ * as images: `pdftotext` (Poppler or Xpdf) when it is installed and works,
+ * else a Python PDF library (PyMuPDF, pypdf, PyPDF2, pdfplumber) from
+ * whichever Python here has one. Only the text comes back: images, charts,
+ * scanned pages and layout are not in it.
+ *
+ * @param filePath Path to the PDF file
+ * @param options Optional page range (1-indexed, inclusive)
+ */
+export async function extractPDFText(
+  filePath: string,
+  options?: { firstPage?: number; lastPage?: number },
+): Promise<PDFResult<PDFTextResult>> {
+  const poppler = await extractPDFTextWithPoppler(filePath, options)
+  if (poppler.success || !['unavailable', 'unknown'].includes(poppler.error.reason)) {
+    return poppler
+  }
+  try {
+    const viaPython = await runPythonDocReader('pdf-text', filePath, pythonPageArgs(options))
+    if (viaPython.ok) {
+      const pages = Array.isArray(viaPython.data.pages)
+        ? (viaPython.data.pages as [number, string][])
+        : []
+      return {
+        success: true,
+        data: {
+          text: pages.map(([, text]) => text).join('\f'),
+          firstPage: pages[0]?.[0] ?? options?.firstPage ?? 1,
+          tool: viaPython.library,
+        },
+      }
+    }
+    if (viaPython.reason === 'password') {
+      return {
+        success: false,
+        error: { reason: 'password_protected', message: 'PDF is password-protected. Please provide an unprotected version.' },
+      }
+    }
+    const popplerPart =
+      poppler.error.reason === 'unavailable'
+        ? 'pdftotext is not installed'
+        : poppler.error.message.replace(/\.$/, '')
+    return viaPython.reason === 'missing'
+      ? {
+          success: false,
+          error: {
+            reason: poppler.error.reason,
+            message: `${popplerPart} and no Python here has a PDF library (PyMuPDF, pypdf, PyPDF2 or pdfplumber), so the text cannot be extracted.`,
+            pythonInstall: viaPython.message,
+          },
+        }
+      : {
+          success: false,
+          error: {
+            reason: 'unknown',
+            message: `${popplerPart}, and extracting the text with Python failed too: ${viaPython.message}`,
+          },
+        }
+  } catch (e: unknown) {
+    return { success: false, error: { reason: 'unknown', message: errorMessage(e) } }
+  }
+}
+
+async function extractPDFTextWithPoppler(
+  filePath: string,
+  options?: { firstPage?: number; lastPage?: number },
+): Promise<PDFResult<PDFTextResult>> {
+  try {
+    if (!(await isPdfToolAvailable('pdftotext'))) {
+      return {
+        success: false,
+        error: {
+          reason: 'unavailable',
+          message: `pdftotext is not installed, so the PDF's text cannot be extracted. ${getPopplerInstallHint()}`,
+        },
+      }
+    }
+
+    const firstPage = options?.firstPage ?? 1
+    // Xpdf defaults to Latin-1 output; '-' writes the text to stdout.
+    const args = ['-layout', '-enc', 'UTF-8', '-f', String(firstPage)]
+    if (options?.lastPage && options.lastPage !== Infinity) {
+      args.push('-l', String(options.lastPage))
+    }
+    args.push(filePath, '-')
+    const { code, stdout, stderr, error } = await execFileNoThrow('pdftotext', args, {
+      timeout: 60_000,
+      useCwd: false,
+    })
+
+    if (code !== 0) {
+      if (/password/i.test(stderr)) {
+        return {
+          success: false,
+          error: {
+            reason: 'password_protected',
+            message:
+              'PDF is password-protected. Please provide an unprotected version.',
+          },
+        }
+      }
+      if (/damaged|corrupt|invalid/i.test(stderr)) {
+        return {
+          success: false,
+          error: {
+            reason: 'corrupted',
+            message: 'PDF file is corrupted or invalid.',
+          },
+        }
+      }
+      return {
+        success: false,
+        error: {
+          reason: 'unknown',
+          message: describePdfToolFailure('pdftotext', { code, stderr, error }),
+        },
+      }
+    }
+
+    return { success: true, data: { text: stdout, firstPage, tool: 'pdftotext' } }
   } catch (e: unknown) {
     return {
       success: false,

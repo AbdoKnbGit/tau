@@ -59,6 +59,7 @@ import {
   resolveEffectiveBashCwd,
 } from './bashWorkdir.js';
 import { maybeAppendCommandHelp } from './commandHelp.js';
+import { appendPythonModuleHelp } from '../../utils/pythonModuleHelp.js';
 import { recordBashFailure, recordBashSuccess } from './bashRetryGuard.js';
 import { getPlatform } from '../../utils/platform.js';
 import { findGitBashPath } from '../../utils/windowsPaths.js';
@@ -507,6 +508,9 @@ export const BashTool = buildTool({
   // 30K chars - tool result persistence threshold
   maxResultSizeChars: 30_000,
   strict: true,
+  // Neither changes what runs: the command string is authoritative for
+  // execution, permissions and sandboxing.
+  advisoryInputFields: ['command_parts', 'description'],
   // Hide BashTool on Windows when neither git-bash nor any other bash is
   // available. The shell layer would route bash commands to PowerShell,
   // but the model's bash syntax (globs, pipes, heredocs) wouldn't parse —
@@ -1041,9 +1045,16 @@ export const BashTool = buildTool({
         // when failure output matches a usage pattern. 3s timeout per
         // lookup; session-lifetime cache so each command is fetched once.
         const outputWithVerifiedSyntax = await maybeAppendCommandHelp(input.command, outputWithFailureGuidance);
+        // A failed Python import: check every Python here and name the fix
+        // (pythonModuleHelp.ts), instead of the model guessing interpreters.
+        const outputWithModuleHelp = await appendPythonModuleHelp(outputWithVerifiedSyntax, {
+          tool: 'bash',
+          command: input.command,
+          cwd: executionDir
+        });
         // Record failure for retry guard before throwing
         recordBashFailure(input.command, result.code, outputWithSbFailures, executionDir);
-        throw new ShellError('', outputWithVerifiedSyntax, result.code, result.interrupted);
+        throw new ShellError('', outputWithModuleHelp, result.code, result.interrupted);
       }
       wasInterrupted = result.interrupted;
     } finally {

@@ -24,6 +24,7 @@ import { getDisplayPath } from '../../utils/file.js';
 import { logError } from '../../utils/log.js';
 import { getPlansDirectory } from '../../utils/plans.js';
 import { openForScan, readCapped } from '../../utils/readEditContext.js';
+import { isUnreadFileRefusal } from '../../utils/readHistory.js';
 import type { Output } from './FileWriteTool.js';
 const MAX_LINES_TO_RENDER = 10;
 // Model output uses \n regardless of platform, so always split on \n.
@@ -356,6 +357,12 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   verbose: boolean;
 }): React.ReactNode {
   if (!verbose && typeof result === 'string' && extractTag(result, 'tool_use_error')) {
+    // Show a less scary message for intended behavior
+    if (isUnreadFileRefusal(extractTag(result, 'tool_use_error') ?? '')) {
+      return <MessageResponse>
+          <Text dimColor>File must be read first</Text>
+        </MessageResponse>;
+    }
     return <MessageResponse>
         <Text color="error">Error writing file</Text>
       </MessageResponse>;

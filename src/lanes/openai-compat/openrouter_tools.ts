@@ -101,6 +101,15 @@ export function openRouterHttpError(
   return error
 }
 
+/** Advisory fields (ProviderTool.__tau_advisory_fields) never change what a
+ * call does, and shared tool execution drops a malformed one instead of
+ * failing the call, so contract checks and repeat detection ignore them. */
+function withoutAdvisoryFields(tool: ProviderTool | undefined, input: unknown): unknown {
+  const fields = tool?.__tau_advisory_fields
+  if (!fields?.length || !input || typeof input !== 'object' || Array.isArray(input)) return input
+  return Object.fromEntries(Object.entries(input).filter(([key]) => !fields.includes(key)))
+}
+
 function canonical(value: unknown): string {
   return JSON.stringify(value, (_key, item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return item
@@ -122,8 +131,10 @@ export function assertOpenRouterToolProgress(
   const calls = new Map<string, ProviderContentBlock>()
   const failed: ProviderContentBlock[] = []
   const contractFailures: ProviderContentBlock[] = []
-  const schema = tools.find(tool => tool.name === name)?.input_schema
-  const invalid = (input: unknown) => schema && isValidAgainstContract(schema, input) === false
+  const tool = tools.find(candidate => candidate.name === name)
+  const schema = tool?.input_schema
+  const invalid = (input: unknown) =>
+    schema && isValidAgainstContract(schema, withoutAdvisoryFields(tool, input)) === false
   const reset = () => { failed.length = 0; contractFailures.length = 0 }
   for (const message of messages) {
     if (typeof message.content === 'string') {
@@ -150,11 +161,14 @@ export function assertOpenRouterToolProgress(
     }
   }
   const decoded = decodeToolArguments(raw)
-  const valid = (input: unknown) => schema && isValidAgainstContract(schema, input) === true
+  const valid = (input: unknown) =>
+    schema && isValidAgainstContract(schema, withoutAdvisoryFields(tool, input)) === true
+  const same = (a: unknown, b: unknown) =>
+    canonical(withoutAdvisoryFields(tool, a)) === canonical(withoutAdvisoryFields(tool, b))
   const recent = failed.slice(-2)
   const repeated = ((decoded.status || invalid(decoded.input)) && contractFailures.length >= 2) ||
     (!decoded.status && failed.length >= 2 && (
-      recent.every(call => !decodeStatusOf(call) && canonical(call.input) === canonical(decoded.input)) ||
+      recent.every(call => !decodeStatusOf(call) && same(call.input, decoded.input)) ||
       // Changing syntactically valid arguments after repeated execution
       // failures is not evidence about file contents or external state.
       // Require a successful tool result before a third speculative attempt.
@@ -283,7 +297,8 @@ export class OpenRouterToolStream {
           assertOpenRouterToolProgress(validationHistory, this.originals, call.function.name,
             decoded.status ? call.function.arguments : decoded.input)
           const original = this.originals.find(tool => tool.name === call.function.name) ?? tool
-          if (decoded.status || isValidAgainstContract(original.input_schema, decoded.input) === false) {
+          if (decoded.status ||
+            isValidAgainstContract(original.input_schema, withoutAdvisoryFields(original, decoded.input)) === false) {
             // Model-generated batches can repeat the same contract error before
             // the executor records any results. Count those known failures too,
             // without mutating conversation history or repairing arguments.

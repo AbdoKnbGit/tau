@@ -134,6 +134,8 @@ Arguments are the tool's own parameters, dict or kwargs:
 - Ignore-decode binaries (\`errors="replace"\`), or a stray asset aborts the cell.
 - \`input()\` unsupported. \`%pip install\`, \`%cd\`, \`%pwd\`, \`%ls\` and \`!cmd\`
   work; magics fire only at line start, so bind before printing.
+- Check a package from a cell (\`import x\`), never through Bash: Bash's
+  \`python\` can be another install. \`%pip install x\` puts it in this kernel.
 
 ## Long, looping and failed cells are safe
 

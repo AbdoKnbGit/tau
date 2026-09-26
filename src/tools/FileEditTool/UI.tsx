@@ -22,6 +22,7 @@ import { firstLineOf } from '../../utils/stringUtils.js';
 import type { ThemeName } from '../../utils/theme.js';
 import type { FileEditOutput } from './types.js';
 import { findActualString, getPatchForEdit, preserveQuoteStyle } from './utils.js';
+import { isUnreadFileRefusal } from '../../utils/readHistory.js';
 export function userFacingName(input: Partial<{
   file_path: string;
   old_string: string;
@@ -144,7 +145,7 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   if (!verbose && typeof result === 'string' && extractTag(result, 'tool_use_error')) {
     const errorMessage = extractTag(result, 'tool_use_error');
     // Show a less scary message for intended behavior
-    if (errorMessage?.includes('File has not been read yet')) {
+    if (errorMessage && isUnreadFileRefusal(errorMessage)) {
       return <MessageResponse>
           <Text dimColor>File must be read first</Text>
         </MessageResponse>;

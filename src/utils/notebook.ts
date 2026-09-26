@@ -16,6 +16,7 @@ import type {
 import { getFsImplementation } from './fsOperations.js'
 import { expandPath } from './path.js'
 import { jsonParse } from './slowOperations.js'
+import { notebookCellDisplayId } from './notebookCellId.js'
 export { parseCellId } from './notebookCellId.js'
 
 const LARGE_OUTPUT_THRESHOLD = 10000
@@ -87,7 +88,7 @@ function processCell(
   codeLanguage: string,
   includeLargeOutputs: boolean,
 ): NotebookCellSource {
-  const cellId = cell.id ?? `cell-${index}`
+  const cellId = notebookCellDisplayId(cell, index)
   const cellData: NotebookCellSource = {
     cellType: cell.cell_type,
     source: Array.isArray(cell.source) ? cell.source.join('') : cell.source,
@@ -130,6 +131,11 @@ function cellContentToToolResult(cell: NotebookCellSource): TextBlockParam {
     text: cellContent,
     type: 'text',
   }
+}
+
+/** The cells as the Read tool shows them, without their outputs. */
+export function notebookCellsAsText(cells: NotebookCellSource[]): string {
+  return cells.map(cell => cellContentToToolResult(cell).text).join('\n')
 }
 
 function cellOutputToToolResult(output: NotebookCellSourceOutput) {

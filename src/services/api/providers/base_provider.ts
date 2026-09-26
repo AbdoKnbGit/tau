@@ -216,6 +216,13 @@ export interface ProviderTool {
    * decisions without serializing the marker onto the wire.
    */
   __tau_should_defer?: boolean
+  /**
+   * Tau-internal, non-enumerable: the tool's advisory input fields
+   * (Tool.advisoryInputFields). Shared tool execution drops a malformed one
+   * instead of rejecting the call, so lane-side argument checks must ignore
+   * them too.
+   */
+  __tau_advisory_fields?: readonly string[]
 }
 
 // ─── Helper: Build a ProviderStreamResult from an async iterable ────

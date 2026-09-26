@@ -394,20 +394,50 @@ def _sh(command):
     return proc.stdout.rstrip("\n").splitlines()
 
 
-def _pip(args):
-    proc = subprocess.run(
-        [sys.executable, "-m", "pip"] + args.split(),
+def _pip_command(argv):
+    """pip for this kernel's own interpreter, whatever made its environment.
+
+    A venv made by uv has no pip unless asked for, so "python -m pip" fails
+    there: use "uv pip ... --python <this interpreter>" when uv is on PATH,
+    else bootstrap pip from the standard library first."""
+    import importlib.util
+    import shutil
+
+    if importlib.util.find_spec("pip") is not None:
+        return [sys.executable, "-m", "pip"] + argv
+    uv = shutil.which("uv")
+    if uv and argv and argv[0] in ("install", "uninstall", "list", "show", "freeze"):
+        return [uv, "pip", argv[0], "--python", sys.executable] + argv[1:]
+    boot = subprocess.run(
+        [sys.executable, "-m", "ensurepip", "--upgrade"],
         capture_output=True,
         text=True,
     )
+    if boot.returncode != 0:
+        sys.stderr.write(
+            "pip is not installed for " + sys.executable + " and could not be bootstrapped "
+            "(install uv, or run: " + sys.executable + " -m ensurepip).\n" + (boot.stderr or "")
+        )
+        return None
+    return [sys.executable, "-m", "pip"] + argv
+
+
+def _pip(args):
+    command = _pip_command(args.split())
+    if command is None:
+        return 1
+    proc = subprocess.run(command, capture_output=True, text=True)
     sys.stdout.write(proc.stdout or "")
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr or "")
         return proc.returncode
     # A freshly installed package must not stay shadowed by a failed earlier
-    # import cached as None in sys.modules.
+    # import cached as None in sys.modules, nor hidden by stale finder caches.
     for name in [m for m, mod in list(sys.modules.items()) if mod is None]:
         sys.modules.pop(name, None)
+    import importlib
+
+    importlib.invalidate_caches()
     return 0
 
 

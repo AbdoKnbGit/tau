@@ -51,6 +51,11 @@ import { gitDiffSchema, hunkSchema } from '../FileEditTool/types.js'
 import { FILE_WRITE_TOOL_NAME, getWriteToolDescription } from './prompt.js'
 import { getFileWriteNoOpMessage, isFileWriteNoOp } from './writeNoOp.js'
 import {
+  partialViewRefusal,
+  refuseWithCurrentContent,
+  unreadFileRefusal,
+} from '../../utils/readHistory.js'
+import {
   getToolUseSummary,
   isResultTruncated,
   renderToolResultMessage,
@@ -231,10 +236,36 @@ export const FileWriteTool = buildTool({
 
     const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
     if (!readTimestamp || readTimestamp.isPartialView) {
+      // Never overwrite a file the model has not read in full. When the file
+      // fits, the refusal shows it and records a full read, so the next write
+      // is grounded and the refusal cannot repeat into a loop.
+      let current: string | undefined
+      try {
+        // CRLF-normalized, like the content the Read tool records.
+        current = readFileSyncWithMetadata(fullFilePath).content
+      } catch {
+        // Unreadable here: fall back to asking for a Read.
+      }
+      const shown =
+        current === undefined
+          ? undefined
+          : refuseWithCurrentContent(
+              fullFilePath,
+              toolUseContext,
+              { content: current, timestamp: Math.floor(fileMtimeMs) },
+              'Base the new content on the current content below and write again',
+              { partialView: readTimestamp !== undefined },
+            )
       return {
         result: false,
         message:
-          'File has not been read yet. Read it first before writing to it.',
+          shown ??
+          (readTimestamp
+            ? partialViewRefusal('before writing to it')
+            : unreadFileRefusal(fullFilePath, toolUseContext.agentId, {
+                neverRead: 'Read it first before writing to it.',
+                action: 'before writing to it',
+              })),
         errorCode: 2,
       }
     }

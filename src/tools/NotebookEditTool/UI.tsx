@@ -12,6 +12,7 @@ import { NotebookEditToolUseRejectedMessage } from '../../components/NotebookEdi
 import { Box, Text } from '../../ink.js';
 import type { Tools } from '../../Tool.js';
 import { getDisplayPath } from '../../utils/file.js';
+import { isUnreadFileRefusal } from '../../utils/readHistory.js';
 import type { inputSchema, Output } from './NotebookEditTool.js';
 export function getToolUseSummary(input: Partial<z.infer<ReturnType<typeof inputSchema>>> | undefined): string | null {
   if (!input?.notebook_path) {
@@ -63,6 +64,12 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   verbose: boolean;
 }): React.ReactNode {
   if (!verbose && typeof result === 'string' && extractTag(result, 'tool_use_error')) {
+    // Show a less scary message for intended behavior
+    if (isUnreadFileRefusal(extractTag(result, 'tool_use_error') ?? '')) {
+      return <MessageResponse>
+          <Text dimColor>File must be read first</Text>
+        </MessageResponse>;
+    }
     return <MessageResponse>
         <Text color="error">Error editing notebook</Text>
       </MessageResponse>;

@@ -13,7 +13,16 @@ import { getFileModificationTime, writeTextContent } from '../../utils/file.js'
 import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { parseCellId } from '../../utils/notebookCellId.js'
+import { notebookCellsAsText, readNotebook } from '../../utils/notebook.js'
+import {
+  findNotebookCellIndex,
+  notebookCellDisplayId,
+  parseCellId,
+} from '../../utils/notebookCellId.js'
+import {
+  refuseWithCurrentContent,
+  unreadFileRefusal,
+} from '../../utils/readHistory.js'
 import { expandPath } from '../../utils/path.js'
 import { checkWritePermissionForTool } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
@@ -102,6 +111,49 @@ type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
 
+// Side-channel from call() to mapToolResultToToolResultBlockParam, keyed by
+// the result object like FileReadTool's notes, so the output schema (and the
+// SDK types built from it) stays unchanged.
+const layoutNotes = new WeakMap<object, string>()
+
+const MAX_LISTED_CELLS = 60
+
+/**
+ * After an insert or delete at `from`, every cell without a stored id at or
+ * after that position is now named by a different `cell-N` than the model
+ * last saw, and an old id may name a different cell. Returns a note listing
+ * the current ids, or undefined when no positional id moved.
+ */
+type LayoutCell = {
+  id?: string | null
+  cell_type: string
+  source?: string | string[]
+}
+
+function describeShiftedPositions(
+  cells: ReadonlyArray<LayoutCell>,
+  from: number,
+): string | undefined {
+  if (!cells.some((cell, index) => index >= from && cell.id == null)) {
+    return undefined
+  }
+  const lines = cells.slice(0, MAX_LISTED_CELLS).map((cell, index) => {
+    const source = Array.isArray(cell.source)
+      ? cell.source.join('')
+      : String(cell.source ?? '')
+    const firstLine = source.split('\n').find(line => line.trim()) ?? ''
+    const preview =
+      firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine
+    return `${notebookCellDisplayId(cell, index)} (${cell.cell_type}): ${preview}`
+  })
+  if (cells.length > MAX_LISTED_CELLS) {
+    lines.push(
+      `...and ${cells.length - MAX_LISTED_CELLS} more cells; Read the notebook to see them all.`,
+    )
+  }
+  return `Cells without a stored id are named by their position, so the cells after this one now have different ids, and an id from your earlier Read may name another cell. Current cells:\n${lines.join('\n')}`
+}
+
 export const NotebookEditTool = buildTool({
   name: NOTEBOOK_EDIT_TOOL_NAME,
   searchHint: 'edit Jupyter notebook cells (.ipynb)',
@@ -153,10 +205,11 @@ export const NotebookEditTool = buildTool({
       appState.toolPermissionContext,
     )
   },
-  mapToolResultToToolResultBlockParam(
-    { cell_id, edit_mode, new_source, error, noOp },
-    toolUseID,
-  ) {
+  mapToolResultToToolResultBlockParam(data, toolUseID) {
+    const { cell_id, edit_mode, new_source, error, noOp } = data
+    const layoutNote = layoutNotes.get(data)
+    const withLayout = (text: string) =>
+      layoutNote ? `${text}\n\n${layoutNote}` : text
     if (error) {
       return {
         tool_use_id: toolUseID,
@@ -183,13 +236,13 @@ export const NotebookEditTool = buildTool({
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `Inserted cell ${cell_id} with ${new_source}`,
+          content: withLayout(`Inserted cell ${cell_id} with ${new_source}`),
         }
       case 'delete':
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `Deleted cell ${cell_id}`,
+          content: withLayout(`Deleted cell ${cell_id}`),
         }
       default:
         return {
@@ -260,13 +313,38 @@ export const NotebookEditTool = buildTool({
 
     // Require Read-before-Edit (matches FileEditTool/FileWriteTool). Without
     // this, the model could edit a notebook it never saw, or edit against a
-    // stale view after an external change — silent data loss.
+    // stale view after an external change — silent data loss. The refusal
+    // shows the current cells and records them as the model's read (as the
+    // Read tool would), so the next edit uses real cell ids instead of
+    // repeating into a loop.
     const readTimestamp = toolUseContext.readFileState.get(fullPath)
     if (!readTimestamp) {
+      let shown: string | undefined
+      try {
+        const cells = await readNotebook(fullPath)
+        shown = refuseWithCurrentContent(
+          fullPath,
+          toolUseContext,
+          {
+            content: jsonStringify(cells),
+            timestamp: getFileModificationTime(fullPath),
+          },
+          'Edit again with a cell_id from its current cells below (outputs are not shown)',
+          { display: notebookCellsAsText(cells) },
+        )
+      } catch {
+        // Missing or unparsable: fall back to asking for a Read.
+      }
       return {
         result: false,
         message:
-          'File has not been read yet. Read the target .ipynb with the Read tool first, then use the cell_id values shown in the Read output.',
+          shown ??
+          unreadFileRefusal(fullPath, toolUseContext.agentId, {
+            neverRead:
+              'Read the target .ipynb with the Read tool first, then use the cell_id values shown in the Read output.',
+            action: 'before editing it',
+            after: 'use the cell_id values shown in the Read output',
+          }),
         errorCode: 9,
       }
     }
@@ -305,32 +383,32 @@ export const NotebookEditTool = buildTool({
         return {
           result: false,
           message:
-            'Cell ID must be specified when not inserting a new cell. Read the notebook first and use a cell_id such as "cell-0".',
+            'Cell ID must be specified when not inserting a new cell. Use a cell_id exactly as shown in the Read output.',
           errorCode: 7,
         }
       }
-    } else {
-      // First try to find the cell by its actual ID
-      const cellIndex = notebook.cells.findIndex(cell => cell.id === cell_id)
-
-      if (cellIndex === -1) {
-        // If not found, try to parse as a numeric index (cell-N format)
-        const parsedCellIndex = parseCellId(cell_id)
-        if (parsedCellIndex !== undefined) {
-          if (!notebook.cells[parsedCellIndex]) {
-            return {
-              result: false,
-              message: `Cell with index ${parsedCellIndex} does not exist in notebook.`,
-              errorCode: 7,
-            }
-          }
-        } else {
-          return {
-            result: false,
-            message: `Cell with ID "${cell_id}" not found in notebook.`,
-            errorCode: 8,
-          }
+    } else if (findNotebookCellIndex(notebook.cells, cell_id) === -1) {
+      const position = parseCellId(cell_id)
+      const cellAtPosition =
+        position === undefined ? undefined : notebook.cells[position]
+      if (cellAtPosition?.id != null) {
+        return {
+          result: false,
+          message: `Cell "${cell_id}" not found. The cell at position ${position} has its own id "${cellAtPosition.id}": a position like ${cell_id} only names a cell without an id, and positions shift when cells are inserted or deleted. Use the ids from your latest Read or NotebookEdit result, or Read the notebook again.`,
+          errorCode: 8,
         }
+      }
+      if (position !== undefined) {
+        return {
+          result: false,
+          message: `Cell with index ${position} does not exist in notebook. It has ${notebook.cells.length} cells.`,
+          errorCode: 7,
+        }
+      }
+      return {
+        result: false,
+        message: `Cell with ID "${cell_id}" not found in notebook. Read the notebook again to see its current cell ids.`,
+        errorCode: 8,
       }
     }
 
@@ -363,10 +441,7 @@ export const NotebookEditTool = buildTool({
     if ((originalEditMode ?? 'replace') === 'replace' && cell_id) {
       try {
         const notebook = jsonParse(contentBeforeHooks) as NotebookContent
-        let cellIndex = notebook.cells.findIndex(cell => cell.id === cell_id)
-        if (cellIndex === -1) {
-          cellIndex = parseCellId(cell_id) ?? -1
-        }
+        const cellIndex = findNotebookCellIndex(notebook.cells, cell_id)
         const targetCell = notebook.cells[cellIndex]
         if (
           targetCell &&
@@ -446,15 +521,12 @@ export const NotebookEditTool = buildTool({
       if (!cell_id) {
         cellIndex = 0 // Default to inserting at the beginning if no cell_id is provided
       } else {
-        // First try to find the cell by its actual ID
-        cellIndex = notebook.cells.findIndex(cell => cell.id === cell_id)
-
-        // If not found, try to parse as a numeric index (cell-N format)
+        cellIndex = findNotebookCellIndex(notebook.cells, cell_id)
         if (cellIndex === -1) {
-          const parsedCellIndex = parseCellId(cell_id)
-          if (parsedCellIndex !== undefined) {
-            cellIndex = parsedCellIndex
-          }
+          // validateInput found this cell; the notebook changed since then.
+          throw new Error(
+            `Cell with ID "${cell_id}" not found in notebook. Read the notebook again to see its current cell ids.`,
+          )
         }
 
         if (originalEditMode === 'insert') {
@@ -472,16 +544,14 @@ export const NotebookEditTool = buildTool({
       }
 
       const language = notebook.metadata.language_info?.name ?? 'python'
+      // nbformat 4.5+ stores an id on every cell, so a new cell gets one.
       let new_cell_id = undefined
       if (
-        notebook.nbformat > 4 ||
-        (notebook.nbformat === 4 && notebook.nbformat_minor >= 5)
+        edit_mode === 'insert' &&
+        (notebook.nbformat > 4 ||
+          (notebook.nbformat === 4 && notebook.nbformat_minor >= 5))
       ) {
-        if (edit_mode === 'insert') {
-          new_cell_id = Math.random().toString(36).substring(2, 15)
-        } else if (cell_id !== null) {
-          new_cell_id = cell_id
-        }
+        new_cell_id = Math.random().toString(36).substring(2, 15)
       }
 
       if (edit_mode === 'replace') {
@@ -504,7 +574,11 @@ export const NotebookEditTool = buildTool({
         }
       }
 
+      // The id the model sees for the affected cell, as Read shows ids. Never
+      // undefined: a cell without a stored id is named by its position.
+      let resultCellId: string
       if (edit_mode === 'delete') {
+        resultCellId = notebookCellDisplayId(notebook.cells[cellIndex]!, cellIndex)
         // Delete the specified cell
         notebook.cells.splice(cellIndex, 1)
       } else if (edit_mode === 'insert') {
@@ -528,9 +602,11 @@ export const NotebookEditTool = buildTool({
         }
         // Insert the new cell
         notebook.cells.splice(cellIndex, 0, new_cell)
+        resultCellId = notebookCellDisplayId(new_cell, cellIndex)
       } else {
         // Find the specified cell
         const targetCell = notebook.cells[cellIndex]! // validateInput ensures cell_number is in bounds
+        resultCellId = notebookCellDisplayId(targetCell, cellIndex)
         targetCell.source = new_source
         if (targetCell.cell_type === 'code') {
           // Reset execution count and clear outputs since cell was modified
@@ -560,11 +636,15 @@ export const NotebookEditTool = buildTool({
         cell_type: cell_type ?? 'code',
         language,
         edit_mode: edit_mode ?? 'replace',
-        cell_id: new_cell_id || undefined,
+        cell_id: resultCellId,
         error: '',
         notebook_path: fullPath,
         original_file: content,
         updated_file: updatedContent,
+      }
+      if (edit_mode === 'insert' || edit_mode === 'delete') {
+        const layoutNote = describeShiftedPositions(notebook.cells, cellIndex)
+        if (layoutNote) layoutNotes.set(data, layoutNote)
       }
       return {
         data,

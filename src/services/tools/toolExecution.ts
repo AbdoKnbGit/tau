@@ -970,6 +970,69 @@ function bashInputMissingCommand(value: unknown): boolean {
   return typeof command !== 'string' || command.trim().length === 0
 }
 
+type SchemaIssue = { path: ReadonlyArray<PropertyKey>; message: string }
+type SafeParser = {
+  safeParse(
+    input: unknown,
+  ):
+    | { success: true }
+    | { success: false; error: { issues: ReadonlyArray<SchemaIssue> } }
+}
+
+/**
+ * A malformed advisory field (Tool.advisoryInputFields) must not reject a call
+ * whose real arguments are fine. When every schema problem sits inside such
+ * fields, returns the input without them plus a note for the model. Otherwise
+ * returns the input untouched, so the usual validation error reports it all.
+ */
+export function dropMalformedAdvisoryFields(
+  advisoryFields: readonly string[] | undefined,
+  schema: SafeParser,
+  input: Record<string, unknown>,
+): { input: Record<string, unknown>; note?: string } {
+  if (!advisoryFields?.length || !isPlainObject(input)) return { input }
+  const parsed = schema.safeParse(input)
+  if (parsed.success) return { input }
+  const dropped = new Map<string, string>()
+  for (const issue of parsed.error.issues) {
+    const field = issue.path[0]
+    if (
+      typeof field !== 'string' ||
+      !advisoryFields.includes(field) ||
+      !(field in input)
+    ) {
+      return { input }
+    }
+    if (!dropped.has(field)) {
+      dropped.set(field, `${issue.path.map(String).join('.')}: ${issue.message}`)
+    }
+  }
+  if (dropped.size === 0) return { input }
+  const kept = Object.fromEntries(
+    Object.entries(input).filter(([key]) => !dropped.has(key)),
+  )
+  const plural = dropped.size > 1
+  const names = [...dropped.keys()].map(name => `\`${name}\``).join(' and ')
+  return {
+    input: kept,
+    note: `The optional ${names} argument${plural ? 's were' : ' was'} ignored because ${plural ? 'they do' : 'it does'} not match the tool's schema (${[...dropped.values()].join('; ')}); the call ran without ${plural ? 'them' : 'it'}.`,
+  }
+}
+
+function appendNoteToToolResult(
+  block: ToolResultBlockParam,
+  note: string,
+): ToolResultBlockParam {
+  const text = `[${note}]`
+  if (Array.isArray(block.content)) {
+    return { ...block, content: [...block.content, { type: 'text', text }] }
+  }
+  return {
+    ...block,
+    content: block.content ? `${block.content}\n\n${text}` : text,
+  }
+}
+
 async function checkPermissionsAndCallTool(
   tool: Tool,
   toolUseID: string,
@@ -1066,6 +1129,18 @@ async function checkPermissionsAndCallTool(
         unknown
       >)
     : zodCoercedInput
+  // Advisory fields never change what a tool does, so a malformed one is
+  // dropped (and the model told, below) instead of rejecting the call. Any
+  // other schema problem still fails the call exactly as before.
+  const advisory = dropMalformedAdvisoryFields(
+    tool.advisoryInputFields,
+    strippedSchema,
+    coercedInput,
+  )
+  const validatedInput = advisory.input
+  if (advisory.note) {
+    logForDebugging(`${tool.name}: ${advisory.note}`)
+  }
   // MCP tools stand in for their servers' real schemas with a passthrough
   // Zod object, so Zod checks nothing about their arguments. Every MCP call
   // is therefore validated against the server's own JSON Schema here — not
@@ -1083,11 +1158,11 @@ async function checkPermissionsAndCallTool(
   const blindCheck: BlindCallCheck =
     validateEveryMcpCall || isBlindCall
       ? (tool.isMcp ?? false)
-        ? checkMcpArguments(tool, coercedInput, { blind: isBlindCall })
-        : checkBlindDeferredCallInput(tool, coercedInput)
+        ? checkMcpArguments(tool, validatedInput, { blind: isBlindCall })
+        : checkBlindDeferredCallInput(tool, validatedInput)
       : { ok: true as const }
 
-  const parsedInput = strippedSchema.safeParse(coercedInput)
+  const parsedInput = strippedSchema.safeParse(validatedInput)
   if (!parsedInput.success || !blindCheck.ok) {
     let errorContent = !parsedInput.success
       ? appendToolInputValidationRecoveryHint(
@@ -2024,13 +2099,16 @@ async function checkPermissionsAndCallTool(
     ) {
       // Use the pre-mapped block when available (non-MCP tools where hooks
       // don't modify the output), otherwise map from scratch.
-      const toolResultBlock = preMappedBlock
+      const mappedResultBlock = preMappedBlock
         ? await processPreMappedToolResultBlock(
             preMappedBlock,
             tool.name,
             tool.maxResultSizeChars,
           )
         : await processToolResultBlock(tool, toolUseResult, toolUseID)
+      const toolResultBlock = advisory.note
+        ? appendNoteToToolResult(mappedResultBlock, advisory.note)
+        : mappedResultBlock
 
       // Build content blocks - tool result first, then optional feedback
       const contentBlocks: ContentBlockParam[] = [toolResultBlock]

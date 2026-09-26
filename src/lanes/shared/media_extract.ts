@@ -213,7 +213,7 @@ export async function prefetchMediaText(
 export function unreadableReason(kind: MediaKind, cause: string): string {
   const selfHelp =
     kind === 'document'
-      ? 'you can still extract it yourself from the file on disk (pdftotext, or python with pypdf/pdfplumber) via Bash'
+      ? 'you can still extract its text yourself from the file on disk: with Python (PyMuPDF or pypdf), checking the import in the same interpreter that will run the code, or with pdftotext via Bash'
       : 'you can pick a describer with /vision-model, or run a local OCR tool via Bash'
   return `this model cannot receive ${kind} attachments and ${cause}; ${selfHelp}`
 }

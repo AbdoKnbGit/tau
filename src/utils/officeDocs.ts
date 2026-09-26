@@ -1,11 +1,17 @@
 /**
- * Office document reading via Firecrawl's /v2/parse endpoint.
+ * Office document reading: locally with a Python library when one is
+ * installed, else via Firecrawl's /v2/parse endpoint.
  *
  * tau reads PDFs natively (utils/pdf.ts) and plain text directly, but Word,
  * Excel and OpenDocument files are binary containers and this codebase ships
- * no local parser for them. Before this module FileReadTool rejected them with
- * "use appropriate tools for binary file analysis" - advice that pointed at
- * nothing, since no such tool exists in the install.
+ * no parser of its own for them. Before this module FileReadTool rejected
+ * them with "use appropriate tools for binary file analysis" - advice that
+ * pointed at nothing, since no such tool exists in the install.
+ *
+ * `readOfficeDocument` tries the machine first: python-docx, openpyxl, xlrd
+ * or python-pptx from whichever Python here has it (pythonDocs.ts). That keeps
+ * the document on the machine and needs no approval. Only without one does it
+ * fall back to the upload below, which FileReadTool asks about first.
  *
  * /v2/parse converts them to markdown and is reachable on Firecrawl's keyless
  * free tier, so this works with no API key configured. A key is used when one
@@ -19,7 +25,8 @@
  *   .pdf         read natively with page ranges and vision, and never leaves
  *                the machine. Routing it here would be a regression.
  *   .html/.htm   already plain text.
- *   .pptx .ppt   /v2/parse does not accept them either, so the gap remains.
+ *   .ppt         old binary PowerPoint: no common Python reader, and
+ *                /v2/parse does not accept it. (.pptx is read locally.)
  *   .ods .odp
  */
 
@@ -27,6 +34,12 @@ import { readFile, stat } from 'fs/promises'
 import { basename, extname } from 'path'
 import { createCombinedAbortSignal } from './combinedAbortSignal.js'
 import { isEnvTruthy } from './envUtils.js'
+import {
+  hasPythonDocReader,
+  LOCAL_OFFICE_EXTENSIONS,
+  officeModeFor,
+  readOfficeWithPython,
+} from './pythonDocs.js'
 import {
   getFirecrawlApiKey,
   getFirecrawlApiUrl,
@@ -46,9 +59,20 @@ const OFFICE_CONTENT_TYPES: Record<string, string> = {
   '.odt': 'application/vnd.oasis.opendocument.text',
 }
 
-export const OFFICE_DOC_EXTENSIONS: ReadonlySet<string> = new Set(
-  Object.keys(OFFICE_CONTENT_TYPES),
-)
+/**
+ * Every Office extension the Read tool handles: the ones a local Python
+ * library reads (pythonDocs.ts; .pptx and .xlsm only that way) and the ones
+ * Firecrawl converts.
+ */
+export const OFFICE_DOC_EXTENSIONS: ReadonlySet<string> = new Set([
+  ...Object.keys(OFFICE_CONTENT_TYPES),
+  ...LOCAL_OFFICE_EXTENSIONS,
+])
+
+/** Whether Firecrawl's /v2/parse accepts this extension (with the dot). */
+export function isFirecrawlOfficeExtension(ext: string): boolean {
+  return ext.toLowerCase() in OFFICE_CONTENT_TYPES
+}
 
 /** Upload ceiling. Parse is a network round-trip; huge files are a bad trade. */
 const MAX_OFFICE_DOC_BYTES = 20 * 1024 * 1024
@@ -61,8 +85,8 @@ export const OFFICE_PARSE_DISABLE_ENV = 'TAU_DISABLE_OFFICE_PARSE'
 /** Shared wording so the tool-level and parse-level refusals stay in sync. */
 export function officeParseDisabledMessage(ext: string): string {
   return (
-    `Reading ${ext} files requires converting them with Firecrawl, which is disabled by ${OFFICE_PARSE_DISABLE_ENV}. ` +
-    `Unset that variable to enable it, or convert the file locally first.`
+    `Reading ${ext} files without a local Python library requires converting them with Firecrawl, which is disabled by ${OFFICE_PARSE_DISABLE_ENV}. ` +
+    `Unset that variable to enable it, or install the Python library for this format.`
   )
 }
 
@@ -239,4 +263,57 @@ export async function parseOfficeDocument(
   } finally {
     combined.cleanup()
   }
+}
+
+/** Whether a local Python library can read this Office extension right now. */
+export async function canReadOfficeLocally(ext: string): Promise<boolean> {
+  const mode = officeModeFor(ext)
+  return mode ? hasPythonDocReader(mode) : false
+}
+
+export type OfficeReadResult = ParsedOfficeDocument & {
+  /** How it was converted: the Python library and interpreter, or Firecrawl. */
+  source: string
+}
+
+/**
+ * Convert an Office document to markdown, on the machine when a Python
+ * library can, else through Firecrawl (whose upload FileReadTool asks about
+ * first). A document the local library could not read (corrupt, encrypted) is
+ * reported as such rather than uploaded as a second try.
+ */
+export async function readOfficeDocument(
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<OfficeReadResult> {
+  const ext = extname(filePath).toLowerCase()
+  const mode = officeModeFor(ext)
+  let localMissing: string | undefined
+  if (mode) {
+    const local = await readOfficeWithPython(filePath, mode, signal)
+    if (local.ok) {
+      if (!local.markdown.trim()) {
+        throw new Error(`${basename(filePath)} has no text for ${local.library} to read.`)
+      }
+      return {
+        markdown: local.markdown,
+        cached: local.cached,
+        source: `${local.library} (${local.python})`,
+      }
+    }
+    if (local.reason !== 'missing') {
+      throw new Error(`Could not read ${basename(filePath)}: ${local.message}`)
+    }
+    localMissing = local.message
+  }
+  if (!isFirecrawlOfficeExtension(ext)) {
+    throw new Error(`Cannot read ${basename(filePath)}: ${localMissing ?? `no reader for ${ext} files.`}`)
+  }
+  if (!isOfficeParseEnabled()) {
+    throw new Error(
+      `${officeParseDisabledMessage(ext)}${localMissing ? ` ${localMissing}` : ''}`,
+    )
+  }
+  const parsed = await parseOfficeDocument(filePath, signal)
+  return { ...parsed, source: 'Firecrawl' }
 }

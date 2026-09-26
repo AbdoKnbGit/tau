@@ -49,6 +49,7 @@ import { powershellToolHasPermission } from './powershellPermissions.js';
 import { getDefaultTimeoutMs, getMaxTimeoutMs, getPrompt } from './prompt.js';
 import { hasSyncSecurityConcerns, isReadOnlyCommand, resolveToCanonical } from './readOnlyValidation.js';
 import { POWERSHELL_TOOL_NAME } from './toolName.js';
+import { pythonModuleNoteFor } from '../../utils/pythonModuleHelp.js';
 import { renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseQueuedMessage } from './UI.js';
 
 // Never use os.EOL for terminal output — \r\n on Windows breaks Ink rendering
@@ -291,6 +292,8 @@ export const PowerShellTool = buildTool({
   searchHint: 'execute Windows PowerShell commands',
   maxResultSizeChars: 30_000,
   strict: true,
+  // Display text only; the command string is what runs.
+  advisoryInputFields: ['description'],
   async description({
     description
   }: Partial<PowerShellToolInput>): Promise<string> {
@@ -663,7 +666,14 @@ export const PowerShellTool = buildTool({
         throw new Error(result.preSpawnError);
       }
       if (interpretation.isError && !isInterrupt) {
-        throw new ShellError(stdout, result.stderr || '', result.code, result.interrupted);
+        // A failed Python import: check every Python here and name the fix
+        // (pythonModuleHelp.ts). The traceback may be on either stream.
+        const moduleNote = await pythonModuleNoteFor(`${stdout}\n${result.stderr || ''}`, {
+          tool: 'powershell',
+          command: input.command,
+          cwd: executionDir
+        });
+        throw new ShellError(stdout, [result.stderr || '', moduleNote].filter(Boolean).join('\n\n'), result.code, result.interrupted);
       }
 
       // Large output: file on disk has more than getMaxOutputLength() bytes.
