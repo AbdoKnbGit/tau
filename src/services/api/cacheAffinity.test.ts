@@ -4,6 +4,7 @@
 
 import {
   providerUsesStableRequestSession,
+  registerForkedAgent,
   resolveProviderRequestSessionId,
 } from './cacheAffinity.js'
 import {
@@ -153,6 +154,104 @@ async function main(): Promise<void> {
     assert(a !== b, `subagents collided: ${a}`)
     assert(typeof a === 'string' && a.startsWith('tau-agent-'), `sessionId=${a}`)
     assert(fork === 'root-session', `fork sessionId=${fork}`)
+  })
+
+  await test('keeps OpenRouter forked helpers on the session of the conversation they fork', () => {
+    const resolve = (agentId: string | undefined, querySource: string) => resolveProviderRequestSessionId({
+      provider: 'openrouter',
+      rootSessionId: 'root-session',
+      ...(agentId && { agentId: agentId as AgentId }),
+      querySource: querySource as QuerySource,
+    })
+    // Same session_id, prompt_cache_key and provider pin as the main thread.
+    const release = registerForkedAgent('fork-main' as AgentId, undefined)
+    try {
+      for (const querySource of ['prompt_suggestion', 'compact', 'extract_memories', 'side_question']) {
+        const sessionId = resolve('fork-main', querySource)
+        assert(sessionId === 'root-session', `${querySource} left the root: ${sessionId}`)
+      }
+    } finally {
+      release()
+    }
+    // A fork of a subagent stays on that subagent's session.
+    const agent = resolve('agent-a', 'agent:builtin:general-purpose')
+    const releaseFork = registerForkedAgent('fork-a' as AgentId, 'agent-a' as AgentId)
+    try {
+      assert(resolve('fork-a', 'compact') === agent, 'subagent compaction left the subagent session')
+    } finally {
+      releaseFork()
+    }
+    // Everything else keeps its own session: agents, hook agents, side queries.
+    assert(agent !== 'root-session' && agent!.startsWith('tau-agent-'), `agent=${agent}`)
+    assert(resolve('hook-1', 'hook_agent')!.startsWith('tau-agent-'), 'hook agent lost its own session')
+    assert(resolve(undefined, 'generate_session_title')!.startsWith('tau-query-'), 'side query lost its own session')
+  })
+
+  await test('gives each Codex (openai) subagent a stable session of its own', () => {
+    const resolve = (agentId: string | undefined, querySource: string) => resolveProviderRequestSessionId({
+      provider: 'openai',
+      rootSessionId: 'root-session',
+      ...(agentId && { agentId: agentId as AgentId }),
+      querySource: querySource as QuerySource,
+    })
+    const a = resolve('agent-a', 'agent:builtin:general-purpose')
+    assert(typeof a === 'string' && a.startsWith('tau-agent-'), `sessionId=${a}`)
+    // A SendMessage resume runs under the same agent id: same session, same
+    // frozen env block, same cache routing.
+    assert(a === resolve('agent-a', 'agent:custom'), `resume changed the session: ${a}`)
+    assert(a !== resolve('agent-b', 'agent:builtin:general-purpose'), 'subagents collided')
+    // Forks reuse the parent's prefix on purpose; the main thread and its
+    // side queries keep the root.
+    assert(resolve('agent-fork', 'agent:builtin:fork') === 'root-session', 'fork left the root')
+    assert(resolve('agent-a', 'repl_main_thread') === 'root-session', 'main thread left the root')
+    assert(resolve(undefined, 'compact') === 'root-session', 'main compaction left the root')
+    // A hook agent is no conversation agent: it keeps the root.
+    assert(resolve('hook-1', 'hook_agent') === 'root-session', 'hook agent left the root')
+  })
+
+  await test('keeps Codex (openai) forked helpers on the cache of the conversation they fork', () => {
+    const resolve = (agentId: string, querySource: string) => resolveProviderRequestSessionId({
+      provider: 'openai',
+      rootSessionId: 'root-session',
+      agentId: agentId as AgentId,
+      querySource: querySource as QuerySource,
+    })
+    // Every helper run gets a new agentId (runForkedAgent). On the main
+    // thread's cache it reads the whole prefix; on an id of its own it would
+    // start cold every run.
+    const helpers = ['prompt_suggestion', 'speculation', 'extract_memories', 'session_memory', 'away_summary', 'compact', 'side_question', 'auto_dream']
+    for (const querySource of helpers) {
+      const release = registerForkedAgent('fork-main' as AgentId, undefined)
+      try {
+        const sessionId = resolve('fork-main', querySource)
+        assert(sessionId === 'root-session', `${querySource} left the root: ${sessionId}`)
+      } finally {
+        release()
+      }
+    }
+    // A fork of a subagent (its compaction, its progress summary) reads the
+    // subagent's cache, also through a fork of that fork.
+    const agent = resolve('agent-a', 'agent:builtin:general-purpose')
+    const releaseFork = registerForkedAgent('fork-a' as AgentId, 'agent-a' as AgentId)
+    const releaseNested = registerForkedAgent('fork-a2' as AgentId, 'fork-a' as AgentId)
+    try {
+      assert(resolve('fork-a', 'compact') === agent, 'subagent compaction left the subagent cache')
+      assert(resolve('fork-a', 'agent_summary') === agent, 'agent summary left the subagent cache')
+      assert(resolve('fork-a2', 'compact') === agent, 'nested fork left the subagent cache')
+    } finally {
+      releaseNested()
+      releaseFork()
+    }
+    // Once released, a stale helper id falls back to the root, never to a
+    // cold session of its own.
+    assert(resolve('fork-a', 'compact') === 'root-session', 'released fork kept a session')
+    // A fork that keeps its parent's id is that parent.
+    const releaseSame = registerForkedAgent('agent-a' as AgentId, 'agent-a' as AgentId)
+    try {
+      assert(resolve('agent-a', 'agent:custom') === agent, 'self-registered agent lost its session')
+    } finally {
+      releaseSame()
+    }
   })
 
   await test('keeps non-OpenRouter cache-aware side calls on the root session', () => {

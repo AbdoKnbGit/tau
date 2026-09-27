@@ -17,10 +17,7 @@ import type {
   ProviderTool,
   SystemBlock,
 } from '../providers/base_provider.js'
-import {
-  sanitizeResponsesToolParametersForOpenAI,
-  toOpenAIStrictToolParameters,
-} from './openai_responses_schema.js'
+import { toCodexToolParameters } from '../../../lanes/codex/tool_schema.js'
 import { coerceToolCallArgs, recordToolSchema } from './tool_schema_cache.js'
 
 // ─── Responses API types ───────────────────────────────────────────
@@ -220,22 +217,22 @@ export function anthropicToResponsesInput(
 // ─── Tool conversion ───────────────────────────────────────────────
 
 /**
- * Convert Anthropic tool definitions to Responses API function tools.
+ * Convert Anthropic tool definitions to Responses API function tools, the way
+ * the Codex lane sends them: each tool's own schema with `strict: false`
+ * (see lanes/codex/tool_schema.ts).
  */
 export function anthropicToolsToResponsesTools(
   tools: ProviderTool[],
 ): ResponsesApiTool[] {
   return tools.map(t => {
-    const wireParameters = sanitizeResponsesToolParametersForOpenAI(t.input_schema)
-    const strictParameters = toOpenAIStrictToolParameters(wireParameters)
-    const parameters = strictParameters ?? wireParameters
+    const parameters = toCodexToolParameters(t.input_schema)
     recordToolSchema(t.name, parameters)
     return {
       type: 'function' as const,
       name: t.name,
       description: t.description,
       parameters,
-      strict: strictParameters !== null,
+      strict: false,
     }
   })
 }

@@ -18,6 +18,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
+import { registerForkedAgent } from '../services/api/cacheAffinity.js'
 import { accumulateUsage, updateUsage } from '../services/api/claude.js'
 import { EMPTY_USAGE, type NonNullableUsage } from '../services/api/logging.js'
 import type { ToolUseContext } from '../Tool.js'
@@ -553,6 +554,13 @@ export async function runForkedAgent({
         : null
   }
 
+  // The fork's requests carry its own new agentId; providers that key the
+  // prompt cache per agent must still find the forked conversation's cache.
+  const releaseForkedAgent = registerForkedAgent(
+    isolatedToolUseContext.agentId,
+    toolUseContext.agentId,
+  )
+
   // Run the query loop with isolated context (cache-safe params preserved)
   try {
     for await (const message of query({
@@ -618,6 +626,7 @@ export async function runForkedAgent({
       }
     }
   } finally {
+    releaseForkedAgent()
     // Release cloned file state cache memory (same pattern as runAgent.ts)
     isolatedToolUseContext.readFileState.clear()
     // Release the cloned fork context messages

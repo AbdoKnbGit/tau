@@ -55,11 +55,15 @@ export function _resetAgentConversationsForTest(): void {
  * validation instead of disappearing. Dropping a declaration changes the
  * request's tool block, which is part of the cached prefix; a refusal only
  * costs a tool round if the model tries the tool anyway.
+ *
+ * With `when`, a tool refuses only while `when()` is true (a foreground agent
+ * after Ctrl+B) and validates as it always did before that.
  */
 export function refuseToolsOutsideRunPolicy(
   declared: Tools,
   runnable: Tools,
   refusal: string,
+  when?: () => boolean,
 ): Tools {
   const runnableNames = new Set(runnable.map(tool => tool.name))
   if (declared.every(tool => runnableNames.has(tool.name))) return declared
@@ -68,7 +72,14 @@ export function refuseToolsOutsideRunPolicy(
       ? tool
       : ({
           ...tool,
-          async validateInput() {
+          async validateInput(
+            ...args: Parameters<NonNullable<Tool['validateInput']>>
+          ) {
+            if (when && !when()) {
+              return tool.validateInput
+                ? tool.validateInput(...args)
+                : { result: true as const }
+            }
             return {
               result: false as const,
               message: `${tool.name} ${refusal}`,

@@ -317,6 +317,7 @@ async function* runAgentWithoutProviderOverride({
   canUseTool,
   isAsync,
   spawnedAsync,
+  backgrounded,
   canShowPermissionPrompts,
   forkContextMessages,
   querySource,
@@ -345,6 +346,11 @@ async function* runAgentWithoutProviderOverride({
    * so building them for the background run would change the request from
    * byte 0 and miss every provider's prompt cache. */
   spawnedAsync?: boolean
+  /** For a foreground run: whether it has been moved to the background
+   * (Ctrl+B). The run keeps its conversation and prompt; from then on it
+   * follows the background run policy: no permission prompts, and the tools a
+   * background spawn would not get refuse. */
+  backgrounded?: () => boolean
   /** Whether this agent can show permission prompts. Defaults to !isAsync.
    * Set to true for in-process teammates that run async but share the terminal. */
   canShowPermissionPrompts?: boolean
@@ -526,13 +532,15 @@ async function* runAgentWithoutProviderOverride({
     // Set flag to auto-deny prompts for agents that can't show UI
     // Use explicit canShowPermissionPrompts if provided, otherwise:
     //   - bubble mode: always show prompts (bubbles to parent terminal)
-    //   - default: !isAsync (sync agents show prompts, async agents don't)
+    //   - default: only while running in the foreground (sync agents show
+    //     prompts until moved to the background, async agents never do)
+    const runsInBackground = isAsync || (backgrounded?.() ?? false)
     const shouldAvoidPrompts =
       canShowPermissionPrompts !== undefined
         ? !canShowPermissionPrompts
         : agentPermissionMode === 'bubble'
           ? false
-          : isAsync
+          : runsInBackground
     if (shouldAvoidPrompts) {
       toolPermissionContext = {
         ...toolPermissionContext,
@@ -545,7 +553,7 @@ async function* runAgentWithoutProviderOverride({
     // Since these are background agents, waiting is fine — the user should
     // only be interrupted when automated checks can't resolve the permission.
     // This applies to bubble mode (always) and explicit canShowPermissionPrompts.
-    if (isAsync && !shouldAvoidPrompts) {
+    if (runsInBackground && !shouldAvoidPrompts) {
       toolPermissionContext = {
         ...toolPermissionContext,
         awaitAutomatedChecksBeforeDialog: true,
@@ -588,20 +596,21 @@ async function* runAgentWithoutProviderOverride({
   }
 
   // Declare the tools the agent was spawned with. A foreground agent resumed
-  // in the background keeps its foreground declarations (same prompt prefix);
-  // the tools the background policy excludes stay declared but refuse to run,
-  // as they could not run in a background spawn either.
+  // or moved to the background keeps its foreground declarations (same prompt
+  // prefix); the tools the background policy excludes stay declared but refuse
+  // to run there, as they could not run in a background spawn either.
   const spawnShapeAsync = spawnedAsync ?? isAsync
   const declaredTools = useExactTools
     ? availableTools
     : resolveAgentTools(agentDefinition, availableTools, spawnShapeAsync)
         .resolvedTools
   const resolvedTools =
-    !useExactTools && isAsync && !spawnShapeAsync
+    !useExactTools && !spawnShapeAsync && (isAsync || backgrounded)
       ? refuseToolsOutsideRunPolicy(
           declaredTools,
           resolveAgentTools(agentDefinition, availableTools, true).resolvedTools,
           'is not available while this agent runs in the background.',
+          isAsync ? undefined : backgrounded,
         )
       : declaredTools
 

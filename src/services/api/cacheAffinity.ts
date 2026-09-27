@@ -54,6 +54,36 @@ function usesRootProviderSession(querySource: QuerySource): boolean {
   )
 }
 
+/**
+ * Helpers forked from a conversation (runForkedAgent: prompt suggestions,
+ * compaction, memory extraction, /btw, agent summaries) run under a new
+ * agentId but resend that conversation's prefix to read its prompt cache.
+ * While a fork runs, this maps its agentId to the agentId of the conversation
+ * it forked (undefined for the main thread).
+ */
+const forkedAgentParents = new Map<AgentId, AgentId | undefined>()
+
+/** Records a running fork; call the returned function when it ends. */
+export function registerForkedAgent(
+  forkAgentId: AgentId | undefined,
+  parentAgentId: AgentId | undefined,
+): () => void {
+  if (!forkAgentId || forkAgentId === parentAgentId) return () => {}
+  forkedAgentParents.set(forkAgentId, parentAgentId)
+  return () => {
+    forkedAgentParents.delete(forkAgentId)
+  }
+}
+
+/** The agent whose conversation a request resends: a fork resolves to what it forked. */
+function forkedConversationAgentId(agentId: AgentId): AgentId | undefined {
+  let current: AgentId | undefined = agentId
+  for (let hop = 0; current && forkedAgentParents.has(current) && hop < 16; hop++) {
+    current = forkedAgentParents.get(current)
+  }
+  return current
+}
+
 function derivedProviderSessionId(
   rootSessionId: string,
   kind: 'agent' | 'query',
@@ -102,15 +132,43 @@ export function resolveProviderRequestSessionId({
     return derivedProviderSessionId(root, 'query', querySource)
   }
 
+  // OpenRouter sends this id as session_id / prompt_cache_key and pins the
+  // upstream provider per session. Agents and side queries get sessions of
+  // their own; a forked helper takes the session of the conversation it
+  // forked, or it lands on a cold upstream with a cold cache key every run.
   if (provider === 'openrouter') {
-    if (agentId) return derivedProviderSessionId(root, 'agent', agentId)
+    if (agentId) {
+      const owner = forkedConversationAgentId(agentId)
+      return owner === undefined
+        ? root
+        : derivedProviderSessionId(root, 'agent', owner)
+    }
     return derivedProviderSessionId(root, 'query', querySource)
   }
 
+  // The Codex lane (openai) keys its prompt_cache_key, its session headers and
+  // the env/git block it freezes at the start of the input by this id. An
+  // agent (Agent tool, a skill or command run as an agent, a teammate) on the
+  // parent's id was served the parent's frozen block (the parent's working
+  // directory, for a worktree agent too) or left its own for the next agent
+  // on the same model. Its own id, stable for the agent's life and kept by a
+  // SendMessage resume, gives it its own block and cache routing.
+  // A forked helper takes the id of the conversation it forked instead of
+  // its own: an id per run would start every run cold and re-bill the whole
+  // context. Anything else with an agentId (hook agents) keeps the root.
+  if (provider === 'openai' && agentId) {
+    const owner = forkedConversationAgentId(agentId)
+    if (owner === undefined) return root
+    if (owner !== agentId || querySource.startsWith('agent:')) {
+      return derivedProviderSessionId(root, 'agent', owner)
+    }
+  }
+
   // Other cache-aware providers use the root Tau session as their stable
-  // affinity/cache key. Antigravity is the exception: fresh subagents need
-  // distinct derived sessions. Root-policy calls returned above already
-  // reuse the live conversation even if their context carries an agentId.
+  // affinity/cache key. Antigravity, like openai above, is the exception:
+  // fresh subagents need distinct derived sessions. Root-policy calls
+  // returned above already reuse the live conversation even if their context
+  // carries an agentId.
   if (provider !== 'antigravity') return root
 
   if (!agentId) {

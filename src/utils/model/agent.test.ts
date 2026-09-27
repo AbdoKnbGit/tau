@@ -15,9 +15,9 @@ import {
   shouldHonorSkillModelOverride,
 } from './skillModel.js'
 import {
-  OPENAI_FAST_AGENT_MODEL,
+  OPENAI_AGENT_MODEL,
   OPENROUTER_AGENT_MODEL,
-  isDirectOpenAIFastAgentParent,
+  isOpenAIAgentAliasParent,
   pinnedAgentModelOutranksAlias,
   resolveAgentAliasPolicy,
 } from './agentAliasFallback.js'
@@ -152,33 +152,40 @@ function main(): void {
 
   // ── live provider policy for spawned-agent tier aliases ─────────────
 
-  test('direct OpenAI fast-agent parents cover the requested GPT families', () => {
+  test('direct OpenAI agent-alias parents cover every GPT-5-or-later family', () => {
     for (const parent of [
+      'gpt-5',
+      'gpt-5-codex',
       'gpt-5.2',
-      'gpt-5.2-codex',
+      'gpt-5.3-codex',
       'gpt-5.4',
       'gpt-5.5-pro',
       'gpt-5.6-sol',
       'openai/gpt-5.6-terra',
+      'gpt-6-sol',
+      'gpt-6-luna',
+      'gpt-6-astra',
     ]) {
-      assert(isDirectOpenAIFastAgentParent(parent), `parent=${parent}`)
+      assert(isOpenAIAgentAliasParent(parent), `parent=${parent}`)
     }
-    assert(!isDirectOpenAIFastAgentParent('gpt-5.3-codex'), '5.3 is not in policy')
-    assert(!isDirectOpenAIFastAgentParent('o4-mini'), 'o-series is not in policy')
+    for (const parent of ['o4-mini', 'gpt-4.1', 'gpt-oss-120b', 'my-azure-deployment']) {
+      assert(!isOpenAIAgentAliasParent(parent), `${parent} is not in policy`)
+    }
   })
 
-  test('direct OpenAI aliases use native GPT-5.4 mini', () => {
-    for (const parent of ['gpt-5.2-codex', 'gpt-5.4', 'gpt-5.5', 'gpt-5.6-sol']) {
+  test('direct OpenAI aliases all use GPT-5.6 Luna, whatever GPT parent runs', () => {
+    assert(OPENAI_AGENT_MODEL === 'gpt-5.6-luna', `agent model=${OPENAI_AGENT_MODEL}`)
+    for (const parent of ['gpt-5.2-codex', 'gpt-5.6-sol', 'gpt-6-sol', 'gpt-6-astra', 'gpt-6-luna']) {
       for (const alias of ROUTED_ALIASES) {
         const resolved = resolveAgentAliasPolicy(alias, parent, 'openai')
-        assert(resolved === OPENAI_FAST_AGENT_MODEL, `${parent}/${alias}=${resolved}`)
+        assert(resolved === OPENAI_AGENT_MODEL, `${parent}/${alias}=${resolved}`)
         assert(!resolved.startsWith('openai/'), `OpenAI route was namespaced: ${resolved}`)
       }
     }
   })
 
   test('other direct OpenAI parents inherit', () => {
-    for (const parent of ['gpt-5.3-codex', 'o4-mini', 'custom-openai-model']) {
+    for (const parent of ['o4-mini', 'gpt-4.1', 'custom-openai-model']) {
       const resolved = resolveAgentAliasPolicy('haiku', parent, 'openai')
       assert(resolved === parent, `${parent}=${resolved}`)
     }

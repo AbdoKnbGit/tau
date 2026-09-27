@@ -6,7 +6,8 @@
  * serve. Resolve those automatic aliases from the active route, not from a
  * generic cross-provider fallback:
  *
- *  - direct OpenAI/Codex GPT-5.2/5.4/5.5/5.6 sessions use GPT-5.4 mini;
+ *  - direct OpenAI/Codex sessions on GPT-5 or later (GPT-5.6, GPT-6, ...)
+ *    use GPT-5.6 Luna for every tier;
  *  - Antigravity uses its provider-specific Gemini Flash-low model;
  *  - OpenRouter uses the requested free Nemotron agent model;
  *  - Anthropic-native routes keep their existing tier resolution;
@@ -22,9 +23,10 @@
 
 import { isModelAlias } from './aliases.js'
 import { resolveAntigravityOpus46AgentModel } from './antigravityAgentModel.js'
+import { OPENAI_AGENT_MODEL } from './openaiGptModels.js'
 import type { APIProvider } from './providers.js'
 
-export const OPENAI_FAST_AGENT_MODEL = 'gpt-5.4-mini'
+export { OPENAI_AGENT_MODEL }
 export const OPENROUTER_AGENT_MODEL =
   'nvidia/nemotron-3-ultra-550b-a55b:free'
 
@@ -32,14 +34,21 @@ function normalize(value: string): string {
   return value.trim().toLowerCase()
 }
 
-/** Whether a direct OpenAI/Codex parent is one of the requested GPT families. */
-export function isDirectOpenAIFastAgentParent(parentModel: string): boolean {
+/**
+ * Whether a direct OpenAI/Codex parent is an OpenAI GPT model from GPT-5 on
+ * (every model the Codex catalog has offered). Anything else on the openai
+ * provider (o-series, gpt-4.x, a custom deployment name behind
+ * OPENAI_BASE_URL) may sit where the agent model is not served, so it keeps
+ * inheriting the parent.
+ */
+export function isOpenAIAgentAliasParent(parentModel: string): boolean {
   const normalized = normalize(parentModel)
     .replace(/^models\//, '')
     .replace(/^openai\//, '')
     .replace(/\[1m\]$/, '')
 
-  return /^gpt-5\.(?:2|4|5|6)(?:$|[-.])/.test(normalized)
+  const version = /^gpt-(\d+)(?:$|[-.])/.exec(normalized)
+  return version !== null && Number(version[1]) >= 5
 }
 
 /**
@@ -63,8 +72,11 @@ export function resolveAgentAliasPolicy(
   }
 
   if (provider === 'openai') {
-    if (isDirectOpenAIFastAgentParent(parentModel)) {
-      return OPENAI_FAST_AGENT_MODEL
+    // One fixed model for every tier, whatever the parent runs: a resumed
+    // subagent resolves its alias again, and a model that followed the parent
+    // would move it to another model (and a cold prompt cache) mid-task.
+    if (isOpenAIAgentAliasParent(parentModel)) {
+      return OPENAI_AGENT_MODEL
     }
     return parentModel || undefined
   }

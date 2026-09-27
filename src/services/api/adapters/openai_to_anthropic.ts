@@ -202,6 +202,7 @@ export async function* openAIStreamToAnthropicEvents(
     argBuffer: string
     blockIndex: number
     started: boolean
+    closed: boolean
   }> = new Map()
 
   let totalInputTokens = 0
@@ -327,6 +328,7 @@ export async function* openAIStreamToAnthropicEvents(
             argBuffer: '',
             blockIndex: currentBlockIndex,
             started: false,
+            closed: false,
           })
         }
 
@@ -372,6 +374,37 @@ export async function* openAIStreamToAnthropicEvents(
 
     // Handle finish
     if (choice.finish_reason) {
+      // A gateway may send the finish chunk twice: Kilo's OpenRouter proxy
+      // repeats it with the accounting. Closing the tool blocks again made
+      // every tool call run twice (claude.ts turns each content_block_stop of
+      // a tool_use block into a call). Take the later usage, end nothing twice.
+      if (finishedCleanly) {
+        if (chunk.usage) {
+          totalInputTokens = chunk.usage.prompt_tokens ?? totalInputTokens
+          totalOutputTokens = chunk.usage.completion_tokens ?? totalOutputTokens
+          totalCachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? totalCachedTokens
+          if (!options.openRouter) {
+            yield {
+              type: 'message_delta',
+              delta: {
+                stop_reason: choice.finish_reason === 'tool_calls' ? 'tool_use'
+                  : choice.finish_reason === 'length' ? 'max_tokens' : 'end_turn',
+                stop_sequence: null,
+              },
+              usage: {
+                output_tokens: totalOutputTokens,
+                input_tokens: Math.max(0, totalInputTokens - totalCachedTokens),
+                ...(totalCachedTokens > 0 && {
+                  cache_read_input_tokens: totalCachedTokens,
+                  cache_creation_input_tokens: 0,
+                }),
+              },
+            }
+          }
+        }
+        continue
+      }
+
       // Close any open thinking block
       if (hasThinkingBlock) {
         yield { type: 'content_block_stop', index: blockIndex }
@@ -394,7 +427,8 @@ export async function* openAIStreamToAnthropicEvents(
         isOutputCapTruncation(choice.finish_reason),
       )
       for (const [tcIndex, state] of toolCallState) {
-        if (state.started && tcIndex !== dropBlock) {
+        if (state.started && !state.closed && tcIndex !== dropBlock) {
+          state.closed = true
           yield { type: 'content_block_stop', index: state.blockIndex }
         }
       }
@@ -460,7 +494,8 @@ export async function* openAIStreamToAnthropicEvents(
       yield { type: 'content_block_stop', index: blockIndex }
     }
     for (const [, state] of toolCallState) {
-      if (state.started) {
+      if (state.started && !state.closed) {
+        state.closed = true
         yield { type: 'content_block_stop', index: state.blockIndex }
       }
     }

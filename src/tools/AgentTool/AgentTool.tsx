@@ -17,6 +17,7 @@ import { checkRemoteAgentEligibility, formatPreconditionError, getRemoteTaskSess
 import { assembleToolPool } from '../../tools.js';
 import { asAgentId } from '../../types/ids.js';
 import { runWithAgentContext } from '../../utils/agentContext.js';
+import { createMovableAbortController } from '../../utils/abortController.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
 import { getCwd, runWithCwdOverride } from '../../utils/cwd.js';
 import { logForDebugging } from '../../utils/debug.js';
@@ -845,19 +846,28 @@ export const AgentTool = buildTool({
         let backgroundHintShown = false;
         // Track if the agent was backgrounded (cleanup handled by backgrounded finally)
         let wasBackgrounded = false;
-        // Per-scope stop function — NOT shared with the backgrounded closure.
+        // Stopped by the finally of whichever phase ends the run.
         // idempotent: startAgentSummarization's stop() checks `stopped` flag.
         let stopForegroundSummarization: (() => void) | undefined;
         // const capture for sound type narrowing inside the callback below
         const summaryTaskId = foregroundTaskId;
+        // Acts as the main turn's own controller while the agent runs in the
+        // foreground; moved to the task's controller if it is backgrounded.
+        const agentAbort = foregroundTaskId ? createMovableAbortController(toolUseContext.abortController) : undefined;
 
         // Get async iterator for the agent
         const agentIterator = runAgent({
           ...runAgentParams,
           override: {
             ...runAgentParams.override,
-            agentId: syncAgentId
+            agentId: syncAgentId,
+            ...(agentAbort && {
+              abortController: agentAbort.controller
+            })
           },
+          ...(agentAbort && {
+            backgrounded: () => wasBackgrounded
+          }),
           onCacheSafeParams: summaryTaskId && getSdkAgentProgressSummariesEnabled() ? (params: CacheSafeParams) => {
             const {
               stop
@@ -910,43 +920,27 @@ export const AgentTool = buildTool({
                 // Capture the taskId for use in the async callback
                 const backgroundedTaskId = foregroundTaskId;
                 wasBackgrounded = true;
-                // Stop foreground summarization; the backgrounded closure
-                // below owns its own independent stop function.
-                stopForegroundSummarization?.();
+                // The run carries on in the background from where it is: same
+                // conversation, prompt and provider session, so its prompt cache
+                // still applies and no tool call it already made runs twice.
+                // (Starting it over from its prompt re-ran all of that.) From
+                // here it outlives the main turn and stops with its task.
+                agentAbort?.moveTo(task.abortController!);
+                const pendingMessage = nextMessagePromise;
 
                 // Workload: inherited via ALS at `void` invocation time,
                 // same as the async-from-start path above.
                 // Continue agent in background and return async result
                 void runWithAgentContext(syncAgentContext, async () => {
-                  let stopBackgroundedSummarization: (() => void) | undefined;
                   try {
-                    // Clean up the foreground iterator so its finally block runs
-                    // (releases MCP connections, session hooks, prompt cache tracking, etc.)
-                    // Timeout prevents blocking if MCP server cleanup hangs.
-                    // .catch() prevents unhandled rejection if timeout wins the race.
-                    await Promise.race([agentIterator.return(undefined).catch(() => {}), sleep(1000)]);
                     // Initialize progress tracking from existing messages
                     const tracker = createProgressTracker();
                     const resolveActivity2 = createActivityDescriptionResolver(toolUseContext.options.tools);
                     for (const existingMsg of agentMessages) {
                       updateProgressFromMessage(tracker, existingMsg, resolveActivity2, toolUseContext.options.tools);
                     }
-                    for await (const msg of runAgent({
-                      ...runAgentParams,
-                      isAsync: true,
-                      // Agent is now running in background
-                      override: {
-                        ...runAgentParams.override,
-                        agentId: asAgentId(backgroundedTaskId),
-                        abortController: task.abortController
-                      },
-                      onCacheSafeParams: getSdkAgentProgressSummariesEnabled() ? (params: CacheSafeParams) => {
-                        const {
-                          stop
-                        } = startAgentSummarization(backgroundedTaskId, asAgentId(backgroundedTaskId), params, rootSetAppState);
-                        stopBackgroundedSummarization = stop;
-                      } : undefined
-                    })) {
+                    for (let next = await pendingMessage; !next.done; next = await agentIterator.next()) {
+                      const msg = next.value;
                       agentMessages.push(msg);
 
                       // Track progress for backgrounded agents
@@ -1037,7 +1031,8 @@ export const AgentTool = buildTool({
                       ...worktreeResult
                     });
                   } finally {
-                    stopBackgroundedSummarization?.();
+                    stopForegroundSummarization?.();
+                    agentAbort?.dispose();
                     clearInvokedSkillsForAgent(syncAgentId);
                     clearDumpState(syncAgentId);
                     endAgentFileScope(syncAgentId);
@@ -1163,10 +1158,12 @@ export const AgentTool = buildTool({
             toolUseContext.setToolJSX(null);
           }
 
-          // Stop foreground summarization. Idempotent — if already stopped at
-          // the backgrounding transition, this is a no-op. The backgrounded
-          // closure owns a separate stop function (stopBackgroundedSummarization).
-          stopForegroundSummarization?.();
+          // A backgrounded run is still going: its own finally stops the
+          // summarization and releases the agent's state below.
+          if (!wasBackgrounded) {
+            stopForegroundSummarization?.();
+            agentAbort?.dispose();
+          }
 
           // Unregister foreground task if agent completed without being backgrounded
           if (foregroundTaskId) {
@@ -1194,12 +1191,12 @@ export const AgentTool = buildTool({
           }
 
           // Release this agent's file-write claims so a later agent can own
-          // the same paths. Safe to call twice — the backgrounded finally above
-          // may already have run.
-          endAgentFileScope(syncAgentId);
-
-          // Clean up scoped skills so they don't accumulate in the global map
-          clearInvokedSkillsForAgent(syncAgentId);
+          // the same paths, and its scoped skills so they don't accumulate in
+          // the global map. A backgrounded run still writes and uses them.
+          if (!wasBackgrounded) {
+            endAgentFileScope(syncAgentId);
+            clearInvokedSkillsForAgent(syncAgentId);
+          }
 
           // Clean up dumpState entry for this agent to prevent unbounded growth
           // Skip if backgrounded — the backgrounded agent's finally handles cleanup

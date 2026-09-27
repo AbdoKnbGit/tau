@@ -1,4 +1,6 @@
+import { createHash } from 'crypto'
 import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
+import { logForDebugging } from '../../utils/debug.js'
 /**
  * Codex Lane — Agent Loop + Provider-Shim Entry
  *
@@ -45,6 +47,7 @@ import {
   CODEX_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
 import { describeUnsendableMedia } from '../shared/media_blocks.js'
+import { toCodexToolParameters } from './tool_schema.js'
 import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
 import {
   createRetryableConnectionError,
@@ -54,17 +57,20 @@ import {
 } from '../../services/api/transport_error.js'
 import {
   codexApi,
+  CodexApiError,
   type CodexInputItem,
   type CodexContentPart,
   type CodexStreamEvent,
   type CodexReasoningConfig,
   type CodexResponsesRequest,
+  type CodexToolSpec,
   type CodexUsage,
 } from './api.js'
 import {
   getOpenAIReasoningLevel,
   isReasoningLevelExplicit,
 } from '../../utils/model/openaiReasoning.js'
+import { OPENAI_AGENT_MODEL, OPENAI_CODEX_MODELS } from '../../utils/model/openaiGptModels.js'
 
 // ─── Lane Implementation ─────────────────────────────────────────
 
@@ -161,13 +167,15 @@ export class CodexLane implements Lane {
     // Map caller-provided tools → Codex Responses format. We honor the
     // native tool registry for tools we recognize (including apply_patch
     // as a freeform custom tool) and pass through MCP / custom tools as
-    // function-schema tools with sanitized parameters. Function tools get
-    // OpenAI strict schemas with optional fields encoded as nullable,
-    // plus the STRICT PARAMETERS description hint.
-    const codexTools = buildCodexToolsFromRequest(tools)
+    // function-schema tools. Every function tool carries its own schema with
+    // `strict: false`, as native Codex sends them, plus the STRICT PARAMETERS
+    // description hint.
+    const declarations = buildCodexToolDeclarations(tools)
+    const orderedTools = freezeCodexToolOrder(codexApi.sessionCacheKey, declarations.tools)
+    const codexTools = orderedTools.length > 0 ? orderedTools : undefined
 
     // Prepend CODEX_TOOL_USAGE_RULES to instructions when tools are
-    // present — belt-and-suspenders with strict schemas where available so the model
+    // present so the model
     // treats the schema as authoritative and doesn't emit empty-args
     // function calls. The preamble is tuned to match Codex's concise
     // native prompt tone.
@@ -489,8 +497,17 @@ export class CodexLane implements Lane {
           break
         }
 
-        if (ev.type === 'response.failed') {
-          const errMessage = (ev as any).response?.error?.message ?? 'Responses API failed'
+        if (ev.type === 'response.failed' || ev.type === 'error') {
+          const failure = codexStreamFailure(ev)
+          // A tool-schema rejection can also arrive as a stream event rather
+          // than the HTTP response; it goes to the same backstop.
+          if (
+            failure.code === 'invalid_function_parameters'
+            || /Invalid schema for function '/.test(failure.message)
+          ) {
+            throw new CodexApiError(400, JSON.stringify({ error: failure }))
+          }
+          const errMessage = failure.message || 'Responses API failed'
           if (!messageStartEmitted) {
             const mst = emitMessageStart()
             if (mst) yield mst
@@ -514,6 +531,19 @@ export class CodexLane implements Lane {
     } catch (err: any) {
       if (!messageStartEmitted && isRetryableProviderError(err)) {
         throw err
+      }
+      // OpenAI refused one MCP/custom tool's schema. Leave that tool out of
+      // the next request; while nothing was emitted, the shared controller
+      // retries this turn without it.
+      const rejection = isAbortError(err, signal) ? null : parseCodexToolSchemaRejection(err)
+      const removed = rejection
+        ? quarantineRejectedCodexTool(rejection, request.tools, declarations.externalNames)
+        : null
+      if (removed && !messageStartEmitted) {
+        throw createRetryableConnectionError(
+          `OpenAI rejected the tool schema of ${removed}; retrying without that tool`,
+          err,
+        )
       }
       if (
         !messageStartEmitted
@@ -654,14 +684,7 @@ export class CodexLane implements Lane {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    return [
-      { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', contextWindow: 1050000, supportsToolCalling: true, tags: ['recommended', 'reasoning'] },
-      { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', contextWindow: 1050000, supportsToolCalling: true, tags: ['reasoning'] },
-      { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', contextWindow: 1050000, supportsToolCalling: true, tags: ['reasoning'] },
-      { id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 272000, supportsToolCalling: true, tags: ['reasoning'] },
-      { id: 'gpt-5.4', name: 'GPT-5.4', contextWindow: 1050000, supportsToolCalling: true, tags: ['reasoning'] },
-      { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 272000, supportsToolCalling: true, tags: ['fast', 'reasoning'] },
-    ]
+    return OPENAI_CODEX_MODELS.map(model => ({ ...model, tags: model.tags && [...model.tags] }))
   }
 
   resolveModel(model: string): string {
@@ -669,8 +692,8 @@ export class CodexLane implements Lane {
   }
 
   smallFastModel(): string {
-    // Matches codex-main's current small GPT-5 family model.
-    return 'gpt-5.4-mini'
+    // The same model tier aliases resolve to on this lane (agentAliasFallback).
+    return OPENAI_AGENT_MODEL
   }
 
   isHealthy(): boolean {
@@ -683,6 +706,7 @@ export class CodexLane implements Lane {
 
   dispose(): void {
     codexApi.clearChain()
+    toolOrderSnapshots.clear()
   }
 }
 
@@ -751,6 +775,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+/**
+ * The error a `response.failed` or `error` stream event carries. The first
+ * nests it under `response.error`; the second under `error` or at the top.
+ */
+function codexStreamFailure(ev: unknown): { message: string; code?: unknown; param?: unknown } {
+  const event = isRecord(ev) ? ev : {}
+  const response = isRecord(event.response) ? event.response : {}
+  const error = isRecord(response.error) ? response.error : isRecord(event.error) ? event.error : event
+  return {
+    message: typeof error.message === 'string' ? error.message : '',
+    ...(error.code !== undefined && { code: error.code }),
+    ...(error.param !== undefined && { param: error.param }),
+  }
+}
+
 function firstFiniteNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -762,12 +801,13 @@ export function resolveReasoning(
   thinking: LaneProviderCallParams['thinking'] | undefined,
   model: string,
 ): CodexReasoningConfig | undefined {
-  // Reasoning-capable families. GPT-5 and o-series accept reasoning; most
-  // classic gpt-4.x variants don't. Default to 'medium' when we're sure,
-  // otherwise omit (some endpoints 400 on unknown reasoning fields).
+  // Reasoning-capable families. GPT-5 and later (GPT-6, ...) and o-series
+  // accept reasoning; most classic gpt-4.x variants don't. Default to
+  // 'medium' when we're sure, otherwise omit (some endpoints 400 on unknown
+  // reasoning fields).
   const m = model.toLowerCase()
   const reasoningCapable =
-    m.startsWith('gpt-5') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('o5') || m.startsWith('codex-')
+    /^gpt-(?:[5-9]|[1-9]\d)/.test(m) || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('o5') || m.startsWith('codex-')
   if (!reasoningCapable) return undefined
 
   if (isReasoningLevelExplicit()) {
@@ -1020,102 +1060,6 @@ function inverseAdapt(nativeName: string, input: Record<string, unknown>): Recor
   }
 }
 
-export function toOpenAIStrictToolParameters(
-  schema: Record<string, unknown>,
-): Record<string, unknown> | null {
-  const cloned = cloneStrictCompatibleSchema(schema)
-  return cloned && isRecord(cloned) && !Array.isArray(cloned)
-    ? cloned
-    : null
-}
-
-function cloneStrictCompatibleSchema(value: unknown): unknown | null {
-  if (Array.isArray(value)) {
-    const items: unknown[] = []
-    for (const item of value) {
-      const cloned = cloneStrictCompatibleSchema(item)
-      if (cloned === null) return null
-      items.push(cloned)
-    }
-    return items
-  }
-
-  if (!isRecord(value)) return value
-
-  const out: Record<string, unknown> = {}
-
-  const type = normalizeJsonSchemaType(value.type)
-  const properties = isRecord(value.properties) ? value.properties : undefined
-  const isObjectSchema = type === 'object' || properties !== undefined
-
-  if (isObjectSchema) {
-    const clonedProperties: Record<string, unknown> = {}
-    const propertyNames = Object.keys(properties ?? {})
-    const required = Array.isArray(value.required)
-      ? value.required.filter((item): item is string => typeof item === 'string')
-      : []
-
-    for (const [propertyName, child] of Object.entries(properties ?? {})) {
-      const cloned = cloneStrictCompatibleSchema(child)
-      if (cloned === null) return null
-      clonedProperties[propertyName] = required.includes(propertyName)
-        ? cloned
-        : makeSchemaNullable(cloned)
-    }
-
-    for (const [key, child] of Object.entries(value)) {
-      if (key === 'properties' || key === 'required' || key === 'additionalProperties') continue
-      const cloned = cloneStrictCompatibleSchema(child)
-      if (cloned === null) return null
-      out[key] = cloned
-    }
-
-    out.type = type ?? 'object'
-    out.properties = clonedProperties
-    out.required = propertyNames
-    out.additionalProperties = false
-    return out
-  }
-
-  for (const [key, child] of Object.entries(value)) {
-    const cloned = cloneStrictCompatibleSchema(child)
-    if (cloned === null) return null
-    out[key] = cloned
-  }
-
-  return out
-}
-
-function normalizeJsonSchemaType(value: unknown): string | undefined {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) {
-    const nonNull = value.filter((item): item is string =>
-      typeof item === 'string' && item !== 'null')
-    return nonNull[0]
-  }
-  return undefined
-}
-
-function makeSchemaNullable(schema: unknown): unknown {
-  if (!isRecord(schema) || Array.isArray(schema)) return schema
-
-  const out = { ...schema }
-  const type = out.type
-  if (typeof type === 'string') {
-    out.type = type === 'null' ? type : [type, 'null']
-    return out
-  }
-  if (Array.isArray(type)) {
-    out.type = type.includes('null') ? type : [...type, 'null']
-    return out
-  }
-  if (Array.isArray(out.anyOf)) {
-    const hasNull = out.anyOf.some(item => isRecord(item) && item.type === 'null')
-    out.anyOf = hasNull ? out.anyOf : [...out.anyOf, { type: 'null' }]
-  }
-  return out
-}
-
 export function stripNullToolArguments(input: unknown): Record<string, unknown> {
   const stripped = stripNullToolArgumentValue(input)
   return isRecord(stripped) && !Array.isArray(stripped) ? stripped : {}
@@ -1156,8 +1100,8 @@ export interface RepairedCodexToolCall {
  * identity function rather than being deleted: the seam is where a future
  * native-name mismatch would be fixed, and removing it would only move that
  * work to whoever hits the next one. It is NOT a validation or safety net --
- * schema conformance on this lane comes from OpenAI strict mode and the
- * STRICT PARAMETERS hint, not from here.
+ * schema conformance comes from Tau's validation of every call against the
+ * tool's full schema and from the STRICT PARAMETERS hint, not from here.
  */
 export function repairCodexToolCall(
   toolName: string,
@@ -1177,95 +1121,19 @@ function targetsContainFilePath(value: unknown): boolean {
   return targets.some(target => isRecord(target) && hasMeaningfulValue(target.filePath))
 }
 
-const UNSUPPORTED_CODEX_RESPONSES_SCHEMA_FIELDS = new Set([
-  '$schema',
-  '$id',
-  '$ref',
-  '$comment',
-  '$defs',
-  'definitions',
-  'strict',
-  'format',
-  'pattern',
-  'default',
-  'examples',
-  'const',
-  'title',
-  'deprecated',
-  'readOnly',
-  'writeOnly',
-  'contentMediaType',
-  'contentEncoding',
-  'patternProperties',
-  'propertyNames',
-  'unevaluatedProperties',
-  'dependentRequired',
-  'dependentSchemas',
-  'unevaluatedItems',
-  'prefixItems',
-  'contains',
-  'minContains',
-  'maxContains',
-])
-
+/**
+ * A tool's input schema as this lane sends it: the tool's own contract with
+ * local `$ref`s inlined, metadata left out and malformed keywords repaired
+ * (see tool_schema.ts). Also what the STRICT PARAMETERS hint reads.
+ */
 export function sanitizeCodexToolParametersForOpenAI(schema: unknown): Record<string, unknown> {
-  const sanitized = sanitizeCodexToolSchemaValue(schema)
-  return isRecord(sanitized) && !Array.isArray(sanitized)
-    ? sanitized
-    : { type: 'object', properties: {} }
+  return toCodexToolParameters(schema)
 }
 
-function sanitizeCodexToolSchemaValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(item => sanitizeCodexToolSchemaValue(item))
-  }
-
-  if (!isRecord(value)) return value
-
-  const out: Record<string, unknown> = {}
-  for (const [key, child] of Object.entries(value)) {
-    if (UNSUPPORTED_CODEX_RESPONSES_SCHEMA_FIELDS.has(key)) continue
-    if (key.startsWith('x-')) continue
-    if (child === undefined) continue
-    if (key === 'properties' && isRecord(child)) {
-      out.properties = Object.fromEntries(
-        Object.entries(child).map(([propertyName, propertySchema]) => [
-          propertyName,
-          sanitizeCodexToolSchemaValue(propertySchema),
-        ]),
-      )
-      continue
-    }
-    if (key === 'type') {
-      const normalizedType = sanitizeSchemaTypeKeyword(child)
-      if (normalizedType !== undefined) out.type = normalizedType
-      continue
-    }
-    out[key] = sanitizeCodexToolSchemaValue(child)
-  }
-  return out
-}
-
-function sanitizeSchemaTypeKeyword(value: unknown): string | string[] | undefined {
-  if (typeof value === 'string') return value
-  if (!Array.isArray(value)) return undefined
-
-  const types: string[] = []
-  for (const item of value) {
-    if (typeof item === 'string') {
-      types.push(item)
-      continue
-    }
-    if (isRecord(item)) {
-      const nested = sanitizeSchemaTypeKeyword(item.type)
-      if (Array.isArray(nested)) types.push(...nested)
-      else if (nested) types.push(nested)
-    }
-  }
-
-  const unique = [...new Set(types)]
-  if (unique.length === 0) return undefined
-  return unique.length === 1 ? unique[0] : unique
+interface CodexToolDeclarations {
+  tools: CodexToolSpec[]
+  /** Tools outside the native registry: the only ones a rejection may leave out. */
+  externalNames: Set<string>
 }
 
 // Build Responses API tools from the caller-provided Anthropic-format
@@ -1275,7 +1143,19 @@ function sanitizeSchemaTypeKeyword(value: unknown): string | string[] | undefine
 export function buildCodexToolsFromRequest(
   tools: import('../../services/api/providers/base_provider.js').ProviderTool[],
 ): CodexResponsesRequest['tools'] {
-  const out: NonNullable<CodexResponsesRequest['tools']> = []
+  const { tools: out } = buildCodexToolDeclarations(tools)
+  return out.length > 0 ? out : undefined
+}
+
+// Every function tool goes out the way native Codex sends all of its tools:
+// the tool's own schema with `strict: false`, so optional fields stay
+// optional and nothing is guessed (see tool_schema.ts). Tau validates every
+// call against the tool's full schema before running it.
+function buildCodexToolDeclarations(
+  tools: import('../../services/api/providers/base_provider.js').ProviderTool[],
+): CodexToolDeclarations {
+  const out: CodexToolSpec[] = []
+  const externalNames = new Set<string>()
   for (const tool of tools) {
     const reg = CODEX_TOOL_REGISTRY.find(r => r.implId === tool.name)
       ?? getCodexRegistrationByNativeName(tool.name)
@@ -1290,39 +1170,166 @@ export function buildCodexToolsFromRequest(
           format: { type: 'text' },
         })
       } else {
-        // Optional fields are valid locally, but OpenAI strict mode
-        // requires every property to be listed in `required`; encode
-        // optionals as nullable on the wire.
-        const wireParameters = sanitizeCodexToolParametersForOpenAI(reg.nativeSchema)
-        const strictParameters = toOpenAIStrictToolParameters(wireParameters)
-        const parameters = strictParameters ?? wireParameters
+        const parameters = toCodexToolParameters(reg.nativeSchema)
         out.push({
           type: 'function',
           name: reg.nativeName,
-          description: appendStrictParamsHint(reg.nativeDescription, wireParameters),
+          description: appendStrictParamsHint(reg.nativeDescription, parameters),
           parameters,
-          ...(strictParameters && { strict: true }),
+          strict: false,
         })
       }
-    } else {
-      // Unknown tool (MCP / custom) - sanitize for OpenAI Responses'
-      // schema validator, then append the STRICT PARAMETERS hint so the
-      // model sees the required-field summary in plain text.
-      const wireParameters = sanitizeCodexToolParametersForOpenAI(
-        tool.input_schema ?? { type: 'object', properties: {} },
-      )
-      const strictParameters = toOpenAIStrictToolParameters(wireParameters)
-      const finalParameters = strictParameters ?? wireParameters
-      out.push({
-        type: 'function',
-        name: tool.name,
-        description: appendStrictParamsHint(tool.description ?? '', wireParameters),
-        parameters: finalParameters,
-        ...(strictParameters && { strict: true }),
-      })
+      continue
     }
+
+    // Unknown tool (MCP / custom / Tau tools outside the registry).
+    const parameters = toCodexToolParameters(tool.input_schema ?? { type: 'object', properties: {} })
+    const spec: CodexToolSpec = {
+      type: 'function',
+      name: tool.name,
+      description: appendStrictParamsHint(tool.description ?? '', parameters),
+      parameters,
+      strict: false,
+    }
+    if (isQuarantinedCodexTool(spec)) continue
+    out.push(spec)
+    externalNames.add(tool.name)
   }
-  return out.length > 0 ? out : undefined
+  return { tools: out, externalNames }
+}
+
+// ─── Stable tool order per conversation ──────────────────────────
+//
+// The tool block sits in the cached prompt prefix. Tau lists tools in sorted
+// order, so an MCP server that connects mid-conversation (claude.ai
+// connectors often do) had its tools inserted in the middle of the list, and
+// every later tool and the whole conversation after the block went uncached.
+// Each conversation (cache key) remembers the order its tools were first sent
+// in: a new tool is appended, and a tool keeps its first declaration until
+// its parameters change. Every request on the key shares that order, so a
+// helper forked from the conversation (a prompt suggestion, a compaction)
+// resends the same tool block, and a request with fewer tools (a server that
+// dropped, a side query) leaves the others' order alone. Same idea as the
+// OpenRouter lane's per-conversation tool snapshot.
+
+const TOOL_ORDER_SNAPSHOT_LIMIT = 256
+const toolOrderSnapshots = new Map<string, Map<string, CodexToolSpec>>()
+
+function codexToolContract(spec: CodexToolSpec): string {
+  return JSON.stringify(spec.type === 'function' ? [spec.type, spec.parameters, spec.strict] : [spec.type, spec.format])
+}
+
+export function freezeCodexToolOrder(key: string, tools: CodexToolSpec[]): CodexToolSpec[] {
+  const snapshot = toolOrderSnapshots.get(key) ?? new Map<string, CodexToolSpec>()
+  // Most recently used last, so eviction drops idle conversations first.
+  toolOrderSnapshots.delete(key)
+  toolOrderSnapshots.set(key, snapshot)
+  while (toolOrderSnapshots.size > TOOL_ORDER_SNAPSHOT_LIMIT) {
+    const oldest = toolOrderSnapshots.keys().next().value
+    if (oldest === undefined || oldest === key) break
+    toolOrderSnapshots.delete(oldest)
+  }
+  const present = new Set<string>()
+  for (const tool of tools) {
+    present.add(tool.name)
+    const saved = snapshot.get(tool.name)
+    // Updating an existing key keeps its position in the Map.
+    if (!saved || codexToolContract(tool) !== codexToolContract(saved)) snapshot.set(tool.name, tool)
+  }
+  // A tool missing from this request is not sent (never restored just to keep
+  // a cached prefix) but keeps its slot for when it comes back.
+  return [...snapshot.values()].filter(tool => present.has(tool.name))
+}
+
+// ─── Rejected-schema backstop ────────────────────────────────────
+//
+// Last line of defence behind the schema cleanup: if OpenAI still rejects a
+// tool's declaration (a rule it adds later, a shape no test anticipated),
+// that tool is left out and the turn retried, instead of every turn failing.
+// Keyed by the exact declaration bytes, so a server that changes its schema
+// is offered again. Process-lifetime and only ever grows, so the tool block
+// changes once per rejection and then stays byte-stable for the prompt cache.
+// Native registry tools are never left out: a rejection there is a Tau bug and
+// must surface.
+
+/** Tool name → hash of the declaration left out of requests. */
+const quarantinedTools = new Map<string, string>()
+
+function codexToolHash(spec: CodexToolSpec): string {
+  return createHash('sha256').update(JSON.stringify(spec)).digest('hex').slice(0, 16)
+}
+
+function isQuarantinedCodexTool(spec: CodexToolSpec): boolean {
+  return quarantinedTools.size > 0 && quarantinedTools.get(spec.name) === codexToolHash(spec)
+}
+
+export interface CodexToolSchemaRejection {
+  toolName?: string
+  toolIndex?: number
+  message: string
+}
+
+/**
+ * The tool a 400 names as having invalid parameters, whether the rejection
+ * came back as the HTTP response or, from another validator on the same
+ * backend, as an error event inside the stream (both measured).
+ */
+export function parseCodexToolSchemaRejection(err: unknown): CodexToolSchemaRejection | null {
+  const status = (err as { status?: unknown } | null)?.status
+  const body = (err as { body?: unknown } | null)?.body
+  if (status !== 400 || typeof body !== 'string') return null
+  let message = body
+  let code: unknown
+  let param: unknown
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>
+    const error = (isRecord(parsed.error) ? parsed.error : parsed) as Record<string, unknown>
+    if (typeof error.message === 'string') message = error.message
+    code = error.code
+    param = error.param
+  } catch {
+    // Not JSON: match on the raw text below.
+  }
+  const toolName = /Invalid schema for function '([^']+)'/.exec(message)?.[1]
+  const index = typeof param === 'string' ? /^tools\[(\d+)\]/.exec(param)?.[1] : undefined
+  if (!toolName && !(code === 'invalid_function_parameters' && index !== undefined)) return null
+  return {
+    ...(toolName !== undefined && { toolName }),
+    ...(index !== undefined && { toolIndex: Number(index) }),
+    message,
+  }
+}
+
+/**
+ * Leave the rejected tool out of the next request (the retry included).
+ * Returns its name, or null when the tool is a native one or was already left
+ * out, in which case the error surfaces as it is.
+ */
+function quarantineRejectedCodexTool(
+  rejection: CodexToolSchemaRejection,
+  requestTools: CodexToolSpec[] | undefined,
+  externalNames: Set<string>,
+): string | null {
+  const tools = requestTools ?? []
+  const spec = rejection.toolName !== undefined
+    ? tools.find(tool => tool.name === rejection.toolName)
+    : tools[rejection.toolIndex ?? -1]
+  if (!spec || !externalNames.has(spec.name)) return null
+  const hash = codexToolHash(spec)
+  if (quarantinedTools.get(spec.name) === hash) return null
+  quarantinedTools.set(spec.name, hash)
+  logForDebugging(
+    `[codex-lane] OpenAI rejected the schema of ${spec.name}; leaving it out for this process. `
+    + `Server said: ${rejection.message.replace(/\s+/g, ' ').slice(0, 600)}`,
+    { level: 'warn' },
+  )
+  return spec.name
+}
+
+/** Test-only: forget every recorded rejection and tool order. */
+export function _resetCodexToolRejectionsForTest(): void {
+  quarantinedTools.clear()
+  toolOrderSnapshots.clear()
 }
 
 // ─── System-prompt stable / volatile split ───────────────────────

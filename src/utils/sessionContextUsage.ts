@@ -61,11 +61,15 @@ export function getSessionContextUsage(
   // before a compact boundary for scrollback, and the last usage among them
   // describes a context the summary has since replaced.
   const liveMessages = getMessagesAfterCompactBoundary(messages)
-  // OpenRouter's per-block messages initially carry zero usage. Keep the last
-  // measurement until the new generation's trailing usage frame replaces it.
-  // Otherwise every thinking/tool block temporarily restores the rough baseline.
+  // OpenRouter's per-block messages initially carry zero usage, and so do the
+  // Codex lane's (openai): the Responses API reports usage only with
+  // `response.completed`. Keep the last measurement until the new
+  // generation's trailing usage frame replaces it. Otherwise every
+  // thinking/tool block temporarily restores the rough baseline, and the
+  // meter swings between it and the real context on every request.
+  const provider = getAPIProvider()
   const currentUsage = applyInitialContextFloor(
-    getCurrentUsage(liveMessages, { skipUnmeasured: getAPIProvider() === 'openrouter' }),
+    getCurrentUsage(liveMessages, { skipUnmeasured: provider === 'openrouter' || provider === 'openai' }),
     getContextBaselineTokens(runtimeModel),
     () => roughTokenCountEstimationForMessages(liveMessages),
   )

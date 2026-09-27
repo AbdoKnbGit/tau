@@ -511,7 +511,7 @@ export class OpenAICompatLane implements Lane {
       ? system
       : (system ?? []).map(b => b.text).join('\n\n')
     const openRouterSnapshotKey = provider === 'openrouter'
-      ? openRouterContextKey('native', model, cacheSessionId, querySource, messages)
+      ? openRouterContextKey('native', model, cacheSessionId, querySource, messages, rawSystemText)
       : ''
 
     // Per-model tool filter: small-tier models (e.g. Groq Llama on free

@@ -97,3 +97,47 @@ export function createChildAbortController(
 
   return child
 }
+
+/**
+ * An AbortController that stands in for `parent` until it is moved: aborting
+ * either one aborts the other, exactly as if they were one controller.
+ * `moveTo(next)` cuts that link; from then on only `next` aborting aborts it.
+ *
+ * A foreground agent runs on it so Esc (and Esc on the agent's permission
+ * prompt) still stops the whole turn. Moved to the background with Ctrl+B,
+ * the agent follows its own task instead: it outlives the turn and stops when
+ * the task is killed.
+ */
+export function createMovableAbortController(parent: AbortController): {
+  controller: AbortController
+  moveTo(next: AbortController): void
+  dispose(): void
+} {
+  const controller = createAbortController()
+  let unlink = (): void => {}
+  const link = (other: AbortController, twoWay: boolean): void => {
+    unlink()
+    unlink = () => {}
+    if (other.signal.aborted) {
+      controller.abort(other.signal.reason)
+      return
+    }
+    const down = (): void => controller.abort(other.signal.reason)
+    const up = (): void => other.abort(controller.signal.reason)
+    other.signal.addEventListener('abort', down, { once: true })
+    if (twoWay) controller.signal.addEventListener('abort', up, { once: true })
+    unlink = () => {
+      other.signal.removeEventListener('abort', down)
+      if (twoWay) controller.signal.removeEventListener('abort', up)
+    }
+  }
+  link(parent, true)
+  return {
+    controller,
+    moveTo: next => link(next, false),
+    dispose: () => {
+      unlink()
+      unlink = () => {}
+    },
+  }
+}

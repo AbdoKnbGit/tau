@@ -14,17 +14,10 @@ const STANDARD_REASONING_LEVELS: readonly OpenAIReasoningLevel[] = [
   'xhigh',
 ]
 
-const GPT_5_6_REASONING_LEVELS: readonly OpenAIReasoningLevel[] = [
+const MAX_REASONING_LEVELS: readonly OpenAIReasoningLevel[] = [
   ...STANDARD_REASONING_LEVELS,
   'max',
 ]
-
-const GPT_5_6_MODELS = new Set([
-  'gpt-5.6',
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.6-luna',
-])
 
 const REASONING_LABELS: Record<OpenAIReasoningLevel, string> = {
   low:    'Low',
@@ -32,7 +25,7 @@ const REASONING_LABELS: Record<OpenAIReasoningLevel, string> = {
   high:   'High',
   xhigh:  'Extra High',
   // The API value is `max`; "Ultra" is the picker-facing name requested for
-  // the GPT-5.6-only top tier.
+  // the top tier GPT-5.6 introduced.
   max:    'Ultra',
 }
 
@@ -84,14 +77,23 @@ export function getReasoningLabel(level: OpenAIReasoningLevel): string {
 
 export function getAllReasoningLevels(modelId?: string): readonly OpenAIReasoningLevel[] {
   return modelId && modelSupportsMaxReasoning(modelId)
-    ? GPT_5_6_REASONING_LEVELS
+    ? MAX_REASONING_LEVELS
     : STANDARD_REASONING_LEVELS
 }
 
-/** GPT-5.6 exposes the API's additional `max` reasoning effort. */
+/**
+ * The API's `max` effort arrived with GPT-5.6, and every later family (GPT-6
+ * Sol, Luna and Astra) accepts it as well (models.dev, 2026-09-26). Judged by
+ * version rather than a list of ids, so a new release gets its top tier
+ * without an edit here.
+ */
 export function modelSupportsMaxReasoning(modelId: string): boolean {
   const normalized = modelId.trim().toLowerCase().replace(/^openai\//, '')
-  return GPT_5_6_MODELS.has(normalized)
+  const version = /^gpt-(\d+)(?:\.(\d+))?(?:$|-)/.exec(normalized)
+  if (!version) return false
+  const major = Number(version[1])
+  const minor = version[2] === undefined ? 0 : Number(version[2])
+  return major > 5 || (major === 5 && minor >= 6)
 }
 
 /**

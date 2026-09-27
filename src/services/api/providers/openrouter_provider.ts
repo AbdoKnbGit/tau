@@ -36,8 +36,12 @@ import { buildProviderStreamResult, type AnthropicStreamEvent, type ProviderStre
 const requestToolContracts = Symbol('openrouterRequestToolContracts')
 const recoveryCompletion = Symbol('openrouterRecoveryCompletion')
 const recoveryNote = Symbol('openrouterRecoveryNote')
+// Chosen once per request from the caller's system prompt; the tool stage only
+// sees the frozen prompt and must use the same snapshot.
+const snapshotKey = Symbol('openrouterSnapshotKey')
 type OpenRouterRequestParams = ProviderRequestParams & {
   [requestToolContracts]?: ProviderTool[]; [recoveryCompletion]?: boolean; [recoveryNote]?: string
+  [snapshotKey]?: string
 }
 
 export class OpenRouterProvider extends OpenAIProvider {
@@ -82,10 +86,11 @@ export class OpenRouterProvider extends OpenAIProvider {
    * send the full tool set so all claudex features work.
    */
   protected optimizeParams(params: ProviderRequestParams): ProviderRequestParams {
-    const text = typeof params.system === 'string'
-      ? params.system : (params.system ?? []).map(block => block.text).join('\n\n')
+    const text = systemText(params)
+    const key = this.contextKey(params, text)
     return { ...params,
-      system: freezeOpenRouterSystem(this.contextKey(params), text),
+      [snapshotKey]: key,
+      system: freezeOpenRouterSystem(key, text),
       tools: params.tools && selectOpenAICompatToolsForRequest(
         params.tools, params.messages, params.sessionId, 'openrouter',
       ),
@@ -115,9 +120,9 @@ export class OpenRouterProvider extends OpenAIProvider {
     return buildProviderStreamResult(cleaned, controller)
   }
 
-  private contextKey(params: ProviderRequestParams): string {
+  private contextKey(params: ProviderRequestParams, system: string): string {
     return openRouterContextKey('legacy', this.resolveModel(params.model),
-      params.sessionId ?? this.cacheSessionKey, params.querySource, params.messages)
+      params.sessionId ?? this.cacheSessionKey, params.querySource, params.messages, system)
   }
 
   protected override async *parseChatCompletionStream(
@@ -181,7 +186,10 @@ export class OpenRouterProvider extends OpenAIProvider {
     moveOpenRouterVolatileSystemTail(messages)
     applyOpenRouterMessageCacheBreakpoints(messages, model)
     normalizeOpenRouterGPTToolSchemas(tools, model)
-    if (tools) tools.splice(0, tools.length, ...freezeOpenRouterTools(this.contextKey(params), tools))
+    if (tools) {
+      const key = (params as OpenRouterRequestParams)[snapshotKey] ?? this.contextKey(params, systemText(params))
+      tools.splice(0, tools.length, ...freezeOpenRouterTools(key, tools))
+    }
     applyOpenRouterToolCacheBreakpoint(tools, model)
     // Keep this request-local and off the wire; concurrent sessions can have
     // different contracts. Validation must match the final advertised schema.
@@ -492,6 +500,11 @@ function applyOpenRouterContextCompressionPlugin(body: Record<string, unknown>):
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function systemText(params: ProviderRequestParams): string {
+  return typeof params.system === 'string'
+    ? params.system : (params.system ?? []).map(block => block.text).join('\n\n')
 }
 
 function shortStableHash(value: string): string {

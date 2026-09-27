@@ -4,21 +4,22 @@
  * Run:  bun run src/lanes/codex/codex.test.ts
  */
 
-import { CodexApiError, codexApi } from './api.js'
+import { CodexApiError, codexApi, FROZEN_VOLATILE_SESSION_LIMIT } from './api.js'
 import {
   buildCodexToolsFromRequest,
   codexLane,
   convertHistoryToCodex,
   extractCodexUsageMetrics,
+  freezeCodexToolOrder,
   repairCodexToolInput,
   resolveReasoning,
   sanitizeCodexToolParametersForOpenAI,
   splitCodexSystemForCache,
   stripNullToolArguments,
-  toOpenAIStrictToolParameters,
 } from './loop.js'
 import { assembleCodexSystemPrompt } from './prompt.js'
 import { CODEX_TOOL_REGISTRY, getCodexRegistrationByNativeName } from './tools.js'
+import { findCodexToolSchemaViolations } from './tool_schema.js'
 import {
   cycleOpenAIReasoningLevel,
   getAllReasoningLevels,
@@ -54,89 +55,20 @@ function deepContainsKey(obj: unknown, key: string): boolean {
   return false
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-const OPENAI_SCHEMA_TYPES = new Set([
-  'string',
-  'number',
-  'integer',
-  'boolean',
-  'object',
-  'array',
-  'null',
-])
-
-function assertOpenAIStrictSchema(schema: unknown, path = 'parameters'): void {
-  if (!isRecord(schema)) return
-
-  if ('additionalProperties' in schema) {
-    assert(schema.additionalProperties === false,
-      `${path}.additionalProperties must be false, got ${JSON.stringify(schema.additionalProperties)}`)
-  }
-
-  const type = schema.type
-  if (type !== undefined) {
-    if (Array.isArray(type)) {
-      assert(type.length > 0, `${path}.type must not be empty`)
-      for (let i = 0; i < type.length; i++) {
-        assert(typeof type[i] === 'string' && OPENAI_SCHEMA_TYPES.has(type[i]),
-          `${path}.type[${i}] must be a JSON Schema type string, got ${JSON.stringify(type[i])}`)
-      }
-    } else {
-      assert(typeof type === 'string' && OPENAI_SCHEMA_TYPES.has(type),
-        `${path}.type must be a JSON Schema type string, got ${JSON.stringify(type)}`)
-    }
-  }
-
-  const typeValues = Array.isArray(type) ? type : [type]
-  const objectLike = typeValues.includes('object') || isRecord(schema.properties)
-  if (objectLike) {
-    const properties = isRecord(schema.properties) ? schema.properties : {}
-    const required = Array.isArray(schema.required) ? schema.required : undefined
-    assert(required !== undefined, `${path}.required must be supplied`)
-    for (const key of Object.keys(properties)) {
-      assert(required.includes(key), `${path}.required missing ${key}`)
-    }
-    assert(schema.additionalProperties === false,
-      `${path}.additionalProperties must be false for object schemas`)
-  }
-
-  if (isRecord(schema.properties)) {
-    for (const [key, child] of Object.entries(schema.properties)) {
-      assertOpenAIStrictSchema(child, `${path}.properties.${key}`)
-    }
-  }
-  if (schema.items !== undefined) {
-    if (Array.isArray(schema.items)) {
-      for (let i = 0; i < schema.items.length; i++) {
-        assertOpenAIStrictSchema(schema.items[i], `${path}.items[${i}]`)
-      }
-    } else {
-      assertOpenAIStrictSchema(schema.items, `${path}.items`)
-    }
-  }
-  for (const key of ['anyOf', 'oneOf', 'allOf']) {
-    const value = schema[key]
-    if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i++) {
-        assertOpenAIStrictSchema(value[i], `${path}.${key}[${i}]`)
-      }
-    }
-  }
-}
-
 async function main(): Promise<void> {
   console.log('codex lane:')
 
-  await test('lists the current GPT-5.6 family with official metadata', async () => {
+  await test('lists the GPT-6 and GPT-5.6 families with models.dev metadata', async () => {
     const models = await codexLane.listModels()
     const expected = [
+      ['gpt-6-sol', 'GPT-6 Sol'],
+      ['gpt-6-astra', 'GPT-6 Astra'],
+      ['gpt-6-luna', 'GPT-6 Luna'],
       ['gpt-5.6-sol', 'GPT-5.6 Sol'],
       ['gpt-5.6-terra', 'GPT-5.6 Terra'],
       ['gpt-5.6-luna', 'GPT-5.6 Luna'],
     ] as const
+    assert(models.length === expected.length, `expected ${expected.length} models, got ${models.map(m => m.id).join(', ')}`)
     for (const [id, name] of expected) {
       const model = models.find(candidate => candidate.id === id)
       assert(model, `expected ${id} in codex model list`)
@@ -144,13 +76,16 @@ async function main(): Promise<void> {
       assert(model?.contextWindow === 1050000, `expected 1.05M context for ${id}`)
       assert(model?.tags?.includes('reasoning'), `expected reasoning tag for ${id}`)
     }
-    assert(models.find(m => m.id === 'gpt-5.6-sol')?.tags?.includes('recommended'), 'Sol should be recommended')
-    assert(models.some(m => m.id === 'gpt-5.5'), 'expected gpt-5.5')
-    assert(!models.find(m => m.id === 'gpt-5.5')?.tags?.includes('recommended'), '5.5 should no longer be recommended')
-    assert(models.some(m => m.id === 'gpt-5.4'), 'expected gpt-5.4')
-    assert(models.some(m => m.id === 'gpt-5.4-mini'), 'expected gpt-5.4-mini')
+    assert(models.find(m => m.id === 'gpt-6-sol')?.tags?.includes('recommended'), 'GPT-6 Sol should be recommended')
+    assert(models.filter(m => m.tags?.includes('recommended')).length === 1, 'one recommended row')
+    for (const gone of ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']) {
+      assert(!models.some(m => m.id === gone), `${gone} must no longer be listed`)
+    }
     assert(!models.some(m => m.id.startsWith('gpt-5.3')), 'gpt-5.3 must not be listed')
     assert(!models.some(m => m.id.startsWith('gpt-5.2')), 'gpt-5.2 must not be listed')
+    // listModels hands out copies: a caller editing tags cannot change the catalog.
+    ;(models[0]!.tags as string[]).push('free')
+    assert(!(await codexLane.listModels())[0]!.tags!.includes('free'), 'catalog was mutated through listModels')
   })
   await test('supports gpt-5-codex', () => {
     assert(codexLane.supportsModel('gpt-5-codex'), 'expected support')
@@ -174,17 +109,29 @@ async function main(): Promise<void> {
     assert(!codexLane.supportsModel('qwen3-coder-plus'), 'Qwen must go to Qwen lane')
   })
 
-  await test('smallFastModel returns gpt-5.4-mini', () => {
-    assert(codexLane.smallFastModel?.() === 'gpt-5.4-mini', 'expected gpt-5.4-mini')
+  await test('smallFastModel returns gpt-5.6-luna (ChatGPT accounts refuse gpt-5.4-mini)', () => {
+    assert(codexLane.smallFastModel?.() === 'gpt-5.6-luna', `got ${codexLane.smallFastModel?.()}`)
   })
   await test('explicit xhigh reasoning reaches Responses request config', () => {
     setOpenAIReasoningLevel('xhigh')
     const reasoning = resolveReasoning({ type: 'disabled' }, 'gpt-5.5')
     assert(reasoning?.effort === 'xhigh', `expected xhigh; got ${reasoning?.effort}`)
   })
+  await test('GPT-6 models get reasoning, and Low through Ultra', () => {
+    setOpenAIReasoningLevel('high')
+    for (const model of ['gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra']) {
+      assert(getAllReasoningLevels(model).join(',') === 'low,medium,high,xhigh,max', `${model} levels`)
+      const reasoning = resolveReasoning({ type: 'disabled' }, model)
+      assert(reasoning?.effort === 'high', `${model} must carry the chosen effort, got ${JSON.stringify(reasoning)}`)
+    }
+    assert(resolveReasoning({ type: 'adaptive' } as any, 'gpt-6-sol') !== undefined, 'GPT-6 is reasoning-capable')
+  })
   await test('GPT-5.6 exposes Ultra while sending the official max effort', () => {
-    for (const model of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+    for (const model of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-sol', 'openai/gpt-6-astra']) {
       assert(getAllReasoningLevels(model).at(-1) === 'max', `${model} should expose max`)
+    }
+    for (const model of ['gpt-5.5', 'gpt-5', 'gpt-5-codex', 'gpt-4.1', 'o3']) {
+      assert(getAllReasoningLevels(model).at(-1) === 'xhigh', `${model} should stop at xhigh`)
     }
     setOpenAIReasoningLevel('xhigh')
     const selected = cycleOpenAIReasoningLevel('right', 'gpt-5.6-sol')
@@ -231,7 +178,7 @@ async function main(): Promise<void> {
     assert(input.run_in_background === true, 'adaptInput must forward run_in_background')
   })
 
-  await test('Codex emits OpenAI-strict-compatible schemas for every native registry tool', () => {
+  await test('Codex sends every native registry tool non-strict with its own schema, as native Codex does', () => {
     const providerTools = CODEX_TOOL_REGISTRY.map(reg => ({
       name: reg.implId,
       description: reg.nativeDescription,
@@ -248,57 +195,40 @@ async function main(): Promise<void> {
         continue
       }
       assert(tool.type === 'function', `expected function tool, got ${tool.type}`)
-      assertOpenAIStrictSchema(tool.parameters, `native.${tool.name}.parameters`)
-      assert(tool.strict === true, `${tool.name} should use strict mode`)
+      assert(tool.strict === false, `${tool.name} strict=${tool.strict}`)
+      const violations = findCodexToolSchemaViolations(tool.parameters)
+      assert(violations.length === 0, `${tool.name}: ${violations.join(' | ')}`)
+      const reg = CODEX_TOOL_REGISTRY.find(r => r.nativeName === tool.name)!
+      assert(JSON.stringify(tool.parameters.required ?? []) === JSON.stringify(reg.nativeSchema.required ?? []),
+        `${tool.name} required list changed: ${JSON.stringify(tool.parameters.required)}`)
       for (const key of ['format', 'propertyNames', 'default']) {
         assert(!deepContainsKey(tool.parameters, key), `${tool.name} ${key} leaked`)
       }
     }
   })
 
-  await test('OpenAI strict tool schema helper accepts fully required schemas', () => {
-    const out = toOpenAIStrictToolParameters({
-      type: 'object',
-      properties: {
-        command: { type: 'string' },
-        target: {
-          type: 'object',
-          properties: {
-            filePath: { type: 'string' },
-            symbol: { type: 'string' },
-          },
-          required: ['filePath', 'symbol'],
+  await test('optional fields stay optional on the wire (no all-required, no nullable rewrite)', () => {
+    const tools = buildCodexToolsFromRequest([{
+      name: 'SampleAstSearch',
+      description: 'ast search',
+      input_schema: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string' },
+          lang: { type: 'string', enum: ['python', 'typescript'] },
+          paths: { type: 'array', items: { type: 'string' } },
         },
+        required: ['pattern'],
       },
-      required: ['command', 'target'],
-    }) as any
-    assert(out != null, 'expected strict-compatible schema')
-    assert(out.additionalProperties === false, 'top-level additionalProperties=false')
-    assert(out.properties.target.additionalProperties === false, 'nested additionalProperties=false')
-    assert(out.required.includes('command') && out.required.includes('target'), 'required preserved')
+    }] as any) ?? []
+    const out = (tools[0] as any).parameters
+    assert(JSON.stringify(out.required) === '["pattern"]', `required=${JSON.stringify(out.required)}`)
+    assert(out.properties.paths.type === 'array', 'optional paths is not made nullable')
+    assert(JSON.stringify(out.properties.lang.enum) === '["python","typescript"]', 'optional enum gains no null')
+    assert(!('additionalProperties' in out), 'no additionalProperties is invented')
   })
 
-  await test('OpenAI strict tool schema helper makes optional SampleAstSearch fields nullable', () => {
-    const out = toOpenAIStrictToolParameters({
-      type: 'object',
-      properties: {
-        pattern: { type: 'string' },
-        lang: { type: 'string' },
-        paths: { type: 'array', items: { type: 'string' } },
-      },
-      required: ['pattern', 'lang'],
-    }) as any
-    assert(out !== null, 'optional paths should be encoded as nullable')
-    assert(out.additionalProperties === false, 'top-level additionalProperties=false')
-    assert(out.required.includes('pattern') && out.required.includes('lang'), 'original required preserved')
-    assert(out.required.includes('paths'), 'OpenAI strict requires every property')
-    assert(out.properties.pattern.type === 'string', 'required pattern must not become nullable')
-    assert(Array.isArray(out.properties.paths.type), 'optional paths should use type array')
-    assert(out.properties.paths.type.includes('array'), 'paths array type preserved')
-    assert(out.properties.paths.type.includes('null'), 'optional paths should accept null')
-  })
-
-  await test('Codex OpenAI sanitizer strips WebFetch uri format without breaking strict eligibility', () => {
+  await test('Codex OpenAI sanitizer strips WebFetch uri format', () => {
     const out = sanitizeCodexToolParametersForOpenAI({
       type: 'object',
       properties: {
@@ -318,7 +248,7 @@ async function main(): Promise<void> {
     assert(out.properties.url.type === 'string', 'url string type preserved')
     assert(!('format' in out.properties.url), 'OpenAI rejects format: uri')
     assert(Array.isArray(out.required) && out.required.includes('url'), 'required preserved')
-    assert(toOpenAIStrictToolParameters(out) !== null, 'sanitized WebFetch schema should be strict-compatible')
+    assert(findCodexToolSchemaViolations(out).length === 0, 'sanitized WebFetch schema passes the backend check')
   })
 
   await test('Codex strips OpenAI nullable optional args before local tool validation', () => {
@@ -486,12 +416,17 @@ async function main(): Promise<void> {
     for (const tool of tools) {
       assert(tool.type === 'function', `expected function tool, got ${tool.type}`)
       if (tool.type !== 'function') continue
-      assert(tool.strict === true, `${tool.name} should use strict mode`)
-      assertOpenAIStrictSchema(tool.parameters, `tools.${tool.name}.parameters`)
+      assert(tool.strict === false, `${tool.name} strict=${tool.strict}`)
+      const violations = findCodexToolSchemaViolations(tool.parameters)
+      assert(violations.length === 0, `${tool.name}: ${violations.join(' | ')}`)
       assert(!deepContainsKey(tool.parameters, 'format'), `${tool.name} format leaked`)
       assert(!deepContainsKey(tool.parameters, 'propertyNames'), `${tool.name} propertyNames leaked`)
       assert(!deepContainsKey(tool.parameters, 'default'), `${tool.name} default leaked`)
     }
+    const task = tools.find(tool => tool.type === 'function' && tool.name === 'TaskCreate') as any
+    assert(JSON.stringify(task.parameters.properties.metadata) === '{"type":"object","additionalProperties":{}}',
+      `TaskCreate metadata must stay a map: ${JSON.stringify(task.parameters.properties.metadata)}`)
+    assert(JSON.stringify(task.parameters.required) === '["subject","description"]', 'the real required list is kept')
     const ast = tools.find(tool => tool.type === 'function' && tool.name === 'SampleAstSearch') as any
     assert(ast?.parameters?.properties?.pattern?.type === 'string',
       'SampleAstSearch pattern property must survive schema sanitization')
@@ -499,7 +434,44 @@ async function main(): Promise<void> {
       'SampleAstSearch required must include pattern')
   })
 
-  await test('Codex strict schema compiler handles common tool schema shapes', () => {
+  await test('tool order stays stable per conversation: late tools are appended, every request shares it', () => {
+    const fn = (name: string, extra: Record<string, unknown> = {}) => ({
+      type: 'function' as const, name, description: `${name} tool`,
+      parameters: { type: 'object', properties: { q: { type: 'string' }, ...extra } }, strict: false,
+    })
+    const key = `order-test-${Date.now()}`
+    const first = [fn('Bash'), fn('Read'), fn('mcp__playwright__click')]
+    assert(freezeCodexToolOrder(key, first).map(t => t.name).join() === 'Bash,Read,mcp__playwright__click', 'first request keeps its order')
+    // A claude.ai connector connects: it sorts before playwright.
+    const second = [fn('Bash'), fn('Read'), fn('mcp__claude_ai_Docs__read'), fn('mcp__playwright__click')]
+    assert(freezeCodexToolOrder(key, second).map(t => t.name).join() === 'Bash,Read,mcp__playwright__click,mcp__claude_ai_Docs__read',
+      'a late tool goes to the end so the earlier prefix stays byte-identical')
+    // A removed tool is dropped, a changed contract replaced in place, a
+    // description-only change keeps the first declaration.
+    const changed = { ...fn('Read', { limit: { type: 'integer' } }) }
+    const reworded = { ...fn('Bash'), description: 'Bash tool, reworded' }
+    const third = freezeCodexToolOrder(key, [reworded, changed, fn('mcp__claude_ai_Docs__read')])
+    assert(third.map(t => t.name).join() === 'Bash,Read,mcp__claude_ai_Docs__read', `order ${third.map(t => t.name).join()}`)
+    assert((third[1] as any).parameters.properties.limit, 'a changed contract is sent')
+    assert((third[0] as any).description === 'Bash tool', 'an unchanged contract keeps its first description')
+    // Every request on the conversation shares the order: one with fewer
+    // tools sends them in that order and leaves the rest alone.
+    const subset = freezeCodexToolOrder(key, [fn('mcp__claude_ai_Docs__read'), fn('Bash')])
+    assert(subset.map(t => t.name).join() === 'Bash,mcp__claude_ai_Docs__read', `subset order ${subset.map(t => t.name).join()}`)
+    // The dropped server comes back to its old slot: the block is the one the
+    // conversation sent before it dropped.
+    const back = freezeCodexToolOrder(key, [reworded, changed, fn('mcp__claude_ai_Docs__read'), fn('mcp__playwright__click')])
+    assert(back.map(t => t.name).join() === 'Bash,Read,mcp__playwright__click,mcp__claude_ai_Docs__read', `order after return ${back.map(t => t.name).join()}`)
+    // A helper forked from the conversation lists the tools in Tau's sorted
+    // order; it still sends the conversation's block byte for byte.
+    const forked = freezeCodexToolOrder(key, [fn('Bash'), changed, fn('mcp__claude_ai_Docs__read'), fn('mcp__playwright__click')])
+    assert(JSON.stringify(forked) === JSON.stringify(back), 'a forked helper resends the conversation tool block')
+    // Another conversation keeps an order of its own.
+    const other = freezeCodexToolOrder(`${key}-other`, [fn('Read'), fn('Bash')])
+    assert(other.map(t => t.name).join() === 'Read,Bash', 'conversations do not share an order')
+  })
+
+  await test('Codex tool schemas handle common tool schema shapes', () => {
     const schemas: Record<string, Record<string, unknown>> = {
       NoArgs: { type: 'object', properties: {}, required: [], additionalProperties: false },
       EnumOptionals: {
@@ -577,13 +549,20 @@ async function main(): Promise<void> {
     for (const tool of tools) {
       assert(tool.type === 'function', `expected function tool, got ${tool.type}`)
       if (tool.type !== 'function') continue
-      assert(tool.strict === true, `${tool.name} should use strict mode`)
-      assertOpenAIStrictSchema(tool.parameters, `fixture.${tool.name}.parameters`)
+      assert(tool.strict === false, `${tool.name} strict=${tool.strict}`)
+      const violations = findCodexToolSchemaViolations(tool.parameters)
+      assert(violations.length === 0, `${tool.name}: ${violations.join(' | ')}`)
       assert(!deepContainsKey(tool.parameters, 'pattern'), `${tool.name} pattern leaked`)
-      assert(!deepContainsKey(tool.parameters, 'additionalProperties') ||
-        JSON.stringify(tool.parameters).includes('"additionalProperties":false'),
-        `${tool.name} has non-false additionalProperties`)
+      const source = schemas[tool.name]!
+      assert(JSON.stringify(tool.parameters.required) === JSON.stringify(source.required),
+        `${tool.name} required list changed: ${JSON.stringify(tool.parameters.required)}`)
     }
+    const arrays = tools.find(tool => tool.name === 'ArrayOfObjects') as any
+    assert(JSON.stringify(arrays.parameters.properties.items.items.properties.metadata) === '{"type":"object","additionalProperties":{}}',
+      'a free-form map is sent as itself')
+    const malformed = tools.find(tool => tool.name === 'MalformedTypeArray') as any
+    assert(JSON.stringify(malformed.parameters.properties.value.type) === '["object","null"]',
+      'a type list with a schema entry keeps the types it names')
   })
 
   await test('stable slot byte-identical across turns when volatile changes', () => {
@@ -773,11 +752,31 @@ async function main(): Promise<void> {
     assert(restored === 'env-A', `live session anchor was not restored; got ${JSON.stringify(restored)}`)
   })
 
+  await test('a session used every turn keeps its anchor while subagent sessions come and go', () => {
+    codexApi.clearChain()
+    codexApi.setSessionCacheKey('tau-main')
+    codexApi.getOrSeedFrozenVolatile('gpt-6-sol', 'main-env')
+    for (let i = 0; i < FROZEN_VOLATILE_SESSION_LIMIT * 3; i++) {
+      codexApi.setSessionCacheKey(`tau-agent-${i}`)
+      codexApi.getOrSeedFrozenVolatile('gpt-5.6-luna', `agent-env-${i}`)
+      if (i % 10 === 0) {
+        codexApi.setSessionCacheKey('tau-main')
+        const main = codexApi.getOrSeedFrozenVolatile('gpt-6-sol', `main-env-changed-${i}`)
+        assert(main === 'main-env', `main anchor was evicted after ${i} agents: ${JSON.stringify(main)}`)
+      }
+    }
+    // A resumed subagent that is still in the store replays its own anchor.
+    const last = FROZEN_VOLATILE_SESSION_LIMIT * 3 - 1
+    codexApi.setSessionCacheKey(`tau-agent-${last}`)
+    const replay = codexApi.getOrSeedFrozenVolatile('gpt-5.6-luna', 'agent-env-changed')
+    assert(replay === `agent-env-${last}`, `resumed agent anchor changed: ${JSON.stringify(replay)}`)
+  })
+
   await test('frozen volatile anchors evict oldest sessions instead of growing', () => {
     codexApi.clearChain()
     codexApi.setSessionCacheKey('tau-session-oldest')
     codexApi.getOrSeedFrozenVolatile('gpt-5.4', 'oldest-env')
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < FROZEN_VOLATILE_SESSION_LIMIT + 8; i++) {
       codexApi.setSessionCacheKey(`tau-session-${i}`)
       codexApi.getOrSeedFrozenVolatile('gpt-5.4', `env-${i}`)
     }

@@ -1,6 +1,6 @@
 import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import { loadOpenCodeApiKeyFromAuthFile } from '../opencodeAuth.js'
-import { isConcreteOpenAIGptModelForProvider } from './openaiGptModels.js'
+import { isConcreteOpenAIGptModelForProvider, OPENAI_AGENT_MODEL } from './openaiGptModels.js'
 import type { ModelName } from './model.js'
 import type { APIProvider } from './providers.js'
 import { alibabaBaseUrl } from './alibabaCatalog.js'
@@ -240,11 +240,11 @@ function hasOpencodeAccountKey(): boolean {
 //
 // Model selection rationale per provider (latest confirmed model IDs):
 //
-// OpenAI (April 2026):
-//   free  → gpt-5.4-mini (cheapest 5.x, tool calling, 128k context)
-//   pro   → gpt-5.5 (frontier coding/research model from Codex catalog)
-//   plus  → gpt-5.5 (frontier coding/research model from Codex catalog)
-//   Haiku → gpt-5.4-nano (smallest/fastest/cheapest)
+// OpenAI (September 2026, Codex catalog in openaiGptModels.ts):
+//   free  → gpt-5.6-luna (cost-efficient, usable from ChatGPT accounts)
+//   pro   → gpt-6-sol (coding and agentic workflows, the recommended row)
+//   plus  → gpt-6-sol
+//   Haiku → gpt-5.6-luna (the model tier aliases resolve to on this provider)
 //
 // Gemini (April 2026):
 //   free  → gemini-3-flash-preview (free in AI Studio, fast, tools)
@@ -285,19 +285,19 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     defaultTier: 'pro',
     tiers: {
       free: {
-        opus:   'gpt-5.4-mini',
-        sonnet: 'gpt-5.4-mini',
-        haiku:  'gpt-5.4-mini',
+        opus:   OPENAI_AGENT_MODEL,
+        sonnet: OPENAI_AGENT_MODEL,
+        haiku:  OPENAI_AGENT_MODEL,
       },
       pro: {
-        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-5.5',
-        sonnet: process.env.OPENAI_MODEL_SONNET ?? 'gpt-5.5',
-        haiku:  process.env.OPENAI_MODEL_HAIKU  ?? 'gpt-5.4-mini',
+        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-6-sol',
+        sonnet: process.env.OPENAI_MODEL_SONNET ?? 'gpt-6-sol',
+        haiku:  process.env.OPENAI_MODEL_HAIKU  ?? OPENAI_AGENT_MODEL,
       },
       plus: {
-        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-5.5',
-        sonnet: process.env.OPENAI_MODEL_SONNET ?? 'gpt-5.5',
-        haiku:  process.env.OPENAI_MODEL_HAIKU  ?? 'gpt-5.4-mini',
+        opus:   process.env.OPENAI_MODEL_OPUS   ?? 'gpt-6-sol',
+        sonnet: process.env.OPENAI_MODEL_SONNET ?? 'gpt-6-sol',
+        haiku:  process.env.OPENAI_MODEL_HAIKU  ?? OPENAI_AGENT_MODEL,
       },
     },
   },

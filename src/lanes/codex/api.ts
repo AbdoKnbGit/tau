@@ -310,8 +310,13 @@ function isAzureResponsesBaseUrl(baseUrl: string): boolean {
   )
 }
 
-/** Frozen-volatile anchors retained across cache sessions before eviction. */
-const FROZEN_VOLATILE_SESSION_LIMIT = 16
+/**
+ * Frozen-volatile anchors retained across cache sessions before eviction.
+ * Every subagent has a session of its own, so this holds a busy session's
+ * agents; eviction takes the least recently used, and the main conversation,
+ * used every turn, is never that one.
+ */
+export const FROZEN_VOLATILE_SESSION_LIMIT = 64
 
 export class CodexApiClient {
   private apiKey: string | null = null
@@ -357,9 +362,12 @@ export class CodexApiClient {
    * map so a fresh conversation captures fresh env.
    *
    * The outer cache-affinity key is part of the map key so bounded side
-   * requests (for example `/report`) cannot erase or seed the live chat's
-   * anchor when the singleton Codex client switches between them. The inner
-   * model key keeps `/models` swaps isolated inside each session.
+   * requests (for example `/report`) and subagents, which each have a key of
+   * their own, cannot erase or seed the live chat's anchor when the singleton
+   * Codex client switches between them. A subagent's anchor is its own env
+   * (a worktree agent's working directory included), and a resumed subagent
+   * replays it. The inner model key keeps `/models` swaps isolated inside
+   * each session.
    */
   private frozenVolatileBySession: Map<string, Map<string, string>> = new Map()
 
@@ -443,19 +451,22 @@ export class CodexApiClient {
     if (!currentText) return ''
     const sessionKey = this.sessionCacheKey
     let frozenByModel = this.frozenVolatileBySession.get(sessionKey)
-    if (!frozenByModel) {
+    if (frozenByModel) {
+      // Move to most recent: insertion order is recency order.
+      this.frozenVolatileBySession.delete(sessionKey)
+      this.frozenVolatileBySession.set(sessionKey, frozenByModel)
+    } else {
       frozenByModel = new Map()
       this.frozenVolatileBySession.set(sessionKey, frozenByModel)
       // Keying by session removed the clear-on-switch this map used to get,
-      // and `clearChain()` now only runs on dispose. Evict oldest-first so a
-      // long-lived process that cycles through sessions cannot accumulate one
-      // env/git/memory snapshot per session forever. The live session is
-      // re-seeded on its next turn if it is ever evicted.
-      if (this.frozenVolatileBySession.size > FROZEN_VOLATILE_SESSION_LIMIT) {
+      // and `clearChain()` now only runs on dispose. Evict the least recently
+      // used so a long-lived process that cycles through sessions and
+      // subagents cannot accumulate one env/git/memory snapshot per session
+      // forever. An evicted session is re-seeded on its next turn.
+      while (this.frozenVolatileBySession.size > FROZEN_VOLATILE_SESSION_LIMIT) {
         const oldest = this.frozenVolatileBySession.keys().next().value
-        if (oldest !== undefined && oldest !== sessionKey) {
-          this.frozenVolatileBySession.delete(oldest)
-        }
+        if (oldest === undefined || oldest === sessionKey) break
+        this.frozenVolatileBySession.delete(oldest)
       }
     }
     const cached = frozenByModel.get(model)

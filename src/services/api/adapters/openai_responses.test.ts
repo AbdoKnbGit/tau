@@ -41,7 +41,7 @@ function deepContainsKey(obj: unknown, key: string): boolean {
 async function main(): Promise<void> {
   console.log('openai responses adapter:')
 
-  await test('emits strict Responses tools for failure-prone schemas', () => {
+  await test('sends failure-prone schemas as their own contracts, non-strict', () => {
     const tools = anthropicToolsToResponsesTools([
       {
         name: 'SampleAstSearch',
@@ -94,30 +94,25 @@ async function main(): Promise<void> {
 
     assert(tools.length === 3, `tools.length=${tools.length}`)
     for (const tool of tools) {
-      assert(tool.strict === true, `${tool.name} strict=${tool.strict}`)
-      assert(tool.parameters.additionalProperties === false,
-        `${tool.name} top-level additionalProperties must be false`)
-      const properties = tool.parameters.properties
-      assert(isRecord(properties), `${tool.name} properties missing`)
-      const required = tool.parameters.required
-      assert(Array.isArray(required), `${tool.name} required missing`)
-      for (const key of Object.keys(properties)) {
-        assert(required.includes(key), `${tool.name} required missing ${key}`)
-      }
+      // Sent the way the Codex lane (and native Codex) sends every tool.
+      assert(tool.strict === false, `${tool.name} strict=${tool.strict}`)
+      assert(isRecord(tool.parameters.properties), `${tool.name} properties missing`)
       assert(!deepContainsKey(tool.parameters, 'format'), `${tool.name} format leaked`)
       assert(!deepContainsKey(tool.parameters, 'propertyNames'), `${tool.name} propertyNames leaked`)
     }
 
     const ast = tools.find(tool => tool.name === 'SampleAstSearch')!
     const astProps = ast.parameters.properties as Record<string, any>
-    assert(astProps.pattern.type === 'string', 'pattern must stay required string')
-    assert(Array.isArray(astProps.paths.type) && astProps.paths.type.includes('null'),
-      'optional paths should be nullable under strict mode')
+    assert(astProps.pattern.type === 'string', 'pattern must stay a string')
+    assert(astProps.paths.type === 'array', 'optional paths stays optional, not nullable')
+    assert(JSON.stringify(ast.parameters.required) === '["pattern","lang"]', 'the real required list is kept')
 
     const task = tools.find(tool => tool.name === 'TaskCreate')!
     const metadata = (task.parameters.properties as Record<string, any>).metadata
-    assert(metadata.additionalProperties === false,
-      `metadata.additionalProperties=${JSON.stringify(metadata.additionalProperties)}`)
+    assert(JSON.stringify(metadata) === '{"type":"object","additionalProperties":{}}',
+      `metadata must stay a map: ${JSON.stringify(metadata)}`)
+    assert(JSON.stringify(task.parameters.required) === '["subject","description"]',
+      'the real required list is kept')
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

@@ -134,6 +134,40 @@ async function main(): Promise<void> {
     assert(out!.inputSchema === schema, 'getter value must be carried over')
   })
 
+  await test('with `when`, a tool refuses only once the agent runs in the background', async () => {
+    let backgrounded = false
+    const seen: unknown[] = []
+    const own = tool('TaskCreate', {
+      async validateInput(input: unknown) {
+        seen.push(input)
+        return { result: false, message: 'own rule', errorCode: 7 }
+      },
+    })
+    const plain = tool('AskUserQuestion', { validateInput: undefined })
+    const [ownOut, plainOut] = refuseToolsOutsideRunPolicy(
+      [own, plain],
+      [],
+      'is not available in the background.',
+      () => backgrounded,
+    )
+    // Foreground: each tool keeps its own validation (or none).
+    const ownVerdict = await ownOut!.validateInput!({ subject: 'a' } as never, {} as never)
+    assert(ownVerdict.result === false && ownVerdict.message === 'own rule', 'own validateInput must run in the foreground')
+    assert(JSON.stringify(seen) === '[{"subject":"a"}]', `input passed through: ${JSON.stringify(seen)}`)
+    const plainVerdict = await plainOut!.validateInput!({} as never, {} as never)
+    assert(plainVerdict.result === true, 'a tool without validateInput must pass in the foreground')
+    // Moved to the background: both refuse, without calling the tool's own rule.
+    backgrounded = true
+    for (const out of [ownOut!, plainOut!]) {
+      const verdict = await out.validateInput!({} as never, {} as never)
+      assert(
+        verdict.result === false && verdict.message === `${out.name} is not available in the background.`,
+        `${out.name} must refuse in the background`,
+      )
+    }
+    assert(seen.length === 1, 'own validateInput must not run once refused')
+  })
+
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed > 0) process.exit(1)
 }

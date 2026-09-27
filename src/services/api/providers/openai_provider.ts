@@ -58,6 +58,7 @@ import {
   type ResponsesApiResponse,
 } from '../adapters/openai_responses.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
+import { OPENAI_CODEX_MODELS } from '../../../utils/model/openaiGptModels.js'
 import { recordProviderRateLimits } from '../providerRateLimits.js'
 import { ProviderHttpError } from '../transport_error.js'
 import {
@@ -71,50 +72,9 @@ import {
 // Used ONLY when the /v1/models fetch fails (e.g. OAuth token can't
 // list models). GPT-5 models use the Responses API (/v1/responses).
 
-const OPENAI_FALLBACK_MODELS: ModelInfo[] = [
-  {
-    id: 'gpt-5.6-sol',
-    name: 'GPT-5.6 Sol',
-    contextWindow: 1050000,
-    supportsToolCalling: true,
-    tags: ['recommended', 'reasoning'],
-  },
-  {
-    id: 'gpt-5.6-terra',
-    name: 'GPT-5.6 Terra',
-    contextWindow: 1050000,
-    supportsToolCalling: true,
-    tags: ['reasoning'],
-  },
-  {
-    id: 'gpt-5.6-luna',
-    name: 'GPT-5.6 Luna',
-    contextWindow: 1050000,
-    supportsToolCalling: true,
-    tags: ['reasoning'],
-  },
-  {
-    id: 'gpt-5.5',
-    name: 'GPT-5.5',
-    contextWindow: 272000,
-    supportsToolCalling: true,
-    tags: ['reasoning'],
-  },
-  {
-    id: 'gpt-5.4',
-    name: 'GPT-5.4',
-    contextWindow: 1050000,
-    supportsToolCalling: true,
-    tags: ['reasoning'],
-  },
-  {
-    id: 'gpt-5.4-mini',
-    name: 'GPT-5.4 Mini',
-    contextWindow: 272000,
-    supportsToolCalling: true,
-    tags: ['fast', 'reasoning'],
-  },
-]
+// The same catalog the Codex lane lists, so switching native lanes off does
+// not change which models /models offers.
+const OPENAI_FALLBACK_MODELS: readonly ModelInfo[] = OPENAI_CODEX_MODELS
 
 const OPENAI_SELECTABLE_MODEL_IDS = new Set(
   OPENAI_FALLBACK_MODELS.map(model => model.id),

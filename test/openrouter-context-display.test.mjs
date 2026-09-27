@@ -36,6 +36,19 @@ test('OpenRouter accepts an entirely cached real measurement and respects compac
   assert.equal(usage(messages).usedTokens, 15_000, 'real smaller measurements must remain visible')
 })
 
+test('Codex (openai) keeps the measured context while the next response streams', () => {
+  // The Responses API reports usage only with response.completed, so every
+  // streamed block of the next response starts at zero, exactly like OpenRouter.
+  const messages = [response('completed', 1_075, 68_000)]
+  assert.equal(usage(messages, 'openai').usedTokens, 69_075)
+  messages.push(response('thinking', 0))
+  assert.equal(usage(messages, 'openai').usedTokens, 69_075, 'a streaming block must not drop the meter to the baseline')
+  messages.push(response('tool', 0))
+  messages.at(-1).message.usage.input_tokens = 900
+  messages.at(-1).message.usage.cache_read_input_tokens = 69_000
+  assert.equal(usage(messages, 'openai').usedTokens, 69_900)
+})
+
 test('other providers keep their existing pending-usage display policy', () => {
   const messages = [response('completed', 54_000), response('pending', 0)]
   assert.ok(usage(messages, 'deepseek').usedTokens >= 71_000)

@@ -26,6 +26,13 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     'claude-opus-4-8': 1_000_000,
     'claude-opus-4-7': 1_000_000,
   },
+  // GPT-6 on the OpenAI (Codex) provider, per models.dev (2026-09-26). The
+  // 922,000-token prompt ceiling comes from the same catalog when it is loaded.
+  openai: {
+    'gpt-6-sol': OPENAI_LONG_CONTEXT_WINDOW,
+    'gpt-6-luna': OPENAI_LONG_CONTEXT_WINDOW,
+    'gpt-6-astra': OPENAI_LONG_CONTEXT_WINDOW,
+  },
   kiro: {
     auto: 1_000_000,
     'claude-sonnet-4.5': 200_000,

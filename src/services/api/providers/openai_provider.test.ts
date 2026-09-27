@@ -42,7 +42,7 @@ async function main(): Promise<void> {
 
   const originalFetch = globalThis.fetch
   try {
-    await test('shows only current curated OpenAI GPT-5 models', async () => {
+    await test('shows only the current curated OpenAI GPT-6 and GPT-5.6 models', async () => {
       globalThis.fetch = (async () =>
         new Response(JSON.stringify({
           data: [
@@ -55,28 +55,26 @@ async function main(): Promise<void> {
 
       const provider = new OpenAIProvider({ apiKey: 'test-key' })
       const models = await provider.listModels()
-      const gpt56 = [
+      const curated = [
+        ['gpt-6-sol', 'GPT-6 Sol'],
+        ['gpt-6-astra', 'GPT-6 Astra'],
+        ['gpt-6-luna', 'GPT-6 Luna'],
         ['gpt-5.6-sol', 'GPT-5.6 Sol'],
         ['gpt-5.6-terra', 'GPT-5.6 Terra'],
         ['gpt-5.6-luna', 'GPT-5.6 Luna'],
       ] as const
-      for (const [id, name] of gpt56) {
+      for (const [id, name] of curated) {
         const model = models.find(candidate => candidate.id === id)
         assert(model, `expected ${id} in OpenAI /models catalog`)
         assert(model?.name === name, `expected official ${id} display name`)
         assert(model?.contextWindow === 1050000, `expected 1.05M context for ${id}`)
         assert(model?.tags?.includes('reasoning'), `expected reasoning tag for ${id}`)
       }
-      const gpt55 = models.find(model => model.id === 'gpt-5.5')
-      const sol = models.find(model => model.id === 'gpt-5.6-sol')
-
-      assert(gpt55, 'expected gpt-5.5 in OpenAI /models catalog')
-      assert(gpt55?.name === 'GPT-5.5', 'expected curated display name')
-      assert(gpt55?.contextWindow === 272000, 'expected codex-main context window')
-      assert(sol?.tags?.includes('recommended'), 'expected Sol recommended tag')
-      assert(!gpt55?.tags?.includes('recommended'), 'GPT-5.5 should no longer be recommended')
-      assert(models.some(model => model.id === 'gpt-5.4'), 'expected gpt-5.4 in OpenAI catalog')
-      assert(models.some(model => model.id === 'gpt-5.4-mini'), 'expected gpt-5.4-mini in OpenAI catalog')
+      const sol = models.find(model => model.id === 'gpt-6-sol')
+      assert(sol?.tags?.includes('recommended'), 'expected GPT-6 Sol recommended tag')
+      for (const gone of ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']) {
+        assert(!models.some(model => model.id === gone), `${gone} must no longer be shown`)
+      }
       assert(!models.some(model => model.id === 'gpt-5.3-codex'), 'gpt-5.3 must not be shown')
       assert(!models.some(model => model.id === 'gpt-5.2'), 'gpt-5.2 must not be shown')
       assert(!models.some(model => model.id === 'gpt-4.1'), 'unscoped live API model must not be shown')
@@ -484,10 +482,11 @@ async function main(): Promise<void> {
       assert(models[0]?.tags?.includes('reasoning'), 'expected live reasoning flag')
     })
 
-    await test('legacy OpenAI transport sends max only to GPT-5.6', () => {
+    await test('legacy OpenAI transport sends max only to GPT-5.6 and later', () => {
       const provider = new InspectableOpenAIProvider({ apiKey: 'test-key' })
       setOpenAIReasoningLevel('max')
       assert(provider.reasoningFor('gpt-5.6-sol') === 'max', 'GPT-5.6 should send max')
+      assert(provider.reasoningFor('gpt-6-astra') === 'max', 'GPT-6 should send max')
       assert(provider.reasoningFor('gpt-5.5') === 'xhigh', 'GPT-5.5 should clamp max to xhigh')
       assert(provider.reasoningFor('gpt-5.4') === 'xhigh', 'GPT-5.4 should clamp max to xhigh')
     })
