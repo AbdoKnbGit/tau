@@ -371,8 +371,11 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
       const out: Record<string, unknown> = { pattern: native.pattern }
       if (native.dir_path) out.path = native.dir_path
       if (native.include_pattern) out.glob = native.include_pattern
-      if (native.names_only) out.output_mode = 'files_with_matches'
-      if (native.total_max_matches) out.head_limit = native.total_max_matches
+      // Its own contract: matching lines with line numbers unless names_only,
+      // and at most 100 matches unless total_max_matches says otherwise.
+      out.output_mode = native.names_only ? 'files_with_matches' : 'content'
+      const max = native.total_max_matches
+      out.head_limit = typeof max === 'number' && max > 0 ? max : 100
       if (native.include_ignored != null) out.include_ignored = native.include_ignored
       return out
     },

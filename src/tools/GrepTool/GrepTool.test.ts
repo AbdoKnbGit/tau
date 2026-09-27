@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -581,6 +581,17 @@ describe('GrepTool with real ripgrep', () => {
     expect(await tools.listProjectFiles(slashed, { hidden: 'none', signal })).toEqual(expected)
   })
 
+  test('a search root reached through a symlink still anchors folder globs', async () => {
+    // macOS /tmp and /var are symlinks: the OS reports rg's working folder
+    // with them resolved, which an absolute target would no longer match.
+    await file('real/src/a.ts')
+    await file('real/.gitignore', 'src/gen/\n')
+    await file('real/src/gen/b.ts')
+    const link = join(root, 'link')
+    await symlink(join(root, 'real'), link, process.platform === 'win32' ? 'junction' : 'dir')
+    expect((await globIn(link, 'src/**/*.ts')).files).toEqual([join(link, 'src', 'a.ts')])
+    expect(normalized((await search({ path: link, glob: 'src/**/*.ts' })).filenames)).toEqual(['link/src/a.ts'])
+  })
   test('Glob patterns starting with ./ match like the same pattern without it', async () => {
     await file('src/a.ts')
     await file('src/sub/b.ts')

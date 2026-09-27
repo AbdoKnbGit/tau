@@ -1054,6 +1054,7 @@ function inverseAdapt(nativeName: string, input: Record<string, unknown>): Recor
       if (input.path != null) out.path = input.path
       if (input.glob != null) out.include = input.glob
       if (input.include_ignored != null) out.include_ignored = input.include_ignored
+      if (input.output_mode != null) out.output_mode = input.output_mode
       return out
     }
     default:

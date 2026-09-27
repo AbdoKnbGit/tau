@@ -253,6 +253,11 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
           type: 'boolean',
           description: 'Also search files excluded by .gitignore/.ignore rules; default false.',
         },
+        output_mode: {
+          type: 'string',
+          enum: ['content', 'files_with_matches', 'count'],
+          description: 'content = matching lines with line numbers, files_with_matches = file paths (default), count = matches per file.',
+        },
       },
       required: ['pattern'],
     },
@@ -261,6 +266,7 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
       if (native.path) out.path = native.path
       if (native.include) out.glob = native.include
       if (native.include_ignored != null) out.include_ignored = native.include_ignored
+      if (native.output_mode) out.output_mode = native.output_mode
       return out
     },
     adaptOutput(output) {

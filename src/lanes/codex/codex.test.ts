@@ -177,6 +177,11 @@ async function main(): Promise<void> {
     assert('include_ignored' in ((code!.nativeSchema.properties ?? {}) as Record<string, unknown>), 'search_code schema must expose include_ignored')
     const grep = code!.adaptInput({ pattern: 'x', include: '*.py', include_ignored: true } as any) as any
     assert(grep.include_ignored === true && grep.glob === '*.py', 'search_code must forward include_ignored and include')
+    // Without an output mode a model could never see the matching lines.
+    assert('output_mode' in ((code!.nativeSchema.properties ?? {}) as Record<string, unknown>), 'search_code schema must expose output_mode')
+    const lines = code!.adaptInput({ pattern: 'x', output_mode: 'content' } as any) as any
+    assert(lines.output_mode === 'content', 'search_code must forward output_mode')
+    assert(!('output_mode' in (code!.adaptInput({ pattern: 'x' } as any) as any)), 'no output_mode keeps the shared default')
   })
 
   await test('Codex shell exposes tracked background execution', () => {

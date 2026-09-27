@@ -145,6 +145,11 @@ function main(): void {
     assert('include_ignored' in ((grep.nativeSchema.properties ?? {}) as Record<string, unknown>), 'grep_search schema must expose include_ignored')
     const grepInput = grep.adaptInput({ pattern: 'x', include_ignored: true }) as Record<string, unknown>
     assert(grepInput.include_ignored === true, 'grep_search adaptInput must forward include_ignored')
+    // Its own contract: lines unless names_only, 100 matches unless told otherwise.
+    const byDefault = grep.adaptInput({ pattern: 'x' }) as Record<string, unknown>
+    assert(byDefault.output_mode === 'content' && byDefault.head_limit === 100, 'grep_search returns matching lines, 100 by default')
+    const names = grep.adaptInput({ pattern: 'x', names_only: true, total_max_matches: 20 }) as Record<string, unknown>
+    assert(names.output_mode === 'files_with_matches' && names.head_limit === 20, 'names_only and total_max_matches are honoured')
   })
 
   test('TOOL_USAGE_RULES contains schema, recovery, and primitive nudges', () => {
