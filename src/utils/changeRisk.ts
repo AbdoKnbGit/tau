@@ -47,6 +47,9 @@ export function resolveAnalysisRoot(root: string | undefined): string {
   const cwd = getCwd()
   const value = root?.trim() ? root.trim() : cwd
   const absolute = isAbsolute(value) ? value : resolve(cwd, value)
+  // A network (UNC) path is not touched here: this also runs for the
+  // permission check, before anyone has agreed to contact that server.
+  if (absolute.startsWith('\\\\') || absolute.startsWith('//')) return absolute
   const stat = safeStat(absolute)
   if (stat?.isFile()) {
     return resolve(absolute, '..')

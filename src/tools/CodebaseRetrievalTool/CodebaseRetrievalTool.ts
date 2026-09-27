@@ -1,13 +1,20 @@
 import { execFileSync } from 'child_process'
-import { existsSync, readFileSync, statSync } from 'fs'
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'fs'
 import { createElement } from 'react'
 import { extname, isAbsolute, join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
 
-import { buildTool, type ToolDef } from '../../Tool.js'
+import { buildTool, type ToolDef, type ToolPermissionContext } from '../../Tool.js'
 import { Text } from '../../ink.js'
 import { getCwd } from '../../utils/cwd.js'
+import { getPathsForPermissionCheck } from '../../utils/fsOperations.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import {
+  checkReadPermissionForTool,
+  getFileReadIgnorePatterns,
+  matchingRuleForInput,
+} from '../../utils/permissions/filesystem.js'
+import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { listProjectFiles } from '../../utils/projectFiles.js'
 import { CODEBASE_RETRIEVAL_TOOL_NAME } from './constants.js'
 
@@ -137,6 +144,11 @@ export type RetrieveCodebaseInput = {
   maxResults?: number
   includeSnippets?: boolean
 }
+export type RetrieveCodebaseOptions = {
+  /** Its read-deny rules apply to every file, the same as for Read. */
+  permissionContext: ToolPermissionContext
+  signal?: AbortSignal
+}
 
 function renderText(message: string): React.ReactNode {
   return createElement(Text, null, message)
@@ -157,6 +169,14 @@ function tokenize(text: string): string[] {
 function safeStat(path: string) {
   try {
     return statSync(path)
+  } catch {
+    return null
+  }
+}
+
+function safeLstat(path: string) {
+  try {
+    return lstatSync(path)
   } catch {
     return null
   }
@@ -205,6 +225,33 @@ function listGitFiles(root: string): string[] | null {
 }
 
 /**
+ * A test for the files Read would refuse under a read-deny rule, or null when
+ * there are no such rules. It asks the Read tool's own matcher about the
+ * listed path and about where that path really leads: a symlinked file, or a
+ * search folder reached through a symlink (macOS `/tmp`). A snippet never
+ * shows what Read would not.
+ */
+function readDenyCheck(
+  root: string,
+  context: ToolPermissionContext,
+): ((path: string, isLink: boolean) => boolean) | null {
+  const hasRules = [...getFileReadIgnorePatterns(context).values()].some(
+    patterns => patterns.length > 0,
+  )
+  if (!hasRules) return null
+  const denied = (path: string) =>
+    matchingRuleForInput(path, context, 'read', 'deny') !== null
+  let realRoot = root
+  try {
+    realRoot = realpathSync(root)
+  } catch {}
+  return (path, isLink) =>
+    denied(path) ||
+    (realRoot !== root && denied(join(realRoot, relative(root, path)))) ||
+    (isLink && getPathsForPermissionCheck(path).some(denied))
+}
+
+/**
  * The files to score, at most `maxFiles`. The walk stops at that budget, so
  * whatever the project disowns (a virtualenv holds tens of thousands of
  * `.py` files) must never be listed: inside a repository git decides, and
@@ -215,6 +262,7 @@ async function walk(
   root: string,
   maxFiles: number,
   signal: AbortSignal,
+  isReadDenied: ((path: string, isLink: boolean) => boolean) | null,
 ): Promise<{ files: string[]; truncated: boolean }> {
   const listed =
     listGitFiles(root) ??
@@ -223,7 +271,11 @@ async function walk(
   for (const path of listed) {
     if (files.length >= maxFiles) return { files, truncated: true }
     if (isSkippedFile(path)) continue
-    const stat = safeStat(path)
+    const entry = safeLstat(path)
+    if (!entry) continue
+    const isLink = entry.isSymbolicLink()
+    if (isReadDenied?.(path, isLink)) continue
+    const stat = isLink ? safeStat(path) : entry
     if (stat?.isFile() && stat.size <= 250_000) files.push(path)
   }
   return { files, truncated: false }
@@ -283,13 +335,13 @@ function scoreFile(path: string, root: string, queryTerms: string[], includeSnip
 
 export async function retrieveCodebase(
   input: RetrieveCodebaseInput,
-  signal: AbortSignal = new AbortController().signal,
+  { permissionContext, signal = new AbortController().signal }: RetrieveCodebaseOptions,
 ): Promise<Output> {
   const root = resolveRoot(input.root)
   const stat = safeStat(root)
   const { files, truncated } =
     existsSync(root) && stat?.isDirectory()
-      ? await walk(root, 15_000, signal)
+      ? await walk(root, 15_000, signal, readDenyCheck(root, permissionContext))
       : { files: [], truncated: false }
   const terms = tokenize(input.query)
   const includeSnippets = input.includeSnippets !== false
@@ -329,6 +381,18 @@ export const CodebaseRetrievalTool = buildTool({
   toAutoClassifierInput(input) {
     return `${input.query} ${input.root ?? ''}`.trim()
   },
+  getPath({ root }): string {
+    return resolveRoot(root)
+  },
+  // The same check as Glob and Grep: a folder outside the working folders
+  // needs approval, and a folder a read-deny rule covers is refused.
+  async checkPermissions(input, context): Promise<PermissionDecision> {
+    return checkReadPermissionForTool(
+      CodebaseRetrievalTool,
+      input,
+      context.getAppState().toolPermissionContext,
+    )
+  },
   async validateInput(input) {
     if (!input.query?.trim()) {
       return { result: false, message: 'CodebaseRetrieval requires a non-empty query.', errorCode: 1 }
@@ -341,8 +405,13 @@ export const CodebaseRetrievalTool = buildTool({
   renderToolResultMessage(output) {
     return renderText(`${output.matches.length} match(es) from ${output.searchedFiles} file(s)`)
   },
-  async call(input, { abortController }) {
-    return { data: await retrieveCodebase(input, abortController.signal) }
+  async call(input, { abortController, getAppState }) {
+    return {
+      data: await retrieveCodebase(input, {
+        permissionContext: getAppState().toolPermissionContext,
+        signal: abortController.signal,
+      }),
+    }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     const lines = [

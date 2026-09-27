@@ -12,6 +12,8 @@ import {
   resolveAnalysisRoot,
 } from '../../utils/changeRisk.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { checkReadPermissionForTool } from '../../utils/permissions/filesystem.js'
+import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { retrieveCodebase } from '../CodebaseRetrievalTool/CodebaseRetrievalTool.js'
 import { detectProjectWorkflow } from '../ProjectWorkflowTool/ProjectWorkflowTool.js'
 import { REPO_CONTEXT_SCOUT_TOOL_NAME } from './constants.js'
@@ -194,6 +196,18 @@ export const RepoContextScoutTool = buildTool({
   toAutoClassifierInput(input) {
     return `${input.task} ${input.root ?? ''} ${(input.changedFiles ?? []).join(' ')}`.trim()
   },
+  getPath({ root }): string {
+    return resolveAnalysisRoot(root)
+  },
+  // The same check as Glob and Grep: a folder outside the working folders
+  // needs approval, and a folder a read-deny rule covers is refused.
+  async checkPermissions(input, context): Promise<PermissionDecision> {
+    return checkReadPermissionForTool(
+      RepoContextScoutTool,
+      input,
+      context.getAppState().toolPermissionContext,
+    )
+  },
   async validateInput(input) {
     if (!input.task?.trim()) {
       return {
@@ -219,7 +233,7 @@ export const RepoContextScoutTool = buildTool({
       `${output.retrievedFiles.length} context file(s), ${output.risk.level} risk`,
     )
   },
-  async call(input, { abortController }) {
+  async call(input, { abortController, getAppState }) {
     const root = resolveAnalysisRoot(input.root)
     const retrieval = await retrieveCodebase(
       {
@@ -228,7 +242,10 @@ export const RepoContextScoutTool = buildTool({
         maxResults: input.maxFiles ?? 8,
         includeSnippets: true,
       },
-      abortController.signal,
+      {
+        permissionContext: getAppState().toolPermissionContext,
+        signal: abortController.signal,
+      },
     )
     const workflow = detectProjectWorkflow({ path: root, maxDepth: 2 })
     const changes = await collectGitChangeSummary(root, input.changedFiles)

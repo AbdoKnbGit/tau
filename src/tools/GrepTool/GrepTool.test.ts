@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
@@ -22,8 +22,21 @@ async function loadSearchTools() {
     [/(?:^|\/)errors\.js$/, 'errors', `export const isENOENT = error => error?.code === 'ENOENT'; export const getErrnoCode = error => error?.code; export const toError = error => error instanceof Error ? error : new Error(String(error));`],
     [/(?:^|\/)file\.js$/, 'file', `export const FILE_NOT_FOUND_CWD_NOTE = ''; export const suggestPathUnderCwd = async () => undefined;`],
     [/permissions\/filesystem\.js$/, 'permissions', `
-      export const checkReadPermissionForTool = async () => ({ behavior: 'allow' });
+      import ignore from 'ignore';
+      import { isAbsolute, relative } from 'node:path';
+      import { state } from 'test:grep-state';
+      export const checkReadPermissionForTool = async (tool, input) => ({ behavior: 'allow', updatedInput: input, checkedPath: tool.getPath?.(input) });
       export const getFileReadIgnorePatterns = context => new Map([[null, context.denyPatterns ?? []], ...(context.denyRules ?? [])]);
+      // Read's matcher in small: gitignore lines under their root (the working folder when none).
+      export const matchingRuleForInput = (path, context, toolType, behavior) => {
+        if (toolType !== 'read' || behavior !== 'deny') return null;
+        for (const [root, patterns] of getFileReadIgnorePatterns(context)) {
+          const rel = relative(root ?? state.cwd, path).replaceAll('\\\\', '/');
+          if (!patterns.length || !rel || rel.startsWith('../') || isAbsolute(rel)) continue;
+          if (ignore().add(patterns.map(pattern => pattern.replace(/\\/\\*\\*$/, ''))).ignores(rel)) return { ruleBehavior: 'deny' };
+        }
+        return null;
+      };
     `],
     [/plugins\/orphanedPluginFilter\.js$/, 'plugins', `import { state } from 'test:grep-state'; export const getGlobExclusionsForPluginCache = async () => state.pluginExclusions;`],
     [/^\.\/UI\.js$/, 'ui', `
@@ -49,7 +62,7 @@ async function loadSearchTools() {
         export { glob, formatIgnoredNote } from './src/utils/glob.ts';
         export { listProjectFiles, foldersWithProjectFiles } from './src/utils/projectFiles.ts';
         export { readDenyExclusionGlobs } from './src/utils/permissions/readDenyGlobs.ts';
-        export { retrieveCodebase } from './src/tools/CodebaseRetrievalTool/CodebaseRetrievalTool.ts';
+        export { retrieveCodebase, CodebaseRetrievalTool } from './src/tools/CodebaseRetrievalTool/CodebaseRetrievalTool.ts';
         export { primeLspServers } from './src/services/lsp/prime.ts';
         export { state } from 'test:grep-state';
       `,
@@ -82,7 +95,7 @@ async function loadSearchTools() {
             if (args.importer.replaceAll('\\', '/').includes('/node_modules/')) return
             return { path: name, namespace: 'grep-test-service' }
           })
-          builder.onLoad({ filter: new RegExp(`^${name}$`), namespace: 'grep-test-service' }, () => ({ contents, loader: 'js' }))
+          builder.onLoad({ filter: new RegExp(`^${name}$`), namespace: 'grep-test-service' }, () => ({ contents, loader: 'js', resolveDir: projectRoot }))
         }
       },
     }],
@@ -630,9 +643,66 @@ describe('GrepTool with real ripgrep', () => {
     await file('.gitignore', 'vendor_copy/\n')
     await file('vendor_copy/tokenizer.py', 'def tokenize_prompt(): pass\n')
     await file('app/tokenizer.py', 'def tokenize_prompt(): pass\n')
-    const output = await tools.retrieveCodebase({ query: 'tokenize prompt', root })
+    const output = await tools.retrieveCodebase({ query: 'tokenize prompt', root }, { permissionContext: {} })
     expect(output.matches.map((match: { relativePath: string }) => match.relativePath.replaceAll('\\', '/'))).toEqual(['app/tokenizer.py'])
     expect(output.searchedFiles).toBe(2)
+  })
+
+  const retrieved = async (permissionContext: object, searchRoot = root) =>
+    (await tools.retrieveCodebase({ query: 'tokenize prompt', root: searchRoot }, { permissionContext })).matches
+      .map((match: { relativePath: string }) => match.relativePath.replaceAll('\\', '/'))
+      .sort()
+
+  test('code retrieval leaves out what a read-deny rule covers, listed by git or by the walk', async () => {
+    const text = 'def tokenize_prompt(): return "tokenize prompt"\n'
+    await file('app/tokenizer.py', text)
+    await file('config/secret.txt', text)
+    await file('private/keys.py', text)
+    const deny = { denyPatterns: ['secret.txt', 'private/**'] }
+    expect(await retrieved({})).toEqual(['app/tokenizer.py', 'config/secret.txt', 'private/keys.py'])
+    expect(await retrieved(deny)).toEqual(['app/tokenizer.py'])
+    execFileSync('git', ['init', '-q'], { cwd: root })
+    execFileSync('git', ['add', '-A'], { cwd: root })
+    expect(await retrieved({})).toEqual(['app/tokenizer.py', 'config/secret.txt', 'private/keys.py'])
+    expect(await retrieved(deny)).toEqual(['app/tokenizer.py'])
+  })
+
+  test('code retrieval applies a rule written for the real folder behind a symlinked root', async () => {
+    const text = 'def tokenize_prompt(): return "tokenize prompt"\n'
+    await file('real/app.py', text)
+    await file('real/notes.md', text)
+    const link = join(root, 'link')
+    await symlink(join(root, 'real'), link, process.platform === 'win32' ? 'junction' : 'dir')
+    const denyRealNotes = { denyRules: [[realpathSync(join(root, 'real')), ['notes.md']]] }
+    expect(await retrieved({}, link)).toEqual(['app.py', 'notes.md'])
+    expect(await retrieved(denyRealNotes, link)).toEqual(['app.py'])
+  })
+
+  test('code retrieval does not read a denied file through a symlink to it', async () => {
+    const text = 'def tokenize_prompt(): return "tokenize prompt"\n'
+    await file('app/tokenizer.py', text)
+    await file('private/keys.py', text)
+    try {
+      await symlink(join(root, 'private', 'keys.py'), join(root, 'app', 'keys_link.py'), 'file')
+    } catch (error) {
+      // Windows without symlink rights: nothing to test on this machine.
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') return
+      throw error
+    }
+    // Git lists a symlink as a file of its own; the walk skips symlinks.
+    execFileSync('git', ['init', '-q'], { cwd: root })
+    execFileSync('git', ['add', '-A'], { cwd: root })
+    expect(await retrieved({})).toContain('app/keys_link.py')
+    expect(await retrieved({ denyPatterns: ['private/**'] })).toEqual(['app/tokenizer.py'])
+  })
+
+  test('code retrieval asks the read-permission check about the folder it will search', async () => {
+    const context = { getAppState: () => ({ toolPermissionContext: {} }) }
+    const checked = async (input: Record<string, unknown>) =>
+      (await tools.CodebaseRetrievalTool.checkPermissions({ query: 'x', ...input }, context)).checkedPath
+    expect(await checked({})).toBe(root)
+    expect(await checked({ root: 'sub' })).toBe(join(root, 'sub'))
+    expect(basename(await checked({ root: join(root, '..', 'elsewhere') }))).toBe('elsewhere')
   })
 
   test('LSP warm-up primes each server with its shallowest file the ignore files keep', async () => {
