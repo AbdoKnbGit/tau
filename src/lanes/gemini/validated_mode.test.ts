@@ -131,6 +131,22 @@ function main(): void {
     assert(!/powershell/i.test(commandDescription), 'command field must not advertise PowerShell')
   })
 
+  test('glob can include ignored files, as Glob can', () => {
+    const reg = GEMINI_TOOL_REGISTRY.find(r => r.nativeName === 'glob')!
+    assert(reg.implId === 'Glob', 'glob must be backed by Glob')
+    const props = (reg.nativeSchema.properties ?? {}) as Record<string, unknown>
+    assert('include_ignored' in props, 'glob schema must expose include_ignored')
+    const input = reg.adaptInput({ pattern: '**/*.py', dir_path: '/p', include_ignored: true }) as Record<string, unknown>
+    assert(input.include_ignored === true && input.path === '/p', 'adaptInput must forward include_ignored and dir_path')
+    const plain = reg.adaptInput({ pattern: '**/*.py' }) as Record<string, unknown>
+    assert(!('include_ignored' in plain), 'an omitted include_ignored stays omitted')
+    const grep = GEMINI_TOOL_REGISTRY.find(r => r.nativeName === 'grep_search')!
+    assert(grep.implId === 'Grep', 'grep_search must be backed by Grep')
+    assert('include_ignored' in ((grep.nativeSchema.properties ?? {}) as Record<string, unknown>), 'grep_search schema must expose include_ignored')
+    const grepInput = grep.adaptInput({ pattern: 'x', include_ignored: true }) as Record<string, unknown>
+    assert(grepInput.include_ignored === true, 'grep_search adaptInput must forward include_ignored')
+  })
+
   test('TOOL_USAGE_RULES contains schema, recovery, and primitive nudges', () => {
     const r = GEMINI_TOOL_USAGE_RULES
     assert(r.includes('<TOOL_USAGE_RULES>'), 'XML wrapper present')

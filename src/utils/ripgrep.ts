@@ -1,5 +1,6 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
+import { stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
@@ -131,6 +132,7 @@ function ripGrepRaw(
     stderr: string,
   ) => void,
   singleThread = false,
+  cwd?: string,
 ): ChildProcess {
   // NB: When running interactively, ripgrep does not require a path as its last
   // argument, but when run non-interactively, it will hang unless a path or file
@@ -152,6 +154,7 @@ function ripGrepRaw(
   if (argv0) {
     const child = spawn(rgPath, fullArgs, {
       argv0,
+      cwd,
       signal: abortSignal,
       // Prevent visible console window on Windows (no-op on other platforms)
       windowsHide: true,
@@ -238,6 +241,7 @@ function ripGrepRaw(
     rgPath,
     fullArgs,
     {
+      cwd,
       maxBuffer: MAX_BUFFER_SIZE,
       signal: abortSignal,
       timeout,
@@ -358,11 +362,46 @@ export async function ripGrepStream(
   })
 }
 
+/**
+ * A directory to run rg inside, for {@link ripGrep}'s `globsRelativeToTarget`;
+ * undefined for a file, a missing path or a network path (no extra probes
+ * there, the same rule as the Grep ignore policy).
+ */
+async function searchableDirectory(target: string): Promise<string | undefined> {
+  if (target.startsWith('\\\\') || target.startsWith('//')) return undefined
+  try {
+    return (await stat(target)).isDirectory() ? target : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Put `dir` back where rg printed `./` for a `.` target. */
+function rebaseDotPath(line: string, dir: string): string {
+  if (!line.startsWith('./') && !line.startsWith('.\\')) return line
+  return (/[\\/]$/.test(dir) ? dir : dir + path.sep) + line.slice(2)
+}
+
 export async function ripGrep(
   args: string[],
   target: string,
   abortSignal: AbortSignal,
-  { strictErrors = false }: { strictErrors?: boolean } = {},
+  {
+    strictErrors = false,
+    globsRelativeToTarget = false,
+  }: {
+    strictErrors?: boolean
+    /**
+     * Anchor every --glob that contains a slash at `target` (a directory).
+     * rg anchors those at its own working directory, so a search of any
+     * other folder matched nothing with `src/*.ts` and ignored path-anchored
+     * deny rules. It runs inside `target` with `.` as the path, and the
+     * printed paths get `target` back. A relative path keeps this exact where
+     * the OS reports the working directory with symlinks resolved (macOS,
+     * Linux) and an absolute one would no longer match it.
+     */
+    globsRelativeToTarget?: boolean
+  } = {},
 ): Promise<string[]> {
   await codesignRipgrepIfNecessary()
 
@@ -371,6 +410,22 @@ export async function ripGrep(
     logError(error)
   })
 
+  const cwd = globsRelativeToTarget
+    ? await searchableDirectory(target)
+    : undefined
+  const lines = await ripGrepLines(args, cwd ? '.' : target, abortSignal, {
+    strictErrors,
+    cwd,
+  })
+  return cwd ? lines.map(line => rebaseDotPath(line, cwd)) : lines
+}
+
+function ripGrepLines(
+  args: string[],
+  target: string,
+  abortSignal: AbortSignal,
+  { strictErrors, cwd }: { strictErrors: boolean; cwd?: string },
+): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const handleResult = (
       error: ExecFileException | null,
@@ -428,6 +483,7 @@ export async function ripGrep(
             handleResult(retryError, retryStdout, retryStderr, true)
           },
           true, // Force single-threaded mode for this retry only
+          cwd,
         )
         return
       }
@@ -486,9 +542,16 @@ export async function ripGrep(
       resolve(lines)
     }
 
-    ripGrepRaw(args, target, abortSignal, (error, stdout, stderr) => {
-      handleResult(error, stdout, stderr, false)
-    })
+    ripGrepRaw(
+      args,
+      target,
+      abortSignal,
+      (error, stdout, stderr) => {
+        handleResult(error, stdout, stderr, false)
+      },
+      false,
+      cwd,
+    )
   })
 }
 

@@ -187,6 +187,26 @@ async function main(): Promise<void> {
       assert(result.ok, `expected existing script target to pass, got: ${result.ok ? 'ok' : result.message}`)
     })
 
+    await test('searches for a misplaced script where the ignore files allow, not by folder name', async () => {
+      const proj = join(root, 'ignore-aware')
+      for (const dir of ['generated', 'scripts', 'build']) mkdirSync(join(proj, dir), { recursive: true })
+      writeFileSync(join(proj, '.gitignore'), 'generated/\n')
+      writeFileSync(join(proj, 'generated', 'job.py'), '# generated copy')
+      writeFileSync(join(proj, 'scripts', 'job.py'), '# fixture')
+      const job = await resolveTargetWorkdir('python job.py', proj)
+      assert(
+        job.kind === 'auto' && job.workdir === join(proj, 'scripts'),
+        `expected only scripts/ (generated/ is ignored), got: ${job.kind === 'auto' ? job.workdir : job.kind}`,
+      )
+      // Not ignored here, so `build` is project content like any other folder.
+      writeFileSync(join(proj, 'build', 'make.py'), '# fixture')
+      const make = await resolveTargetWorkdir('python make.py', proj)
+      assert(
+        make.kind === 'auto' && make.workdir === join(proj, 'build'),
+        `expected build/, got: ${make.kind === 'auto' ? make.workdir : make.kind}`,
+      )
+    })
+
     await test('allows script referenced by its correct relative path', async () => {
       const resolution = await resolveTargetWorkdir('node api/server.js', root)
       assert(resolution.kind === 'none', 'correct relative path needs no redirect')

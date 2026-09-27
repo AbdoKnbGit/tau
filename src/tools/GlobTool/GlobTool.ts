@@ -8,12 +8,13 @@ import {
   suggestPathUnderCwd,
 } from '../../utils/file.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
-import { glob } from '../../utils/glob.js'
+import { formatIgnoredNote, glob } from '../../utils/glob.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath, toRelativePath } from '../../utils/path.js'
 import { checkReadPermissionForTool } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
+import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { DESCRIPTION, GLOB_TOOL_NAME } from './prompt.js'
 import {
   getToolUseSummary,
@@ -32,6 +33,9 @@ const inputSchema = lazySchema(() =>
       .describe(
         'Search directory; omit for cwd',
       ),
+    include_ignored: semanticBoolean(z.boolean().optional()).describe(
+      'Also list files excluded by .gitignore/.ignore rules; default false',
+    ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -60,6 +64,16 @@ const outputSchema = lazySchema(() =>
       .number()
       .optional()
       .describe('Distinct top-level entries across all matches'),
+    ignored: z
+      .object({
+        count: z.number().nullable(),
+        places: z.array(z.object({ path: z.string(), count: z.number() })),
+        morePlaces: z.number(),
+      })
+      .optional()
+      .describe(
+        'Matches left out because ignore files exclude them, and where they are',
+      ),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -210,13 +224,15 @@ export const GlobTool = buildTool({
     const start = Date.now()
     const appState = getAppState()
     const limit = globLimits?.maxResults ?? 100
-    const { files, truncated, total, shownEntries, totalEntries } = await glob(
-      input.pattern,
-      GlobTool.getPath(input),
-      { limit, offset: 0 },
-      abortController.signal,
-      appState.toolPermissionContext,
-    )
+    const { files, truncated, total, shownEntries, totalEntries, ignored } =
+      await glob(
+        input.pattern,
+        GlobTool.getPath(input),
+        { limit, offset: 0 },
+        abortController.signal,
+        appState.toolPermissionContext,
+        { includeIgnored: input.include_ignored === true },
+      )
     // Relativize paths under cwd to save tokens (same as GrepTool)
     const filenames = files.map(toRelativePath)
     const output: Output = {
@@ -227,23 +243,37 @@ export const GlobTool = buildTool({
       total,
       ...(shownEntries !== undefined && { shownEntries }),
       ...(totalEntries !== undefined && { totalEntries }),
+      ...(ignored && {
+        ignored: {
+          ...ignored,
+          places: ignored.places.map(place => ({
+            ...place,
+            path: toRelativePath(place.path),
+          })),
+        },
+      }),
     }
     return {
       data: output,
     }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
+    // First line, so it survives when a large result is cut to a preview.
+    const ignoredNote = formatIgnoredNote(output.ignored)
     if (output.filenames.length === 0) {
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: 'No files found',
+        content: ignoredNote
+          ? `No files found\n${ignoredNote}`
+          : 'No files found',
       }
     }
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
       content: [
+        ...(ignoredNote ? [ignoredNote] : []),
         ...output.filenames,
         ...(output.truncated ? [formatGlobTruncationNotice(output)] : []),
       ].join('\n'),

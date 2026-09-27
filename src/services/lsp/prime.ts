@@ -1,32 +1,18 @@
-import { readFile, readdir } from 'fs/promises'
+import { readFile } from 'fs/promises'
 import * as path from 'path'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { byDepth, listProjectFiles } from '../../utils/projectFiles.js'
 import {
   suppressLSPDiagnosticsForFile,
   unsuppressLSPDiagnosticsForFile,
 } from './LSPDiagnosticRegistry.js'
+import { lspFileNameGlobs } from './fileKeys.js'
 import type { LSPServerInstance } from './LSPServerInstance.js'
 import type { LSPServerManager } from './LSPServerManager.js'
 
-// Directories never worth walking when looking for a primer file.
-const SKIP_DIRS = new Set([
-  'node_modules',
-  '.git',
-  'dist',
-  'build',
-  'out',
-  '.next',
-  'coverage',
-  'vendor',
-  '.cache',
-  'tmp',
-  '.venv',
-  'venv',
-  '__pycache__',
-])
 // Bound the walk so startup never stalls on huge trees.
-const MAX_ENTRIES = 4000
+const PRIME_WALK_BUDGET_MS = 5_000
 
 /**
  * Open one real project file per always-on server at session start so the
@@ -56,34 +42,20 @@ export async function primeLspServers(manager: LSPServerManager): Promise<void> 
   }
   if (pending.size === 0) return
 
-  // Single bounded breadth-first walk; prime each server with the first file
-  // matching one of its extensions, and stop once every server is primed.
-  const queue: string[] = [root]
-  let visited = 0
-  while (queue.length > 0 && visited < MAX_ENTRIES && pending.size > 0) {
-    const dir = queue.shift()
-    if (dir === undefined) break
-    let entries
-    try {
-      entries = await readdir(dir, { withFileTypes: true })
-    } catch {
-      continue
-    }
-    for (const entry of entries) {
-      if (++visited > MAX_ENTRIES) break
-      if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
-          queue.push(path.join(dir, entry.name))
-        }
-        continue
-      }
-      if (!entry.isFile()) continue
-      const target = extToServer.get(path.extname(entry.name).toLowerCase())
-      if (!target || !pending.has(target.name)) continue
-      pending.delete(target.name)
-      void primeOne(manager, target.server, path.join(dir, entry.name))
-      if (pending.size === 0) break
-    }
+  // One bounded walk of the project files its ignore files keep (hidden
+  // folders skipped); prime each server with its shallowest file, which is
+  // the most likely to belong to the root project.
+  const files = await listProjectFiles(root, {
+    hidden: 'files',
+    names: lspFileNameGlobs(extToServer.keys()),
+    signal: AbortSignal.timeout(PRIME_WALK_BUDGET_MS),
+  })
+  for (const file of files.sort(byDepth(root))) {
+    const target = extToServer.get(path.extname(file).toLowerCase())
+    if (!target || !pending.has(target.name)) continue
+    pending.delete(target.name)
+    void primeOne(manager, target.server, file)
+    if (pending.size === 0) break
   }
 }
 

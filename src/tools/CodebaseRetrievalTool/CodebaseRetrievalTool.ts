@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process'
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, statSync } from 'fs'
 import { createElement } from 'react'
 import { extname, isAbsolute, join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
@@ -8,6 +8,7 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { Text } from '../../ink.js'
 import { getCwd } from '../../utils/cwd.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { listProjectFiles } from '../../utils/projectFiles.js'
 import { CODEBASE_RETRIEVAL_TOOL_NAME } from './constants.js'
 
 const DESCRIPTION =
@@ -16,42 +17,6 @@ const DESCRIPTION =
 const PROMPT = `Search the local repository by intent using lightweight lexical scoring and return ranked files with snippets. This is read-only.
 
 Use when the user asks where behavior lives, how a feature works, what to change for an intent, or when broad semantic-style repo orientation is useful before Grep/LSP/Read. Prefer CodeGraph first when a .codegraph directory exists.`
-
-/**
- * Directories whose contents are installed or generated rather than written.
- * These matter more than they look: the walk stops at 15k files, so anything
- * that fills the budget with machine-generated content pushes the project's
- * own source out of the search. A virtualenv alone can hold tens of
- * thousands of `.py` files — which the old extension allowlist happily read.
- */
-const SKIP_DIRS = new Set([
-  '.git',
-  'node_modules',
-  'bower_components',
-  'dist',
-  'build',
-  'out',
-  'target',
-  '.next',
-  '.nuxt',
-  '.svelte-kit',
-  'coverage',
-  '.cache',
-  '.parcel-cache',
-  '.turbo',
-  'vendor',
-  '__pycache__',
-  '.venv',
-  'venv',
-  'site-packages',
-  '.tox',
-  '.mypy_cache',
-  '.pytest_cache',
-  '.ruff_cache',
-  '.ipynb_checkpoints',
-  '.gradle',
-  '.terraform',
-])
 
 /**
  * Binary and generated formats, skipped without being opened.
@@ -215,7 +180,8 @@ function resolveRoot(root: string | undefined): string {
  * git rather than guessing with directory names.
  *
  * Returns null when the root is not a git repo, git is missing, or the
- * listing is unusable — every one of which falls back to {@link walkFs}.
+ * listing is unusable — every one of which falls back to
+ * {@link listProjectFiles}, which reads the same ignore files without git.
  */
 function listGitFiles(root: string): string[] | null {
   let stdout: string
@@ -238,53 +204,29 @@ function listGitFiles(root: string): string[] | null {
   return relatives.length > 0 ? relatives.map(rel => join(root, rel)) : null
 }
 
-function walk(root: string, maxFiles: number): { files: string[]; truncated: boolean } {
-  const tracked = listGitFiles(root)
-  if (tracked) {
-    const files: string[] = []
-    for (const path of tracked) {
-      if (files.length >= maxFiles) return { files, truncated: true }
-      if (isSkippedFile(path)) continue
-      const stat = safeStat(path)
-      if (stat?.isFile() && stat.size <= 250_000) files.push(path)
-    }
-    return { files, truncated: false }
-  }
-  return walkFs(root, maxFiles)
-}
-
-function walkFs(root: string, maxFiles: number): { files: string[]; truncated: boolean } {
+/**
+ * The files to score, at most `maxFiles`. The walk stops at that budget, so
+ * whatever the project disowns (a virtualenv holds tens of thousands of
+ * `.py` files) must never be listed: inside a repository git decides, and
+ * anywhere else the project's own ignore files do, read by ripgrep the way
+ * Grep reads them. Neither needs a list of folder names.
+ */
+async function walk(
+  root: string,
+  maxFiles: number,
+  signal: AbortSignal,
+): Promise<{ files: string[]; truncated: boolean }> {
+  const listed =
+    listGitFiles(root) ??
+    (await listProjectFiles(root, { hidden: 'all', signal })).sort()
   const files: string[] = []
-  let truncated = false
-
-  function visit(dir: string): void {
-    if (files.length >= maxFiles) {
-      truncated = true
-      return
-    }
-    let entries
-    try {
-      entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      if (files.length >= maxFiles) {
-        truncated = true
-        return
-      }
-      const path = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) visit(path)
-      } else if (entry.isFile() && !isSkippedFile(entry.name)) {
-        const stat = safeStat(path)
-        if (stat && stat.size <= 250_000) files.push(path)
-      }
-    }
+  for (const path of listed) {
+    if (files.length >= maxFiles) return { files, truncated: true }
+    if (isSkippedFile(path)) continue
+    const stat = safeStat(path)
+    if (stat?.isFile() && stat.size <= 250_000) files.push(path)
   }
-
-  visit(root)
-  return { files, truncated }
+  return { files, truncated: false }
 }
 
 function snippetFor(content: string, terms: string[]): string | undefined {
@@ -339,12 +281,15 @@ function scoreFile(path: string, root: string, queryTerms: string[], includeSnip
   }
 }
 
-export function retrieveCodebase(input: RetrieveCodebaseInput): Output {
+export async function retrieveCodebase(
+  input: RetrieveCodebaseInput,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<Output> {
   const root = resolveRoot(input.root)
   const stat = safeStat(root)
   const { files, truncated } =
     existsSync(root) && stat?.isDirectory()
-      ? walk(root, 15_000)
+      ? await walk(root, 15_000, signal)
       : { files: [], truncated: false }
   const terms = tokenize(input.query)
   const includeSnippets = input.includeSnippets !== false
@@ -396,8 +341,8 @@ export const CodebaseRetrievalTool = buildTool({
   renderToolResultMessage(output) {
     return renderText(`${output.matches.length} match(es) from ${output.searchedFiles} file(s)`)
   },
-  async call(input) {
-    return { data: retrieveCodebase(input) }
+  async call(input, { abortController }) {
+    return { data: await retrieveCodebase(input, abortController.signal) }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     const lines = [

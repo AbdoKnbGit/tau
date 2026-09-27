@@ -13,10 +13,12 @@ export function userFacingName(): string {
 }
 export function renderToolUseMessage({
   pattern,
-  path
+  path,
+  include_ignored
 }: Partial<{
   pattern: string;
   path: string;
+  include_ignored: boolean;
 }>, {
   verbose
 }: {
@@ -25,10 +27,15 @@ export function renderToolUseMessage({
   if (!pattern) {
     return null;
   }
-  if (!path) {
-    return `pattern: "${pattern}"`;
+  const parts = [`pattern: "${pattern}"`];
+  if (path) {
+    parts.push(`path: "${verbose ? path : getDisplayPath(path)}"`);
   }
-  return `pattern: "${pattern}", path: "${verbose ? path : getDisplayPath(path)}"`;
+  // Streaming input can still hold the string form.
+  if (String(include_ignored) === 'true') {
+    parts.push('including ignored files');
+  }
+  return parts.join(', ');
 }
 export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'], {
   verbose

@@ -163,6 +163,22 @@ async function main(): Promise<void> {
     assert(r != null, 'apply_patch missing from Codex tool registry')
   })
 
+  await test('Codex file search can include ignored files, as Glob can', () => {
+    const search = getCodexRegistrationByNativeName('search_files')
+    assert(search?.implId === 'Glob', 'search_files must map to Glob')
+    const props = (search!.nativeSchema.properties ?? {}) as Record<string, unknown>
+    assert('include_ignored' in props, 'search_files schema must expose include_ignored')
+    const input = search!.adaptInput({ pattern: '**/*.py', include_ignored: true } as any) as any
+    assert(input.include_ignored === true, 'adaptInput must forward include_ignored')
+    const plain = search!.adaptInput({ pattern: '**/*.py' } as any) as any
+    assert(!('include_ignored' in plain), 'an omitted include_ignored stays omitted')
+    const code = getCodexRegistrationByNativeName('search_code')
+    assert(code?.implId === 'Grep', 'search_code must map to Grep')
+    assert('include_ignored' in ((code!.nativeSchema.properties ?? {}) as Record<string, unknown>), 'search_code schema must expose include_ignored')
+    const grep = code!.adaptInput({ pattern: 'x', include: '*.py', include_ignored: true } as any) as any
+    assert(grep.include_ignored === true && grep.glob === '*.py', 'search_code must forward include_ignored and include')
+  })
+
   await test('Codex shell exposes tracked background execution', () => {
     const shell = getCodexRegistrationByNativeName('shell')
     assert(shell != null, 'shell missing from Codex tool registry')

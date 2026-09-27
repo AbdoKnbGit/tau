@@ -1,10 +1,11 @@
 import * as path from 'path'
-import { readdir } from 'fs/promises'
 import { pathToFileURL } from 'url'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
+import { byDepth, listProjectFiles } from '../../utils/projectFiles.js'
 import { getAllLspServers } from './config.js'
+import { getFileLookupKeys, lspFileNameGlobs } from './fileKeys.js'
 import {
   createLSPServerInstance,
   type LSPServerInstance,
@@ -12,17 +13,8 @@ import {
 import type { ServerCapabilities } from 'vscode-languageserver-protocol'
 import type { ScopedLspServerConfig } from './types.js'
 
-function getFileLookupKeys(filePath: string): string[] {
-  const ext = path.extname(filePath).toLowerCase()
-  const baseName = path.basename(filePath).toLowerCase()
-  const keys = ext ? [ext] : []
-
-  if (baseName.startsWith('.') && !keys.includes(baseName)) {
-    keys.push(baseName)
-  }
-
-  return keys
-}
+// Bound the directory walk so an LSP query never stalls on a huge tree.
+const ROUTABLE_WALK_BUDGET_MS = 5_000
 
 function getLanguageIdForFile(
   config: ScopedLspServerConfig,
@@ -405,53 +397,25 @@ export function createLSPServerManager(): LSPServerManager {
     dirPath: string,
     requiredCapability?: string,
   ): Promise<string | undefined> {
-    const skip = new Set([
-      'node_modules',
-      '.git',
-      'dist',
-      'build',
-      'out',
-      '.next',
-      'coverage',
-      'vendor',
-      '.cache',
-      'tmp',
-      '.venv',
-      'venv',
-      '__pycache__',
-    ])
-    const queue: string[] = [dirPath]
-    let visited = 0
+    // The project files under dirPath that its ignore files keep (hidden
+    // folders skipped), shallowest first; bounded so it never stalls.
+    const files = await listProjectFiles(dirPath, {
+      hidden: 'files',
+      names: lspFileNameGlobs(extensionMap.keys()),
+      signal: AbortSignal.timeout(ROUTABLE_WALK_BUDGET_MS),
+    })
     let firstRoutable: string | undefined
     const seenServers = new Set<LSPServerInstance>()
     const candidates: Array<{ file: string; server: LSPServerInstance }> = []
-    while (queue.length > 0 && visited < 4000) {
-      const dir = queue.shift()
-      if (dir === undefined) break
-      let entries
-      try {
-        entries = await readdir(dir, { withFileTypes: true })
-      } catch {
-        continue
-      }
-      for (const entry of entries) {
-        if (++visited > 4000) break
-        const full = path.join(dir, entry.name)
-        if (entry.isDirectory()) {
-          if (!skip.has(entry.name) && !entry.name.startsWith('.')) {
-            queue.push(full)
-          }
-        } else if (entry.isFile()) {
-          const server = getServerForFile(full)
-          if (server === undefined) continue
-          if (firstRoutable === undefined) firstRoutable = full
-          // No capability requirement: the first routable file is enough.
-          if (!requiredCapability) return full
-          if (!seenServers.has(server)) {
-            seenServers.add(server)
-            candidates.push({ file: full, server })
-          }
-        }
+    for (const full of files.sort(byDepth(dirPath))) {
+      const server = getServerForFile(full)
+      if (server === undefined) continue
+      if (firstRoutable === undefined) firstRoutable = full
+      // No capability requirement: the first routable file is enough.
+      if (!requiredCapability) return full
+      if (!seenServers.has(server)) {
+        seenServers.add(server)
+        candidates.push({ file: full, server })
       }
     }
 

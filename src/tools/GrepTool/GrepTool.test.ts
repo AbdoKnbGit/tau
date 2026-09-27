@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -19,12 +19,11 @@ async function loadSearchTools() {
     [/^test:grep-state$/, 'state', `export const state = { cwd: '', pluginExclusions: [] };`],
     [/(?:^|\/)Tool\.js$/, 'tool', `export const buildTool = definition => definition;`],
     [/(?:^|\/)cwd\.js$/, 'cwd', `import { state } from 'test:grep-state'; export const getCwd = () => state.cwd;`],
-    [/(?:^|\/)errors\.js$/, 'errors', `export const isENOENT = error => error?.code === 'ENOENT'; export const getErrnoCode = error => error?.code;`],
+    [/(?:^|\/)errors\.js$/, 'errors', `export const isENOENT = error => error?.code === 'ENOENT'; export const getErrnoCode = error => error?.code; export const toError = error => error instanceof Error ? error : new Error(String(error));`],
     [/(?:^|\/)file\.js$/, 'file', `export const FILE_NOT_FOUND_CWD_NOTE = ''; export const suggestPathUnderCwd = async () => undefined;`],
     [/permissions\/filesystem\.js$/, 'permissions', `
       export const checkReadPermissionForTool = async () => ({ behavior: 'allow' });
-      export const getFileReadIgnorePatterns = context => context.denyPatterns ?? [];
-      export const normalizePatternsToPath = patterns => patterns;
+      export const getFileReadIgnorePatterns = context => new Map([[null, context.denyPatterns ?? []], ...(context.denyRules ?? [])]);
     `],
     [/plugins\/orphanedPluginFilter\.js$/, 'plugins', `import { state } from 'test:grep-state'; export const getGlobExclusionsForPluginCache = async () => state.pluginExclusions;`],
     [/^\.\/UI\.js$/, 'ui', `
@@ -32,18 +31,26 @@ async function loadSearchTools() {
       export const renderToolResultMessage = () => null;
       export const renderToolUseErrorMessage = () => null;
       export const renderToolUseMessage = () => null;
+      export const userFacingName = () => 'Search';
     `],
     [/services\/analytics\/index\.js$/, 'analytics', `export const logEvent = () => {};`],
     [/(?:^|\/)debug\.js$/, 'debug', `export const logForDebugging = () => {};`],
     [/(?:^|\/)log\.js$/, 'log', `export const logError = () => {};`],
     [/(?:^|\/)slowOperations\.js$/, 'slow', `export const slowLogging = () => ({ [Symbol.dispose]() {} }); export const jsonStringify = JSON.stringify;`],
+    [/(?:^|\/)ink\.js$/, 'ink', `export const Text = () => null;`],
   ]
   const bundled = await build({
     stdin: {
       contents: `
         export { GrepTool } from './src/tools/GrepTool/GrepTool.ts';
+        export { GlobTool } from './src/tools/GlobTool/GlobTool.ts';
+        export { VisualDesignAuditTool } from './src/tools/VisualDesignAuditTool/VisualDesignAuditTool.ts';
         export { ripGrep, ripgrepCommand, getRipgrepMajorVersion } from './src/utils/ripgrep.ts';
-        export { glob } from './src/utils/glob.ts';
+        export { glob, formatIgnoredNote } from './src/utils/glob.ts';
+        export { listProjectFiles, foldersWithProjectFiles } from './src/utils/projectFiles.ts';
+        export { readDenyExclusionGlobs } from './src/utils/permissions/readDenyGlobs.ts';
+        export { retrieveCodebase } from './src/tools/CodebaseRetrievalTool/CodebaseRetrievalTool.ts';
+        export { primeLspServers } from './src/services/lsp/prime.ts';
         export { state } from 'test:grep-state';
       `,
       resolveDir: projectRoot,
@@ -131,12 +138,12 @@ describe('GrepTool with real ripgrep', () => {
     return target
   }
 
-  async function search(input: Record<string, unknown> = {}, denyPatterns: string[] = []) {
+  async function search(input: Record<string, unknown> = {}, denyPatterns: string[] = [], denyRules: Array<[string, string[]]> = []) {
     const result = await tools.GrepTool.call(
       { pattern: 'needle', path: root, ...input },
       {
         abortController: new AbortController(),
-        getAppState: () => ({ toolPermissionContext: { denyPatterns } }),
+        getAppState: () => ({ toolPermissionContext: { denyPatterns, denyRules } }),
       },
     )
     return result.data
@@ -239,14 +246,29 @@ describe('GrepTool with real ripgrep', () => {
     expect(result.filenames[0]).toContain('source.txt')
   })
 
-  test('explicit file and positive glob overrides still search ignored files', async () => {
+  test('an explicit file or include_ignored searches ignored files; a glob that names them does not', async () => {
     await file('.gitignore', 'ignored.ts\n')
     await file('source.ts')
     const ignored = await file('ignored.ts')
     expect(normalized((await search()).filenames)).toEqual(['source.ts'])
     expect(normalized((await search({ path: ignored })).filenames)).toEqual(['ignored.ts'])
-    expect(normalized((await search({ glob: '*.ts' })).filenames)).toEqual(['ignored.ts', 'source.ts'])
-    expect(normalized((await search({ glob: '*.ts !ignored.ts' })).filenames)).toEqual(['source.ts'])
+    expect(normalized((await search({ glob: '*.ts' })).filenames)).toEqual(['source.ts'])
+    expect(normalized((await search({ glob: '*.ts', include_ignored: true })).filenames)).toEqual(['ignored.ts', 'source.ts'])
+    expect(normalized((await search({ glob: '*.ts !ignored.ts', include_ignored: true })).filenames)).toEqual(['source.ts'])
+  })
+
+  test('globs that match folder names do not search ignored folders', async () => {
+    await file('.venv/.gitignore', '*\n')
+    await file('.venv/Lib/site-packages/pkg/mod.py')
+    await file('app.py')
+    await file('src/model.py')
+    for (const glob of ['*', '*.*', '**', '**/*', '*.py,*.md']) {
+      expect(normalized((await search({ glob })).filenames)).toEqual(['app.py', 'src/model.py'])
+    }
+    expect((await search({ glob: '*', include_ignored: true })).filenames).toHaveLength(3)
+    // Path globs keep their meaning, anchored at the searched folder.
+    expect(normalized((await search({ glob: 'src/**' })).filenames)).toEqual(['src/model.py'])
+    expect(normalized((await search({ glob: '*.py !app.py' })).filenames)).toEqual(['src/model.py'])
   })
 
   test('deny patterns and orphaned-plugin exclusions retain precedence over a positive glob', async () => {
@@ -255,7 +277,10 @@ describe('GrepTool with real ripgrep', () => {
     await file('denied.ts')
     await file('orphaned.ts')
     tools.state.pluginExclusions = ['!**/orphaned.ts']
-    expect(normalized((await search({ glob: '*.ts' }, ['denied.ts'])).filenames)).toEqual(['source.ts'])
+    const input = { glob: '*.ts', include_ignored: true }
+    expect(normalized((await search(input, ['denied.ts'])).filenames)).toEqual(['source.ts'])
+    // Beside `type` the glob stays an override; exclusions still win.
+    expect(normalized((await search({ ...input, type: 'ts' }, ['denied.ts'])).filenames)).toEqual(['source.ts'])
   })
 
   test('a type filter preserves ignores while including hidden source and excluding VCS metadata', async () => {
@@ -367,13 +392,329 @@ describe('GrepTool with real ripgrep', () => {
     })
   })
 
-  test('default Glob still discovers ignored files after Grep filters them', async () => {
+  test('Glob, like Grep, leaves out ignored files unless asked to include them', async () => {
     await file('.gitignore', 'ignored.txt\n')
     await file('ignored.txt')
     await file('source.txt')
     expect((await search()).filenames).toEqual(['source.txt'])
-    const result = await tools.glob('*.txt', root, { limit: 100, offset: 0 }, new AbortController().signal, {})
-    expect(normalized(result.files.map((path: string) => relative(root, path)))).toEqual(['ignored.txt', 'source.txt'])
-    expect(result.total).toBe(2)
+    const result = await globIn(root, '*.txt')
+    expect(names(result.files)).toEqual(['source.txt'])
+    expect(result.total).toBe(1)
+    expect(places(result.ignored)).toEqual([['ignored.txt', 1]])
+    const all = await globIn(root, '*.txt', { includeIgnored: true })
+    expect(names(all.files)).toEqual(['ignored.txt', 'source.txt'])
+    expect(all.total).toBe(2)
+    expect(all.ignored).toBeUndefined()
+  })
+
+  function globIn(dir: string, pattern: string, options: { includeIgnored?: boolean } = {}, denyPatterns: string[] = [], denyRules: Array<[string, string[]]> = []) {
+    return tools.glob(pattern, dir, { limit: 100, offset: 0 }, new AbortController().signal, { denyPatterns, denyRules }, options)
+  }
+  const names = (paths: string[]) => normalized(paths.map(path => relative(root, path)))
+  const places = (ignored: { places: Array<{ path: string, count: number }> } | undefined) =>
+    ignored?.places.map(place => [relative(root, place.path).replaceAll('\\', '/'), place.count])
+
+  // A virtualenv as uv, virtualenv and Python 3.13+ write it: it ignores itself.
+  async function virtualenv() {
+    await file('.venv/.gitignore', '*\n')
+    await file('.venv/Lib/site-packages/pkg/__init__.py')
+    await file('.venv/Lib/site-packages/pkg/util.py')
+  }
+
+  test('Glob drops a self-ignoring virtualenv outside a repository and says where it went', async () => {
+    await virtualenv()
+    await file('app.py')
+    await file('src/model.py')
+    for (const pattern of ['**/*.py', '*.py']) {
+      const result = await globIn(root, pattern)
+      expect(names(result.files)).toEqual(['app.py', 'src/model.py'])
+      expect(result.ignored.count).toBe(2)
+      expect(places(result.ignored)).toEqual([['.venv', 2]])
+    }
+  })
+
+  test('patterns that also match folders do not walk into ignored ones', async () => {
+    await virtualenv()
+    await file('.gitignore', 'build/\nsecret.py\n')
+    await file('build/generated.py')
+    await file('secret.py')
+    await file('app.py')
+    await file('src/model.py')
+    for (const pattern of ['**/*', '*', '**', '**/*.*']) {
+      const result = await globIn(root, pattern)
+      expect(names(result.files)).toEqual(['.gitignore', 'app.py', 'src/model.py'])
+      // .venv holds three: its own .gitignore matches its `*` too.
+      expect(places(result.ignored)).toEqual([['.venv', 3], ['build', 1], ['secret.py', 1]])
+      expect(result.ignored.count).toBe(5)
+    }
+  })
+
+  test('path patterns keep their own meaning and still drop ignored matches', async () => {
+    await file('.gitignore', 'src/generated/\n')
+    await file('src/a.ts')
+    await file('src/sub/b.ts')
+    await file('src/generated/c.ts')
+    await file('lib/d.ts')
+    const nested = await globIn(root, 'src/**/*.ts')
+    expect(names(nested.files)).toEqual(['src/a.ts', 'src/sub/b.ts'])
+    expect(places(nested.ignored)).toEqual([['src/generated', 1]])
+    const shallow = await globIn(root, 'src/*.ts')
+    expect(names(shallow.files)).toEqual(['src/a.ts'])
+    expect(shallow.ignored.count).toBe(0)
+    const braced = await globIn(root, '{src,lib}/*.ts')
+    expect(names(braced.files)).toEqual(['lib/d.ts', 'src/a.ts'])
+  })
+
+  test('both listing routes keep oldest-first order, with and without ignored files', async () => {
+    await file('.gitignore', 'old.ts\n')
+    const stamps: Array<[string, number]> = [['src/newest.ts', 4000], ['src/old.ts', 1000], ['src/middle.ts', 2000], ['src/older.ts', 1500]]
+    for (const [name, seconds] of stamps) {
+      const target = await file(name)
+      await utimes(target, seconds, seconds)
+    }
+    const expected = ['src/older.ts', 'src/middle.ts', 'src/newest.ts']
+    for (const pattern of ['**/*.ts', 'src/**/*.ts']) {
+      const result = await globIn(root, pattern)
+      expect(result.files.map((path: string) => relative(root, path).replaceAll('\\', '/'))).toEqual(expected)
+    }
+    const all = await globIn(root, '**/*.ts', { includeIgnored: true })
+    expect(all.files.map((path: string) => relative(root, path).replaceAll('\\', '/'))).toEqual(['src/old.ts', ...expected])
+  })
+
+  test('searching inside an ignored folder lists nothing but reports what is there', async () => {
+    await virtualenv()
+    const result = await globIn(join(root, '.venv', 'Lib'), '**/*.py')
+    expect(result.files).toEqual([])
+    expect(places(result.ignored)).toEqual([['.venv/Lib/site-packages', 2]])
+    const included = await globIn(join(root, '.venv', 'Lib'), '**/*.py', { includeIgnored: true })
+    expect(included.files).toHaveLength(2)
+  })
+
+  test('deny rules and plugin exclusions still win, and what they hide is not counted', async () => {
+    await file('.gitignore', 'ignored.py\n')
+    await file('ignored.py')
+    await file('denied.py')
+    await file('orphaned.py')
+    await file('source.py')
+    // A rule rooted at the searched folder must anchor there, not in the
+    // directory tau was started from.
+    await file('secret/key.py')
+    tools.state.pluginExclusions = ['!**/orphaned.py']
+    const rooted: Array<[string, string[]]> = [[root, ['/secret/**']]]
+    const result = await globIn(root, '*.py', {}, ['denied.py'], rooted)
+    expect(names(result.files)).toEqual(['source.py'])
+    expect(places(result.ignored)).toEqual([['ignored.py', 1]])
+    const all = await globIn(root, '*.py', { includeIgnored: true }, ['denied.py'], rooted)
+    expect(names(all.files)).toEqual(['ignored.py', 'source.py'])
+  })
+
+  test('a deny rule applies wherever the search starts: at, below or above its root', async () => {
+    await file('keys/root.pem')
+    await file('app/src/main.ts')
+    await file('app/src/leaked.pem')
+    await file('app/secret/token.txt')
+    await file('app/private/notes.txt')
+    await file('other/free.pem')
+    const app = join(root, 'app')
+    // Rooted above the search: `**` walks down to it, a literal must match.
+    const above: Array<[string, string[]]> = [[root, ['/**/*.pem', '/app/secret/**', '/elsewhere/**']]]
+    const fromApp = await globIn(app, '**/*', {}, [], above)
+    expect(names(fromApp.files)).toEqual(['app/private/notes.txt', 'app/src/main.ts'])
+    expect(fromApp.ignored.count).toBe(0)
+    const grep = await search({ path: app, pattern: '.', output_mode: 'files_with_matches' }, [], above)
+    expect(normalized(grep.filenames)).toEqual(['app/private/notes.txt', 'app/src/main.ts'])
+    // Rooted below the search: the path between them is prefixed.
+    const below: Array<[string, string[]]> = [[app, ['/private/**']]]
+    const fromRoot = await globIn(root, '**/*.txt', {}, [], below)
+    expect(names(fromRoot.files)).toEqual(['app/secret/token.txt'])
+    // Another tree entirely: nothing to exclude.
+    const unrelated: Array<[string, string[]]> = [[join(root, 'other'), ['/**']]]
+    expect(names((await globIn(app, '**/*.pem', {}, [], unrelated)).files)).toEqual(['app/src/leaked.pem'])
+  })
+
+  test('deny rule paths with glob characters in folder names match those folders only', async () => {
+    await file('we[ird]/{x}/secret.txt')
+    await file('we[ird]/{x}/other/keep.txt')
+    await file('wei/x/secret.txt')
+    const rules: Array<[string, string[]]> = [[join(root, 'we[ird]', '{x}'), ['/secret.txt']]]
+    expect(names((await globIn(root, '**/*.txt', {}, [], rules)).files))
+      .toEqual(['we[ird]/{x}/other/keep.txt', 'wei/x/secret.txt'])
+  })
+
+  test('Grep globs with a folder part anchor at the searched path, wherever tau runs', async () => {
+    await file('src/a.ts')
+    await file('lib/src/b.ts')
+    await file('docs/c.ts')
+    // The test process runs in the repository, not in this temporary root.
+    expect(process.cwd()).not.toBe(root)
+    expect(normalized((await search({ glob: 'src/**/*.ts' })).filenames)).toEqual(['src/a.ts'])
+    expect(normalized((await search({ glob: './src/*.ts' })).filenames)).toEqual(['src/a.ts'])
+    expect(normalized((await search({ glob: '*.ts' })).filenames)).toEqual(['docs/c.ts', 'lib/src/b.ts', 'src/a.ts'])
+    const content = await search({ glob: 'src/**/*.ts', output_mode: 'content' })
+    expect(content.numLines).toBe(1)
+    expect(content.content.replaceAll('\\', '/')).toEndWith('src/a.ts:1:needle')
+    const count = await search({ glob: 'src/**/*.ts', output_mode: 'count' })
+    expect(count.content.replaceAll('\\', '/')).toBe('src/a.ts:1')
+  })
+
+  test('VCS metadata is never listed or searched, even by a pattern that matches everything', async () => {
+    await file('.git/HEAD', 'needle\n')
+    await file('.git/hooks/pre-commit.sample', 'needle\n')
+    await file('.hg/store/data', 'needle\n')
+    await file('src/main.ts')
+    for (const pattern of ['**/*', '*', '**']) {
+      const result = await globIn(root, pattern, { includeIgnored: pattern === '*' })
+      expect(names(result.files)).toEqual(['src/main.ts'])
+      if (pattern !== '*') expect(result.ignored.count).toBe(0)
+    }
+    expect(normalized((await search({ glob: '*' })).filenames)).toEqual(['src/main.ts'])
+    expect(normalized((await search({ path: join(root, '.git') })).filenames)).toEqual(['.git/HEAD', '.git/hooks/pre-commit.sample'])
+  })
+
+  test('a root spelled with forward slashes comes back in the platform spelling', async () => {
+    await file('src/a.ts')
+    const slashed = root.replaceAll('\\', '/')
+    const expected = [join(root, 'src', 'a.ts')]
+    expect((await globIn(slashed, 'src/*.ts')).files).toEqual(expected)
+    expect((await globIn(root, `${slashed}/src/*.ts`)).files).toEqual(expected)
+    const signal = new AbortController().signal
+    expect(await tools.listProjectFiles(slashed, { hidden: 'none', signal })).toEqual(expected)
+  })
+
+  test('Glob patterns starting with ./ match like the same pattern without it', async () => {
+    await file('src/a.ts')
+    await file('src/sub/b.ts')
+    await file('lib/c.ts')
+    expect(names((await globIn(root, './src/**/*.ts')).files)).toEqual(['src/a.ts', 'src/sub/b.ts'])
+    expect(names((await globIn(root, './*.ts')).files)).toEqual(['lib/c.ts', 'src/a.ts', 'src/sub/b.ts'])
+    expect(names((await globIn(root, '././src/*.ts', { includeIgnored: true })).files)).toEqual(['src/a.ts'])
+  })
+
+  test('the project walk honours ignore files, skips VCS metadata, and never names a folder', async () => {
+    await file('.venv/.gitignore', '*\n')
+    await file('.venv/Lib/site-packages/pkg/mod.py')
+    await file('.gitignore', 'node_modules/\ndist/\n')
+    await file('node_modules/dep/index.js')
+    await file('dist/app.js')
+    await file('.git/config')
+    await file('.config/settings.json')
+    await file('.env')
+    await file('build/keep.py')
+    await file('src/app.py')
+    const signal = new AbortController().signal
+    const walk = (hidden: string, extra = {}) => tools.listProjectFiles(root, { hidden, signal, ...extra })
+    expect(names(await walk('all'))).toEqual(['.config/settings.json', '.env', '.gitignore', 'build/keep.py', 'src/app.py'])
+    expect(names(await walk('files'))).toEqual(['.env', '.gitignore', 'build/keep.py', 'src/app.py'])
+    expect(names(await walk('none'))).toEqual(['build/keep.py', 'src/app.py'])
+    expect(names(await walk('files', { names: ['*.[pP][yY]'] }))).toEqual(['build/keep.py', 'src/app.py'])
+    expect(names(await walk('files', { maxDepth: 1 }))).toEqual(['.env', '.gitignore'])
+    await mkdir(join(root, 'empty'))
+    const folders = await tools.foldersWithProjectFiles(root, ['build', 'dist', 'empty', 'node_modules', 'src'], { hidden: 'files', signal })
+    expect(folders).toEqual(['build', 'src'])
+  })
+
+  test('code retrieval outside a repository reads what the ignore files keep', async () => {
+    await file('.venv/.gitignore', '*\n')
+    await file('.venv/Lib/site-packages/tokenizer/core.py', 'def tokenize_prompt(): pass\n')
+    await file('.gitignore', 'vendor_copy/\n')
+    await file('vendor_copy/tokenizer.py', 'def tokenize_prompt(): pass\n')
+    await file('app/tokenizer.py', 'def tokenize_prompt(): pass\n')
+    const output = await tools.retrieveCodebase({ query: 'tokenize prompt', root })
+    expect(output.matches.map((match: { relativePath: string }) => match.relativePath.replaceAll('\\', '/'))).toEqual(['app/tokenizer.py'])
+    expect(output.searchedFiles).toBe(2)
+  })
+
+  test('LSP warm-up primes each server with its shallowest file the ignore files keep', async () => {
+    await file('.venv/.gitignore', '*\n')
+    await file('.venv/Lib/site-packages/a.py')
+    await file('.gitignore', 'node_modules/\n')
+    await file('node_modules/x/y.ts')
+    await file('.storybook/main.ts')
+    await file('packages/core/src/index.ts')
+    await file('src/app.TS')
+    await file('tools/run.py')
+    tools.state.cwd = root
+    const opened: string[] = []
+    const server = (name: string, exts: string[]) => [name, {
+      name,
+      config: { alwaysOn: true, extensionToLanguage: Object.fromEntries(exts.map(ext => [ext, name])) },
+      waitUntilReady: async () => {},
+    }] as const
+    const manager = {
+      getAllServers: () => new Map([server('ts', ['.ts', '.tsx']), server('py', ['.py'])]),
+      openFile: async (path: string) => { opened.push(path) },
+    }
+    await tools.primeLspServers(manager)
+    // Each primer is opened once its file has been read.
+    for (let i = 0; i < 100 && opened.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 20))
+    expect(names(opened)).toEqual(['src/app.TS', 'tools/run.py'])
+  })
+
+  test('deny rules become anchored exclusion globs for every root relationship', () => {
+    const anchor = join(root, 'proj')
+    const globs = (entries: Array<[string | null, string[]]>, at = anchor) => tools.readDenyExclusionGlobs(new Map(entries), at)
+    expect(globs([[null, ['.env', 'secrets/**', 'build/']]])).toEqual(['!**/.env', '!**/secrets/**', '!**/build/'])
+    expect(globs([[anchor, ['/secrets/**', 'key.pem']]])).toEqual(['!/secrets/**', '!/**/key.pem'])
+    expect(globs([[join(anchor, 'a b', 'c*d'), ['/x.txt']]])).toEqual(['!/a b/c[*]d/x.txt'])
+    expect(globs([[root, ['/proj/secret/**', '/**/*.key', '/other/**', '/proj', '/p*/tmp/']]])).toEqual([
+      '!/secret/**', '!/**/*.key', '!**', '!/tmp/',
+    ])
+    expect(globs([[join(root, 'elsewhere'), ['/**']]])).toEqual([])
+  })
+
+  test('the Glob result leads with what was left out, and accepts include_ignored as a string', async () => {
+    const ignored = { count: 3, places: [{ path: '.venv', count: 2 }, { path: 'build', count: 1 }], morePlaces: 0 }
+    const note = '(Left out 3 matches excluded by .gitignore/.ignore rules: .venv (2), build (1). Pass include_ignored: true to include them.)'
+    const listed = tools.GlobTool.mapToolResultToToolResultBlockParam({ filenames: ['app.py'], numFiles: 1, durationMs: 1, truncated: false, ignored }, 'id')
+    expect(listed.content).toBe(`${note}\napp.py`)
+    const empty = tools.GlobTool.mapToolResultToToolResultBlockParam({ filenames: [], numFiles: 0, durationMs: 1, truncated: false, ignored }, 'id')
+    expect(empty.content).toBe(`No files found\n${note}`)
+    const none = tools.GlobTool.mapToolResultToToolResultBlockParam({ filenames: [], numFiles: 0, durationMs: 1, truncated: false, ignored: { count: 0, places: [], morePlaces: 0 } }, 'id')
+    expect(none.content).toBe('No files found')
+    expect(tools.formatIgnoredNote({ count: 1, places: [{ path: '.env', count: 1 }], morePlaces: 0 }))
+      .toBe('(Left out 1 match excluded by .gitignore/.ignore rules: .env (1). Pass include_ignored: true to include it.)')
+    expect(tools.formatIgnoredNote({ count: 9, places: [{ path: 'a', count: 5 }], morePlaces: 2 }))
+      .toBe('(Left out 9 matches excluded by .gitignore/.ignore rules: a (5), 2 more places. Pass include_ignored: true to include them.)')
+    expect(tools.formatIgnoredNote({ count: null, places: [], morePlaces: 0 }))
+      .toBe('(Matches excluded by .gitignore/.ignore rules are left out, and counting them failed. Pass include_ignored: true to include them.)')
+    expect(tools.GlobTool.inputSchema.parse({ pattern: '*.py', include_ignored: 'true' }).include_ignored).toBe(true)
+  })
+
+  test('the Glob tool passes include_ignored through', async () => {
+    await virtualenv()
+    await file('app.py')
+    const call = (input: Record<string, unknown>) => tools.GlobTool.call(
+      { pattern: '**/*.py', path: root, ...input },
+      { abortController: new AbortController(), getAppState: () => ({ toolPermissionContext: {} }) },
+    ).then((result: { data: { filenames: string[], ignored?: { count: number } } }) => result.data)
+    const plain = await call({})
+    expect(plain.filenames.map((path: string) => path.replaceAll('\\', '/')).filter((path: string) => path.includes('.venv'))).toEqual([])
+    expect(plain.ignored?.count).toBe(2)
+    const all = await call({ include_ignored: true })
+    expect(all.filenames).toHaveLength(3)
+    expect(all.ignored).toBeUndefined()
+  })
+
+  test('the design audit scans what the ignore files keep and reports the rest', async () => {
+    await file('.venv/.gitignore', '*\n')
+    await file('.venv/Lib/site-packages/viewer/static/style.css', 'body { color: #fff }\n')
+    await file('web/app.css', '@media (min-width: 40rem) { body { color: #000 } }\n')
+    await file('web/index.html', '<img src="hero.png">\n')
+    const audit = (input: Record<string, unknown>) => tools.VisualDesignAuditTool.call(
+      { root, ...input },
+      { abortController: new AbortController(), getAppState: () => ({ toolPermissionContext: {} }) },
+    ).then((result: { data: Record<string, any> }) => result.data)
+    const plain = await audit({})
+    expect(plain.scannedFiles).toBe(2)
+    expect(plain.styleFiles.map((path: string) => relative(root, path).replaceAll('\\', '/'))).toEqual(['web/app.css'])
+    expect(places(plain.ignored)).toEqual([['.venv', 1]])
+    const text = tools.VisualDesignAuditTool.mapToolResultToToolResultBlockParam(plain, 'id').content
+    expect(text).toContain('(Left out 1 frontend file excluded by .gitignore/.ignore rules: ')
+    const all = await audit({ include_ignored: true })
+    expect(all.scannedFiles).toBe(3)
+    expect(all.ignored).toBeUndefined()
+    const capped = await audit({ maxFiles: 1 })
+    expect(capped.scannedFiles).toBe(1)
+    expect(tools.VisualDesignAuditTool.mapToolResultToToolResultBlockParam(capped, 'id').content).toContain('Scanned files: 1 of 2 found')
   })
 })

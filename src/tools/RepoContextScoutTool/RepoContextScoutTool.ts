@@ -219,14 +219,17 @@ export const RepoContextScoutTool = buildTool({
       `${output.retrievedFiles.length} context file(s), ${output.risk.level} risk`,
     )
   },
-  async call(input) {
+  async call(input, { abortController }) {
     const root = resolveAnalysisRoot(input.root)
-    const retrieval = retrieveCodebase({
-      query: input.task,
-      root,
-      maxResults: input.maxFiles ?? 8,
-      includeSnippets: true,
-    })
+    const retrieval = await retrieveCodebase(
+      {
+        query: input.task,
+        root,
+        maxResults: input.maxFiles ?? 8,
+        includeSnippets: true,
+      },
+      abortController.signal,
+    )
     const workflow = detectProjectWorkflow({ path: root, maxDepth: 2 })
     const changes = await collectGitChangeSummary(root, input.changedFiles)
     const risk = assessChangeRisk(changes)

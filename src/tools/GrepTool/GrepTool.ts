@@ -13,12 +13,18 @@ import { expandPath, toRelativePath } from '../../utils/path.js'
 import {
   checkReadPermissionForTool,
   getFileReadIgnorePatterns,
-  normalizePatternsToPath,
 } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { readDenyExclusionGlobs } from '../../utils/permissions/readDenyGlobs.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { getGlobExclusionsForPluginCache } from '../../utils/plugins/orphanedPluginFilter.js'
 import { getRipgrepMajorVersion, ripGrep } from '../../utils/ripgrep.js'
+import {
+  fileNameFilterArgs,
+  fileNameOnly,
+  vcsExclusionArgs,
+  withoutDotSlash,
+} from '../../utils/searchGlobs.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
 import { plural } from '../../utils/stringUtils.js'
@@ -88,20 +94,12 @@ const inputSchema = lazySchema(() =>
     multiline: semanticBoolean(z.boolean().optional()).describe(
       'Allow patterns and `.` to span lines; default false',
     ),
+    include_ignored: semanticBoolean(z.boolean().optional()).describe(
+      'Also search files excluded by .gitignore/.ignore rules; default false',
+    ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
-
-// Version control system directories to exclude from searches
-// These are excluded automatically because they create noise in search results
-const VCS_DIRECTORIES_TO_EXCLUDE = [
-  '.git',
-  '.svn',
-  '.hg',
-  '.bzr',
-  '.jj',
-  '.sl',
-] as const
 
 // Default cap on grep results when head_limit is unspecified. Unbounded content-mode
 // greps can fill up to the 20KB persist threshold (~6-24K tokens/grep-heavy session).
@@ -325,22 +323,21 @@ export const GrepTool = buildTool({
       head_limit,
       offset = 0,
       multiline = false,
+      include_ignored = false,
     },
     { abortController, getAppState },
   ) {
     const absolutePath = path ? expandPath(path) : getCwd()
     const args = ['--hidden']
     abortController.signal.throwIfAborted()
-    args.push(...await getGrepIgnoreArgs(
-      absolutePath,
-      await getRipgrepMajorVersion(),
-      abortController.signal,
-    ))
-
-    // Exclude VCS directories to avoid noise from version control metadata
-    for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) {
-      args.push('--glob', `!${dir}`)
-    }
+    // Ignore files are honoured unless the caller asks for ignored files too.
+    args.push(...(include_ignored
+      ? ['--no-ignore']
+      : await getGrepIgnoreArgs(
+          absolutePath,
+          await getRipgrepMajorVersion(),
+          abortController.signal,
+        )))
 
     // Limit line length to prevent base64/minified content from cluttering output
     args.push('--max-columns', '500')
@@ -411,27 +408,37 @@ export const GrepTool = buildTool({
         }
       }
 
-      for (const globPattern of globPatterns.filter(Boolean)) {
+      // A positive --glob is an override: one that matches folder names
+      // (`*`, `*.*`, `**`) walks into ignored folders, and an ignored file it
+      // names is searched anyway. Globs that only name files are applied as a
+      // file type instead, which keeps the ignore files (include_ignored is
+      // how to search ignored files). Negations only exclude. Path globs, and
+      // name globs beside one or beside `type`, stay globs so the combination
+      // keeps its meaning.
+      const patterns = globPatterns.filter(Boolean).map(withoutDotSlash)
+      const positive = patterns.filter(p => !p.startsWith('!'))
+      const names = positive.map(fileNameOnly)
+      const asType =
+        !type && names.length > 0 && names.every(name => name !== null)
+      for (const globPattern of asType ? patterns.filter(p => p.startsWith('!')) : patterns) {
         args.push('--glob', globPattern)
+      }
+      if (asType) {
+        args.push(...fileNameFilterArgs('taugrep', names as string[]))
       }
     }
 
-    // Add ignore patterns
+    // VCS metadata, then read-deny rules, after the caller's globs: the last
+    // matching glob wins, so `glob: "*"` no longer re-includes `.git`. The
+    // deny rules are anchored at the searched path, where ripGrep anchors
+    // every glob below. (A file named as the path bypasses all globs.)
+    args.push(...vcsExclusionArgs())
     const appState = getAppState()
-    const ignorePatterns = normalizePatternsToPath(
+    for (const denyGlob of readDenyExclusionGlobs(
       getFileReadIgnorePatterns(appState.toolPermissionContext),
-      getCwd(),
-    )
-    for (const ignorePattern of ignorePatterns) {
-      // Note: ripgrep only applies gitignore patterns relative to the working directory
-      // So for non-absolute paths, we need to prefix them with '**'
-      // See: https://github.com/BurntSushi/ripgrep/discussions/2156#discussioncomment-2316335
-      //
-      // We also need to negate the pattern with `!` to exclude it
-      const rgIgnorePattern = ignorePattern.startsWith('/')
-        ? `!${ignorePattern}`
-        : `!**/${ignorePattern}`
-      args.push('--glob', rgIgnorePattern)
+      absolutePath,
+    )) {
+      args.push('--glob', denyGlob)
     }
 
     // Exclude orphaned plugin version directories
@@ -448,6 +455,7 @@ export const GrepTool = buildTool({
     // so Claude knows the search didn't complete (rather than thinking there were no matches)
     const results = await ripGrep(args, absolutePath, abortController.signal, {
       strictErrors: true,
+      globsRelativeToTarget: true,
     })
 
     if (output_mode === 'content') {

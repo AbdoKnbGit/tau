@@ -1,12 +1,14 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, statSync } from 'fs'
 import { createElement } from 'react'
-import { extname, isAbsolute, join, resolve } from 'path'
+import { extname, isAbsolute, resolve } from 'path'
 import { z } from 'zod/v4'
 
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { Text } from '../../ink.js'
 import { getCwd } from '../../utils/cwd.js'
+import { formatIgnoredNote, glob } from '../../utils/glob.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from './constants.js'
 
 const DESCRIPTION =
@@ -20,6 +22,9 @@ const inputSchema = lazySchema(() =>
   z.strictObject({
     root: z.string().optional().describe('Directory to scan. Defaults to cwd.'),
     maxFiles: z.number().int().min(1).max(500).optional().describe('Max frontend files to scan. Defaults to 120.'),
+    include_ignored: semanticBoolean(z.boolean().optional()).describe(
+      'Also scan files excluded by .gitignore/.ignore rules. Defaults to false.',
+    ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -28,6 +33,14 @@ const outputSchema = lazySchema(() =>
   z.object({
     root: z.string(),
     scannedFiles: z.number(),
+    foundFiles: z.number().optional(),
+    ignored: z
+      .object({
+        count: z.number().nullable(),
+        places: z.array(z.object({ path: z.string(), count: z.number() })),
+        morePlaces: z.number(),
+      })
+      .optional(),
     styleFiles: z.array(z.string()),
     assetSignals: z.array(z.string()),
     findings: z.array(z.string()),
@@ -41,35 +54,21 @@ function renderText(message: string): React.ReactNode {
   return createElement(Text, null, message)
 }
 
-const FRONTEND_EXTS = new Set(['.tsx', '.jsx', '.vue', '.svelte', '.css', '.scss', '.html'])
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage'])
+// Found with the same ignore-aware listing as Glob, so dependency and build
+// folders drop out wherever the project's ignore files say they should.
+const FRONTEND_FILES = '*.{tsx,jsx,vue,svelte,css,scss,html}'
 
-function walk(root: string, maxFiles: number): string[] {
-  const files: string[] = []
-  function visit(dir: string): void {
-    if (files.length >= maxFiles) return
-    let entries
+function pickScannable(files: string[], maxFiles: number): string[] {
+  const picked: string[] = []
+  for (const path of files) {
+    if (picked.length >= maxFiles) break
     try {
-      entries = readdirSync(dir, { withFileTypes: true })
+      if (statSync(path).size <= 180_000) picked.push(path)
     } catch {
-      return
-    }
-    for (const entry of entries) {
-      const path = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) visit(path)
-      } else if (entry.isFile() && FRONTEND_EXTS.has(extname(entry.name).toLowerCase())) {
-        try {
-          if (statSync(path).size <= 180_000) files.push(path)
-        } catch {
-          // ignore
-        }
-      }
-      if (files.length >= maxFiles) return
+      // ignore
     }
   }
-  visit(root)
-  return files
+  return picked
 }
 
 function resolveRoot(root: string | undefined): string {
@@ -109,9 +108,20 @@ export const VisualDesignAuditTool = buildTool({
   renderToolResultMessage(output) {
     return renderText(`${output.findings.length} finding(s), ${output.scannedFiles} file(s)`)
   },
-  async call(input) {
+  async call(input, { abortController, getAppState }) {
     const root = resolveRoot(input.root)
-    const files = existsSync(root) ? walk(root, input.maxFiles ?? 120) : []
+    const listing = existsSync(root)
+      ? await glob(
+          FRONTEND_FILES,
+          root,
+          { limit: Number.MAX_SAFE_INTEGER, offset: 0 },
+          abortController.signal,
+          getAppState().toolPermissionContext,
+          { includeIgnored: input.include_ignored === true },
+        )
+      : undefined
+    const found = listing?.files ?? []
+    const files = pickScannable(found, input.maxFiles ?? 120)
     const styleFiles = files.filter(f => ['.css', '.scss'].includes(extname(f).toLowerCase()))
     const findings: string[] = []
     const assetSignals: string[] = []
@@ -136,12 +146,29 @@ export const VisualDesignAuditTool = buildTool({
       'Run a browser/app check for desktop and mobile viewport behavior when a dev server is available.',
       'Check text fit, overlap, loading/error states, focus/hover states, and console/runtime errors.',
     ]
-    return { data: { root, scannedFiles: files.length, styleFiles, assetSignals: [...new Set(assetSignals)].slice(0, 20), findings, verification } }
+    return {
+      data: {
+        root,
+        scannedFiles: files.length,
+        foundFiles: found.length,
+        ...(listing?.ignored && { ignored: listing.ignored }),
+        styleFiles,
+        assetSignals: [...new Set(assetSignals)].slice(0, 20),
+        findings,
+        verification,
+      },
+    }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
+    const ignoredNote = formatIgnoredNote(output.ignored, ['frontend file', 'frontend files'])
     const lines = [
       `Root: ${output.root}`,
-      `Scanned files: ${output.scannedFiles}`,
+      `Scanned files: ${output.scannedFiles}${
+        output.foundFiles !== undefined && output.foundFiles > output.scannedFiles
+          ? ` of ${output.foundFiles} found`
+          : ''
+      }`,
+      ...(ignoredNote ? [ignoredNote] : []),
       'Style files:',
       ...(output.styleFiles.length ? output.styleFiles.slice(0, 20).map(f => `- ${f}`) : ['- none']),
       'Asset signals:',

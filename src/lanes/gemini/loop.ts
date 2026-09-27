@@ -1438,6 +1438,7 @@ function implToNativeInput(
       if (input.glob != null) out.include_pattern = input.glob
       if (input.head_limit != null) out.total_max_matches = input.head_limit
       if (input.output_mode === 'files_with_matches') out.names_only = true
+      if (input.include_ignored != null) out.include_ignored = input.include_ignored
       return out
     }
     default:

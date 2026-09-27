@@ -28,13 +28,14 @@ import {
 } from '../../../utils/model/commandCodeThinking.js'
 import type { OpenAIReasoningLevel } from '../../../utils/model/openaiReasoning.js'
 import { getSessionId } from '../../../bootstrap/state.js'
+import { foldersWithProjectFiles } from '../../../utils/projectFiles.js'
 
 const COMMAND_CODE_API_BASE_URL = 'https://api.commandcode.ai'
 const COMMAND_CODE_PROVIDER_BASE_URL = `${COMMAND_CODE_API_BASE_URL}/provider/v1`
 const COMMAND_CODE_ALPHA_GENERATE_PATH = '/alpha/generate'
 const COMMAND_CODE_CLI_VERSION = process.env.COMMAND_CODE_CLI_VERSION ?? '0.32.2'
 const COMMAND_CODE_CACHE_CONTROL = { type: 'ephemeral' } as const
-const commandCodeEnvironmentContextBySession = new Map<string, Record<string, unknown>>()
+const commandCodeEnvironmentContextBySession = new Map<string, Promise<Record<string, unknown>>>()
 let fallbackCommandCodeAlphaSessionId: string | null = null
 
 const COMMAND_CODE_NATIVE_MODEL_IDS = [
@@ -177,7 +178,7 @@ export class CommandCodeProvider extends OpenAIProvider {
     const response = await fetch(this._alphaGenerateUrl(), {
       method: 'POST',
       headers: this._alphaHeaders(alphaSessionId),
-      body: JSON.stringify(this._alphaBody(params, model, alphaSessionId)),
+      body: JSON.stringify(await this._alphaBody(params, model, alphaSessionId)),
       signal: ac.signal,
     })
 
@@ -202,7 +203,7 @@ export class CommandCodeProvider extends OpenAIProvider {
     const response = await fetch(this._alphaGenerateUrl(), {
       method: 'POST',
       headers: this._alphaHeaders(alphaSessionId),
-      body: JSON.stringify(this._alphaBody(params, model, alphaSessionId)),
+      body: JSON.stringify(await this._alphaBody(params, model, alphaSessionId)),
     })
 
     if (!response.ok) {
@@ -236,11 +237,11 @@ export class CommandCodeProvider extends OpenAIProvider {
     }
   }
 
-  private _alphaBody(
+  private async _alphaBody(
     params: ProviderRequestParams,
     model: string,
     alphaSessionId: string,
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     const requestParams: Record<string, unknown> = {
       stream: true,
       messages: toCommandCodeAlphaMessages(params.messages),
@@ -263,7 +264,7 @@ export class CommandCodeProvider extends OpenAIProvider {
 
     return {
       mode: 'custom-agent',
-      config: getCommandCodeEnvironmentContext(alphaSessionId),
+      config: await getCommandCodeEnvironmentContext(alphaSessionId),
       memory: '',
       threadId: alphaSessionId,
       params: requestParams,
@@ -876,7 +877,9 @@ function commandCodeAlphaSessionId(): string {
   return fallbackCommandCodeAlphaSessionId
 }
 
-function getCommandCodeEnvironmentContext(sessionId: string): Record<string, unknown> {
+// Built once per session: the listing walks the project, and the request
+// bytes must not change between turns.
+function getCommandCodeEnvironmentContext(sessionId: string): Promise<Record<string, unknown>> {
   const existing = commandCodeEnvironmentContextBySession.get(sessionId)
   if (existing) return existing
 
@@ -885,14 +888,14 @@ function getCommandCodeEnvironmentContext(sessionId: string): Record<string, unk
   return context
 }
 
-function buildCommandCodeEnvironmentContext(): Record<string, unknown> {
+async function buildCommandCodeEnvironmentContext(): Promise<Record<string, unknown>> {
   const workingDir = process.cwd()
   const isGitRepo = commandCodeIsGitRepository(workingDir)
   return {
     workingDir,
     date: new Date().toISOString().split('T')[0] ?? '',
     environment: `${platform()}-${arch()}, Node.js ${process.version}`,
-    structure: commandCodeDirectoryStructure(workingDir),
+    structure: await commandCodeDirectoryStructure(workingDir),
     isGitRepo,
     currentBranch: isGitRepo ? commandCodeGitOutput(workingDir, ['branch', '--show-current']) : '',
     mainBranch: isGitRepo ? commandCodeMainBranch(workingDir) : '',
@@ -901,33 +904,28 @@ function buildCommandCodeEnvironmentContext(): Record<string, unknown> {
   }
 }
 
-function commandCodeDirectoryStructure(workingDir: string): string[] {
-  const ignored = new Set([
-    'node_modules',
-    'dist',
-    'build',
-    '.git',
-    '.svn',
-    '.hg',
-    'coverage',
-    '.nyc_output',
-    '.cache',
-    'tmp',
-    'temp',
-    '.next',
-    '.nuxt',
-    'out',
-  ])
+// Bound the walk so the first request of a session never waits long on it.
+const COMMAND_CODE_STRUCTURE_BUDGET_MS = 3_000
+
+/**
+ * The working directory's visible folders that hold project files. The
+ * project's own ignore files decide what drops out (a dependency folder, a
+ * virtualenv, a build output), wherever they say so, never a list of names.
+ */
+async function commandCodeDirectoryStructure(workingDir: string): Promise<string[]> {
+  let folders: string[]
   try {
-    return readdirSync(workingDir, { withFileTypes: true })
-      .filter(entry => entry.isDirectory())
-      .filter(entry => !entry.name.startsWith('.'))
-      .filter(entry => !ignored.has(entry.name))
+    folders = readdirSync(workingDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
       .map(entry => entry.name)
       .sort()
   } catch {
     return []
   }
+  return foldersWithProjectFiles(workingDir, folders, {
+    hidden: 'files',
+    signal: AbortSignal.timeout(COMMAND_CODE_STRUCTURE_BUDGET_MS),
+  })
 }
 
 function commandCodeIsGitRepository(workingDir: string): boolean {

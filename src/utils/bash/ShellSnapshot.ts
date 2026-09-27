@@ -17,6 +17,7 @@ import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
 import { getPlatform } from '../platform.js'
 import { ripgrepCommand } from '../ripgrep.js'
+import { VCS_METADATA_DIRS } from '../searchGlobs.js'
 import { subprocessEnv } from '../subprocessEnv.js'
 import { quote } from './shellQuote.js'
 
@@ -92,19 +93,6 @@ export function createRipgrepShellIntegration(): {
 }
 
 /**
- * VCS directories to exclude from grep searches. Matches the list in
- * GrepTool (see GrepTool.ts: VCS_DIRECTORIES_TO_EXCLUDE).
- */
-const VCS_DIRECTORIES_TO_EXCLUDE = [
-  '.git',
-  '.svn',
-  '.hg',
-  '.bzr',
-  '.jj',
-  '.sl',
-] as const
-
-/**
  * Creates shell integration for `find` and `grep`, backed by bfs and ugrep
  * embedded in the bun binary (ant-native only). Unlike the rg integration,
  * this always shadows the system find/grep since bfs/ugrep are drop-in
@@ -119,8 +107,8 @@ const VCS_DIRECTORIES_TO_EXCLUDE = [
  *   -regex, but GNU find defaults to emacs-flavor (which supports `\|`
  *   alternation). Without this, `find . -regex '.*\.\(js\|ts\)'` silently
  *   returns zero results. A later user-supplied -regextype still overrides.
- * - No gitignore filtering: GlobTool passes `--no-ignore` to rg. bfs has no
- *   gitignore support anyway, so this matches by default.
+ * - No gitignore filtering: bfs has none, so `find` behaves like GlobTool
+ *   with `include_ignored: true` (GlobTool itself honours ignore files).
  * - Hidden files included: both GlobTool (`--hidden`) and bfs's default.
  *
  * Caveat: even with findutils-default, Oniguruma (bfs's regex engine) uses
@@ -173,7 +161,7 @@ export function createFindGrepShellIntegration(): string | null {
       '--ignore-files',
       '--hidden',
       '-I',
-      ...VCS_DIRECTORIES_TO_EXCLUDE.map(d => `--exclude-dir=${d}`),
+      ...VCS_METADATA_DIRS.map(d => `--exclude-dir=${d}`),
     ]),
   ].join('\n')
 }

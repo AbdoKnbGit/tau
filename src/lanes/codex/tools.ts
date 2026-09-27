@@ -211,12 +211,17 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
           type: 'string',
           description: 'Directory to search in.',
         },
+        include_ignored: {
+          type: 'boolean',
+          description: 'Also list files excluded by .gitignore/.ignore rules; default false.',
+        },
       },
       required: ['pattern'],
     },
     adaptInput(native) {
       const out: Record<string, unknown> = { pattern: native.pattern }
       if (native.path) out.path = native.path
+      if (native.include_ignored != null) out.include_ignored = native.include_ignored
       return out
     },
     adaptOutput(output) {
@@ -244,6 +249,10 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
           type: 'string',
           description: 'Glob pattern to filter files (e.g., "*.ts").',
         },
+        include_ignored: {
+          type: 'boolean',
+          description: 'Also search files excluded by .gitignore/.ignore rules; default false.',
+        },
       },
       required: ['pattern'],
     },
@@ -251,6 +260,7 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
       const out: Record<string, unknown> = { pattern: native.pattern }
       if (native.path) out.path = native.path
       if (native.include) out.glob = native.include
+      if (native.include_ignored != null) out.include_ignored = native.include_ignored
       return out
     },
     adaptOutput(output) {

@@ -27,6 +27,7 @@ import {
 import { logError } from '../utils/log.js'
 import { expandPath } from '../utils/path.js'
 import { ripGrep } from '../utils/ripgrep.js'
+import { VCS_METADATA_DIRS } from '../utils/searchGlobs.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
 import { createSignal } from '../utils/signal.js'
 
@@ -482,18 +483,7 @@ async function getProjectFiles(
     '--files',
     '--follow',
     '--hidden',
-    '--glob',
-    '!.git/',
-    '--glob',
-    '!.svn/',
-    '--glob',
-    '!.hg/',
-    '--glob',
-    '!.bzr/',
-    '--glob',
-    '!.jj/',
-    '--glob',
-    '!.sl/',
+    ...VCS_METADATA_DIRS.flatMap(dir => ['--glob', `!${dir}/`]),
   ]
   if (!respectGitignore) {
     rgArgs.push('--no-ignore-vcs')

@@ -313,12 +313,17 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
           type: 'string',
           description: 'Optional: The absolute path to the directory to search within. If omitted, searches the root directory.',
         },
+        include_ignored: {
+          type: 'boolean',
+          description: 'Optional: Also list files excluded by .gitignore/.ignore rules. Defaults to false.',
+        },
       },
       required: ['pattern'],
     },
     adaptInput(native) {
       const out: Record<string, unknown> = { pattern: native.pattern }
       if (native.dir_path) out.path = native.dir_path
+      if (native.include_ignored != null) out.include_ignored = native.include_ignored
       return out
     },
     adaptOutput(output) {
@@ -355,6 +360,10 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
           type: 'integer',
           description: 'Optional: Maximum number of total matches to return. Use this to limit the overall size of the response. Defaults to 100 if omitted.',
         },
+        include_ignored: {
+          type: 'boolean',
+          description: 'Optional: Also search files excluded by .gitignore/.ignore rules. Defaults to false.',
+        },
       },
       required: ['pattern'],
     },
@@ -364,6 +373,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
       if (native.include_pattern) out.glob = native.include_pattern
       if (native.names_only) out.output_mode = 'files_with_matches'
       if (native.total_max_matches) out.head_limit = native.total_max_matches
+      if (native.include_ignored != null) out.include_ignored = native.include_ignored
       return out
     },
     adaptOutput(output) {

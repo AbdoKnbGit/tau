@@ -4,6 +4,8 @@ import { homedir } from 'os'
 import path from 'path'
 import { getCwd } from '../../utils/cwd.js'
 import { getPlatform } from '../../utils/platform.js'
+import { byDepth, listProjectFiles } from '../../utils/projectFiles.js'
+import { literalGlob } from '../../utils/searchGlobs.js'
 import { windowsPathToPosixPath } from '../../utils/windowsPaths.js'
 import {
   extractLeadingCdCommand,
@@ -84,12 +86,8 @@ const MANIFEST_RUNNERS = new Set(['npm', 'yarn', 'pnpm'])
 const MANIFEST_SUBCOMMANDS = new Set(['run', 'start', 'test', 'build', 'dev', 'ci'])
 const MANIFEST_BARE_INSTALL_SUBCOMMANDS = new Set(['install', 'i'])
 
-// Directory names skipped while searching for a misplaced target. Hidden
-// directories (leading dot) are skipped unconditionally.
-const SKIPPED_SEARCH_DIRS = new Set([
-  'node_modules', 'dist', 'build', 'out', 'coverage', 'target',
-  'venv', '__pycache__', 'vendor',
-])
+// Bound the search for a misplaced target so a command never waits long.
+const CANDIDATE_SEARCH_BUDGET_MS = 2_000
 
 function firstCommandSegment(command: string): string {
   return command.split(/&&|\|\||;|\||\n/)[0]?.trim() ?? ''
@@ -153,47 +151,31 @@ async function pathExists(target: string): Promise<boolean> {
 }
 
 /**
- * Breadth-first search for a file name under rootDir. Bounded (depth,
- * directory count, match count) so it stays fast even in big repos.
+ * Files named `fileName` under rootDir, nearest first, relative to it. Only
+ * files the project's own ignore files keep, with hidden folders skipped, so
+ * a copy inside a dependency tree, a build output or a virtualenv is never
+ * offered. Bounded by depth, match count and time so it stays fast even in
+ * big repos.
  */
 async function findFileCandidates(
   rootDir: string,
   fileName: string | string[],
-  { maxDepth = 4, maxDirs = 500, maxMatches = 3 } = {},
+  { maxDepth = 4, maxMatches = 3 } = {},
 ): Promise<string[]> {
   const fsRoot = normalizeForFs(rootDir)
   const wanted = Array.isArray(fileName) ? fileName : [fileName]
   const caseInsensitive = process.platform === 'win32'
-  const wantedLower = new Set(wanted.map(name => name.toLowerCase()))
-  const matchesName = (name: string): boolean =>
-    caseInsensitive ? wantedLower.has(name.toLowerCase()) : wanted.includes(name)
-  const matches: string[] = []
-  const queue: Array<{ dir: string; depth: number }> = [{ dir: fsRoot, depth: 0 }]
-  let visited = 0
-  while (queue.length > 0 && visited < maxDirs && matches.length < maxMatches) {
-    const { dir, depth } = queue.shift()!
-    visited++
-    let entries
-    try {
-      entries = await readdir(dir, { withFileTypes: true })
-    } catch {
-      continue
-    }
-    for (const entry of entries) {
-      if (entry.isFile() && matchesName(entry.name)) {
-        matches.push(path.relative(fsRoot, path.join(dir, entry.name)))
-        if (matches.length >= maxMatches) break
-      } else if (
-        entry.isDirectory() &&
-        depth < maxDepth &&
-        !entry.name.startsWith('.') &&
-        !SKIPPED_SEARCH_DIRS.has(entry.name)
-      ) {
-        queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 })
-      }
-    }
-  }
-  return matches
+  const files = await listProjectFiles(fsRoot, {
+    hidden: 'files',
+    names: wanted.map(name => literalGlob(name, caseInsensitive)),
+    // Folders up to maxDepth below the root, so files one level deeper.
+    maxDepth: maxDepth + 1,
+    signal: AbortSignal.timeout(CANDIDATE_SEARCH_BUDGET_MS),
+  })
+  return files
+    .sort(byDepth(fsRoot))
+    .slice(0, maxMatches)
+    .map(file => path.relative(fsRoot, file))
 }
 
 function extractManifestRunner(command: string): string | null {
@@ -373,7 +355,6 @@ async function collectTargetDirs(
     const fsRoot = normalizeForFs(root)
     const candidates = await findFileCandidates(fsRoot, fileNames, {
       maxDepth,
-      maxDirs: 250,
     })
     for (const candidate of candidates) {
       const dir = path.resolve(fsRoot, path.dirname(candidate))
@@ -704,7 +685,6 @@ async function collectPathSuffixDirs(
     const fsRoot = normalizeForFs(root)
     const candidates = await findFileCandidates(fsRoot, leaf, {
       maxDepth,
-      maxDirs: 400,
       maxMatches: 8,
     })
     for (const candidate of candidates) {
@@ -837,7 +817,6 @@ async function collectModuleWorkdirs(
     const fsRoot = normalizeForFs(root)
     const candidates = await findFileCandidates(fsRoot, target.leafNames, {
       maxDepth: 6,
-      maxDirs: 400,
       maxMatches: 8,
     })
     for (const candidate of candidates) {
