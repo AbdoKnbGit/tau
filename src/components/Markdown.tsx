@@ -41,9 +41,9 @@ const tokenCache = new Map<string, Token[]>();
 const MD_SYNTAX_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
 const ANSI_RE = /\x1B\[[0-?]*[ -/]*[@-~]/;
 function hasMarkdownSyntax(s: string): boolean {
-  // Sample first 500 chars — if markdown exists it's usually early (headers,
-  // code fence, list). Long tool outputs are mostly plain text tails.
-  return MD_SYNTAX_RE.test(s.length > 500 ? s.slice(0, 500) : s);
+  // Only skip lexing when the entire message is plain text. A fence or other
+  // syntax can follow a long introduction, including when history is remounted.
+  return MD_SYNTAX_RE.test(s);
 }
 function cachedLexer(content: string): Token[] {
   // Fast path: plain text with no markdown syntax → single paragraph token.
