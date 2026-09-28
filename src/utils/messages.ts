@@ -4953,14 +4953,102 @@ function hasOnlyWhitespaceTextContent(
 }
 
 /**
+ * Which side of the API conversation a message ends up on once
+ * normalizeMessagesForAPI has run: attachments and local-command output become
+ * user content; progress, bookkeeping system messages, synthetic API errors and
+ * virtual messages are never sent.
+ */
+function apiSideOf(message: Message): 'user' | 'assistant' | null {
+  switch (message.type) {
+    case 'user':
+      return message.isVirtual ? null : 'user'
+    case 'attachment':
+      return 'user'
+    case 'system':
+      return isSystemLocalCommandMessage(message) ? 'user' : null
+    case 'assistant':
+      return message.isVirtual || isSyntheticApiErrorMessage(message)
+        ? null
+        : 'assistant'
+    default:
+      return null
+  }
+}
+
+/** The assistant turn sent in place of one that has no sendable content. */
+function toNoContentAssistant<T extends AssistantMessage>(message: T): T {
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: [
+        { type: 'text' as const, text: NO_CONTENT_MESSAGE, citations: [] },
+      ],
+    },
+  }
+}
+
+/**
+ * Drops the assistant messages `removable` selects, except where they are the
+ * model's whole answer between two user messages: that answer is kept as one
+ * "(no content)" assistant turn. Dropping it would glue the two user messages
+ * into one, so the earlier one, already sent as the last message of a request,
+ * would change in the next request (a cache rewrite on every provider); and
+ * when the resume loaders run this, a resumed session would rebuild a
+ * different history from the one the live session sent.
+ */
+function dropKeepingAnswerTurns<T extends Message>(
+  messages: T[],
+  removable: (message: AssistantMessage) => boolean,
+): { messages: T[]; dropped: number } {
+  const remove = messages.map(
+    message => message.type === 'assistant' && removable(message),
+  )
+  if (!remove.includes(true)) return { messages, dropped: 0 }
+  const keep = new Set<number>()
+  for (let i = 0; i < messages.length; i++) {
+    if (!remove[i]) continue
+    // A run of removable messages, with only unsent messages between them.
+    let next = i + 1
+    let runEnd = i
+    while (next < messages.length) {
+      if (remove[next]) runEnd = next
+      else if (apiSideOf(messages[next]!) !== null) break
+      next++
+    }
+    let prev = i - 1
+    while (prev >= 0 && apiSideOf(messages[prev]!) === null) prev--
+    if (
+      prev >= 0 &&
+      next < messages.length &&
+      apiSideOf(messages[prev]!) === 'user' &&
+      apiSideOf(messages[next]!) === 'user'
+    ) {
+      keep.add(i)
+    }
+    i = runEnd
+  }
+  let dropped = 0
+  const out: T[] = []
+  messages.forEach((message, index) => {
+    if (!remove[index]) out.push(message)
+    else if (keep.has(index)) {
+      out.push(toNoContentAssistant(message as T & AssistantMessage))
+    } else dropped++
+  })
+  return { messages: out, dropped }
+}
+
+/**
  * Filter out assistant messages with only whitespace-only text content.
  *
  * The API requires "text content blocks must contain non-whitespace text".
  * This can happen when the model outputs whitespace (like "\n\n") before a thinking block,
  * but the user cancels mid-stream, leaving only the whitespace text.
  *
- * This function removes such messages entirely rather than keeping a placeholder,
- * since whitespace-only content has no semantic value.
+ * Such messages are removed, since whitespace-only content has no semantic
+ * value, except when one is the model's whole answer between two user
+ * messages: it is then sent as "(no content)" (see dropKeepingAnswerTurns).
  *
  * Also used by conversationRecovery to filter these from the main state during session resume.
  */
@@ -4973,33 +5061,28 @@ export function filterWhitespaceOnlyAssistantMessages(
 export function filterWhitespaceOnlyAssistantMessages(
   messages: Message[],
 ): Message[] {
-  let hasChanges = false
-
-  const filtered = messages.filter(message => {
-    if (message.type !== 'assistant') {
-      return true
-    }
-
-    const content = message.message.content
-    // Keep messages with empty arrays (handled elsewhere) or that have real content
-    if (!Array.isArray(content) || content.length === 0) {
-      return true
-    }
-
-    if (hasOnlyWhitespaceTextContent(content)) {
-      hasChanges = true
+  const { messages: filtered, dropped } = dropKeepingAnswerTurns(
+    messages,
+    message => {
+      const content = message.message.content
+      // Keep messages with empty arrays (handled elsewhere) or that have real content
+      if (
+        !Array.isArray(content) ||
+        content.length === 0 ||
+        !hasOnlyWhitespaceTextContent(content)
+      ) {
+        return false
+      }
       logEvent('tengu_filtered_whitespace_only_assistant', {
         messageUUID:
           message.uuid as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
-      return false
-    }
+      return true
+    },
+  )
 
-    return true
-  })
-
-  if (!hasChanges) {
-    return messages
+  if (dropped === 0) {
+    return filtered
   }
 
   // Removing assistant messages may leave adjacent user messages that need
@@ -5057,15 +5140,7 @@ function ensureNonEmptyAssistantContent(
         messageIndex: index,
       })
 
-      return {
-        ...message,
-        message: {
-          ...message.message,
-          content: [
-            { type: 'text' as const, text: NO_CONTENT_MESSAGE, citations: [] },
-          ],
-        },
-      }
+      return toNoContentAssistant(message)
     }
 
     return message
@@ -5085,6 +5160,10 @@ function ensureNonEmptyAssistantContent(
  * A thinking-only message is "orphaned" if there is NO other assistant message with the
  * same message.id that contains non-thinking content (text, tool_use, etc). If such a
  * message exists, the thinking block will be merged with it in normalizeMessagesForAPI().
+ *
+ * An orphan that is the model's whole answer between two user messages (a reply
+ * that was reasoning only) is sent as "(no content)" instead of being removed,
+ * so the user messages around it stay apart (see dropKeepingAnswerTurns).
  */
 export function filterOrphanedThinkingOnlyMessages(
   messages: (UserMessage | AssistantMessage)[],
@@ -5113,14 +5192,10 @@ export function filterOrphanedThinkingOnlyMessages(
   }
 
   // Second pass: filter out thinking-only messages that are truly orphaned
-  const filtered = messages.filter(msg => {
-    if (msg.type !== 'assistant') {
-      return true
-    }
-
+  return dropKeepingAnswerTurns(messages, msg => {
     const content = msg.message.content
     if (!Array.isArray(content) || content.length === 0) {
-      return true
+      return false
     }
 
     // Check if ALL content blocks are thinking blocks
@@ -5129,7 +5204,7 @@ export function filterOrphanedThinkingOnlyMessages(
     )
 
     if (!allThinking) {
-      return true // Has non-thinking content, keep it
+      return false // Has non-thinking content, keep it
     }
 
     // It's thinking-only. Keep it if there's another message with same id
@@ -5138,7 +5213,7 @@ export function filterOrphanedThinkingOnlyMessages(
       msg.message.id &&
       messageIdsWithNonThinkingContent.has(msg.message.id)
     ) {
-      return true
+      return false
     }
 
     // Truly orphaned - no other message with same id has content to merge with
@@ -5149,10 +5224,8 @@ export function filterOrphanedThinkingOnlyMessages(
         .id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       blockCount: content.length,
     })
-    return false
-  })
-
-  return filtered
+    return true
+  }).messages
 }
 
 /**
