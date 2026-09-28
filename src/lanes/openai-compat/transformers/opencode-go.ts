@@ -20,7 +20,7 @@
 
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
-import { opencodeTransformer } from './opencode.js'
+import { buildOpencodeHeaders, opencodeTransformer } from './opencode.js'
 import { openCodeRouteFor } from '../opencode_anthropic_route.js'
 import {
   getOpencodeEffort,
@@ -76,6 +76,11 @@ export const opencodeGoTransformer: Transformer = {
   id: 'opencodego',
   displayName: 'OpenCode Go',
   defaultBaseUrl: 'https://opencode.ai/zen/go/v1',
+
+  // Keep Go's existing headers independent of Zen's free-tier compatibility.
+  buildHeaders(apiKey, ctx) {
+    return buildOpencodeHeaders(apiKey, ctx, '1.15.9')
+  },
 
   transformRequest(
     body: OpenAIChatRequest,

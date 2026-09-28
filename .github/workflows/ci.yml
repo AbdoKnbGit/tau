@@ -408,5 +408,11 @@ jobs:
           bun run src/utils/localInstaller.test.ts
           bun run src/utils/ripgrepBinary.test.ts
           bun run src/utils/updateLock.test.ts
+      - name: Test OpenCode Zen compatibility and provider isolation
+        run: |
+          bun test src/lanes/openai-compat/opencode_zen.test.ts
+          bun run src/lanes/openai-compat/opencode_routes.test.ts
+          bun run src/lanes/openai-compat/opencode_go.test.ts
+          bun run src/lanes/openai-compat/network_retry.test.ts
       - run: npm run build:bun
       - run: node dist/cli.mjs --version

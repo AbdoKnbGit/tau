@@ -41,6 +41,7 @@ import {
   openCodeRouteFor,
 } from './opencode_anthropic_route.js'
 import { buildOpenCodeGeminiBody, OpenCodeGeminiStream } from './opencode_google.js'
+import { isOpencodeAnonymousModelId, streamOpenCodeZen } from './opencode_zen.js'
 import {
   buildOpenCodeResponsesBody,
   OPENCODE_MAX_OUTPUT_TOKENS,
@@ -446,9 +447,13 @@ export class OpenAICompatLane implements Lane {
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
     const model = !params.providerHint || params.providerHint === 'openrouter'
       ? resolveOpenRouterVirtualModelId(params.model) : params.model
-    if (this.getConfigForModel(model, params.providerHint)?.provider === 'openrouter') {
+    const provider = this.getConfigForModel(model, params.providerHint)?.provider
+    if (provider === 'openrouter') {
       return yield* retryOpenRouterStream(({ recovery, note }) => this.streamAsProviderOnce(params, recovery, note),
         params.signal, { bufferText: params.tools.length > 0 })
+    }
+    if (provider === 'opencode' && isOpencodeAnonymousModelId(model)) {
+      return yield* streamOpenCodeZen(params, request => this.streamAsProviderOnce(request))
     }
     return yield* this.streamAsProviderOnce(params)
   }
@@ -1465,14 +1470,6 @@ function isOpencodeAnonymousCatalogModel(model: ModelInfo): boolean {
     || model.tags?.some(tag => tag.toLowerCase() === 'free') === true
 }
 
-function isOpencodeAnonymousModelId(id: string): boolean {
-  const normalized = id.toLowerCase()
-  return normalized.endsWith('-free')
-    || normalized === 'big-pickle'
-    || normalized === 'gpt-5-nano'
-    || normalized === 'gpt-5.4-nano'
-}
-
 /** Providers whose upstream catalog has already been consulted for metadata. */
 const contextWindowLearnAttempted = new Set<string>()
 
@@ -2427,6 +2424,15 @@ function formatProviderHttpError(
       '(big-pickle, *-free rows, gpt-5-nano). Use a real OPENCODE_API_KEY and switch to a paid model in /models opencode',
       '(e.g. claude-opus-4-7, claude-sonnet-4-6, gpt-5.4, gemini-3.1-pro, glm-5.1, kimi-k2.5)',
       `to use your API-key quota instead. Raw: ${errText.slice(0, 200)}`,
+    ].join(' ')
+  }
+  if (provider === 'opencode' && status === 403 && errText.includes('FreeTierError')) {
+    const said = parseProviderErrorPayload(errText)?.message ?? errText.slice(0, 200)
+    return [
+      `opencode API error 403: OpenCode Zen rejected the free-tier request for ${model ?? 'this model'}.`,
+      'Its compatibility checks can reject requests with a reduced tool set, including tool-free requests.',
+      'Try a normal coding session with the standard tools enabled, or select a paid Zen model with /models opencode',
+      `(an OpenCode API key is required for paid models). OpenCode says: ${said}`,
     ].join(' ')
   }
   const headline = isPromptTooLong

@@ -100,12 +100,13 @@ const READ_TOOL = {
   },
 }
 
-type Captured = { url: string; headers: Record<string, string>; body: any; events: any[] }
+type Captured = { url: string; headers: Record<string, string>; body: any; events: any[]; requests: number }
 
 async function capture(
   provider: 'opencode' | 'opencodego',
   model: string,
   messages: any[],
+  reply?: () => Response,
 ): Promise<Captured> {
   const lane = new OpenAICompatLane()
   lane.registerProvider(
@@ -114,10 +115,13 @@ async function capture(
     provider === 'opencodego' ? 'https://opencode.ai/zen/go/v1' : 'https://opencode.ai/zen/v1',
   )
   const oldFetch = globalThis.fetch
-  let seen: Omit<Captured, 'events'> = { url: '', headers: {}, body: {} }
+  let seen: Omit<Captured, 'events' | 'requests'> = { url: '', headers: {}, body: {} }
+  let requests = 0
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input)
+    requests++
     seen = { url, headers: init?.headers as Record<string, string>, body: JSON.parse(String(init?.body ?? '{}')) }
+    if (reply) return reply()
     const text = url.endsWith('/messages') ? MESSAGES_SSE
       : url.endsWith('/responses') ? RESPONSES_SSE
         : url.includes(':streamGenerateContent') ? GEMINI_SSE
@@ -138,7 +142,7 @@ async function capture(
       sessionId: 'session-1',
       providerHint: provider,
     })) events.push(event)
-    return { ...seen, events }
+    return { ...seen, events, requests }
   } finally {
     globalThis.fetch = oldFetch
     lane.unregisterProvider(provider)
@@ -294,6 +298,41 @@ await test('Jev is explained, not requested, and hidden from both catalogs', asy
     (TRANSFORMERS[provider].filterModelCatalog?.([{ id: 'jev-1.13' }, { id: 'kimi-k2.6' }]) ?? []).map(m => m.id)
   assert.deepEqual(ids('opencode'), ['kimi-k2.6'])
   assert.deepEqual(ids('opencodego'), ['kimi-k2.6'])
+})
+
+// A gateway rejection can still occur, for example with a reduced tool set.
+const FREE_TIER_403 = () => new Response(
+  '{"type":"error","error":{"type":"FreeTierError","message":"OpenCode\'s free tier can only be used from within OpenCode"}}',
+  { status: 403, headers: { 'content-type': 'application/json' } },
+)
+const replyText = (r: Captured): string =>
+  r.events.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join('')
+
+await test('a Zen free-tier refusal is explained on every route, with one request', async () => {
+  const rows = [
+    ['ling-3.0-flash-fin-free', 'chat/completions'],
+    ['qwen3.6-plus-free', 'messages'],
+    ['muse-spark-1.3-contributor-free', 'responses'],
+  ] as const
+  for (const [model, route] of rows) {
+    const r = await capture('opencode', model, [{ role: 'user', content: 'hey' }], FREE_TIER_403)
+    assert.equal(r.url, `https://opencode.ai/zen/v1/${route}`)
+    assert.equal(r.requests, 1, `${model}: not retried`)
+    const text = replyText(r)
+    assert.match(text, /^opencode API error 403: OpenCode Zen rejected the free-tier request/)
+    assert(text.includes(`for ${model}.`), text)
+    assert(text.includes('standard tools enabled'), text)
+    assert(text.includes('/models opencode'), text)
+    assert(text.endsWith("OpenCode says: OpenCode's free tier can only be used from within OpenCode"), text)
+  }
+})
+
+await test('other 403s on Zen, and Go, keep the raw error', async () => {
+  const other = await capture('opencode', 'kimi-k2.6', [{ role: 'user', content: 'hey' }],
+    () => new Response('{"error":{"message":"Forbidden"}}', { status: 403 }))
+  assert.equal(replyText(other), 'opencode API error 403: {"error":{"message":"Forbidden"}}')
+  const go = await capture('opencodego', 'minimax-m3', [{ role: 'user', content: 'hey' }], FREE_TIER_403)
+  assert.equal(replyText(go), `opencodego API error 403: ${await FREE_TIER_403().text()}`)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

@@ -51,21 +51,14 @@ const OPENCODE_THINKING_FIELDS = [
 
 declare const MACRO: { VERSION: string }
 
-// Pinned to the live opencode release shape: `opencode/<version>`. The
-// rate-limit gate (ipRateLimiter.ts:13-16) reads checkHeaders out of the
-// ZEN_LIMITS secret and the only entry stable enough to gate on is the
-// official client's UA. Bumping this string in lockstep with opencode-dev's
-// packages/opencode/package.json keeps the gate satisfied even if the
-// gateway tightens the substring (e.g. to `opencode/1.`).
-const OPENCODE_UA_VERSION = '1.15.9'
+// Compatibility version from opencode-dev/packages/opencode/package.json.
+// Zen now requires at least 1.17.0 for free rows.
+const OPENCODE_UA_VERSION = '1.18.32'
 
 // Stable per-process session id used when the caller didn't pass one
 // (e.g. /title, /compact, or any one-shot lane call that bypasses the
-// bridge's getSessionId() injection). Without this header the gateway's
-// `headersExist` test (ipRateLimiter.ts:13) fails on the entry that
-// requires x-opencode-session to be non-empty, dropping the daily quota
-// to dailyRequestsFallback (1/day) on free rows. Generating once per
-// process means the gateway sees consistent affinity across the run.
+// bridge's getSessionId() injection). Zen free rows receive native session
+// IDs in opencode_zen.ts; other rows keep the existing affinity behavior.
 let _processSessionId: string | null = null
 function getProcessSessionId(): string {
   if (!_processSessionId) _processSessionId = randomUUID()
@@ -412,48 +405,24 @@ export const opencodeTransformer: Transformer = {
     return 'none'
   },
 
-  buildHeaders(_apiKey: string, ctx?: HeaderContext): Record<string, string> {
-    // OpenCode Zen's gateway reads five headers. Four are stripped before
-    // the gateway forwards to the upstream (see opencode-dev
-    // packages/console/app/src/routes/zen/util/handler.ts:193-196); they're
-    // gateway-side only — affinity / rate-limit bucketing / telemetry.
-    //
-    // - User-Agent          → THE rate-limit gate. ipRateLimiter.ts:13-16
-    //                         (packages/console/app/src/routes/zen/util)
-    //                         runs `request.headers.get(name).toLowerCase()
-    //                         .includes(value)` over a `checkHeaders` map
-    //                         from Subscription.getFreeLimits(). If any
-    //                         check fails the daily quota collapses from
-    //                         `dailyRequests` to `dailyRequestsFallback`
-    //                         (typically 1/day) and the next request 429s
-    //                         with FreeUsageLimitError. The official
-    //                         client sends `opencode/<version>` (see
-    //                         opencode-dev packages/opencode/src/session/
-    //                         llm/request.ts:16,175); we mirror that exact
-    //                         shape so free-tier rows ("*-free", big-pickle,
-    //                         gpt-5-nano) actually get their full daily
-    //                         allowance instead of the fallback bucket.
-    // - x-opencode-session  → sticky-provider routing across turns so the
-    //                         upstream cache (Anthropic prefix, OpenAI
-    //                         Responses, DeepSeek/GLM/Kimi implicit, etc.)
-    //                         actually hits instead of cold-writing every
-    //                         request. Also feeds the gateway's stickyId
-    //                         (handler.ts:124) for per-session affinity.
-    // - x-opencode-request  → request correlation key for telemetry; the
-    //                         official client passes a user id, we reuse
-    //                         the session id as a stable surrogate.
-    // - x-opencode-project  → project grouping for telemetry; optional.
-    // - x-opencode-client   → client identifier; identifies Tau in usage
-    //                         metrics on the OpenCode side.
-    const sessionId = ctx?.sessionId ?? getProcessSessionId()
-    const headers: Record<string, string> = {
-      'User-Agent': `opencode/${OPENCODE_UA_VERSION}`,
-      'x-opencode-client': process.env.OPENCODE_CLIENT ?? `opencode-tau/${MACRO.VERSION}`,
-      'x-opencode-session': sessionId,
-      'x-opencode-request': sessionId,
-    }
-    const project = process.env.OPENCODE_PROJECT
-    if (project) headers['x-opencode-project'] = project
-    return headers
-  },
+  buildHeaders: buildOpencodeHeaders,
+}
+
+export function buildOpencodeHeaders(
+  _apiKey: string,
+  ctx?: HeaderContext,
+  version = OPENCODE_UA_VERSION,
+): Record<string, string> {
+  // Keep Tau attribution and the user's overrides. The session drives
+  // gateway affinity; the request/project headers are telemetry hints.
+  const sessionId = ctx?.sessionId ?? getProcessSessionId()
+  const headers: Record<string, string> = {
+    'User-Agent': `opencode/${version}`,
+    'x-opencode-client': process.env.OPENCODE_CLIENT ?? `opencode-tau/${MACRO.VERSION}`,
+    'x-opencode-session': sessionId,
+    'x-opencode-request': sessionId,
+  }
+  const project = process.env.OPENCODE_PROJECT
+  if (project) headers['x-opencode-project'] = project
+  return headers
 }
