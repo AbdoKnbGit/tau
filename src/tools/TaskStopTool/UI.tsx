@@ -30,7 +30,8 @@ export function renderToolResultMessage(output: Output, _progressMessagesForMess
   }
   const rawCommand = output.command ?? '';
   const command = verbose ? rawCommand : truncateCommand(rawCommand);
-  const suffix = command !== rawCommand ? '… · stopped' : ' · stopped';
+  const state = output.not_stopped ?? 'stopped';
+  const suffix = command !== rawCommand ? `… · ${state}` : command ? ` · ${state}` : state;
   return <MessageResponse>
       <Text>
         {command}

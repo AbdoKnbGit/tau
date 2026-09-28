@@ -4509,6 +4509,16 @@ export function isLoggableMessage(m: Message): boolean {
     ) {
       return true
     }
+    // A task notification handed to the model mid-turn is kept, as one
+    // delivered between turns (a user message) always was: a resumed session
+    // must rebuild the history the model saw, byte for byte, and still know
+    // the task ended.
+    if (
+      m.attachment.type === 'queued_command' &&
+      m.attachment.commandMode === 'task-notification'
+    ) {
+      return true
+    }
     return false
   }
   return true

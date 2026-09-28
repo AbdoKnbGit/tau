@@ -86,6 +86,10 @@ import {
   isSlashCommand,
 } from './utils/messageQueueManager.js'
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
+import {
+  enqueueSdkEvent,
+  taskNotificationSdkEvent,
+} from './utils/sdkEventQueue.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import {
   getRuntimeMainLoopModel,
@@ -1853,10 +1857,11 @@ async function* queryLoop(
     // Get queued commands snapshot before processing attachments.
     // These will be sent as attachments so Claude can respond to them in the current turn.
     //
-    // Drain pending notifications. LocalShellTask completions are 'next'
-    // (when MONITOR_TOOL is on) and drain without Sleep. Other task types
-    // (agent/workflow/framework) still default to 'later' — the Sleep flush
-    // covers those. If all task types move to 'next', this branch could go.
+    // Drain pending notifications. LocalShellTask completions are 'next' and
+    // drain here, after the tool round. Other task types (agent/workflow/
+    // framework) still default to 'later': they arrive between turns, or at
+    // a Sleep where that tool is built in. If all task types move to 'next',
+    // this branch could go.
     //
     // Slash commands are excluded from mid-turn drain — they must go through
     // processSlashCommand after the turn ends (via useQueueProcessor), not be
@@ -1943,6 +1948,15 @@ async function* queryLoop(
         if (cmd.uuid) {
           consumedCommandUuids.push(cmd.uuid)
           notifyCommandLifecycle(cmd.uuid, 'started')
+        }
+        // Handed to the model here instead of between turns, where print.ts
+        // would have emitted the SDK event; SDK consumers still see the task
+        // close.
+        if (cmd.mode === 'task-notification') {
+          const event = taskNotificationSdkEvent(
+            typeof cmd.value === 'string' ? cmd.value : '',
+          )
+          if (event) enqueueSdkEvent(event)
         }
       }
       removeFromQueue(consumedCommands)

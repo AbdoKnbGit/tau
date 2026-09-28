@@ -5597,7 +5597,7 @@ export function wrapCommandText(
 ): string {
   switch (origin?.kind) {
     case 'task-notification':
-      return `A background agent completed a task:\n${raw}`
+      return `A background task sent an update while you were working:\n${raw}`
     case 'coordinator':
       return `The coordinator sent a message while you were working:\n${raw}\n\nAddress this before completing your current task.`
     case 'channel':

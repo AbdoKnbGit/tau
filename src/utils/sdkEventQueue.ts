@@ -132,3 +132,61 @@ export function emitTaskTerminatedSdk(
     usage: opts?.usage,
   })
 }
+
+/**
+ * The task_notification SDK event for a queued `<task-notification>`, or null
+ * for one without a `<status>` (a progress or stall ping, which must not close
+ * the task for SDK consumers). print.ts emits it when it hands a notification
+ * to the model between turns; query.ts when it hands one over mid-turn.
+ */
+export function taskNotificationSdkEvent(
+  notificationText: string,
+): TaskNotificationSdkEvent | null {
+  const statusMatch = notificationText.match(/<status>([^<]+)<\/status>/)
+  if (!statusMatch) {
+    return null
+  }
+  const taskIdMatch = notificationText.match(/<task-id>([^<]+)<\/task-id>/)
+  const toolUseIdMatch = notificationText.match(
+    /<tool-use-id>([^<]+)<\/tool-use-id>/,
+  )
+  const outputFileMatch = notificationText.match(
+    /<output-file>([^<]+)<\/output-file>/,
+  )
+  const summaryMatch = notificationText.match(/<summary>([^<]+)<\/summary>/)
+  const rawStatus = statusMatch[1]
+  const status =
+    rawStatus === 'killed' || rawStatus === 'stopped'
+      ? 'stopped'
+      : rawStatus === 'failed'
+        ? 'failed'
+        : 'completed'
+
+  const usageContent =
+    notificationText.match(/<usage>([\s\S]*?)<\/usage>/)?.[1] ?? ''
+  const totalTokensMatch = usageContent.match(
+    /<total_tokens>(\d+)<\/total_tokens>/,
+  )
+  const toolUsesMatch = usageContent.match(/<tool_uses>(\d+)<\/tool_uses>/)
+  const durationMsMatch = usageContent.match(
+    /<duration_ms>(\d+)<\/duration_ms>/,
+  )
+
+  return {
+    type: 'system',
+    subtype: 'task_notification',
+    task_id: taskIdMatch?.[1] ?? '',
+    tool_use_id: toolUseIdMatch?.[1],
+    status,
+    output_file: outputFileMatch?.[1] ?? '',
+    summary: summaryMatch?.[1] ?? '',
+    usage:
+      totalTokensMatch && toolUsesMatch
+        ? {
+            total_tokens: parseInt(totalTokensMatch[1]!, 10),
+            tool_uses: parseInt(toolUsesMatch[1]!, 10),
+            duration_ms: durationMsMatch ? parseInt(durationMsMatch[1]!, 10) : 0,
+          }
+        : undefined,
+  }
+}

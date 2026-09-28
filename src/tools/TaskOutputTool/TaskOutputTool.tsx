@@ -1,5 +1,4 @@
 import { c as _c } from "react/compiler-runtime";
-import { stat } from 'fs/promises';
 import React from 'react';
 import { z } from 'zod/v4';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
@@ -21,9 +20,11 @@ import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { sleep } from '../../utils/sleep.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { countCharInString } from '../../utils/stringUtils.js';
-import { getTaskOutput, getTaskOutputPath } from '../../utils/task/diskOutput.js';
+import { toAgentId } from '../../types/ids.js';
+import { getTaskOutput, readTaskOutputFile } from '../../utils/task/diskOutput.js';
 import { updateTaskState } from '../../utils/task/framework.js';
 import { formatTaskOutput } from '../../utils/task/outputFormatting.js';
+import { type EndedTask, findEndedTask, noTaskFoundMessage, readRecordedResult } from '../../utils/task/taskOutcomes.js';
 import type { ThemeName } from '../../utils/theme.js';
 import { AgentPromptDisplay, AgentResponseDisplay } from '../AgentTool/UI.js';
 import BashToolResultMessage from '../BashTool/BashToolResultMessage.js';
@@ -54,10 +55,13 @@ type TaskOutputToolOutput = {
   task: TaskOutput | null;
 };
 
-// Only fall back to disk for generated task IDs; app-state lookup handles any other shape.
+// A task found only by its output file has no recorded type: read it from the id.
 const GENERATED_TASK_ID_PATTERN = /^[abrtwmd][0-9a-z]{8}$/;
 
 function inferTaskTypeFromId(taskId: string): TaskType | null {
+  if (toAgentId(taskId)) {
+    return 'local_agent';
+  }
   if (!GENERATED_TASK_ID_PATTERN.test(taskId)) {
     return null;
   }
@@ -81,39 +85,56 @@ function inferTaskTypeFromId(taskId: string): TaskType | null {
   }
 }
 
-async function getRecoverableTaskType(taskId: string): Promise<TaskType | null> {
-  const taskType = inferTaskTypeFromId(taskId);
-  if (!taskType) {
+// A task no longer in app state (finished and evicted, or from an earlier run):
+// its recorded outcome, or only its output file.
+async function findRecoverableTask(taskId: string): Promise<EndedTask | null> {
+  const ended = await findEndedTask(taskId);
+  if (ended?.kind === 'untracked' && !inferTaskTypeFromId(taskId)) {
     return null;
   }
-  try {
-    await stat(getTaskOutputPath(taskId));
-  } catch {
-    return null;
-  }
-  return taskType;
+  return ended;
 }
 
-async function getRecoveredTaskOutputData(taskId: string): Promise<TaskOutput | null> {
-  const taskType = await getRecoverableTaskType(taskId);
-  if (!taskType) {
-    return null;
-  }
-  const output = await getTaskOutput(taskId);
-  const recovered: TaskOutput = {
-    task_id: taskId,
-    task_type: taskType,
-    status: 'completed',
-    description: `Recovered output for evicted task ${taskId}`,
-    output
-  };
-  if (taskType === 'local_bash') {
+async function getEndedTaskOutputData(ended: EndedTask): Promise<TaskOutput> {
+  if (ended.kind === 'untracked') {
+    const taskType = inferTaskTypeFromId(ended.id)!;
     return {
-      ...recovered,
-      exitCode: null
+      task_id: ended.id,
+      task_type: taskType,
+      status: 'unknown',
+      description: `Output of task ${ended.id}, which is not tracked by this Tau process (it ran before a restart or in another session), so its final status is unknown`,
+      output: await readTaskOutputFile(ended.outputFile),
+      ...(taskType === 'local_bash' ? {
+        exitCode: null
+      } : {})
     };
   }
-  return recovered;
+  const outcome = ended.outcome;
+  const data: TaskOutput = {
+    task_id: outcome.id,
+    task_type: outcome.type,
+    status: outcome.status,
+    description: outcome.description,
+    output: await readTaskOutputFile(outcome.outputFile)
+  };
+  if (outcome.type === 'local_bash') {
+    data.exitCode = outcome.exitCode ?? null;
+  }
+  if (outcome.error) {
+    data.error = outcome.error;
+  }
+  if (outcome.type === 'local_agent') {
+    // The agent's final answer, as for a task still in app state.
+    const result = await readRecordedResult(outcome);
+    if (result) {
+      data.result = result;
+      data.output = result;
+    }
+  }
+  if (outcome.type === 'remote_agent' && outcome.command) {
+    data.prompt = outcome.command;
+  }
+  return data;
 }
 
 // Re-export Progress from centralized types to break import cycles
@@ -250,14 +271,14 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     const appState = getAppState();
     const task = appState.tasks?.[task_id] as TaskState | undefined;
     if (!task) {
-      if (await getRecoverableTaskType(task_id)) {
+      if (await findRecoverableTask(task_id)) {
         return {
           result: true
         };
       }
       return {
         result: false,
-        message: `No task found with ID: ${task_id}`,
+        message: noTaskFoundMessage(task_id, appState.tasks),
         errorCode: 2
       };
     }
@@ -274,16 +295,16 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     const appState = toolUseContext.getAppState();
     const task = appState.tasks?.[task_id] as TaskState | undefined;
     if (!task) {
-      const recoveredTask = await getRecoveredTaskOutputData(task_id);
-      if (recoveredTask) {
+      const ended = await findRecoverableTask(task_id);
+      if (ended) {
         return {
           data: {
             retrieval_status: 'success' as const,
-            task: recoveredTask
+            task: await getEndedTaskOutputData(ended)
           }
         };
       }
-      throw new Error(`No task found with ID: ${task_id}`);
+      throw new Error(noTaskFoundMessage(task_id, appState.tasks));
     }
     if (!block) {
       // Non-blocking: return current state
@@ -321,12 +342,13 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     }
     const completedTask = await waitForTaskCompletion(task_id, toolUseContext.getAppState, timeout, toolUseContext.abortController);
     if (!completedTask) {
-      const recoveredTask = await getRecoveredTaskOutputData(task_id);
-      if (recoveredTask) {
+      // Finished and evicted while we waited.
+      const ended = await findRecoverableTask(task_id);
+      if (ended) {
         return {
           data: {
             retrieval_status: 'success' as const,
-            task: recoveredTask
+            task: await getEndedTaskOutputData(ended)
           }
         };
       }

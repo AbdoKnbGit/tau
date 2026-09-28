@@ -337,11 +337,19 @@ export async function getTaskOutput(
   taskId: string,
   maxBytes: number = DEFAULT_MAX_READ_BYTES,
 ): Promise<string> {
+  return readTaskOutputFile(getTaskOutputPath(taskId), maxBytes)
+}
+
+/**
+ * Same as getTaskOutput, for an output file found by path (a finished task's
+ * file, possibly in another session's folder).
+ */
+export async function readTaskOutputFile(
+  path: string,
+  maxBytes: number = DEFAULT_MAX_READ_BYTES,
+): Promise<string> {
   try {
-    const { content, bytesTotal, bytesRead } = await tailFile(
-      getTaskOutputPath(taskId),
-      maxBytes,
-    )
+    const { content, bytesTotal, bytesRead } = await tailFile(path, maxBytes)
     if (bytesTotal > bytesRead) {
       return `[${Math.round((bytesTotal - bytesRead) / 1024)}KB of earlier output omitted]\n${content}`
     }

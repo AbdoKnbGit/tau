@@ -2,9 +2,13 @@
 // Used by TaskStopTool (LLM-invoked) and SDK stop_task control request.
 
 import type { AppState } from '../state/AppState.js'
-import type { TaskStateBase } from '../Task.js'
 import { getTaskByType } from '../tasks.js'
 import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
+import {
+  describeTaskOutcome,
+  findEndedTask,
+  outcomeOfTask,
+} from '../utils/task/taskOutcomes.js'
 import { isLocalShellTask } from './LocalShellTask/guards.js'
 
 export class StopTaskError extends Error {
@@ -41,15 +45,26 @@ export async function stopTask(
 ): Promise<StopTaskResult> {
   const { getAppState, setAppState } = context
   const appState = getAppState()
-  const task = appState.tasks?.[taskId] as TaskStateBase | undefined
+  const task = appState.tasks?.[taskId]
 
   if (!task) {
+    // Finished and already evicted, or from an earlier run of the session.
+    const ended = await findEndedTask(taskId)
+    if (ended) {
+      throw new StopTaskError(
+        ended.kind === 'recorded'
+          ? `Task ${taskId} is not running (${describeTaskOutcome(ended.outcome)})`
+          : `Task ${taskId} is not running in this Tau process`,
+        'not_running',
+      )
+    }
     throw new StopTaskError(`No task found with ID: ${taskId}`, 'not_found')
   }
 
   if (task.status !== 'running') {
+    const outcome = outcomeOfTask(task)
     throw new StopTaskError(
-      `Task ${taskId} is not running (status: ${task.status})`,
+      `Task ${taskId} is not running (${outcome ? describeTaskOutcome(outcome) : `status: ${task.status}`})`,
       'not_running',
     )
   }
