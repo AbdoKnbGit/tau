@@ -1,6 +1,7 @@
 /**
  * Run: bun run src/utils/abortController.test.ts
  */
+import { getEventListeners } from 'node:events'
 import { createMovableAbortController } from './abortController.js'
 
 let passed = 0
@@ -81,6 +82,60 @@ async function main(): Promise<void> {
     agent2.dispose()
     agent2.controller.abort()
     assert(!turn2.signal.aborted, 'a disposed controller must not reach its parent')
+  })
+
+  await test('a targeted foreground stop spares the parent and its other agents', () => {
+    const turn = new AbortController()
+    const task = new AbortController()
+    const siblingTask = new AbortController()
+    const agent = createMovableAbortController(turn, task)
+    const sibling = createMovableAbortController(turn, siblingTask)
+    task.abort('task-stopped')
+    assert(agent.controller.signal.reason === 'task-stopped', 'task stop must reach execution')
+    assert(!turn.signal.aborted, 'targeted stop must not cancel the turn')
+    assert(!sibling.controller.signal.aborted, 'targeted stop must not cancel a sibling')
+    turn.abort('Esc')
+    assert(sibling.controller.signal.reason === 'Esc', 'Esc must still stop the other agent')
+    agent.dispose()
+    sibling.dispose()
+  })
+
+  await test('an already killed task stops execution without aborting its parent', () => {
+    const turn = new AbortController()
+    const task = new AbortController()
+    task.abort('killed-before-link')
+    const agent = createMovableAbortController(turn, task)
+    assert(agent.controller.signal.reason === 'killed-before-link', 'must handle registration-time kill')
+    assert(!turn.signal.aborted, 'must unlink the parent before forwarding an existing stop')
+    agent.dispose()
+  })
+
+  await test('permission-prompt Esc still cancels the turn with a task stop link', () => {
+    const turn = new AbortController()
+    const task = new AbortController()
+    const agent = createMovableAbortController(turn, task)
+    agent.controller.abort('permission-interrupt')
+    assert(turn.signal.reason === 'permission-interrupt', 'agent Esc must still reach the turn')
+    agent.dispose()
+  })
+
+  await test('move and dispose release task listeners across repeated runs', () => {
+    const turn = new AbortController()
+    for (let i = 0; i < 50; i++) {
+      const task = new AbortController()
+      const nextTask = new AbortController()
+      const agent = createMovableAbortController(turn, task)
+      if (i % 2 === 0) {
+        agent.moveTo(nextTask)
+        task.abort('old-task')
+        assert(!agent.controller.signal.aborted, 'the previous task must be detached after move')
+      }
+      agent.dispose()
+      agent.dispose()
+      for (const controller of [turn, task, nextTask, agent.controller]) {
+        assert(getEventListeners(controller.signal, 'abort').length === 0, 'listener leaked after dispose')
+      }
+    }
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

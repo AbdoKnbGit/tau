@@ -107,8 +107,13 @@ export function createChildAbortController(
  * prompt) still stops the whole turn. Moved to the background with Ctrl+B,
  * the agent follows its own task instead: it outlives the turn and stops when
  * the task is killed.
+ * An optional task controller can also stop it while it is in the foreground.
+ * That targeted stop cuts the parent link first, so it cannot cancel the turn.
  */
-export function createMovableAbortController(parent: AbortController): {
+export function createMovableAbortController(
+  parent: AbortController,
+  task?: AbortController,
+): {
   controller: AbortController
   moveTo(next: AbortController): void
   dispose(): void
@@ -132,10 +137,22 @@ export function createMovableAbortController(parent: AbortController): {
     }
   }
   link(parent, true)
+  const onTaskAbort = (): void => {
+    if (task) link(task, false)
+  }
+  const unlinkTask = (): void => {
+    task?.signal.removeEventListener('abort', onTaskAbort)
+  }
+  if (task?.signal.aborted) onTaskAbort()
+  else task?.signal.addEventListener('abort', onTaskAbort, { once: true })
   return {
     controller,
-    moveTo: next => link(next, false),
+    moveTo: next => {
+      unlinkTask()
+      link(next, false)
+    },
     dispose: () => {
+      unlinkTask()
       unlink()
       unlink = () => {}
     },

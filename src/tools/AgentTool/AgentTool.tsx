@@ -818,6 +818,7 @@ export const AgentTool = buildTool({
         // Register as foreground task immediately so it can be backgrounded at any time
         // Skip registration if background tasks are disabled
         let foregroundTaskId: string | undefined;
+        let foregroundAbortController: AbortController | undefined;
         // Create the background race promise once outside the loop — otherwise
         // each iteration adds a new .then() reaction to the same pending
         // promise, accumulating callbacks for the lifetime of the agent.
@@ -836,6 +837,7 @@ export const AgentTool = buildTool({
             autoBackgroundMs: getAutoBackgroundMs() || undefined
           });
           foregroundTaskId = registration.taskId;
+          foregroundAbortController = registration.abortController;
           backgroundPromise = registration.backgroundSignal.then(() => ({
             type: 'background' as const
           }));
@@ -853,7 +855,8 @@ export const AgentTool = buildTool({
         const summaryTaskId = foregroundTaskId;
         // Acts as the main turn's own controller while the agent runs in the
         // foreground; moved to the task's controller if it is backgrounded.
-        const agentAbort = foregroundTaskId ? createMovableAbortController(toolUseContext.abortController) : undefined;
+        // A task-specific stop reaches it in either phase without stopping the turn.
+        const agentAbort = foregroundAbortController ? createMovableAbortController(toolUseContext.abortController, foregroundAbortController) : undefined;
 
         // Get async iterator for the agent
         const agentIterator = runAgent({
@@ -916,7 +919,7 @@ export const AgentTool = buildTool({
             if (raceResult.type === 'background' && foregroundTaskId) {
               const appState = toolUseContext.getAppState();
               const task = appState.tasks[foregroundTaskId];
-              if (isLocalAgentTask(task) && task.isBackgrounded) {
+              if (isLocalAgentTask(task) && task.isBackgrounded && task.status === 'running') {
                 // Capture the taskId for use in the async callback
                 const backgroundedTaskId = foregroundTaskId;
                 wasBackgrounded = true;
@@ -1057,14 +1060,9 @@ export const AgentTool = buildTool({
               }
             }
 
-            // Process the message from the race result
-            if (raceResult.type !== 'message') {
-              // This shouldn't happen - background case handled above
-              continue;
-            }
-            const {
-              result
-            } = raceResult;
+            // A task can be killed after requesting background but before the
+            // handoff runs. Consume the pending read (and its abort) exactly once.
+            const result = raceResult.type === 'message' ? raceResult.result : await nextMessagePromise;
             if (result.done) break;
             const message = result.value;
             agentMessages.push(message);

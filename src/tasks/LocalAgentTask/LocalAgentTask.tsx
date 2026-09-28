@@ -521,7 +521,7 @@ const backgroundSignalResolvers = new Map<string, () => void>();
 /**
  * Register a foreground agent task that could be backgrounded later.
  * Called when an agent has been running long enough to show the BackgroundHint.
- * @returns object with taskId and backgroundSignal promise
+ * @returns task controller for cancellation and signal for background handoff
  */
 export function registerAgentForeground({
   agentId,
@@ -541,6 +541,7 @@ export function registerAgentForeground({
   toolUseId?: string;
 }): {
   taskId: string;
+  abortController: AbortController;
   backgroundSignal: Promise<void>;
   cancelAutoBackground?: () => void;
 } {
@@ -608,6 +609,7 @@ export function registerAgentForeground({
   }
   return {
     taskId: agentId,
+    abortController,
     backgroundSignal,
     cancelAutoBackground
   };
