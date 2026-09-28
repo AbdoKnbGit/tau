@@ -116,8 +116,11 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
     return supported3P
   }
   const canonical = getCanonicalName(model)
-  // Supported by a subset of Claude 4 models
+  // Supported by a subset of Claude 4 models and every Claude 5 model, where
+  // budget_tokens is a 400.
   if (
+    canonical.includes('opus-5') ||
+    canonical.includes('sonnet-5') ||
     canonical.includes('opus-4-8') ||
     canonical.includes('opus-4-7') ||
     canonical.includes('opus-4-6') ||

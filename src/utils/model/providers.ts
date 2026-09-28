@@ -255,6 +255,16 @@ export function isAnthropicNativeProvider(p: APIProvider): boolean {
   return ['firstParty', 'bedrock', 'vertex', 'foundry'].includes(p)
 }
 
+/**
+ * Claude 5 support covers the Anthropic-native providers only. Elsewhere a
+ * Claude 5 id keeps the reading it had before that support (claude-opus /
+ * claude-sonnet), so no other provider's requests, prompt or prices move;
+ * OpenCode shapes its Claude rows on its own route.
+ */
+export function claude5SupportApplies(): boolean {
+  return isAnthropicNativeProvider(getAPIProvider())
+}
+
 export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
   return getAPIProvider() as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
 }

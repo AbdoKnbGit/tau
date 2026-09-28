@@ -12,6 +12,8 @@
  */
 
 import assert from 'node:assert/strict'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { APIProvider } from './model/providers.js'
 import {
   providerModelSupportsClientSideToolDiscovery,
@@ -118,6 +120,16 @@ test('OpenRouter exposes schemas from the initial request in every mode', () => 
   for (const mode of ['cheap', 'normal', 'full'] as const) {
     assert.equal(shouldDisableToolDeferralForProvider('openrouter', mode), true)
   }
+})
+
+test('OpenCode rows off the chat route get eager schemas', () => {
+  // With no models.dev catalogue on disk the families from OpenCode's own
+  // endpoint tables decide the route.
+  process.env.TAU_OPENCODE_MODELS_DEV_CACHE = join(tmpdir(), `tau-no-catalog-${process.pid}.json`)
+  for (const model of ['claude-opus-5-5', 'gpt-5.5', 'gemini-3.7-flash', 'qwen3.6-plus']) {
+    assert.equal(providerModelSupportsClientSideToolDiscovery('opencode', model), false, model)
+  }
+  assert.equal(providerModelSupportsClientSideToolDiscovery('opencode', 'kimi-k2.6'), true)
 })
 
 if (failed > 0) {

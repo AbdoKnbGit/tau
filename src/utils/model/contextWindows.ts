@@ -22,7 +22,9 @@ const providerContextWindows = new Map<APIProvider, Map<string, number>>()
 
 const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindowMap>> = {
   firstParty: {
+    'claude-opus-5-5': 1_000_000,
     'claude-opus-5': 1_000_000,
+    'claude-sonnet-5': 1_000_000,
     'claude-opus-4-8': 1_000_000,
     'claude-opus-4-7': 1_000_000,
   },
@@ -88,8 +90,10 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     'qwen-3.8-2.4t-a95b': 1_000_000,
   },
   mimo: {
-    'mimo-v2.5-pro': 1_000_000,
-    'mimo-v2.5': 1_000_000,
+    'mimo-v2.6-pro': 1_048_576,
+    'mimo-v2.6-flash': 1_048_576,
+    'mimo-v2.5-pro': 1_048_576,
+    'mimo-v2.5': 1_048_576,
   },
   minimax: {
     'minimax-m2.7': 204_800,

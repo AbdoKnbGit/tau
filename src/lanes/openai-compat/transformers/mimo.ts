@@ -54,7 +54,7 @@ export const mimoTransformer: Transformer = {
   clampMaxTokens(requested: number): number {
     // Highest per-model ceiling MiMo publishes; the per-model clamp in
     // transformRequest narrows it further once the model id is known.
-    return Math.min(Math.max(1, requested), 128_000)
+    return Math.min(Math.max(1, requested), 131_072)
   },
 
   staticCatalog() {

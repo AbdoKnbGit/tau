@@ -87,14 +87,19 @@ function shape(
 
 console.log('MiMo catalog:')
 
-test('ships the two documented chat rows', () => {
+test('ships the documented chat rows, newest first', () => {
   const ids = mimoStaticCatalog().map(m => m.id)
-  eq(ids, ['mimo-v2.5-pro', 'mimo-v2.5'], 'catalog ids')
+  eq(ids, ['mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.5-pro', 'mimo-v2.5'], 'catalog ids')
 })
 
 test('carries the published context windows and output caps', () => {
-  eq(getMimoModelMeta('mimo-v2.5-pro')?.contextWindow, 1_000_000, 'pro context')
-  eq(mimoMaxOutputTokens('mimo-v2.5-pro'), 128_000, 'pro output cap')
+  // models.dev, xiaomi host and every Token Plan region: 1,048,576 / 131,072.
+  for (const id of ['mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.5-pro', 'mimo-v2.5']) {
+    eq(getMimoModelMeta(id)?.contextWindow, 1_048_576, `${id} context`)
+    eq(mimoMaxOutputTokens(id), 131_072, `${id} output cap`)
+  }
+  assert(getMimoModelMeta('mimo-v2.6-pro')?.vision === true, 'v2.6 pro takes images')
+  assert(getMimoModelMeta('mimo-v2.5-pro')?.vision === false, 'v2.5 pro is text only')
 })
 
 test('folds a live /v1/models row in without dropping it', () => {
@@ -108,7 +113,7 @@ test('folds a live /v1/models row in without dropping it', () => {
 console.log('\nMiMo effort ladder:')
 
 test('every chat row exposes low/medium/high and defaults to medium', () => {
-  for (const id of ['mimo-v2.5-pro', 'mimo-v2.5']) {
+  for (const id of ['mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.5-pro', 'mimo-v2.5']) {
     assert(supportsMimoEffortSelection(id), `${id} shows a chip`)
     eq(getMimoEffort(id), 'medium', `${id} default is MiMo's own medium`)
   }
@@ -132,7 +137,7 @@ test('requires the carry-back on every reasoning row', () => {
   // MiMo sets requireReasoningContentOnAssistantMessages for all rows. This
   // is the exact contract whose absence broke the SECOND tool turn on LXD,
   // so it is asserted here rather than discovered in production.
-  for (const id of ['mimo-v2.5-pro', 'mimo-v2.5']) {
+  for (const id of ['mimo-v2.6-pro', 'mimo-v2.6-flash', 'mimo-v2.5-pro', 'mimo-v2.5']) {
     assert(mimoReasoningContentReplayRequired(id), `${id} needs the replay`)
   }
 })
@@ -147,12 +152,13 @@ test('renames max_tokens to max_completion_tokens', () => {
   // MiMo ignores max_tokens outright, silently substituting its own default.
   const body = shape('mimo-v2.5-pro')
   eq(body.max_tokens, undefined, 'max_tokens removed')
-  eq(body.max_completion_tokens, 128_000, 'clamped to the per-model cap')
+  eq(body.max_completion_tokens, 131_072, 'clamped to the per-model cap')
 })
 
 test('clamps the output field per model', () => {
-  eq(shape('mimo-v2.5').max_completion_tokens, 128_000, 'v2.5 cap')
-  eq(mimoTransformer.clampMaxTokens(999_999), 128_000, 'lane-level clamp')
+  eq(shape('mimo-v2.5').max_completion_tokens, 131_072, 'v2.5 cap')
+  eq(shape('mimo-v2.6-flash').max_completion_tokens, 131_072, 'v2.6 flash cap')
+  eq(mimoTransformer.clampMaxTokens(999_999), 131_072, 'lane-level clamp')
 })
 
 test('always sends a reasoning_effort on a reasoning row', () => {

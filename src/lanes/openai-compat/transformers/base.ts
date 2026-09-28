@@ -53,6 +53,11 @@ export interface TransformContext {
   reasoningEffort: 'low' | 'medium' | 'high' | null
   /** Stable claudex session id, used only by providers with cache affinity. */
   sessionId?: string
+  /**
+   * The sub-provider this request goes to. Transformers shared by two hosts
+   * (OpenCode Zen and Go) use it where the hosts publish different ladders.
+   */
+  provider?: string
 }
 
 export interface HeaderContext {

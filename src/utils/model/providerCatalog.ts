@@ -31,6 +31,7 @@ import {
 } from '../../lanes/cursor/catalog.js'
 import { inferProviderLabelFromModelId } from './openrouterCatalog.js'
 import { warmOpenRouterReasoningCatalog } from './openrouterReasoningCatalog.js'
+import { waitForOpencodeModelsDev } from './opencodeModelsDevCatalog.js'
 import {
   VOICE_CONVERSATION_LABEL,
   DEFAULT_LIVE_VOICE,
@@ -46,6 +47,9 @@ import {
   type ClineEffort,
 } from './clineThinking.js'
 import { isClinePassProvider } from './clinePassCatalog.js'
+
+/** Longest the picker waits for OpenCode's ladders when none are on disk. */
+const OPENCODE_MODELS_DEV_WAIT_MS = 8_000
 
 export type BrowsableModelProvider =
   | APIProvider
@@ -257,7 +261,15 @@ export async function loadProviderModels(
 
   await resolveProviderAuth(provider)
 
-  const models = await getProvider(provider).listModels()
+  const [models] = await Promise.all([
+    getProvider(provider).listModels(),
+    // OpenCode's thinking chips are drawn from the ladder models.dev states
+    // per row. Only a machine with no copy yet waits, alongside a fetch the
+    // user is already waiting on; a due refresh otherwise runs behind it.
+    provider === 'opencode' || provider === 'opencodego'
+      ? waitForOpencodeModelsDev(OPENCODE_MODELS_DEV_WAIT_MS)
+      : undefined,
+  ])
   if (provider === 'openrouter') {
     // OpenRouter states each row's reasoning ladder in its own catalogue, and
     // the picker draws those chips synchronously. Warming here — alongside a
@@ -377,9 +389,19 @@ const ANTHROPIC_OPUS_48_EFFORTS = [
 
 const ANTHROPIC_MODELS: readonly AnthropicModelInfo[] = [
   {
+    // Thinking is always on for Opus 5.5 (disabling it is a 400), so effort is
+    // its only control; the API applies `medium` when a request names none.
+    id: 'claude-opus-5-5',
+    name: 'Claude Opus 5.5',
+    tags: ['recommended', 'reasoning'],
+    effortLevels: ANTHROPIC_EXTENDED_EFFORTS,
+    defaultEffort: 'medium',
+    contextWindow: 1_000_000,
+  },
+  {
     id: 'claude-opus-5',
     name: 'Claude Opus 5',
-    tags: ['recommended', 'reasoning'],
+    tags: ['reasoning'],
     effortLevels: ANTHROPIC_EXTENDED_EFFORTS,
     defaultEffort: 'high',
     contextWindow: 1_000_000,
@@ -398,6 +420,7 @@ const ANTHROPIC_MODELS: readonly AnthropicModelInfo[] = [
     tags: ['reasoning'],
     effortLevels: ANTHROPIC_EXTENDED_EFFORTS,
     defaultEffort: 'high',
+    contextWindow: 1_000_000,
   },
   {
     id: 'claude-sonnet-4-6',

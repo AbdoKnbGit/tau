@@ -21,10 +21,12 @@
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 import { opencodeTransformer } from './opencode.js'
+import { openCodeRouteFor } from '../opencode_anthropic_route.js'
 import {
   getOpencodeEffort,
   isOpencodeGlm52,
   supportsOpencodeThinkingSelection,
+  usesOpencodeCatalogEfforts,
 } from '../../../utils/model/opencodeThinking.js'
 
 // Reasoning/thinking controls the Zen transformer may inject. OpenCode Go's
@@ -81,17 +83,20 @@ export const opencodeGoTransformer: Transformer = {
   ): OpenAIChatRequest {
     // Reuse ALL of Zen's request shaping (session affinity, effort injection,
     // cache_control), then reconcile the thinking controls with what Go's
-    // upstreams accept.
-    const result = opencodeTransformer.transformRequest(body, ctx)
+    // upstreams accept. The base reads Go's own ladders from models.dev.
+    const result = opencodeTransformer.transformRequest(body, { ...ctx, provider: 'opencodego' })
     const mutable = result as unknown as Record<string, unknown>
-    if (isOpencodeGlm52(result.model)) {
+    if (usesOpencodeCatalogEfforts('opencodego', result.model)) {
+      // Already shaped from the ladder models.dev publishes for this Go row:
+      // `reasoning_effort` with one of its values, or nothing at Default.
+    } else if (isOpencodeGlm52(result.model)) {
       // GLM-5.2's Go upstream 400s on the zai-style `thinking` object the base
       // transformer stamps; its reasoning is driven by `reasoning_effort`
       // (high|max) — the exact two variants opencode-dev generates for this row.
       // Strip the thinking controls, then translate the picker's effort into
       // reasoning_effort ('default' leaves the upstream server default).
       for (const field of GO_UNSUPPORTED_THINKING_FIELDS) delete mutable[field]
-      const effort = getOpencodeEffort(result.model)
+      const effort = getOpencodeEffort(result.model, 'opencodego')
       if (effort === 'high' || effort === 'max') {
         mutable.reasoning_effort = effort
       }
@@ -124,7 +129,8 @@ export const opencodeGoTransformer: Transformer = {
     models: Array<{ id: string; name?: string }>,
   ): Array<{ id: string; name?: string }> {
     return models.filter(
-      model => !GO_HIDDEN_MODEL_IDS.has(model.id.trim().toLowerCase()),
+      model => !GO_HIDDEN_MODEL_IDS.has(model.id.trim().toLowerCase())
+        && openCodeRouteFor('opencodego', model.id) !== 'systemone',
     )
   },
 }

@@ -23,7 +23,7 @@ import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { getAPIProvider, isThirdPartyProvider } from './providers.js'
+import { claude5SupportApplies, getAPIProvider, isThirdPartyProvider } from './providers.js'
 import { getForcedProvider } from '../forcedProvider.js'
 import { getProviderModelSet, isAgentRouterModelId } from './configs.js'
 import { resolveAgentAliasPolicy } from './agentAliasFallback.js'
@@ -259,10 +259,28 @@ export function getDefaultMainLoopModel(): ModelName {
  * 'us.anthropic.claude-opus-4-6-v1:0'). Does not touch settings, so safe at
  * module top-level (see MODEL_COSTS in modelCost.ts).
  */
-export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
+export function firstPartyNameToCanonical(
+  name: ModelName,
+  claude5 = true,
+): ModelShortName {
   name = name.toLowerCase()
   // Special cases for Claude 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-5 before 4)
+  // The Claude 5 ids need explicit cases: the generic pattern at the bottom
+  // reads 'claude-opus-5' and 'claude-opus-5-5' both as 'claude-opus', which
+  // gave them one price and one set of capabilities. `claude5` false keeps
+  // that generic reading (see getCanonicalName).
+  if (claude5) {
+    if (name.includes('claude-opus-5-5')) {
+      return 'claude-opus-5-5'
+    }
+    if (name.includes('claude-opus-5')) {
+      return 'claude-opus-5'
+    }
+    if (name.includes('claude-sonnet-5')) {
+      return 'claude-sonnet-5'
+    }
+  }
   if (name.includes('claude-opus-4-8')) {
     return 'claude-opus-4-8'
   }
@@ -330,7 +348,18 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
 export function getCanonicalName(fullModelName: ModelName): ModelShortName {
   // Resolve overridden model IDs (e.g. Bedrock ARNs) back to canonical names.
   // resolved is always a 1P-format ID, so firstPartyNameToCanonical can handle it.
-  return firstPartyNameToCanonical(resolveOverriddenModel(fullModelName))
+  const resolved = resolveOverriddenModel(fullModelName)
+  const canonical = firstPartyNameToCanonical(resolved)
+  // Off the Anthropic providers a Claude 5 id keeps its earlier reading, and
+  // with it every capability, price and prompt line keyed on this name.
+  if (isClaude5CanonicalName(canonical) && !claude5SupportApplies()) {
+    return firstPartyNameToCanonical(resolved, false)
+  }
+  return canonical
+}
+
+function isClaude5CanonicalName(name: string): boolean {
+  return name === 'claude-opus-5-5' || name === 'claude-opus-5' || name === 'claude-sonnet-5'
 }
 
 // @[MODEL LAUNCH]: Update the default model description strings shown to users.
@@ -398,6 +427,13 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  * if the model is not recognized as a public model.
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
+  // Claude 5 names show on the Anthropic providers only (claude5SupportApplies).
+  if (model === getModelStrings().opus55 && claude5SupportApplies()) {
+    return 'Opus 5.5'
+  }
+  if (model === getModelStrings().opus5 && claude5SupportApplies()) {
+    return 'Opus 5'
+  }
   switch (model) {
     case getModelStrings().opus48:
       return 'Opus 4.8'
@@ -637,6 +673,12 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   const has1m = modelId.toLowerCase().includes('[1m]')
   const canonical = getCanonicalName(modelId)
 
+  if (canonical.includes('claude-opus-5-5')) {
+    return 'Opus 5.5'
+  }
+  if (canonical.includes('claude-opus-5')) {
+    return 'Opus 5'
+  }
   if (canonical.includes('claude-opus-4-8')) {
     return has1m ? 'Opus 4.8 (with 1M context)' : 'Opus 4.8'
   }

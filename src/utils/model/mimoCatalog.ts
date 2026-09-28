@@ -34,12 +34,33 @@ export interface MimoModelMeta {
   tools: boolean
 }
 
+// Windows and output caps as models.dev states them for the `xiaomi` host and
+// all three Token Plan regions (2026-09-28): 1,048,576 / 131,072 on every row.
+// The 2.6 rows take images, video and audio; 2.5 Pro is text only.
 const MIMO_STATIC_CATALOG: readonly MimoModelMeta[] = [
+  {
+    id: 'mimo-v2.6-pro',
+    name: 'MiMo V2.6 Pro',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 131_072,
+    reasoning: true,
+    vision: true,
+    tools: true,
+  },
+  {
+    id: 'mimo-v2.6-flash',
+    name: 'MiMo V2.6 Flash',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 131_072,
+    reasoning: true,
+    vision: true,
+    tools: true,
+  },
   {
     id: 'mimo-v2.5-pro',
     name: 'MiMo V2.5 Pro',
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
+    contextWindow: 1_048_576,
+    maxOutputTokens: 131_072,
     reasoning: true,
     vision: false,
     tools: true,
@@ -47,8 +68,8 @@ const MIMO_STATIC_CATALOG: readonly MimoModelMeta[] = [
   {
     id: 'mimo-v2.5',
     name: 'MiMo V2.5',
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
+    contextWindow: 1_048_576,
+    maxOutputTokens: 131_072,
     reasoning: true,
     vision: true,
     tools: true,

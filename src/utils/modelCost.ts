@@ -15,6 +15,7 @@ import {
   CLAUDE_OPUS_4_8_CONFIG,
   CLAUDE_OPUS_4_CONFIG,
   CLAUDE_OPUS_5_CONFIG,
+  CLAUDE_OPUS_5_5_CONFIG,
   CLAUDE_SONNET_4_5_CONFIG,
   CLAUDE_SONNET_4_6_CONFIG,
   CLAUDE_SONNET_4_CONFIG,
@@ -65,6 +66,15 @@ export const COST_TIER_5_25 = {
   outputTokens: 25,
   promptCacheWriteTokens: 6.25,
   promptCacheReadTokens: 0.5,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
+// Pricing tier for Opus 5.5: $4 input / $20 output per Mtok
+export const COST_TIER_4_20 = {
+  inputTokens: 4,
+  outputTokens: 20,
+  promptCacheWriteTokens: 5,
+  promptCacheReadTokens: 0.2,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
@@ -219,6 +229,11 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_8_CONFIG.firstParty)]:
     COST_TIER_5_25,
   [firstPartyNameToCanonical(CLAUDE_OPUS_5_CONFIG.firstParty)]: COST_TIER_5_25,
+  [firstPartyNameToCanonical(CLAUDE_OPUS_5_5_CONFIG.firstParty)]: COST_TIER_4_20,
+  // Off the Anthropic providers Claude 5 ids keep their earlier reading,
+  // 'claude-opus' (see getCanonicalName), and the price it had before.
+  [firstPartyNameToCanonical(CLAUDE_OPUS_5_CONFIG.firstParty, false)]:
+    COST_TIER_5_25,
 }
 
 /**

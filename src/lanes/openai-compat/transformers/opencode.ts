@@ -26,11 +26,28 @@ import { randomUUID } from 'node:crypto'
 import type { HeaderContext, Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 import { sanitizeDeepSeekToolCallAdjacency } from './deepseek.js'
+import { openCodeRouteFor } from '../opencode_anthropic_route.js'
 import {
   getOpencodeEffort,
   isOpencodeThinkingModel,
+  resolveOpencodeCatalogEffort,
+  usesOpencodeCatalogEfforts,
   type OpencodeEffort,
 } from '../../../utils/model/opencodeThinking.js'
+
+// Every thinking control the id-based shaping below can put on a body. A row
+// whose ladder comes from models.dev carries none of them, only
+// `reasoning_effort`, exactly as the official client sends it.
+const OPENCODE_THINKING_FIELDS = [
+  'thinking',
+  'reasoning',
+  'reasoning_effort',
+  'enable_thinking',
+  'chat_template_args',
+  'thinking_config',
+  'reasoning_summary',
+  'include',
+] as const
 
 declare const MACRO: { VERSION: string }
 
@@ -213,8 +230,22 @@ export const opencodeTransformer: Transformer = {
     // If the user hasn't picked an effort, we fall through to the gateway's
     // default behavior — opencode-dev itself defaults thinking on for
     // free-tier rows (handled by the store).
-    if (isReasoningCapable(body.model)) {
-      const effort = getOpencodeEffort(body.model)
+    //
+    // A row models.dev describes with an effort ladder skips all of that:
+    // the official client sends `reasoning_effort` with one of the row's own
+    // values on this route and nothing else, and Default sends nothing.
+    const provider = ctx.provider ?? 'opencode'
+    if (usesOpencodeCatalogEfforts(provider, body.model)) {
+      const bag = body as unknown as Record<string, unknown>
+      for (const field of OPENCODE_THINKING_FIELDS) delete bag[field]
+      const effort = resolveOpencodeCatalogEffort(
+        provider,
+        body.model,
+        ctx.isReasoning ? ctx.reasoningEffort : null,
+      )
+      if (effort) body.reasoning_effort = effort
+    } else if (isReasoningCapable(body.model)) {
+      const effort = getOpencodeEffort(body.model, provider)
       const m = body.model.toLowerCase()
       if (effort !== 'default') {
         // Anthropic upstream — `thinking.budget_tokens`. The gateway converts
@@ -321,6 +352,14 @@ export const opencodeTransformer: Transformer = {
 
     body.messages = sanitizeDeepSeekToolCallAdjacency(body.messages)
     return body
+  },
+
+  filterModelCatalog(
+    models: Array<{ id: string; name?: string }>,
+  ): Array<{ id: string; name?: string }> {
+    // TypeSafe's Jev ("System One") rows are served only on /systemone, a
+    // typed-decision API rather than a chat one, so they cannot run here.
+    return models.filter(model => openCodeRouteFor('opencode', model.id) !== 'systemone')
   },
 
   schemaDropList(): Set<string> {

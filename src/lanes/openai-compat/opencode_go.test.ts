@@ -9,7 +9,14 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { APIConnectionError } from '@anthropic-ai/sdk'
-import type { AnthropicStreamEvent } from '../../services/api/providers/base_provider.js'
+import type {
+  AnthropicStreamEvent,
+  ProviderMessage,
+} from '../../services/api/providers/base_provider.js'
+import {
+  _resetOpencodeModelsDevForTests,
+  deriveOpencodeModelsDevCache,
+} from '../../utils/model/opencodeModelsDevCatalog.js'
 import { OpenAICompatLane } from './loop.js'
 
 type CapturedRequest = {
@@ -22,6 +29,7 @@ type CapturedRequest = {
 async function captureRequest(
   model: string,
   provider: 'opencode' | 'opencodego' = 'opencodego',
+  messages: ProviderMessage[] = [{ role: 'user', content: 'hey' }],
 ): Promise<{ request: CapturedRequest; events: AnthropicStreamEvent[] }> {
   const lane = new OpenAICompatLane()
   const baseUrl = provider === 'opencodego'
@@ -121,7 +129,7 @@ async function captureRequest(
     const events: AnthropicStreamEvent[] = []
     const stream = lane.streamAsProvider({
       model,
-      messages: [{ role: 'user', content: 'hey' }],
+      messages,
       system: 'You are a coding agent.',
       tools: [],
       max_tokens: 1024,
@@ -149,6 +157,8 @@ async function main(): Promise<void> {
     mkdtempSync(join(tmpdir(), 'tau-opencode-go-')),
     'store.json',
   )
+  // Likewise the models.dev catalogue: none unless a check installs one.
+  _resetOpencodeModelsDevForTests(null)
 
   const qwen = await captureRequest('qwen3.7-max')
   assert.equal(qwen.request.url, 'https://opencode.ai/zen/go/v1/messages')
@@ -354,6 +364,37 @@ async function main(): Promise<void> {
   // ("Extra inputs are not permitted, field: 'usage'"), so the Go transformer
   // drops it (the standard stream_options.include_usage still carries usage).
   assert.equal(glm.request.body.usage, undefined)
+
+  // Kimi K2.6 on Go publishes no thinking control, but models.dev names
+  // `reasoning_content` as its replay field. The reasoning a tool turn
+  // produced has to go back with that turn at Default too, or the next tool
+  // turn can be refused.
+  _resetOpencodeModelsDevForTests(deriveOpencodeModelsDevCache({
+    'opencode-go': {
+      models: {
+        'kimi-k2.6': { reasoning: true, reasoning_options: [], interleaved: { field: 'reasoning_content' } },
+      },
+    },
+  }, Date.now()))
+  try {
+    const kimi = await captureRequest('kimi-k2.6', 'opencodego', [
+      { role: 'user', content: 'list the files' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'I should run ls.', signature: '' },
+          { type: 'tool_use', id: 'call_1', name: 'Bash', input: { command: 'ls' } },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'a.txt' }] },
+    ])
+    const assistant = kimi.request.body.messages.find((message: any) => message.role === 'assistant')
+    assert.equal(assistant?.reasoning_content, 'I should run ls.')
+    assert.equal(kimi.request.body.thinking, undefined)
+    assert.equal(kimi.request.body.reasoning_effort, undefined)
+  } finally {
+    _resetOpencodeModelsDevForTests(null)
+  }
 
   console.log('OpenCode Go focused transport tests passed')
 }

@@ -49,10 +49,17 @@ import {
 import { setGlmThinking } from '../../utils/model/glmThinking.js'
 import {
   _resetOpencodeThinkingForTests,
+  getOpencodeEffort,
+  getOpencodeEffortLabel,
   opencodeEffortLevelsFor,
+  opencodeReplaysReasoningContent,
   setOpencodeEffort,
   supportsOpencodeThinkingSelection,
 } from '../../utils/model/opencodeThinking.js'
+import {
+  _resetOpencodeModelsDevForTests,
+  deriveOpencodeModelsDevCache,
+} from '../../utils/model/opencodeModelsDevCatalog.js'
 import {
   _resetClineThinkingForTests,
   setClineEffort,
@@ -157,8 +164,45 @@ function withTempOpencodeThinkingStore(fn: () => void): void {
   }
 }
 
+// The reasoning fields of the models.dev `opencode` (Zen) and `opencode-go`
+// blocks for a few rows, as published 2026-09-28.
+const OPENCODE_MODELS_DEV_FIXTURE = {
+  opencode: {
+    models: {
+      'claude-opus-5-5': { reasoning: true, reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high', 'xhigh', 'max'] }] },
+      'gpt-6-luna': { reasoning: true, reasoning_options: [{ type: 'effort', values: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] }] },
+      'glm-5.2': { reasoning: true, reasoning_options: [{ type: 'effort', values: ['high', 'max'] }], interleaved: { field: 'reasoning_content' } },
+      'glm-5.3': { reasoning: true, reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }], interleaved: { field: 'reasoning_content' } },
+      'glm-5.1': { reasoning: true, reasoning_options: [{ type: 'toggle' }], interleaved: { field: 'reasoning_content' } },
+      'deepseek-v4-flash': { reasoning: true, reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }], interleaved: { field: 'reasoning_content' } },
+      'qwen3.8-max': { reasoning: true, reasoning_options: [{ type: 'toggle' }] },
+    },
+  },
+  'opencode-go': {
+    models: {
+      'glm-5.2': { reasoning: true, reasoning_options: [{ type: 'effort', values: ['high', 'max'] }], interleaved: { field: 'reasoning_content' } },
+      'kimi-k3': { reasoning: true, reasoning_options: [{ type: 'effort', values: ['max'] }], interleaved: { field: 'reasoning_content' } },
+      'kimi-k2.6': { reasoning: true, reasoning_options: [], interleaved: { field: 'reasoning_content' } },
+      'qwen3.8-max': { reasoning: true, reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'medium', 'xhigh'] }, { type: 'budget_tokens', max: 262144 }] },
+      'qwen3.7-max': { reasoning: true, reasoning_options: [{ type: 'toggle' }, { type: 'budget_tokens', max: 262144 }] },
+    },
+  },
+}
+
+function withOpencodeModelsDev(fn: () => void): void {
+  _resetOpencodeModelsDevForTests(deriveOpencodeModelsDevCache(OPENCODE_MODELS_DEV_FIXTURE, Date.now()))
+  try {
+    withTempOpencodeThinkingStore(fn)
+  } finally {
+    _resetOpencodeModelsDevForTests(null)
+  }
+}
+
 async function main(): Promise<void> {
   console.log('openai-compat transformers:')
+  // No models.dev catalogue unless a test installs one: a developer's own
+  // downloaded copy must not decide the id-based OpenCode expectations.
+  _resetOpencodeModelsDevForTests(null)
 
   // ── Registry invariants ─────────────────────────────────────────
   const ids: Array<Transformer['id']> = [
@@ -244,6 +288,90 @@ async function main(): Promise<void> {
     const body = mkBody('glm-5.2')
     TRANSFORMERS.opencode.transformRequest(body, mkCtx('glm-5.2', false))
     assert(body.thinking !== undefined, 'Zen GLM thinking behavior was unexpectedly changed')
+  })
+
+  test('OpenCode ladders come from models.dev, per host', () => {
+    withOpencodeModelsDev(() => {
+      const levels = (model: string, provider: string) =>
+        opencodeEffortLevelsFor(model, provider).join(',')
+      assert(supportsOpencodeThinkingSelection('opencode', 'claude-opus-5-5'), 'Opus 5.5 on Zen gains a chip')
+      assert(levels('claude-opus-5-5', 'opencode') === 'default,low,medium,high,xhigh,max',
+        `opus 5.5: ${levels('claude-opus-5-5', 'opencode')}`)
+      assert(levels('gpt-6-luna', 'opencode') === 'default,none,low,medium,high,xhigh,max',
+        `gpt-6-luna: ${levels('gpt-6-luna', 'opencode')}`)
+      assert(levels('kimi-k3', 'opencodego') === 'default,max', `kimi-k3: ${levels('kimi-k3', 'opencodego')}`)
+      assert(levels('glm-5.3', 'opencode') === 'default,low,high,max', `glm-5.3: ${levels('glm-5.3', 'opencode')}`)
+      // Zen publishes only a switch for Qwen3.8 Max; Go publishes efforts.
+      assert(levels('qwen3.8-max', 'opencode') === 'default,low,medium,high', 'Zen keeps the id-based ladder')
+      assert(levels('qwen3.8-max', 'opencodego') === 'default,low,medium,xhigh', 'Go uses its own ladder')
+      assert(!supportsOpencodeThinkingSelection('opencodego', 'qwen3.7-max'), 'Qwen3.7 Max on Go stays hidden')
+      assert(!supportsOpencodeThinkingSelection('opencodego', 'kimi-k2.6'), 'nothing to pick on Go kimi-k2.6')
+      assert(getOpencodeEffortLabel('xhigh') === 'xHigh', `xhigh label: ${getOpencodeEffortLabel('xhigh')}`)
+    })
+  })
+
+  test('OpenCode rows with a published ladder send reasoning_effort and nothing else', () => {
+    withOpencodeModelsDev(() => {
+      const shaped = (model: string, provider: 'opencode' | 'opencodego', isReasoning = false) => {
+        const body = mkBody(model) as OpenAIChatRequest & Record<string, any>
+        TRANSFORMERS[provider].transformRequest(body, { ...mkCtx(model, isReasoning), provider })
+        return body
+      }
+      // Default sends nothing, so the upstream's own default applies.
+      for (const model of ['glm-5.3', 'glm-5.2']) {
+        const body = shaped(model, 'opencode')
+        assert(body.reasoning_effort === undefined && body.thinking === undefined && body.reasoning === undefined,
+          `${model} default: ${JSON.stringify(body)}`)
+      }
+
+      setOpencodeEffort('claude-opus-5-5', 'xhigh', 'opencode')
+      const opus = shaped('claude-opus-5-5', 'opencode')
+      assert(opus.reasoning_effort === 'xhigh', `opus reasoning_effort=${opus.reasoning_effort}`)
+      assert(opus.thinking === undefined && opus.reasoning === undefined, `opus extra fields: ${JSON.stringify(opus)}`)
+
+      setOpencodeEffort('gpt-6-luna', 'none', 'opencode')
+      const gpt = shaped('gpt-6-luna', 'opencode')
+      assert(gpt.reasoning_effort === 'none', `gpt reasoning_effort=${gpt.reasoning_effort}`)
+      assert(gpt.reasoning_summary === undefined && gpt.include === undefined,
+        'no Responses-only fields on a chat-completions body')
+
+      setOpencodeEffort('glm-5.2', 'max', 'opencodego')
+      const go = shaped('glm-5.2', 'opencodego')
+      assert(go.reasoning_effort === 'max' && go.thinking === undefined, `go glm-5.2: ${JSON.stringify(go)}`)
+
+      // On Default the session's thinking maps onto a published value:
+      // medium sits between low and high, and the tie goes to high.
+      const session = shaped('glm-5.3', 'opencode', true)
+      assert(session.reasoning_effort === 'high', `session glm-5.3: ${session.reasoning_effort}`)
+    })
+  })
+
+  test('OpenCode picks stored against an older ladder snap to a published stop', () => {
+    withOpencodeModelsDev(() => {
+      _resetOpencodeThinkingForTests({ 'deepseek-v4-flash': 'medium' })
+      assert(getOpencodeEffort('deepseek-v4-flash', 'opencode') === 'high',
+        `stored medium: ${getOpencodeEffort('deepseek-v4-flash', 'opencode')}`)
+      // Nothing stored: the row starts at Default, not the old free-tier Medium.
+      _resetOpencodeThinkingForTests({})
+      assert(getOpencodeEffort('deepseek-v4-flash', 'opencode') === 'default',
+        `nothing stored: ${getOpencodeEffort('deepseek-v4-flash', 'opencode')}`)
+    })
+  })
+
+  test('OpenCode reasoning_content replay follows the row, not the chip', () => {
+    withOpencodeModelsDev(() => {
+      assert(opencodeReplaysReasoningContent('opencodego', 'kimi-k2.6'), 'kimi-k2.6 replays at Default')
+      assert(opencodeReplaysReasoningContent('opencode', 'glm-5.3'), 'glm-5.3 replays at Default')
+      setOpencodeEffort('claude-opus-5-5', 'high', 'opencode')
+      assert(!opencodeReplaysReasoningContent('opencode', 'claude-opus-5-5'),
+        'Opus 5.5 has no reasoning_content contract')
+    })
+    // Without the catalogue the old rule stands: replay only while picked.
+    withTempOpencodeThinkingStore(() => {
+      assert(!opencodeReplaysReasoningContent('opencode', 'glm-5.1'), 'glm-5.1 at Default, no catalogue')
+      setOpencodeEffort('glm-5.1', 'high')
+      assert(opencodeReplaysReasoningContent('opencode', 'glm-5.1'), 'glm-5.1 picked, no catalogue')
+    })
   })
 
   test('OpenCode Go hides only the requested MiMo model IDs', () => {

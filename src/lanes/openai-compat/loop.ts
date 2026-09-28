@@ -37,9 +37,16 @@ import { filterToSingleShell } from './single_shell.js'
 import { recordProviderRateLimits } from '../../services/api/providerRateLimits.js'
 import { selectOpenAICompatToolsForRequest } from './lazy_tools.js'
 import {
-  isOpenCodeAnthropicRouteModel,
   OPENCODE_ANTHROPIC_ROUTE_MODELS,
+  openCodeRouteFor,
 } from './opencode_anthropic_route.js'
+import { buildOpenCodeGeminiBody, OpenCodeGeminiStream } from './opencode_google.js'
+import {
+  buildOpenCodeResponsesBody,
+  OPENCODE_MAX_OUTPUT_TOKENS,
+  OpenCodeResponsesStream,
+} from './opencode_responses.js'
+import { readSseDataPayloads } from './sse_payloads.js'
 import { recordCompatCacheDebug } from './cache_debug.js'
 import {
   freezeOpenRouterSystem,
@@ -62,7 +69,7 @@ import {
   isOutputCapTruncation,
   laneStopReason,
 } from '../shared/truncation.js'
-import { renderMediaForTextLane } from '../shared/media_extract.js'
+import { renderMediaForTextLane, substituteUnsendableMedia } from '../shared/media_extract.js'
 import { walkSchemaByPosition } from '../shared/schema_positions.js'
 import { decideImageSupport, recordModelVision } from '../shared/vision_capability.js'
 import { forgetOpenRouterServedProvider, recordOpenRouterServedProvider } from './transformers/openrouter.js'
@@ -101,8 +108,12 @@ import { isDirectProvider, isDirectThinkingProvider, listDirectProviderModels } 
 import {
   getOpencodeEffort,
   isOpencodeThinkingModel,
+  opencodeReplaysReasoningContent,
+  resolveOpencodeRouteEffort,
   supportsOpencodeThinkingSelection,
+  usesOpencodeCatalogEfforts,
 } from '../../utils/model/opencodeThinking.js'
+import { getOpencodeModelMeta } from '../../utils/model/opencodeModelsDevCatalog.js'
 import { cloudflareReasoningContentReplayRequired } from '../../utils/model/cloudflareThinking.js'
 import { lxdReasoningContentReplayRequired } from '../../utils/model/lxdThinking.js'
 import { mimoReasoningContentReplayRequired } from '../../utils/model/mimoThinking.js'
@@ -473,37 +484,45 @@ export class OpenAICompatLane implements Lane {
       ? sessionId
       : undefined
 
-    // OpenCode Zen/Go serve the qwen rows through their Anthropic-format
-    // `/messages` route (models.dev marks them `provider.npm ===
-    // "@ai-sdk/anthropic"`; the official client speaks Anthropic shape to
-    // them). Two things only work there:
-    //   1. qwen3.7-max isn't served on `/chat/completions` at all — the
-    //      oa-compat route rejects it before reaching an upstream.
-    //   2. Explicit prompt caching: the alibaba upstream behind the qwen rows
-    //      caches ONLY via Anthropic cache_control breakpoints, and the
-    //      gateway's oa-compat→anthropic converter strips content-level
-    //      fields, so `/chat/completions` can never produce a qwen cache hit
-    //      (live-verified 2026-07-11: /messages + breakpoints → 6306-token
-    //      cache write cold / 6306-token cache read warm; oa-compat → zero).
-    if (
-      (provider === 'opencode' || provider === 'opencodego')
-      && isOpenCodeAnthropicRouteModel(model)
-    ) {
-      return yield* streamOpenCodeAnthropicRoute(
-        provider,
-        cfg,
-        {
+    // OpenCode Zen/Go: each row goes to the gateway route the official client
+    // uses for it (opencode_anthropic_route.ts). The gateway forwards bodies
+    // untouched and 500s on a route that does not match the row's upstream,
+    // so Claude, GPT, Grok, Muse Spark and Gemini never work over
+    // `/chat/completions`. The qwen rows are pinned to `/messages` for a
+    // second reason: their alibaba upstream caches ONLY via Anthropic
+    // cache_control breakpoints (live-verified 2026-07-11: /messages +
+    // breakpoints → 6306-token cache write cold / 6306-token cache read warm;
+    // oa-compat → zero).
+    if (provider === 'opencode' || provider === 'opencodego') {
+      const route = openCodeRouteFor(provider, model)
+      const routeParams = {
+        model,
+        messages,
+        system,
+        tools,
+        max_tokens,
+        temperature,
+        stop_sequences,
+        signal,
+        thinking,
+      }
+      if (route === 'messages') {
+        return yield* streamOpenCodeAnthropicRoute(provider, cfg, routeParams, cacheSessionId)
+      }
+      if (route === 'responses') {
+        return yield* streamOpenCodeResponsesRoute(provider, cfg, routeParams, cacheSessionId)
+      }
+      if (route === 'google') {
+        return yield* streamOpenCodeGoogleRoute(provider, cfg, routeParams, cacheSessionId)
+      }
+      if (route === 'systemone') {
+        return yield* emitOpenCodeRouteNotice(
           model,
-          messages,
-          system,
-          tools,
-          max_tokens,
-          temperature,
-          stop_sequences,
-          signal,
-        },
-        cacheSessionId,
-      )
+          `${model} is a TypeSafe System One model. OpenCode serves it only on /systemone, `
+            + 'a typed-decision API rather than a chat one, so it cannot run as the model here. '
+            + 'Pick another model with /models.',
+        )
+      }
     }
 
     // Assemble system text. We keep it simple for Phase-1 (caller's text).
@@ -1778,16 +1797,11 @@ function* emitErrorText(text: string): Generator<AnthropicStreamEvent> {
   yield { type: 'content_block_stop', index: 0 }
 }
 
-// Rows served via the gateway's Anthropic-format `/messages` route. Source of
-// truth: models.dev per-model `provider.npm === "@ai-sdk/anthropic"` on the
-// opencode / opencode-go catalogs. The `-free` variants share the base row.
-// (The minimax rows carry the same override; they stay on oa-compat here until
-// their /messages behavior is verified — their reasoning shaping differs.)
-// These rows do NOT go through the Chat Completions conversion at all: they
-// are forwarded as Anthropic-format messages verbatim, so image blocks reach
-// the model untouched. Recording that here is a fact about our own transport,
-// not a guess about the model, and it stops the attachment prefetch paying
-// for OCR whose output the route would never use.
+// The pinned qwen rows are forwarded as Anthropic-format messages, so image
+// blocks reach the model untouched. Recording that here is a fact about our
+// own transport, not a guess about the model, and it stops the attachment
+// prefetch paying for OCR whose output the route would never use. Rows
+// models.dev describes answer from its `modalities` (openCodeRouteCanSeeImages).
 for (const routeModel of OPENCODE_ANTHROPIC_ROUTE_MODELS) {
   recordModelVision('opencode', routeModel, true)
   recordModelVision('opencodego', routeModel, true)
@@ -1839,27 +1853,228 @@ function stampOpenCodeAnthropicCacheBreakpoints(
   return { system: clonedSystem, messages: clonedMessages }
 }
 
+type OpenCodeRouteParams = Pick<
+  LaneProviderCallParams,
+  'model' | 'messages' | 'system' | 'tools' | 'max_tokens'
+  | 'temperature' | 'stop_sequences' | 'signal' | 'thinking'
+>
+
+/** The session's own thinking level, when its thinking is on. */
+function sessionEffortOf(
+  thinking: LaneProviderCallParams['thinking'] | undefined,
+): 'low' | 'medium' | 'high' | null {
+  return resolveReasoningEffort(thinking) ?? null
+}
+
+/** The system prompt as one string, for the routes that take it that way. */
+function routeSystemText(system: LaneProviderCallParams['system']): string {
+  const text = typeof system === 'string'
+    ? system
+    : (system ?? []).map(block => block.text).join('\n\n')
+  return stripSystemDynamicBoundary(text)
+}
+
+/**
+ * Whether a request to this row may carry images. What models.dev says about
+ * the row's input is recorded as catalog evidence, and the answer comes from
+ * decideImageSupport, which freezes it per process so a conversation's images
+ * cannot switch rendering under a live cache.
+ */
+function openCodeRouteCanSeeImages(provider: string, model: string): boolean {
+  const meta = getOpencodeModelMeta(provider, model)
+  if (meta) recordModelVision(provider, model, meta.imageInput)
+  return decideImageSupport(provider, model)
+}
+
+/**
+ * History as the /messages route sends it, the way @ai-sdk/anthropic builds
+ * it: a thinking block without a signature is left out (another provider's
+ * reasoning carries none, and Anthropic rejects one it cannot verify), a
+ * redacted block needs its data, and Tau's own `_`-prefixed bookkeeping
+ * (Gemini thought signatures, OpenRouter state, decode status) stays home.
+ * Images go as images only where the model takes them.
+ */
+function prepareOpenCodeAnthropicMessages(
+  messages: LaneProviderCallParams['messages'],
+  canSeeImages: boolean,
+): LaneProviderCallParams['messages'] {
+  const source = canSeeImages ? messages : substituteUnsendableMedia(messages)
+  const clean = (block: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(block)) {
+      if (key.startsWith('_')) continue
+      out[key] = key === 'content' && Array.isArray(value)
+        ? value.map(child =>
+          child && typeof child === 'object' ? clean(child as Record<string, unknown>) : child)
+        : value
+    }
+    return out
+  }
+  const out: LaneProviderCallParams['messages'] = []
+  for (const message of source) {
+    if (typeof message.content === 'string') {
+      out.push(message)
+      continue
+    }
+    const content = message.content
+      .filter(block => {
+        if (block.type === 'thinking') return typeof block.signature === 'string' && block.signature.length > 0
+        if (block.type === 'redacted_thinking') return typeof (block as { data?: unknown }).data === 'string'
+        return true
+      })
+      .map(block => clean(block as unknown as Record<string, unknown>) as unknown as typeof block)
+    if (content.length === 0 && message.role === 'assistant') continue
+    out.push({ ...message, content })
+  }
+  return out
+}
+
+function legacyThinkingBudget(effort: string): number {
+  return effort === 'low' ? 4000 : effort === 'medium' ? 8000 : 16000
+}
+
+/**
+ * Claude's thinking shape by version, as the official client picks it
+ * (anthropicUsesModernAdaptiveThinking / anthropicAdaptiveEfforts): 4.7 and
+ * later think adaptively and return empty thinking text unless
+ * `display: 'summarized'`, 4.6 thinks adaptively with summaries by default,
+ * and older rows take a token budget, which 4.7 and later reject.
+ */
+function claudeThinkingKind(id: string): 'modern' | 'adaptive' | 'budget' {
+  const version = /claude-(?:[a-z]+-)?(\d+)(?:[.-](\d{1,2}))?(?:[.@-]|$)/.exec(id)
+  if (!version) return 'modern'
+  const major = Number(version[1])
+  const minor = Number(version[2] ?? 0)
+  if (major > 4 || (major === 4 && minor >= 7)) return 'modern'
+  return major === 4 && minor === 6 ? 'adaptive' : 'budget'
+}
+
+/**
+ * The thinking fields a /messages request carries, as the official client
+ * sends them. Claude: adaptive thinking plus `output_config.effort` (Opus 4.5:
+ * a 16K budget plus the effort; older rows: a budget), and never a
+ * temperature. MiniMax M3: adaptive thinking, OpenCode's default there.
+ * Other rows with a published ladder (Qwen3.8 Flash): the effort alone. The
+ * pinned qwen rows keep their per-pick budget.
+ */
+function applyOpenCodeAnthropicThinking(
+  body: Record<string, unknown>,
+  provider: string,
+  model: string,
+  sessionEffort: 'low' | 'medium' | 'high' | null,
+): void {
+  const id = model.trim().toLowerCase()
+  let budget: number
+  if (id.startsWith('claude-')) {
+    delete body.temperature
+    const effort = resolveOpencodeRouteEffort(provider, model, sessionEffort)
+    if (!effort) return
+    const kind = claudeThinkingKind(id)
+    if (kind !== 'budget') {
+      body.thinking = { type: 'adaptive', ...(kind === 'modern' && { display: 'summarized' }) }
+      body.output_config = { effort }
+      return
+    }
+    if (id.includes('opus-4-5')) {
+      budget = 16_000
+      body.output_config = { effort }
+    } else {
+      budget = legacyThinkingBudget(effort)
+    }
+  } else if (id.startsWith('minimax-m3')) {
+    body.thinking = { type: 'adaptive' }
+    return
+  } else if (usesOpencodeCatalogEfforts(provider, model)) {
+    const effort = resolveOpencodeRouteEffort(provider, model, sessionEffort)
+    if (effort) body.output_config = { effort }
+    return
+  } else {
+    // qwen3.7-max on Go exposes no effort selection
+    // (supportsOpencodeThinkingSelection is false there) and keeps its
+    // server default.
+    if (!supportsOpencodeThinkingSelection(provider, model)) return
+    const effort = getOpencodeEffort(model, provider)
+    if (effort === 'default') return
+    budget = legacyThinkingBudget(effort)
+  }
+  body.thinking = { type: 'enabled', budget_tokens: budget }
+  // The budget is spent out of max_tokens, so it goes on top, as the SDK does.
+  body.max_tokens = Math.min(Number(body.max_tokens) + budget, 64_000)
+}
+
+/**
+ * POST to an OpenCode route. Its upstreams intermittently 500 with
+ * "InternalError: Request timed out." before any bytes arrive; the AI SDK
+ * retries 5xx by default, so the official client never surfaces these, and
+ * this mirrors that. Retrying is safe: nothing has been yielded until a 200
+ * arrives. 429s are NOT retried: the gateway's quota errors carry retry-after
+ * semantics the user should see immediately. A connection failure is thrown
+ * for the shared request retry layer rather than multiplied here.
+ */
+async function postOpenCodeRoute(
+  provider: 'opencode' | 'opencodego',
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  signal: AbortSignal | undefined,
+): Promise<Response> {
+  const RETRYABLE_STATUSES = new Set([500, 502, 503, 504, 529])
+  const MAX_STATUS_RETRIES = 3
+  let response: Response | null = null
+  let connectionError: unknown = null
+  for (let attempt = 0; attempt <= MAX_STATUS_RETRIES; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, 500 * 2 ** (attempt - 1)))
+      if (signal?.aborted) break
+    }
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal,
+      })
+      connectionError = null
+    } catch (error) {
+      connectionError = error
+      response = null
+      break
+    }
+    if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_STATUS_RETRIES) {
+      await response.text().catch(() => {})
+      continue
+    }
+    break
+  }
+
+  if (!response) {
+    if (isAbortError(connectionError, signal)) throw connectionError
+    throw createProviderConnectionError(provider, connectionError)
+  }
+  recordProviderRateLimits(provider, response.headers)
+  return response
+}
+
 async function* streamOpenCodeAnthropicRoute(
   provider: 'opencode' | 'opencodego',
   cfg: { apiKey: string; baseUrl: string },
-  params: Pick<
-    LaneProviderCallParams,
-    'model' | 'messages' | 'system' | 'tools' | 'max_tokens'
-    | 'temperature' | 'stop_sequences' | 'signal'
-  >,
+  params: OpenCodeRouteParams,
   sessionId?: string,
 ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
-  // The whole point of this route: the alibaba upstream only caches via
-  // explicit cache_control breakpoints, verbatim-forwarded by the gateway.
+  // Cache breakpoints matter most here: the alibaba upstream behind the qwen
+  // rows only caches via explicit cache_control, forwarded verbatim.
   const { system, messages } = stampOpenCodeAnthropicCacheBreakpoints(
     params.system,
-    params.messages,
+    prepareOpenCodeAnthropicMessages(
+      params.messages,
+      openCodeRouteCanSeeImages(provider, params.model),
+    ),
   )
 
   const body: Record<string, unknown> = {
     model: params.model,
     messages,
-    max_tokens: params.max_tokens,
+    max_tokens: Math.min(params.max_tokens, OPENCODE_MAX_OUTPUT_TOKENS),
     stream: true,
   }
 
@@ -1871,20 +2086,7 @@ async function* streamOpenCodeAnthropicRoute(
   if (params.tools.length > 0) body.tools = params.tools
   if (params.temperature !== undefined) body.temperature = params.temperature
   if (params.stop_sequences?.length) body.stop_sequences = params.stop_sequences
-
-  // Per-model effort → Anthropic thinking budget (matches the budgets the
-  // oa-compat transformer uses). qwen3.7-max exposes no effort selection
-  // (supportsOpencodeThinkingSelection is false there) and keeps its server
-  // default.
-  if (supportsOpencodeThinkingSelection(provider, params.model)) {
-    const effort = getOpencodeEffort(params.model)
-    if (effort !== 'default') {
-      body.thinking = {
-        type: 'enabled',
-        budget_tokens: effort === 'low' ? 4000 : effort === 'medium' ? 8000 : 16000,
-      }
-    }
-  }
+  applyOpenCodeAnthropicThinking(body, provider, params.model, sessionEffortOf(params.thinking))
 
   // `/messages` authenticates with x-api-key. Keep the same OpenCode
   // affinity/rate-limit headers as the compat route.
@@ -1916,51 +2118,7 @@ async function* streamOpenCodeAnthropicRoute(
     },
   })
 
-  // The alibaba upstream behind this route intermittently 500s with
-  // "InternalError: Request timed out." before any bytes arrive. The official
-  // client never surfaces these because the AI SDK retries 5xx by default;
-  // mirror that. Retrying is safe here — nothing has been yielded until a 200
-  // arrives. 429s are NOT retried: the gateway's quota errors carry
-  // retry-after semantics the user should see immediately.
-  const RETRYABLE_STATUSES = new Set([500, 502, 503, 504, 529])
-  const MAX_STATUS_RETRIES = 3
-  let response: Response | null = null
-  let connectionError: unknown = null
-  for (let attempt = 0; attempt <= MAX_STATUS_RETRIES; attempt += 1) {
-    if (attempt > 0) {
-      await new Promise(resolve => setTimeout(resolve, 500 * 2 ** (attempt - 1)))
-      if (params.signal?.aborted) break
-    }
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: params.signal,
-      })
-      connectionError = null
-    } catch (error) {
-      connectionError = error
-      response = null
-      if (params.signal?.aborted) break
-      // Connection failures are retried by the shared request retry layer.
-      // Avoid multiplying its attempts inside this route; the status retry
-      // loop below remains useful for OpenCode's intermittent upstream 5xxs.
-      break
-    }
-    if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_STATUS_RETRIES) {
-      await response.text().catch(() => {})
-      continue
-    }
-    break
-  }
-
-  if (!response) {
-    if (isAbortError(connectionError, params.signal)) throw connectionError
-    throw createProviderConnectionError(provider, connectionError)
-  }
-
-  recordProviderRateLimits(provider, response.headers)
+  const response = await postOpenCodeRoute(provider, url, headers, body, params.signal)
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '')
@@ -2099,6 +2257,143 @@ async function* streamOpenCodeAnthropicRoute(
     cache_write_tokens: cacheWriteTokens,
     thinking_tokens: 0,
   }
+}
+
+/** A message that is only a notice, for requests no route can serve. */
+function* emitOpenCodeRouteNotice(
+  model: string,
+  text: string,
+): Generator<AnthropicStreamEvent, NormalizedUsage> {
+  yield {
+    type: 'message_start',
+    message: {
+      id: `compat-${Date.now()}`,
+      type: 'message',
+      role: 'assistant',
+      content: [],
+      model,
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }
+  yield* emitErrorText(text)
+  yield {
+    type: 'message_delta',
+    delta: { stop_reason: 'end_turn' },
+    usage: { output_tokens: 0 },
+  }
+  yield { type: 'message_stop' }
+  return blankUsage(0, 0, 0, 0)
+}
+
+/** What the /responses and Gemini stream translators share. */
+interface OpenCodeRouteStream {
+  push(event: Record<string, any>): AnthropicStreamEvent[]
+  fail(text: string): AnthropicStreamEvent[]
+  finish(): AnthropicStreamEvent[]
+  failure: string | null
+  readonly usage: NormalizedUsage
+}
+
+async function* runOpenCodeRouteStream(
+  provider: 'opencode' | 'opencodego',
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  params: Pick<OpenCodeRouteParams, 'model' | 'signal'>,
+  stream: OpenCodeRouteStream,
+): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
+  const response = await postOpenCodeRoute(provider, url, headers, body, params.signal)
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '')
+    throwRetryableProviderHttpError(provider, response, errText)
+    return yield* emitOpenCodeRouteNotice(
+      params.model,
+      formatProviderHttpError(provider, response.status, errText, false, params.model),
+    )
+  }
+  if (!response.body) {
+    return yield* emitOpenCodeRouteNotice(params.model, `${provider} API error: empty response body`)
+  }
+
+  const responseBody = response.body
+  for await (const payload of readSseDataPayloads(responseBody)) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(payload)
+    } catch {
+      continue
+    }
+    if (!parsed || typeof parsed !== 'object') continue
+    for (const event of stream.push(parsed as Record<string, any>)) yield event
+    if (stream.failure) break
+  }
+  if (stream.failure) {
+    await responseBody.cancel().catch(() => {})
+    for (const event of stream.fail(`${provider} API stream error: ${stream.failure}`)) yield event
+  }
+  for (const event of stream.finish()) yield event
+  return stream.usage
+}
+
+async function* streamOpenCodeResponsesRoute(
+  provider: 'opencode' | 'opencodego',
+  cfg: { apiKey: string; baseUrl: string },
+  params: OpenCodeRouteParams,
+  sessionId?: string,
+): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
+  const body = buildOpenCodeResponsesBody({
+    model: params.model,
+    system: routeSystemText(params.system),
+    messages: params.messages,
+    tools: params.tools,
+    maxTokens: params.max_tokens,
+    temperature: params.temperature,
+    sessionId,
+    effort: resolveOpencodeRouteEffort(provider, params.model, sessionEffortOf(params.thinking)),
+    canSeeImages: openCodeRouteCanSeeImages(provider, params.model),
+  })
+  return yield* runOpenCodeRouteStream(
+    provider,
+    `${normalizeBaseUrl(cfg.baseUrl)}/responses`,
+    buildRequestHeaders(provider, cfg.apiKey, params.model, sessionId),
+    body,
+    params,
+    new OpenCodeResponsesStream(params.model, `compat-${Date.now()}`),
+  )
+}
+
+async function* streamOpenCodeGoogleRoute(
+  provider: 'opencode' | 'opencodego',
+  cfg: { apiKey: string; baseUrl: string },
+  params: OpenCodeRouteParams,
+  sessionId?: string,
+): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
+  const body = buildOpenCodeGeminiBody({
+    model: params.model,
+    system: routeSystemText(params.system),
+    messages: params.messages,
+    tools: params.tools,
+    maxTokens: params.max_tokens,
+    temperature: params.temperature,
+    stopSequences: params.stop_sequences,
+    effort: resolveOpencodeRouteEffort(provider, params.model, sessionEffortOf(params.thinking)),
+    canSeeImages: openCodeRouteCanSeeImages(provider, params.model),
+  })
+  // Google's format takes the key in x-goog-api-key, next to the same
+  // OpenCode affinity/rate-limit headers as the other routes.
+  const headers = buildRequestHeaders(provider, cfg.apiKey, params.model, sessionId)
+  delete headers.Authorization
+  headers['x-goog-api-key'] = cfg.apiKey
+  return yield* runOpenCodeRouteStream(
+    provider,
+    `${normalizeBaseUrl(cfg.baseUrl)}/models/${encodeURIComponent(params.model)}:streamGenerateContent?alt=sse`,
+    headers,
+    body,
+    params,
+    new OpenCodeGeminiStream(params.model, `compat-${Date.now()}`),
+  )
 }
 
 interface ProviderErrorPayload {
@@ -2715,6 +3010,7 @@ function applyProviderRequestQuirks(
     isReasoning,
     reasoningEffort: effort,
     sessionId,
+    provider,
   })
 
   // Per-model default generation params (Qwen 0.55, Kimi-k2 0.6,
@@ -3360,10 +3656,11 @@ function convertHistoryToOpenAI(
   // opencode row.
   // OpenCode Go shares Zen's gateway + upstreams, so the same reasoning
   // carry-back applies — without it a thinking-on Go row 400s on the next
-  // tool turn ("reasoning_content must be passed back").
+  // tool turn ("reasoning_content must be passed back"). Where models.dev
+  // states a row's replay contract it decides, whatever the chip says.
   if (
     (provider === 'opencode' || provider === 'opencodego')
-    && opencodeThinkingActive(provider, model)
+    && opencodeReplaysReasoningContent(provider, model)
   ) {
     return convertHistoryToOpenAIForDeepSeek(messages, systemText, provider, model)
   }
@@ -3463,11 +3760,6 @@ export function buildDirectCacheStableMessages(
 ): OpenAIChatMessage[] {
   return buildDirectHistory(messages, systemText, provider, model, sessionId,
     turns => convertHistoryToOpenAIDefault(turns, '', provider, model))
-}
-
-function opencodeThinkingActive(provider: ProviderType, model: string): boolean {
-  if (!supportsOpencodeThinkingSelection(provider, model)) return false
-  return getOpencodeEffort(model) !== 'default'
 }
 
 function convertHistoryToOpenAIDefault(

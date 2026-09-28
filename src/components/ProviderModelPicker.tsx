@@ -583,7 +583,7 @@ export function ProviderModelPicker({
         && (selectedProvider === 'opencode' || selectedProvider === 'opencodego')
         && supportsOpencodeThinkingSelection(selectedProvider, row.model.id)
       ) {
-        cycleOpencodeEffort(row.model.id, key.leftArrow ? 'left' : 'right')
+        cycleOpencodeEffort(row.model.id, key.leftArrow ? 'left' : 'right', selectedProvider)
         setOpencodeEffortTick(tick => tick + 1)
         return
       }
@@ -799,7 +799,7 @@ export function ProviderModelPicker({
               const isOpencodeThinking =
                 (selectedProvider === 'opencode' || selectedProvider === 'opencodego')
                 && supportsOpencodeThinkingSelection(selectedProvider, model.id)
-              const opencodeEffort = isOpencodeThinking ? getOpencodeEffort(model.id) : undefined
+              const opencodeEffort = isOpencodeThinking ? getOpencodeEffort(model.id, selectedProvider) : undefined
               const isCommandCodeThinking =
                 selectedProvider === 'commandcode'
                 && supportsCommandCodeEffortSelection(model.id, model.tags)

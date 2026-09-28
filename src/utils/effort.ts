@@ -3,7 +3,7 @@ import { isUltrathinkEnabled } from './thinking.js'
 import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
-import { getAPIProvider, isThirdPartyProvider } from './model/providers.js'
+import { claude5SupportApplies, getAPIProvider, isThirdPartyProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getOpenAIReasoningLevel, modelSupportsReasoning } from './model/openaiReasoning.js'
 import {
@@ -39,9 +39,11 @@ export function modelSupportsEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  // Supported by the current Claude 4 model picker surface.
+  // Supported by the current Claude 4 and 5 model picker surface (Claude 5 on
+  // the Anthropic providers only; this reads the raw id, not getCanonicalName).
   if (
-    m.includes('opus-4-8')
+    (m.includes('opus-5') && claude5SupportApplies())
+    || m.includes('opus-4-8')
     || m.includes('opus-4-7')
     || m.includes('opus-4-6')
     || m.includes('sonnet-5')
@@ -414,6 +416,13 @@ export function getDefaultEffortForModel(
   // IMPORTANT: Do not change the default effort level without notifying
   // the model launch DRI and research. Default effort is a sensitive setting
   // that can greatly affect model quality and bashing.
+
+  // Claude Opus 5.5 runs at medium when a request names no effort (Opus 5
+  // runs at high). Naming it keeps the level Tau shows equal to the level
+  // the API applies, instead of the 'high' fallback the display assumes.
+  if (model.toLowerCase().includes('opus-5-5') && claude5SupportApplies()) {
+    return 'medium'
+  }
 
   // Default effort on current Opus models to medium for Pro.
   // Max/Team also get medium when the tengu_grey_step2 config is enabled.

@@ -1,12 +1,19 @@
 /**
- * OpenCode Zen per-model thinking effort store.
+ * OpenCode Zen / Go per-model thinking effort store.
  *
- * Every reasoning-capable model the gateway serves has its own knob:
- * Default (server default — usually off, except for free-tier models
- * where opencode-dev defaults thinking on at medium), Low, Medium, High.
+ * A row models.dev describes with an `effort` option (see
+ * opencodeModelsDevCatalog.ts) gets exactly that ladder: Default, then the
+ * values the row publishes — Claude Opus 5.5 Low..Max, GPT-6 None..Max,
+ * DeepSeek V4 Low/High/Max, Kimi K3 Max. A pick goes on the wire as
+ * `reasoning_effort`, the one field the official OpenCode client sends for
+ * it; Default sends nothing, so the upstream's own default applies.
  *
- * The shape we inject downstream depends on the upstream backend the
- * gateway routes to (see opencodeTransformer.transformRequest):
+ * Every other reasoning row keeps the id-based rules below: Default (server
+ * default — usually off, except for free-tier models where opencode-dev
+ * defaults thinking on at medium), Low, Medium, High.
+ *
+ * The shape we inject downstream for those depends on the upstream backend
+ * the gateway routes to (see opencodeTransformer.transformRequest):
  *
  *   - Anthropic native    → thinking: { type: "enabled", budget_tokens }
  *   - OpenAI Responses    → reasoning_effort + reasoning: { effort }
@@ -24,8 +31,24 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { getOpencodeModelMeta } from './opencodeModelsDevCatalog.js'
+import {
+  isOpenAIReasoningModel,
+  openCodeRouteFor,
+} from '../../lanes/openai-compat/opencode_anthropic_route.js'
 
-export type OpencodeEffort = 'default' | 'low' | 'medium' | 'high' | 'max'
+export type OpencodeEffort =
+  | 'default'
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+
+/** A stop that goes on the wire as the effort value itself. */
+export type OpencodeWireEffort = Exclude<OpencodeEffort, 'default'>
 
 // The generic ladder almost every OpenCode row cycles through.
 export const OPENCODE_EFFORT_LEVELS: readonly OpencodeEffort[] = [
@@ -46,15 +69,22 @@ export const OPENCODE_GLM52_EFFORT_LEVELS: readonly OpencodeEffort[] = [
   'max',
 ]
 
-// Superset of every per-model ladder, used only to validate persisted values on
-// load (a stored 'max' must survive a reload).
+// Every stop in ascending effort, `default` first. Validates persisted values
+// on load (a stored 'xhigh' must survive a reload) and orders the snap below.
 const OPENCODE_ALL_EFFORT_LEVELS: readonly OpencodeEffort[] = [
   'default',
+  'none',
+  'minimal',
   'low',
   'medium',
   'high',
+  'xhigh',
   'max',
 ]
+
+function isOpencodeEffort(value: string): value is OpencodeEffort {
+  return (OPENCODE_ALL_EFFORT_LEVELS as readonly string[]).includes(value)
+}
 
 /** True for the OpenCode Go GLM-5.2 row (its reasoning_effort high|max knob). */
 export function isOpencodeGlm52(model: string): boolean {
@@ -62,16 +92,71 @@ export function isOpencodeGlm52(model: string): boolean {
 }
 
 /**
- * The effort stops a given model cycles through in the picker. GLM-5.2 uses the
- * Default/High/Max ladder (reasoning_effort); every other OpenCode row uses the
- * generic Default/Low/Medium/High.
+ * The ladder models.dev publishes for this row on this host — Default, then
+ * the row's effort values — or null when the row has no effort option there
+ * (or the catalogue is not on disk), which leaves it on the id-based rules.
+ */
+function catalogEffortLevels(
+  provider: string,
+  model: string,
+): readonly OpencodeEffort[] | null {
+  const meta = getOpencodeModelMeta(provider, model)
+  if (!meta?.reasoning) return null
+  const efforts = meta.efforts.filter(isOpencodeEffort)
+  return efforts.length > 0 ? ['default', ...efforts] : null
+}
+
+/**
+ * Whether this row's thinking is driven by the effort values models.dev
+ * publishes for it. Such a row sends `reasoning_effort` and nothing else.
+ */
+export function usesOpencodeCatalogEfforts(
+  provider: string,
+  model: string,
+): boolean {
+  return catalogEffortLevels(provider, model) !== null
+}
+
+/**
+ * The effort stops a given model cycles through in the picker: the row's own
+ * published ladder where models.dev states one, otherwise GLM-5.2's
+ * Default/High/Max (reasoning_effort) or the generic Default/Low/Medium/High.
+ * Zen and Go can publish different ladders for the same id (Qwen3.8 Max), so
+ * the provider matters.
  */
 export function opencodeEffortLevelsFor(
   model: string,
+  provider = 'opencode',
 ): readonly OpencodeEffort[] {
-  return isOpencodeGlm52(model)
-    ? OPENCODE_GLM52_EFFORT_LEVELS
-    : OPENCODE_EFFORT_LEVELS
+  return catalogEffortLevels(provider, model)
+    ?? (isOpencodeGlm52(model) ? OPENCODE_GLM52_EFFORT_LEVELS : OPENCODE_EFFORT_LEVELS)
+}
+
+/**
+ * The stop on `levels` closest to `effort`, ties going to the stronger one.
+ * A pick stored against an older ladder (Medium, on a row that now publishes
+ * Low/High/Max) lands on a value the row accepts instead of being dropped.
+ */
+function snapToLevels(
+  effort: OpencodeWireEffort,
+  levels: readonly OpencodeEffort[],
+): OpencodeWireEffort | null {
+  const rank = (value: OpencodeEffort) => OPENCODE_ALL_EFFORT_LEVELS.indexOf(value)
+  let best: OpencodeWireEffort | null = null
+  for (const stop of levels) {
+    if (stop === 'default') continue
+    if (
+      best === null
+      || Math.abs(rank(stop) - rank(effort)) < Math.abs(rank(best) - rank(effort))
+      || (
+        Math.abs(rank(stop) - rank(effort)) === Math.abs(rank(best) - rank(effort))
+        && rank(stop) > rank(best)
+      )
+    ) {
+      best = stop
+    }
+  }
+  return best
 }
 
 // Models that should default to "medium" on first use:
@@ -142,6 +227,20 @@ export function supportsOpencodeThinkingSelection(
   provider: string,
   model: string,
 ): boolean {
+  // What models.dev says about the row on this host outranks the id rules:
+  // a row that does not reason gets no chip, one with published efforts does.
+  const meta = getOpencodeModelMeta(provider, model)
+  if (meta && !meta.reasoning) return false
+  // The route decides what a pick can reach. On /responses the official SDK
+  // sends `reasoning` only for OpenAI reasoning models, so Grok and Muse
+  // Spark would show a chip that changes nothing; on /messages only Claude
+  // and Qwen rows take a thinking setting from the client (MiniMax's
+  // defaults are fixed by OpenCode).
+  const route = openCodeRouteFor(provider, model)
+  if (route === 'systemone') return false
+  if (route === 'responses' && !isOpenAIReasoningModel(model)) return false
+  if (usesOpencodeCatalogEfforts(provider, model)) return true
+  if (route === 'messages' && !/^(claude-|qwen)/.test(model.trim().toLowerCase())) return false
   if (!isOpencodeThinkingModel(model)) return false
   if (provider !== 'opencodego') return true
 
@@ -194,26 +293,41 @@ function save(): void {
   }
 }
 
-export function getOpencodeEffort(model: string): OpencodeEffort {
+export function getOpencodeEffort(
+  model: string,
+  provider = 'opencode',
+): OpencodeEffort {
   load()
   const key = model.trim().toLowerCase()
-  const levels = opencodeEffortLevelsFor(model)
+  const catalogLevels = catalogEffortLevels(provider, model)
+  const levels = catalogLevels ?? opencodeEffortLevelsFor(model, provider)
   const stored = _cache[key]
+  if (stored && levels.includes(stored)) return stored
+  if (catalogLevels) {
+    // A published ladder starts at Default — the upstream's own setting —
+    // and a pick stored against another ladder snaps to the nearest stop.
+    return stored && stored !== 'default'
+      ? snapToLevels(stored, catalogLevels) ?? 'default'
+      : 'default'
+  }
   // Ignore a stored value that isn't valid for this model's ladder (e.g. a
   // generic 'medium' left over for a GLM-5.2 that now only takes high|max).
-  if (stored && levels.includes(stored)) return stored
   if (FREE_TIER_DEFAULT_MEDIUM(model) && isOpencodeThinkingModel(model)) {
     return 'medium'
   }
   return 'default'
 }
 
-export function setOpencodeEffort(model: string, effort: OpencodeEffort): void {
+export function setOpencodeEffort(
+  model: string,
+  effort: OpencodeEffort,
+  provider = 'opencode',
+): void {
   load()
   const key = model.trim().toLowerCase()
   // Only persist a level this model actually supports; anything else (including
   // 'default') clears the override so the model falls back to its default.
-  const next = opencodeEffortLevelsFor(model).includes(effort) ? effort : 'default'
+  const next = opencodeEffortLevelsFor(model, provider).includes(effort) ? effort : 'default'
   if (next === 'default') {
     delete _cache[key]
   } else {
@@ -225,17 +339,77 @@ export function setOpencodeEffort(model: string, effort: OpencodeEffort): void {
 export function cycleOpencodeEffort(
   model: string,
   direction: 'left' | 'right',
+  provider = 'opencode',
 ): OpencodeEffort {
-  const levels = opencodeEffortLevelsFor(model)
-  const current = getOpencodeEffort(model)
+  const levels = opencodeEffortLevelsFor(model, provider)
+  const current = getOpencodeEffort(model, provider)
   const idx = Math.max(0, levels.indexOf(current))
   const len = levels.length
   const next =
     direction === 'right'
       ? levels[(idx + 1) % len]!
       : levels[(idx - 1 + len) % len]!
-  setOpencodeEffort(model, next)
+  setOpencodeEffort(model, next, provider)
   return next
+}
+
+/**
+ * The `reasoning_effort` a row with a published ladder sends, or undefined to
+ * send none. A pick on the chip wins. On Default the session's own thinking
+ * setting drives the row, mapped onto a value the row published (OpenRouter's
+ * Default works the same way); with thinking off nothing is sent and the
+ * upstream applies its own default.
+ */
+export function resolveOpencodeCatalogEffort(
+  provider: string,
+  model: string,
+  sessionEffort: 'low' | 'medium' | 'high' | null,
+): OpencodeWireEffort | undefined {
+  const levels = catalogEffortLevels(provider, model)
+  if (!levels) return undefined
+  const picked = getOpencodeEffort(model, provider)
+  if (picked !== 'default') return picked
+  return sessionEffort ? snapToLevels(sessionEffort, levels) ?? undefined : undefined
+}
+
+/**
+ * The effort a /messages, /responses or Gemini request carries for this row,
+ * or undefined for none: the published-ladder rule above where models.dev
+ * states a ladder, otherwise the id-based pick, and on Default the session's
+ * own thinking level. Each route turns it into its own field.
+ */
+export function resolveOpencodeRouteEffort(
+  provider: string,
+  model: string,
+  sessionEffort: 'low' | 'medium' | 'high' | null,
+): OpencodeWireEffort | undefined {
+  if (!supportsOpencodeThinkingSelection(provider, model)) return undefined
+  if (usesOpencodeCatalogEfforts(provider, model)) {
+    return resolveOpencodeCatalogEffort(provider, model, sessionEffort)
+  }
+  const picked = getOpencodeEffort(model, provider)
+  return picked !== 'default' ? picked : sessionEffort ?? undefined
+}
+
+/**
+ * Whether replayed assistant messages carry `reasoning_content` for this row.
+ *
+ * Where models.dev states the row's contract (`interleaved.field`), that
+ * decides it, as it does for the official client, whatever the chip says. So
+ * a row that reasons by default replays its reasoning at Default too, and
+ * moving the chip never re-serialises the history already sent (which would
+ * be a cache miss on every earlier turn). A row with a published ladder and
+ * no such contract never replays. Anything else keeps the old rule: replay
+ * while a thinking level is picked.
+ */
+export function opencodeReplaysReasoningContent(
+  provider: string,
+  model: string,
+): boolean {
+  if (getOpencodeModelMeta(provider, model)?.replaysReasoningContent) return true
+  if (usesOpencodeCatalogEfforts(provider, model)) return false
+  return supportsOpencodeThinkingSelection(provider, model)
+    && getOpencodeEffort(model, provider) !== 'default'
 }
 
 /** Test-only: reset the in-memory store to a known state for the active path. */
@@ -247,8 +421,10 @@ export function _resetOpencodeThinkingForTests(
 }
 
 /**
- * Label rendered in the picker chip. Capitalized for the row.
+ * Label rendered in the picker chip. Capitalized for the row; `xhigh` reads
+ * as `xHigh`, as on OpenRouter's chip.
  */
 export function getOpencodeEffortLabel(effort: OpencodeEffort): string {
+  if (effort === 'xhigh') return 'xHigh'
   return effort.charAt(0).toUpperCase() + effort.slice(1)
 }

@@ -47,7 +47,7 @@ export interface OpenAIChatRequest {
   top_p?: number
   stop?: string[]
   /** 'none' and 'max' are used by relays with wider ladders (LXD, OpenCode Go). */
-  reasoning_effort?: 'none' | 'low' | 'medium' | 'high' | 'max'
+  reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   reasoning?: { effort?: string; enabled?: boolean; max_tokens?: number }
   thinking?: { type: 'enabled' | 'disabled' | 'adaptive'; clear_thinking?: boolean }
   extra_body?: Record<string, unknown>

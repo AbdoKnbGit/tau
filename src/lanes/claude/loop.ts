@@ -72,6 +72,8 @@ export class ClaudeLane implements Lane {
     // catalog surfaces. Flip to a live /v1/models call when Anthropic
     // makes that available on the Messages API.
     return [
+      { id: 'claude-opus-5-5',        name: 'Claude Opus 5.5' },
+      { id: 'claude-opus-5',          name: 'Claude Opus 5' },
       { id: 'claude-opus-4-8',        name: 'Claude Opus 4.8' },
       { id: 'claude-sonnet-5',        name: 'Claude Sonnet 5' },
       { id: 'claude-opus-4-7',        name: 'Claude Opus 4.7' },

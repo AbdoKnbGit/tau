@@ -202,10 +202,15 @@ export function getModelMaxOutputTokens(model: string): {
 
   const m = getCanonicalName(model)
 
-  if (m.includes('opus-4-8') || m.includes('opus-4-7') || m.includes('opus-4-6')) {
+  if (
+    m.includes('opus-5')
+    || m.includes('opus-4-8')
+    || m.includes('opus-4-7')
+    || m.includes('opus-4-6')
+  ) {
     defaultTokens = 64_000
     upperLimit = 128_000
-  } else if (m.includes('sonnet-4-6')) {
+  } else if (m.includes('sonnet-5') || m.includes('sonnet-4-6')) {
     defaultTokens = 32_000
     upperLimit = 128_000
   } else if (

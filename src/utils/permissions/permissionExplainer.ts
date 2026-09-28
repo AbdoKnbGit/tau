@@ -8,6 +8,7 @@ import { errorMessage } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
 import { getMainLoopModel } from '../model/model.js'
+import { claude5SupportApplies } from '../model/providers.js'
 import { sideQuery } from '../sideQuery.js'
 import { jsonStringify } from '../slowOperations.js'
 
@@ -141,6 +142,18 @@ export function isPermissionExplainerEnabled(): boolean {
 }
 
 /**
+ * Claude Opus 5.5 and Fable 5.1 answer a forced tool choice (`any` / `tool`)
+ * with a 400. On those the tool is offered under `auto` and the prompt asks
+ * for it; a reply without the call is handled like any other miss (null).
+ * Scoped to the Anthropic providers, like the rest of Claude 5 support.
+ */
+function modelAcceptsForcedToolChoice(model: string): boolean {
+  if (!claude5SupportApplies()) return true
+  const m = model.toLowerCase()
+  return !(m.includes('opus-5-5') || m.includes('fable-5-1') || m.includes('mythos-5-1'))
+}
+
+/**
  * Generate a permission explanation using Haiku with structured output.
  * Returns null if the feature is disabled, request is aborted, or an error occurs.
  */
@@ -173,14 +186,22 @@ ${conversationContext ? `\nRecent conversation context:\n${conversationContext}`
 Explain this command in context.`
 
     const model = getMainLoopModel()
+    const forceTool = modelAcceptsForcedToolChoice(model)
 
     // Use sideQuery with forced tool choice for guaranteed structured output
     const response = await sideQuery({
       model,
       system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userPrompt }],
+      messages: [{
+        role: 'user',
+        content: forceTool
+          ? userPrompt
+          : `${userPrompt}\nAnswer by calling the explain_command tool.`,
+      }],
       tools: [EXPLAIN_COMMAND_TOOL],
-      tool_choice: { type: 'tool', name: 'explain_command' },
+      tool_choice: forceTool
+        ? { type: 'tool', name: 'explain_command' }
+        : { type: 'auto' },
       signal,
       querySource: 'permission_explainer',
     })

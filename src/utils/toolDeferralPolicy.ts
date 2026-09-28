@@ -3,7 +3,7 @@ import type { APIProvider } from './model/providers.js'
 import type { PowerMode } from './powerMode.js'
 import { isSmallTierGroqModel } from '../lanes/openai-compat/groq_tool_policy.js'
 import { isNimFastToolFilterActive } from '../lanes/openai-compat/nim_tool_policy.js'
-import { isOpenCodeAnthropicRouteModel } from '../lanes/openai-compat/opencode_anthropic_route.js'
+import { openCodeRouteFor } from '../lanes/openai-compat/opencode_anthropic_route.js'
 
 /**
  * Providers routed through Tau's Gemini or OpenAI-compatible lanes. These
@@ -125,10 +125,10 @@ export function providerModelSupportsClientSideToolDiscovery(
   if (provider === 'groq' && isSmallTierGroqModel(model)) return false
 
   // These rows bypass the OpenAI-compatible selector and use the gateway's
-  // Anthropic-format route, where they currently receive eager schemas.
+  // /messages, /responses or Gemini route, where they receive eager schemas.
   if (
     (provider === 'opencode' || provider === 'opencodego') &&
-    isOpenCodeAnthropicRouteModel(model)
+    openCodeRouteFor(provider, model) !== 'chat'
   ) {
     return false
   }
