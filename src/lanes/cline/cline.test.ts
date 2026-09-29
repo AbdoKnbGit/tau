@@ -5,6 +5,8 @@
  */
 
 import { buildClineToolsForRequest } from './tools.js'
+import { z } from 'zod/v4'
+import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import {
   buildClineAdvisoryFieldMap,
   buildClineBlockedInvalidToolCallText,
@@ -669,6 +671,51 @@ function main(): void {
       call('c3', 'Browser', { action: 'scroll', direction: '' }), required, opts)
     assert(wrong.length === 1 && wrong[0]?.reason === 'invalid_arguments',
       `invalid action not reported: ${JSON.stringify(wrong)}`)
+  })
+
+  test('omitted defaults pass both Cline checks without changing schemas or inputs', () => {
+    // Exercise Zod's actual output: defaults are listed as required, including
+    // false, zero, empty-string and null defaults nested inside array items.
+    const inputSchema = z.object({
+      id: z.string(),
+      block: z.boolean().default(true),
+      timeout: z.number().default(30000),
+      questions: z.array(z.object({
+        question: z.string(),
+        multiSelect: z.boolean().default(false),
+        offset: z.number().default(0),
+        label: z.string().default(''),
+        nullable: z.string().nullable().default(null),
+      })),
+    })
+    const tools = [{ name: 'DefaultsFixture', input_schema: zodToJsonSchema(inputSchema) }] as any
+    const before = JSON.stringify(tools)
+    const required = buildClineRequiredParamMap(tools)
+    const opts = { schemaByTool: buildClineToolSchemaMap(tools) }
+    const input = { id: 'id', questions: [{ question: 'Choose?' }] }
+    const events = [{
+      type: 'content_block_start', index: 0,
+      content_block: { type: 'tool_use', id: 'defaults', name: 'DefaultsFixture', input },
+    }] as any
+    assert(JSON.stringify(required.get('DefaultsFixture')) === '["id","questions"]',
+      `defaulted fields still required: ${JSON.stringify(required.get('DefaultsFixture'))}`)
+    const invalid = findClineToolCallsMissingRequiredArgs(events, required, opts)
+    assert(invalid.length === 0, `omitted defaults rejected: ${JSON.stringify(invalid)}`)
+    assert(JSON.stringify(tools) === before, 'validation changed the cached schema')
+    assert(!('block' in input) && !('multiSelect' in input.questions[0]!),
+      'validation filled defaults instead of leaving them to shared execution')
+
+    for (const bad of [
+      { questions: [{ question: 'Choose?' }] },
+      { ...input, questions: [{}] },
+      { ...input, block: 'wrong' },
+      { ...input, timeout: null },
+      { ...input, questions: [{ question: 'Choose?', multiSelect: 'wrong' }] },
+    ]) {
+      const badEvents = [{ ...events[0], content_block: { ...events[0].content_block, input: bad } }]
+      assert(findClineToolCallsMissingRequiredArgs(badEvents, required, opts).length === 1,
+        `invalid explicit input passed: ${JSON.stringify(bad)}`)
+    }
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

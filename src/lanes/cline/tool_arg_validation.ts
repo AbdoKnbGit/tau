@@ -61,15 +61,13 @@ export function buildClineRequiredParamMap(
   const requiredByTool = new Map<string, string[]>()
   for (const tool of tools) {
     const schema = tool.input_schema
-    const properties = schema && typeof schema === 'object'
-      ? (schema as Record<string, unknown>).properties
-      : undefined
-    const propertyNames = properties && typeof properties === 'object' && !Array.isArray(properties)
-      ? new Set(Object.keys(properties as Record<string, unknown>))
-      : null
+    const properties = isPlainRecord(schema?.properties) ? schema.properties : undefined
+    const propertyNames = properties ? new Set(Object.keys(properties)) : null
     const required = Array.isArray(schema?.required)
       ? schema.required.filter((item): item is string =>
-        typeof item === 'string' && (!propertyNames || propertyNames.has(item)))
+        typeof item === 'string'
+        && (!propertyNames || propertyNames.has(item))
+        && !hasSchemaDefault(properties?.[item]))
       : []
     requiredByTool.set(tool.name, required)
   }
@@ -424,7 +422,7 @@ function validateClineToolInputAgainstSchema(
       ? schema.required.filter((item): item is string => typeof item === 'string')
       : []
     for (const key of required) {
-      if (isMissingRequiredToolArg(value[key])) {
+      if (!hasSchemaDefault(properties[key]) && isMissingRequiredToolArg(value[key])) {
         problems.push(`${joinSchemaPath(path, key)} is required`)
       }
     }
@@ -742,6 +740,15 @@ function parseClineToolInput(
   } catch {
     return { _raw: raw }
   }
+}
+
+// Zod's output JSON Schema lists defaulted properties as required, but shared
+// tool execution accepts their omission and applies the defaults. This only
+// relaxes Cline's preflight: keep wire schemas and received arguments intact,
+// and still type-check any value the model explicitly supplies. Presence of
+// the keyword matters, including false, 0, empty-string and null defaults.
+function hasSchemaDefault(schema: unknown): boolean {
+  return isPlainRecord(schema) && Object.prototype.hasOwnProperty.call(schema, 'default')
 }
 
 function isMissingRequiredToolArg(value: unknown): boolean {

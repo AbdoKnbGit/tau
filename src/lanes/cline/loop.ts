@@ -583,17 +583,21 @@ export class ClineLane implements Lane {
       { knownToolNames, schemaByTool, advisoryFieldsByTool },
     )
 
+    // Keep earlier repairs byte-stable within this call. Replacing the last
+    // repair on each attempt breaks the prefix cached by the preceding send.
+    // These messages stay after the marked history and expire with this call.
+    const repairs: OpenAIMessage[] = []
     for (
       let attempt = 1;
       invalidToolCalls.length > 0 && attempt <= CLINE_TOOL_ARG_REPAIR_ATTEMPTS;
       attempt += 1
     ) {
-      const repair = buildClineToolArgRepairMessage(invalidToolCalls, attempt, schemaByTool)
+      repairs.push(buildClineToolArgRepairMessage(invalidToolCalls, attempt, schemaByTool))
       response = await this._send(
         auth,
         params,
         messages,
-        [repair],
+        repairs,
         promptCache,
         'cline API connection error after tool-arg repair retry',
       )
