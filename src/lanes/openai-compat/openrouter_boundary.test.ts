@@ -220,5 +220,56 @@ await test('every turn is a pure prefix extension of the previous one', async ()
   )
 })
 
+await test('every request extends the previous one byte for byte, encoding included', async () => {
+  _resetSessionVolatileFreezeForTest()
+  const sessionId = 'sess-encoding'
+  const system = `${STABLE}\n${MARKER}\n${VOLATILE}`
+  const call = (id: string): ProviderMessage => ({
+    role: 'assistant',
+    content: [{ type: 'tool_use', id, name: 'Bash', input: { command: `echo ${id}` } }],
+  })
+  const result = (id: string): ProviderMessage => ({
+    role: 'user',
+    content: [{ type: 'tool_result', tool_use_id: id, content: `output of ${id}` }],
+  })
+  const history: ProviderMessage[] = [{ role: 'user', content: 'run three commands' }]
+  const requests = [await captureBody(system, [...history], sessionId)]
+  for (const id of ['call_1', 'call_2', 'call_3']) {
+    history.push(call(id), result(id))
+    requests.push(await captureBody(system, [...history], sessionId))
+  }
+  // Three results answered at once, plus text riding in the same message:
+  // the first result is never among the last two marked messages.
+  history.push(
+    {
+      role: 'assistant',
+      content: ['call_4', 'call_5', 'call_6'].map(id => (
+        { type: 'tool_use' as const, id, name: 'Bash', input: { command: `echo ${id}` } })),
+    },
+    {
+      role: 'user',
+      content: [
+        ...['call_4', 'call_5', 'call_6'].map(id => (
+          { type: 'tool_result' as const, tool_use_id: id, content: `output of ${id}` })),
+        { type: 'text', text: 'a reminder next to the results' },
+      ],
+    },
+  )
+  requests.push(await captureBody(system, [...history], sessionId))
+  history.push({ role: 'assistant', content: 'done' }, { role: 'user', content: 'thanks' })
+  requests.push(await captureBody(system, [...history], sessionId))
+
+  // Cache markers move every request by design; everything else is sent.
+  const wire = (body: Record<string, any>): string[] => (body.messages as any[]).map(m =>
+    JSON.stringify(m, (key, value) => key === 'cache_control' ? undefined : value))
+  for (let i = 1; i < requests.length; i++) {
+    const before = wire(requests[i - 1]!)
+    const after = wire(requests[i]!)
+    assert(after.length > before.length, `request ${i} did not extend request ${i - 1}`)
+    const k = before.findIndex((m, j) => m !== after[j])
+    assert(k === -1, `request ${i} re-sent message ${k} differently:\n${before[k]}\n---\n${after[k]}`)
+  }
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

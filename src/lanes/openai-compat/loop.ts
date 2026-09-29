@@ -3006,7 +3006,7 @@ function applyProviderRequestQuirks(
     // cold write, the system breakpoint anchors a deep read and the two
     // rolling user breakpoints extend it to the latest tool result, so
     // subsequent turns hit ~100% of the prefix.
-    applyLastOnlyCacheBreakpoints(body.messages, body.model)
+    applyLastOnlyCacheBreakpoints(body.messages, body.model, provider)
   }
 
   // Let the transformer apply its provider-specific quirks. Every
@@ -3099,11 +3099,17 @@ function stripCacheControlFromMessage(m: OpenAIChatMessage): OpenAIChatMessage {
  * String content gets promoted to a single-element parts array so the
  * marker has somewhere to land. Empty tool results fall back to ' ' so
  * the part is well-formed without altering visible prompt content.
+ * Outside the Gemini anchor, OpenRouter promotes every user/tool message,
+ * marked or not, so a message keeps its encoding after the markers move on.
  *
  * Idempotent: existing markers are left untouched, so a SystemBlock that
  * arrived with cache_control already set isn't re-stamped.
  */
-function applyLastOnlyCacheBreakpoints(messages: OpenAIChatMessage[], model = ''): void {
+function applyLastOnlyCacheBreakpoints(
+  messages: OpenAIChatMessage[],
+  model = '',
+  provider?: ProviderType,
+): void {
   const stampLast = (parts: Array<{ type: string; text?: string; cache_control?: { type: string } }>): void => {
     if (parts.length === 0) return
     // Walk back to the last TEXT part rather than only inspecting the final
@@ -3146,6 +3152,18 @@ function applyLastOnlyCacheBreakpoints(messages: OpenAIChatMessage[], model = ''
       sys.content = [{ type: 'text', text: sys.content, cache_control: { type: 'ephemeral' } }]
     } else if (Array.isArray(sys.content)) {
       stampLast(sys.content as any)
+    }
+  }
+
+  // OpenRouter: every user/tool message goes as parts, not only the two that
+  // carry a marker. Promoted only while marked, a message went back to a plain
+  // string once the markers moved on, and the request no longer extended the
+  // previous one byte for byte.
+  if (provider === 'openrouter') {
+    for (const m of messages) {
+      if ((m.role === 'user' || m.role === 'tool') && typeof m.content === 'string') {
+        m.content = [{ type: 'text', text: m.content.length > 0 ? m.content : ' ' }]
+      }
     }
   }
 
