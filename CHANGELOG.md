@@ -3,6 +3,33 @@
 All notable changes to **Tau**, from the first release to the latest.
 Each version lists what was fixed or added, newest first.
 
+## v0.92.37 (2026-09-30)
+
+This release records every change from the OpenRouter safety fix through the
+current MCP setup work.
+
+- Prevent OpenRouter provider failures from being mistaken for tool calls (9c27ee7f)
+- Let retries continue with another provider when the pinned provider fails (66dbfbb1)
+- Add a one-hour Claude cache option and repair OpenRouter free-model handling (a6cd7431)
+- Let tools recover independently and read documents from local storage (984c870c)
+- Ignore optional placeholder arguments when validating tool calls (ea0a1fd0)
+- Put the ignored-arguments explanation first in tool results (24184487)
+- Add Codex GPT-6 models, cache-safe forks and agents, and stop Kilo double tool calls (ee6e0d29)
+- Honor ignore files in every project search and correct glob anchoring (19a02079)
+- Show matching content lines in Codex and Antigravity searches (405c8214)
+- Apply Read permissions consistently to code retrieval and repository scouting (62efbf4c)
+- Report finished task exits and answer TaskStop and TaskOutput requests (fc2fa89f)
+- Add Opus 5.5 and MiMo V2.6, plus OpenCode thinking and models.dev routes (0e6b51f9)
+- Restore compatibility with OpenCode Zen free models (1f6b61df)
+- Keep blank model replies from replacing the preceding message (cd268efb)
+- Fix cancellation for foreground agent tasks (9bce5eab)
+- Detect Markdown correctly after long plain-text introductions (5507a691)
+- Keep OpenRouter messages in one encoding when cache markers move (36af9f6c)
+- Fix Cline tool defaults and retry caching (422d20b6)
+- Keep MCP updates current while preserving provider cache behavior (d32cd664)
+- Pin the packaged ignore dependency for reproducible installs (260c5b2c)
+- Fix generic MCP setup by removing the misleading Windows `npx` warning, preserving executable arguments, clarifying scope and verification rules, and adding cross-provider launcher coverage (c83aab78)
+
 ## v0.92.36 (2026-09-21)
 
 MCP reliability: tool calls that failed are now reported as failures, a
