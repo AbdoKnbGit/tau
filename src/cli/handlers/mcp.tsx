@@ -7,6 +7,7 @@ import { stat } from 'fs/promises';
 import pMap from 'p-map';
 import { cwd } from 'process';
 import React from 'react';
+import { PRODUCT_COMMAND } from '../../constants/product.js';
 import { MCPServerDesktopImportDialog } from '../../components/MCPServerDesktopImportDialog.js';
 import { render } from '../../ink.js';
 import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js';
@@ -290,6 +291,9 @@ export async function mcpAddJsonHandler(name: string, json: string, options: {
   try {
     const scope = ensureConfigScope(options.scope);
     const parsedJson = safeParseJSON(json);
+    if (!parsedJson || typeof parsedJson !== 'object' || Array.isArray(parsedJson)) {
+      return cliError(`Expected an MCP server JSON object as one argument. Check the calling shell's quoting, variable expansion, and argument/path conversion. See \`${PRODUCT_COMMAND} mcp add-json --help\`.`);
+    }
 
     // Read secret before writing config so cancellation doesn't leave partial state
     const needsSecret = options.clientSecret && parsedJson && typeof parsedJson === 'object' && 'type' in parsedJson && (parsedJson.type === 'sse' || parsedJson.type === 'http') && 'url' in parsedJson && typeof parsedJson.url === 'string' && 'oauth' in parsedJson && parsedJson.oauth && typeof parsedJson.oauth === 'object' && 'clientId' in parsedJson.oauth;

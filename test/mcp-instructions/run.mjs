@@ -744,6 +744,13 @@ async function modeWithoutMcp(target, mode, interactive = false) {
   check(enoughRequests && reqs.every(r => !r.tools.some(n => n.startsWith('mcp__'))), 'no MCP tools exposed')
   check(enoughRequests && reqs.every(r => !r.all.includes(code) && !r.all.includes('MCP configuration update:')), 'no MCP instruction updates sent')
   check(!existsSync(join(ctx.root, 'server-starts.jsonl')), 'no MCP server process launched')
+  // Setup rules must reach providers even before the first server is added.
+  // Check the serialized requests, not just the shared prompt generator.
+  for (const rule of ['one executable and a separate argument array',
+    'Do not add a shell wrapper', 'local overrides project',
+    'successful add only saves configuration', 'redact secrets']) {
+    check(enoughRequests && reqs.every(r => r.all.includes(rule)), `setup guidance delivered: ${rule}`)
+  }
   prefixCheck(check, reqs, `${mode} without MCP`)
   return { list, run, reqs }
 }

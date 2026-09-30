@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 
 import { loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
 
@@ -17,8 +18,15 @@ import { loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
 // must carry the guidance, AND every command it names must actually exist in
 // the CLI. Guidance that drifts into fiction is worse than none.
 
-const runtime = await loadMcpRuntime()
-const CLI = resolve('dist/cli.mjs')
+const configDirectory = mkdtempSync(join(tmpdir(), 'tau-setup-guidance-'))
+process.env.CLAUDE_CONFIG_DIR = configDirectory
+process.env.DISABLE_TELEMETRY = '1'
+test.after(() => rmSync(configDirectory, { recursive: true, force: true }))
+const runtime = await loadMcpRuntime({
+  paths: ['src/utils/powerMode.ts'],
+  exports: ['getMcpAndPluginSetupGuidance', 'setSessionPowerMode', 'getSystemPromptSectionCache'],
+})
+const CLI = resolve(process.env.TAU_MCP_TEST_BUNDLE ?? 'dist/cli.mjs')
 
 const prompt = (await runtime.getSystemPrompt([], 'claude-opus-5')).join('\n')
 
@@ -61,7 +69,7 @@ test('the prompt teaches the flag-ordering gotcha', () => {
 
 test('every MCP command the prompt names exists in the CLI', () => {
   const help = cliHelp(['mcp'])
-  for (const sub of ['add', 'list', 'get', 'remove']) {
+  for (const sub of ['add', 'add-json', 'list', 'get', 'remove']) {
     assert.ok(
       new RegExp(`^\\s+${sub}\\b`, 'm').test(help),
       `the prompt promises \`tau mcp ${sub}\` but the CLI does not offer it`,
@@ -189,5 +197,48 @@ test('guidance contains no OS-specific assumption', () => {
       !fn.includes(leak),
       `setup guidance must not assume an OS ("${leak}")`,
     )
+  }
+})
+
+test('setup chooses the intended scope and protects policy and shared credentials', () => {
+  const guidance = runtime.getMcpAndPluginSetupGuidance()
+  for (const expected of [
+    /local.*private to this project/, /project.*shared/, /user.*all projects/,
+    /-s <scope>/, /local overrides project.*overrides user/, /intended project directory/,
+    /preserve unrelated/, /never bypass/, /credentials out of shared project files/, /redact secrets/,
+  ]) assert.match(guidance, expected)
+  assert.doesNotMatch(guidance, /-s user --/)
+})
+
+test('setup preserves argv across runtimes and distinguishes verification stages', () => {
+  const guidance = runtime.getMcpAndPluginSetupGuidance()
+  for (const expected of [
+    /one executable and a separate argument array/, /documented runtime and transport/,
+    /Do not add a shell wrapper/, /MSYS argument conversion/, /Inspect the stored command and argv/,
+    /successful add only saves/, /initialize handshake/, /read-only tool/,
+    /saved, connected, discovered and tested/, /Reconnect through \/mcp/,
+    /dependency download\/startup/, /MCP_TIMEOUT/, /disable TLS checks/,
+  ]) assert.match(guidance, expected)
+  // Examples belong in tests/docs, never special cases in production guidance.
+  assert.doesNotMatch(guidance, /playwright|context7|npx|uvx|mcp-server-git/i)
+})
+
+test('normal and cheap modes receive stable setup rules before any server connects', async () => {
+  const setup = runtime.getMcpAndPluginSetupGuidance()
+  try {
+    for (const mode of ['normal', 'cheap']) {
+      runtime.setSessionPowerMode(mode)
+      runtime.getSystemPromptSectionCache().clear()
+      const first = (await runtime.getSystemPrompt([], 'claude-opus-5')).join('\n')
+      const late = (await runtime.getSystemPrompt([], 'claude-opus-5', undefined, [
+        { type: 'connected', name: 'late-setup-fixture', config: { command: 'runtime', args: [], scope: 'local' } },
+      ])).join('\n')
+      assert.ok(first.includes(setup), `${mode} must include setup before the first server`)
+      assert.ok(late.includes(setup))
+      assert.equal(late, first, 'changing the catalog must not rewrite setup or bust its cache')
+    }
+  } finally {
+    runtime.setSessionPowerMode('normal')
+    runtime.getSystemPromptSectionCache().clear()
   }
 })

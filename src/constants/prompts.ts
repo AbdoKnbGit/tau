@@ -494,22 +494,26 @@ function getDiscoverSkillsGuidance(): string | null {
  * plugins are "just MCP servers" with no separate system, and inventing slash
  * commands and package names that do not exist.
  *
- * Every command named here is real and was checked against the CLI. The
- * emphasis is on the two mistakes actually observed — wrong file, invented
- * tooling — rather than a full tutorial the model can read from `--help`.
+ * Every command named here is real and was checked against the CLI.
+ * Keep these rules independent of the current OS, provider, server catalog,
+ * credentials and connection results: this section is cached for the session,
+ * including sessions that install their first server after the first request.
  */
 function getMcpAndPluginSetupGuidance(): string {
   // Derived from PRODUCT_COMMAND, never spelled out, so renaming the binary
   // cannot leave the model describing a command that no longer exists.
   const cli = PRODUCT_COMMAND
   return [
-    `To install or manage an MCP server, use the \`${cli} mcp\` CLI (\`${cli} mcp add\`, \`list\`, \`get\`, \`remove\`), not hand-edited config. Run \`${cli} mcp add --help\` when unsure of a flag rather than guessing.`,
+    `To install or manage an MCP server, use the \`${cli} mcp\` CLI (\`${cli} mcp add\`, \`add-json\`, \`list\`, \`get\`, \`remove\`). Read the chosen subcommand's \`--help\` when unsure of a flag rather than guessing. Inspect existing configuration in the intended project before changing it; preserve unrelated servers and settings.`,
     `MCP servers live in .mcp.json / .claude.json — NOT in settings.json, which holds permissions, hooks and env vars. Writing an \`mcpServers\` block into settings.json does nothing.`,
-    `For a stdio server, the CLI's own flags go BEFORE \`--\` and the server's own flags after it: \`${cli} mcp add <name> -s user -- <command> <args>\`. A flag like \`-y\` placed before \`--\` is rejected as an unknown option.`,
-    `For a remote server: \`${cli} mcp add --transport http <name> <url>\`, with \`--header\` for auth and \`-e KEY=value\` for environment variables. Pass the URL once — repeating the name as a second positional registers the name as the URL.`,
-    `Verify with \`${cli} mcp list\` (connection health for every server) or \`${cli} mcp get <name>\`. "Needs authentication" on an OAuth server is expected until the user completes the flow via /mcp; "Failed to connect" usually means the command does not speak MCP over stdio.`,
+    `Choose scope from the user's intent: \`local\` (the default) is private to this project, \`project\` is shared through its .mcp.json, and \`user\` is available in all projects. Use \`-s <scope>\` explicitly; do not default to user/global scope. Run project/local operations from the intended project directory. For duplicate names, local overrides project, which overrides user; inspect the effective scope before replacing or removing an entry. Managed policy, project approval and disabled-server settings still apply; never bypass them to make a test pass.`,
+    `For a stdio server, the CLI's own flags go BEFORE \`--\` and the server's own flags after it: \`${cli} mcp add <name> -s <scope> -- <command> <args>\`. A flag like \`-y\` placed before \`--\` is rejected as an unknown option. Store one executable and a separate argument array, using the server's documented runtime and transport. Check runtime availability, paths, working directory and required environment in the launch context; aliases, shell functions, virtual-environment activation and interactive profiles are not executable configuration.`,
+    `Use the stdio transport's cross-platform launcher for executable and script-shim resolution. Do not add a shell wrapper merely because of an OS or package-manager name. If the documented command really requires a shell, preserve its exact argument boundaries and use quoting for the shell actually executing the setup command. Shells can expand variables, quotes and metacharacters or convert path-like arguments before the CLI receives them (including MSYS argument conversion); prevent that for the setup invocation. \`add-json\` accepts structured configuration as one JSON argument, but that argument also needs protection from shell expansion and path conversion. Inspect the stored command and argv after writing; do not guess repairs to a path that resembles a switch.`,
+    `For a remote server: \`${cli} mcp add --transport http <name> <url> -s <scope>\`, with \`--header\` for documented headers/auth. Use the server's documented transport; pass the URL once. Keep credentials out of shared project files and reports; use supported environment references or the documented auth flow, and redact secrets in displayed command output.`,
+    `A successful add only saves configuration. Verify the effective entry from the intended project with \`${cli} mcp get <name>\`, or \`${cli} mcp list\` to check all enabled servers. "Connected" means an MCP initialize handshake succeeded; it does not prove every tool works or that this running session has refreshed its tools. Reconnect through /mcp after edits, inspect discovered tools, and when authorized exercise a harmless read-only tool before claiming end-to-end success. Report separately what was saved, connected, discovered and tested.`,
+    `On failure, diagnose the actual error: executable/PATH, argv/quoting, missing environment, working directory, dependency download/startup, network/TLS, authentication or MCP protocol. A cold install may exceed MCP_TIMEOUT; adjust a timeout only with evidence, not by changing a working command. "Needs authentication" requires the documented OAuth flow via /mcp. Do not infer a broken runtime from a static warning, repeatedly reinstall, rewrite other scopes, disable TLS checks or broaden permissions as a workaround.`,
     `Plugins are a SEPARATE system, not MCP servers: \`${cli} plugin install|list|enable|disable|uninstall <name>@<marketplace>\` and \`${cli} plugin marketplace add|list|remove\`. A plugin can bundle skills, agents, hooks and MCP servers, so it is not reducible to MCP config.`,
-    `Never guess a package name, repo, marketplace or slash command. Ask the user which server or plugin they mean, confirm the identifier, then run the real command and show its output.`,
+    `Never guess a package name, repo, marketplace or slash command. Resolve the identifier and setup contract from the supplied configuration or official documentation; ask the user only if ambiguity remains. Run the real command and report its result with secrets redacted.`,
   ].join(' ')
 }
 
@@ -552,6 +556,9 @@ function getSessionSpecificGuidanceSection(
 
   if (getPowerModeFromSettings(getInitialSettings()) === 'cheap') {
     const compactItems = [
+      // Setup can be requested even when cheap mode has no connected MCP tools.
+      getMcpAndPluginSetupGuidance(),
+      'Cheap mode does not connect MCP servers. Configuration can be saved here; switch to normal mode to verify connection and tool availability.',
       hasWebSearchTool
         ? `Use ${WEB_SEARCH_TOOL_NAME} automatically for current/changing public information; never claim live access is unavailable when it is listed, and answer from results with source URLs.`
         : null,

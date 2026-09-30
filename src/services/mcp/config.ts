@@ -3,7 +3,6 @@ import { chmod, open, rename, stat, unlink } from 'fs/promises'
 import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import { dirname, join, parse } from 'path'
-import { getPlatform } from 'src/utils/platform.js'
 import type { PluginError } from '../../types/plugin.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
@@ -1325,27 +1324,10 @@ export function parseMcpConfig(params: {
       configToCheck = expanded
     }
 
-    // Check for Windows-specific npx usage without cmd wrapper
-    if (
-      getPlatform() === 'windows' &&
-      (!configToCheck.type || configToCheck.type === 'stdio') &&
-      (configToCheck.command === 'npx' ||
-        configToCheck.command.endsWith('\\npx') ||
-        configToCheck.command.endsWith('/npx'))
-    ) {
-      errors.push({
-        ...(filePath && { file: filePath }),
-        path: `mcpServers.${name}`,
-        message: `Windows requires 'cmd /c' wrapper to execute npx`,
-        suggestion: `Change command to "cmd" with args ["/c", "npx", ...]. See: https://code.claude.com/docs/en/mcp#configure-mcp-servers`,
-        mcpErrorMetadata: {
-          scope,
-          serverName: name,
-          severity: 'warning',
-        },
-      })
-    }
-
+    // Executable resolution belongs to the stdio transport (the SDK uses
+    // cross-spawn for Windows shims and POSIX executables). Do not infer a
+    // required shell from a runtime/package-manager name or rewrite argv at
+    // parse time. Health checks perform the actual MCP initialization.
     validatedServers[name] = configToCheck
   }
   return {

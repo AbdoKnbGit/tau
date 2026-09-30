@@ -111,6 +111,11 @@ jobs:
       - name: Build with esbuild (default, Node-only)
         run: npm run build
 
+      - name: Test MCP setup, scope persistence, and platform launching
+        run: |
+          node --test test/mcp-plugin-setup-guidance.test.mjs test/mcp-setup-scopes.test.mjs
+          node test/mcp-setup-launch.test.mjs
+
       - name: Test Mermaid rendering and rewind
         run: node --test test/mermaid-rendering.test.mjs
 
