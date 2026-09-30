@@ -2531,10 +2531,11 @@ export function REPL({
     // async as servers connect — the store may have newer MCP state than
     // the closure captured at render time. Also doubles as refreshTools()
     // for mid-query tool list updates.
-    const computeTools = () => {
-      const state = store.getState();
+    const computeTools = (state = store.getState()) => {
       const assembled = assembleToolPool(state.toolPermissionContext, state.mcp.tools);
-      const merged = mergeAndFilterTools(combinedInitialTools, assembled, state.toolPermissionContext.mode, state.settings);
+      const managedServers = new Set([...(initialMcpClients ?? []), ...state.mcp.clients].map(c => c.name));
+      const initial = combinedInitialTools.filter(t => !t.mcpInfo || !managedServers.has(t.mcpInfo.serverName));
+      const merged = mergeAndFilterTools(initial, assembled, state.toolPermissionContext.mode, state.settings);
       if (!mainThreadAgentDefinition) return merged;
       return resolveAgentTools(mainThreadAgentDefinition, merged, false, true).resolvedTools;
     };
@@ -2543,7 +2544,7 @@ export function REPL({
       abortController,
       options: {
         commands,
-        tools: computeTools(),
+        tools: computeTools(s),
         debug,
         verbose: s.verbose,
         mainLoopModel: effectiveMainLoopModel,
@@ -2564,7 +2565,11 @@ export function REPL({
         } : s.agentDefinitions,
         customSystemPrompt,
         appendSystemPrompt,
-        refreshTools: computeTools
+        refreshTools: computeTools,
+        refreshMcpContext: () => {
+          const state = store.getState();
+          return { tools: computeTools(state), mcpClients: mergeClients(initialMcpClients, state.mcp.clients) };
+        }
       },
       getAppState: () => store.getState(),
       setAppState,

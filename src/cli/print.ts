@@ -1507,13 +1507,22 @@ function runHeadlessStreaming(
   // Closes over the mutable sdkTools/dynamicMcpState bindings so both call
   // sites see late-connecting servers.
   const buildAllTools = (appState: AppState): Tools => {
+    // Startup tools are snapshots. Managed MCP tools must come from their
+    // current pool, otherwise disabling/reconnecting resurrects old tools.
+    const managedServers = new Set(
+      [...mcpClients, ...appState.mcp.clients].map(c => c.name),
+    )
     const assembledTools = assembleToolPool(
       appState.toolPermissionContext,
       appState.mcp.tools,
     )
     let allTools = uniqBy(
       mergeAndFilterTools(
-        [...tools, ...sdkTools, ...dynamicMcpState.tools],
+        [
+          ...tools.filter(t => !t.mcpInfo || !managedServers.has(t.mcpInfo.serverName)),
+          ...sdkTools,
+          ...dynamicMcpState.tools,
+        ],
         assembledTools,
         appState.toolPermissionContext.mode,
         appState.settings,
@@ -2128,6 +2137,17 @@ function runHeadlessStreaming(
               tools: allTools,
               verbose: options.verbose,
               mcpClients: allMcpClients,
+              refreshMcpContext: () => {
+                const state = getAppState()
+                return {
+                  tools: buildAllTools(state),
+                  mcpClients: [
+                    ...state.mcp.clients,
+                    ...sdkClients,
+                    ...dynamicMcpState.clients,
+                  ],
+                }
+              },
               thinkingConfig: options.thinkingConfig,
               maxTurns: options.maxTurns,
               maxBudgetUsd: options.maxBudgetUsd,

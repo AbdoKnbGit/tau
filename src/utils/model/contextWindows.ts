@@ -6,6 +6,7 @@ import {
   noteMissingContextWindow,
 } from '../modelPricingCatalog.js'
 import { getAlibabaModelMeta } from './alibabaCatalog.js'
+import { getOpencodeContextWindow } from './opencodeModelsDevCatalog.js'
 import { getDirectModelMeta, isDirectProvider } from './directProviderCatalog.js'
 import {
   getStoredContextWindow,
@@ -312,6 +313,16 @@ export function getProviderCatalogContextWindow(
   }
 
   if (provider) {
+    // Zen/Go publish ids only on /models. Their models.dev row is the source
+    // of limits, ahead of old persisted guesses and another host's defaults.
+    if (provider === 'opencode' || provider === 'opencodego') {
+      for (const candidate of candidates) {
+        const window = getOpencodeContextWindow(provider, candidate)
+        if (window !== undefined) return window
+      }
+      const window = lookupCatalogContextWindow(provider, candidates)
+      if (window !== undefined) return window
+    }
     const hostWindow = lookupHostWindow(model, provider, candidates)
     if (hostWindow !== undefined) {
       return capToPromptCeiling(hostWindow, provider, candidates)

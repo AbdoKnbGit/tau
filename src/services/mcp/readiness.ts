@@ -11,7 +11,7 @@
  * So readiness is tracked here, in a React-independent registry that the hook,
  * print mode and main.tsx all report into, in two parts:
  *
- * - **Sources** (local config, claude.ai connectors, dynamic/SDK config): each
+ * - **Sources** (local config, plugin and dynamic/SDK config): each
  *   is registered as enumerating *before* its fetch starts and settles when it
  *   has finished handing over the servers it found. Registration of a source's
  *   servers and completion of that source are one transition (`settleSource`).
@@ -34,7 +34,6 @@ export type McpSourceId = string
  * its own and leaving the other's unsettled forever.
  */
 export const MCP_SOURCE_LOCAL_CONFIG = 'local-config'
-export const MCP_SOURCE_CLAUDEAI_CONNECTORS = 'claudeai-connectors'
 
 /**
  * `discovering` — no result yet.

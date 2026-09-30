@@ -107,6 +107,7 @@ async function capture(
   model: string,
   messages: any[],
   reply?: () => Response,
+  tools: any[] = [READ_TOOL],
 ): Promise<Captured> {
   const lane = new OpenAICompatLane()
   lane.registerProvider(
@@ -134,7 +135,7 @@ async function capture(
       model,
       messages,
       system: 'You are a coding agent.',
-      tools: [READ_TOOL],
+      tools,
       max_tokens: 64_000,
       temperature: 1,
       thinking: { type: 'disabled' },
@@ -334,6 +335,26 @@ await test('other 403s on Zen, and Go, keep the raw error', async () => {
   const go = await capture('opencodego', 'minimax-m3', [{ role: 'user', content: 'hey' }], FREE_TIER_403)
   assert.equal(replyText(go), `opencodego API error 403: ${await FREE_TIER_403().text()}`)
 })
+
+for (const provider of ['opencode', 'opencodego'] as const) {
+  for (const model of ['kimi-k2.6', 'longcat-2.5-preview-free', 'mimo-v2.6-flash-free', 'claude-opus-5-5', 'gpt-5.5', 'gemini-3.7-flash']) {
+    await test(`${provider}/${model} sends deferred contracts eagerly and removes ToolSearch`, async () => {
+      const deferred = { name: 'mcp__fixture__echo', description: 'Echo', input_schema: {
+        type: 'object', properties: { text: { type: 'string' } }, required: ['text'],
+      } }
+      Object.defineProperty(deferred, '__tau_should_defer', { value: true })
+      const tools = [READ_TOOL, { name: 'ToolSearch', description: 'Search', input_schema: { type: 'object', properties: {} } }, deferred]
+      const first = await capture(provider, model, [{ role: 'user', content: 'hello' }], undefined, tools)
+      const declarations = first.body.tools?.[0]?.functionDeclarations ?? first.body.tools
+      const names = declarations.map((tool: any) => tool.function?.name ?? tool.name)
+      assert.ok(names.includes('mcp__fixture__echo'), JSON.stringify(first.body.tools))
+      assert.ok(!names.includes('ToolSearch'))
+      assert.equal(declarations.length, 2)
+      const second = await capture(provider, model, [{ role: 'user', content: 'after compact' }], undefined, tools)
+      assert.deepEqual(second.body.tools, first.body.tools, 'tool schemas changed across requests')
+    })
+  }
+}
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

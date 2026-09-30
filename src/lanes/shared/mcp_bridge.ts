@@ -19,6 +19,7 @@
  */
 
 import type { ProviderTool } from '../../services/api/providers/base_provider.js'
+import { MCP_INSTRUCTION_UPDATES_GUIDANCE } from '../../constants/mcpInstructions.js'
 import { sanitizeGeminiToolParameters } from './gemini_schema.js'
 import { walkSchemaByPosition } from './schema_positions.js'
 
@@ -181,6 +182,8 @@ export function sanitizeSchemaForLane(
  * Keep each preamble SHORT — every byte lands on every turn.
  */
 export const GEMINI_TOOL_USAGE_RULES = `<TOOL_USAGE_RULES>
+${MCP_INSTRUCTION_UPDATES_GUIDANCE}
+
 Tool schemas OVERRIDE training memory. Treat each tool's "parameters" as authoritative:
 - Use parameter NAMES exactly as listed in "properties" (case-sensitive).
 - Supply EVERY parameter listed in "required"; never omit one, never send empty objects.
@@ -197,6 +200,8 @@ Bash autonomy: run them yourself. Skill tool: use relevant skills; Only use list
  * exactly, apply_patch is the edit primitive."
  */
 export const CODEX_TOOL_USAGE_RULES = `<tool_use_rules>
+${MCP_INSTRUCTION_UPDATES_GUIDANCE}
+
 Tool parameter schemas are authoritative. Never call a tool with missing required fields, never send empty arguments, never invent extra parameters. Parameter names are case-sensitive — copy them exactly from "properties". Match parameter types exactly (array means array, object means object, string means string).
 
 Each tool description ends with a "STRICT PARAMETERS:" line listing required fields first. Use it as your quick reference before you emit the call.
@@ -213,6 +218,8 @@ When a shell or tool call fails, diagnose first: exit code, error text, binary/p
  * prompt reminder does more of the enforcement work.
  */
 export const KIRO_TOOL_USAGE_RULES = `<tool_usage_rules>
+${MCP_INSTRUCTION_UPDATES_GUIDANCE}
+
 Tool schemas are authoritative. For every tool call:
 - include every field listed in "required"
 - use parameter names exactly as declared in "properties"
@@ -232,6 +239,8 @@ When a tool call fails, diagnose first — exit code, error text, what's actuall
  * schema field names. Extra nudge on case-sensitivity + required fields.
  */
 export const QWEN_TOOL_USAGE_RULES = `<tool_usage>
+${MCP_INSTRUCTION_UPDATES_GUIDANCE}
+
 Tool schemas are authoritative — they override anything you remember from training data about tool names or shapes.
 
 Rules for every tool call:
@@ -253,6 +262,8 @@ When a command fails, diagnose first — read the exit code (127=not found, 2=mi
  */
 export function buildOpenAICompatToolUsageRules(discovery = true): string {
   return `<tool_usage_rules>
+${MCP_INSTRUCTION_UPDATES_GUIDANCE}
+
 Tool parameter schemas are authoritative. Before every tool call:
 - Fill in every parameter listed in "required". Never send empty {} when the schema requires fields.
 - Use parameter names exactly as they appear in "properties" (case-sensitive).

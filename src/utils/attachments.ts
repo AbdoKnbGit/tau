@@ -164,6 +164,7 @@ import { getMermaidDiagramsChange } from './mermaidDiagramsReminder.js'
 import { getUndrawnMermaidReasons } from './mermaidDiagramFeedback.js'
 import type { QuerySource } from '../constants/querySource.js'
 import { getAPIProvider } from './model/providers.js'
+import { getProviderFilteredToolCallDecision } from './toolSearchCallGuard.js'
 import {
   getDeferredToolsDelta,
   isDeferredToolsDeltaEnabled,
@@ -176,6 +177,7 @@ import {
 import {
   getMcpInstructionsDelta,
   isMcpInstructionsDeltaEnabled,
+  mcpServersForTools,
   type ClientSideInstruction,
 } from './mcpInstructionsDelta.js'
 import { CLAUDE_IN_CHROME_MCP_SERVER_NAME } from './claudeInChrome/common.js'
@@ -724,6 +726,8 @@ export type Attachment =
       type: 'mcp_instructions_delta'
       addedNames: string[]
       addedBlocks: string[]
+      /** addedNames whose block replaces one announced earlier */
+      updatedNames?: string[]
       removedNames: string[]
     }
   | {
@@ -888,16 +892,9 @@ export async function getAttachments(
     maybe('agent_listing_delta', () =>
       Promise.resolve(getAgentListingDeltaAttachment(toolUseContext, messages)),
     ),
-    maybe('mcp_instructions_delta', () =>
-      Promise.resolve(
-        getMcpInstructionsDeltaAttachment(
-          toolUseContext.options.mcpClients,
-          toolUseContext.options.tools,
-          toolUseContext.options.mainLoopModel,
-          messages,
-        ),
-      ),
-    ),
+    // mcp_instructions_delta is not collected here: query.ts announces it
+    // right before each request, from the server state that request's tools
+    // come from (the list captured here can predate both).
     maybe('power_mode_change', () =>
       Promise.resolve(getPowerModeChangeAttachment(messages)),
     ),
@@ -1660,7 +1657,8 @@ export function getAgentListingDeltaAttachment(
   ]
 }
 
-// Exported for compact.ts / reactiveCompact.ts — single source of truth for the gate.
+// Called by query.ts before each request and by compact.ts /
+// reactiveCompact.ts — single source of truth for the gate.
 export function getMcpInstructionsDeltaAttachment(
   mcpClients: MCPServerConnection[],
   tools: Tools,
@@ -1693,8 +1691,13 @@ export function getMcpInstructionsDeltaAttachment(
     })
   }
 
+  // Instructions travel with the tools they describe: only servers this
+  // request can use are announced, and a server whose tools left the request
+  // has its instructions retracted.
   const delta = getMcpInstructionsDelta(
-    effectiveMcpClients,
+    mcpServersForTools(effectiveMcpClients, tools.filter(tool =>
+      getProviderFilteredToolCallDecision(getAPIProvider(), tool.name, model) === null,
+    )),
     messages ?? [],
     clientSide,
   )

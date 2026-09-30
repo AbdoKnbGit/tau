@@ -504,7 +504,9 @@ export class OpenAICompatLane implements Lane {
         model,
         messages,
         system,
-        tools,
+        // Apply the same eager policy on /messages, /responses and Google
+        // routes as on chat, including tools restored from older sessions.
+        tools: selectOpenAICompatToolsForRequest(tools, messages, cacheSessionId, provider),
         max_tokens,
         temperature,
         stop_sequences,

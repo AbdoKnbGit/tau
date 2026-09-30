@@ -41,7 +41,6 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../analytics/index.js'
-import { fetchClaudeAIMcpConfigsIfEligible } from './claudeai.js'
 import { expandEnvVarsInString } from './envExpansion.js'
 import {
   type ConfigScope,
@@ -1258,47 +1257,14 @@ export async function getClaudeCodeMcpConfigs(
 }
 
 /**
- * Get all MCP configurations across all scopes, including claude.ai servers.
- * This may be slow due to network calls - use getClaudeCodeMcpConfigs() for fast startup.
- * @returns All server configurations with appropriate scopes
+ * Get configured MCP servers from user, project, enterprise and plugin scopes.
+ * Claude.ai account connectors are not imported into Tau.
  */
 export async function getAllMcpConfigs(): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
 }> {
-  // Cheap power mode ignores all MCP sources, including claude.ai connectors.
-  if (getPowerModeFromSettings(getInitialSettings()) === 'cheap') {
-    return { servers: {}, errors: [] }
-  }
-
-  // In enterprise mode, don't load claude.ai servers (enterprise has exclusive control)
-  if (doesEnterpriseMcpConfigExist()) {
-    return getClaudeCodeMcpConfigs()
-  }
-
-  // Kick off the claude.ai fetch before getClaudeCodeMcpConfigs so it overlaps
-  // with loadAllPluginsCacheOnly() inside. Memoized — the awaited call below is a cache hit.
-  const claudeaiPromise = fetchClaudeAIMcpConfigsIfEligible()
-  const { servers: claudeCodeServers, errors } = await getClaudeCodeMcpConfigs(
-    {},
-    claudeaiPromise,
-  )
-  const { allowed: claudeaiMcpServers } = filterMcpServersByPolicy(
-    await claudeaiPromise,
-  )
-
-  // Suppress claude.ai connectors that duplicate an enabled manual server.
-  // Keys never collide (`slack` vs `claude.ai Slack`) so the merge below
-  // won't catch this — need content-based dedup by URL signature.
-  const { servers: dedupedClaudeAi } = dedupClaudeAiMcpServers(
-    claudeaiMcpServers,
-    claudeCodeServers,
-  )
-
-  // Merge with claude.ai having lowest precedence
-  const servers = Object.assign({}, dedupedClaudeAi, claudeCodeServers)
-
-  return { servers, errors }
+  return getClaudeCodeMcpConfigs()
 }
 
 /**

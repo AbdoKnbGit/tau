@@ -31,9 +31,12 @@ const _volatileBySession = new Map<string, string>()
  * Return the session's frozen volatile text, pinning `volatileText` as the
  * frozen value the first time a non-empty one is seen. Later (different)
  * values are ignored so the already-cached prefix keeps replaying byte-for-
- * byte. An empty first value pins nothing — a late-arriving volatile block
- * (e.g. MCP instructions that connect after turn 1) is frozen on its first
- * appearance instead, costing exactly one prefix break.
+ * byte. An empty first value pins nothing — a block that is empty on the
+ * first request is frozen on its first non-empty appearance instead, costing
+ * exactly one prefix break. The block is frozen whole, so a section that shows
+ * up later (after env info already filled it) never reaches the model this
+ * way; MCP server instructions go through the conversation instead
+ * (utils/mcpInstructionsDelta.ts).
  */
 export function freezeSessionVolatileText(
   cacheKey: string,

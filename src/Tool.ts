@@ -185,6 +185,8 @@ export type ToolUseContext = {
     querySource?: QuerySource
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
+    /** Read tools and their MCP connections from one current state snapshot. */
+    refreshMcpContext?: () => { tools: Tools; mcpClients: MCPServerConnection[] }
   }
   abortController: AbortController
   readFileState: FileStateCache

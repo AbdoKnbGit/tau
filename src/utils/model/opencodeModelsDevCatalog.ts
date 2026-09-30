@@ -27,6 +27,8 @@
  *                          @ai-sdk/openai → /responses, @ai-sdk/google →
  *                          :streamGenerateContent; no override → chat
  *   imageInput             `modalities.input` includes images
+ *   contextWindow          `limit.context` for this exact gateway row
+ *   maxInputTokens         `limit.input`, when a separate prompt cap exists
  *
  * Nothing here names a model, so a row OpenCode adds tomorrow is described on
  * the next refresh without a Tau release.
@@ -52,7 +54,8 @@ import { isModelPricingDisabled } from '../modelPricingCatalog.js'
 const CATALOG_URL = 'https://models.dev/api.json'
 // 2: rows carry the SDK (route) and image input. A v1 file has neither, so
 // it is discarded rather than read as though every row were chat-only.
-const CACHE_VERSION = 2
+// 3: also retain host-specific context and input limits.
+const CACHE_VERSION = 3
 /** Capabilities move on model releases, not on the hour. */
 const TTL_MS = 24 * 60 * 60 * 1000
 const FETCH_TIMEOUT_MS = 20_000
@@ -86,6 +89,10 @@ export interface OpencodeModelMeta {
   sdk?: OpencodeRowSdk
   /** The model takes image input. */
   imageInput: boolean
+  /** Whole context window published for this exact gateway row. */
+  contextWindow?: number
+  /** Separate prompt ceiling, when the host publishes one. */
+  maxInputTokens?: number
 }
 
 /** Stored form with short keys. */
@@ -95,6 +102,8 @@ export interface StoredRow {
   i?: boolean
   s?: OpencodeRowSdk
   v?: boolean
+  c?: number
+  p?: number
 }
 
 const SDK_BY_NPM: Readonly<Record<string, OpencodeRowSdk>> = {
@@ -157,12 +166,17 @@ export function deriveOpencodeModelsDevRows(provider: unknown): Record<string, S
     const npm = (model.provider as { npm?: unknown } | undefined)?.npm
     const sdk = typeof npm === 'string' ? SDK_BY_NPM[npm] : undefined
     const inputs = (model.modalities as { input?: unknown } | undefined)?.input
+    const limits = model.limit as { context?: unknown; input?: unknown } | undefined
+    const context = positiveLimit(limits?.context)
+    const input = positiveLimit(limits?.input)
     out[key] = {
       r: reasoning,
       ...(efforts.length > 0 && { e: efforts }),
       ...(interleaved?.field === 'reasoning_content' && { i: true }),
       ...(sdk && { s: sdk }),
       ...(Array.isArray(inputs) && inputs.includes('image') && { v: true }),
+      ...(context !== undefined && { c: context }),
+      ...(input !== undefined && { p: input }),
     }
   }
   return out
@@ -193,7 +207,9 @@ function loadCache(): CacheFile | null {
   try {
     if (!existsSync(path)) return null
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as CacheFile
-    if (parsed?.version !== CACHE_VERSION) return null
+    // Preserve v2 capabilities during a failed/offline upgrade, but refresh
+    // them even within the TTL because they cannot supply context limits.
+    if (parsed?.version !== CACHE_VERSION && parsed?.version !== 2) return null
     if (!parsed.providers || typeof parsed.providers !== 'object') return null
     cache = parsed
   } catch {
@@ -229,7 +245,22 @@ function toMeta(row: StoredRow): OpencodeModelMeta {
     replaysReasoningContent: row.i === true,
     ...(row.s && { sdk: row.s }),
     imageInput: row.v === true,
+    ...(positiveLimit(row.c) !== undefined && { contextWindow: row.c }),
+    ...(positiveLimit(row.p) !== undefined && { maxInputTokens: row.p }),
   }
+}
+
+function positiveLimit(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+/** Effective prompt window; never borrow the paid/base model's limits. */
+export function getOpencodeContextWindow(provider: string, modelId: string): number | undefined {
+  const meta = getOpencodeModelMeta(provider, modelId)
+  const context = meta?.contextWindow
+  const input = meta?.maxInputTokens
+  if (context !== undefined && input !== undefined) return Math.min(context, input)
+  return context ?? input
 }
 
 /** Every row described for this host, as [id, meta]. Empty when none. */
@@ -315,7 +346,7 @@ export function ensureOpencodeModelsDevFresh(): Promise<void> | null {
     current = loadCache()
   }
   const age = current ? now - current.fetchedAt : -1
-  if (current && age >= 0 && age < TTL_MS) return null
+  if (current?.version === CACHE_VERSION && age >= 0 && age < TTL_MS) return null
 
   refresh = (async () => {
     try {
@@ -346,13 +377,13 @@ export function ensureOpencodeModelsDevFresh(): Promise<void> | null {
 }
 
 /**
- * Start a refresh when one is due and, only when no description is on disk
- * at all, wait up to `ms` for it. A stale table still describes every model it
- * knew, so it never holds anything up.
+ * Start a refresh when one is due and wait up to `ms` if the cache is missing
+ * or predates context limits. A stale v3 table keeps serving its known rows
+ * while refreshing in the background.
  */
 export async function waitForOpencodeModelsDev(ms: number): Promise<void> {
   const pending = ensureOpencodeModelsDevFresh()
-  if (!pending || hasOpencodeModelsDev()) return
+  if (!pending || loadCache()?.version === CACHE_VERSION) return
 
   let timer: ReturnType<typeof setTimeout> | undefined
   const giveUp = new Promise<void>((resolve) => {

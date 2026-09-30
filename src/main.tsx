@@ -102,7 +102,7 @@ const kairosGate = feature('KAIROS') ? require('./assistant/gate.js') as typeof 
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { checkQuotaStatus } from './services/claudeAiLimits.js';
 import { getMcpToolsCommandsAndResources, prefetchAllMcpResources } from './services/mcp/client.js';
-import { MCP_SOURCE_CLAUDEAI_CONNECTORS, MCP_SOURCE_LOCAL_CONFIG, acknowledgeMcpPublication, beginMcpSource, registerMcpPublisher, settleMcpSource, skipMcpSource } from './services/mcp/readiness.js';
+import { MCP_SOURCE_LOCAL_CONFIG, acknowledgeMcpPublication, beginMcpSource, registerMcpPublisher, settleMcpSource, skipMcpSource } from './services/mcp/readiness.js';
 import { waitForMcpLaunchBarrier } from './services/mcp/launchBarrier.js';
 import { VALID_INSTALLABLE_SCOPES, VALID_UPDATE_SCOPES } from './services/plugins/pluginCliCommands.js';
 import { initBundledSkills } from './skills/bundled/index.js';
@@ -153,10 +153,7 @@ import { validateUuid } from './utils/uuid.js';
 import { registerMcpAddCommand } from 'src/commands/mcp/addCommand.js';
 import { registerMcpXaaIdpCommand } from 'src/commands/mcp/xaaIdpCommand.js';
 import { logPermissionContextForAnts } from 'src/services/internalLogging.js';
-import { fetchClaudeAIMcpConfigsIfEligible } from 'src/services/mcp/claudeai.js';
-import { clearServerCache } from 'src/services/mcp/client.js';
-import { areMcpConfigsAllowedWithEnterpriseMcpConfig, dedupClaudeAiMcpServers, doesEnterpriseMcpConfigExist, filterMcpServersByPolicy, getClaudeCodeMcpConfigs, getMcpServerSignature, isMcpServerDisabled, parseMcpConfig, parseMcpConfigFromFilePath } from 'src/services/mcp/config.js';
-import { excludeCommandsByServer, excludeResourcesByServer } from 'src/services/mcp/utils.js';
+import { areMcpConfigsAllowedWithEnterpriseMcpConfig, doesEnterpriseMcpConfigExist, filterMcpServersByPolicy, getClaudeCodeMcpConfigs, isMcpServerDisabled, parseMcpConfig, parseMcpConfigFromFilePath } from 'src/services/mcp/config.js';
 import { isXaaEnabled } from 'src/services/mcp/xaaIdpLogin.js';
 import { getRelevantTips } from 'src/services/tips/tipRegistry.js';
 import { logContextMetrics } from 'src/utils/api.js';
@@ -1864,34 +1861,7 @@ async function run(): Promise<CommanderCommand> {
     });
     void assertMinVersion();
 
-    // claude.ai config fetch: -p mode only (interactive uses useManageMCPConnections
-    // two-phase loading). Kicked off here to overlap with setup(); awaited
-    // before runHeadless so single-turn -p sees connectors. Skipped under
-    // enterprise/strict MCP to preserve policy boundaries.
-    // The connector source is registered here, at launch, even though
-    // interactive mode does not fetch it until the REPL mounts: the launch
-    // barrier can be reached before that mount, and a connector list still in
-    // flight is the case that released the wait too early (see
-    // docs/mcp-tool-loading-investigation.md §2, the 12:31 session).
-    if (strictMcpConfig || isBareMode() || doesEnterpriseMcpConfigExist()) {
-      skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS);
-    } else {
-      beginMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS);
-    }
-    const claudeaiConfigPromise: Promise<Record<string, ScopedMcpServerConfig>> = isNonInteractiveSession && !strictMcpConfig && !doesEnterpriseMcpConfigExist() &&
-    // --bare / SIMPLE: skip claude.ai proxy servers (datadog, Gmail,
-    // Slack, BigQuery, PubMed — 6-14s each to connect). Scripted calls
-    // that need MCP pass --mcp-config explicitly.
-    !isBareMode() ? fetchClaudeAIMcpConfigsIfEligible().then(configs => {
-      const {
-        allowed,
-        blocked
-      } = filterMcpServersByPolicy(configs);
-      if (blocked.length > 0) {
-        process.stderr.write(`Warning: claude.ai MCP ${plural(blocked.length, 'server')} blocked by enterprise policy: ${blocked.join(', ')}\n`);
-      }
-      return allowed;
-    }) : Promise.resolve({});
+    // Tau loads configured MCP servers only; claude.ai account connectors are not imported.
 
     // Kick off MCP config loading early (safe - just reads files, no execution).
     // Both interactive and -p use getTauCodeMcpConfigs (local file reads only).
@@ -2509,8 +2479,11 @@ async function run(): Promise<CommanderCommand> {
       servers: existingMcpConfigs
     } = await mcpConfigPromise;
     logForDebugging(`[STARTUP] MCP configs resolved in ${mcpConfigResolvedMs}ms (awaited at +${Date.now() - mcpConfigStart}ms)`);
-    // CLI flag (--mcp-config) should override file-based configs, matching settings precedence
-    const allMcpConfigs = {
+    // Cheap mode must also suppress explicit --mcp-config connections. The
+    // config loader already hides file-based servers, but spreading dynamic
+    // configs afterward used to bypass that gate during startup prefetch.
+    // Keep dynamicMcpConfig for a later /mode normal transition.
+    const allMcpConfigs = getPowerModeFromSettings(getInitialSettings()) === 'cheap' ? {} : {
       ...existingMcpConfigs,
       ...dynamicMcpConfig
     };
@@ -2538,30 +2511,11 @@ async function run(): Promise<CommanderCommand> {
     // Interactive mode only: print mode defers connects until headlessStore exists
     // and pushes per-server (below), so ToolSearch's pending-client handling works
     // and one slow server doesn't block the batch.
-    const localMcpPromise = isNonInteractiveSession ? Promise.resolve({
+    const mcpPromise = isNonInteractiveSession ? Promise.resolve({
       clients: [],
       tools: [],
       commands: []
     }) : prefetchAllMcpResources(regularMcpConfigs);
-    const claudeaiMcpPromise = isNonInteractiveSession ? Promise.resolve({
-      clients: [],
-      tools: [],
-      commands: []
-    }) : claudeaiConfigPromise.then(configs => Object.keys(configs).length > 0 ? prefetchAllMcpResources(configs) : {
-      clients: [],
-      tools: [],
-      commands: []
-    });
-    // Merge with dedup by name: each prefetchAllMcpResources call independently
-    // adds helper tools (ListMcpResourcesTool, ReadMcpResourceTool) via
-    // local dedup flags, so merging two calls can yield duplicates. print.ts
-    // already uniqBy's the final tool pool, but dedup here keeps appState clean.
-    const mcpPromise = Promise.all([localMcpPromise, claudeaiMcpPromise]).then(([local, claudeai]) => ({
-      clients: [...local.clients, ...claudeai.clients],
-      tools: uniqBy([...local.tools, ...claudeai.tools], 'name'),
-      commands: uniqBy([...local.commands, ...claudeai.commands], 'name')
-    }));
-
     // Start hooks early so they run in parallel with MCP connections.
     // Skip for initOnly/init/maintenance (handled separately), non-interactive
     // (handled via setupTrigger), and resume/continue (conversationRecovery.ts
@@ -2882,94 +2836,14 @@ async function run(): Promise<CommanderCommand> {
       // the default raises TAU_MCP_LAUNCH_WAIT_MS; setting it to 0 turns the
       // wait off entirely, which for -p means turn 1 may see no MCP tools.
       const localMcpConnect = connectMcpBatch(regularMcpConfigs, 'regular');
-      // Dedup: suppress plugin MCP servers that duplicate a claude.ai
-      // connector (connector wins), then connect claude.ai servers.
-      // #23725 made this blocking so single-turn -p sees connectors, but with
-      // 40+ slow connectors tengu_startup_perf p99 climbed to 76s. Whatever
-      // is not ready by the shared deadline keeps running in the background
-      // and updates headlessStore, so turn 2+ still sees it.
-      const claudeaiConnect = claudeaiConfigPromise.then(claudeaiConfigs => {
-        if (Object.keys(claudeaiConfigs).length > 0) {
-          const claudeaiSigs = new Set<string>();
-          for (const config of Object.values(claudeaiConfigs)) {
-            const sig = getMcpServerSignature(config);
-            if (sig) claudeaiSigs.add(sig);
-          }
-          const suppressed = new Set<string>();
-          for (const [name, config] of Object.entries(regularMcpConfigs)) {
-            if (!name.startsWith('plugin:')) continue;
-            const sig = getMcpServerSignature(config);
-            if (sig && claudeaiSigs.has(sig)) suppressed.add(name);
-          }
-          if (suppressed.size > 0) {
-            logForDebugging(`[MCP] Lazy dedup: suppressing ${suppressed.size} plugin server(s) that duplicate claude.ai connectors: ${[...suppressed].join(', ')}`);
-            // Disconnect before filtering from state. Only connected
-            // servers need cleanup — clearServerCache on a never-connected
-            // server triggers a real connect just to kill it (memoize
-            // cache-miss path, see useManageMCPConnections.ts:870).
-            for (const c of headlessStore.getState().mcp.clients) {
-              if (!suppressed.has(c.name) || c.type !== 'connected') continue;
-              c.client.onclose = undefined;
-              void clearServerCache(c.name, c.config).catch(() => {});
-            }
-            headlessStore.setState(prev => {
-              let {
-                clients,
-                tools,
-                commands,
-                resources
-              } = prev.mcp;
-              clients = clients.filter(c => !suppressed.has(c.name));
-              tools = tools.filter(t => !t.mcpInfo || !suppressed.has(t.mcpInfo.serverName));
-              for (const name of suppressed) {
-                commands = excludeCommandsByServer(commands, name);
-                resources = excludeResourcesByServer(resources, name);
-              }
-              return {
-                ...prev,
-                mcp: {
-                  ...prev.mcp,
-                  clients,
-                  tools,
-                  commands,
-                  resources
-                }
-              };
-            });
-          }
-        }
-        // Suppress claude.ai connectors that duplicate an enabled
-        // manual server (URL-signature match). Plugin dedup above only
-        // handles `plugin:*` keys; this catches manual `.mcp.json` entries.
-        // plugin:* must be excluded here — step 1 already suppressed
-        // those (claude.ai wins); leaving them in suppresses the
-        // connector too, and neither survives (gh-39974).
-        const nonPluginConfigs = pickBy(regularMcpConfigs, (_, n) => !n.startsWith('plugin:'));
-        const {
-          servers: dedupedClaudeAi
-        } = dedupClaudeAiMcpServers(claudeaiConfigs, nonPluginConfigs);
-        settleMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS, Object.keys(dedupedClaudeAi));
-        return connectMcpBatch(dedupedClaudeAi, 'claudeai');
-      }).catch(err => {
-        // Settle regardless: an unsettled source would leave the readiness
-        // registry permanently unsettled for anything else reading it.
-        // Swallowed, not rethrown — this promise is raced below, so a late
-        // rejection would surface as an unhandled rejection.
-        skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS);
-        logForDebugging(`[MCP] claude.ai connector setup failed: ${err}`);
-      });
-      // Neither batch is awaited directly: both report into the readiness
-      // registry, and the barrier waits on that under the remaining launch
-      // budget. Claim their rejections so an unawaited failure cannot
-      // surface as an unhandled rejection.
+      // Discovery reports readiness independently; a failed connection must not
+      // become an unhandled rejection while the launch barrier is waiting.
       localMcpConnect.catch(() => {});
-      claudeaiConnect.catch(() => {});
       const mcpWait = await waitForMcpLaunchBarrier();
       if (mcpWait.outcome === 'deadline') {
         logForDebugging(`[MCP] not all servers ready after ${mcpWait.waitedMs}ms — proceeding; background connection continues`);
       }
       profileCheckpoint('after_connectMcp');
-      profileCheckpoint('after_connectMcp_claudeai');
 
       // In headless mode, start deferred prefetches immediately (no user typing delay)
       // --bare / SIMPLE: startDeferredPrefetches early-returns internally.

@@ -1,9 +1,9 @@
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logEvent } from '../services/analytics/index.js'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
 } from '../services/mcp/types.js'
+import { LIST_MCP_RESOURCES_TOOL_NAME } from '../tools/ListMcpResourcesTool/prompt.js'
 import type { Message } from '../types/message.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 
@@ -12,6 +12,11 @@ export type McpInstructionsDelta = {
   addedNames: string[]
   /** Rendered "## {name}\n{instructions}" blocks for addedNames. */
   addedBlocks: string[]
+  /**
+   * The addedNames announced earlier with different text (a server that
+   * reconnected with new instructions). Their block replaces the earlier one.
+   */
+  updatedNames?: string[]
   removedNames: string[]
 }
 
@@ -27,37 +32,69 @@ export type ClientSideInstruction = {
 }
 
 /**
- * True → announce MCP server instructions via persisted delta attachments.
- * False → prompts.ts keeps its DANGEROUS_uncachedSystemPromptSection
- * (rebuilt every turn; cache-busts on late connect).
+ * True → MCP server instructions reach the model as reminders in the
+ * conversation: query.ts announces them before each request, from the same
+ * server state that request's tools come from, appended to the newest message
+ * so nothing already sent changes. False → prompts.ts keeps its per-turn
+ * system-prompt section, which rewrites the cached prefix when a server
+ * connects late and never reaches the lanes that freeze that section.
  *
- * Env override for local testing: CLAUDE_CODE_MCP_INSTR_DELTA=true/false
- * wins over both ant bypass and the GrowthBook gate.
+ * On by default. CLAUDE_CODE_MCP_INSTR_DELTA=0 turns it off (=1 forces it on).
+ * CLAUDE_CODE_DISABLE_ATTACHMENTS also turns it off: no reminder is sent then,
+ * so the system-prompt section is the only way the instructions arrive.
  */
 export function isMcpInstructionsDeltaEnabled(): boolean {
   if (isEnvTruthy(process.env.CLAUDE_CODE_MCP_INSTR_DELTA)) return true
   if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_MCP_INSTR_DELTA)) return false
-  return (
-    process.env.USER_TYPE === 'ant' ||
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_basalt_3kr', false)
+  return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS)
+}
+
+/**
+ * The servers whose instructions belong with a request that carries `tools`:
+ * connected servers the request can use (one of their tools is in it, or it
+ * carries the MCP resource tools and the server has resources), plus servers
+ * that are reconnecting, which keep what they already announced until the
+ * reconnect settles. Every other server counts as gone for this request.
+ */
+export function mcpServersForTools(
+  mcpClients: readonly MCPServerConnection[],
+  tools: ReadonlyArray<{ name: string; mcpInfo?: { serverName: string } }>,
+): MCPServerConnection[] {
+  const offered = new Set<string>()
+  let resourceTools = false
+  for (const tool of tools) {
+    if (tool.mcpInfo) offered.add(tool.mcpInfo.serverName)
+    else if (
+      tool.name === LIST_MCP_RESOURCES_TOOL_NAME ||
+      tool.name === 'ReadMcpResourceTool'
+    ) resourceTools = true
+  }
+  return mcpClients.filter(
+    c =>
+      c.type === 'pending' ||
+      (c.type === 'connected' &&
+        (offered.has(c.name) || (resourceTools && !!c.capabilities?.resources))),
   )
 }
 
 /**
- * Diff the current set of connected MCP servers that have instructions
- * (server-authored via InitializeResult, or client-side synthesized)
- * against what's already been announced in this conversation. Null if
- * nothing changed.
+ * Diff the servers that have instructions (server-authored via
+ * InitializeResult, or client-side synthesized) against what this
+ * conversation has already been told. Null if nothing changed.
  *
- * Instructions are immutable for the life of a connection (set once at
- * handshake), so the scan diffs on server NAME, not on content.
+ * Compares the text, not only the name: a server that reconnects between two
+ * scans can come back with different instructions, or none, and nothing else
+ * would tell the model. A server that is reconnecting ('pending') keeps its
+ * announcement; one that is gone, or connected without instructions, has its
+ * earlier instructions retracted.
  */
 export function getMcpInstructionsDelta(
   mcpClients: MCPServerConnection[],
   messages: Message[],
   clientSideInstructions: ClientSideInstruction[],
 ): McpInstructionsDelta | null {
-  const announced = new Set<string>()
+  // Name → the block the model was last shown for that server.
+  const announced = new Map<string, string>()
   let attachmentCount = 0
   let midCount = 0
   for (const msg of messages) {
@@ -65,14 +102,18 @@ export function getMcpInstructionsDelta(
     attachmentCount++
     if (msg.attachment.type !== 'mcp_instructions_delta') continue
     midCount++
-    for (const n of msg.attachment.addedNames) announced.add(n)
-    for (const n of msg.attachment.removedNames) announced.delete(n)
+    const { addedNames, addedBlocks, removedNames } = msg.attachment
+    addedNames.forEach((n, i) => announced.set(n, addedBlocks[i] ?? ''))
+    for (const n of removedNames) announced.delete(n)
   }
 
   const connected = mcpClients.filter(
     (c): c is ConnectedMCPServer => c.type === 'connected',
   )
   const connectedNames = new Set(connected.map(c => c.name))
+  const reconnecting = new Set(
+    mcpClients.filter(c => c.type === 'pending').map(c => c.name),
+  )
 
   // Servers with instructions to announce (either channel). A server can
   // have both: server-authored instructions + a client-side block appended.
@@ -92,19 +133,17 @@ export function getMcpInstructionsDelta(
   }
 
   const added: Array<{ name: string; block: string }> = []
+  const updated: string[] = []
   for (const [name, block] of blocks) {
-    if (!announced.has(name)) added.push({ name, block })
+    const previous = announced.get(name)
+    if (previous === block) continue
+    added.push({ name, block })
+    if (previous !== undefined) updated.push(name)
   }
 
-  // A previously-announced server that is no longer connected → removed.
-  // There is no "announced but now has no instructions" case for a still-
-  // connected server: InitializeResult is immutable, and client-side
-  // instruction gates are session-stable in practice. (/model can flip
-  // the model gate, but deferred_tools_delta has the same property and
-  // we treat history as historical — no retroactive retractions.)
   const removed: string[] = []
-  for (const n of announced) {
-    if (!connectedNames.has(n)) removed.push(n)
+  for (const n of announced.keys()) {
+    if (!blocks.has(n) && !reconnecting.has(n)) removed.push(n)
   }
 
   if (added.length === 0 && removed.length === 0) return null
@@ -113,6 +152,7 @@ export function getMcpInstructionsDelta(
   // scan-fails-in-prod bug, same attachment persistence path.
   logEvent('tengu_mcp_instructions_pool_change', {
     addedCount: added.length,
+    updatedCount: updated.length,
     removedCount: removed.length,
     priorAnnouncedCount: announced.size,
     clientSideCount: clientSideInstructions.length,
@@ -125,6 +165,7 @@ export function getMcpInstructionsDelta(
   return {
     addedNames: added.map(a => a.name),
     addedBlocks: added.map(a => a.block),
+    ...(updated.length > 0 && { updatedNames: updated.sort() }),
     removedNames: removed.sort(),
   }
 }

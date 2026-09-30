@@ -31,7 +31,7 @@ import {
 } from '../../lanes/cursor/catalog.js'
 import { inferProviderLabelFromModelId } from './openrouterCatalog.js'
 import { warmOpenRouterReasoningCatalog } from './openrouterReasoningCatalog.js'
-import { waitForOpencodeModelsDev } from './opencodeModelsDevCatalog.js'
+import { getOpencodeContextWindow, waitForOpencodeModelsDev } from './opencodeModelsDevCatalog.js'
 import {
   VOICE_CONVERSATION_LABEL,
   DEFAULT_LIVE_VOICE,
@@ -224,6 +224,10 @@ export async function refreshProviderContextWindows(): Promise<void> {
     if (!SELECTABLE_PROVIDERS.includes(provider)) {
       return
     }
+    if (provider === 'opencode' || provider === 'opencodego') {
+      // An old durable window must not prevent the metadata format upgrade.
+      await waitForOpencodeModelsDev(OPENCODE_MODELS_DEV_WAIT_MS)
+    }
     const ageMs = getStoredCatalogAgeMs(provider)
     if (ageMs !== undefined && ageMs < CONTEXT_WINDOW_REFRESH_TTL_MS) {
       return
@@ -261,7 +265,7 @@ export async function loadProviderModels(
 
   await resolveProviderAuth(provider)
 
-  const [models] = await Promise.all([
+  const [upstreamModels] = await Promise.all([
     getProvider(provider).listModels(),
     // OpenCode's thinking chips are drawn from the ladder models.dev states
     // per row. Only a machine with no copy yet waits, alongside a fetch the
@@ -270,6 +274,12 @@ export async function loadProviderModels(
       ? waitForOpencodeModelsDev(OPENCODE_MODELS_DEV_WAIT_MS)
       : undefined,
   ])
+  const models = provider === 'opencode' || provider === 'opencodego'
+    ? upstreamModels.map(model => {
+        const contextWindow = getOpencodeContextWindow(provider, model.id)
+        return contextWindow === undefined ? model : { ...model, contextWindow }
+      })
+    : upstreamModels
   if (provider === 'openrouter') {
     // OpenRouter states each row's reasoning ladder in its own catalogue, and
     // the picker draws those chips synchronously. Warming here — alongside a

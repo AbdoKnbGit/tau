@@ -12,8 +12,6 @@
  */
 
 import assert from 'node:assert/strict'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import type { APIProvider } from './model/providers.js'
 import {
   providerModelSupportsClientSideToolDiscovery,
@@ -44,7 +42,7 @@ const EXCLUDED: APIProvider[] = [
 
 // Explicit cache_control breakpoints, or no prefix-cache pin at all.
 const STILL_LAZY: APIProvider[] = [
-  'opencode', 'vercel', 'requesty', 'copilot', 'iflow',
+  'vercel', 'requesty', 'copilot', 'iflow',
   'minimax', 'glm', 'ollama', 'lmstudio',
 ] as APIProvider[]
 
@@ -122,14 +120,16 @@ test('OpenRouter exposes schemas from the initial request in every mode', () => 
   }
 })
 
-test('OpenCode rows off the chat route get eager schemas', () => {
-  // With no models.dev catalogue on disk the families from OpenCode's own
-  // endpoint tables decide the route.
-  process.env.TAU_OPENCODE_MODELS_DEV_CACHE = join(tmpdir(), `tau-no-catalog-${process.pid}.json`)
-  for (const model of ['claude-opus-5-5', 'gpt-5.5', 'gemini-3.7-flash', 'qwen3.6-plus']) {
-    assert.equal(providerModelSupportsClientSideToolDiscovery('opencode', model), false, model)
+test('all OpenCode routes keep schemas eager in every mode', () => {
+  for (const provider of ['opencode', 'opencodego'] as const) {
+    assert.equal(providerSupportsClientSideToolDiscovery(provider), false)
+    for (const model of [undefined, 'claude-opus-5-5', 'gpt-5.5', 'gemini-3.7-flash', 'qwen3.6-plus', 'kimi-k2.6', 'longcat-2.5-preview-free', 'mimo-v2.6-flash-free']) {
+      assert.equal(providerModelSupportsClientSideToolDiscovery(provider, model), false, `${provider}/${model}`)
+    }
+    for (const mode of ['cheap', 'normal', 'full'] as const) {
+      assert.equal(shouldDisableToolDeferralForProvider(provider, mode), true)
+    }
   }
-  assert.equal(providerModelSupportsClientSideToolDiscovery('opencode', 'kimi-k2.6'), true)
 })
 
 if (failed > 0) {

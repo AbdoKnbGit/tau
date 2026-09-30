@@ -76,6 +76,7 @@ import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
+import { MCP_INSTRUCTION_UPDATES_GUIDANCE } from './mcpInstructions.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -805,7 +806,7 @@ ${CYBER_RISK_INSTRUCTION}`,
       // When delta enabled, instructions are announced via persisted
       // mcp_instructions_delta attachments (attachments.ts) instead.
       isMcpInstructionsDeltaEnabled()
-        ? null
+        ? null // Cheap mode has no MCP tools.
         : getMcpInstructionsSection(mcpClients),
       getScratchpadInstructions(),
       getFunctionResultClearingSection(model),
@@ -847,7 +848,7 @@ ${CYBER_RISK_INSTRUCTION}`,
       'mcp_instructions',
       () =>
         isMcpInstructionsDeltaEnabled()
-          ? null
+          ? MCP_INSTRUCTION_UPDATES_GUIDANCE
           : getMcpInstructionsSection(mcpClients),
       'MCP servers connect/disconnect between turns',
     ),

@@ -15,6 +15,9 @@ export function installNativeLaneReadinessResolver(
 }
 
 export function providerWillUseNativeLane(provider: APIProvider): boolean {
+  // OpenAI has no legacy transport fallback, even before the shim installs
+  // its resolver or while OAuth credentials are waiting to be refreshed.
+  if (provider === 'openai') return true
   if (eagerLatchedProviders.has(provider)) return false
   const ready = readinessResolver?.(provider) ?? false
   if (!ready) eagerLatchedProviders.add(provider)

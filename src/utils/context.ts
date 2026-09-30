@@ -73,6 +73,13 @@ export function getContextWindowForModel(
     }
   }
 
+  // OpenCode's gateway limits can differ from the same model's native host.
+  // Resolve them before shared capability data or Anthropic beta overrides.
+  const provider = getAPIProvider()
+  if (provider === 'opencode' || provider === 'opencodego') {
+    return getProviderCatalogContextWindow(model, provider) ?? MODEL_CONTEXT_WINDOW_DEFAULT
+  }
+
   // [1m] suffix — explicit client-side opt-in, respected over all detection
   if (has1mContext(model)) {
     return 1_000_000
@@ -102,7 +109,6 @@ export function getContextWindowForModel(
     }
   }
 
-  const provider = getAPIProvider()
   const providerWindow = getProviderCatalogContextWindow(model, provider)
   if (providerWindow) {
     if (

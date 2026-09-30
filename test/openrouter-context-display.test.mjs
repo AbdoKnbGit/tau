@@ -53,3 +53,19 @@ test('other providers keep their existing pending-usage display policy', () => {
   const messages = [response('completed', 54_000), response('pending', 0)]
   assert.ok(usage(messages, 'deepseek').usedTokens >= 71_000)
 })
+
+for (const provider of ['opencode', 'opencodego']) {
+  test(`${provider} keeps measured context through streaming, then accepts genuine shrinkage`, () => {
+    const messages = [response('measured', 10_000, 80_000)]
+    assert.equal(usage(messages, provider).usedTokens, 90_000)
+    messages.push(response('thinking', 0), response('tool', 0))
+    assert.equal(usage(messages, provider).usedTokens, 90_000)
+    messages.at(-1).message.usage = { input_tokens: 12_000, cache_read_input_tokens: 88_000, output_tokens: 20 }
+    assert.equal(usage(messages, provider).usedTokens, 100_000)
+    messages.push(response('pending', 0))
+    assert.equal(usage(messages, provider).usedTokens, 100_000)
+    messages.push({ type: 'system', subtype: 'compact_boundary', uuid: 'boundary' })
+    messages.push(response('after-compact', 0, 40_000), response('pending-again', 0))
+    assert.equal(usage(messages, provider).usedTokens, 40_000)
+  })
+}

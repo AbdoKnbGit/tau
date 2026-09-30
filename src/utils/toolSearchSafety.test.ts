@@ -311,7 +311,7 @@ test('provider matrix enables only implemented discovery transports', () => {
   for (const provider of ['firstParty', 'bedrock', 'vertex', 'foundry'] as const) {
     assert(providerSupportsSafeToolDiscovery(provider), provider)
   }
-  for (const provider of ['gemini', 'opencode', 'deepseek'] as const) {
+  for (const provider of ['gemini', 'deepseek'] as const) {
     assert(providerSupportsClientSideToolDiscovery(provider), provider)
     assert(providerSupportsSafeToolDiscovery(provider), provider)
   }
@@ -319,7 +319,7 @@ test('provider matrix enables only implemented discovery transports', () => {
     !providerSupportsClientSideToolDiscovery('agentrouter'),
     'AgentRouter bypass path must stay eager',
   )
-  for (const provider of ['cursor', 'openai', 'commandcode', 'kiro', 'openrouter'] as const) {
+  for (const provider of ['cursor', 'openai', 'commandcode', 'kiro', 'openrouter', 'opencode', 'opencodego'] as const) {
     assert(!providerSupportsSafeToolDiscovery(provider), provider)
   }
 })
@@ -361,7 +361,7 @@ test('Groq small-tier eager calls are not guarded while native lanes stay lazy',
   }
 
   assert(
-    providerModelSupportsClientSideToolDiscovery('deepseek', 'deepseek-chat'),
+    providerModelSupportsClientSideToolDiscovery('glm', 'glm-4.6'),
     'supported native lane was disabled',
   )
   const nativeDecision = decideLazyToolCall({
@@ -501,13 +501,13 @@ test('NIM fast mode disables discovery and rejects schemas pruned post-filter', 
   }
 })
 
-test('cheap mode is eager on every transport and normal keeps discovery', () => {
+test('cheap mode is eager and normal keeps discovery on eligible transports', () => {
   assert(
     shouldDisableToolDeferralForProvider('deepseek', 'cheap'),
     'cheap client-native discovery must be eager/cache-stable',
   )
   for (const mode of ['normal', 'full'] as const) {
-    assert(!shouldDisableToolDeferralForProvider('deepseek', mode), `deepseek/${mode}`)
+    assert(!shouldDisableToolDeferralForProvider('glm', mode), `glm/${mode}`)
   }
   for (const mode of ['cheap', 'normal', 'full'] as const) {
     assert(shouldDisableToolDeferralForProvider('cursor', mode), `cursor/${mode}`)
@@ -521,6 +521,15 @@ test('cheap mode is eager on every transport and normal keeps discovery', () => 
       !shouldDisableToolDeferralForProvider('firstParty', mode),
       `firstParty/${mode} lost server-native discovery`,
     )
+  }
+})
+
+test('prefix-cache providers keep schemas eager in every power mode', () => {
+  for (const provider of ['deepseek', 'mimo', 'alibaba', 'fireworks', 'moonshot', 'cloudflare', 'mistral', 'lxd'] as const) {
+    assert(!providerModelSupportsClientSideToolDiscovery(provider), `${provider} unexpectedly deferred tools`)
+    for (const mode of ['cheap', 'normal', 'full'] as const) {
+      assert(shouldDisableToolDeferralForProvider(provider, mode), `${provider}/${mode} rewrites cached tool schemas`)
+    }
   }
 })
 

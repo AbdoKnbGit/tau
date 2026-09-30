@@ -373,7 +373,7 @@ export class CodexApiClient {
 
   configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string; chatgptAccountId?: string; chatgptIdToken?: string }): void {
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
-    if (opts.baseUrl) this.explicitBaseUrl = opts.baseUrl
+    if (opts.baseUrl !== undefined) this.explicitBaseUrl = opts.baseUrl || null
     if (opts.chatgptAccessToken !== undefined) this.chatgptAccessToken = opts.chatgptAccessToken
     if (opts.chatgptAccountId !== undefined) this.chatgptAccountId = opts.chatgptAccountId
     // Auto-extract the account id from the id_token (preferred, carries

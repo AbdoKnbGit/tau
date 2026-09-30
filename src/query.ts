@@ -70,6 +70,7 @@ import {
   createAttachmentMessage,
   filterDuplicateMemoryAttachments,
   getAttachmentMessages,
+  getMcpInstructionsDeltaAttachment,
   startRelevantMemoryPrefetch,
 } from './utils/attachments.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -214,6 +215,15 @@ function isWithheldMaxOutputTokens(
   msg: Message | StreamEvent | undefined,
 ): msg is AssistantMessage {
   return msg?.type === 'assistant' && msg.apiError === 'max_output_tokens'
+}
+
+/** Main thread, SDK and agents; every other source is a helper request. */
+function isConversationQuerySource(querySource: QuerySource): boolean {
+  return (
+    querySource.startsWith('repl_main_thread') ||
+    querySource === 'sdk' ||
+    querySource.startsWith('agent:')
+  )
 }
 
 export type QueryParams = {
@@ -595,6 +605,31 @@ async function* queryLoop(
       tracking = {
         ...(tracking ?? { compacted: false, turnId: '', turnCounter: 0 }),
         consecutiveFailures,
+      }
+    }
+
+    // MCP server instructions go out with the tools they describe: diffed
+    // against what this conversation was already told, from the same server
+    // list this request's tools came from, and appended to the newest message
+    // so no earlier byte changes. Conversations only (main thread, SDK,
+    // agents); helper forks resend a conversation's prefix as it stands.
+    if (isConversationQuerySource(querySource)) {
+      const fresh = toolUseContext.options.refreshMcpContext?.()
+      if (fresh) {
+        toolUseContext = {
+          ...toolUseContext,
+          options: { ...toolUseContext.options, ...fresh },
+        }
+      }
+      for (const attachment of getMcpInstructionsDeltaAttachment(
+        toolUseContext.options.mcpClients,
+        toolUseContext.options.tools,
+        toolUseContext.options.mainLoopModel,
+        messagesForQuery,
+      )) {
+        const message = createAttachmentMessage(attachment)
+        yield message
+        messagesForQuery = [...messagesForQuery, message]
       }
     }
 
@@ -2011,8 +2046,12 @@ async function* queryLoop(
       }
     }
 
-    // Refresh tools between turns so newly-connected MCP servers become available
-    if (updatedToolUseContext.options.refreshTools) {
+    // Legacy tool-only refresh. Contexts with an atomic MCP refresh read both
+    // pools immediately before the next request, after any compaction awaits.
+    if (
+      updatedToolUseContext.options.refreshTools &&
+      !updatedToolUseContext.options.refreshMcpContext
+    ) {
       const refreshedTools = updatedToolUseContext.options.refreshTools()
       if (refreshedTools !== updatedToolUseContext.options.tools) {
         updatedToolUseContext = {

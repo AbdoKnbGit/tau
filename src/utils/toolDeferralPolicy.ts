@@ -3,7 +3,6 @@ import type { APIProvider } from './model/providers.js'
 import type { PowerMode } from './powerMode.js'
 import { isSmallTierGroqModel } from '../lanes/openai-compat/groq_tool_policy.js'
 import { isNimFastToolFilterActive } from '../lanes/openai-compat/nim_tool_policy.js'
-import { openCodeRouteFor } from '../lanes/openai-compat/opencode_anthropic_route.js'
 
 /**
  * Providers routed through Tau's Gemini or OpenAI-compatible lanes. These
@@ -14,17 +13,15 @@ import { openCodeRouteFor } from '../lanes/openai-compat/opencode_anthropic_rout
  * Keep this list narrower than `isThirdPartyProvider()`. A provider belongs
  * here only when its active lane calls the shared lazy-tool selector. Unknown
  * and dedicated lanes deliberately fall back to eager schemas.
- * OpenRouter deliberately stays eager: exposing names without contracts lets
- * routed models guess arguments, and loading contracts later changes the
- * cached prefix. Its full permitted toolset is sent from the initial request.
+ * OpenRouter and OpenCode deliberately stay eager: exposing names without
+ * contracts lets routed models guess arguments, and loading contracts later
+ * changes the cached prefix. They send the full permitted toolset initially.
  */
 const CLIENT_SIDE_TOOL_DISCOVERY_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'gemini',
   'modelrouter',
   'vercel',
   'requesty',
-  'opencode',
-  'opencodego',
   'lxd',
   'mimo',
   'fireworks',
@@ -69,7 +66,8 @@ export function providerSupportsClientSideToolDiscovery(
  *     (fireworks, moonshot, cloudflare, mistral, lxd)
  *
  * Deliberately NOT here:
- *   - openrouter / opencode / vercel / requesty / copilot / iflow — these pass
+ *   - openrouter / opencode / opencodego — always eager, independently of this set.
+ *   - vercel / requesty / copilot / iflow — these pass
  *     `cache_control` through and place breakpoints themselves, so the lane
  *     re-warms on its own terms.
  *   - minimax, glm, groq, nim — no prefix-cache pin at all (minimax actively
@@ -123,15 +121,6 @@ export function providerModelSupportsClientSideToolDiscovery(
   // Groq's small-tier filter deliberately removes ToolSearch while retaining
   // callable WebSearch/WebFetch/MCP schemas. Treat that final toolset as eager.
   if (provider === 'groq' && isSmallTierGroqModel(model)) return false
-
-  // These rows bypass the OpenAI-compatible selector and use the gateway's
-  // /messages, /responses or Gemini route, where they receive eager schemas.
-  if (
-    (provider === 'opencode' || provider === 'opencodego') &&
-    openCodeRouteFor(provider, model) !== 'chat'
-  ) {
-    return false
-  }
 
   return true
 }

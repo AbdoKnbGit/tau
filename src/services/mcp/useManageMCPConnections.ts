@@ -6,6 +6,7 @@ import type { Command } from '../../commands.js'
 import type { Tool } from '../../Tool.js'
 import {
   clearServerCache,
+  clearMcpAuthCache,
   getServerCacheKey,
   isCurrentMcpConnection,
   fetchCommandsForClient,
@@ -44,9 +45,7 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import {
-  dedupClaudeAiMcpServers,
   doesEnterpriseMcpConfigExist,
-  filterMcpServersByPolicy,
   getClaudeCodeMcpConfigs,
   isMcpServerDisabled,
   setMcpServerEnabled,
@@ -79,14 +78,9 @@ import {
   createChannelPermissionCallbacks,
   isChannelPermissionRelayEnabled,
 } from './channelPermissions.js'
-import {
-  clearClaudeAIMcpConfigsCache,
-  fetchClaudeAIMcpConfigsIfEligible,
-} from './claudeai.js'
 import { registerElicitationHandler } from './elicitationHandler.js'
 import { getMcpPrefix } from './mcpStringUtils.js'
 import {
-  MCP_SOURCE_CLAUDEAI_CONNECTORS,
   MCP_SOURCE_LOCAL_CONFIG,
   acknowledgeMcpPublication,
   beginMcpSource,
@@ -992,14 +986,13 @@ export function useManageMCPConnections(
   ])
 
   // Load MCP configs and connect to servers
-  // Two-phase loading: Tau configs first (fast), then claude.ai configs (may be slow)
+  // Load configured MCP servers; claude.ai account connectors are not imported.
   useEffect(() => {
-    // Cheap power mode: never connect to MCP servers (local or claude.ai).
-    // Nothing will ever enumerate, so settle both sources rather than leaving
+    // Cheap power mode: never connect to MCP servers.
+    // Nothing will enumerate, so settle the source rather than leaving
     // the launch barrier waiting for work that will not happen.
     if (powerMode === 'cheap') {
       skipMcpSource(MCP_SOURCE_LOCAL_CONFIG)
-      skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
       return
     }
     let cancelled = false
@@ -1008,39 +1001,20 @@ export function useManageMCPConnections(
     }
     const releasePublisher = registerMcpPublisher(publishIfCurrent)
 
-    // Registered synchronously, before any await: a request reaching the
-    // launch barrier between this mount and the first connection must see
-    // both sources as still enumerating. Idempotent with main.tsx, which
-    // registers them at launch — this covers mounts that main.tsx did not
-    // precede (the SDK's in-process REPL, a remounted REPL).
+    // Register before any await so startup waits for configured MCP discovery.
     beginMcpSource(MCP_SOURCE_LOCAL_CONFIG)
-    if (isStrictMcpConfig || doesEnterpriseMcpConfigExist()) {
-      skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
-    } else {
-      beginMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
-    }
 
     async function loadAndConnectMcpConfigs() {
-      // Clear claude.ai MCP cache so we fetch fresh configs with current auth
-      // state. This is important when authVersion changes (e.g., after login/
-      // logout). Kick off the fetch now so it overlaps with loadAllPlugins()
-      // inside getClaudeCodeMcpConfigs; it's awaited only at the dedup step.
-      // Phase 2 below awaits the same promise — no second network call.
-      let claudeaiPromise: Promise<Record<string, ScopedMcpServerConfig>>
-      if (isStrictMcpConfig || doesEnterpriseMcpConfigExist()) {
-        claudeaiPromise = Promise.resolve({})
-      } else {
-        clearClaudeAIMcpConfigsCache()
-        claudeaiPromise = fetchClaudeAIMcpConfigsIfEligible()
+      // Refresh MCP authorization when the user logs in or out.
+      if (!isStrictMcpConfig && !doesEnterpriseMcpConfigExist()) {
+        clearMcpAuthCache()
       }
 
-      // Phase 1: Load Tau configs. Plugin MCP servers that duplicate a
-      // --mcp-config entry or a claude.ai connector are suppressed here so they
-      // don't connect alongside the connector in Phase 2.
+      // Keep configured and plugin servers, including CLI --mcp-config entries.
       const { servers: claudeCodeConfigs, errors: mcpErrors } =
         isStrictMcpConfig
           ? { servers: {}, errors: [] }
-          : await getClaudeCodeMcpConfigs(dynamicMcpConfig, claudeaiPromise)
+          : await getClaudeCodeMcpConfigs(dynamicMcpConfig)
       if (cancelled) return
 
       // Add MCP errors to plugin errors for UI visibility (deduplicated)
@@ -1048,7 +1022,7 @@ export function useManageMCPConnections(
 
       const configs = { ...claudeCodeConfigs, ...dynamicMcpConfig }
 
-      // Start connecting to Tau servers (don't wait - runs concurrently with Phase 2)
+      // Start connections without blocking publication from faster servers.
       // Filter out disabled servers to avoid unnecessary connection attempts
       const enabledConfigs = Object.fromEntries(
         Object.entries(configs).filter(([name]) => !isMcpServerDisabled(name)),
@@ -1068,88 +1042,7 @@ export function useManageMCPConnections(
         )
       })
 
-      // Phase 2: Await claude.ai configs (started above; memoized — no second fetch)
-      let claudeaiConfigs: Record<string, ScopedMcpServerConfig> = {}
-      if (isStrictMcpConfig) {
-        skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
-      } else {
-        claudeaiConfigs = filterMcpServersByPolicy(
-          await claudeaiPromise,
-        ).allowed
-        if (cancelled) {
-          // The effect is being torn down. Nothing else will settle this
-          // source, and an unsettled source holds the barrier to its
-          // deadline for the rest of the process.
-          skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
-          return
-        }
-
-        // Suppress claude.ai connectors that duplicate an enabled manual server.
-        // Keys never collide (`slack` vs `claude.ai Slack`) so the merge below
-        // won't catch this — need content-based dedup by URL signature.
-        if (Object.keys(claudeaiConfigs).length > 0) {
-          const { servers: dedupedClaudeAi } = dedupClaudeAiMcpServers(
-            claudeaiConfigs,
-            configs,
-          )
-          claudeaiConfigs = dedupedClaudeAi
-        }
-
-        if (Object.keys(claudeaiConfigs).length === 0) {
-          // No connectors, none eligible, or all deduped against manual
-          // servers: the source is settled with nothing to discover.
-          skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
-        }
-
-        if (Object.keys(claudeaiConfigs).length > 0) {
-          // Add claude.ai servers as pending immediately so they show up in UI
-          setAppState(prevState => {
-            const existingServerNames = new Set(
-              prevState.mcp.clients.map(c => c.name),
-            )
-            const newClients = Object.entries(claudeaiConfigs)
-              .filter(([name]) => !existingServerNames.has(name))
-              .map(([name, config]) => ({
-                name,
-                type: isMcpServerDisabled(name)
-                  ? ('disabled' as const)
-                  : ('pending' as const),
-                config,
-              }))
-            if (newClients.length === 0) return prevState
-            return {
-              ...prevState,
-              mcp: {
-                ...prevState.mcp,
-                clients: [...prevState.mcp.clients, ...newClients],
-              },
-            }
-          })
-
-          // Now start connecting (only enabled servers)
-          const enabledClaudeaiConfigs = Object.fromEntries(
-            Object.entries(claudeaiConfigs).filter(
-              ([name]) => !isMcpServerDisabled(name),
-            ),
-          )
-          settleMcpSource(
-            MCP_SOURCE_CLAUDEAI_CONNECTORS,
-            Object.keys(enabledClaudeaiConfigs),
-          )
-          getMcpToolsCommandsAndResources(
-            publishIfCurrent,
-            enabledClaudeaiConfigs,
-          ).catch(error => {
-            logMCPError(
-              'useManageMcpConnections',
-              `Failed to get claude.ai MCP resources: ${errorMessage(error)}`,
-            )
-          })
-        }
-      }
-
-      // Log server counts after both phases complete
-      const allConfigs = { ...configs, ...claudeaiConfigs }
+      // Log configured server counts.
       const counts = {
         enterprise: 0,
         global: 0,
@@ -1162,7 +1055,7 @@ export function useManageMCPConnections(
       // metrics. Stdio servers like rust-analyzer can be heavy and we want to
       // know which ones correlate with poor session performance.
       const stdioCommands: string[] = []
-      for (const [name, serverConfig] of Object.entries(allConfigs)) {
+      for (const [name, serverConfig] of Object.entries(configs)) {
         if (serverConfig.scope === 'enterprise') counts.enterprise++
         else if (serverConfig.scope === 'user') counts.global++
         else if (serverConfig.scope === 'project') counts.project++
@@ -1196,14 +1089,13 @@ export function useManageMCPConnections(
     void loadAndConnectMcpConfigs().catch(error => {
       if (cancelled) return
       // A source that never settles holds the launch barrier to its full
-      // deadline for the rest of the process. Settle both here: whatever
+      // deadline for the rest of the process. Settle it here: whatever
       // failed, nothing further is going to enumerate on this run.
       logMCPError(
         'useManageMcpConnections',
         `Failed to load MCP configs: ${errorMessage(error)}`,
       )
       skipMcpSource(MCP_SOURCE_LOCAL_CONFIG)
-      skipMcpSource(MCP_SOURCE_CLAUDEAI_CONNECTORS)
     })
 
     return () => {

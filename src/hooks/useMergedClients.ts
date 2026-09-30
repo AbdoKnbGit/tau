@@ -7,9 +7,9 @@ export function mergeClients(
   mcpClients: readonly MCPServerConnection[] | undefined,
 ): MCPServerConnection[] {
   if (initialClients && mcpClients && mcpClients.length > 0) {
-    return uniqBy([...initialClients, ...mcpClients], 'name')
+    return uniqBy([...mcpClients, ...initialClients], 'name')
   }
-  return initialClients || []
+  return mcpClients?.length ? [...mcpClients] : initialClients || []
 }
 
 export function useMergedClients(

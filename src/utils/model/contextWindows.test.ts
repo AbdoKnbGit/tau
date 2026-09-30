@@ -14,6 +14,8 @@ import { join } from 'path'
 const configDir = mkdtempSync(join(tmpdir(), 'tau-context-windows-'))
 const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
 process.env.CLAUDE_CONFIG_DIR = configDir
+const previousOpencodeCache = process.env.TAU_OPENCODE_MODELS_DEV_CACHE
+process.env.TAU_OPENCODE_MODELS_DEV_CACHE = join(configDir, 'opencode-models-dev.json')
 
 const { deriveTable, resetCatalogForTests } = await import('../modelPricingCatalog.js')
 const { getProviderCatalogContextWindow, recordProviderModelContextWindows } =
@@ -161,6 +163,11 @@ if (previousConfigDir === undefined) {
   delete process.env.CLAUDE_CONFIG_DIR
 } else {
   process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+}
+if (previousOpencodeCache === undefined) {
+  delete process.env.TAU_OPENCODE_MODELS_DEV_CACHE
+} else {
+  process.env.TAU_OPENCODE_MODELS_DEV_CACHE = previousOpencodeCache
 }
 rmSync(configDir, { recursive: true, force: true })
 

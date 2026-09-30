@@ -30,8 +30,8 @@ export function selectOpenAICompatToolsForRequest(
   provider?: string,
 ): ProviderTool[] {
   // Do not trust deferred flags carried by a resumed or cross-provider
-  // session. OpenRouter always receives every available callable contract.
-  if (provider === 'openrouter') {
+  // session. These providers always receive every available callable contract.
+  if (provider === 'openrouter' || provider === 'opencode' || provider === 'opencodego') {
     return tools.filter(tool => tool.name !== TOOL_SEARCH_TOOL_NAME)
   }
   if (!shouldUseOpenAICompatLazyTools(tools)) return tools

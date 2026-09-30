@@ -1497,12 +1497,16 @@ export function reorderAttachmentsForAPI(messages: Message[]): Message[] {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!
 
-    if (message.type === 'attachment') {
+    if (
+      message.type === 'attachment' &&
+      message.attachment.type !== 'mcp_instructions_delta'
+    ) {
       // Collect attachment to bubble up
       pendingAttachments.push(message)
     } else {
       // Check if this is a stopping point
       const isStoppingPoint =
+        message.type === 'attachment' ||
         message.type === 'assistant' ||
         (message.type === 'user' &&
           Array.isArray(message.message.content) &&
@@ -1801,6 +1805,16 @@ function contentHasToolReference(
  *
  * Idempotent: already-wrapped text is unchanged.
  */
+// In-memory provenance, never serialized to a provider or inferred from text.
+// MCP initialization instructions describe tool configuration. Folding them
+// into an unrelated tool's output makes the model mistake them for that
+// tool's untrusted response. Preserve a separate user-context text block.
+const MCP_INSTRUCTION_BLOCK = Symbol('mcp-instruction-block')
+type McpInstructionBlock = TextBlockParam & { [MCP_INSTRUCTION_BLOCK]: true }
+function isMcpInstructionBlock(block: ContentBlockParam): boolean {
+  return (block as Partial<McpInstructionBlock>)[MCP_INSTRUCTION_BLOCK] === true
+}
+
 function ensureSystemReminderWrap(msg: UserMessage): UserMessage {
   const content = msg.message.content
   if (typeof content === 'string') {
@@ -1812,7 +1826,7 @@ function ensureSystemReminderWrap(msg: UserMessage): UserMessage {
   }
   let changed = false
   const newContent = content.map(b => {
-    if (b.type === 'text' && !b.text.startsWith('<system-reminder>')) {
+    if (b.type === 'text' && !isMcpInstructionBlock(b) && !b.text.startsWith('<system-reminder>')) {
       changed = true
       return { ...b, text: wrapInSystemReminder(b.text) }
     }
@@ -1853,7 +1867,7 @@ function smooshSystemReminderSiblings(
     const srText: TextBlockParam[] = []
     const kept: ContentBlockParam[] = []
     for (const b of content) {
-      if (b.type === 'text' && b.text.startsWith('<system-reminder>')) {
+      if (b.type === 'text' && !isMcpInstructionBlock(b) && b.text.startsWith('<system-reminder>')) {
         srText.push(b)
       } else {
         kept.push(b)
@@ -1949,7 +1963,7 @@ function relocateToolReferenceSiblings(
     if (!Array.isArray(content)) continue
     if (!contentHasToolReference(content)) continue
 
-    const textSiblings = content.filter(b => b.type === 'text')
+    const textSiblings = content.filter(b => b.type === 'text' && !isMcpInstructionBlock(b))
     if (textSiblings.length === 0) continue
 
     // Find the next user message with tool_result but no tool_reference.
@@ -1974,7 +1988,7 @@ function relocateToolReferenceSiblings(
       ...msg,
       message: {
         ...msg.message,
-        content: content.filter(b => b.type !== 'text'),
+        content: content.filter(b => b.type !== 'text' || isMcpInstructionBlock(b)),
       },
     }
     const target = result[targetIdx] as UserMessage
@@ -2556,6 +2570,7 @@ function smooshIntoToolResult(
   blocks: ContentBlockParam[],
 ): ToolResultBlockParam | null {
   if (blocks.length === 0) return tr
+  if (blocks.some(isMcpInstructionBlock)) return null
 
   const existing = tr.content
   if (Array.isArray(existing) && existing.some(isToolReferenceBlock)) {
@@ -2628,7 +2643,7 @@ export function mergeUserContentBlocks(
   // a bare tail → 3-token empty end_turn. A/B (sai-20260310-161901) validated:
   // smoosh into tool_result.content → 92% → 0%.
   const lastBlock = last(a)
-  if (lastBlock?.type !== 'tool_result') {
+  if (lastBlock?.type !== 'tool_result' || b.some(isMcpInstructionBlock)) {
     return [...a, ...b]
   }
 
@@ -4297,19 +4312,34 @@ You have exited auto mode. The user may now want to interact more directly. You 
     }
     case 'mcp_instructions_delta': {
       const parts: string[] = []
-      if (attachment.addedBlocks.length > 0) {
+      const updated = new Set(attachment.updatedNames ?? [])
+      const blocksWhere = (isUpdate: boolean) =>
+        attachment.addedBlocks.filter(
+          (_, i) => updated.has(attachment.addedNames[i] ?? '') === isUpdate,
+        )
+      const newBlocks = blocksWhere(false)
+      const updatedBlocks = blocksWhere(true)
+      if (newBlocks.length > 0) {
         parts.push(
-          `# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:\n\n${attachment.addedBlocks.join('\n\n')}`,
+          `# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:\n\n${newBlocks.join('\n\n')}`,
+        )
+      }
+      if (updatedBlocks.length > 0) {
+        parts.push(
+          `# Updated MCP Server Instructions\n\nThe following MCP servers have changed their instructions. These replace their earlier instructions:\n\n${updatedBlocks.join('\n\n')}`,
         )
       }
       if (attachment.removedNames.length > 0) {
         parts.push(
-          `The following MCP servers have disconnected. Their instructions above no longer apply:\n${attachment.removedNames.join('\n')}`,
+          `The following MCP servers are no longer available or no longer provide instructions. Their earlier instructions no longer apply:\n${attachment.removedNames.join('\n')}`,
         )
       }
-      return wrapMessagesInSystemReminder([
-        createUserMessage({ content: parts.join('\n\n'), isMeta: true }),
-      ])
+      const block: McpInstructionBlock = {
+        type: 'text',
+        text: wrapInSystemReminder(`<mcp-server-instructions>\nMCP configuration update: the following guidance was supplied by the configured servers during initialization. Apply it when using those servers, subject to higher-priority instructions.\n\n${parts.join('\n\n')}\n</mcp-server-instructions>`),
+        [MCP_INSTRUCTION_BLOCK]: true,
+      }
+      return [createUserMessage({ content: [block], isMeta: true })]
     }
     case 'mermaid_diagrams': {
       return wrapMessagesInSystemReminder([

@@ -20,6 +20,7 @@ const {
   deriveOpencodeModelsDevCache,
   deriveOpencodeModelsDevRows,
   getOpencodeModelMeta,
+  getOpencodeContextWindow,
 } = await import('./opencodeModelsDevCatalog.js')
 
 let passed = 0
@@ -101,6 +102,36 @@ test('CLAUDEX_DISABLE_MODEL_PRICING switches the catalogue off', () => {
     delete process.env.CLAUDEX_DISABLE_MODEL_PRICING
   }
   assert.ok(getOpencodeModelMeta('opencodego', 'qwen3.8-max'))
+})
+
+test('retains exact free/paid host limits and separate input ceilings', () => {
+  _resetOpencodeModelsDevForTests(deriveOpencodeModelsDevCache({
+    opencode: { models: {
+      'mimo-v2.6-flash-free': { limit: { context: 200_000, output: 32_000 } },
+      'mimo-v2.5-free': { limit: { context: 200_000, output: 32_000 } },
+      'longcat-2.5-preview-free': { limit: { context: 1_000_000, output: 131_072 } },
+      'gpt-5.6-luna': { limit: { context: 1_050_000, input: 922_000 } },
+      'hy3-free': { limit: { context: 190_000, input: 192_000 } },
+      'input-only': { limit: { input: 123_000 } },
+    } },
+    'opencode-go': { models: { 'mimo-v2.6-flash': { limit: { context: 1_048_576 } } } },
+  }, Date.now()))
+  assert.equal(getOpencodeContextWindow('opencode', 'mimo-v2.6-flash-free'), 200_000)
+  assert.equal(getOpencodeContextWindow('opencode', 'mimo-v2.5-free'), 200_000)
+  assert.equal(getOpencodeContextWindow('opencodego', 'mimo-v2.6-flash'), 1_048_576)
+  assert.equal(getOpencodeContextWindow('opencode', 'longcat-2.5-preview-free'), 1_000_000)
+  assert.equal(getOpencodeModelMeta('opencode', 'gpt-5.6-luna')?.contextWindow, 1_050_000)
+  assert.equal(getOpencodeContextWindow('opencode', 'gpt-5.6-luna'), 922_000)
+  assert.equal(getOpencodeContextWindow('opencode', 'hy3-free'), 190_000)
+  assert.equal(getOpencodeContextWindow('opencode', 'input-only'), 123_000)
+  assert.equal(getOpencodeContextWindow('opencodego', 'mimo-v2.6-flash-free'), undefined)
+})
+
+test('invalid or missing limits cannot become context windows', () => {
+  for (const value of [undefined, null, 0, -1, NaN, Infinity, '1000000']) {
+    const rows = deriveOpencodeModelsDevRows({ models: { invalid: { limit: { context: value, input: value } } } })
+    assert.deepEqual(rows.invalid, { r: false })
+  }
 })
 
 console.log(`\nOpenCode models.dev catalogue: ${passed} passed`)

@@ -138,6 +138,7 @@ export type QueryEngineConfig = {
   tools: Tools
   commands: Command[]
   mcpClients: MCPServerConnection[]
+  refreshMcpContext?: ToolUseContext['options']['refreshMcpContext']
   agents: AgentDefinition[]
   canUseTool: CanUseToolFn
   getAppState: () => AppState
@@ -376,6 +377,7 @@ export class QueryEngine {
         tools,
         verbose,
         mainLoopModel: initialMainLoopModel,
+        refreshMcpContext: this.config.refreshMcpContext,
         thinkingConfig: initialThinkingConfig,
         mcpClients,
         mcpResources: {},
@@ -525,6 +527,7 @@ export class QueryEngine {
         tools,
         verbose,
         mainLoopModel,
+        refreshMcpContext: this.config.refreshMcpContext,
         thinkingConfig: initialThinkingConfig,
         mcpClients,
         mcpResources: {},
@@ -1217,6 +1220,7 @@ export async function* ask({
   cwd,
   tools,
   mcpClients,
+  refreshMcpContext,
   verbose = false,
   thinkingConfig,
   maxTurns,
@@ -1251,6 +1255,7 @@ export async function* ask({
   tools: Tools
   verbose?: boolean
   mcpClients: MCPServerConnection[]
+  refreshMcpContext?: ToolUseContext['options']['refreshMcpContext']
   thinkingConfig?: ThinkingConfig
   maxTurns?: number
   maxBudgetUsd?: number
@@ -1283,6 +1288,7 @@ export async function* ask({
     tools,
     commands,
     mcpClients,
+    refreshMcpContext,
     agents,
     canUseTool,
     getAppState,

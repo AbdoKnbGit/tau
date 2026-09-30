@@ -26,7 +26,6 @@ import {
   getProviderRuntimeApiKey,
   getProviderBaseUrl,
   getProviderAuthMethod,
-  getProviderOAuthToken,
 } from '../../../utils/auth.js'
 import { loadProviderKey } from '../auth/api_key_manager.js'
 import { getOpenAISessionToken } from '../auth/openai_oauth.js'
@@ -63,6 +62,7 @@ import { OllamaProvider } from './ollama_provider.js'
 import { sanitizeProviderMessagesForNonCursorTransport } from './sanitizeProviderMessages.js'
 import { warmupCodeAssist } from './gemini_code_assist.js'
 import { initLanes, getLane } from '../../../lanes/index.js'
+import { codexLane, initCodexLane } from '../../../lanes/codex/index.js'
 import { LaneBackedProvider } from '../../../lanes/provider-bridge.js'
 import { installNativeLaneReadinessResolver } from './nativeLaneReadiness.js'
 
@@ -244,10 +244,10 @@ function _laneNameForProvider(provider: APIProvider): string {
 // Gemini users fall through to legacy gemini_provider until OAuth is
 // ported into the lane), so this flip is safe for all auth paths.
 //
-// Explicit opt-out for debugging:
-//   CLAUDEX_NATIVE_LANES=off             → every lane disabled, legacy path
+// Explicit opt-out for debugging (OpenAI always uses native Codex):
+//   CLAUDEX_NATIVE_LANES=off             → other lanes disabled, legacy path
 //   CLAUDEX_NATIVE_LANES=legacy          → same as off
-//   CLAUDEX_NATIVE_LANES=-gemini,-codex  → disable specific lanes
+//   CLAUDEX_NATIVE_LANES=-gemini         → disable a specific other lane
 //   CLAUDEX_NATIVE_LANES=gemini          → legacy default (named allow-list)
 function _nativeLaneEnabledFor(provider: APIProvider): boolean {
   const raw = process.env.CLAUDEX_NATIVE_LANES
@@ -290,6 +290,9 @@ function _readyNativeLaneFor(provider: APIProvider) {
 
 /** True iff createProvider will select a LaneBackedProvider for this call. */
 export function providerUsesNativeLane(provider: APIProvider): boolean {
+  // OpenAI's transport does not depend on the current credential snapshot.
+  // In particular, tool shaping can run before the async OAuth refresh.
+  if (provider === 'openai') return true
   return _readyNativeLaneFor(provider) !== null
 }
 
@@ -300,6 +303,17 @@ installNativeLaneReadinessResolver(providerUsesNativeLane)
  * Resolves auth method (API key vs OAuth) and injects the right credentials.
  */
 function createProvider(provider: APIProvider): BaseProvider {
+  if (provider === 'openai') {
+    // getAnthropicClient refreshes OAuth before calling this factory. Adopt
+    // those credentials every time, without reinitializing other providers
+    // or resetting Codex's conversation cache state.
+    configureOpenAILaneAuth()
+    if (!codexLane.isHealthy()) {
+      throw new Error('OpenAI credentials are unavailable. Run /login openai or set OPENAI_API_KEY.')
+    }
+    return new LaneBackedProvider(codexLane, provider)
+  }
+
   // Native-lane opt-in. When set, use the LaneBackedProvider so the model
   // sees its home environment (native tools, native prompt, native cache,
   // native API). Otherwise fall through to the legacy shim path.
@@ -319,14 +333,6 @@ function createProvider(provider: APIProvider): BaseProvider {
   const baseUrl = getProviderBaseUrl(provider)
 
   switch (provider) {
-    case 'openai': {
-      if (authMethod === 'oauth') {
-        const oauthToken = getProviderOAuthToken('openai') ?? ''
-        const sessionToken = getOpenAISessionToken() ?? undefined
-        return new OpenAIProvider({ apiKey: oauthToken, baseUrl, sessionToken })
-      }
-      return new OpenAIProvider({ apiKey, baseUrl })
-    }
     case 'gemini': {
       if (authMethod === 'oauth') {
         // CLI-tier OAuth only — Antigravity has its own provider row.
@@ -781,22 +787,22 @@ export async function reloadCursorLaneAuth(): Promise<void> {
 
 /**
  * Reconfigure the Codex lane from current OpenAI credentials. Called after
- * `/login openai` or saving an OpenAI API key so the running process stops
- * falling back to the legacy OpenAI provider.
+ * `/login openai` or saving an OpenAI API key, and before each OpenAI request.
+ * Explicit empty values clear credentials/account/endpoint hints removed
+ * since the previous request; configure preserves conversation cache state.
  */
-export async function reloadOpenAILaneAuth(): Promise<void> {
-  const { codexLane } = await import('../../../lanes/codex/index.js')
-  const apiKey = getProviderApiKey('openai') ?? undefined
-  const chatgptAccessToken =
-    getOpenAISessionToken() ?? process.env.OPENAI_CHATGPT_ACCESS_TOKEN
-  codexLane.configure({
-    apiKey,
-    baseUrl: process.env.OPENAI_BASE_URL,
-    chatgptAccessToken: chatgptAccessToken ?? undefined,
-    chatgptAccountId: process.env.OPENAI_CHATGPT_ACCOUNT_ID,
+function configureOpenAILaneAuth(): void {
+  initCodexLane({
+    apiKey: getProviderApiKey('openai') ?? '',
+    baseUrl: process.env.OPENAI_BASE_URL ?? '',
+    chatgptAccessToken: getOpenAISessionToken() ?? process.env.OPENAI_CHATGPT_ACCESS_TOKEN ?? '',
+    chatgptAccountId: process.env.OPENAI_CHATGPT_ACCOUNT_ID ?? '',
     chatgptIdToken: process.env.OPENAI_CHATGPT_ID_TOKEN,
   })
-  codexLane.setHealthy(!!(apiKey || chatgptAccessToken))
+}
+
+export async function reloadOpenAILaneAuth(): Promise<void> {
+  configureOpenAILaneAuth()
 }
 
 /**
