@@ -49,7 +49,7 @@
         "grok-mermaid": "0.2.3",
         "highlight.js": "^11.11.1",
         "https-proxy-agent": "^7.0.6",
-        "ignore": "^7.0.3",
+        "ignore": "7.0.5",
         "indent-string": "^5.0.0",
         "jsonc-parser": "^3.3.1",
         "lodash-es": "^4.17.21",
