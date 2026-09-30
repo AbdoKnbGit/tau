@@ -129,10 +129,24 @@ export function isAnthropicAuthEnabled(): boolean {
     apiKeyHelper ||
     process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
 
-  // Check if API key is from an external source (not managed by /login)
-  const { source: apiKeySource } = getAnthropicApiKeyWithSource({
-    skipRetrievingKeyFromApiKeyHelper: true,
-  })
+  // Check if API key is from an external source (not managed by /login).
+  // This is a predicate, so it must answer rather than throw:
+  // getAnthropicApiKeyWithSource throws when no credential is present under
+  // CI/NODE_ENV=test, and an escaping throw here takes down every caller
+  // that only wanted a boolean (isClaudeAISubscriber, getSubscriptionType,
+  // runMigrations, getSystemPrompt). No credentials means no external key.
+  let apiKeySource: ReturnType<
+    typeof getAnthropicApiKeyWithSource
+  >['source'] = 'none'
+  try {
+    ;({
+      source: apiKeySource,
+    } = getAnthropicApiKeyWithSource({
+      skipRetrievingKeyFromApiKeyHelper: true,
+    }))
+  } catch {
+    // Credential lookup failed — treat as no external API key.
+  }
   const hasExternalApiKey =
     apiKeySource === 'ANTHROPIC_API_KEY' || apiKeySource === 'apiKeyHelper'
 
