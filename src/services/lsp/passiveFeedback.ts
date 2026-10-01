@@ -7,6 +7,9 @@ import { jsonStringify } from '../../utils/slowOperations.js'
 import type { DiagnosticFile } from '../diagnosticTracking.js'
 import { registerPendingLSPDiagnostic } from './LSPDiagnosticRegistry.js'
 import type { LSPServerManager } from './LSPServerManager.js'
+import type { LSPServerInstance } from './LSPServerInstance.js'
+
+const registeredServers = new WeakSet<LSPServerInstance>()
 
 /**
  * Map LSP severity to Claude diagnostic severity
@@ -137,6 +140,10 @@ export function registerLSPNotificationHandlers(
     new Map()
 
   for (const [serverName, serverInstance] of servers.entries()) {
+    if (registeredServers.has(serverInstance)) {
+      successCount++
+      continue
+    }
     try {
       // Validate server instance has onNotification method
       if (
@@ -161,6 +168,8 @@ export function registerLSPNotificationHandlers(
       serverInstance.onNotification(
         'textDocument/publishDiagnostics',
         (params: unknown) => {
+          // Ignore late notifications from a retired server/session.
+          if (manager.getAllServers().get(serverName) !== serverInstance) return
           logForDebugging(
             `[PASSIVE DIAGNOSTICS] Handler invoked for ${serverName}! Params type: ${typeof params}`,
           )
@@ -278,6 +287,7 @@ export function registerLSPNotificationHandlers(
       )
 
       logForDebugging(`Registered diagnostics handler for ${serverName}`)
+      registeredServers.add(serverInstance)
       successCount++
     } catch (error) {
       const err = toError(error)

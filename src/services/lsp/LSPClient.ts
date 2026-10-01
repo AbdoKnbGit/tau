@@ -15,6 +15,10 @@ import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { subprocessEnv } from '../../utils/subprocessEnv.js'
+import { killProcessTree } from '../../utils/processTree.js'
+
+const SHUTDOWN_TIMEOUT_MS = 2_000
+
 /**
  * LSP client interface.
  */
@@ -60,6 +64,7 @@ export function createLSPClient(
   let startFailed = false
   let startError: Error | undefined
   let isStopping = false // Track intentional shutdown to avoid spurious error logging
+  let stopPromise: Promise<void> | undefined
   // Every handler this client has been given, in registration order.
   //
   // A registry rather than a queue, because a client outlives its connection.
@@ -106,6 +111,8 @@ export function createLSPClient(
       },
     ): Promise<void> {
       try {
+        startFailed = false
+        startError = undefined
         // 1. Spawn LSP server process
         process = spawn(command, args, {
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -250,9 +257,7 @@ export function createLSPClient(
         // 5. Apply every registered request handler to this connection.
         for (const { method, handler } of registeredRequestHandlers) {
           connection.onRequest(method, handler)
-          logForDebugging(
-            `Applied request handler for ${serverName}.${method}`,
-          )
+          logForDebugging(`Applied request handler for ${serverName}.${method}`)
         }
 
         logForDebugging(`LSP client started for ${serverName}`)
@@ -271,6 +276,7 @@ export function createLSPClient(
       }
 
       checkStartFailed()
+      const initializingConnection = connection
 
       try {
         const result: InitializeResult = await connection.sendRequest(
@@ -278,10 +284,21 @@ export function createLSPClient(
           params,
         )
 
+        if (isStopping || connection !== initializingConnection) {
+          throw new Error(
+            `LSP server ${serverName} initialization was cancelled`,
+          )
+        }
         capabilities = result.capabilities
 
         // Send initialized notification
-        await connection.sendNotification('initialized', {})
+        await initializingConnection.sendNotification('initialized', {})
+
+        if (isStopping || connection !== initializingConnection) {
+          throw new Error(
+            `LSP server ${serverName} initialization was cancelled`,
+          )
+        }
 
         isInitialized = true
         logForDebugging(`LSP server ${serverName} initialized`)
@@ -391,77 +408,127 @@ export function createLSPClient(
     },
 
     async stop(): Promise<void> {
-      let shutdownError: Error | undefined
+      if (stopPromise) return stopPromise
+      stopPromise = (async () => {
+        let shutdownError: Error | undefined
 
-      // Mark as stopping to prevent error handlers from logging spurious errors
-      isStopping = true
+        // Mark as stopping to prevent error handlers from logging spurious errors
+        isStopping = true
 
-      try {
-        if (connection) {
-          // Try to send shutdown request and exit notification
-          await connection.sendRequest('shutdown', {})
-          await connection.sendNotification('exit', {})
+        try {
+          // On Windows, terminate the intact process tree below. A protocol
+          // shutdown/exit can make vtsls/tsserver exit first, orphaning npm or
+          // typings workers before taskkill /T can discover their ancestry.
+          if (
+            connection &&
+            isInitialized &&
+            globalThis.process.platform !== 'win32'
+          ) {
+            // Try to send shutdown request and exit notification
+            let timer: ReturnType<typeof setTimeout> | undefined
+            try {
+              await Promise.race([
+                connection.sendRequest('shutdown', {}),
+                new Promise<never>((_, reject) => {
+                  timer = setTimeout(
+                    () => reject(new Error('LSP shutdown timed out')),
+                    SHUTDOWN_TIMEOUT_MS,
+                  )
+                }),
+              ])
+            } finally {
+              clearTimeout(timer)
+            }
+            await connection.sendNotification('exit', {})
+          }
+        } catch (error) {
+          const err = error as Error
+          logError(
+            new Error(`LSP server ${serverName} stop failed: ${err.message}`),
+          )
+          shutdownError = err
+          // Continue to cleanup despite shutdown failure
+        } finally {
+          // Always cleanup resources, even if shutdown/exit failed
+          if (connection) {
+            try {
+              connection.dispose()
+            } catch (error) {
+              // Log but don't throw - disposal errors are less critical
+              logForDebugging(
+                `Connection disposal failed for ${serverName}: ${errorMessage(error)}`,
+              )
+            }
+            connection = undefined
+          }
+
+          if (process) {
+            const child = process
+            // vtsls owns tsserver/typingsInstaller children. Killing only its
+            // root on Windows can leave the large project graph orphaned.
+            if (
+              child.pid &&
+              child.exitCode === null &&
+              child.signalCode === null
+            ) {
+              await new Promise<void>(resolve => {
+                const finished = (): void => {
+                  clearTimeout(timer)
+                  child.removeListener('exit', finished)
+                  resolve()
+                }
+                const timer = setTimeout(() => {
+                  try {
+                    child.kill('SIGKILL')
+                  } catch (error) {
+                    logForDebugging(
+                      `LSP process kill failed: ${errorMessage(error)}`,
+                    )
+                  }
+                  finished()
+                }, SHUTDOWN_TIMEOUT_MS)
+                child.once('exit', finished)
+                killProcessTree(child.pid!)
+              })
+            }
+            // Remove event listeners to prevent memory leaks
+            process.removeAllListeners('error')
+            process.removeAllListeners('exit')
+            if (process.stdin) {
+              process.stdin.removeAllListeners('error')
+            }
+            if (process.stderr) {
+              process.stderr.removeAllListeners('data')
+            }
+
+            try {
+              process.kill()
+            } catch (error) {
+              // Process might already be dead, which is fine
+              logForDebugging(
+                `Process kill failed for ${serverName} (may already be dead): ${errorMessage(error)}`,
+              )
+            }
+            process = undefined
+          }
+
+          isInitialized = false
+          capabilities = undefined
+          isStopping = false // Reset for potential restart
+          startFailed = false
+          startError = undefined
+
+          logForDebugging(`LSP client stopped for ${serverName}`)
         }
-      } catch (error) {
-        const err = error as Error
-        logError(
-          new Error(`LSP server ${serverName} stop failed: ${err.message}`),
-        )
-        shutdownError = err
-        // Continue to cleanup despite shutdown failure
-      } finally {
-        // Always cleanup resources, even if shutdown/exit failed
-        if (connection) {
-          try {
-            connection.dispose()
-          } catch (error) {
-            // Log but don't throw - disposal errors are less critical
-            logForDebugging(
-              `Connection disposal failed for ${serverName}: ${errorMessage(error)}`,
-            )
-          }
-          connection = undefined
-        }
 
-        if (process) {
-          // Remove event listeners to prevent memory leaks
-          process.removeAllListeners('error')
-          process.removeAllListeners('exit')
-          if (process.stdin) {
-            process.stdin.removeAllListeners('error')
-          }
-          if (process.stderr) {
-            process.stderr.removeAllListeners('data')
-          }
-
-          try {
-            process.kill()
-          } catch (error) {
-            // Process might already be dead, which is fine
-            logForDebugging(
-              `Process kill failed for ${serverName} (may already be dead): ${errorMessage(error)}`,
-            )
-          }
-          process = undefined
-        }
-
-        isInitialized = false
-        capabilities = undefined
-        isStopping = false // Reset for potential restart
-        // Don't reset startFailed - preserve error state for diagnostics
-        // startFailed and startError remain as-is
+        // A failed graceful handshake is recoverable after forced cleanup.
         if (shutdownError) {
-          startFailed = true
-          startError = shutdownError
+          logForDebugging(`LSP server ${serverName} required forced shutdown`)
         }
-
-        logForDebugging(`LSP client stopped for ${serverName}`)
-      }
-
-      // Re-throw shutdown error after cleanup is complete
-      if (shutdownError) {
-        throw shutdownError
-      }
+      })().finally(() => {
+        stopPromise = undefined
+      })
+      return stopPromise
     },
   }
 }

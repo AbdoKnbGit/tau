@@ -1,5 +1,6 @@
 import * as path from 'path'
 import { pathToFileURL } from 'url'
+import { isDeepStrictEqual } from 'util'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
@@ -33,7 +34,7 @@ function getLanguageIdForFile(
  * Manages multiple LSP server instances and routes requests based on file extensions.
  */
 export type LSPServerManager = {
-  /** Initialize the manager by loading all configured LSP servers */
+  /** Load current configuration, retaining unchanged servers and their indexes. */
   initialize(): Promise<void>
   /** Shutdown all running servers and clear state */
   shutdown(): Promise<void>
@@ -102,13 +103,26 @@ export function createLSPServerManager(): LSPServerManager {
   const extensionMap: Map<string, string[]> = new Map()
   // Track which files have been opened on which servers (URI -> server name)
   const openedFiles: Map<string, string> = new Map()
+  let disposed = false
+  let configurationTask: Promise<void> = Promise.resolve()
+  let shutdownPromise: Promise<void> | undefined
+
+  function initialize(): Promise<void> {
+    // Plugin refreshes can overlap startup. Apply them in order, with one
+    // owner per server; a failed refresh must not block the next attempt.
+    configurationTask = configurationTask
+      .catch(() => {})
+      .then(loadConfiguration)
+    return configurationTask
+  }
 
   /**
    * Initialize the manager by loading all configured LSP servers.
    *
    * @throws {Error} If configuration loading fails
    */
-  async function initialize(): Promise<void> {
+  async function loadConfiguration(): Promise<void> {
+    if (disposed) return
     let serverConfigs: Record<string, ScopedLspServerConfig>
 
     try {
@@ -125,6 +139,29 @@ export function createLSPServerManager(): LSPServerManager {
       throw error
     }
 
+    // shutdown() may have run while plugin configuration was loading.
+    if (disposed) return
+
+    const retiring = Array.from(servers.entries()).filter(
+      ([name, server]) =>
+        !isDeepStrictEqual(server.config, serverConfigs[name]),
+    )
+    for (const [name] of retiring) {
+      servers.delete(name)
+      for (const [uri, owner] of openedFiles) {
+        if (owner === name) openedFiles.delete(uri)
+      }
+    }
+    // Finish stopping changed/removed servers, including in-flight starts,
+    // before creating their replacements.
+    const stopped = await Promise.allSettled(
+      retiring.map(([, server]) => server.stop()),
+    )
+    const stopError = stopped.find(result => result.status === 'rejected')
+    if (stopError?.status === 'rejected') throw stopError.reason
+    if (disposed) return
+
+    extensionMap.clear()
     // Build extension → server mapping
     for (const [serverName, config] of Object.entries(serverConfigs)) {
       try {
@@ -155,6 +192,9 @@ export function createLSPServerManager(): LSPServerManager {
             serverList.push(serverName)
           }
         }
+
+        // Preserve unchanged processes, open documents, and warm project graphs.
+        if (servers.has(serverName)) continue
 
         // Create server instance
         const instance = createLSPServerInstance(serverName, config)
@@ -198,24 +238,29 @@ export function createLSPServerManager(): LSPServerManager {
   }
 
   /**
-   * Shutdown all running servers and clear state.
-   * Only servers in 'running' state are explicitly stopped;
-   * servers in other states are cleared without shutdown.
+   * Retire this manager permanently, including pending configuration and starts.
    *
    * @throws {Error} If one or more servers fail to stop
    */
-  async function shutdown(): Promise<void> {
-    const toStop = Array.from(servers.entries()).filter(
-      ([, s]) => s.state === 'running' || s.state === 'error',
-    )
-
-    const results = await Promise.allSettled(
-      toStop.map(([, server]) => server.stop()),
-    )
-
+  function shutdown(): Promise<void> {
+    if (shutdownPromise) return shutdownPromise
+    disposed = true
+    const toStop = Array.from(servers.entries())
     servers.clear()
     extensionMap.clear()
     openedFiles.clear()
+    shutdownPromise = stopServers(toStop)
+    return shutdownPromise
+  }
+
+  async function stopServers(
+    toStop: Array<[string, LSPServerInstance]>,
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      toStop.map(([, server]) => server.stop()),
+    )
+    // A refresh may already be stopping a removed server. Drain that too.
+    await configurationTask.catch(() => {})
 
     const errors = results
       .map((r, i) =>
@@ -285,6 +330,7 @@ export function createLSPServerManager(): LSPServerManager {
       }
     }
 
+    if (disposed || servers.get(server.name) !== server) return undefined
     return server
   }
 
@@ -467,7 +513,8 @@ export function createLSPServerManager(): LSPServerManager {
         },
       })
       // Track that this file is now open on this server
-      openedFiles.set(fileUri, server.name)
+      if (servers.get(server.name) === server)
+        openedFiles.set(fileUri, server.name)
       logForDebugging(
         `LSP: Sent didOpen for ${filePath} (languageId: ${languageId})`,
       )
@@ -559,7 +606,7 @@ export function createLSPServerManager(): LSPServerManager {
         },
       })
       // Remove from tracking so file can be reopened later
-      openedFiles.delete(fileUri)
+      if (servers.get(server.name) === server) openedFiles.delete(fileUri)
       logForDebugging(`LSP: Sent didClose for ${filePath}`)
     } catch (error) {
       const err = new Error(

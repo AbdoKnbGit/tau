@@ -721,8 +721,10 @@ describe('GrepTool with real ripgrep', () => {
       config: { alwaysOn: true, extensionToLanguage: Object.fromEntries(exts.map(ext => [ext, name])) },
       waitUntilReady: async () => {},
     }] as const
+    const servers = new Map([server('ts', ['.ts', '.tsx']), server('py', ['.py'])])
     const manager = {
-      getAllServers: () => new Map([server('ts', ['.ts', '.tsx']), server('py', ['.py'])]),
+      getAllServers: () => servers,
+      getServerForFile: (file: string) => servers.get(file.toLowerCase().endsWith('.py') ? 'py' : 'ts'),
       openFile: async (path: string) => { opened.push(path) },
     }
     await tools.primeLspServers(manager)

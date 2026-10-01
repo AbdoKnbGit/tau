@@ -3,6 +3,13 @@
 All notable changes to **Tau**, from the first release to the latest.
 Each version lists what was fixed or added, newest first.
 
+## v0.92.38 (2026-10-01)
+
+- Keep background language servers off by default to reduce startup memory; enable them in `/config` when needed.
+- Reuse unchanged language servers during plugin refresh and stop their Windows child processes on shutdown.
+- Clear diagnostic state when LSP is turned off and ignore late results from stopped servers.
+- Keep file search, outlines, editing, and project checks available without LSP.
+
 ## v0.92.37 (2026-09-30)
 
 This release records every change from the OpenRouter safety fix through the

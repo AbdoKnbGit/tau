@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/tau",
-  "version": "0.92.37",
+  "version": "0.92.38",
   "workspaces": [
     "packages/*"
   ],

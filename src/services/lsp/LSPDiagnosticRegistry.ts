@@ -61,7 +61,7 @@ const deliveredDiagnostics = new LRUCache<string, Set<string>>({
 // must NOT reach the model — the user never asked about them. Keyed by
 // resolved+lowercased path so it matches whether the server reports a path or a
 // file:// uri.
-const suppressedFiles = new Set<string>()
+const suppressedFiles = new Map<string, symbol>()
 
 function normalizeForSuppress(uri: string): string {
   let p = uri
@@ -76,13 +76,20 @@ function normalizeForSuppress(uri: string): string {
 }
 
 /** Suppress delivery of diagnostics for a file (used while priming). */
-export function suppressLSPDiagnosticsForFile(filePath: string): void {
-  suppressedFiles.add(normalizeForSuppress(filePath))
+export function suppressLSPDiagnosticsForFile(filePath: string): symbol {
+  const token = Symbol()
+  suppressedFiles.set(normalizeForSuppress(filePath), token)
+  return token
 }
 
 /** Resume normal diagnostic delivery for a previously-suppressed file. */
-export function unsuppressLSPDiagnosticsForFile(filePath: string): void {
-  suppressedFiles.delete(normalizeForSuppress(filePath))
+export function unsuppressLSPDiagnosticsForFile(
+  filePath: string,
+  token?: symbol,
+): void {
+  const key = normalizeForSuppress(filePath)
+  if (token === undefined || suppressedFiles.get(key) === token)
+    suppressedFiles.delete(key)
 }
 
 /**
@@ -398,6 +405,7 @@ export function resetAllLSPDiagnosticState(): void {
   )
   pendingDiagnostics.clear()
   deliveredDiagnostics.clear()
+  suppressedFiles.clear()
 }
 
 /**

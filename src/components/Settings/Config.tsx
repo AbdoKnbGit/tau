@@ -50,6 +50,7 @@ import { useSearchInput } from '../../hooks/useSearchInput.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeEnabled, getFastModeModel, isFastModeSupportedByModel } from '../../utils/fastMode.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
+import { syncLspServerManagerWithSettings } from '../../services/lsp/manager.js';
 type Props = {
   onClose: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -282,6 +283,20 @@ export function Config({
       logEvent('tengu_auto_compact_setting_changed', {
         enabled: autoCompactEnabled
       });
+    }
+  }, {
+    id: 'lspEnabled',
+    label: 'Background language diagnostics (LSP)',
+    value: settingsData?.lspEnabled === true,
+    type: 'boolean' as const,
+    onChange(lspEnabled: boolean) {
+      const result = updateSettingsForSource('localSettings', { lspEnabled });
+      if (result.error) {
+        logError(result.error);
+        return;
+      }
+      setSettingsData(getInitialSettings());
+      syncLspServerManagerWithSettings();
     }
   }, {
     id: 'spinnerTipsEnabled',
@@ -1210,6 +1225,9 @@ export function Config({
     if (globalConfig.autoCompactEnabled !== initialConfig.current.autoCompactEnabled) {
       formattedChanges.push(`${globalConfig.autoCompactEnabled ? 'Enabled' : 'Disabled'} auto-compact`);
     }
+    if (settingsData?.lspEnabled !== initialSettingsData.current?.lspEnabled) {
+      formattedChanges.push(`${settingsData?.lspEnabled === true ? 'Enabled' : 'Disabled'} background language diagnostics (LSP)`);
+    }
     if (globalConfig.respectGitignore !== initialConfig.current.respectGitignore) {
       formattedChanges.push(`${globalConfig.respectGitignore ? 'Enabled' : 'Disabled'} respect .gitignore in file picker`);
     }
@@ -1245,7 +1263,7 @@ export function Config({
         display: 'system'
       });
     }
-  }, [showSubmenu, changes, globalConfig, mainLoopModel, currentOutputStyle, currentLanguage, settingsData?.autoUpdatesChannel, isFastModeEnabled() ? (settingsData as Record<string, unknown> | undefined)?.fastMode : undefined, onClose]);
+  }, [showSubmenu, changes, globalConfig, mainLoopModel, currentOutputStyle, currentLanguage, settingsData?.autoUpdatesChannel, settingsData?.lspEnabled, isFastModeEnabled() ? (settingsData as Record<string, unknown> | undefined)?.fastMode : undefined, onClose]);
 
   // Restore all state stores to their mount-time snapshots. Changes are
   // applied to disk/AppState immediately on toggle, so "cancel" means
@@ -1266,10 +1284,12 @@ export function Config({
     const il = initialLocalSettings;
     updateSettingsForSource('localSettings', {
       spinnerTipsEnabled: il?.spinnerTipsEnabled,
+      lspEnabled: il?.lspEnabled,
       prefersReducedMotion: il?.prefersReducedMotion,
       defaultView: il?.defaultView,
       outputStyle: il?.outputStyle
     });
+    syncLspServerManagerWithSettings();
     const iu = initialUserSettings;
     updateSettingsForSource('userSettings', {
       alwaysThinkingEnabled: iu?.alwaysThinkingEnabled,

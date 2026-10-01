@@ -773,6 +773,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Mode set by /mode. cheap = core tools only; normal = default behavior; full = every optional tool forced on. Absent means normal.',
         ),
+      lspEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable background language servers and automatic diagnostics. Off unless explicitly true; file tools and project checks remain available.',
+        ),
       promptSuggestionEnabled: z
         .boolean()
         .optional()

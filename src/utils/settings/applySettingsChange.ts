@@ -15,6 +15,7 @@ import { syncPermissionRulesFromDisk } from '../permissions/permissions.js'
 import { loadAllPermissionRulesFromDisk } from '../permissions/permissionsLoader.js'
 import type { SettingSource } from './constants.js'
 import { getInitialSettings } from './settings.js'
+import { syncLspServerManagerWithSettings } from '../../services/lsp/manager.js'
 
 /**
  * Apply a settings change to app state. Re-reads settings from disk,
@@ -38,6 +39,7 @@ export function applySettingsChange(
   setAppState: (f: (prev: AppState) => AppState) => void,
 ): void {
   const newSettings = getInitialSettings()
+  syncLspServerManagerWithSettings()
 
   logForDebugging(`Settings changed from ${source}, updating app state`)
   clearToolSchemaCache()

@@ -2,6 +2,9 @@ import { logForDebugging } from '../../utils/debug.js'
 import { isBareMode } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getPowerModeFromSettings } from '../../utils/powerMode.js'
+import { resetAllLSPDiagnosticState } from './LSPDiagnosticRegistry.js'
 import {
   createLSPServerManager,
   type LSPServerManager,
@@ -39,6 +42,27 @@ let initializationGeneration = 0
  * Promise that resolves when initialization completes (success or failure)
  */
 let initializationPromise: Promise<void> | undefined
+let shutdownPromise: Promise<void> = Promise.resolve()
+let startupAllowed = false
+
+/** LSP is explicit opt-in; ordinary file tools do not need a project index. */
+export function isLspEnabled(): boolean {
+  const settings = getInitialSettings()
+  return (
+    !isBareMode() &&
+    settings.lspEnabled === true &&
+    getPowerModeFromSettings(settings) !== 'cheap'
+  )
+}
+
+/** Apply a user toggle without changing the tool catalog or system prompt. */
+export function syncLspServerManagerWithSettings(): void {
+  // Settings notifications must not launch project processes before main's
+  // explicit post-trust initialization boundary.
+  if (!startupAllowed) return
+  if (isLspEnabled()) initializeLspServerManager()
+  else void shutdownLspServerManager()
+}
 
 /**
  * Test-only sync reset. shutdownLspServerManager() is async and tears down
@@ -47,6 +71,8 @@ let initializationPromise: Promise<void> | undefined
  * tests on the same shard.
  */
 export function _resetLspManagerForTesting(): void {
+  startupAllowed = false
+  lspManagerInstance = undefined
   initializationState = 'not-started'
   initializationError = undefined
   initializationPromise = undefined
@@ -63,7 +89,7 @@ export function _resetLspManagerForTesting(): void {
  */
 export function getLspServerManager(): LSPServerManager | undefined {
   // Don't return a broken instance if initialization failed
-  if (initializationState === 'failed') {
+  if (!isLspEnabled() || initializationState === 'failed') {
     return undefined
   }
   return lspManagerInstance
@@ -162,9 +188,9 @@ export async function waitForInitialization(): Promise<void> {
  * However, if initialization previously failed, calling again will retry.
  */
 export function initializeLspServerManager(): void {
-  // --bare / SIMPLE: no LSP. LSP is for editor integration (diagnostics,
-  // hover, go-to-def in the REPL). Scripted -p calls have no use for it.
-  if (isBareMode()) {
+  startupAllowed = true
+  // No server, project warmup, or implicit launch from an edit unless opted in.
+  if (!isLspEnabled()) {
     return
   }
   logForDebugging('[LSP MANAGER] initializeLspServerManager() called')
@@ -177,16 +203,13 @@ export function initializeLspServerManager(): void {
     return
   }
 
-  // Reset state for retry if previous initialization failed
-  if (initializationState === 'failed') {
-    lspManagerInstance = undefined
-    initializationError = undefined
-  }
+  lspManagerInstance ??= createLSPServerManager()
+  initializeManager(lspManagerInstance)
+}
 
-  // Create the manager instance and mark as pending
-  lspManagerInstance = createLSPServerManager()
+function initializeManager(manager: LSPServerManager): void {
   initializationState = 'pending'
-  logForDebugging('[LSP MANAGER] Created manager instance, state=pending')
+  initializationError = undefined
 
   // Increment generation to invalidate any pending initializations
   const currentGeneration = ++initializationGeneration
@@ -196,8 +219,11 @@ export function initializeLspServerManager(): void {
 
   // Start initialization asynchronously without blocking
   // Store the promise so callers can await it via waitForInitialization()
-  initializationPromise = lspManagerInstance
-    .initialize()
+  initializationPromise = shutdownPromise
+    .then(() => {
+      if (!isLspEnabled()) return shutdownLspServerManager()
+      return manager.initialize()
+    })
     .then(() => {
       // Only update state if this is still the current initialization
       if (currentGeneration === initializationGeneration) {
@@ -205,11 +231,13 @@ export function initializeLspServerManager(): void {
         logForDebugging('LSP server manager initialized successfully')
 
         // Register passive notification handlers for diagnostics
-        if (lspManagerInstance) {
-          registerLSPNotificationHandlers(lspManagerInstance)
+        if (lspManagerInstance === manager) {
+          registerLSPNotificationHandlers(manager)
           // Warm the always-on servers now so the indexing bar appears at
           // session start instead of waiting for the first LSP query.
-          void primeLspServers(lspManagerInstance)
+          void primeLspServers(manager).catch(error => {
+            logForDebugging(`LSP priming failed: ${errorMessage(error)}`)
+          })
         }
       }
     })
@@ -218,8 +246,7 @@ export function initializeLspServerManager(): void {
       if (currentGeneration === initializationGeneration) {
         initializationState = 'failed'
         initializationError = error as Error
-        // Clear the instance since it's not usable
-        lspManagerInstance = undefined
+        // Retain ownership for cleanup/retry even if configuration loading failed.
 
         logError(error as Error)
         logForDebugging(
@@ -241,11 +268,14 @@ export function initializeLspServerManager(): void {
  * stale memoized result and initializes with 0 servers. Unlike commands/agents/
  * hooks/MCP, LSP was never re-initialized on plugin refresh.
  *
- * Safe to call when no LSP plugins changed: initialize() is just config
- * parsing (servers are lazy-started on first use). Also safe during pending
- * init: the generation counter invalidates the in-flight promise.
+ * Refresh configuration on the same manager. Unchanged servers keep their
+ * processes and project indexes; changed/removed servers are stopped first.
  */
 export function reinitializeLspServerManager(): void {
+  if (!isLspEnabled()) {
+    void shutdownLspServerManager()
+    return
+  }
   if (initializationState === 'not-started') {
     // initializeLspServerManager() was never called (e.g. headless subcommand
     // path). Don't start it now.
@@ -254,24 +284,7 @@ export function reinitializeLspServerManager(): void {
 
   logForDebugging('[LSP MANAGER] reinitializeLspServerManager() called')
 
-  // Best-effort shutdown of any running servers on the old instance so
-  // /reload-plugins doesn't leak child processes. Fire-and-forget: the
-  // primary use case (issue #15521) has 0 servers so this is usually a no-op.
-  if (lspManagerInstance) {
-    void lspManagerInstance.shutdown().catch(err => {
-      logForDebugging(
-        `[LSP MANAGER] old instance shutdown during reinit failed: ${errorMessage(err)}`,
-      )
-    })
-  }
-
-  // Force the idempotence check in initializeLspServerManager() to fall
-  // through. Generation counter handles invalidating any in-flight init.
-  lspManagerInstance = undefined
-  initializationState = 'not-started'
-  initializationError = undefined
-
-  initializeLspServerManager()
+  if (lspManagerInstance) initializeManager(lspManagerInstance)
 }
 
 /**
@@ -287,25 +300,26 @@ export function reinitializeLspServerManager(): void {
  * @returns Promise that resolves when shutdown completes (errors are swallowed)
  */
 export async function shutdownLspServerManager(): Promise<void> {
-  if (lspManagerInstance === undefined) {
-    return
-  }
+  const manager = lspManagerInstance
+  // Invalidate callbacks before awaiting cleanup, so a late initialize cannot
+  // publish success or prime a retired manager. A new init waits for this stop.
+  lspManagerInstance = undefined
+  initializationState = 'not-started'
+  initializationError = undefined
+  initializationPromise = undefined
+  initializationGeneration++
+  resetAllLSPDiagnosticState()
+  if (!manager) return shutdownPromise
 
-  try {
-    await lspManagerInstance.shutdown()
-    logForDebugging('LSP server manager shut down successfully')
-  } catch (error: unknown) {
-    logError(error as Error)
-    logForDebugging(
-      `Failed to shutdown LSP server manager: ${errorMessage(error)}`,
-    )
-  } finally {
-    // Always clear state even if shutdown failed
-    lspManagerInstance = undefined
-    initializationState = 'not-started'
-    initializationError = undefined
-    initializationPromise = undefined
-    // Increment generation to invalidate any pending initializations
-    initializationGeneration++
-  }
+  shutdownPromise = Promise.all([shutdownPromise, manager.shutdown()])
+    .then(() => {
+      logForDebugging('LSP server manager shut down successfully')
+    })
+    .catch((error: unknown) => {
+      logError(error as Error)
+      logForDebugging(
+        `Failed to shutdown LSP server manager: ${errorMessage(error)}`,
+      )
+    })
+  return shutdownPromise
 }

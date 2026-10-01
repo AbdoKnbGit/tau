@@ -13,6 +13,7 @@ import type { LSPServerManager } from './LSPServerManager.js'
 
 // Bound the walk so startup never stalls on huge trees.
 const PRIME_WALK_BUDGET_MS = 5_000
+const primedServers = new WeakSet<LSPServerInstance>()
 
 /**
  * Open one real project file per always-on server at session start so the
@@ -21,7 +22,9 @@ const PRIME_WALK_BUDGET_MS = 5_000
  * first LSP query. Fully best-effort and non-blocking; the primer file's
  * diagnostics are suppressed so this stays invisible to the model.
  */
-export async function primeLspServers(manager: LSPServerManager): Promise<void> {
+export async function primeLspServers(
+  manager: LSPServerManager,
+): Promise<void> {
   const root = getCwd()
 
   // Which extension maps to which not-yet-primed always-on server.
@@ -31,7 +34,7 @@ export async function primeLspServers(manager: LSPServerManager): Promise<void> 
   >()
   const pending = new Set<string>()
   for (const [name, server] of manager.getAllServers()) {
-    if (!server.config.alwaysOn) continue
+    if (!server.config.alwaysOn || primedServers.has(server)) continue
     const exts = Object.keys(server.config.extensionToLanguage)
     if (exts.length === 0) continue
     pending.add(name)
@@ -64,9 +67,14 @@ async function primeOne(
   server: LSPServerInstance,
   file: string,
 ): Promise<void> {
+  // A plugin refresh/shutdown may have replaced this server during the walk.
+  if (manager.getServerForFile(file) !== server || primedServers.has(server))
+    return
+  primedServers.add(server)
+  const suppression = suppressLSPDiagnosticsForFile(file)
   try {
-    suppressLSPDiagnosticsForFile(file)
     const content = await readFile(file, 'utf-8')
+    if (manager.getServerForFile(file) !== server) return
     await manager.openFile(file, content)
     logForDebugging(
       `[LSP PRIME] ${server.name}: opened ${file} to warm the project`,
@@ -74,8 +82,11 @@ async function primeOne(
     // Once the project finishes loading (or the warmup times out), resume
     // normal diagnostics for that file so later real edits to it still report.
     await server.waitUntilReady()
-    setTimeout(() => unsuppressLSPDiagnosticsForFile(file), 3_000)
   } catch (error) {
-    logForDebugging(`[LSP PRIME] ${server.name} priming failed: ${String(error)}`)
+    logForDebugging(
+      `[LSP PRIME] ${server.name} priming failed: ${String(error)}`,
+    )
+  } finally {
+    setTimeout(() => unsuppressLSPDiagnosticsForFile(file, suppression), 3_000)
   }
 }

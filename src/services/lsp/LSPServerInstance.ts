@@ -305,10 +305,13 @@ export function createLSPServerInstance(
       const finish = (): void => {
         if (settled) return
         settled = true
+        clearTimeout(timer)
+        const index = readyWaiters.indexOf(finish)
+        if (index !== -1) readyWaiters.splice(index, 1)
         resolve()
       }
+      const timer = setTimeout(finish, timeoutMs)
       readyWaiters.push(finish)
-      setTimeout(finish, timeoutMs)
     })
   }
 
@@ -336,7 +339,12 @@ export function createLSPServerInstance(
   // Without this, batched LSP operations would try to use a server that was
   // still initializing and hit "server is starting" notification failures.
   let startPromise: Promise<void> | undefined
+  let stopPromise: Promise<void> | undefined
+  let clientStartPromise: Promise<void> | undefined
+  let lifecycleGeneration = 0
   function start(): Promise<void> {
+    if (stopPromise)
+      return Promise.reject(new Error(`LSP server '${name}' is stopping`))
     if (state === 'running') return Promise.resolve()
     if (startPromise) return startPromise
     startPromise = doStart()
@@ -349,6 +357,12 @@ export function createLSPServerInstance(
   }
 
   async function doStart(): Promise<void> {
+    const generation = ++lifecycleGeneration
+    const assertCurrentStart = (): void => {
+      if (generation !== lifecycleGeneration) {
+        throw new Error(`LSP server '${name}' startup was cancelled`)
+      }
+    }
     // Cap crash-recovery attempts so a persistently crashing server doesn't
     // spawn unbounded child processes on every incoming request.
     const maxRestarts = config.maxRestarts ?? 3
@@ -363,6 +377,10 @@ export function createLSPServerInstance(
 
     let initPromise: Promise<unknown> | undefined
     try {
+      if (state === 'error') {
+        await client.stop().catch(() => {})
+        assertCurrentStart()
+      }
       state = 'starting'
       logForDebugging(`Starting LSP server instance: ${name}`)
 
@@ -371,14 +389,18 @@ export function createLSPServerInstance(
         config.command,
         config.args || [],
       )
-      await client.start(resolvedCommand.command, resolvedCommand.args, {
-        env: config.env,
-        cwd: config.workspaceFolder,
-      })
+      clientStartPromise = client.start(
+        resolvedCommand.command,
+        resolvedCommand.args,
+        {
+          env: config.env,
+          cwd: config.workspaceFolder,
+        },
+      )
+      await clientStartPromise
+      assertCurrentStart()
 
-      // Register progress handlers + reset warmup BEFORE initialize, so we catch
-      // the project-load progress the server emits immediately after it.
-      registerProgressHandlers()
+      // Reset warmup before initialize so early project-load progress is kept.
       resetWarmup()
 
       // Initialize with workspace info
@@ -473,7 +495,9 @@ export function createLSPServerInstance(
         await initPromise
       }
 
+      assertCurrentStart()
       state = 'running'
+      lastError = undefined
       startTime = new Date()
       crashRecoveryCount = 0
       // Now that the server is initialized and about to load the project, arm
@@ -481,8 +505,11 @@ export function createLSPServerInstance(
       startWarmupTimers()
       logForDebugging(`LSP server instance started: ${name}`)
     } catch (error) {
+      // stop() owns cleanup for a cancelled start. Never let a late handshake
+      // resurrect this instance or race another cleanup against its restart.
+      if (generation !== lifecycleGeneration) throw error
       // Clean up the spawned child process on timeout/error
-      client.stop().catch(() => {})
+      await client.stop().catch(() => {})
       // Prevent unhandled rejection from abandoned initialize promise
       initPromise?.catch(() => {})
       state = 'error'
@@ -500,24 +527,35 @@ export function createLSPServerInstance(
    *
    * @throws {Error} If server fails to stop
    */
-  async function stop(): Promise<void> {
-    if (state === 'stopped' || state === 'stopping') {
-      return
-    }
+  function stop(): Promise<void> {
+    if (stopPromise) return stopPromise
+    if (state === 'stopped' && !startPromise) return Promise.resolve()
+    lifecycleGeneration++
+    state = 'stopping'
+    stopPromise = doStop().finally(() => {
+      stopPromise = undefined
+    })
+    return stopPromise
+  }
 
+  async function doStop(): Promise<void> {
     try {
-      state = 'stopping'
+      // Wait only for spawn, not initialize (a hung handshake is cancelled by
+      // disposing the client connection). This also closes the pre-spawn race.
+      await clientStartPromise?.catch(() => {})
       await client.stop()
+      await startPromise?.catch(() => {})
       state = 'stopped'
-      // Don't leave readiness waiters hanging once the server is down.
-      for (const resolve of readyWaiters.splice(0)) resolve()
-      resetWarmup()
       logForDebugging(`LSP server instance stopped: ${name}`)
     } catch (error) {
       state = 'error'
       lastError = error as Error
       logError(error)
       throw error
+    } finally {
+      clientStartPromise = undefined
+      for (const resolve of readyWaiters.splice(0)) resolve()
+      resetWarmup()
     }
   }
 
@@ -696,6 +734,9 @@ export function createLSPServerInstance(
   ): void {
     client.onRequest(method, handler)
   }
+
+  // The client preserves handlers across restarts; register these just once.
+  registerProgressHandlers()
 
   // Return public API
   return {
