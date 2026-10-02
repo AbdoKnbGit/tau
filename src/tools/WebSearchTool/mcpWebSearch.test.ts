@@ -83,6 +83,35 @@ function main(): void {
     )
   })
 
+  const longHit = (body: string): string =>
+    `Title: Long page URL: https://example.com/long Published: N/A Highlights: intro. ${body}`
+  const pad = 'menu cookie banner navigation footer '.repeat(250)
+
+  test('keeps the passage matching the query in long hit content', () => {
+    const hits = parseMcpWebSearchHits(
+      longHit(`${pad} The minimum PC specs are an RTX 3060 GPU. ${pad}`),
+      'minimum PC specs',
+    )
+    const content = hits[0]?.content ?? ''
+    assert(content.length <= 4_000, `too long: ${content.length}`)
+    assert(content.includes('minimum PC specs are an RTX 3060'), content.slice(0, 200))
+    assert(content.startsWith('Published: N/A'), 'lead must be kept')
+  })
+
+  test('falls back to the head cut when nothing matches', () => {
+    const text = longHit(`${pad} ${pad}`)
+    const withQuery = parseMcpWebSearchHits(text, 'quantum chromodynamics')
+    const withoutQuery = parseMcpWebSearchHits(text)
+    assert(
+      withQuery[0]?.content === withoutQuery[0]?.content,
+      'no-match result must equal the previous head cut',
+    )
+    assert(
+      withoutQuery[0]?.content?.endsWith('[content truncated]'),
+      'head cut keeps its marker',
+    )
+  })
+
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed > 0) process.exit(1)
 }

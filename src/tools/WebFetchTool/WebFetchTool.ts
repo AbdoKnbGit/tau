@@ -5,6 +5,12 @@ import { formatFileSize } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { getRuleByContentsForTool } from '../../utils/permissions/permissions.js'
+import {
+  getPersistenceThreshold,
+  isPersistError,
+  persistToolResult,
+} from '../../utils/toolResultStorage.js'
+import { buildPageExcerptNote, excerptPageForPrompt } from './excerpt.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { DESCRIPTION, WEB_FETCH_TOOL_NAME } from './prompt.js'
 import {
@@ -47,6 +53,33 @@ type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
 
+// 100K chars - tool result persistence threshold
+const MAX_RESULT_SIZE_CHARS = 100_000
+
+/**
+ * Preapproved Markdown is returned verbatim when it fits inline. A larger page
+ * would be parked on disk behind a 2 KB preview, so return the sections that
+ * match the prompt instead and save the full page for ToolOutputRetrieve.
+ */
+async function preapprovedMarkdownResult(
+  content: string,
+  prompt: string,
+  toolUseId: string | undefined,
+): Promise<string> {
+  const excerpt = excerptPageForPrompt(
+    content,
+    prompt,
+    getPersistenceThreshold(WEB_FETCH_TOOL_NAME, MAX_RESULT_SIZE_CHARS),
+  )
+  if (!excerpt) return content
+  let savedPath: string | null = null
+  if (toolUseId) {
+    const saved = await persistToolResult(content, `${toolUseId}.page`)
+    if (!isPersistError(saved)) savedPath = saved.filepath
+  }
+  return excerpt.text + buildPageExcerptNote(excerpt, content.length, savedPath)
+}
+
 function webFetchToolInputToPermissionRuleContent(input: {
   [k: string]: unknown
 }): string {
@@ -66,8 +99,7 @@ function webFetchToolInputToPermissionRuleContent(input: {
 export const WebFetchTool = buildTool({
   name: WEB_FETCH_TOOL_NAME,
   searchHint: 'fetch and extract content from a URL',
-  // 100K chars - tool result persistence threshold
-  maxResultSizeChars: 100_000,
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   shouldDefer: true,
   async description(input) {
     const { url } = input as { url: string }
@@ -207,7 +239,11 @@ ${DESCRIPTION}`
   renderToolResultMessage,
   async call(
     { url, prompt },
-    { abortController, options: { isNonInteractiveSession, mainLoopModel } },
+    {
+      abortController,
+      options: { isNonInteractiveSession, mainLoopModel },
+      toolUseId,
+    },
   ) {
     const start = Date.now()
 
@@ -266,7 +302,7 @@ To complete your request, I need to fetch content from the redirected URL. Pleas
       contentType.includes('text/markdown') &&
       content.length < MAX_MARKDOWN_LENGTH
     ) {
-      result = content
+      result = await preapprovedMarkdownResult(content, prompt, toolUseId)
     } else {
       result = await applyPromptToMarkdown(
         prompt,

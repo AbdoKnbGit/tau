@@ -7,6 +7,7 @@ import {
   isToolResultCompressionEnabled,
   selectToolResultPreview,
 } from './toolResultCompression.js'
+import { isWellFormedText } from './wellFormedText.js'
 
 let passed = 0
 let failed = 0
@@ -95,6 +96,75 @@ test('small content is not compressed', () => {
   process.env.TAU_TOOL_RESULT_COMPRESSION = '1'
 
   eq(buildCompressedToolResultPreview('short\ncontent', 1000), null)
+})
+
+/** Shaped like a persisted web search: a few short lines, then huge ones. */
+function searchLikeOutput(): string {
+  const lines = ['Web search results for query: "gta 6 pc requirements"', '']
+  for (let i = 1; i <= 8; i++) {
+    lines.push(
+      `Result ${i}:`,
+      `Title: Result title number ${i}`,
+      `URL: https://example.com/page-${i}`,
+      'Content excerpt:',
+      `Published: 2026 Highlights: ${'content words for this hit '.repeat(150)}`,
+      '',
+    )
+  }
+  lines.push('REMINDER: You MUST include the sources above in your response.')
+  return lines.join('\n')
+}
+
+test('long lines no longer crowd out the last lines', () => {
+  resetEnv()
+  const content = searchLikeOutput()
+  const preview = buildCompressedToolResultPreview(content, 2000)!
+  assert(preview !== null, 'expected a preview')
+  assert(preview.length <= 2000, `too long: ${preview.length}`)
+  assert(preview.includes('--- first lines ---'), 'missing head section')
+  assert(preview.includes('--- last lines ---'), 'missing tail section')
+  assert(preview.includes('REMINDER: You MUST include the sources'), 'missing final line')
+  assert(!preview.includes('preview trimmed to budget'), 'sections should fit by construction')
+  for (const line of preview.split('\n')) {
+    assert(line.length <= 300, `line not capped: ${line.length}`)
+  }
+  assert(preview.includes(' chars]'), 'capped lines must say how much was dropped')
+})
+
+test('fits the 512-char aggregate preview budget', () => {
+  resetEnv()
+  const preview = buildCompressedToolResultPreview(largeLog(), 512)!
+  assert(preview !== null, 'expected a preview')
+  assert(preview.length <= 512, `too long: ${preview.length}`)
+  assert(preview.includes('--- first lines ---'), 'missing head')
+  assert(preview.includes('--- last lines ---'), 'missing tail')
+})
+
+test('a diagnostic already shown in the first lines is not repeated', () => {
+  resetEnv()
+  const lines = largeLog().split('\n')
+  lines[2] = 'Error: failed to start'
+  const preview = buildCompressedToolResultPreview(lines.join('\n'), 2000)!
+  const count = preview.split('Error: failed to start').length - 1
+  eq(count, 1, 'diagnostic should appear once')
+})
+
+test('capped lines never split a surrogate pair', () => {
+  resetEnv()
+  const rocket = String.fromCodePoint(0x1f680)
+  const lines = Array.from({ length: 60 }, (_, i) => `${i} ${rocket.repeat(400)}`)
+  const preview = buildCompressedToolResultPreview(lines.join('\n'), 2000)!
+  assert(preview !== null, 'expected a preview')
+  assert(isWellFormedText(preview), 'preview has a lone surrogate')
+})
+
+test('is deterministic', () => {
+  resetEnv()
+  const content = searchLikeOutput()
+  eq(
+    buildCompressedToolResultPreview(content, 2000),
+    buildCompressedToolResultPreview(content, 2000),
+  )
 })
 
 resetEnv()

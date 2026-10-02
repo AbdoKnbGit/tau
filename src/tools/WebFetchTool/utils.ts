@@ -5,6 +5,7 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { queryWithModel } from '../../services/api/claude.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { AbortError } from '../../utils/errors.js'
 import { getWebFetchUserAgent } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
@@ -14,6 +15,8 @@ import {
 } from '../../utils/mcpOutputStorage.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import { surrogateSafeEnd } from '../../utils/wellFormedText.js'
+import { selectContentForSideQuery } from './excerpt.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { makeSecondaryModelPrompt } from './prompt.js'
 
@@ -523,12 +526,25 @@ export async function applyPromptToMarkdown(
   isPreapprovedDomain: boolean,
   model: string,
 ): Promise<string> {
-  // Truncate content to avoid "Prompt is too long" errors from the model
+  // A prompt that targets part of a long page gets that part (less input, a
+  // faster answer); otherwise truncate to avoid "Prompt is too long" errors.
+  const scopedContent = selectContentForSideQuery(markdownContent, prompt)
   const truncatedContent =
-    markdownContent.length > MAX_MARKDOWN_LENGTH
-      ? markdownContent.slice(0, MAX_MARKDOWN_LENGTH) +
-        '\n\n[Content truncated due to length...]'
-      : markdownContent
+    scopedContent ??
+    (markdownContent.length > MAX_MARKDOWN_LENGTH
+      ? markdownContent.slice(
+          0,
+          surrogateSafeEnd(markdownContent, MAX_MARKDOWN_LENGTH),
+        ) + '\n\n[Content truncated due to length...]'
+      : markdownContent)
+  const sent = scopedContent
+    ? 'sections relevant to the prompt'
+    : markdownContent.length > MAX_MARKDOWN_LENGTH
+      ? 'page head'
+      : 'whole page'
+  logForDebugging(
+    `WebFetch side query: sending ${truncatedContent.length} of ${markdownContent.length} page characters (${sent})`,
+  )
 
   const modelPrompt = makeSecondaryModelPrompt(
     truncatedContent,

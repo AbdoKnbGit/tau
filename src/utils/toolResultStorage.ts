@@ -39,6 +39,7 @@ import {
   isAllowedTauManagedTaskOutputPath,
 } from './tauManagedOutputPaths.js'
 import { selectToolResultPreview } from './toolResultCompression.js'
+import { surrogateSafeEnd, toWellFormedText } from './wellFormedText.js'
 import { posixPathToWindowsPath } from './windowsPaths.js'
 
 // Subdirectory name for tool results within a session
@@ -861,11 +862,57 @@ export function isToolResultContentEmpty(
 }
 
 /**
+ * Replace lone surrogates in a tool result's text with U+FFFD.
+ *
+ * A tool that slices output at a UTF-16 index can split an emoji in half.
+ * JSON-encoded, the lone half is rejected by strict API parsers (Anthropic:
+ * 400 "no low surrogate in string"), and because it sits in the history,
+ * every later request fails too. Every tool result passes through here once,
+ * before it is frozen into the conversation, so this is prompt-cache safe.
+ * Returns the same block object when nothing needed fixing (the usual case).
+ */
+function wellFormedToolResultBlock(
+  toolResultBlock: ToolResultBlockParam,
+): ToolResultBlockParam {
+  const content = toolResultBlock.content
+  if (typeof content === 'string') {
+    const fixed = toWellFormedText(content)
+    return fixed === content ? toolResultBlock : { ...toolResultBlock, content: fixed }
+  }
+  if (!Array.isArray(content)) return toolResultBlock
+  let changed = false
+  const fixedContent = content.map(block => {
+    if (block.type !== 'text' || typeof block.text !== 'string') return block
+    const text = toWellFormedText(block.text)
+    if (text === block.text) return block
+    changed = true
+    return { ...block, text }
+  })
+  return changed ? { ...toolResultBlock, content: fixedContent } : toolResultBlock
+}
+
+/**
  * Handle large tool results by persisting to disk instead of truncating.
  * Returns the original block if no persistence needed, or a modified block
- * with the content replaced by a reference to the persisted file.
+ * with the content replaced by a reference to the persisted file. The text is
+ * made well-formed on the way in (so the saved file and preview are) and on
+ * the way out (so the preview cut can never leave half a pair).
  */
 async function maybePersistLargeToolResult(
+  toolResultBlock: ToolResultBlockParam,
+  toolName: string,
+  persistenceThreshold?: number,
+): Promise<ToolResultBlockParam> {
+  return wellFormedToolResultBlock(
+    await persistLargeToolResultIfNeeded(
+      wellFormedToolResultBlock(toolResultBlock),
+      toolName,
+      persistenceThreshold,
+    ),
+  )
+}
+
+async function persistLargeToolResultIfNeeded(
   toolResultBlock: ToolResultBlockParam,
   toolName: string,
   persistenceThreshold?: number,
@@ -945,8 +992,11 @@ export function generatePreview(
   const lastNewline = truncated.lastIndexOf('\n')
 
   // If we found a newline reasonably close to the limit, use it
-  // Otherwise fall back to the exact limit
-  const cutPoint = lastNewline > maxBytes * 0.5 ? lastNewline : maxBytes
+  // Otherwise fall back to the exact limit, without splitting a surrogate pair
+  const cutPoint =
+    lastNewline > maxBytes * 0.5
+      ? lastNewline
+      : surrogateSafeEnd(content, maxBytes)
 
   return { preview: content.slice(0, cutPoint), hasMore: true }
 }

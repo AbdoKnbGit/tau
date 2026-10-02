@@ -1,6 +1,7 @@
 import type { ZodError, ZodTypeAny } from 'zod/v4'
 import { AbortError, ShellError } from './errors.js'
 import { INTERRUPT_MESSAGE_FOR_TOOL_USE } from './messages.js'
+import { surrogateSafeEnd, surrogateSafeStart } from './wellFormedText.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
 
 export function formatError(error: unknown): string {
@@ -17,9 +18,13 @@ export function formatError(error: unknown): string {
     return fullMessage
   }
   const halfLength = 5000
-  const start = fullMessage.slice(0, halfLength)
-  const end = fullMessage.slice(-halfLength)
-  return `${start}\n\n... [${fullMessage.length - 10000} characters truncated] ...\n\n${end}`
+  // Cut points step around surrogate pairs: half an emoji in a tool error
+  // would make every later API request fail as invalid JSON.
+  const start = fullMessage.slice(0, surrogateSafeEnd(fullMessage, halfLength))
+  const end = fullMessage.slice(
+    surrogateSafeStart(fullMessage, fullMessage.length - halfLength),
+  )
+  return `${start}\n\n... [${fullMessage.length - start.length - end.length} characters truncated] ...\n\n${end}`
 }
 
 export function getErrorParts(error: Error): string[] {

@@ -1,5 +1,6 @@
 import { loadProviderKey } from '../../services/api/auth/api_key_manager.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { excerptForQuery, extractQueryTerms } from '../../utils/queryExcerpt.js'
 
 export const FIRECRAWL_PROVIDER_KEY = 'firecrawl'
 export const FIRECRAWL_DISPLAY_NAME = 'Firecrawl Search'
@@ -119,15 +120,23 @@ function normalizePlainText(value: string, maxChars: number): string {
   return truncateText(value.replace(/\s+/g, ' ').trim(), maxChars)
 }
 
-function normalizePageContent(value: string): string {
-  return truncateText(
-    value
-      .replace(/\r\n?/g, '\n')
-      .replace(/[ \t]+/g, ' ')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim(),
-    FIRECRAWL_MAX_CONTENT_CHARS,
-  )
+/**
+ * Normalize scraped page markdown and fit it to the per-hit cap. When the page
+ * is longer than the cap, keep the passages that match the search query
+ * rather than the page head (navigation, intros); fall back to the head when
+ * nothing matches.
+ */
+function normalizePageContent(value: string, terms: readonly string[]): string {
+  const normalized = value
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  if (normalized.length > FIRECRAWL_MAX_CONTENT_CHARS && terms.length > 0) {
+    const excerpt = excerptForQuery(normalized, terms, FIRECRAWL_MAX_CONTENT_CHARS)
+    if (excerpt !== null) return excerpt
+  }
+  return truncateText(normalized, FIRECRAWL_MAX_CONTENT_CHARS)
 }
 
 function normalizeDomain(value: string): string | null {
@@ -202,7 +211,10 @@ function getWebResults(data: unknown): unknown[] {
   return Array.isArray(web) ? web : []
 }
 
-function toSearchHit(value: unknown): FirecrawlSearchHit | null {
+function toSearchHit(
+  value: unknown,
+  terms: readonly string[],
+): FirecrawlSearchHit | null {
   const urlOnly = asString(value)
   if (urlOnly) return { title: urlOnly, url: urlOnly }
 
@@ -239,7 +251,7 @@ function toSearchHit(value: unknown): FirecrawlSearchHit | null {
     )
   }
   if (content) {
-    hit.content = normalizePageContent(content)
+    hit.content = normalizePageContent(content, terms)
   }
   return hit
 }
@@ -380,6 +392,7 @@ async function postFirecrawlScrape(
 async function enrichHitsWithScrapedContent(
   hits: FirecrawlSearchHit[],
   apiKey: string,
+  terms: readonly string[],
   signal?: AbortSignal,
 ): Promise<FirecrawlSearchHit[]> {
   let scrapeCount = 0
@@ -392,11 +405,14 @@ async function enrichHitsWithScrapedContent(
       scrapeCount++
       try {
         const response = await postFirecrawlScrape(hit.url, apiKey, signal)
-        const scraped = toSearchHit({
-          ...(asRecord(response.data) ?? {}),
-          url: hit.url,
-          title: hit.title,
-        })
+        const scraped = toSearchHit(
+          {
+            ...(asRecord(response.data) ?? {}),
+            url: hit.url,
+            title: hit.title,
+          },
+          terms,
+        )
         return mergeHitWithScrapedContent(hit, scraped)
       } catch {
         return hit
@@ -438,13 +454,19 @@ export async function runFirecrawlWebSearch(
     }
     const includeDomains = normalizeDomainFilter(input.allowed_domains)
     const excludeDomains = normalizeDomainFilter(input.blocked_domains)
+    const terms = extractQueryTerms(input.query)
     const hits = getWebResults(response.data ?? response)
-      .map(toSearchHit)
+      .map(value => toSearchHit(value, terms))
       .filter((hit): hit is FirecrawlSearchHit => hit !== null)
       .filter(hit => keepHitForFilters(hit, includeDomains, excludeDomains))
 
     return {
-      hits: await enrichHitsWithScrapedContent(hits, apiKey, combined.signal),
+      hits: await enrichHitsWithScrapedContent(
+        hits,
+        apiKey,
+        terms,
+        combined.signal,
+      ),
       durationSeconds: (performance.now() - startTime) / 1000,
     }
   } finally {

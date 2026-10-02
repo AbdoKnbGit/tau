@@ -1,4 +1,5 @@
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { excerptForQuery, extractQueryTerms } from '../../utils/queryExcerpt.js'
 
 export const EXA_API_KEY_ENV = 'EXA_API_KEY'
 export const PARALLEL_API_KEY_ENV = 'PARALLEL_API_KEY'
@@ -105,16 +106,36 @@ function normalizeText(value: string, maxChars: number): string {
   return `${normalized.slice(0, maxChars).replace(/\s+\S*$/, '').trimEnd()}\n[content truncated]`
 }
 
+/**
+ * Fit one hit's text to the per-hit cap. Providers return far more text than
+ * fits; when a query is known, keep the passages that match it instead of the
+ * page head, falling back to the head when nothing matches.
+ */
+function normalizeHitContent(value: string, terms: readonly string[]): string {
+  if (terms.length > 0) {
+    const normalized = value.replace(/\s+/g, ' ').trim()
+    if (normalized.length > MCP_MAX_CONTENT_CHARS) {
+      const excerpt = excerptForQuery(normalized, terms, MCP_MAX_CONTENT_CHARS)
+      if (excerpt !== null) return excerpt
+    }
+  }
+  return normalizeText(value, MCP_MAX_CONTENT_CHARS)
+}
+
 function normalizeUrl(value: string): string {
   return value.replace(/[),.;]+$/g, '')
 }
 
-export function parseMcpWebSearchHits(text: string): McpWebSearchHit[] {
+export function parseMcpWebSearchHits(
+  text: string,
+  query?: string,
+): McpWebSearchHit[] {
   const matches = Array.from(
     text.matchAll(/Title:\s*([\s\S]*?)\s+URL:\s*(https?:\/\/[^\s)]+)/g),
   )
   if (!matches.length) return []
 
+  const terms = query ? extractQueryTerms(query) : []
   const hits: McpWebSearchHit[] = []
   for (let i = 0; i < matches.length; i++) {
     const match = matches[i]
@@ -126,9 +147,9 @@ export function parseMcpWebSearchHits(text: string): McpWebSearchHit[] {
 
     const contentStart = match.index + match[0].length
     const contentEnd = matches[i + 1]?.index ?? text.length
-    const content = normalizeText(
+    const content = normalizeHitContent(
       text.slice(contentStart, contentEnd),
-      MCP_MAX_CONTENT_CHARS,
+      terms,
     )
 
     hits.push({
@@ -274,7 +295,7 @@ export async function runMcpWebSearch(
         return {
           provider,
           text,
-          hits: parseMcpWebSearchHits(text),
+          hits: parseMcpWebSearchHits(text, input.query),
           durationSeconds: (performance.now() - startTime) / 1000,
         }
       } catch (error) {

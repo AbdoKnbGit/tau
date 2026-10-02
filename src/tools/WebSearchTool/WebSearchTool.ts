@@ -14,11 +14,13 @@ import { createUserMessage } from '../../utils/messages.js'
 import { getMainLoopModel, getSmallFastModel } from '../../utils/model/model.js'
 import { jsonParse } from '../../utils/slowOperations.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import { getPersistenceThreshold } from '../../utils/toolResultStorage.js'
 import {
   hasFirecrawlSearchConfig,
   runFirecrawlWebSearch,
   type FirecrawlSearchHit,
 } from './firecrawl.js'
+import { formatWebSearchResultsForModel } from './formatResults.js'
 import {
   runMcpWebSearch,
   type McpWebSearchHit,
@@ -86,39 +88,15 @@ type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
 
-type SearchHitForModel = {
-  title: string
-  url: string
-  description?: string
-  content?: string
-}
+const MAX_RESULT_SIZE_CHARS = 100_000
 
-const TOOL_RESULT_MAX_CONTENT_CHARS = 6_000
-
-function truncateForToolResult(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value
-  const truncated = value.slice(0, maxChars).replace(/\s+\S*$/, '').trimEnd()
-  return `${truncated}\n[content truncated]`
-}
-
-function formatSearchHitForModel(
-  hit: SearchHitForModel,
-  index: number,
-): string {
-  const lines = [`Result ${index}:`, `Title: ${hit.title}`, `URL: ${hit.url}`]
-  if (hit.description) {
-    lines.push(`Description: ${truncateForToolResult(hit.description, 1_000)}`)
-  }
-  if (hit.content) {
-    lines.push(
-      `Content excerpt:\n${truncateForToolResult(
-        hit.content,
-        TOOL_RESULT_MAX_CONTENT_CHARS,
-      )}`,
-    )
-  }
-  return lines.join('\n')
-}
+/**
+ * Share of the persistence threshold a formatted search result may use. It
+ * stays well under the threshold so a whole result page is never parked on
+ * disk behind a preview, and two searches in parallel still leave most of the
+ * per-message tool result budget free.
+ */
+const RESULT_BUDGET_FRACTION = 0.6
 
 // Re-export WebSearchProgress from centralized types to break import cycles
 export type { WebSearchProgress } from '../../types/tools.js'
@@ -277,7 +255,7 @@ function makeOutputFromSearchResponse(
 export const WebSearchTool = buildTool({
   name: WEB_SEARCH_TOOL_NAME,
   searchHint: 'search the web for current information',
-  maxResultSizeChars: 100_000,
+  maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   shouldDefer: true,
   async description(input) {
     return `Search the web for: ${input.query}`
@@ -585,40 +563,14 @@ export const WebSearchTool = buildTool({
     return runAnthropicServerSearch()
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
-    const { query, results } = output
-
-    let formattedOutput = `Web search results for query: "${query}"\n\n`
-
-    let resultIndex = 1
-
-    // Results can contain both text summaries and structured search hits.
-    // Guard against null/undefined entries that can appear after JSON round-tripping.
-    ;(results ?? []).forEach(result => {
-      if (result == null) {
-        return
-      }
-      if (typeof result === 'string') {
-        // Text summary
-        formattedOutput += result + '\n\n'
-      } else {
-        if (result.content?.length > 0) {
-          formattedOutput +=
-            result.content
-              .map(hit => formatSearchHitForModel(hit, resultIndex++))
-              .join('\n\n') + '\n\n'
-        } else {
-          formattedOutput += 'No search results found.\n\n'
-        }
-      }
-    })
-
-    formattedOutput +=
-      '\nREMINDER: Use the content excerpts above to answer directly when they contain the requested facts. You MUST include the sources above in your response to the user using markdown hyperlinks.'
-
+    const budgetChars = Math.floor(
+      getPersistenceThreshold(WEB_SEARCH_TOOL_NAME, MAX_RESULT_SIZE_CHARS) *
+        RESULT_BUDGET_FRACTION,
+    )
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: formattedOutput.trim(),
+      content: formatWebSearchResultsForModel(output, budgetChars),
     }
   },
 } satisfies ToolDef<InputSchema, Output, WebSearchProgress>)

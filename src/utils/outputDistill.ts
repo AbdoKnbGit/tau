@@ -22,6 +22,8 @@
  * format we misread is worse than the dumb-but-honest head preview.
  */
 
+import { surrogateSafeEnd } from './wellFormedText.js'
+
 const DISTILL_ENV_KEYS = ['TAU_OUTPUT_DISTILL', 'CLAUDE_CODE_OUTPUT_DISTILL'] as const
 
 /** Default ON; disable with TAU_OUTPUT_DISTILL=0/false/off/no. */
@@ -254,7 +256,7 @@ export function distillCommandOutput(
   if (result.length > maxChars) {
     // Hard trim at a line boundary, keeping the front (header + failures
     // lead; summary already ordered before tail).
-    const slice = result.slice(0, maxChars - 24)
+    const slice = result.slice(0, surrogateSafeEnd(result, maxChars - 24))
     const lastNewline = slice.lastIndexOf('\n')
     result =
       (lastNewline > maxChars * 0.5 ? slice.slice(0, lastNewline) : slice) +
