@@ -429,6 +429,7 @@ function isScratchpadPath(absolutePath: string): boolean {
  * - Files in .git directories or .gitconfig files (to prevent git-based data exfiltration and code execution)
  * - Files in .vscode directories (to prevent VS Code settings manipulation and potential code execution)
  * - Files in .idea directories (to prevent JetBrains IDE settings manipulation)
+ * - Files in .agents/skills directories (skills there auto-load like .claude/skills)
  * - Shell configuration files (to prevent shell startup script manipulation)
  * - UNC paths (to prevent network file access and WebDAV attacks)
  */
@@ -447,6 +448,16 @@ function isDangerousFilePathToAutoEdit(path: string): boolean {
   for (let i = 0; i < pathSegments.length; i++) {
     const segment = pathSegments[i]!
     const normalizedSegment = normalizeCaseForComparison(segment)
+
+    // Skills in .agents/skills load like .claude/skills (and can pre-approve
+    // tools), so they get the same protection. The rest of .agents/ is not
+    // loaded and stays editable.
+    if (
+      normalizedSegment === '.agents' &&
+      normalizeCaseForComparison(pathSegments[i + 1] ?? '') === 'skills'
+    ) {
+      return true
+    }
 
     for (const dir of DANGEROUS_DIRECTORIES) {
       if (normalizedSegment !== normalizeCaseForComparison(dir)) {

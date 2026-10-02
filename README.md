@@ -207,10 +207,13 @@ Commands run by Tau's Bash and PowerShell tools, including the ones you type wit
 
 Tau separates live usage, session statistics, and final reports, so you can monitor consumption while still producing readable end-of-session summaries.
 
-### Reads the rules your team already wrote
+### Reads the rules and skills your team already wrote
 
-Switching from another tool? Tau reads `AGENTS.md`, Cursor `.cursor/rules/*.mdc`, Copilot `.github/instructions`, Cline, and Windsurf rules where they already sit — no migration, no conversion step.
-Path-scoped rules load only when you touch a file they cover, and rules the original tool kept dormant stay dormant, so nothing bloats every request. Project files only; your global config for other tools is never read.
+Switching from another tool? Tau reads `AGENTS.md`, Cursor `.cursor/rules/*.mdc`, Copilot `.github/instructions`, Cline, and Windsurf rules where they already sit. No migration, no conversion step.
+Path-scoped rules load only when you touch a file they cover, and rules the original tool kept dormant stay dormant, so nothing bloats every request. Rules come from project files only, never from your global config for other tools.
+
+Skills too: Tau loads `.agents/skills`, the folder Codex, opencode and Cline use, from your project and from `~/.agents/skills`, next to `.claude/skills`.
+Skills in a sub-folder load when you open a file there. If two skills share a name, the `.claude` one wins, and editing any skill file asks first.
 
 ### Self-learning & self-improvement
 

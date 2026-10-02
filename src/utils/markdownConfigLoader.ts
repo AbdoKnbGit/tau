@@ -229,11 +229,14 @@ function resolveStopBoundary(cwd: string): string | null {
  *
  * @param subdir Subdirectory (eg. "commands", "agents")
  * @param cwd Current working directory to start from
- * @returns Array of directory paths containing .claude/subdir, from most specific (cwd) to least specific
+ * @param configDir Directory holding `subdir` at each level. Skills are also
+ *   read from `.agents/skills`, where other coding agents keep them.
+ * @returns Array of directory paths containing <configDir>/subdir, from most specific (cwd) to least specific
  */
 export function getProjectDirsUpToHome(
   subdir: ClaudeConfigDirectory,
   cwd: string,
+  configDir: '.claude' | '.agents' = '.claude',
 ): string[] {
   const home = resolve(homedir()).normalize('NFC')
   const gitRoot = resolveStopBoundary(cwd)
@@ -250,7 +253,7 @@ export function getProjectDirsUpToHome(
       break
     }
 
-    const claudeSubdir = join(current, '.claude', subdir)
+    const claudeSubdir = join(current, configDir, subdir)
     // Filter to existing dirs. This is a perf filter (avoids spawning
     // ripgrep on non-existent dirs downstream) and the worktree fallback
     // in loadMarkdownFilesForSubdir relies on it. statSync + explicit error

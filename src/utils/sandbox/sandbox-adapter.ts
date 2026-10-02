@@ -253,6 +253,11 @@ export function convertToSandboxRuntimeConfig(
   if (cwd !== originalCwd) {
     denyWrite.push(resolve(cwd, '.claude', 'skills'))
   }
+  // Same for .agents/skills, which skills are also auto-loaded from.
+  denyWrite.push(resolve(originalCwd, '.agents', 'skills'))
+  if (cwd !== originalCwd) {
+    denyWrite.push(resolve(cwd, '.agents', 'skills'))
+  }
 
   // SECURITY: Git's is_git_directory() treats cwd as a bare repo if it has
   // HEAD + objects/ + refs/. An attacker planting these (plus a config with

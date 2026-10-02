@@ -1,6 +1,7 @@
 import { realpath } from 'fs/promises'
 import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
+import { homedir } from 'os'
 import {
   basename,
   dirname,
@@ -643,9 +644,17 @@ export const getSkillDirCommands = memoize(
     const userSkillsDir = join(getClaudeConfigHomeDir(), 'skills')
     const managedSkillsDir = join(getManagedFilePath(), '.claude', 'skills')
     const projectSkillsDirs = getProjectDirsUpToHome('skills', cwd)
+    // .agents/skills is where Codex, opencode, Cline and the `skills` CLI keep
+    // skills. Same walk, gates and setting sources as the .claude dirs.
+    const agentsUserSkillsDir = join(homedir(), '.agents', 'skills')
+    const agentsProjectSkillsDirs = getProjectDirsUpToHome(
+      'skills',
+      cwd,
+      '.agents',
+    )
 
     logForDebugging(
-      `Loading skills from: managed=${managedSkillsDir}, user=${userSkillsDir}, project=[${projectSkillsDirs.join(', ')}]`,
+      `Loading skills from: managed=${managedSkillsDir}, user=${userSkillsDir}, project=[${projectSkillsDirs.join(', ')}], agents=[${[agentsUserSkillsDir, ...agentsProjectSkillsDirs].join(', ')}]`,
     )
 
     // Load from additional directories (--add-dir)
@@ -673,8 +682,24 @@ export const getSkillDirCommands = memoize(
           ),
         ),
       )
-      // No dedup needed — explicit dirs, user controls uniqueness.
-      return additionalSkillsNested.flat().map(s => s.skill)
+      const agentsSkillsNested = await Promise.all(
+        additionalDirs.map(dir =>
+          loadSkillsFromSkillsDir(
+            join(dir, '.agents', 'skills'),
+            'projectSettings',
+          ),
+        ),
+      )
+      // No dedup needed — explicit dirs, user controls uniqueness. A
+      // .agents skill only steps aside for a name that is already taken.
+      const skills = additionalSkillsNested.flat().map(s => s.skill)
+      const takenNames = new Set(skills.map(skill => skill.name))
+      for (const { skill } of agentsSkillsNested.flat()) {
+        if (takenNames.has(skill.name)) continue
+        takenNames.add(skill.name)
+        skills.push(skill)
+      }
+      return skills
     }
 
     // Load from /skills/ directories, additional dirs, and legacy /commands/ in parallel
@@ -685,6 +710,8 @@ export const getSkillDirCommands = memoize(
       projectSkillsNested,
       additionalSkillsNested,
       legacyCommands,
+      agentsUserSkills,
+      agentsProjectSkillsNested,
     ] = await Promise.all([
       isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_POLICY_SKILLS)
         ? Promise.resolve([])
@@ -714,6 +741,17 @@ export const getSkillDirCommands = memoize(
       // here when skills are locked — these ARE skills, regardless of the
       // directory they load from.
       skillsLocked ? Promise.resolve([]) : loadSkillsFromCommandsDir(cwd),
+      isSettingSourceEnabled('userSettings') && !skillsLocked
+        ? loadSkillsFromSkillsDir(agentsUserSkillsDir, 'userSettings')
+        : Promise.resolve([]),
+      projectSettingsEnabled
+        ? Promise.all(
+            [
+              ...agentsProjectSkillsDirs,
+              ...additionalDirs.map(dir => join(dir, '.agents', 'skills')),
+            ].map(dir => loadSkillsFromSkillsDir(dir, 'projectSettings')),
+          )
+        : Promise.resolve([]),
     ])
 
     // Flatten and combine all skills
@@ -724,6 +762,13 @@ export const getSkillDirCommands = memoize(
       ...additionalSkillsNested.flat(),
       ...legacyCommands,
     ]
+    // .agents/skills come last, so a name a .claude source already took keeps
+    // its .claude skill (multi-agent repos often keep a skill in both).
+    const agentsStart = allSkillsWithPaths.length
+    allSkillsWithPaths.push(
+      ...agentsUserSkills,
+      ...agentsProjectSkillsNested.flat(),
+    )
 
     // Deduplicate by resolved path (handles symlinks and duplicate parent directories)
     // Pre-compute file identities in parallel (realpath calls are independent),
@@ -741,15 +786,24 @@ export const getSkillDirCommands = memoize(
       SettingSource | 'builtin' | 'mcp' | 'plugin' | 'bundled'
     >()
     const deduplicatedSkills: Command[] = []
+    const takenNames = new Set<string>()
 
     for (let i = 0; i < allSkillsWithPaths.length; i++) {
       const entry = allSkillsWithPaths[i]
       if (entry === undefined || entry.skill.type !== 'prompt') continue
       const { skill } = entry
 
+      if (i >= agentsStart && takenNames.has(skill.name)) {
+        logForDebugging(
+          `Skipping .agents skill '${skill.name}' from ${skill.source} (a skill with that name is already loaded)`,
+        )
+        continue
+      }
+
       const fileId = fileIds[i]
       if (fileId === null || fileId === undefined) {
         deduplicatedSkills.push(skill)
+        takenNames.add(skill.name)
         continue
       }
 
@@ -763,6 +817,7 @@ export const getSkillDirCommands = memoize(
 
       seenFileIds.set(fileId, skill.source)
       deduplicatedSkills.push(skill)
+      takenNames.add(skill.name)
     }
 
     const duplicatesRemoved =
@@ -799,7 +854,7 @@ export const getSkillDirCommands = memoize(
     }
 
     logForDebugging(
-      `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length})`,
+      `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length}, .agents: ${allSkillsWithPaths.length - agentsStart})`,
     )
 
     return unconditionalSkills
@@ -881,12 +936,16 @@ export async function discoverSkillDirsForPaths(
     // CWD-level skills are already loaded at startup, so we only discover nested ones
     // Use prefix+separator check to avoid matching /project-backup when cwd is /project
     while (currentDir.startsWith(resolvedCwd + pathSep)) {
-      const skillDir = join(currentDir, '.claude', 'skills')
-
-      // Skip if we've already checked this path (hit or miss) — avoids
-      // repeating the same failed stat on every Read/Write/Edit call when
-      // the directory doesn't exist (the common case).
-      if (!dynamicSkillDirs.has(skillDir)) {
+      // .claude/skills first: at equal depth the stable sort below keeps this
+      // order, so addSkillDirectories lets the .claude skill win a name clash.
+      for (const skillDir of [
+        join(currentDir, '.claude', 'skills'),
+        join(currentDir, '.agents', 'skills'),
+      ]) {
+        // Skip if we've already checked this path (hit or miss) — avoids
+        // repeating the same failed stat on every Read/Write/Edit call when
+        // the directory doesn't exist (the common case).
+        if (dynamicSkillDirs.has(skillDir)) continue
         dynamicSkillDirs.add(skillDir)
         try {
           await fs.stat(skillDir)
