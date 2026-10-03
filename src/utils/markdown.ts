@@ -100,9 +100,11 @@ export function formatToken(
         case 1: // h1
           return (
             chalk.bold.italic.underline(
-              (token.tokens ?? [])
-                .map(_ => formatToken(_, theme, 0, null, null, highlight))
-                .join(''),
+              color('info', theme)(
+                (token.tokens ?? [])
+                  .map(_ => formatToken(_, theme, 0, null, null, highlight))
+                  .join(''),
+              ),
             ) +
             EOL +
             EOL
@@ -110,9 +112,11 @@ export function formatToken(
         case 2: // h2
           return (
             chalk.bold(
-              (token.tokens ?? [])
-                .map(_ => formatToken(_, theme, 0, null, null, highlight))
-                .join(''),
+              color('info', theme)(
+                (token.tokens ?? [])
+                  .map(_ => formatToken(_, theme, 0, null, null, highlight))
+                  .join(''),
+              ),
             ) +
             EOL +
             EOL
@@ -120,9 +124,11 @@ export function formatToken(
         default: // h3+
           return (
             chalk.bold(
-              (token.tokens ?? [])
-                .map(_ => formatToken(_, theme, 0, null, null, highlight))
-                .join(''),
+              color('info', theme)(
+                (token.tokens ?? [])
+                  .map(_ => formatToken(_, theme, 0, null, null, highlight))
+                  .join(''),
+              ),
             ) +
             EOL +
             EOL

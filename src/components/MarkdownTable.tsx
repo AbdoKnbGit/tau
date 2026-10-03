@@ -1,3 +1,4 @@
+import chalk from 'chalk';
 import type { Token, Tokens } from 'marked';
 import React from 'react';
 import stripAnsi from 'strip-ansi';
@@ -7,6 +8,7 @@ import { wrapAnsi } from '../ink/wrapAnsi.js';
 import { Ansi, useTheme } from '../ink.js';
 import type { CliHighlight } from '../utils/cliHighlight.js';
 import { formatToken, padAligned } from '../utils/markdown.js';
+import { color } from './design-system/color.js';
 
 /** Accounts for parent indentation (e.g. message dot prefix) and terminal
  *  resize races. Without enough margin the table overflows its layout box
@@ -79,6 +81,8 @@ export function MarkdownTable({
     columns: actualTerminalWidth
   } = useTerminalSize();
   const terminalWidth = forceWidth ?? actualTerminalWidth;
+  const headerColor = color('info', theme);
+  const borderColor = color('inactive', theme);
 
   // Format cell content to ANSI string
   function formatCell(tokens: Token[] | undefined): string {
@@ -215,7 +219,10 @@ export function MarkdownTable({
         const width_0 = columnWidths[colIndex_2]!;
         // Headers always centered; data uses table alignment
         const align = isHeader ? 'center' : token.align?.[colIndex_2] ?? 'left';
-        line += ' ' + padAligned(lineText, stringWidth(lineText), width_0, align) + ' │';
+        // Apply table styling only after wrapping and alignment are finished.
+        const paddedText = padAligned(lineText, stringWidth(lineText), width_0, align);
+        const styledText = isHeader ? chalk.bold(headerColor(paddedText)) : paddedText;
+        line += ' ' + styledText + ' │';
       }
       result.push(line);
     }
@@ -234,7 +241,7 @@ export function MarkdownTable({
       line_0 += mid.repeat(width_1 + 2);
       line_0 += colIndex_3 < columnWidths.length - 1 ? cross : right;
     });
-    return line_0;
+    return borderColor(line_0);
   }
 
   // Render vertical format (key-value pairs) for extra-narrow terminals
