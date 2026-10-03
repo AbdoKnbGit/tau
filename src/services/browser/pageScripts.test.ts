@@ -9,8 +9,10 @@
 
 import {
   classifyCoordinateStreak,
+  clipBody,
   formatConsoleEntries,
   formatNetworkEntries,
+  selectNetworkEntries,
   getBrowserSession,
   normalizeUrlForNavigation,
   parseChord,
@@ -23,10 +25,12 @@ import {
   buildStealthScript,
   stealthPlatformFromUserAgent,
   detectBlocker,
+  ELEMENT_INFO_JS,
   MAX_OBSERVED_ELEMENTS,
   OBSERVE_SCRIPT,
   PAGE_TOOLS_SCRIPT,
   prunePayloadElements,
+  READ_HELPERS_JS,
   type InteractiveElement,
   type ObservedState,
 } from "./pageScripts.js";
@@ -1273,6 +1277,270 @@ async function main(): Promise<void> {
       );
     },
   );
+
+  console.log("element names and state (ELEMENT_INFO_JS):");
+
+  type AnyNode = Record<string, unknown>;
+  type ElementInfo = {
+    tauFieldName(el: AnyNode): string;
+    tauShownValue(el: AnyNode): string | undefined;
+    tauStateOf(el: AnyNode): Record<string, unknown>;
+  };
+  const info = new Function(
+    `${ELEMENT_INFO_JS}\nreturn { tauFieldName, tauShownValue, tauStateOf };`,
+  )() as ElementInfo;
+  const textNode = (value: string): AnyNode => ({ nodeType: 3, nodeValue: value });
+  const node = (
+    tagName: string,
+    over: AnyNode & { attrs?: Record<string, string> } = {},
+  ): AnyNode => {
+    const attrs = over.attrs ?? {};
+    return {
+      nodeType: 1,
+      tagName,
+      childNodes: [],
+      getAttribute: (name: string) => (name in attrs ? attrs[name] : null),
+      ...over,
+    };
+  };
+
+  test("a checkbox inside its label is named by the label, not by its value", () => {
+    const box = node("INPUT", { type: "checkbox", value: "on" });
+    box.labels = [node("LABEL", { childNodes: [box, textNode(" Prime eligible")] })];
+    assert(info.tauFieldName(box) === "Prime eligible", `named ${info.tauFieldName(box)}`);
+    assert(info.tauShownValue(box) === undefined, "a checkbox value is not shown");
+  });
+
+  test("a select is named by its label and shows the chosen option", () => {
+    const select = node("SELECT", {
+      selectedOptions: [{ label: "2", text: "2", value: "2" }],
+      labels: [node("LABEL", { childNodes: [textNode("Quantity")] })],
+    });
+    assert(info.tauFieldName(select) === "Quantity", `named ${info.tauFieldName(select)}`);
+    assert(info.tauShownValue(select) === "2", `shows ${info.tauShownValue(select)}`);
+  });
+
+  test("aria-labelledby names a field", () => {
+    const owner = {
+      getElementById: (id: string) =>
+        id === "cn" ? node("SPAN", { childNodes: [textNode("Name on card")] }) : null,
+    };
+    const input = node("INPUT", {
+      type: "text",
+      value: "",
+      ownerDocument: owner,
+      attrs: { "aria-labelledby": "cn" },
+    });
+    assert(info.tauFieldName(input) === "Name on card", `named ${info.tauFieldName(input)}`);
+  });
+
+  test("label text leaves out aria-hidden marks and a nested field's content", () => {
+    const select = node("SELECT", {
+      childNodes: [node("OPTION", { childNodes: [textNode("1")] })],
+    });
+    const input = node("INPUT", { type: "email", value: "" });
+    input.labels = [
+      node("LABEL", {
+        childNodes: [
+          textNode("Email"),
+          node("SPAN", { attrs: { "aria-hidden": "true" }, childNodes: [textNode("*")] }),
+          select,
+        ],
+      }),
+    ];
+    assert(info.tauFieldName(input) === "Email", `named ${info.tauFieldName(input)}`);
+  });
+
+  test("unlabelled fields fall back to title, then placeholder; buttons to their value", () => {
+    const search = node("INPUT", { type: "text", value: "", attrs: { placeholder: "Search" } });
+    assert(info.tauFieldName(search) === "Search", "placeholder fallback");
+    const send = node("INPUT", { type: "submit", value: "Send" });
+    assert(info.tauFieldName(send) === "Send", "submit named by its value");
+    assert(info.tauShownValue(send) === undefined, "a button's value is its label, not shown again");
+  });
+
+  test("password values are never shown; text values are", () => {
+    assert(
+      info.tauShownValue(node("INPUT", { type: "password", value: "hunter2" })) === undefined,
+      "password leaked",
+    );
+    assert(info.tauShownValue(node("INPUT", { type: "text", value: "hello" })) === "hello", "text value");
+  });
+
+  test("state carries expanded, selected, current, required and invalid", () => {
+    const state = info.tauStateOf(
+      node("INPUT", {
+        required: true,
+        attrs: { "aria-expanded": "false", "aria-current": "page", "aria-invalid": "true", "aria-selected": "true" },
+      }),
+    );
+    assert(
+      state.expanded === false &&
+        state.current === "page" &&
+        state.invalid === true &&
+        state.required === true &&
+        state.selected === true,
+      JSON.stringify(state),
+    );
+    const summary = node("SUMMARY", { parentElement: { tagName: "DETAILS", open: true } });
+    assert(info.tauStateOf(summary).expanded === true, "an open <details> reads as expanded");
+    assert(
+      Object.keys(info.tauStateOf(node("BUTTON", { attrs: { "aria-invalid": "false" } }))).length === 0,
+      "false flags are left out",
+    );
+  });
+
+  console.log("read paging (READ_HELPERS_JS):");
+
+  type ReadHelpers = {
+    readCut(text: string, start: number, budget: number): number;
+    findAnchor(text: string, offset: number, anchor: string, radius: number): number;
+  };
+  const reader = new Function(`return {${READ_HELPERS_JS}};`)() as ReadHelpers;
+
+  test("the rest of the page comes whole when it fits", () => {
+    assert(reader.readCut("short text", 0, 100) === 10, "should take everything");
+  });
+
+  test("a paragraph break past half the budget ends the page", () => {
+    const text = `${"a".repeat(60)}\n\n${"b".repeat(100)}`;
+    assert(reader.readCut(text, 0, 100) === 62, `cut at ${reader.readCut(text, 0, 100)}`);
+  });
+
+  test("otherwise the page ends after a sentence, closing quotes included", () => {
+    const text = 'He said "stop." Then the next sentence runs well past the budget given';
+    const cut = reader.readCut(text, 0, 40);
+    assert(text.slice(0, cut) === 'He said "stop." ', `cut to ${JSON.stringify(text.slice(0, cut))}`);
+  });
+
+  test("a CJK full stop ends a sentence without a space", () => {
+    const text = `${"x".repeat(30)}${String.fromCharCode(0x3002)}${"y".repeat(100)}`;
+    assert(reader.readCut(text, 0, 50) === 31, `cut at ${reader.readCut(text, 0, 50)}`);
+  });
+
+  test("with no boundary at all the page is cut at the budget", () => {
+    assert(reader.readCut("x".repeat(200), 0, 50) === 50, "hard cut");
+  });
+
+  test("the anchor is found where it was, and where the page moved it", () => {
+    const text = "intro words, then the part already read, then more text to come";
+    const offset = text.indexOf(", then more");
+    const anchor = text.slice(offset - 12, offset);
+    assert(reader.findAnchor(text, offset, anchor, 4000) === offset, "unchanged page");
+    const shifted = `A new banner line. ${text}`;
+    assert(reader.findAnchor(shifted, offset, anchor, 4000) === offset + 19, "shifted page");
+    assert(reader.findAnchor("a different page entirely", offset, anchor, 4000) === -1, "rewritten page");
+  });
+
+  test("of several copies of the anchor, the one nearest the old offset wins", () => {
+    // Copies end at 3, 11 and 19; an old offset of 18 is nearest the last.
+    const text = "END one END two END three";
+    assert(reader.findAnchor(text, 18, "END", 4000) === 19, `got ${reader.findAnchor(text, 18, "END", 4000)}`);
+  });
+
+  console.log("picked elements:");
+
+  test("pruning never folds the picked element into a run of look-alikes", () => {
+    const rows = Array.from({ length: 9 }, (_, i) =>
+      el({ id: i, tag: "button", text: "Add to cart", x: 10, y: 10 + i * 40, ...(i === 4 ? { picked: true } : {}) }),
+    );
+    const out = prunePayloadElements(rows);
+    assert(out.some((row) => row.picked && row.id === 4), "picked element was pruned away");
+  });
+
+  console.log("shadow DOM helpers:");
+
+  type ShadowTools = {
+    composedContains(outer: unknown, inner: unknown): boolean;
+    pointHitsTarget(el: unknown, hit: unknown): boolean;
+    deepAll(selector: string): unknown[];
+    deepActive(): unknown;
+    shadowText(): string;
+  };
+  // A light-DOM node whose contains() stops at shadow boundaries, like the real one.
+  const lightNode = (tagName: string, parentNode: Record<string, unknown> | null, extra: Record<string, unknown> = {}) => {
+    const node: Record<string, unknown> = { nodeType: 1, tagName, parentNode, ...extra };
+    node.contains = (other: Record<string, unknown> | null) => {
+      for (let n = other; n; n = n.parentNode as Record<string, unknown> | null) if (n === node) return true;
+      return false;
+    };
+    return node;
+  };
+  const shadowFixture = () => {
+    const doc: Record<string, unknown> = { nodeType: 9, parentNode: null };
+    const host = lightNode("MY-CARD", doc);
+    const root: Record<string, unknown> = { nodeType: 11, host, parentNode: null };
+    const inner = lightNode("BUTTON", root, { innerText: "Buy now" });
+    host.shadowRoot = root;
+    root.querySelectorAll = (selector: string) => (selector === "*" ? [inner] : selector === "button" ? [inner] : []);
+    root.children = [inner];
+    const light = lightNode("BUTTON", doc, { innerText: "Light" });
+    doc.querySelectorAll = (selector: string) => (selector === "*" ? [host, light] : selector === "button" ? [light] : []);
+    doc.activeElement = host;
+    root.activeElement = inner;
+    const tools = new Function("window", "document", `${PAGE_TOOLS_SCRIPT}\nreturn window.__tauPageTools;`)(
+      {},
+      doc,
+    ) as ShadowTools;
+    return { doc, host, root, inner, light, tools };
+  };
+
+  test("containment crosses a shadow boundary; plain contains() does not", () => {
+    const { host, inner, tools } = shadowFixture();
+    assert(!(host.contains as (n: unknown) => boolean)(inner), "fixture: contains must stop at the shadow root");
+    assert(tools.composedContains(host, inner), "host should contain its shadow content");
+    assert(!tools.composedContains(inner, host), "the inside does not contain its host");
+  });
+
+  test("a hit on the host counts as a hit on an element inside it", () => {
+    const { host, inner, light, tools } = shadowFixture();
+    assert(tools.pointHitsTarget(inner, host), "the retargeted host hit must count");
+    assert(!tools.pointHitsTarget(inner, light), "an unrelated element must not count");
+  });
+
+  test("deepAll finds matches inside open shadow roots, the document's first", () => {
+    const { inner, light, tools } = shadowFixture();
+    const found = tools.deepAll("button");
+    assert(found.length === 2 && found[0] === light && found[1] === inner, `found ${found.length}`);
+  });
+
+  test("deepActive follows focus into a shadow root", () => {
+    const { inner, tools } = shadowFixture();
+    assert(tools.deepActive() === inner, "focus inside the shadow root was not followed");
+  });
+
+  test("shadowText reads text that body.innerText leaves out", () => {
+    const { tools } = shadowFixture();
+    assert(tools.shadowText().includes("Buy now"), "shadow text missing");
+  });
+
+  console.log("network bodies:");
+
+  test("clipBody masks credentials and compacts JSON", () => {
+    const text = clipBody('{\n  "user": "bob",\n  "token": "abc123def456ghi789"\n}', 200);
+    assert(text === '{"user":"bob","token":"[masked token]"}', text);
+  });
+
+  test("clipBody collapses whitespace in plain text", () => {
+    const text = clipBody("line one\n\n   line two\tand three", 200);
+    assert(text === "line one line two and three", text);
+  });
+
+  test("clipBody cuts long bodies and says how long they were", () => {
+    const text = clipBody("word ".repeat(1000), 50);
+    assert(text.length < 100 && text.includes("(5000 characters in all)"), text);
+  });
+
+  test("selectNetworkEntries returns exactly the rows the listing shows", () => {
+    const rows = Array.from({ length: 40 }, (_, i) =>
+      nentry({ requestId: `r${i}`, url: `https://api.test/${i % 2 ? "orders" : "items"}/${i}`, status: 200 }),
+    );
+    const { shown, omitted } = selectNetworkEntries(rows, { filter: "orders", limit: 5 });
+    assert(shown.length === 5 && omitted === 15, `shown ${shown.length}, omitted ${omitted}`);
+    assert(shown.every((row) => row.url.includes("orders")), "filter applied");
+    const listed = formatNetworkEntries(rows, { filter: "orders", limit: 5 });
+    assert(shown.every((row) => listed.includes(row.url)), "listing and selection agree");
+  });
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);

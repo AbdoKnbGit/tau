@@ -44,6 +44,7 @@ import {
 import { runSurfaceLadder } from '../../services/browser/surfaceLadder.js'
 import { formatVisionReceipt } from '../../services/browser/imageMeta.js'
 import { formatMeasure } from '../../services/browser/measure.js'
+import { formatPicked } from '../../services/browser/pick.js'
 import {
   formatWatchReport,
   parseWatchSpec,
@@ -56,7 +57,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { BROWSER_TOOL_NAME } from './constants.js'
 
 const DESCRIPTION =
-  'Drive a real Chrome/Edge browser: read a page the cheap way (HTTP first, browser only when needed), observe numbered elements, click, fill, type, drag, upload, run JS, measure what actually rendered, extract structured data with provenance, watch for console/network errors, record and replay flows, screenshot, and manage tabs. Every action reports what it actually changed. One tool, one action per call.'
+  'Drive a real Chrome/Edge browser: read a page the cheap way (HTTP first, browser only when needed), observe numbered elements, click, fill, type, drag, upload, run JS, measure what actually rendered, extract structured data with provenance, watch for console/network errors, record and replay flows, screenshot, let the user point at the element they mean, and manage tabs. Every action reports what it actually changed. One tool, one action per call.'
 
 const PROMPT = `Operate a real Chromium browser (Chrome, Edge, or Brave) through the DevTools protocol. Unlike WebBrowser/InspectSite (static HTML fetch), this runs JavaScript: it works on React/Vue/SPA pages, clicks and types through real trusted input, reads the rendered DOM (including same-origin iframes), extracts page content as markdown, runs JS in the page, watches console/network (great for debugging web apps you are developing), uploads files, and handles tabs, dialogs, and downloads.
 
@@ -66,7 +67,7 @@ EVIDENCE — THE PART THAT KEEPS YOU HONEST:
 - Every result carries an "Effect:" line: step number, whether the url changed, whether it is still the same document, how the interactive DOM moved, and how long it took. It is proof the action did something.
 - "NO OBSERVABLE EFFECT" means the url, the document, the DOM and the scroll position are all unchanged: your action did nothing. Do NOT repeat it with a tweak. Observe or screenshot, then act differently.
 - "unverified" means the page could not be sampled. Treat it as unknown, not as success.
-- NEVER describe how a page LOOKS unless a screenshot in this same turn returned a "vision token". A screenshot saved with { "path": ... } is NOT shown to you and mints no token — you may say where it was saved, nothing about its appearance. Reading the source of a component is not seeing it.
+- NEVER describe how a page LOOKS unless a screenshot in this same turn returned a "vision token" and the image itself reached you. If the result holds "[image not sent ...]", OCR text or another model's description in place of the image, you have not seen the page. A screenshot saved with { "path": ... } is NOT shown to you and mints no token — you may say where it was saved, nothing about its appearance. Reading the source of a component is not seeing it.
 - For visual facts without an image, use measure: it returns what actually painted (colors, fonts that failed to load, contrast ratios, broken images, overflow).
 
 THE LOOP:
@@ -93,11 +94,12 @@ SEE / READ:
 - get — { url, surface?, maxChars? } READ A PAGE THE CHEAP WAY. Fetches over HTTP first and only starts the browser when the bytes prove it is needed (empty SPA shell, bot wall, 403/429, timeout). The reply always says which rung answered ("rung=http" or "rung=chromium · escalated from http: ..."). Use this instead of open+navigate+read for anything you only want to READ. surface: "http" or "chromium" forces one rung.
 - measure — no params. MEASURED FACTS about what rendered: viewport, painted background/text colors by area, fonts that fell back because they never loaded, WCAG contrast failures with real ratios, broken and oversized images, elements overflowing the viewport, running animations, landmark boxes. This is how you check a UI without inventing it.
 - extract — { fields, container?, limit? } STRUCTURED SCRAPING WITH PROVENANCE. { "container": "article.product", "fields": { "name": ".title", "price": ".price", "link": "a@href" } }. Every value comes back with the selector that produced it, plus warnings you cannot get any other way: a selector that matched nothing, one that matched the same value in every row (it is reaching outside the row), one that matched several elements, and links that are really login/redirect/wishlist URLs rather than item URLs. If the container matches nothing you get the page's actual repeating structures to choose from. Nothing outside that table came from the page — do not fill gaps from memory.
-- observe — no params. url, title, elements as "@N tag \\"text\\" [role]", and scroll state.
-- read — { selector?, maxChars?, offset? }. Rendered page as markdown with [text](url) links. Defaults to the main content area; selector scopes it (e.g. "#docs"); long pages report total length — page through with offset.
+- observe — no params. url, title, elements as "@N tag \\"text\\" [role]", and scroll state. Form fields are named by their label. State shows when it applies: (checked)/(unchecked), (expanded)/(collapsed), (selected), (current page), (pressed)/(not pressed), (required), (invalid), (disabled).
+- read — { selector?, maxChars?, offset? }. Rendered page as markdown with [text](url) links. Defaults to the main content area; selector scopes it (e.g. "#docs"); long pages report total length — page through with the offset each reply gives. Pages end at a paragraph or sentence. If the page shifted between two reads the reply re-finds your place; if the text you read is gone, it says so (reason stale_read) instead of stitching two versions together.
+- pick — { text?: "Point at the price you mean" } hands the visible browser to the user: whatever their pointer is over is outlined, and the element they click (the link, button or heading it sits in) comes back as @N (first in the list, marked (picked)) with its tag, selector and text. Tell the user to click once the bar starting "Tau:" shows at the top of the page; a click before that reaches the page itself. Esc cancels; it waits up to 2 minutes for a person. While it waits the page does not react to the pointer, so to pick inside a menu that opens on hover, hover it open first, then pick. Use it only when the target is genuinely ambiguous or the user means "this one" on the page, never to explore. Not available while the browser is headless.
 - screenshot — optional { full: true } whole page, { ref: N } one element, { annotate: true } @N badges over the last observation, { path: "shot.png" } save to a file instead of returning into context (use path when the user wants the image, not you).
 - console — { level?, filter?, limit?, clear? }. This tab's console messages + uncaught exceptions. level: error|warn|info|log|all.
-- network — { filter?, failed?, limit?, clear? }. This tab's requests as "METHOD status url [type]". failed: only errors/4xx/5xx. Use console+network to debug the web app you are working on.
+- network — { filter?, failed?, limit?, clear?, bodies? }. This tab's requests as "METHOD status url [type]". failed: only errors/4xx/5xx. bodies: true adds the request payload and response body of the newest listed requests (up to 3; narrow with filter), cut short, credentials masked. Use console+network to debug the web app you are working on.
 
 NAVIGATE:
 - open — { url?, headless? } start the browser (headless default false so the user sees the window).
@@ -161,6 +163,7 @@ const ACTIONS = [
   'navigate',
   'observe',
   'read',
+  'pick',
   'measure',
   'extract',
   'watch',
@@ -214,7 +217,7 @@ const inputSchema = lazySchema(() =>
       .string()
       .optional()
       .describe(
-        'For click/hover: visible text to match. For type: text to type. For wait: text to wait for.',
+        'For click/hover: visible text to match. For type: text to type. For wait: text to wait for. For pick: one short line shown over the page saying what to point at.',
       ),
     nth: z
       .number()
@@ -334,6 +337,12 @@ const inputSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe('For console/network: clear the captured buffer after returning it.'),
+    bodies: z
+      .boolean()
+      .optional()
+      .describe(
+        'For network: also show the request payload and response body of the newest listed requests (up to 3), cut short, with credentials masked. Default false.',
+      ),
     width: z
       .number()
       .int()
@@ -572,7 +581,14 @@ function formatElements(observation: ObservedState): string {
     if (label) parts.push(`"${label}"`)
     if (el.value) parts.push(`= "${el.value}"`)
     if (el.checked !== undefined) parts.push(el.checked ? '(checked)' : '(unchecked)')
+    if (el.pressed !== undefined) parts.push(el.pressed ? '(pressed)' : '(not pressed)')
+    if (el.expanded !== undefined) parts.push(el.expanded ? '(expanded)' : '(collapsed)')
+    if (el.selected) parts.push('(selected)')
+    if (el.current) parts.push(el.current === 'true' ? '(current)' : `(current ${el.current})`)
+    if (el.required) parts.push('(required)')
+    if (el.invalid) parts.push('(invalid)')
     if (el.disabled) parts.push('(disabled)')
+    if (el.picked) parts.push('(picked)')
     if (el.frame) parts.push('[iframe]')
     if (el.repeatNote) parts.push(`(+${el.repeatNote} more similar)`)
     return parts.join(' ')
@@ -670,6 +686,10 @@ function summarize(input: Partial<Input>): string {
       return `Get ${input.url ?? ''}`
     case 'observe':
       return 'Observe page'
+    case 'pick':
+      return input.text
+        ? `Your turn in the browser: ${input.text.slice(0, 60)}`
+        : 'Your turn in the browser: click the element you mean'
     case 'measure':
       return 'Measure rendered page'
     case 'extract':
@@ -728,7 +748,7 @@ function summarize(input: Partial<Input>): string {
     case 'console':
       return `Console${input.level && input.level !== 'all' ? ` (${input.level})` : ''}`
     case 'network':
-      return `Network${input.failed ? ' failures' : ''}`
+      return `Network${input.failed ? ' failures' : ''}${input.bodies ? ' with bodies' : ''}`
     case 'pdf':
       return `Save PDF ${input.path ?? ''}`
     case 'resize':
@@ -986,18 +1006,28 @@ async function runActionInner(
       if (!result.success) {
         return errorOutput('read', result.error ?? 'Could not read the page.', result.reason)
       }
+      if (result.stale) {
+        return errorOutput(
+          'read',
+          'The page changed since your last read: the text you were reading is no longer on it, so continuing would stitch two versions together. Read again without an offset to start over.',
+          'stale_read',
+        )
+      }
+      const shifted = result.shift
+        ? `The page shifted by ${Math.abs(result.shift)} characters since your last read; I found your place again and continued from there.`
+        : ''
       const shown = result.content?.length ?? 0
       const total = result.total ?? shown
       const from = result.offset ?? 0
       const more = from + shown < total
       const range =
         total > shown
-          ? `Characters ${from}–${from + shown} of ${total}.${more ? ` Continue with { "action": "read", "offset": ${from + shown} }.` : ''}`
+          ? `Characters ${from}–${from + shown} of ${result.complete === false ? 'at least ' : ''}${total}.${more ? ` Continue with { "action": "read", "offset": ${from + shown} }.` : ''}`
           : ''
       return {
         action: 'read',
         ok: true,
-        message: [`Read ${result.title || result.url || 'page'}.`, range]
+        message: [`Read ${result.title || result.url || 'page'}.`, shifted, range]
           .filter(Boolean)
           .join(' '),
         url: result.url,
@@ -1008,6 +1038,30 @@ async function runActionInner(
     }
     case 'get':
       return runGet(input, context)
+    case 'pick': {
+      const outcome = await session.pick(input.text, signal)
+      const picked = outcome.picked
+      if (!outcome.ok || !picked) return outcomeToOutput('pick', outcome)
+      const entry = outcome.observation?.interactive_elements.find(el => el.picked)
+      const ref = entry?.id
+      // An icon button has no text of its own; its accessible name says what it is.
+      const name = picked.text || entry?.text || ''
+      const said = name ? ` "${name.slice(0, 60)}"` : ''
+      // A picked element that left the page at once (a popup that closed) has
+      // no ref; say so instead of handing out one that cannot resolve.
+      const gone =
+        ref === undefined
+          ? ' It is no longer on the page, so it has no ref; use its selector, or pick again.'
+          : ''
+      return {
+        ...outcomeToOutput(
+          'pick',
+          outcome,
+          `The user picked ${ref !== undefined ? `@${ref}: ` : ''}${picked.tag}${said}.${gone}`,
+        ),
+        detailText: formatPicked(picked),
+      }
+    }
     case 'measure': {
       const measured = await session.measurePage()
       return {
@@ -1130,17 +1184,20 @@ async function runActionInner(
       }
     }
     case 'network': {
-      const result = session.networkLog({
+      const result = await session.networkLog({
         filter: input.filter,
         failedOnly: input.failed,
         limit: input.limit,
         clear: input.clear,
+        bodies: input.bodies,
       })
       return {
         action: 'network',
         ok: true,
         message: `${result.captured} request(s) captured on this tab${input.clear ? ' (buffer cleared)' : ''}.`,
-        networkText: result.text,
+        networkText: result.bodies
+          ? `${result.text}\n\nBodies of the newest listed requests (credentials masked):\n${result.bodies}`
+          : result.text,
         warnings: session.drainSessionNotes(),
       }
     }
@@ -1365,6 +1422,9 @@ async function runAction(
         output.action === 'eval'
           ? output.value !== undefined && output.value !== 'undefined'
           : false,
+      // The target's own state (checked, pressed, expanded, its value) is part
+      // of the evidence, so toggling it is never reported as no effect.
+      ...(input.ref !== undefined ? { targetRef: input.ref } : {}),
     },
   )
   if (result.ok) recordActionAsStep(input, targetElement, targetSiblings)
@@ -1468,6 +1528,8 @@ export const BrowserTool = buildTool({
     return (
       input.action === 'observe' ||
       input.action === 'read' ||
+      // The user does the pointing; nothing reaches the page.
+      input.action === 'pick' ||
       input.action === 'screenshot' ||
       input.action === 'console' ||
       input.action === 'network' ||
@@ -1583,8 +1645,11 @@ export const BrowserTool = buildTool({
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     if (output.action === 'screenshot' && output.screenshot) {
+      // The vision token rides beside the image. A text-only provider swaps
+      // the image for a "not sent" or OCR note, which the prompt says to heed.
       const caption = [
         output.message || 'Screenshot of the current tab.',
+        ...(output.vision ? [output.vision] : []),
         ...(output.warnings.length > 0
           ? ['Attention:', ...output.warnings.map(w => `- ${w}`)]
           : []),

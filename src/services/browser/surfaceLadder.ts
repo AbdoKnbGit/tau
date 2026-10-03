@@ -153,7 +153,7 @@ export async function runSurfaceLadder(
     rungUsed: "chromium",
     message: `Rendered ${read.title || read.url || target} in the browser.${
       total > shown
-        ? ` Characters 0–${shown} of ${total}; continue with { "action": "read", "offset": ${shown} }.`
+        ? ` Characters 0–${shown} of ${read.complete === false ? "at least " : ""}${total}; continue with { "action": "read", "offset": ${shown} }.`
         : ""
     } Observe if you need to act on it.`,
     rung: formatRung("chromium", {

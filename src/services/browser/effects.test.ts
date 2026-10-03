@@ -5,6 +5,7 @@
  */
 
 import {
+  buildStateProbeScript,
   diffEffect,
   formatEffect,
   isMutatingAction,
@@ -110,6 +111,36 @@ function main(): void {
       nodes: [{ tagName: "BUTTON", id: "b", textContent: "Saving…" }],
     }).result!;
     assert(changed.sig !== first.sig, "a changed label must change the signature");
+  });
+
+  test("ticking a checkbox or pressing a toggle changes the signature", () => {
+    const attrs = (pressed: string) => (name: string) => (name === "aria-pressed" ? pressed : null);
+    const off = fakeDom({ nodes: [{ tagName: "INPUT", id: "c", checked: false }, { tagName: "BUTTON", id: "t", getAttribute: attrs("false") }] }).result!;
+    const ticked = fakeDom({ nodes: [{ tagName: "INPUT", id: "c", checked: true }, { tagName: "BUTTON", id: "t", getAttribute: attrs("false") }] }).result!;
+    const pressed = fakeDom({ nodes: [{ tagName: "INPUT", id: "c", checked: false }, { tagName: "BUTTON", id: "t", getAttribute: attrs("true") }] }).result!;
+    assert(ticked.sig !== off.sig, "a ticked checkbox must change the signature");
+    assert(pressed.sig !== off.sig, "a pressed toggle must change the signature");
+  });
+
+  test("the targeted element's own state is sampled", () => {
+    const el: Record<string, unknown> = { tagName: "BUTTON", id: "t", isConnected: true, textContent: "Mute" };
+    const sample = (pressed: string, connected = true) => {
+      el.getAttribute = (name: string) => (name === "aria-pressed" ? pressed : null);
+      el.isConnected = connected;
+      const doc = { title: "", readyState: "complete", body: { innerText: "" }, querySelectorAll: () => [] };
+      const win = { scrollY: 0, __tauRefState: { document: doc, idToElement: new Map([[5, el]]) } };
+      const run = new Function("window", "document", "location", `return ${buildStateProbeScript(5)};`);
+      return run(win, doc, { href: "https://example.test/" }) as PageStateSnapshot;
+    };
+    const before = sample("false");
+    const after = sample("true");
+    assert(typeof before.target === "string" && before.target !== after.target, "target state must be sampled and differ");
+    assert(sample("true", false).target === "gone", "a target that left the page reads as gone");
+  });
+
+  test("a change only in the target's state is an effect, not a no-op", () => {
+    const effect = diffEffect("click", snapshot({ target: "a|false" }), snapshot({ target: "a|true" }), 15, 30);
+    assert(!effect.noop && effect.domChanged, "a toggled target must not be reported as no effect");
   });
 
   test("survives a page that blocks querySelectorAll", () => {

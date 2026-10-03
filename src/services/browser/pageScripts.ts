@@ -38,8 +38,19 @@ export interface InteractiveElement {
   pressed?: boolean;
   checked?: boolean;
   disabled?: boolean;
+  /** aria-expanded, or whether a <summary>'s <details> is open. */
+  expanded?: boolean;
+  /** aria-selected, set only when true. */
+  selected?: boolean;
+  /** aria-current (page, step, ...), set only when present. */
+  current?: string;
+  required?: boolean;
+  /** aria-invalid: the page marked this field as failing validation. */
+  invalid?: boolean;
   /** True when the element lives inside a same-origin iframe (still clickable/fillable by ref). */
   frame?: boolean;
+  /** The element the user pointed at with the pick action; listed first. */
+  picked?: boolean;
   /** Set on a collapsed run marker: N additional similar elements were omitted after this one. */
   repeatNote?: number;
 }
@@ -68,7 +79,19 @@ export interface ReadResult {
   content?: string;
   /** Total extracted length before slicing, for pagination. */
   total?: number;
+  /**
+   * False when extraction stopped at the budget, so `total` is only how much
+   * was read so far and the page holds more.
+   */
+  complete?: boolean;
   offset?: number;
+  /**
+   * The text already read is gone from the page (it was rewritten between two
+   * reads), so no content is returned rather than a stitched mix of versions.
+   */
+  stale?: boolean;
+  /** The page shifted by this many characters since the last read; the place was re-found. */
+  shift?: number;
 }
 
 /** Structured result returned by every in-page action helper. */
@@ -197,6 +220,104 @@ export const OVERLAY_DISMISS_SCRIPT = `
 `;
 
 /**
+ * How observe names an element and reads its state, kept as source text so the
+ * page and the tests run the same code. A form field is named by what labels
+ * it: aria-labelledby, aria-label, its <label>, then title or placeholder. What
+ * is typed in a field is its value and never its name, so a checkbox no longer
+ * reads as "on" and a <select> no longer reads as all of its options at once.
+ */
+export const ELEMENT_INFO_JS = `
+  var TAU_INLINE_TAGS = { A: 1, ABBR: 1, B: 1, BDI: 1, BDO: 1, CITE: 1, CODE: 1, DATA: 1, DFN: 1, EM: 1, FONT: 1, I: 1, KBD: 1, LABEL: 1, MARK: 1, Q: 1, S: 1, SAMP: 1, SMALL: 1, SPAN: 1, STRONG: 1, SUB: 1, SUP: 1, TIME: 1, U: 1, VAR: 1 };
+  var TAU_UNNAMED_TAGS = { INPUT: 1, SELECT: 1, TEXTAREA: 1, OPTION: 1, OPTGROUP: 1, DATALIST: 1, SCRIPT: 1, STYLE: 1, TEMPLATE: 1, NOSCRIPT: 1, SVG: 1 };
+  function tauCollapse(value) {
+    return String(value == null ? '' : value).replace(/\\s+/g, ' ').trim();
+  }
+  // The words a node gives a name, leaving out a nested field's own content
+  // (a <select>'s options, a <textarea>'s text) and anything aria-hidden.
+  function tauNameText(node, depth) {
+    if (!node || depth > 12) return '';
+    if (node.nodeType === 3) return node.nodeValue || '';
+    if (node.nodeType !== 1) return '';
+    var tag = String(node.tagName || '').toUpperCase();
+    if (TAU_UNNAMED_TAGS[tag]) return '';
+    if (depth > 0 && node.getAttribute && node.getAttribute('aria-hidden') === 'true') return '';
+    var out = '';
+    var kids = node.childNodes || [];
+    for (var i = 0; i < kids.length; i++) out += tauNameText(kids[i], depth + 1);
+    return TAU_INLINE_TAGS[tag] ? out : ' ' + out + ' ';
+  }
+  function tauLabelledBy(el) {
+    var ids = tauCollapse(el.getAttribute && el.getAttribute('aria-labelledby'));
+    if (!ids) return '';
+    // Ids resolve in the element's own tree: a shadow root, or the document.
+    var root = typeof el.getRootNode === 'function' ? el.getRootNode() : null;
+    var doc = root && typeof root.getElementById === 'function' ? root : el.ownerDocument;
+    if (!doc || typeof doc.getElementById !== 'function') return '';
+    var parts = [];
+    var list = ids.split(' ');
+    for (var i = 0; i < list.length && i < 8; i++) {
+      var ref = null;
+      try { ref = doc.getElementById(list[i]); } catch (e) { ref = null; }
+      if (ref) parts.push(tauNameText(ref, 0));
+    }
+    return tauCollapse(parts.join(' '));
+  }
+  function tauLabelsText(el) {
+    var labels = null;
+    try { labels = el.labels; } catch (e) { labels = null; }
+    if (!labels) return '';
+    for (var i = 0; i < labels.length; i++) {
+      var text = tauCollapse(tauNameText(labels[i], 0));
+      if (text) return text;
+    }
+    return '';
+  }
+  function tauIsField(el) {
+    var tag = String(el.tagName || '').toUpperCase();
+    return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
+  }
+  function tauFieldName(el) {
+    var attr = function (name) { return el.getAttribute ? el.getAttribute(name) : null; };
+    var name = tauLabelledBy(el) || tauCollapse(attr('aria-label')) || tauLabelsText(el);
+    if (!name && String(el.tagName || '').toUpperCase() === 'INPUT') {
+      var type = String(el.type || '').toLowerCase();
+      if (type === 'button' || type === 'submit' || type === 'reset') name = tauCollapse(el.value);
+      else if (type === 'image') name = tauCollapse(attr('alt'));
+    }
+    return name || tauCollapse(attr('title')) || tauCollapse(attr('placeholder'));
+  }
+  // What a field shows. Nothing for password, checkable and button inputs:
+  // their value is a secret, an internal token, or the label itself.
+  function tauShownValue(el) {
+    var tag = String(el.tagName || '').toUpperCase();
+    if (tag === 'SELECT') {
+      var option = el.selectedOptions && el.selectedOptions[0];
+      return option ? (tauCollapse(option.label || option.text) || String(option.value || '')) : undefined;
+    }
+    if (tag === 'TEXTAREA') return typeof el.value === 'string' ? el.value : undefined;
+    if (tag !== 'INPUT') return undefined;
+    var type = String(el.type || '').toLowerCase();
+    if (type === 'password' || type === 'checkbox' || type === 'radio' || type === 'button' || type === 'submit' || type === 'reset' || type === 'image' || type === 'hidden') return undefined;
+    return typeof el.value === 'string' ? el.value : undefined;
+  }
+  function tauStateOf(el) {
+    var attr = function (name) { return el.getAttribute ? el.getAttribute(name) : null; };
+    var state = {};
+    var expanded = attr('aria-expanded');
+    var parent = el.parentElement;
+    if (expanded === 'true' || expanded === 'false') state.expanded = expanded === 'true';
+    else if (String(el.tagName || '').toUpperCase() === 'SUMMARY' && parent && String(parent.tagName || '').toUpperCase() === 'DETAILS') state.expanded = !!parent.open;
+    if (attr('aria-selected') === 'true') state.selected = true;
+    var current = attr('aria-current');
+    if (current && current !== 'false') state.current = String(current).slice(0, 16);
+    if (el.required === true || attr('aria-required') === 'true') state.required = true;
+    var invalid = attr('aria-invalid');
+    if (invalid && invalid !== 'false') state.invalid = true;
+    return state;
+  }
+`;
+
+/**
  * Observes the page: collects visible interactive elements and stores them in
  * a bidirectional identity registry. BrowserSession supplies a unique id block
  * for each observation, while surviving DOM nodes retain their existing ids.
@@ -204,12 +325,13 @@ export const OVERLAY_DISMISS_SCRIPT = `
  */
 export const OBSERVE_SCRIPT = `
 (function() {
+${ELEMENT_INFO_JS}
   const MAX = ${MAX_OBSERVED_ELEMENTS};
   const REGISTRY_VERSION = 2;
   const config = window.__tauObserveConfig || {};
   const sessionKey = String(config.sessionKey || '');
   const blockBase = Number.isSafeInteger(config.base) && config.base >= 0 ? config.base : 0;
-  const selector = 'a,button,input,textarea,select,[contenteditable="true"],[role=textbox],[role=button],[role=link],[role=checkbox],[role=radio],[role=combobox],[role=option],[role=menuitem],[role=tab],[tabindex]:not([tabindex="-1"])';
+  const selector = 'a,button,input,textarea,select,summary,[contenteditable="true"],[role=textbox],[role=searchbox],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=combobox],[role=option],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=tab],[role=treeitem],[role=slider],[role=spinbutton],[tabindex]:not([tabindex="-1"])';
   const elements = [];
   let crossFrames = 0;
   let localCursor = 0;
@@ -278,50 +400,130 @@ export const OBSERVE_SCRIPT = `
     ].filter(Boolean).join(' ')).join(' ').toLowerCase();
     return /(?:^|[\\s:_-])(close|dismiss|times|xmark|cross|lucide-x)(?:$|[\\s:_-])/.test(hint) ? 'Close' : '';
   };
+  // One element as the model sees it. (ax, ay) is its top-left corner in
+  // top-viewport space, already shifted by any same-origin frame offsets.
+  const describe = (el, r, ax, ay, depth) => {
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    const field = tauIsField(el);
+    let text;
+    if (field) {
+      text = tauFieldName(el);
+    } else {
+      const innerText = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      text = innerText || ariaLabel || tauLabelledBy(el) || el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('placeholder') || el.value || closeIconLabel(el, r) || '';
+    }
+    const pressed = el.getAttribute('aria-pressed');
+    const checked = el.matches('input[type=checkbox],input[type=radio]') ? String(el.checked) : el.getAttribute('aria-checked');
+    const shown = field ? tauShownValue(el) : undefined;
+    const st = tauStateOf(el);
+    return {
+      id: refFor(el),
+      tag: el.tagName.toLowerCase(),
+      text: String(text).slice(0, 120),
+      x: Math.round(ax + r.width / 2),
+      y: Math.round(ay + r.height / 2),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      role: el.getAttribute('role') || undefined,
+      href: (el.href && typeof el.href === 'string') ? el.href.slice(0, 300) : undefined,
+      placeholder: el.getAttribute('placeholder') || undefined,
+      aria: ariaLabel ? ariaLabel.slice(0, 80) : undefined,
+      value: typeof shown === 'string' ? shown.slice(0, 60) : undefined,
+      pressed: pressed === 'true' ? true : (pressed === 'false' ? false : undefined),
+      checked: checked === 'true' ? true : (checked === 'false' ? false : undefined),
+      disabled: (el.disabled === true || el.getAttribute('aria-disabled') === 'true') ? true : undefined,
+      expanded: st.expanded,
+      selected: st.selected,
+      current: st.current,
+      required: st.required,
+      invalid: st.invalid,
+      frame: depth > 0 ? true : undefined,
+    };
+  };
+  // Clickable elements that carry no role: the outermost element styled
+  // cursor:pointer (a card or a row built from divs), or one with an inline
+  // onclick. A <label> is left out, since the field it names is listed already.
+  const CLICKABLE_MAX = 30;
+  const NOT_CLICKABLE = { LABEL: 1, HTML: 1, BODY: 1, OPTION: 1, OPTGROUP: 1 };
+  const cursors = new Map();
+  const cursorOf = (el, win) => {
+    if (cursors.has(el)) return cursors.get(el);
+    let value = '';
+    try { value = String(win.getComputedStyle(el).cursor || ''); } catch (e) { value = ''; }
+    cursors.set(el, value);
+    return value;
+  };
+  // Across a shadow boundary, the top of a shadow tree belongs to its host.
+  const composedParent = (el) => el.parentElement || (el.parentNode && el.parentNode.nodeType === 11 ? el.parentNode.host : null);
+  const composedContains = (outer, inner) => {
+    let node = inner;
+    let guard = 0;
+    while (node && guard++ < 500) {
+      if (node === outer) return true;
+      node = node.parentNode || (node.nodeType === 11 ? node.host : null);
+    }
+    return false;
+  };
+  const pointerRoot = (el, win) => {
+    if (el.hasAttribute && el.hasAttribute('onclick')) return true;
+    if (cursorOf(el, win) !== 'pointer') return false;
+    const parent = composedParent(el);
+    return !parent || cursorOf(parent, win) !== 'pointer';
+  };
+  const clickableEls = new Map();
+  let clickables = 0;
+  // Walks a document or an open shadow root in document order. A shadow root
+  // is walked right after its host, so its controls are listed where they
+  // show. Frames are gathered for the caller to walk afterwards.
+  const walk = (scope, ox, oy, depth, win, frames) => {
+    let all, controls;
+    try {
+      all = scope.querySelectorAll('*');
+      controls = new Set(scope.querySelectorAll(selector));
+    } catch (e) { return; }
+    const inside = [];
+    for (const el of all) {
+      if (elements.length >= MAX) return;
+      while (inside.length) {
+        const top = inside[inside.length - 1];
+        if (typeof top.contains === 'function' && top.contains(el)) break;
+        inside.pop();
+      }
+      const tag = String(el.tagName || '').toUpperCase();
+      if (tag === 'IFRAME' || tag === 'FRAME') frames.push(el);
+      const control = controls.has(el);
+      if (control || (clickables < CLICKABLE_MAX && inside.length === 0 && !NOT_CLICKABLE[tag])) {
+        const r = el.getBoundingClientRect();
+        const ax = ox + r.left, ay = oy + r.top;
+        const inView = r.width > 0 && r.height > 0 && !(ay + r.height < 0 || ax + r.width < 0 || ay > innerHeight * 2 || ax > innerWidth);
+        let style = null;
+        if (inView) { try { style = win.getComputedStyle(el); } catch (e) { style = null; } }
+        if (style && style.visibility !== 'hidden' && style.display !== 'none') {
+          if (control) {
+            elements.push(describe(el, r, ax, ay, depth));
+          } else if (r.width >= 8 && r.height >= 8 && r.width * r.height <= innerWidth * innerHeight * 0.6 && pointerRoot(el, win)) {
+            const entry = describe(el, r, ax, ay, depth);
+            if (entry.text) {
+              elements.push(entry);
+              clickableEls.set(entry.id, el);
+              clickables++;
+            }
+          }
+        }
+      }
+      if (control) inside.push(el);
+      if (el.shadowRoot) walk(el.shadowRoot, ox, oy, depth, win, frames);
+    }
+  };
   // Walks a document plus its same-origin iframes (payment forms, embedded
   // editors, docs viewers). Frame elements get their coordinates translated to
   // top-viewport space, so real-input clicks land in the right frame for free.
   const collect = (doc, ox, oy, depth) => {
     const win = doc.defaultView;
     if (!win) return;
-    let list;
-    try { list = doc.querySelectorAll(selector); } catch (e) { return; }
-    for (const el of list) {
-      if (elements.length >= MAX) return;
-      const r = el.getBoundingClientRect();
-      const style = win.getComputedStyle(el);
-      if (!(r.width > 0 && r.height > 0) || style.visibility === 'hidden' || style.display === 'none') continue;
-      const ax = ox + r.left, ay = oy + r.top;
-      if (ay + r.height < 0 || ax + r.width < 0 || ay > innerHeight * 2 || ax > innerWidth) continue;
-      const ariaLabel = el.getAttribute('aria-label') || '';
-      const innerText = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-      const text = (innerText || ariaLabel || el.getAttribute('title') || el.getAttribute('placeholder') || el.value || closeIconLabel(el, r) || '').slice(0, 120);
-      const pressed = el.getAttribute('aria-pressed');
-      const checked = el.matches('input[type=checkbox],input[type=radio]') ? String(el.checked) : el.getAttribute('aria-checked');
-      const value = (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') && typeof el.value === 'string' && el.type !== 'password' ? el.value.slice(0, 60) : undefined;
-      const id = refFor(el);
-      elements.push({
-        id,
-        tag: el.tagName.toLowerCase(),
-        text,
-        x: Math.round(ax + r.width / 2),
-        y: Math.round(ay + r.height / 2),
-        w: Math.round(r.width),
-        h: Math.round(r.height),
-        role: el.getAttribute('role') || undefined,
-        href: (el.href && typeof el.href === 'string') ? el.href.slice(0, 300) : undefined,
-        placeholder: el.getAttribute('placeholder') || undefined,
-        aria: ariaLabel ? ariaLabel.slice(0, 80) : undefined,
-        value,
-        pressed: pressed === 'true' ? true : (pressed === 'false' ? false : undefined),
-        checked: checked === 'true' ? true : (checked === 'false' ? false : undefined),
-        disabled: (el.disabled === true || el.getAttribute('aria-disabled') === 'true') ? true : undefined,
-        frame: depth > 0 ? true : undefined,
-      });
-    }
+    const frames = [];
+    walk(doc, ox, oy, depth, win, frames);
     if (depth >= 3) return;
-    let frames;
-    try { frames = doc.querySelectorAll('iframe,frame'); } catch (e) { return; }
     for (const f of frames) {
       if (elements.length >= MAX) return;
       const fr = f.getBoundingClientRect();
@@ -335,6 +537,41 @@ export const OBSERVE_SCRIPT = `
     }
   };
   collect(document, 0, 0, 0);
+  // A clickable that only wraps one control with the same words adds nothing,
+  // and one holding more than three controls is a container, not a control.
+  if (clickableEls.size) {
+    const controlEntries = elements.filter(entry => !clickableEls.has(entry.id));
+    for (let i = elements.length - 1; i >= 0; i--) {
+      const holder = clickableEls.get(elements[i].id);
+      if (!holder) continue;
+      const held = controlEntries.filter(entry => composedContains(holder, state.idToElement.get(entry.id)));
+      if (held.length > 3 || (held.length === 1 && held[0].text === elements[i].text)) elements.splice(i, 1);
+    }
+  }
+  // The element the user pointed at with pick leads the list and gets a ref
+  // even when it is not a control: they meant exactly that element.
+  const pickedEl = window.__tauPickTarget;
+  if (pickedEl) {
+    try { delete window.__tauPickTarget; } catch (e) { window.__tauPickTarget = undefined; }
+    if (liveInTopTree(pickedEl)) {
+      const known = state.elementToId.get(pickedEl);
+      const at = known === undefined ? -1 : elements.findIndex(item => item.id === known);
+      let entry = at >= 0 ? elements.splice(at, 1)[0] : null;
+      if (!entry) {
+        const r = pickedEl.getBoundingClientRect();
+        let ox = 0, oy = 0, depth = 0;
+        let view = pickedEl.ownerDocument && pickedEl.ownerDocument.defaultView;
+        while (view && view !== window && view.frameElement && depth < 5) {
+          const fr = view.frameElement.getBoundingClientRect();
+          ox += fr.left; oy += fr.top; depth++;
+          view = view.parent;
+        }
+        entry = describe(pickedEl, r, ox + r.left, oy + r.top, depth);
+      }
+      entry.picked = true;
+      elements.unshift(entry);
+    }
+  }
   state.lastObservedIds = elements.map(el => el.id);
   // Do not leave the legacy positional array around: resolving through it can
   // silently bind an old numeric ref to a different element after a rerender.
@@ -353,6 +590,80 @@ export const OBSERVE_SCRIPT = `
     crossFrames: crossFrames || undefined,
   };
 })()
+`;
+
+/**
+ * Where one page of read output ends, and where a continued read picks up.
+ * Methods of the page-tools object, kept as source text so the tests run the
+ * same code the page does.
+ */
+export const READ_HELPERS_JS = `
+  // The last paragraph break, sentence end, line break or space inside the
+  // budget (each only past a floor, so a page never comes back nearly empty),
+  // else exactly at the budget.
+  readCut(text, start, budget) {
+    if (text.length - start <= budget) return text.length;
+    const win = text.slice(start, start + budget);
+    const para = win.lastIndexOf('\\n\\n');
+    if (para >= budget * 0.5) {
+      let end = para;
+      while (end < win.length && win[end] === '\\n') end++;
+      return start + end;
+    }
+    const sentence = this.sentenceEnd(win, Math.floor(budget * 0.25));
+    if (sentence > 0) return start + sentence;
+    const line = win.lastIndexOf('\\n');
+    if (line >= budget * 0.25) return start + line + 1;
+    const space = win.lastIndexOf(' ');
+    if (space > 0) return start + space + 1;
+    return start + budget;
+  },
+  // End of the last sentence that finishes at or after floor: a terminator
+  // (closing quotes and brackets allowed) followed by whitespace, or a CJK
+  // full stop, which needs no space after it.
+  sentenceEnd(win, floor) {
+    const ends = '.!?' + String.fromCharCode(0x2026);
+    const cjkEnds = String.fromCharCode(0x3002, 0xff01, 0xff1f);
+    const closers = '"\\')]' + String.fromCharCode(0x2019, 0x201d, 0x300d, 0x300f, 0xff09);
+    for (let i = win.length - 1; i >= floor; i--) {
+      const ch = win[i];
+      if (ch === ' ' || ch === '\\n') {
+        let j = i - 1;
+        while (j >= 0 && closers.indexOf(win[j]) !== -1) j--;
+        if (j >= 0 && (ends.indexOf(win[j]) !== -1 || cjkEnds.indexOf(win[j]) !== -1)) {
+          let end = i;
+          while (end < win.length && (win[end] === ' ' || win[end] === '\\n')) end++;
+          return end;
+        }
+      } else if (cjkEnds.indexOf(ch) !== -1) {
+        let end = i + 1;
+        while (end < win.length && closers.indexOf(win[end]) !== -1) end++;
+        return end;
+      }
+    }
+    return 0;
+  },
+  // Where the text already read now ends: the copy of anchor closest to the
+  // old offset, within radius. -1 when the page no longer contains it.
+  findAnchor(text, offset, anchor, radius) {
+    if (!anchor) return -1;
+    const lo = Math.max(0, offset - radius - anchor.length);
+    const hi = Math.min(text.length, offset + radius);
+    const region = text.slice(lo, hi);
+    let best = -1;
+    let bestDistance = Infinity;
+    let at = region.indexOf(anchor);
+    while (at !== -1) {
+      const end = lo + at + anchor.length;
+      const distance = Math.abs(end - offset);
+      if (distance < bestDistance) {
+        best = end;
+        bestDistance = distance;
+      }
+      at = region.indexOf(anchor, at + 1);
+    }
+    return best;
+  },
 `;
 
 /**
@@ -476,11 +787,82 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     window.__tauPageState.lastBlocker = { hit, scope, x, y, at: Date.now() };
     return scope;
   },
+  // Containment across shadow boundaries: a shadow root belongs to its host.
+  composedContains(outer, inner) {
+    let node = inner;
+    let guard = 0;
+    while (node && guard++ < 500) {
+      if (node === outer) return true;
+      node = node.parentNode || (node.nodeType === 11 ? node.host : null);
+    }
+    return false;
+  },
   // A hit counts as on-target when it IS the element, sits inside it, or wraps
   // it. Anything else is a different element painted on top.
   pointHitsTarget(el, hit) {
     if (!hit) return false;
-    return hit === el || el.contains(hit) || hit.contains(el);
+    return hit === el || el.contains(hit) || hit.contains(el)
+      || this.composedContains(el, hit) || this.composedContains(hit, el);
+  },
+  // Hit-test in the element's own tree. Inside a shadow root, the root answers
+  // with the element under the point where the document would name the host.
+  hitScope(el) {
+    const root = typeof el.getRootNode === 'function' ? el.getRootNode() : null;
+    return root && root !== el && typeof root.elementFromPoint === 'function'
+      ? root
+      : (el.ownerDocument || document);
+  },
+  // The focused element, followed into open shadow roots and same-origin frames.
+  deepActive() {
+    let el = document.activeElement;
+    let guard = 0;
+    while (el && guard++ < 10) {
+      if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      const tag = String(el.tagName || '').toUpperCase();
+      if (tag === 'IFRAME' || tag === 'FRAME') {
+        let inner = null;
+        try { inner = el.contentDocument; } catch (e) { inner = null; }
+        if (inner && inner.activeElement && inner.activeElement !== inner.body) { el = inner.activeElement; continue; }
+      }
+      break;
+    }
+    return el;
+  },
+  // Matches in the document and in every open shadow root inside it, the
+  // document's own first.
+  deepAll(selector) {
+    const out = [];
+    const visit = (scope, depth) => {
+      let list = [];
+      try { list = scope.querySelectorAll(selector); } catch (e) { return; }
+      for (const el of list) out.push(el);
+      if (depth >= 8) return;
+      let all = [];
+      try { all = scope.querySelectorAll('*'); } catch (e) { return; }
+      for (const el of all) if (el.shadowRoot) visit(el.shadowRoot, depth + 1);
+    };
+    visit(document, 0);
+    return out;
+  },
+  // Rendered text inside open shadow roots, which body.innerText leaves out.
+  shadowText() {
+    let out = '';
+    const visit = (scope, depth) => {
+      let all = [];
+      try { all = scope.querySelectorAll('*'); } catch (e) { return; }
+      for (const el of all) {
+        const root = el.shadowRoot;
+        if (!root) continue;
+        for (const child of Array.from(root.children || [])) {
+          const tag = String(child.tagName || '').toUpperCase();
+          if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'TEMPLATE') continue;
+          out += ' ' + (child.innerText || child.textContent || '');
+        }
+        if (depth < 8) visit(root, depth + 1);
+      }
+    };
+    visit(document, 0);
+    return out;
   },
   // Points to try inside an element, best first. Testing only the centre fails
   // whenever a badge, ribbon, sticker or price label is stacked over the middle
@@ -511,11 +893,11 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     return out;
   },
   clickablePoint(el) {
-    const doc = el.ownerDocument || document;
+    const scope = this.hitScope(el);
     const points = this.hitPoints(el);
     let blocker = null;
     for (let i = 0; i < points.length; i++) {
-      const hit = doc.elementFromPoint(points[i].x, points[i].y);
+      const hit = scope.elementFromPoint(points[i].x, points[i].y);
       if (this.pointHitsTarget(el, hit)) {
         return { found: true, x: points[i].x, y: points[i].y, centre: points[i].centre, tried: points.length };
       }
@@ -830,7 +1212,7 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
       return 5;
     };
     const selector = 'a,button,[role=button],[role=link],input,textarea,select,[contenteditable="true"],[role=textbox],[tabindex]:not([tabindex="-1"]),span,div,p,li,label';
-    const candidates = Array.from(document.querySelectorAll(selector))
+    const candidates = this.deepAll(selector)
       .filter(el => this.visible(el))
       .filter(el => this.label(el).toLowerCase().includes(needle))
       .sort((a, b) => {
@@ -891,7 +1273,13 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     };
   },
   labelAt(x, y) {
-    const el = document.elementFromPoint(Number(x), Number(y));
+    let el = document.elementFromPoint(Number(x), Number(y));
+    let guard = 0;
+    while (el && el.shadowRoot && guard++ < 8) {
+      const inner = el.shadowRoot.elementFromPoint(Number(x), Number(y));
+      if (!inner || inner === el) break;
+      el = inner;
+    }
     if (!el) return { found: false };
     return { found: true, label: this.label(el).slice(0, 120), tag: el.tagName.toLowerCase() };
   },
@@ -973,12 +1361,12 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     return { success: true, info: { ref: Number(ref), tag: 'select', selected: match.label || match.text || match.value } };
   },
   focusedInfo() {
-    const el = this.editableTarget(document.activeElement);
+    const el = this.editableTarget(this.deepActive());
     if (!el) return { editable: false };
     return { editable: true, tag: el.tagName.toLowerCase(), label: this.label(el).slice(0, 80), valueBefore: this.fieldValue(el).length };
   },
   verifyTyped() {
-    const el = this.editableTarget(document.activeElement);
+    const el = this.editableTarget(this.deepActive());
     if (!el) return { length: 0 };
     return { length: this.fieldValue(el).length };
   },
@@ -996,14 +1384,14 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
   scrollToRef(ref) {
     const got = this.byRef(ref);
     if (got.error) return { success: false, reason: 'stale_ref', staleKind: this.staleKind(got), error: 'Element @' + ref + ' cannot be resolved (DOM changed). Re-observe.' };
-    got.this.scrollTo(el);
+    this.scrollTo(got.el);
     return { success: true, info: { scrolledTo: this.label(got.el).slice(0, 60) || got.el.tagName.toLowerCase(), y: Math.round(window.scrollY) } };
   },
   // Viewport rect (with a small margin) of @ref for an element screenshot.
   rectOfRef(ref) {
     const got = this.byRef(ref);
     if (got.error) return { success: false, reason: 'stale_ref', staleKind: this.staleKind(got), error: 'Element @' + ref + ' cannot be resolved (DOM changed). Re-observe.' };
-    got.this.scrollTo(el);
+    this.scrollTo(got.el);
     const r = this.absRect(got.el);
     return { success: true, info: { x: Math.max(0, Math.round(r.left) - 4), y: Math.max(0, Math.round(r.top) - 4), w: Math.min(Math.round(r.width) + 8, innerWidth), h: Math.min(Math.round(r.height) + 8, innerHeight) } };
   },
@@ -1121,11 +1509,14 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
       if (selector) {
         let found = null;
         try { found = document.querySelector(selector); } catch (e) { return { bad: 'Invalid selector: ' + selector }; }
+        if (!found) found = this.deepAll(selector)[0] || null;
         const present = !!found && this.visible(found);
         return { met: gone ? !present : present };
       }
       if (text) {
-        const has = ((document.body && document.body.innerText) || '').toLowerCase().includes(String(text).toLowerCase());
+        const needle = String(text).toLowerCase();
+        let has = ((document.body && document.body.innerText) || '').toLowerCase().includes(needle);
+        if (!has) has = this.shadowText().toLowerCase().includes(needle);
         return { met: gone ? !has : has };
       }
       return { bad: 'Nothing to wait for: give a selector or a text.' };
@@ -1219,11 +1610,15 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     if (w) w.remove();
     return { success: true };
   },
+${READ_HELPERS_JS}
   // Readable-content extraction (the read action): walks the rendered DOM and
   // serializes it as compact markdown — headings, paragraphs, lists, tables,
   // code fences, links as [text](url). This is how the model READS a page
   // (articles, docs, search results) without burning tokens on screenshots.
-  readPage(selector, offset, maxChars) {
+  // A page ends at a paragraph or sentence boundary. With an anchor (the text
+  // that ended the previous page) the read continues from wherever that text
+  // is now, so content that moved in between is neither repeated nor skipped.
+  readPage(selector, offset, maxChars, anchor) {
     let root = null;
     if (selector) {
       try { root = document.querySelector(selector); } catch (e) { return { success: false, error: 'Invalid selector: ' + selector }; }
@@ -1239,17 +1634,37 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     if (!root) return { success: false, error: 'Page has no readable body yet.' };
     const FENCE = String.fromCharCode(96, 96, 96);
     const SKIP = selector ? 'script,style,noscript,template,svg' : 'script,style,noscript,template,svg,nav,header,footer,aside';
-    const want = Number(offset || 0) + Number(maxChars || 6000) + 2000;
+    const READ_RADIUS = 4000;
+    const start = Math.max(0, Number(offset || 0));
+    const budget = Number(maxChars || 6000);
+    const want = start + budget + 2000 + (anchor ? READ_RADIUS : 0);
     const parts = [];
     let len = 0;
     let nodes = 0;
+    // Set when the walk stops at the budget, so the reply can say "at least".
+    let stopped = false;
     const push = (s) => { if (s) { parts.push(s); len += s.length; } };
     const clean = (s) => String(s || '').replace(/\\s+/g, ' ').trim();
     const hidden = (el) => {
       try {
         if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return true;
-        return el.getClientRects().length === 0 && el.tagName !== 'HTML' && el.tagName !== 'BODY';
+        if (el.getClientRects().length > 0 || el.tagName === 'HTML' || el.tagName === 'BODY') return false;
+        // display:contents draws no box of its own while its children still
+        // render; every <slot> works this way.
+        const view = el.ownerDocument && el.ownerDocument.defaultView;
+        const style = view && view.getComputedStyle ? view.getComputedStyle(el) : null;
+        return !(style && style.display === 'contents');
       } catch (e) { return false; }
+    };
+    // Children in render order: a shadow root's content in place of its host's,
+    // and whatever is slotted into a <slot> where the slot sits.
+    const kids = (el) => {
+      if (el.shadowRoot) return el.shadowRoot.childNodes;
+      if (el.tagName === 'SLOT' && typeof el.assignedNodes === 'function') {
+        const assigned = el.assignedNodes({ flatten: true });
+        if (assigned.length) return assigned;
+      }
+      return el.childNodes;
     };
     const BLOCKS = { DIV:1, SECTION:1, ARTICLE:1, MAIN:1, ASIDE:1, HEADER:1, FOOTER:1, UL:1, OL:1, TABLE:1, TBODY:1, THEAD:1, FIGURE:1, FIELDSET:1, DETAILS:1, DL:1, DT:1, DD:1, NAV:1, FORM:1, P:1, LI:1, PRE:1, BLOCKQUOTE:1, HR:1, H1:1, H2:1, H3:1, H4:1, H5:1, H6:1 };
     const inlineNode = (node) => {
@@ -1271,11 +1686,12 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     };
     const inline = (el) => {
       let out = '';
-      for (const node of el.childNodes) out += inlineNode(node);
+      for (const node of kids(el)) out += inlineNode(node);
       return out;
     };
     const serialize = (el, depth) => {
-      if (len >= want || nodes++ > 20000 || depth > 40) return;
+      if (len >= want || nodes++ > 20000) { stopped = true; return; }
+      if (depth > 40) return;
       if (el.nodeType !== 1) return;
       if (el.matches && el.matches(SKIP) && el !== root) return;
       if (el !== root && hidden(el)) return;
@@ -1287,7 +1703,7 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
         // so items are not duplicated through inline() recursion.
         let liBuf = '';
         const sublists = [];
-        for (const node of el.childNodes) {
+        for (const node of kids(el)) {
           if (node.nodeType === 1 && (node.tagName === 'UL' || node.tagName === 'OL')) { sublists.push(node); continue; }
           liBuf += inlineNode(node);
         }
@@ -1304,7 +1720,8 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
         const rows = el.querySelectorAll('tr');
         let i = 0;
         for (const row of rows) {
-          if (i++ >= 40 || len >= want) { push('\\n(...more rows)'); break; }
+          if (len >= want) { stopped = true; push('\\n(...more rows)'); break; }
+          if (i++ >= 40) { push('\\n(...more rows)'); break; }
           const cells = Array.from(row.querySelectorAll('th,td')).map(c => clean(inline(c)));
           if (cells.some(Boolean)) push('\\n| ' + cells.join(' | ') + ' |');
         }
@@ -1316,23 +1733,34 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
       // it and recurse, so neither side of the mix is lost.
       let buf = '';
       const flush = () => { const s = clean(buf); buf = ''; if (s) push('\\n' + s + '\\n'); };
-      for (const node of el.childNodes) {
-        if (len >= want) break;
+      for (const node of kids(el)) {
+        if (len >= want) { stopped = true; break; }
         if (node.nodeType === 3) { buf += String(node.textContent || '').replace(/\\s+/g, ' '); continue; }
         if (node.nodeType !== 1) continue;
         if (node.matches && node.matches(SKIP)) continue;
         if (hidden(node)) continue;
-        if (BLOCKS[node.tagName]) { flush(); serialize(node, depth + 1); }
+        // A shadow host or a slot is read as a block, so the structure inside
+        // a web component (headings, paragraphs, lists) survives.
+        if (BLOCKS[node.tagName] || node.shadowRoot || node.tagName === 'SLOT') { flush(); serialize(node, depth + 1); }
         else buf += inlineNode(node);
       }
       flush();
     };
     serialize(root, 0);
-    let content = parts.join('').replace(/\\n{3,}/g, '\\n\\n').trim();
-    const total = content.length;
-    const from = Math.min(Number(offset || 0), total);
-    content = content.slice(from, from + Number(maxChars || 6000));
-    return { success: true, url: location.href, title: document.title, content, total, offset: from };
+    const text = parts.join('').replace(/\\n{3,}/g, '\\n\\n').trim();
+    const total = text.length;
+    let from = Math.min(start, total);
+    let shift = 0;
+    if (anchor) {
+      const found = this.findAnchor(text, start, String(anchor), READ_RADIUS);
+      // The text already read is gone: the page was rewritten in between, and
+      // two versions must not be stitched into one.
+      if (found < 0) return { success: true, stale: true, url: location.href, title: document.title, total, complete: !stopped };
+      shift = found - start;
+      from = found;
+    }
+    const end = this.readCut(text, from, budget);
+    return { success: true, url: location.href, title: document.title, content: text.slice(from, end), total, complete: !stopped, offset: from, shift: shift || undefined };
   }
 });
 `;
@@ -1548,8 +1976,9 @@ export function prunePayloadElements(
     dedup.push(e);
   }
 
+  // A picked element never folds into a run: the user pointed at that one.
   const sig = (e: InteractiveElement) =>
-    `${e.tag}|${e.role || ""}|${(e.text || "").toLowerCase()}`;
+    `${e.tag}|${e.role || ""}|${(e.text || "").toLowerCase()}${e.picked ? "|picked" : ""}`;
   const out: InteractiveElement[] = [];
   for (let i = 0; i < dedup.length; ) {
     let j = i + 1;

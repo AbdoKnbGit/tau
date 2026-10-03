@@ -12,7 +12,7 @@ import {
 } from "./chromeLauncher.js";
 import {
   diffEffect,
-  STATE_PROBE_SCRIPT,
+  buildStateProbeScript,
   type ActionEffect,
   type PageStateSnapshot,
 } from "./effects.js";
@@ -20,6 +20,14 @@ import { buildExtractScript, type ExtractResult } from "./extract.js";
 import type { FlowStep } from "./flows.js";
 import { describeImage, type ImageMeta } from "./imageMeta.js";
 import { MEASURE_SCRIPT, type MeasureResult } from "./measure.js";
+import {
+  buildPickScript,
+  CANCEL_PICK_SCRIPT,
+  PICK_TIMEOUT_MS,
+  type PickedElement,
+  type PickOutcome,
+} from "./pick.js";
+import { maskBody } from "./secrets.js";
 import {
   buildWatchDomScript,
   matchEventAlerts,
@@ -125,10 +133,16 @@ export interface NetworkEntry {
   mime?: string;
   error?: string;
   finished?: boolean;
+  /** Request payload as sent, capped at POST_DATA_CAP. */
+  postData?: string;
+  /** A payload too large to arrive with the event; fetched on demand. */
+  hasPostData?: boolean;
 }
 
 /** Ring-buffer cap per tab for console and network capture. */
 const EVENT_BUFFER_CAP = 300;
+/** Payload kept per request: far more than is shown, so masking sees whole values. */
+const POST_DATA_CAP = 8_000;
 
 export function formatConsoleEntries(
   entries: ConsoleEntry[],
@@ -160,10 +174,11 @@ export function formatConsoleEntries(
   return lines.join("\n");
 }
 
-export function formatNetworkEntries(
+/** The requests a network read lists: filtered, newest last, at most `limit`. */
+export function selectNetworkEntries(
   entries: NetworkEntry[],
   options: { filter?: string; failedOnly?: boolean; limit?: number },
-): string {
+): { shown: NetworkEntry[]; omitted: number } {
   const filter = options.filter?.toLowerCase();
   const picked = entries.filter((e) => {
     if (filter && !e.url.toLowerCase().includes(filter)) return false;
@@ -174,21 +189,54 @@ export function formatNetworkEntries(
   });
   const limit = Math.min(Math.max(options.limit ?? 30, 1), 200);
   const shown = picked.slice(-limit);
+  return { shown, omitted: picked.length - shown.length };
+}
+
+function networkStatus(e: NetworkEntry): string {
+  return e.error
+    ? `FAILED(${e.error.slice(0, 60)})`
+    : e.status !== undefined
+      ? String(e.status)
+      : e.finished
+        ? "done"
+        : "pending";
+}
+
+export function formatNetworkEntries(
+  entries: NetworkEntry[],
+  options: { filter?: string; failedOnly?: boolean; limit?: number },
+): string {
+  const { shown, omitted } = selectNetworkEntries(entries, options);
   const lines = shown.map((e) => {
-    const status = e.error
-      ? `FAILED(${e.error.slice(0, 60)})`
-      : e.status !== undefined
-        ? String(e.status)
-        : e.finished
-          ? "done"
-          : "pending";
     const type = e.type ? ` [${e.type.toLowerCase()}]` : "";
-    return `${e.method} ${status} ${e.url.slice(0, 200)}${type}`;
+    return `${e.method} ${networkStatus(e)} ${e.url.slice(0, 200)}${type}`;
   });
-  const omitted = picked.length - shown.length;
   if (omitted > 0)
     lines.unshift(`(...${omitted} earlier matching request(s) omitted)`);
   return lines.join("\n");
+}
+
+/** Bodies are shown for at most this many of the listed requests, newest first. */
+const BODY_REQUESTS = 3;
+const RESPONSE_BODY_CHARS = 1_500;
+const REQUEST_BODY_CHARS = 800;
+/** Masking scans well past what is shown, so a cut never splits a credential. */
+const BODY_SCAN_CHARS = 16_000;
+/** A body up to this size is masked whole, so JSON is parsed before it is cut. */
+const BODY_PARSE_CHARS = 262_144;
+/** Resource types whose bytes are never worth reading as text. */
+const BODILESS_TYPES = new Set(["image", "font", "media"]);
+
+/** One payload or body as the model reads it: credentials masked, whitespace collapsed, cut to `max`. */
+export function clipBody(text: string, max: number): string {
+  const scanned = text.length <= BODY_PARSE_CHARS ? text : text.slice(0, BODY_SCAN_CHARS);
+  const flat = maskBody(scanned).replace(/\s+/g, " ").trim();
+  if (flat.length <= max && scanned.length === text.length) return flat;
+  return `${flat.slice(0, max)} ... (${text.length} characters in all)`;
+}
+
+function isTextualMime(mime?: string): boolean {
+  return /json|text|xml|javascript|ecmascript|x-www-form-urlencoded|graphql|csv|yaml|html/i.test(mime ?? "");
 }
 
 interface EvaluateResult {
@@ -624,6 +672,18 @@ class BrowserSessionService {
   private actionChain: Promise<unknown> = Promise.resolve();
   /** How often each failure cause has been hit, so a repeat can say more. */
   private failureStreak = new Map<string, number>();
+  /** No window anyone could point in: launched headless, or attached to a headless browser. */
+  private headless = false;
+  /**
+   * Where the last read of a tab ended and the text that ended it, so reading
+   * on from there can re-find its place if the page shifted in between.
+   */
+  private lastRead?: {
+    targetId: string;
+    selector: string | null;
+    next: number;
+    anchor: string;
+  };
 
   isRunning(): boolean {
     return !!this.client?.isOpen;
@@ -644,11 +704,11 @@ class BrowserSessionService {
    * rather than throwing: a sample that cannot be taken is reported as
    * unverified, never as success.
    */
-  async sampleState(): Promise<PageStateSnapshot | null> {
+  async sampleState(targetRef?: number): Promise<PageStateSnapshot | null> {
     if (!this.client?.isOpen) return null;
     try {
       const state = await this.evaluate<PageStateSnapshot | null>(
-        STATE_PROBE_SCRIPT,
+        buildStateProbeScript(targetRef),
         { timeoutMs: 5_000 },
       );
       return state && typeof state.docId === "string" ? state : null;
@@ -664,15 +724,19 @@ class BrowserSessionService {
   async withEffect<T>(
     action: string,
     run: () => Promise<T>,
-    options?: { producedValue?: (result: T) => boolean },
+    options?: {
+      producedValue?: (result: T) => boolean;
+      /** Ref the action is aimed at; its own state joins the before/after sample. */
+      targetRef?: number;
+    },
   ): Promise<{ result: T; effect: ActionEffect }> {
     const task = this.actionChain.then(async () => {
       const step = this.nextStep();
-      const before = await this.sampleState();
+      const before = await this.sampleState(options?.targetRef);
       const startedAt = Date.now();
       const result = await run();
       const elapsed = Date.now() - startedAt;
-      const after = await this.sampleState();
+      const after = await this.sampleState(options?.targetRef);
       const effect = diffEffect(action, before, after, step, elapsed, {
         producedValue: options?.producedValue?.(result) ?? false,
       });
@@ -1007,6 +1071,7 @@ class BrowserSessionService {
     this.child = launched.child;
     this.client = await CdpClient.connect(launched.wsUrl);
     this.mode = "spawned";
+    this.headless = headless;
     this.installClientHooks();
     this.installExitHook();
     await this.setupDownloads();
@@ -1628,11 +1693,33 @@ class BrowserSessionService {
   }): Promise<ReadResult> {
     const maxChars = clampNumber(Number(options.maxChars), 500, 30_000, 6_000);
     const offset = Math.max(0, Number(options.offset) || 0);
+    const selector = options.selector ?? null;
+    // Reading on from exactly where the last read of this tab ended: hand the
+    // page the text that ended it, so a shift in between is caught.
+    const previous = this.lastRead;
+    const anchor =
+      previous &&
+      offset > 0 &&
+      previous.next === offset &&
+      previous.targetId === this.activeTargetId &&
+      previous.selector === selector
+        ? previous.anchor
+        : null;
     const result = await this.callPageTools<ReadResult>(
-      `readPage(${JSON.stringify(options.selector ?? null)}, ${offset}, ${maxChars})`,
+      `readPage(${JSON.stringify(selector)}, ${offset}, ${maxChars}, ${JSON.stringify(anchor)})`,
       { timeoutMs: 25_000 },
     );
     if (result?.url) this.lastKnownUrl = result.url;
+    const targetId = this.activeTargetId;
+    this.lastRead =
+      result?.success && !result.stale && result.content && targetId
+        ? {
+            targetId,
+            selector,
+            next: (result.offset ?? 0) + result.content.length,
+            anchor: result.content.slice(-64),
+          }
+        : undefined;
     return result ?? { success: false, error: "Read produced no result." };
   }
 
@@ -1862,17 +1949,29 @@ class BrowserSessionService {
     };
   }
 
-  /** Network requests captured for the active tab. */
-  networkLog(options: {
+  /**
+   * Network requests captured for the active tab. With bodies, the newest few
+   * listed requests also carry their payload and response body, read back
+   * from Chrome's buffer with credentials masked.
+   */
+  async networkLog(options: {
     filter?: string;
     failedOnly?: boolean;
     limit?: number;
     clear?: boolean;
-  }): { text: string; captured: number } {
+    bodies?: boolean;
+  }): Promise<{ text: string; captured: number; bodies?: string }> {
     const targetId = this.activeTargetId;
     const entries = (targetId && this.networkBuf.get(targetId)) || [];
     const text = formatNetworkEntries(entries, options);
     const captured = entries.length;
+    // Read before any clear: clearing drops the listing, not Chrome's buffer,
+    // but the request ids to read with live only in the listing.
+    const shown = options.bodies ? selectNetworkEntries(entries, options).shown : [];
+    const bodies =
+      targetId && shown.length > 0
+        ? await this.describeBodies(targetId, shown)
+        : undefined;
     if (options.clear && targetId) {
       this.networkBuf.set(targetId, []);
       this.networkIndex.set(targetId, new Map());
@@ -1884,7 +1983,180 @@ class BrowserSessionService {
           ? "(no failed requests captured on this tab)"
           : "(no requests captured on this tab since it was attached)"),
       captured,
+      ...(bodies ? { bodies } : {}),
     };
+  }
+
+  private async describeBodies(
+    targetId: string,
+    shown: NetworkEntry[],
+  ): Promise<string> {
+    const wanted = shown
+      .filter((entry) => !BODILESS_TYPES.has((entry.type ?? "").toLowerCase()))
+      .slice(-BODY_REQUESTS);
+    if (wanted.length === 0) {
+      return "(none of the listed requests can carry a readable body; filter for an API or document request)";
+    }
+    const client = this.requireClient();
+    const sessionId = this.sessions.get(targetId);
+    const blocks: string[] = [];
+    for (const entry of wanted) {
+      const lines = [`${entry.method} ${networkStatus(entry)} ${entry.url.slice(0, 200)}`];
+      const payload = await this.requestPayload(client, entry, sessionId);
+      if (payload) lines.push(`  request: ${payload}`);
+      lines.push(`  response: ${await this.responseBody(client, entry, sessionId)}`);
+      blocks.push(lines.join("\n"));
+    }
+    return blocks.join("\n");
+  }
+
+  private async requestPayload(
+    client: CdpClient,
+    entry: NetworkEntry,
+    sessionId?: string,
+  ): Promise<string | undefined> {
+    let data = entry.postData;
+    if (!data && entry.hasPostData && sessionId) {
+      data = await client
+        .send<{ postData?: string }>(
+          "Network.getRequestPostData",
+          { requestId: entry.requestId },
+          sessionId,
+          10_000,
+        )
+        .then((got) => got.postData)
+        .catch(() => undefined);
+    }
+    if (data) return clipBody(data, REQUEST_BODY_CHARS);
+    return entry.hasPostData ? "(sent, but the browser no longer holds it)" : undefined;
+  }
+
+  private async responseBody(
+    client: CdpClient,
+    entry: NetworkEntry,
+    sessionId?: string,
+  ): Promise<string> {
+    if (entry.error) return "(none: the request failed)";
+    if (!entry.finished) return "(none yet: still loading)";
+    if (
+      entry.status !== undefined &&
+      (entry.status === 204 || (entry.status >= 300 && entry.status < 400))
+    ) {
+      return `(none: HTTP ${entry.status})`;
+    }
+    if (!sessionId) return "(unavailable: the tab is no longer attached)";
+    try {
+      const got = await client.send<{ body?: string; base64Encoded?: boolean }>(
+        "Network.getResponseBody",
+        { requestId: entry.requestId },
+        sessionId,
+        10_000,
+      );
+      let body = got.body ?? "";
+      if (got.base64Encoded) {
+        const bytes = Buffer.from(body, "base64");
+        if (!isTextualMime(entry.mime)) {
+          return `(${entry.mime || "binary"}, ${bytes.length} bytes, not shown)`;
+        }
+        body = bytes.toString("utf8");
+      }
+      if (!body.trim()) return "(empty)";
+      return `${entry.mime ? `[${entry.mime}] ` : ""}${clipBody(body, RESPONSE_BODY_CHARS)}`;
+    } catch {
+      return "(unavailable: the browser no longer holds it, or it arrived before capture started on this tab)";
+    }
+  }
+
+  /**
+   * Hands the visible page to the user for one click and returns the element
+   * they chose. The observation that follows lists it first, with a ref.
+   */
+  async pick(
+    hint: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<BrowserActionOutcome & { picked?: PickedElement }> {
+    if (this.headless) {
+      return {
+        ok: false,
+        reason: "pick_unavailable",
+        error:
+          "The browser is running headless, so there is no window anyone could point in. Ask in words, or close the browser and open it again visible, then pick.",
+        warnings: [],
+      };
+    }
+    const client = this.requireClient();
+    const sessionId = await this.getActiveSession();
+    // The user has to find the window and the tab to point in.
+    const browserWindow = await client
+      .send<{ windowId?: number; bounds?: { windowState?: string } }>(
+        "Browser.getWindowForTarget",
+        { targetId: this.activeTargetId },
+      )
+      .catch(() => null);
+    if (
+      browserWindow?.windowId !== undefined &&
+      browserWindow.bounds?.windowState === "minimized"
+    ) {
+      await client
+        .send("Browser.setWindowBounds", {
+          windowId: browserWindow.windowId,
+          bounds: { windowState: "normal" },
+        })
+        .catch(() => undefined);
+    }
+    await client.send("Page.bringToFront", {}, sessionId).catch(() => undefined);
+    const cancel = () => {
+      void this.evaluate(CANCEL_PICK_SCRIPT).catch(() => undefined);
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    let result: PickOutcome | null;
+    try {
+      result = await this.evaluate<PickOutcome>(buildPickScript(hint ?? "", PICK_TIMEOUT_MS), {
+        awaitPromise: true,
+        timeoutMs: PICK_TIMEOUT_MS + 10_000,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !/context was destroyed|navigated or closed|Cannot find context|Target closed|Promise was collected/i.test(
+          message,
+        )
+      ) {
+        throw error;
+      }
+      // A navigation tears down the page the picker was waiting in.
+      const { observation, warnings } = await this.observe(signal);
+      return {
+        ok: false,
+        reason: "page_changed",
+        error:
+          "The page navigated while the picker was open, so nothing was picked. Pick again on the page that is open now.",
+        observation,
+        warnings,
+      };
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+    }
+    if (!result || "cancelled" in result) {
+      return {
+        ok: false,
+        reason: "pick_cancelled",
+        error: signal?.aborted
+          ? "The pick was interrupted."
+          : "The user closed the picker without choosing anything. Ask them in words instead.",
+        warnings: [],
+      };
+    }
+    if ("timedOut" in result) {
+      return {
+        ok: false,
+        reason: "pick_timeout",
+        error: `Nobody pointed at anything within ${Math.round(PICK_TIMEOUT_MS / 1000)} seconds. Ask in words instead, or pick again once the user is at the browser.`,
+        warnings: [],
+      };
+    }
+    const { observation, warnings } = await this.observe(signal);
+    return { ok: true, observation, warnings, picked: result.picked };
   }
 
   /** Prints the current page to a PDF file at the given local path. */
@@ -2714,6 +2986,8 @@ class BrowserSessionService {
         userAgent?: string;
       }>("Browser.getVersion");
       const rawUa = version.userAgent || "";
+      // An attached browser says it is headless only here, before the spoof.
+      if (/HeadlessChrome/.test(rawUa)) this.headless = true;
       const cleanUa = rawUa.replace(/HeadlessChrome/g, "Chrome");
       const match = (version.product || rawUa).match(/Chrome\/(\d+)/);
       if (match) chromeMajor = Number(match[1]);
@@ -2870,7 +3144,12 @@ class BrowserSessionService {
         params: {
           requestId: string;
           type?: string;
-          request?: { url?: string; method?: string };
+          request?: {
+            url?: string;
+            method?: string;
+            postData?: string;
+            hasPostData?: boolean;
+          };
         },
         sessionId?: string,
       ) => {
@@ -2878,12 +3157,15 @@ class BrowserSessionService {
         if (!targetId) return;
         const url = params.request?.url ?? "";
         if (url.startsWith("data:")) return;
+        const postData = params.request?.postData;
         const entry: NetworkEntry = {
           ts: Date.now(),
           requestId: params.requestId,
           method: params.request?.method ?? "GET",
           url,
           type: params.type,
+          ...(postData ? { postData: postData.slice(0, POST_DATA_CAP) } : {}),
+          ...(params.request?.hasPostData && !postData ? { hasPostData: true } : {}),
         };
         let buf = this.networkBuf.get(targetId);
         let index = this.networkIndex.get(targetId);
@@ -3062,6 +3344,8 @@ class BrowserSessionService {
     // caller's intent and survive a reopen, but their cursor cannot.
     this.tabOwners.clear();
     this.failureStreak.clear();
+    this.headless = false;
+    this.lastRead = undefined;
     this.watchCursor = 0;
     this.actionChain = Promise.resolve();
   }

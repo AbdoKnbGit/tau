@@ -28,6 +28,8 @@ export interface PageStateSnapshot {
   textLen: number;
   scrollY: number;
   readyState: string;
+  /** State of the element the action targeted ("gone" once it left the page). */
+  target?: string;
 }
 
 /** What changed between two snapshots. */
@@ -78,33 +80,73 @@ export function isMutatingAction(action: string): boolean {
  * One expression, evaluated in the page, returning a {@link PageStateSnapshot}.
  * Never throws: a page that blocks property access still yields a usable
  * sample, and total failure returns null rather than breaking the action.
+ *
+ * The signature covers each control's state as well as its text, so ticking a
+ * checkbox or pressing a toggle registers as a change. With `targetRef` the
+ * sample also carries the state of the element the action is aimed at, which
+ * catches a toggle the page-wide signature cannot see (past its cap, or inside
+ * a shadow root).
  */
-export const STATE_PROBE_SCRIPT = `(function(){
+export function buildStateProbeScript(targetRef?: number): string {
+  const target = Number.isSafeInteger(targetRef) && Number(targetRef) >= 0 ? Number(targetRef) : -1;
+  return `(function(){
   try {
     var d = document;
     if (!window.__tauDocId) {
       window.__tauDocId = 'd' + Math.random().toString(36).slice(2, 10);
     }
+    var SEL = 'a[href],button,input,select,textarea,summary,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="checkbox"],[role="radio"],[role="switch"],[onclick],[contenteditable=""],[contenteditable="true"]';
     var nodes = [];
-    try {
-      nodes = d.querySelectorAll('a[href],button,input,select,textarea,summary,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="checkbox"],[role="radio"],[onclick],[contenteditable=""],[contenteditable="true"]');
-    } catch (e) { nodes = []; }
+    try { nodes = Array.prototype.slice.call(d.querySelectorAll(SEL)); } catch (e) { nodes = []; }
+    // Controls and text inside open shadow roots count too.
+    var shadowText = 0;
+    var scan = function (scope, depth) {
+      var all = [];
+      try { all = scope.querySelectorAll('*'); } catch (e) { return; }
+      for (var a = 0; a < all.length && a < 20000; a++) {
+        var root = all[a] && all[a].shadowRoot;
+        if (!root) continue;
+        try { nodes = nodes.concat(Array.prototype.slice.call(root.querySelectorAll(SEL))); } catch (e) {}
+        try { shadowText += String(root.textContent || '').length; } catch (e) {}
+        if (depth < 8) scan(root, depth + 1);
+      }
+    };
+    scan(d, 0);
+    var stateOf = function (el) {
+      var attr = function (name) {
+        try { return el.getAttribute ? (el.getAttribute(name) || '') : ''; } catch (e) { return ''; }
+      };
+      var open = '';
+      try {
+        if (String(el.tagName || '').toUpperCase() === 'SUMMARY' && el.parentElement && el.parentElement.open) open = 'o';
+      } catch (e) {}
+      return (el.checked ? 'c' : '') + attr('aria-checked') + attr('aria-pressed') + attr('aria-expanded') + attr('aria-selected') + open;
+    };
+    var describe = function (el) {
+      return (el.tagName || '') + '|' + (el.id || '') + '|'
+        + String(el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40) + '|'
+        + (el.disabled ? '1' : '0') + '|'
+        + (el.value == null ? '' : String(el.value).slice(0, 20)) + '|'
+        + stateOf(el);
+    };
     var total = nodes.length;
-    var cap = total < 400 ? total : 400;
+    var cap = total < 2000 ? total : 2000;
     var h = 2166136261;
     for (var i = 0; i < cap; i++) {
-      var el = nodes[i];
       var part = '';
-      try {
-        part = (el.tagName || '') + '|' + (el.id || '') + '|'
-          + String(el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40) + '|'
-          + (el.disabled ? '1' : '0') + '|'
-          + (el.value == null ? '' : String(el.value).slice(0, 20));
-      } catch (e) { part = 'x'; }
+      try { part = describe(nodes[i]); } catch (e) { part = 'x'; }
       for (var j = 0; j < part.length; j++) {
         h ^= part.charCodeAt(j);
         h = Math.imul(h, 16777619) >>> 0;
       }
+    }
+    var target;
+    if (${target} >= 0) {
+      try {
+        var reg = window.__tauRefState;
+        var el = reg && reg.document === d && reg.idToElement && reg.idToElement.get(${target});
+        target = el && el.isConnected ? describe(el) : 'gone';
+      } catch (e) { target = undefined; }
     }
     var textLen = 0;
     try { textLen = (d.body && d.body.innerText ? d.body.innerText.length : 0); } catch (e) { textLen = 0; }
@@ -114,14 +156,18 @@ export const STATE_PROBE_SCRIPT = `(function(){
       title: d.title || '',
       elements: total,
       sig: h.toString(36),
-      textLen: textLen,
+      textLen: textLen + shadowText,
       scrollY: Math.round(window.scrollY || 0),
-      readyState: d.readyState || ''
+      readyState: d.readyState || '',
+      target: target
     };
   } catch (e) {
     return null;
   }
 })()`;
+}
+
+export const STATE_PROBE_SCRIPT = buildStateProbeScript();
 
 /**
  * Compares two samples. `before` may be null (browser had no page yet), in
@@ -167,7 +213,8 @@ export function diffEffect(
   const domChanged =
     before.sig !== after.sig ||
     before.elements !== after.elements ||
-    before.textLen !== after.textLen;
+    before.textLen !== after.textLen ||
+    (before.target ?? "") !== (after.target ?? "");
   const scrolled = before.scrollY !== after.scrollY;
   // Targeting an element scrolls it into view first, so on any page longer than
   // the viewport a click "scrolls the page" no matter what it does afterwards.
