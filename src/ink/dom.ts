@@ -83,6 +83,11 @@ export type DOMElement = {
   // Only set on ink-root. The document owns focus — any node can
   // reach it by walking parentNode, like browser getRootNode().
   focusManager?: FocusManager
+  // Only set on ink-root, by Ink after each frame: rows of that frame in
+  // terminal scrollback, where log-update can no longer redraw them
+  // (LogUpdate.rowsInScrollback). 'alt' in the alt screen, where nothing
+  // scrolls away. Read by useTerminalViewport.
+  rowsInScrollback?: number | 'alt'
   // React component stack captured at createInstance time (reconciler.ts),
   // e.g. ['ToolUseLoader', 'Messages', 'REPL']. Only populated when
   // CLAUDE_CODE_DEBUG_REPAINTS is set. Used by findOwnerChainAtRow to

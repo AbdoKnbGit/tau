@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import {
   Box,
   NoSelect,
@@ -89,6 +89,14 @@ const BLOOM_MS = 1600
 const MAX_BURSTS = 5
 
 let launchPlayed = false
+
+// The wordmark is remounted whenever the transcript above the prompt is
+// rebuilt — a dialog closing, a prompt going out — usually long after it
+// scrolled into terminal history. A fresh clock reading recolored rows that
+// log-update can no longer reach, and each remount cost a full reset. A new
+// instance shows the time the last one showed until its own clock moves,
+// which happens only once it is fully on screen.
+let lastShownTime: number | undefined
 
 function clamp(n: number): number {
   return Math.max(0, Math.min(1, n))
@@ -497,7 +505,15 @@ export function TauWordmark(): React.ReactNode {
     return getInitialSettings().prefersReducedMotion ?? false
   })
   const animatable = !reducedMotion
-  const [ref, time] = useAnimationFrame(animatable ? FRAME_MS : null)
+  const [ref, clockTime] = useAnimationFrame(animatable ? FRAME_MS : null)
+  const [mountClockTime] = useState(clockTime)
+  const time =
+    clockTime === mountClockTime && lastShownTime !== undefined
+      ? lastShownTime
+      : clockTime
+  useLayoutEffect(() => {
+    lastShownTime = time
+  })
   const [buildStartedAt] = useState(() => (animatable && !launchPlayed ? time : null))
   const [bursts, setBursts] = useState<readonly Burst[]>([])
 

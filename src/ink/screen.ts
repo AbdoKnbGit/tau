@@ -9,6 +9,7 @@ import {
   type Size,
   unionRect,
 } from './layout/geometry.js'
+import { withoutColor } from './no-color.js'
 import { BEL, ESC, SEP } from './termio/ansi.js'
 import * as warn from './warn.js'
 
@@ -114,8 +115,11 @@ export class StylePool {
   private styles: AnsiCode[][] = []
   private transitionCache = new Map<number, string>()
   readonly none: number
+  /** NO_COLOR: every style comes in without its colors; see ink/no-color.ts. */
+  private readonly colorless: boolean
 
-  constructor() {
+  constructor(options: { colors?: boolean } = {}) {
+    this.colorless = options.colors === false
     this.none = this.intern([])
   }
 
@@ -127,6 +131,7 @@ export class StylePool {
    * with a single bitmask check on the packed word.
    */
   intern(styles: AnsiCode[]): number {
+    if (this.colorless) styles = withoutColor(styles)
     const key = styles.length === 0 ? '' : styles.map(s => s.code).join('\0')
     let id = this.ids.get(key)
     if (id === undefined) {
@@ -243,7 +248,8 @@ export class StylePool {
   }
   withSelectionBg(baseId: number): number {
     const bg = this.selectionBgCode
-    if (bg === null) return this.withInverse(baseId)
+    // Without colors a selection background would not show; inverse does.
+    if (bg === null || this.colorless) return this.withInverse(baseId)
     let id = this.selectionBgCache.get(baseId)
     if (id === undefined) {
       // Keep everything except bg (49m) and inverse (27m). Fg, bold, dim,

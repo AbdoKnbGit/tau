@@ -28,6 +28,7 @@ import Output from './output.js';
 import type { ParsedKey } from './parse-keypress.js';
 import reconciler, { dispatcher, getLastCommitMs, getLastYogaMs, isDebugRepaintsEnabled, recordYogaMs, resetProfileCounters } from './reconciler.js';
 import renderNodeToOutput, { consumeFollowScroll, didLayoutShift } from './render-node-to-output.js';
+import { isNoColorRequested } from './no-color.js';
 import { applyPositionedHighlight, type MatchPosition, scanPositions } from './render-to-screen.js';
 import createRenderer, { type Renderer } from './renderer.js';
 import { CellWidth, CharPool, cellAt, createScreen, HyperlinkPool, isEmptyCellAt, migrateScreenPools, StylePool } from './screen.js';
@@ -203,7 +204,9 @@ export default class Ink {
     this.terminalColumns = options.stdout.columns || 80;
     this.terminalRows = options.stdout.rows || 24;
     this.altScreenParkPatch = makeAltScreenParkPatch(this.terminalRows);
-    this.stylePool = new StylePool();
+    this.stylePool = new StylePool({
+      colors: !isNoColorRequested()
+    });
     this.charPool = new CharPool();
     this.hyperlinkPool = new HyperlinkPool();
     this.frontFrame = emptyFrame(this.terminalRows, this.terminalColumns, this.stylePool, this.charPool, this.hyperlinkPool);
@@ -626,6 +629,7 @@ export default class Ink {
     // doesn't implement DEC 2026, so SYNC_OUTPUT_SUPPORTED is false).
     SYNC_OUTPUT_SUPPORTED);
     const diffMs = performance.now() - tDiff;
+    this.rootNode.rowsInScrollback = this.altScreenActive ? 'alt' : this.log.rowsInScrollback;
     // Swap buffers
     this.backFrame = this.frontFrame;
     this.frontFrame = frame;
@@ -697,7 +701,7 @@ export default class Ink {
       if (optimized.some(patch => patch.type === 'clearTerminal')) {
         invalidateGraphicsPlacements();
       }
-      const graphicsViewportTop = this.altScreenActive ? 0 : Math.max(0, frame.cursor.y - terminalRows + 1);
+      const graphicsViewportTop = this.altScreenActive ? 0 : this.log.rowsInScrollback;
       // Images the writer just drew with their rows are on screen now. Record
       // them before the pass below, which would otherwise draw them twice — or,
       // for boxes the same frame pushed into history, give up on them.
@@ -722,10 +726,10 @@ export default class Ink {
       const graphicsCursor = hasDiff ? restingCursor : this.displayCursor ?? restingCursor;
       const graphics = buildGraphicsSequence({
         cursor: graphicsCursor,
-        // nodeCache uses logical screen rows on the main screen. Once content
-        // has filled the terminal, the physical viewport follows the logical
-        // cursor and begins above it by rows - 1. Alt-screen coordinates are
-        // already viewport-relative.
+        // nodeCache uses logical screen rows on the main screen; the physical
+        // viewport begins at the first row not yet in scrollback, which the
+        // writer tracks (after a shrink it is not the cursor row minus rows - 1).
+        // Alt-screen coordinates are already viewport-relative.
         viewportTop: graphicsViewportTop,
         viewportRows: terminalRows,
         viewportColumns: terminalWidth,

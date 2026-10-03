@@ -31,7 +31,8 @@ export function useAnimationFrame(
   intervalMs: number | null = 16,
 ): [ref: (element: DOMElement | null) => void, time: number] {
   const clock = useContext(ClockContext)
-  const [viewportRef, { isVisible }, isVisibleNow] = useTerminalViewport()
+  const [viewportRef, { isVisible }, isVisibleNow, isFullyVisibleNow] =
+    useTerminalViewport()
   const [time, setTime] = useState(() => clock?.now() ?? 0)
   const [, renderAgain] = useReducer((n: number) => n + 1, 0)
 
@@ -48,11 +49,14 @@ export function useAnimationFrame(
         lastUpdate = now
         // Other content can push the element into scrollback between its own
         // renders, and a new frame there forces log-update into a full
-        // terminal reset. Render again without advancing time instead; once a
-        // render sees the element offscreen, this subscription ends.
-        if (isVisibleNow()) {
+        // terminal reset. That holds for any of its rows: an animation may
+        // change cells in all of them (the wordmark does), so advance only
+        // while the whole element is on screen and hold still while part of
+        // it is in scrollback. Fully offscreen, render again without advancing
+        // time; once a render sees that, this subscription ends.
+        if (isFullyVisibleNow()) {
           setTime(now)
-        } else {
+        } else if (!isVisibleNow()) {
           renderAgain()
         }
       }
@@ -60,7 +64,7 @@ export function useAnimationFrame(
 
     // keepAlive: true — visible animations drive the clock
     return clock.subscribe(onChange, true)
-  }, [clock, intervalMs, active, isVisibleNow])
+  }, [clock, intervalMs, active, isVisibleNow, isFullyVisibleNow])
 
   return [viewportRef, time]
 }

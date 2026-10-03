@@ -108,6 +108,7 @@ function measureViewport(
   let absoluteTop = element.yogaNode.getComputedTop()
   let parent: DOMElement | undefined = element.parentNode
   let root = element.yogaNode
+  let rootElement: DOMElement = element
   while (parent) {
     if (parent.yogaNode) {
       absoluteTop += parent.yogaNode.getComputedTop()
@@ -116,6 +117,7 @@ function measureViewport(
     // scrollTop is only ever set on scroll containers (by ScrollBox + renderer).
     // Non-scroll nodes have undefined scrollTop → falsy fast-path.
     if (parent.scrollTop) absoluteTop -= parent.scrollTop
+    rootElement = parent
     parent = parent.parentNode
   }
 
@@ -127,8 +129,12 @@ function measureViewport(
     // log-update treats rows above screenHeight - rows + 1 as scrollback as
     // soon as the content is as tall as the screen (its cursor-restore LF
     // scrolls one more row out), so count the boundary the same way.
-    const viewportY =
-      Math.max(0, screenHeight - rows) + (screenHeight >= rows ? 1 : 0)
+    const viewportY = firstRowOnScreen(
+      rootElement,
+      screenHeight,
+      rows,
+      Math.max(0, screenHeight - rows) + (screenHeight >= rows ? 1 : 0),
+    )
     return absoluteTop >= viewportY && bottom <= viewportY + rows
   }
   // When content overflows the viewport (screenHeight > rows), the
@@ -138,7 +144,38 @@ function measureViewport(
   // "visible" here (animation keeps ticking) but its row is treated as
   // scrollback by log-update (content change → full reset → flicker).
   const cursorRestoreScroll = screenHeight > rows ? 1 : 0
-  const viewportY = Math.max(0, screenHeight - rows) + cursorRestoreScroll
+  const viewportY = firstRowOnScreen(
+    rootElement,
+    screenHeight,
+    rows,
+    Math.max(0, screenHeight - rows) + cursorRestoreScroll,
+  )
   const viewportBottom = viewportY + rows
   return bottom > viewportY && absoluteTop < viewportBottom
+}
+
+/**
+ * The first row of the content on screen once the next frame is written, as
+ * log-update counts it.
+ *
+ * Rows the last frame left in scrollback stay there: a shrink erases rows in
+ * place and scrolls nothing back, so this can be more than the content's
+ * overflow. The next frame also scrolls out its own overflow, plus the row
+ * the cursor-restore LF pushes once the content is as tall as the screen.
+ * The alt screen has no scrollback. Before Ink has written a frame, falls
+ * back to `estimate`, the overflow alone.
+ */
+export function firstRowOnScreen(
+  root: DOMElement,
+  screenHeight: number,
+  rows: number,
+  estimate: number,
+): number {
+  const scrollback = root.rowsInScrollback
+  if (scrollback === undefined) return estimate
+  if (scrollback === 'alt') return 0
+  return Math.max(
+    scrollback,
+    screenHeight >= rows ? screenHeight - rows + 1 : 0,
+  )
 }

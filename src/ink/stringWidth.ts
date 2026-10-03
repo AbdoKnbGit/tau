@@ -4,6 +4,31 @@ import stripAnsi from 'strip-ansi'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 
 const EMOJI_REGEX = emojiRegex()
+const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u
+const TEXT_PRESENTATION_SELECTOR = 0xfe0e
+
+/**
+ * A lone pictograph that Unicode shows as text by default — ✔ ⚠ ❤ ⚙ ©, alone
+ * or with the text selector U+FE0E. emoji-regex matches these, but terminals
+ * draw them in one cell, as Bun.stringWidth counts them: only U+FE0F, an emoji
+ * sequence, or an emoji-by-default code point is two cells wide. Counting two
+ * put every later cell of the row one column right of where the terminal drew
+ * it, so the cells meant to be cleared on that row were never reached.
+ */
+function isTextPresentationPictograph(grapheme: string): boolean {
+  const codePoint = grapheme.codePointAt(0)!
+  const length = codePoint > 0xffff ? 2 : 1
+  if (
+    grapheme.length !== length &&
+    !(
+      grapheme.length === length + 1 &&
+      grapheme.charCodeAt(length) === TEXT_PRESENTATION_SELECTOR
+    )
+  ) {
+    return false
+  }
+  return !EMOJI_PRESENTATION.test(grapheme.slice(0, length))
+}
 
 /**
  * Fallback JavaScript implementation of stringWidth when Bun.stringWidth is not available.
@@ -16,8 +41,10 @@ const EMOJI_REGEX = emojiRegex()
  * The implementation uses eastAsianWidth directly with ambiguousAsWide: false,
  * which correctly treats ambiguous-width characters as narrow (width 1) as
  * recommended by the Unicode standard for Western contexts.
+ *
+ * Exported for tests; tau runs on Node, where this is the implementation used.
  */
-function stringWidthJavaScript(str: string): number {
+export function stringWidthJavaScript(str: string): number {
   if (typeof str !== 'string' || str.length === 0) {
     return 0
   }
@@ -69,7 +96,7 @@ function stringWidthJavaScript(str: string): number {
   for (const { segment: grapheme } of getGraphemeSegmenter().segment(str)) {
     // Check for emoji first (most emoji sequences are width 2)
     EMOJI_REGEX.lastIndex = 0
-    if (EMOJI_REGEX.test(grapheme)) {
+    if (EMOJI_REGEX.test(grapheme) && !isTextPresentationPictograph(grapheme)) {
       width += getEmojiWidth(grapheme)
       continue
     }

@@ -583,8 +583,9 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
               // In fullscreen the command just showed as a centered modal
               // pane — the transient notification is enough feedback. The
               // "❯ /config" + "⎿ dismissed" transcript entries are
-              // type:system subtype:local_command (user-visible but NOT sent
-              // to the model), so skipping them doesn't affect model context.
+              // type:system subtype:local_command. These DO reach the model:
+              // normalizeMessagesForAPI turns them into user messages, so
+              // skipping them also keeps a no-op exchange out of its context.
               // Outside fullscreen keep them so scrollback shows what ran.
               // Only skip "<Name> dismissed" modal-close notifications —
               // commands that early-exit before showing a modal (/ultraplan

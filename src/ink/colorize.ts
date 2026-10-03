@@ -10,8 +10,9 @@ import type { Color, TextStyles } from './styles.js'
  * downgrades to the nearest 6×6×6 cube color: rgb(215,119,87) (Claude
  * orange) → idx 174 rgb(215,135,135) — washed-out salmon.
  *
- * Gated on level === 2 (not < 3) to respect NO_COLOR / FORCE_COLOR=0 —
- * those yield level 0 and are an explicit "no colors" request. Desktop VS
+ * Gated on level === 2 (not < 3) to respect FORCE_COLOR=0 — it yields
+ * level 0, an explicit "no colors" request. (chalk never reads NO_COLOR;
+ * Ink's StylePool drops colors for it, see no-color.ts.) Desktop VS
  * Code sets COLORTERM=truecolor itself, so this is a no-op there (already 3).
  *
  * Must run BEFORE the tmux clamp — if tmux is running inside a VS Code
