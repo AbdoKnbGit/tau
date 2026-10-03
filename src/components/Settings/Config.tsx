@@ -12,6 +12,7 @@ import { type GlobalConfig, saveGlobalConfig, getCurrentProjectConfig, type Outp
 import { MESSAGE_HEADER_MODES, type MessageHeaderMode, normalizeMessageHeaderMode } from '../../utils/messageHeader.js';
 import { normalizeApiKeyForConfig } from '../../utils/authPortable.js';
 import { getGlobalConfig, getAutoUpdaterDisabledReason, formatAutoUpdaterDisabledReason, getRemoteControlAtStartup } from '../../utils/config.js';
+import { setMascotEnabled } from '../TauMascot/enabled.js';
 import chalk from 'chalk';
 import { permissionModeTitle, permissionModeFromString, toExternalPermissionMode, isExternalPermissionMode, EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type ExternalPermissionMode, type PermissionMode } from '../../utils/permissions/PermissionMode.js';
 import { getAutoModeEnabledState, hasAutoModeOptInAnySource, transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js';
@@ -391,6 +392,20 @@ export function Config({
       }));
       logEvent('tengu_reduce_motion_setting_changed', {
         enabled: prefersReducedMotion
+      });
+    }
+  }, {
+    // Purely visual, so it stays out of the change summary below: that
+    // summary is a transcript message the model reads.
+    id: 'mascotEnabled',
+    label: 'Tau mascot',
+    value: globalConfig.mascotEnabled ?? false,
+    type: 'boolean' as const,
+    onChange(mascotEnabled: boolean) {
+      setMascotEnabled(mascotEnabled);
+      setGlobalConfig({
+        ...getGlobalConfig(),
+        mascotEnabled
       });
     }
   }, {

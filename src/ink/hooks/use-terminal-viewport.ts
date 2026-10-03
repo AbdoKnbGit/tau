@@ -12,8 +12,8 @@ type ViewportEntry = {
 /**
  * Hook to detect if a component is within the terminal viewport.
  *
- * Returns a callback ref, a viewport entry object, and a function that
- * measures visibility against the latest layout on demand.
+ * Returns a callback ref, a viewport entry object, and functions that
+ * measure visibility against the latest layout on demand.
  * Attach the ref to the component you want to track.
  *
  * The entry is updated during the layout phase (useLayoutEffect) so callers
@@ -25,6 +25,10 @@ type ViewportEntry = {
  * tick, calls `isVisibleNow` instead: the entry only moves when this
  * component renders, and other content can push it into scrollback meanwhile.
  *
+ * `isFullyVisibleNow` asks whether every row is on screen. A tall element can
+ * be partly in scrollback while its bottom rows still show, and changing a
+ * scrollback row costs log-update a full terminal reset.
+ *
  * @example
  * const [ref, entry] = useTerminalViewport()
  * return <Box ref={ref}><Animation enabled={entry.isVisible}>...</Animation></Box>
@@ -33,6 +37,7 @@ export function useTerminalViewport(): [
   ref: (element: DOMElement | null) => void,
   entry: ViewportEntry,
   isVisibleNow: () => boolean,
+  isFullyVisibleNow: () => boolean,
 ] {
   const terminalSize = useContext(TerminalSizeContext)
   const elementRef = useRef<DOMElement | null>(null)
@@ -45,53 +50,12 @@ export function useTerminalViewport(): [
   }, [])
 
   // Whether the element is within the viewport in the latest layout, or null
-  // while it has none. Walks the DOM ancestor chain fresh each time to avoid
-  // holding stale references after yoga tree rebuilds.
-  const measure = useCallback((): boolean | null => {
-    const element = elementRef.current
-    const terminalSize = terminalSizeRef.current
-    if (!element?.yogaNode || !terminalSize) {
-      return null
-    }
-
-    const height = element.yogaNode.getComputedHeight()
-    const rows = terminalSize.rows
-
-    // Walk the DOM parent chain (not yoga.getParent()) so we can detect
-    // scroll containers and subtract their scrollTop. Yoga computes layout
-    // positions without scroll offset — scrollTop is applied at render time.
-    // Without this, an element inside a ScrollBox whose yoga position exceeds
-    // terminalRows would be considered offscreen even when scrolled into view
-    // (e.g., the spinner in fullscreen mode after enough messages accumulate).
-    let absoluteTop = element.yogaNode.getComputedTop()
-    let parent: DOMElement | undefined = element.parentNode
-    let root = element.yogaNode
-    while (parent) {
-      if (parent.yogaNode) {
-        absoluteTop += parent.yogaNode.getComputedTop()
-        root = parent.yogaNode
-      }
-      // scrollTop is only ever set on scroll containers (by ScrollBox + renderer).
-      // Non-scroll nodes have undefined scrollTop → falsy fast-path.
-      if (parent.scrollTop) absoluteTop -= parent.scrollTop
-      parent = parent.parentNode
-    }
-
-    // Only the root's height matters
-    const screenHeight = root.getComputedHeight()
-
-    const bottom = absoluteTop + height
-    // When content overflows the viewport (screenHeight > rows), the
-    // cursor-restore at frame end scrolls one extra row into scrollback.
-    // log-update.ts accounts for this with scrollbackRows = viewportY + 1.
-    // We must match, otherwise an element at the boundary is considered
-    // "visible" here (animation keeps ticking) but its row is treated as
-    // scrollback by log-update (content change → full reset → flicker).
-    const cursorRestoreScroll = screenHeight > rows ? 1 : 0
-    const viewportY = Math.max(0, screenHeight - rows) + cursorRestoreScroll
-    const viewportBottom = viewportY + rows
-    return bottom > viewportY && absoluteTop < viewportBottom
-  }, [])
+  // while it has none.
+  const measure = useCallback(
+    (): boolean | null =>
+      measureViewport(elementRef.current, terminalSizeRef.current?.rows, false),
+    [],
+  )
 
   // Runs on every render because yoga layout values can change
   // without React being aware. Only updates the ref — no setState
@@ -108,5 +72,73 @@ export function useTerminalViewport(): [
     [measure],
   )
 
-  return [setElement, entryRef.current, isVisibleNow]
+  const isFullyVisibleNow = useCallback(
+    () =>
+      measureViewport(elementRef.current, terminalSizeRef.current?.rows, true) ??
+      entryRef.current.isVisible,
+    [],
+  )
+
+  return [setElement, entryRef.current, isVisibleNow, isFullyVisibleNow]
+}
+
+/**
+ * Whether `element` is within a viewport `rows` tall in the latest layout —
+ * any row of it, or with `fully`, all of them — or null while it has none.
+ * Walks the DOM ancestor chain fresh each time to avoid holding stale
+ * references after yoga tree rebuilds.
+ */
+function measureViewport(
+  element: DOMElement | null,
+  rows: number | undefined,
+  fully: boolean,
+): boolean | null {
+  if (!element?.yogaNode || rows === undefined) {
+    return null
+  }
+
+  const height = element.yogaNode.getComputedHeight()
+
+  // Walk the DOM parent chain (not yoga.getParent()) so we can detect
+  // scroll containers and subtract their scrollTop. Yoga computes layout
+  // positions without scroll offset — scrollTop is applied at render time.
+  // Without this, an element inside a ScrollBox whose yoga position exceeds
+  // terminalRows would be considered offscreen even when scrolled into view
+  // (e.g., the spinner in fullscreen mode after enough messages accumulate).
+  let absoluteTop = element.yogaNode.getComputedTop()
+  let parent: DOMElement | undefined = element.parentNode
+  let root = element.yogaNode
+  while (parent) {
+    if (parent.yogaNode) {
+      absoluteTop += parent.yogaNode.getComputedTop()
+      root = parent.yogaNode
+    }
+    // scrollTop is only ever set on scroll containers (by ScrollBox + renderer).
+    // Non-scroll nodes have undefined scrollTop → falsy fast-path.
+    if (parent.scrollTop) absoluteTop -= parent.scrollTop
+    parent = parent.parentNode
+  }
+
+  // Only the root's height matters
+  const screenHeight = root.getComputedHeight()
+
+  const bottom = absoluteTop + height
+  if (fully) {
+    // log-update treats rows above screenHeight - rows + 1 as scrollback as
+    // soon as the content is as tall as the screen (its cursor-restore LF
+    // scrolls one more row out), so count the boundary the same way.
+    const viewportY =
+      Math.max(0, screenHeight - rows) + (screenHeight >= rows ? 1 : 0)
+    return absoluteTop >= viewportY && bottom <= viewportY + rows
+  }
+  // When content overflows the viewport (screenHeight > rows), the
+  // cursor-restore at frame end scrolls one extra row into scrollback.
+  // log-update.ts accounts for this with scrollbackRows = viewportY + 1.
+  // We must match, otherwise an element at the boundary is considered
+  // "visible" here (animation keeps ticking) but its row is treated as
+  // scrollback by log-update (content change → full reset → flicker).
+  const cursorRestoreScroll = screenHeight > rows ? 1 : 0
+  const viewportY = Math.max(0, screenHeight - rows) + cursorRestoreScroll
+  const viewportBottom = viewportY + rows
+  return bottom > viewportY && absoluteTop < viewportBottom
 }

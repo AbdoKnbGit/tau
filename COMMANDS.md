@@ -170,6 +170,17 @@ always:date+time+model   27 Aug 2026 10:00 AM   claude-opus-5
 
 Leave `/config` with **Enter** to save - Escape reverts every change you made in the panel (that applies to every row in `/config`, not just this one). The setting is stored in the global config (`~/.claude.json`) as `messageHeaderMode`, so you can also set it by hand. It applies to the next reply: lines already printed in the scrollback keep the look they were drawn with, while the Ctrl+O transcript redraws in full and always reflects the current setting.
 
+**`/mascot` - Tau's mascot above the prompt**
+The little block figure from the logo can live above the prompt and act out what Tau is doing. He walks while it works, holds the τ up while the model thinks, hammers on an anvil while files change, sprints while commands run, and holds the τ up like a lantern while Tau reads or searches. When a tool fails he sees stars, and when a turn finishes cleanly he does a small hop. The τ gets heavier as the context fills: he slows down past 80%, then kneels near auto-compact. It turns bronze in cheap mode and gold in full mode.
+
+```
+/mascot        toggle
+/mascot on     show him
+/mascot off    hide him
+```
+
+He is off by default; **Tau mascot** in `/config` switches him too, stored as `mascotEnabled` in `~/.claude.json`. He is purely visual: nothing about him reaches the model or the prompt cache, and `/mascot` answers with a notification, not a transcript message. He takes 8 rows and needs a terminal at least 40x24 with 256 colors, so he stays hidden under `NO_COLOR`. With **Reduce motion** he stands still. He steps aside while a slash-command panel is open, and freezes while any part of him has scrolled out of view, so his animation never forces a full terminal redraw.
+
 **`/statusline` - Configure the status row under the prompt**
 Tau draws one status row beneath the prompt. By default it is the built-in session bar: current directory, provider/model, and a context-usage meter. `/statusline` hands the job to the `statusline-setup` agent, which writes a `statusLine` command into `~/.claude/settings.json` for you.
 

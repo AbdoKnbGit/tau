@@ -431,6 +431,9 @@ export type GlobalConfig = {
   // Terminal progress bar configuration (OSC 9;4)
   terminalProgressBarEnabled: boolean
 
+  // Tau's mascot above the prompt (/mascot). Off unless turned on.
+  mascotEnabled?: boolean
+
   // Which model describes an image when the active model cannot see one (set
   // via /vision-model). Unset means auto-pick from whichever configured
   // provider can serve as a describer; null means never describe.
