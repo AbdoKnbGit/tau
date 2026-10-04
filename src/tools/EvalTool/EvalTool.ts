@@ -78,6 +78,9 @@ export type EvalOutput = z.infer<OutputSchema>
 // the result object (like FileReadTool's notes), so the output schema and the
 // SDK types built from it stay unchanged.
 const moduleNotes = new WeakMap<object, string>()
+// Only the model needs to see a remaining layout issue. Keep it out of the
+// visible cell text/error UI, and leave schemas and historical results alone.
+const chartLayoutNotes = new WeakMap<object, string>()
 
 /** The module a failed cell could not import, from the kernel's error. */
 function missingModuleOf(error: { ename: string; evalue: string } | undefined): string | undefined {
@@ -243,6 +246,13 @@ export const EvalTool = buildTool({
           outcome.error?.ename === 'IndentationError',
       } satisfies EvalOutput
 
+      const chartNotes = [...new Set(
+        outcome.statuses
+          .filter(status => status.op === 'chart_layout')
+          .map(status => status.detail),
+      )].slice(0, 4)
+      if (chartNotes.length > 0) chartLayoutNotes.set(data, chartNotes.join('\n'))
+
       // A failed import: check every Python here before the model guesses,
       // and say which one the kernel runs and what fixes it.
       const missing = missingModuleOf(outcome.error)
@@ -289,6 +299,8 @@ export const EvalTool = buildTool({
     }
     const moduleNote = moduleNotes.get(output)
     if (moduleNote) notes.push(moduleNote)
+    const chartNote = chartLayoutNotes.get(output)
+    if (chartNote) notes.push(chartNote)
 
     const text = notes.length > 0 ? `${output.text}\n\n${notes.join('\n')}` : output.text
 

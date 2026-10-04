@@ -69,6 +69,15 @@ _emit_lock = threading.Lock()
 _raw_stdout = sys.stdout
 _current_id = ""
 _exec_count = 0
+# Independent limits: one chart must not consume another chart's retries.
+# The outer limits still bound unusually large batches and repeated displays.
+_CHART_MAX_AUDITS = 32
+_CHART_MAX_REPAIR_FIGURES = 16
+_chart_audits_left = 0
+_chart_repair_figures_left = 0
+_chart_limit_hit = False
+_chart_cache = {}
+_chart_notes = {}
 _cancel_token = os.environ.get("TAU_EVAL_CANCEL_TOKEN", "")
 # Set only while a cell is executing. A cancel racing a cell that already
 # finished must not raise KeyboardInterrupt in the main read loop and take
@@ -253,6 +262,285 @@ class _ToolProxy:
         return "<tau tool bridge>"
 
 
+def _chart_boxes(fig, renderer):
+    """Bounded snapshot of ordinary subplot labels, in the actual PNG draw.
+
+    No extra draw, private matplotlib layout API, or changes to live text.
+    Uncertain geometry is skipped: a false alarm can cause needless redraws.
+    """
+    from copy import copy
+    from math import cos, sin, radians, isfinite
+    from matplotlib.axis import Axis, Tick, XTick
+    from matplotlib.axes import Axes
+    from matplotlib.text import Text
+    from matplotlib.colors import to_rgba
+
+    if len(fig.axes) > 16:
+        return None
+    boxes, visited = [], 0
+    stack = [(fig, False)]
+    title_ids = {id(ax.title) for ax in fig.axes}
+    while stack:
+        artist, label = stack.pop()
+        visited += 1
+        if visited > 2048 or len(boxes) >= 256:
+            return None
+        if not artist.get_visible():
+            continue
+        if isinstance(artist, Axes) and artist.name != "rectilinear":
+            continue
+        if isinstance(artist, Axis):
+            if not artist.axes.axison:
+                continue
+            label = True
+        if isinstance(artist, Tick):
+            axis = artist.axes.xaxis if isinstance(artist, XTick) else artist.axes.yaxis
+            lo, hi = sorted(axis.get_view_interval())
+            if not lo <= artist.get_loc() <= hi:
+                continue
+        if type(artist) is Text:
+            if not (label or id(artist) in title_ids):
+                continue
+            value = artist.get_text()
+            if not value.strip() or len(value) > 1000 or artist.get_wrap() or artist.get_usetex():
+                continue
+            if to_rgba(artist.get_color(), artist.get_alpha())[3] == 0:
+                continue
+            # A detached shallow copy lets us measure unrotated dimensions
+            # without changing the user's rotation or marking their axes stale.
+            text = copy(artist)
+            text.stale_callback = None
+            box = text.get_window_extent(renderer)
+            if not all(isfinite(v) for v in box.extents) or box.width <= 0 or box.height <= 0:
+                continue
+            if text.get_clip_on():
+                if text.get_clip_path() is not None:
+                    continue
+                clip = text.get_clip_box()
+                if clip is not None and not (clip.contains(box.x0, box.y0) and clip.contains(box.x1, box.y1)):
+                    continue
+            angle = radians(text.get_rotation())
+            ux, uy = cos(angle), sin(angle)
+            text.set_transform_rotates_text(False)
+            text.set_rotation(0)
+            flat = text.get_window_extent(renderer)
+            w, h = flat.width, flat.height
+            # Wrapping/custom transforms may not form this rotated rectangle.
+            if abs(abs(ux) * w + abs(uy) * h - box.width) > 0.5 or abs(abs(uy) * w + abs(ux) * h - box.height) > 0.5:
+                continue
+            name = " ".join(value.split())[:40]
+            boxes.append((box.x0, box.y0, box.x1, box.y1, (box.x0 + box.x1) / 2,
+                          (box.y0 + box.y1) / 2, ux, uy, w / 2, h / 2, name))
+            continue
+        children = artist.get_children()
+        if len(children) + visited + len(stack) > 2048:
+            return None
+        stack.extend((child, label) for child in reversed(children))
+    return boxes
+
+
+def _chart_collisions(boxes):
+    """Sweep by x, then test oriented rectangles; fixed work/output limits."""
+    if boxes is None:
+        return None
+    boxes = sorted(boxes, key=lambda b: (b[0], b[1], b[10]))
+    hits, comparisons = [], 0
+    tolerance = 2.0  # Pixels in the fixed 110-DPI PNG, not machine/display DPI.
+    for i, a in enumerate(boxes):
+        for j in range(i + 1, len(boxes)):
+            b = boxes[j]
+            if b[0] >= a[2] - tolerance:
+                break
+            comparisons += 1
+            if comparisons > 4096:
+                return None
+            if min(a[3], b[3]) - max(a[1], b[1]) <= tolerance:
+                continue
+            dx, dy = b[4] - a[4], b[5] - a[5]
+            for x, y in ((a[6], a[7]), (-a[7], a[6]), (b[6], b[7]), (-b[7], b[6])):
+                ra = a[8] * abs(a[6] * x + a[7] * y) + a[9] * abs(-a[7] * x + a[6] * y)
+                rb = b[8] * abs(b[6] * x + b[7] * y) + b[9] * abs(-b[7] * x + b[6] * y)
+                if ra + rb - abs(dx * x + dy * y) <= tolerance:
+                    break
+            else:
+                hits.append((a[10], b[10]))
+                if len(hits) == 16:
+                    return hits
+    return hits
+
+
+def _chart_layout_state(fig):
+    """Only adjust a simple subplot grid; custom/inset/twin layouts keep theirs."""
+    axes = fig.axes
+    if not 1 <= len(axes) <= 16:
+        return None
+    specs = []
+    points = 0
+    for ax in axes:
+        if ax.name != "rectilinear" or not ax.axison or not ax.get_in_layout() or ax.get_axes_locator() is not None or ax.child_axes:
+            return None
+        spec = ax.get_subplotspec()
+        if spec is None or spec.get_topmost_subplotspec() != spec:
+            return None
+        if specs and spec.get_gridspec() is not specs[0].get_gridspec():
+            return None
+        for other in specs:
+            if (spec.rowspan.start < other.rowspan.stop and other.rowspan.start < spec.rowspan.stop
+                    and spec.colspan.start < other.colspan.stop and other.colspan.start < spec.colspan.stop):
+                return None
+        specs.append(spec)
+        if len(ax.lines) + len(ax.collections) > 128:
+            return None
+        for line in ax.lines:
+            points += len(line.get_xdata())
+        for collection in ax.collections:
+            paths = collection.get_paths()
+            if len(paths) > 256:
+                return None
+            points += len(collection.get_offsets()) + sum(len(path.vertices) for path in paths)
+        if points > 100_000 or any(image.get_array().size > 2_000_000 for image in ax.images):
+            return None
+    size = tuple(fig.get_size_inches())
+    # Extra renders must not multiply the cost of a poster-sized figure.
+    if size[0] * size[1] * 110 * 110 > 2_000_000:
+        return None
+    params = {key: getattr(fig.subplotpars, key) for key in ("left", "bottom", "right", "top", "wspace", "hspace")}
+    positions = [(ax, ax.get_position().frozen(), ax.get_position(original=True).frozen(), ax.get_in_layout()) for ax in axes]
+    return size, params, positions
+
+
+def _record_chart_note(value, note):
+    if note and (id(value) in _chart_notes or len(_chart_notes) < _CHART_MAX_AUDITS):
+        _chart_notes[id(value)] = note
+    else:
+        _chart_notes.pop(id(value), None)
+
+
+def _save_chart_png(value):
+    """Repair ordinary label collisions in memory before any image is emitted.
+
+    All output still uses the existing PNG path. Diagnostics are advisory and
+    never alter tool success, prompt/schema bytes, or previous result blocks.
+    """
+    global _chart_audits_left, _chart_repair_figures_left, _chart_limit_hit
+    import warnings
+    module = sys.modules.get("matplotlib.figure")
+    eligible = module is not None and type(value) is module.Figure
+    canvas, connection = None, None
+    boxes, draws = None, 0
+    original = None
+
+    def on_draw(event):
+        nonlocal boxes, draws
+        boxes = None
+        draws += 1
+        if draws <= 4:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    boxes = _chart_boxes(value, event.renderer)
+            except Exception:
+                pass
+
+    def render():
+        nonlocal boxes, draws
+        boxes, draws = None, 0
+        buf = io.BytesIO()
+        value.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+        try:
+            hits = _chart_collisions(boxes)
+        except Exception:
+            hits = None
+        return buf.getvalue(), hits
+
+    audit_allowed = eligible and _chart_audits_left > 0
+    if audit_allowed:
+        _chart_audits_left -= 1
+        try:
+            canvas = value.canvas
+            connection = canvas.mpl_connect("draw_event", on_draw)
+        except Exception:
+            pass
+    try:
+        original, hits = render()
+        if not eligible:
+            return original
+        # Repeated display(fig) / trailing fig / automatic capture must return
+        # the same repair without spending another figure's allowance.
+        import hashlib
+        key = hashlib.sha256(original).digest()
+        if key in _chart_cache:
+            best, note = _chart_cache[key]
+            _record_chart_note(value, note)
+            return best
+        if connection is None:
+            if not audit_allowed:
+                _chart_limit_hit = True
+            return original
+        best = original
+        if hits and _chart_repair_figures_left <= 0:
+            _chart_limit_hit = True
+        if hits and _chart_repair_figures_left > 0:
+            state = None
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    state = _chart_layout_state(value)
+                    if state is not None:
+                        _chart_repair_figures_left -= 1
+                        from matplotlib.layout_engine import TightLayoutEngine
+                        engine = value.get_layout_engine()
+                        # At most two attempts for THIS figure, independent of
+                        # attempts already used by other figures in the cell.
+                        for grow in (False, True):
+                            if grow:
+                                value.set_size_inches(state[0][0] * 1.4, state[0][1] * 1.4, forward=False)
+                            if engine is None:
+                                TightLayoutEngine(pad=1.2).execute(value)
+                            candidate, candidate_hits = render()
+                            # A partial improvement can trade one collision for
+                            # another. Publish a repair only when the bounded
+                            # inspection completed and found no collisions.
+                            if candidate_hits == []:
+                                best, hits = candidate, candidate_hits
+                            if not hits:
+                                break
+            except Exception:
+                # Keep the successfully rendered original (or verified repair).
+                pass
+            finally:
+                if state is not None:
+                    restores = [(value.set_size_inches, (state[0],), {"forward": False}),
+                                (value.subplotpars.update, (), state[1])]
+                    for ax, active, original_position, in_layout in state[2]:
+                        restores.extend(((ax.set_position, (original_position,), {"which": "original"}),
+                                         (ax.set_position, (active,), {"which": "active"}),
+                                         (ax.set_in_layout, (in_layout,), {})))
+                    for restore, args, kwargs in restores:
+                        try:
+                            restore(*args, **kwargs)
+                        except Exception:
+                            pass
+        note = ""
+        if hits:
+            pairs = "; ".join(json.dumps(a, ensure_ascii=True) + " / " + json.dumps(b, ensure_ascii=True) for a, b in hits[:3])
+            note = "[chart layout] Possible label overlap: " + pairs + ". Check and correct unintended overlap before presenting this chart."
+        _record_chart_note(value, note)
+        if len(_chart_cache) < _CHART_MAX_AUDITS and len(best) + sum(len(entry[0]) for entry in _chart_cache.values()) <= 8_000_000:
+            _chart_cache[key] = (best, note)
+        return best
+    except Exception:
+        if original is not None:
+            return original
+        raise
+    finally:
+        if connection is not None:
+            try:
+                canvas.mpl_disconnect(connection)
+            except Exception:
+                pass
+
+
 def _image_payload(value):
     """Image bundle for a value, or None. Cheap: renders no text."""
     for attr, mime in (("_repr_png_", "image/png"), ("_repr_jpeg_", "image/jpeg")):
@@ -269,10 +557,8 @@ def _image_payload(value):
 
     savefig = getattr(value, "savefig", None)
     if callable(savefig):
-        buf = io.BytesIO()
         try:
-            savefig(buf, format="png", dpi=110, bbox_inches="tight")
-            return "image/png", base64.b64encode(buf.getvalue()).decode("ascii")
+            return "image/png", base64.b64encode(_save_chart_png(value)).decode("ascii")
         except Exception:
             pass
 
@@ -328,21 +614,23 @@ def _capture_pyplot_figures():
     except Exception:
         return
     for number in numbers:
+        figure = None
         try:
             figure = pyplot.figure(number)
-            buf = io.BytesIO()
-            figure.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+            raw = _save_chart_png(figure)
             _emit(
                 {
                     "type": "display",
                     "id": _current_id,
                     "mime": "image/png",
-                    "data": base64.b64encode(buf.getvalue()).decode("ascii"),
+                    "data": base64.b64encode(raw).decode("ascii"),
                 }
             )
-            pyplot.close(figure)
         except Exception:
             continue
+        finally:
+            if figure is not None:
+                pyplot.close(figure)
 
 
 def _read(path, offset=1, limit=None):
@@ -678,11 +966,16 @@ def _user_traceback(exc):
 
 
 def _handle_exec(request):
-    global _current_id, _exec_count
+    global _current_id, _exec_count, _chart_audits_left, _chart_repair_figures_left, _chart_limit_hit
     _current_id = str(request.get("id", ""))
     code = request.get("code") or ""
     cancelled = False
     ok = True
+    _chart_audits_left = _CHART_MAX_AUDITS
+    _chart_repair_figures_left = _CHART_MAX_REPAIR_FIGURES
+    _chart_limit_hit = False
+    _chart_cache.clear()
+    _chart_notes.clear()
 
     proxy_out = _StreamProxy("stdout")
     proxy_err = _StreamProxy("stderr")
@@ -744,7 +1037,19 @@ def _handle_exec(request):
             _capture_pyplot_figures()
         except Exception:
             pass
+        # One bounded, model-only note. Sampling details must not silently
+        # imply that all other figures were inspected or successfully repaired.
+        notes = list(dict.fromkeys(note for note in _chart_notes.values() if note))
+        details = notes[:3]
+        if len(notes) > 3:
+            details.append("[chart layout] Additional charts may have overlapping labels; inspect the remaining charts before presenting them.")
+        if _chart_limit_hit:
+            details.append("[chart layout] Automatic layout checks or repairs reached this cell's safety limit. Inspect remaining charts, or render them in smaller batches.")
+        if details:
+            _emit_status("chart_layout", "\n".join(details))
     finally:
+        _chart_cache.clear()
+        _chart_notes.clear()
         _cell_running.clear()
         proxy_out.flush()
         proxy_err.flush()
