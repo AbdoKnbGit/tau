@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { Box, Text, useInput } from '../ink.js'
+import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js'
 import {
   getClaudeAIOAuthTokens,
   hasAnthropicApiKeyAuth,
@@ -118,6 +119,7 @@ const TAG_STYLE: Record<ModelTag, { label: string; color: string }> = {
   recommended: { label: 'RECOMMENDED', color: 'green' },
   free:      { label: 'FREE',      color: 'green' },
   pro:       { label: 'PRO PLAN',  color: 'magenta' },
+  'pro-ultra': { label: 'PRO/ULTRA', color: 'magenta' },
   fast:      { label: 'fast',      color: 'cyan' },
   pulled:    { label: 'ready',     color: 'green' },
   missing:   { label: 'pull',      color: 'yellow' },
@@ -291,6 +293,8 @@ export function ProviderModelPicker({
   // itself lives in GlobalConfig and is read fresh during render.
   const [favoritesVersion, setFavoritesVersion] = useState(0)
   const [favoriteNotice, setFavoriteNotice] = useState<string | null>(null)
+  // The current model only picks which effort chip opens first.
+  const mainLoopModel = useAppStateMaybeOutsideOfProvider(s => s.mainLoopModel)
 
   const selectedProvider =
     lockedProvider
@@ -308,7 +312,9 @@ export function ProviderModelPicker({
     setSections([])
     setSelectedRowIndex(0)
 
-    void loadProviderModelSections(selectedProvider)
+    void loadProviderModelSections(selectedProvider, {
+      currentModel: mainLoopModel ?? undefined,
+    })
       .then(loadedSections => {
         if (cancelled) return
 

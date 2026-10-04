@@ -47,6 +47,14 @@ import {
   type ClineEffort,
 } from './clineThinking.js'
 import { isClinePassProvider } from './clinePassCatalog.js'
+import {
+  ANTIGRAVITY_CLAUDE_DEFAULT_EFFORT,
+  ANTIGRAVITY_CLAUDE_EFFORTS,
+  antigravityClaudeEffortLabel,
+  antigravityClaudeTierModelId,
+  parseAntigravityClaudeTier,
+  type AntigravityClaudeTierModel,
+} from './antigravityClaudeTiers.js'
 
 /** Longest the picker waits for OpenCode's ladders when none are on disk. */
 const OPENCODE_MODELS_DEV_WAIT_MS = 8_000
@@ -357,6 +365,8 @@ export type ModelTag =
   | 'recommended'
   | 'free'
   | 'pro'
+  /** Needs a paid Google AI Pro or Ultra plan (Antigravity). */
+  | 'pro-ultra'
   | 'fast'
   | 'pulled'
   | 'missing'
@@ -505,6 +515,7 @@ export function resolveProviderModelSelection(
  */
 export async function loadProviderModelSections(
   provider: BrowsableModelProvider,
+  options: { currentModel?: string } = {},
 ): Promise<ProviderModelSection[]> {
   if (isVoiceConversationProvider(provider)) {
     return [
@@ -593,9 +604,77 @@ export async function loadProviderModelSections(
     {
       id: 'all',
       title: `${getProviderBrowseLabel(provider)} models`,
-      models: models.map(toProviderSectionedModel),
+      models: provider === 'antigravity'
+        ? toAntigravitySectionedModels(models, options.currentModel)
+        : models.map(toProviderSectionedModel),
     },
   ]
+}
+
+/**
+ * Antigravity lists each Claude 5.5 model once per effort level. Show one row
+ * per model whose arrow-key chip picks the level, as the Anthropic rows pick
+ * effort; every other Antigravity row is listed as before. The chip opens on
+ * the level the session runs, so it never reads High while Low is in use.
+ */
+function toAntigravitySectionedModels(
+  models: readonly ModelInfo[],
+  currentModel?: string,
+): SectionedModelInfo[] {
+  const levelsByModel = new Map<string, ModelInfo[]>()
+  for (const model of models) {
+    const tier = parseAntigravityClaudeTier(model.id)
+    if (!tier) continue
+    const levels = levelsByModel.get(tier.model.id) ?? []
+    levels.push(model)
+    levelsByModel.set(tier.model.id, levels)
+  }
+
+  const rows: SectionedModelInfo[] = []
+  for (const model of models) {
+    const tier = parseAntigravityClaudeTier(model.id)
+    if (!tier) {
+      rows.push(toProviderSectionedModel(model))
+      continue
+    }
+    // The row takes the position of the model's first level.
+    const levels = levelsByModel.get(tier.model.id)
+    if (!levels) continue
+    levelsByModel.delete(tier.model.id)
+    rows.push(toAntigravityClaudeTierRow(tier.model, levels, currentModel))
+  }
+  return rows
+}
+
+function toAntigravityClaudeTierRow(
+  model: AntigravityClaudeTierModel,
+  levels: readonly ModelInfo[],
+  currentModel?: string,
+): SectionedModelInfo {
+  const variants: ModelVariantInfo[] = ANTIGRAVITY_CLAUDE_EFFORTS.flatMap(effort => {
+    const level = levels.find(
+      candidate => parseAntigravityClaudeTier(candidate.id)?.effort === effort,
+    )
+    if (!level) return []
+    return [{
+      id: level.id,
+      name: level.name,
+      label: `${antigravityClaudeEffortLabel(effort)} effort`,
+      tags: pickKnownModelTags(level),
+    }]
+  })
+  const current = currentModel?.toLowerCase()
+  const defaultId = antigravityClaudeTierModelId(model, ANTIGRAVITY_CLAUDE_DEFAULT_EFFORT)
+  const defaultVariant = variants.find(variant => variant.id === current)
+    ?? variants.find(variant => variant.id === defaultId)
+    ?? variants[0]
+  return {
+    id: model.id,
+    name: model.name,
+    tags: mergeModelTags(...variants.map(variant => variant.tags)),
+    variants,
+    ...(defaultVariant ? { defaultVariantId: defaultVariant.id } : {}),
+  }
 }
 
 const CURSOR_SECTION_ORDER: readonly CursorModelSection[] = [
@@ -940,6 +1019,7 @@ const KNOWN_MODEL_TAGS = new Set<ModelTag>([
   'recommended',
   'free',
   'pro',
+  'pro-ultra',
   'fast',
   'pulled',
   'missing',

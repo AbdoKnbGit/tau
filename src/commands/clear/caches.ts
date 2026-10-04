@@ -31,6 +31,7 @@ import { clearRepositoryCaches } from '../../utils/detectRepository.js'
 import { clearResolveGitDirCache } from '../../utils/git/gitFilesystem.js'
 import { clearStoredImagePaths } from '../../utils/imageStore.js'
 import { clearSessionEnvVars } from '../../utils/sessionEnvVars.js'
+import { cancelAntigravityClaudeKeepAlive } from '../../lanes/gemini/antigravity_claude_keepalive.js'
 
 /**
  * Clear all session-related caches.
@@ -61,6 +62,9 @@ export function clearSessionCaches(
 
   // Clear prompt cache break detection state
   if (!hasPreserved) resetPromptCacheBreakDetection()
+
+  // Stop refreshing the cached prompt of the conversation being cleared.
+  cancelAntigravityClaudeKeepAlive()
 
   // Clear system prompt injection (cache breaker)
   setSystemPromptInjection(null)

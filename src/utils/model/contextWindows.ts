@@ -6,6 +6,11 @@ import {
   noteMissingContextWindow,
 } from '../modelPricingCatalog.js'
 import { getAlibabaModelMeta } from './alibabaCatalog.js'
+import {
+  ANTIGRAVITY_CLAUDE_EFFORTS,
+  ANTIGRAVITY_CLAUDE_TIER_MODELS,
+  antigravityClaudeTierModelId,
+} from './antigravityClaudeTiers.js'
 import { getOpencodeContextWindow } from './opencodeModelsDevCatalog.js'
 import { getDirectModelMeta, isDirectProvider } from './directProviderCatalog.js'
 import {
@@ -29,6 +34,17 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     'claude-opus-4-8': 1_000_000,
     'claude-opus-4-7': 1_000_000,
   },
+  // Antigravity's per-level Claude 5.5 ids, per its own catalog. Keyed by the
+  // full level ids: a bare `claude-opus-5-5` is not something Antigravity
+  // serves, so it keeps whatever it resolved to before.
+  antigravity: Object.fromEntries(
+    ANTIGRAVITY_CLAUDE_TIER_MODELS.flatMap(model =>
+      ANTIGRAVITY_CLAUDE_EFFORTS.map(effort => [
+        antigravityClaudeTierModelId(model, effort),
+        model.contextWindow,
+      ]),
+    ),
+  ),
   // GPT-6 on the OpenAI (Codex) provider, per models.dev (2026-09-26). The
   // 922,000-token prompt ceiling comes from the same catalog when it is loaded.
   openai: {

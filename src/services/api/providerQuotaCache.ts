@@ -460,10 +460,15 @@ function findMetricForModel(
   if (wanted === '') return undefined
   const scored = metrics.filter(metric => metric.usedPercent !== null)
 
-  const byId = scored.find(metric =>
+  // A model can sit under more than one window - Antigravity meters each model
+  // group by a weekly and a 5-hour limit - and the one nearest its ceiling is
+  // what stops work first.
+  const byId = scored.filter(metric =>
     metric.modelKeys.some(key => normalizeForMatch(key) === wanted),
   )
-  if (byId) return byId
+  if (byId.length > 0) {
+    return byId.reduce((a, b) => (b.usedPercent! > a.usedPercent! ? b : a))
+  }
 
   // Nothing published an id for this row, or none of them is the active
   // model. The label heuristic is still better than the family fallback.

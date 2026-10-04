@@ -2,6 +2,7 @@ import {
   ANTIGRAVITY_MODELS,
   getAntigravityModelDisplayName,
 } from './providers/gemini_code_assist.js'
+import { parseAntigravityClaudeTier } from '../../utils/model/antigravityClaudeTiers.js'
 
 export type AntigravityUsageMetric = {
   label: string
@@ -60,6 +61,70 @@ export function parseAntigravityUsage(data: unknown): AntigravityUsageMetric[] {
     .map((modelKey) => parseAntigravityUsageRow(modelKey, models[modelKey]))
     .filter((metric): metric is AntigravityUsageRow => metric !== null)
   return finalizeAntigravityUsageRows(rows)
+}
+
+/**
+ * Rows from `retrieveUserQuotaSummary`, the source of the Antigravity app's own
+ * usage panel. Each model group (Gemini; Claude and GPT) has a weekly limit and
+ * a 5-hour limit, both consumed in proportion to token cost. The per-model
+ * fraction in fetchAvailableModels follows only the 5-hour window, so a spent
+ * weekly limit never showed: live 2026-10-04 the Claude rows read 89% while
+ * the weekly limit stood at 74%.
+ *
+ * One row per window, keyed by every model id in its group. Returns [] for a
+ * response without groups, so callers can fall back to the per-model rows.
+ */
+export function parseAntigravityQuotaSummary(data: unknown): AntigravityUsageMetric[] {
+  const groups = asRecord(data)?.groups
+  if (!Array.isArray(groups)) return []
+
+  const metrics: AntigravityUsageMetric[] = []
+  for (const groupValue of groups) {
+    const group = asRecord(groupValue)
+    const buckets = group?.buckets
+    if (!group || !Array.isArray(buckets)) continue
+    const groupLabel = readString(group.displayName) ?? 'Antigravity models'
+    for (const bucketValue of buckets) {
+      const bucket = asRecord(bucketValue)
+      const remaining = readNumber(bucket?.remainingFraction)
+      if (!bucket || remaining === null || remaining < 0 || remaining > 1) continue
+      const label = `${groupLabel} · ${quotaWindowLabel(bucket)}`
+      metrics.push({
+        ...metricFromAntigravityRemaining(
+          label,
+          remaining,
+          validFutureIso(readString(bucket.resetTime)),
+        ),
+        modelKeys: quotaGroupModelKeys(readString(bucket.bucketId), groupLabel),
+      })
+    }
+  }
+  return metrics
+}
+
+/**
+ * "session" marks the rolling window for the status bar, as it does for
+ * Anthropic's and OpenAI's 5-hour windows (see isSessionWindowLabel).
+ */
+function quotaWindowLabel(bucket: Record<string, unknown>): string {
+  switch (readString(bucket.window)) {
+    case 'weekly':
+      return 'weekly limit'
+    case '5h':
+      return '5-hour session limit'
+    default:
+      return readString(bucket.displayName)?.replace(/\s*remaining$/i, '') ?? 'limit'
+  }
+}
+
+/** Model ids a quota group meters: `gemini-*` buckets, else Claude and GPT. */
+function quotaGroupModelKeys(bucketId: string | null, groupLabel: string): string[] {
+  const gemini = bucketId
+    ? bucketId.toLowerCase().startsWith('gemini')
+    : /gemini/i.test(groupLabel)
+  return ANTIGRAVITY_USAGE_MODEL_KEYS.filter(
+    key => key.toLowerCase().startsWith('gemini') === gemini,
+  )
 }
 
 export function parseAntigravityQuotaBuckets(buckets: readonly unknown[]): AntigravityUsageMetric[] {
@@ -123,7 +188,8 @@ function parseAntigravityUsageRow(modelKey: string, value: unknown): Antigravity
   if (!quota) return null
   const remaining = readNumber(quota.remainingFraction)
   if (remaining === null || remaining < 0 || remaining > 1) return null
-  const display = sanitizeAntigravityUsageLabel(readString(info.displayName))
+  const display = claudeTierUsageLabel(modelKey)
+    ?? sanitizeAntigravityUsageLabel(readString(info.displayName))
     ?? getAntigravityModelDisplayName(modelKey)
     ?? modelKey
   const reset = validFutureIso(readString(quota.resetTime))
@@ -144,13 +210,25 @@ function parseAntigravityQuotaBucket(value: unknown): AntigravityUsageRow | null
   if (!modelKey) return null
   const remaining = readNumber(bucket?.remainingFraction)
   if (remaining === null || remaining < 0 || remaining > 1) return null
-  const label = getAntigravityModelDisplayName(modelKey) ?? modelKey
+  const label = claudeTierUsageLabel(modelKey)
+    ?? getAntigravityModelDisplayName(modelKey)
+    ?? modelKey
   const reset = validFutureIso(readString(bucket?.resetTime))
   return {
     ...metricFromAntigravityRemaining(label, remaining, reset),
     modelKey,
     remainingFraction: remaining,
   }
+}
+
+/**
+ * One row per Claude tier model rather than one per level: its three level
+ * ids are metered together (same fraction, same reset), so the rows they
+ * would get are copies. The shared label merges them below, keeping every
+ * level id as a key the status bar can match.
+ */
+function claudeTierUsageLabel(modelKey: string): string | null {
+  return parseAntigravityClaudeTier(modelKey)?.model.name ?? null
 }
 
 function metricFromAntigravityRemaining(

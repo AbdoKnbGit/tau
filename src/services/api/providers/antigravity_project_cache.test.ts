@@ -75,6 +75,39 @@ test('entitlement diagnostics follow the request credential instead of another l
   expect(describeAntigravityEntitlementGap('gemini-3.7-flash-low')).toContain('gemini-3.7-flash-low')
 })
 
+test('Claude 5.5 entitlement follows the account plan, not the production quota list', async () => {
+  // Production's quota list omits the Claude 5.5 ids even on Pro accounts
+  // (only the daily host lists them), so a missing bucket proves nothing.
+  const fetchNow = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input)
+    const token = new Headers(init?.headers).get('authorization')
+    if (url.endsWith(':loadCodeAssist')) {
+      return Response.json({
+        cloudaicompanionProject: `project-${token}`,
+        currentTier: { id: 'free-tier' },
+        paidTier: token === 'Bearer pro-account'
+          ? { id: 'g1-pro-tier', name: 'Google AI Pro' }
+          : { id: 'free-tier', name: 'Antigravity Starter Quota' },
+      })
+    }
+    if (url.endsWith(':retrieveUserQuota')) {
+      return Response.json({ buckets: [{ modelId: 'claude-opus-4-6-thinking' }] })
+    }
+    return fetchNow(input, init)
+  }) as typeof fetch
+
+  await ensureCodeAssistReady('pro-account', 'antigravity')
+  expect(describeAntigravityEntitlementGap('claude-opus-5-5-high')).toBeNull()
+  expect(describeAntigravityEntitlementGap('claude-sonnet-5-5-low')).toBeNull()
+
+  await ensureCodeAssistReady('starter-account', 'antigravity')
+  const gap = describeAntigravityEntitlementGap('claude-opus-5-5-medium')
+  expect(gap).toContain('Claude Opus 5.5')
+  expect(gap).toContain('Pro and Ultra')
+  expect(gap).toContain('the free plan')
+})
+
 test('switching credentials never pairs the new token with the old project', async () => {
   expect(await ensureCodeAssistReady('account-A', 'antigravity')).toBe('project-account-A')
   expect(await ensureCodeAssistReady('account-B', 'antigravity')).toBe('project-account-B')

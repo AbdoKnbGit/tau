@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   // ── 1. Prefix padding ──────────────────────────────────────────
   //
   // The pad exists to lift a small prompt over the implicit-cache minimum.
-  // Padding a report would rebuild the ~17.4k-token cold request the bounded
+  // Padding a report would rebuild the ~18k-token cold request the bounded
   // report exists to avoid, and it can never pay off: a report is one shot,
   // so nothing ever reads the entry it would write.
 

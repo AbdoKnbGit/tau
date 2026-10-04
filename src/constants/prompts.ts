@@ -42,6 +42,7 @@ import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt
 import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
 import { getAPIProvider } from '../utils/model/providers.js'
+import { parseAntigravityClaudeTier } from '../utils/model/antigravityClaudeTiers.js'
 import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/constants.js'
 import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
 import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
@@ -1093,6 +1094,10 @@ export async function computeCheapEnvInfo(
 
 // @[MODEL LAUNCH]: Add a knowledge cutoff date for the new model.
 function getKnowledgeCutoff(modelId: string): string | null {
+  const antigravityClaudeTier = getAPIProvider() === 'antigravity'
+    ? parseAntigravityClaudeTier(modelId)
+    : null
+  if (antigravityClaudeTier) return antigravityClaudeTier.model.knowledgeCutoff
   const canonical = getCanonicalName(modelId)
   if (canonical.includes('claude-opus-5-5')) {
     return 'June 2026'

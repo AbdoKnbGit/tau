@@ -2,6 +2,7 @@
 import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
 import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
+import { parseAntigravityClaudeTier } from './model/antigravityClaudeTiers.js'
 import { getProviderCatalogContextWindow } from './model/contextWindows.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
@@ -204,6 +205,13 @@ export function getModelMaxOutputTokens(model: string): {
       upperLimit = antModel.upperMaxTokensLimit ?? MAX_OUTPUT_TOKENS_UPPER_LIMIT
       return { default: defaultTokens, upperLimit }
     }
+  }
+
+  // Antigravity's per-level Claude 5.5 ids. Off the Anthropic providers their
+  // canonical name is the generic 'claude-opus' / 'claude-sonnet' reading.
+  if (getAPIProvider() === 'antigravity') {
+    const tier = parseAntigravityClaudeTier(model)
+    if (tier) return { ...tier.model.maxOutputTokens }
   }
 
   const m = getCanonicalName(model)

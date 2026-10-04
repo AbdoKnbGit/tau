@@ -5,6 +5,7 @@ import {
   pinnedAgentModelOutranksAlias,
   resolveAgentAliasPolicy,
 } from './agentAliasFallback.js'
+import { resolveAntigravityOpus46AgentModel } from './antigravityAgentModel.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
 import {
   getCanonicalName,
@@ -115,6 +116,9 @@ export function getAgentModel(
   const agentModelWithExp = agentModel ?? getDefaultSubagentModel()
 
   if (agentModelWithExp === 'inherit') {
+    // Antigravity sends model-less subagents to its agent models instead.
+    const antigravityModel = resolveAntigravityOpus46AgentModel('inherit', parentModel, getAPIProvider())
+    if (antigravityModel && antigravityModel !== parentModel) return antigravityModel
     // Apply runtime model resolution for inherit to get the effective model
     // This ensures agents using 'inherit' get opusplan→Opus resolution in plan mode
     return getRuntimeMainLoopModel({

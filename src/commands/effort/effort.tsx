@@ -6,6 +6,8 @@ import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEffortValueDescription, isEffortLevel, toPersistableEffort } from '../../utils/effort.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
+import { getAPIProvider } from '../../utils/model/providers.js';
+import { AntigravityEffort } from './antigravityEffort.js';
 const COMMON_HELP_ARGS = ['help', '-h', '--help'];
 type EffortCommandResult = {
   message: string;
@@ -173,6 +175,9 @@ export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, arg
   if (COMMON_HELP_ARGS.includes(args)) {
     onDone('Usage: /effort [low|medium|high|xhigh|max|ultracode|auto]\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extra high reasoning for supported Claude models\n- max: Maximum capability with deepest reasoning\n- ultracode: Maximum reasoning, Claude Opus 4.8 only\n- auto: Use the default effort level for your model');
     return;
+  }
+  if (getAPIProvider() === 'antigravity') {
+    return <AntigravityEffort args={args} onDone={onDone} />;
   }
   if (!args || args === 'current' || args === 'status') {
     return <ShowCurrentEffort onDone={onDone} />;

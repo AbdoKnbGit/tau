@@ -16,8 +16,9 @@
 
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import {
-  ANTIGRAVITY_PICKER_MODELS,
+  antigravityPickerModelsForPlan,
   ensureCodeAssistReady,
+  getGeminiTier,
   executorForModel,
   parseCodeAssistSSE,
   unwrapCodeAssistResponse,
@@ -509,6 +510,20 @@ class GeminiApiClient {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Antigravity's rows for the account's plan. Discovery is a cache read
+   * once the project is known; a failure leaves the plan unknown, which
+   * lists every row.
+   */
+  private async _antigravityPickerModels(token: string): Promise<readonly ModelInfo[]> {
+    try {
+      await ensureCodeAssistReady(token, 'antigravity')
+    } catch {
+      // Plan unknown: the next request reports any access problem.
+    }
+    return antigravityPickerModelsForPlan(getGeminiTier('antigravity'))
   }
 
   /**
@@ -1242,7 +1257,7 @@ class GeminiApiClient {
 
     if (providerFilter === 'antigravity') {
       if (!this.antigravityOAuthToken) return []
-      return [...ANTIGRAVITY_PICKER_MODELS]
+      return [...await this._antigravityPickerModels(this.antigravityOAuthToken)]
     }
 
     // `providerFilter` is how the UX split between the Gemini row and the
@@ -1276,7 +1291,7 @@ class GeminiApiClient {
         models.push(...resolveCliModelsForPicker())
       }
       if (showAntigravity && this.antigravityOAuthToken) {
-        models.push(...ANTIGRAVITY_PICKER_MODELS)
+        models.push(...await this._antigravityPickerModels(this.antigravityOAuthToken))
       }
       return models
     }

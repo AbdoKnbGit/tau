@@ -5,6 +5,7 @@ import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { claude5SupportApplies, getAPIProvider, isThirdPartyProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
+import { parseAntigravityClaudeTier } from './model/antigravityClaudeTiers.js'
 import { getOpenAIReasoningLevel, modelSupportsReasoning } from './model/openaiReasoning.js'
 import {
   getCommandCodeEffort,
@@ -35,6 +36,11 @@ export function modelSupportsEffort(model: string): boolean {
   if (isEnvTruthy(process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT)) {
     return true
   }
+  // Antigravity's request carries no effort field; its Claude 5.5 ids name the
+  // level instead (see getAntigravityTierEffort).
+  if (getAPIProvider() === 'antigravity') {
+    return false
+  }
   const supported3P = get3PModelCapabilityOverride(model, 'effort')
   if (supported3P !== undefined) {
     return supported3P
@@ -64,6 +70,16 @@ export function modelSupportsEffort(model: string): boolean {
   // Do not default to true for 3P as they have different formats for their
   // model strings (ex. anthropics/claude-code#30795)
   return getAPIProvider() === 'firstParty'
+}
+
+/**
+ * The level an Antigravity Claude 5.5 id runs at, e.g. 'low' for
+ * `claude-sonnet-5-5-low`, or undefined off Antigravity and for its other
+ * models. On Antigravity the id is the only effort control.
+ */
+export function getAntigravityTierEffort(model: string): EffortLevel | undefined {
+  if (getAPIProvider() !== 'antigravity') return undefined
+  return parseAntigravityClaudeTier(model)?.effort
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
@@ -254,6 +270,8 @@ export function getDisplayedEffortLevel(
   model: string,
   appStateEffort: EffortValue | undefined,
 ): EffortLevel {
+  const tierEffort = getAntigravityTierEffort(model)
+  if (tierEffort) return tierEffort
   const provider = getAPIProvider()
   if (provider === 'commandcode' && supportsCommandCodeEffortSelection(model)) {
     const effort = getCommandCodeEffort(model)

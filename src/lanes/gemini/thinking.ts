@@ -1,5 +1,6 @@
 import type { LaneProviderCallParams } from '../types.js'
 import { isAntigravityGeminiModel } from '../../services/api/providers/gemini_code_assist.js'
+import { parseAntigravityClaudeTier } from '../../utils/model/antigravityClaudeTiers.js'
 
 export function resolveThinkingBudget(
   thinking: LaneProviderCallParams['thinking'] | undefined,
@@ -24,6 +25,14 @@ export function resolveThinkingConfig(
   thinkingBudget: number,
   thinking?: LaneProviderCallParams['thinking'],
 ): Record<string, unknown> {
+  // Antigravity's Claude 5.5 ids carry their effort in the id. The bridge
+  // accepted budgets -1, 0 and 8192 alike (2026-10-04), but the model itself
+  // rejects a budget or disabled thinking, so every request sends the one
+  // shape tau already sends by default, whatever /thinking says.
+  if (parseAntigravityClaudeTier(model)) {
+    return { thinkingBudget: -1, includeThoughts: true }
+  }
+
   const lower = model.toLowerCase()
   let level: 'low' | 'medium' | 'high' | null = null
   const levelMatch = lower.match(/^gemini-\d+(?:\.\d+)?-(?:pro|flash)-(high|medium|low)$/)

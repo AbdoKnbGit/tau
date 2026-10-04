@@ -6,6 +6,7 @@
 
 import {
   parseAntigravityQuotaBuckets,
+  parseAntigravityQuotaSummary,
   parseAntigravityUsage,
 } from './antigravityUsageParser.js'
 import {
@@ -126,6 +127,75 @@ function main(): void {
       !metrics.some(metric => metric.label.includes('thinking') || metric.label.includes('via Antigravity')),
       'usage labels should not include Antigravity thinking suffixes',
     )
+  })
+
+  test('shows one Antigravity row per Claude 5.5 model, keyed by every level', () => {
+    // Shape of the daily host's catalog on a Google AI Pro account
+    // (2026-10-04): the three levels of each model are metered together.
+    const shared = { remainingFraction: 0.9533024, resetTime: '2099-01-01T00:00:00Z' }
+    const metrics = parseAntigravityUsage({
+      models: {
+        'claude-opus-5-5-low': { displayName: 'Claude Opus 5.5 (Low)', quotaInfo: shared },
+        'claude-opus-5-5-medium': { displayName: 'Claude Opus 5.5 (Medium)', quotaInfo: shared },
+        'claude-opus-5-5-high': { displayName: 'Claude Opus 5.5 (High)', quotaInfo: shared },
+        'claude-sonnet-5-5-low': { displayName: 'Claude Sonnet 5.5 (Low)', quotaInfo: shared },
+        'claude-sonnet-5-5-medium': { displayName: 'Claude Sonnet 5.5 (Medium)', quotaInfo: shared },
+        'claude-sonnet-5-5-high': { displayName: 'Claude Sonnet 5.5 (High)', quotaInfo: shared },
+        'claude-sonnet-4-6': { displayName: 'Claude Sonnet 4.6 (Thinking)', quotaInfo: { remainingFraction: 0.5 } },
+      },
+    })
+
+    const opus = metrics.filter(metric => metric.label.startsWith('Claude Opus 5.5'))
+    const sonnet = metrics.filter(metric => metric.label.startsWith('Claude Sonnet 5.5'))
+    assert(opus.length === 1 && opus[0]!.label === 'Claude Opus 5.5', `opus rows: ${JSON.stringify(opus.map(m => m.label))}`)
+    assert(sonnet.length === 1 && sonnet[0]!.label === 'Claude Sonnet 5.5', `sonnet rows: ${JSON.stringify(sonnet.map(m => m.label))}`)
+    assert(opus[0]!.summary === '95% remaining', `opus summary ${opus[0]!.summary}`)
+    assert(
+      ['claude-opus-5-5-low', 'claude-opus-5-5-medium', 'claude-opus-5-5-high']
+        .every(id => opus[0]!.modelKeys?.includes(id)),
+      `every Opus level must stay matchable: ${JSON.stringify(opus[0]!.modelKeys)}`,
+    )
+    assert(
+      metricSummary(metrics, 'Claude Sonnet 4.6 (Thinking)') === '50% remaining',
+      'Claude 4.6 keeps its own row and label',
+    )
+  })
+
+  test('reads the weekly and 5-hour limits of each Antigravity model group', () => {
+    // retrieveUserQuotaSummary as the daily host answered it on 2026-10-04.
+    const metrics = parseAntigravityQuotaSummary({
+      groups: [
+        {
+          displayName: 'Gemini Models',
+          buckets: [
+            { bucketId: 'gemini-weekly', window: 'weekly', resetTime: '2099-10-11T00:15:46Z', remainingFraction: 0.9989685 },
+            { bucketId: 'gemini-5h', window: '5h', resetTime: '2099-10-04T13:59:15Z', remainingFraction: 0.9945082 },
+          ],
+        },
+        {
+          displayName: 'Claude and GPT models',
+          buckets: [
+            { bucketId: '3p-weekly', window: 'weekly', resetTime: '2099-10-10T23:04:59Z', remainingFraction: 0.7383004 },
+            { bucketId: '3p-5h', window: '5h', resetTime: '2099-10-04T13:57:56Z', remainingFraction: 0.8882648 },
+          ],
+        },
+      ],
+    })
+
+    assert(metrics.length === 4, `rows: ${JSON.stringify(metrics.map(m => m.label))}`)
+    const weekly = metrics.find(m => m.label === 'Claude and GPT models · weekly limit')
+    const fiveHour = metrics.find(m => m.label === 'Claude and GPT models · 5-hour session limit')
+    assert(weekly?.summary === '74% remaining', `weekly: ${weekly?.summary}`)
+    assert(fiveHour?.summary === '89% remaining', `5h: ${fiveHour?.summary}`)
+    assert(weekly?.resetsAt === '2099-10-10T23:04:59.000Z', `weekly reset: ${weekly?.resetsAt}`)
+    for (const id of ['claude-opus-5-5-high', 'claude-sonnet-5-5-low', 'claude-sonnet-4-6', 'gpt-oss-120b-medium']) {
+      assert(weekly?.modelKeys?.includes(id), `${id} belongs to the Claude and GPT group`)
+    }
+    assert(!weekly?.modelKeys?.some(id => id.startsWith('gemini')), 'no Gemini id in the Claude group')
+    const gemini = metrics.find(m => m.label === 'Gemini Models · weekly limit')
+    assert(gemini?.modelKeys?.includes('gemini-3.8-flash-high'), 'Gemini ids key the Gemini group')
+    assert(!gemini?.modelKeys?.some(id => id.startsWith('claude')), 'no Claude id in the Gemini group')
+    assert(parseAntigravityQuotaSummary({}).length === 0, 'no groups means no rows')
   })
 
   test('shares live Antigravity quota buckets across Gemini rows', () => {

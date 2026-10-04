@@ -45,10 +45,20 @@ async function main(): Promise<void> {
     }
   })
 
-  await test('keeps suggestions for Claude resold through Antigravity', () => {
-    for (const model of ['claude-sonnet-4-6', 'claude-opus-4-6-thinking']) {
-      assert(getForkCacheSuppressReason('antigravity', model) === null, model)
+  await test('suppresses for Claude resold through Antigravity: quota is per token', () => {
+    for (const model of [
+      'claude-sonnet-4-6',
+      'claude-opus-4-6-thinking',
+      'claude-sonnet-5-5-low',
+      'claude-opus-5-5-high',
+    ]) {
+      const reason = getForkCacheSuppressReason('antigravity', model)
+      assert(reason === 'provider_quota_per_token', `${model}: ${reason}`)
     }
+  })
+
+  await test('keeps suggestions for ids Antigravity does not serve', () => {
+    assert(getForkCacheSuppressReason('antigravity', 'claude-opus-5-5') === null, 'bare first-party id')
   })
 
   await test('keeps suggestions on other providers, whatever the model name', () => {
@@ -70,6 +80,10 @@ async function main(): Promise<void> {
     assert(
       getForkCacheSuppressReason('antigravity', 'gemini-3.8-flash-medium') === null,
       'opt-in ignored',
+    )
+    assert(
+      getForkCacheSuppressReason('antigravity', 'claude-sonnet-5-5-low') === null,
+      'opt-in ignored for Claude',
     )
     process.env.TAU_ANTIGRAVITY_PROMPT_SUGGESTIONS = '0'
     assert(

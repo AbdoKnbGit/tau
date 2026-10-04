@@ -98,7 +98,7 @@ async function main(): Promise<void> {
   })
 
   await test('over-minimum prompts are returned unchanged', () => {
-    const big = 'x'.repeat(120_000) // ≈ 21.8k estimated tokens > target
+    const big = 'x'.repeat(120_000) // ≈ 21.8k estimated tokens > 18k target
     assert(
       applyAntigravityPrefixPad(big, 0) === big,
       'large prompt must not be padded',
@@ -118,15 +118,37 @@ async function main(): Promise<void> {
     }
   })
 
-  await test('padding is OFF by default (no TAU_ANTIGRAVITY_MAX_CACHE)', () => {
+  await test('by default only agents are padded (no TAU_ANTIGRAVITY_MAX_CACHE)', () => {
     delete process.env.TAU_ANTIGRAVITY_MAX_CACHE
     try {
       const stable = 'You are a focused search agent.'.repeat(50) // ~1.5k chars
+      for (const source of [undefined, 'repl_main_thread', 'compact', 'session_memory', 'report']) {
+        assert(
+          applyAntigravityPrefixPad(stable, 10_000, source) === stable,
+          `${source ?? 'untagged'} must NOT be padded when the discipline is off`,
+        )
+      }
+      for (const source of ['agent:builtin:general-purpose', 'agent:custom', 'agent:builtin:Explore']) {
+        const padded = applyAntigravityPrefixPad(stable, 10_000, source)
+        assert(padded.endsWith(stable), `${source}: stable text must follow the pad`)
+        // (stable + tools ~11.7k chars ~ 2.1k tokens) -> pad >= ~16k tokens.
+        assert(padded.length - stable.length >= 15_500 * 4.6, `${source}: pad too small`)
+      }
+      // Same size, same bytes: a later agent of the same type shares the prefix.
       assert(
-        applyAntigravityPrefixPad(stable, 10_000) === stable,
-        'a small prompt must NOT be padded when the discipline is off',
+        applyAntigravityPrefixPad(stable, 10_000, 'agent:builtin:general-purpose')
+          === applyAntigravityPrefixPad(stable, 10_000, 'agent:builtin:general-purpose'),
+        'agent pad must be byte-stable',
+      )
+      const big = 'x'.repeat(120_000)
+      assert(applyAntigravityPrefixPad(big, 0, 'agent:custom') === big, 'a large agent prompt must not be padded')
+      process.env.TAU_ANTIGRAVITY_NO_PREFIX_PAD = '1'
+      assert(
+        applyAntigravityPrefixPad(stable, 10_000, 'agent:custom') === stable,
+        'TAU_ANTIGRAVITY_NO_PREFIX_PAD=1 must turn agent padding off',
       )
     } finally {
+      delete process.env.TAU_ANTIGRAVITY_NO_PREFIX_PAD
       process.env.TAU_ANTIGRAVITY_MAX_CACHE = '1'
     }
   })

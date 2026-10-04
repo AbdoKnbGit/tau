@@ -8,6 +8,7 @@ import {
 import {
   type EffortLevel,
   type EffortValue,
+  getAntigravityTierEffort,
   getDisplayedEffortLevel,
   modelSupportsEffort,
 } from '../utils/effort.js'
@@ -20,6 +21,8 @@ export function getEffortNotificationText(
   effortValue: EffortValue | undefined,
   model: string,
 ): string | undefined {
+  const tierEffort = getAntigravityTierEffort(model)
+  if (tierEffort) return `${effortLevelToSymbol(tierEffort)} ${tierEffort} · /effort`
   if (!modelSupportsEffort(model)) return undefined
   const level = getDisplayedEffortLevel(model, effortValue)
   return `${effortLevelToSymbol(level)} ${level} · /effort`

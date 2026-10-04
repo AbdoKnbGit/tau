@@ -53,33 +53,60 @@ function assert(cond: unknown, hint: string): void {
 function main(): void {
   console.log('agent model resolver:')
 
-  test('Antigravity inherit remains the exact Claude or Gemini parent', () => {
-    for (const parent of ['claude-opus-4-6-thinking', 'gemini-3.1-pro-high']) {
-      const omitted = resolveAntigravityOpus46AgentModel(
-        undefined,
-        parent,
-        'antigravity',
-      )
-      const inherited = resolveAntigravityOpus46AgentModel(
-        'inherit',
-        parent,
-        'antigravity',
-      )
-      assert(omitted === parent, `${parent}/omitted=${omitted}`)
-      assert(inherited === parent, `${parent}/inherit=${inherited}`)
+  test('Antigravity subagents with no model of their own get the family agent model', () => {
+    for (const spec of [undefined, 'inherit']) {
+      for (const parent of ['gemini-3.8-flash-high', 'gemini-3.7-flash-medium', 'gemini-3.6-flash-low', 'gemini-3.1-pro-high']) {
+        for (const plan of ['free-tier', 'g1-pro-tier', 'g1-ultra-tier', null]) {
+          const model = resolveAntigravityOpus46AgentModel(spec, parent, 'antigravity', plan)
+          assert(model === 'gemini-3.7-flash-low', `${plan} ${parent}/${spec}=${model}`)
+        }
+      }
+      for (const parent of ['claude-opus-5-5-medium', 'claude-opus-5-5-high', 'claude-sonnet-5-5-high', 'claude-sonnet-5-5-low']) {
+        for (const plan of ['g1-pro-tier', 'g1-ultra-tier', null]) {
+          const model = resolveAntigravityOpus46AgentModel(spec, parent, 'antigravity', plan)
+          assert(model === 'claude-sonnet-5-5-low', `${plan} ${parent}/${spec}=${model}`)
+        }
+      }
+      for (const parent of ['claude-opus-4-6-thinking', 'claude-sonnet-4-6']) {
+        const model = resolveAntigravityOpus46AgentModel(spec, parent, 'antigravity', 'free-tier')
+        assert(model === 'claude-sonnet-4-6', `free ${parent}/${spec}=${model}`)
+      }
     }
   })
 
-  test('Antigravity aliases always use its fast agent model', () => {
-    for (const parent of ['claude-opus-4-6-thinking', 'gemini-3.1-pro-high']) {
-      for (const alias of ROUTED_ALIASES) {
-        const resolved = resolveAntigravityOpus46AgentModel(
-          alias,
-          parent,
-          'antigravity',
-        )
-        assert(resolved === 'gemini-3.6-flash-medium', `${parent}/${alias}=${resolved}`)
+  test('Antigravity explicit model ids are honoured on either family', () => {
+    for (const explicit of ['claude-opus-5-5-high', 'gemini-3.8-flash-high', 'claude-sonnet-4-6']) {
+      for (const parent of ['claude-opus-5-5-medium', 'gemini-3.8-flash-high']) {
+        const model = resolveAntigravityOpus46AgentModel(explicit, parent, 'antigravity', 'g1-pro-tier')
+        assert(model === null, `${parent}/${explicit} was redirected to ${model}`)
       }
+    }
+  })
+
+  test('Antigravity aliases from a Gemini parent use its fast agent model', () => {
+    for (const alias of ROUTED_ALIASES) {
+      for (const plan of [null, 'free-tier', 'g1-pro-tier']) {
+        const resolved = resolveAntigravityOpus46AgentModel(alias, 'gemini-3.1-pro-high', 'antigravity', plan)
+        assert(resolved === 'gemini-3.7-flash-low', `${plan}/${alias}=${resolved}`)
+      }
+    }
+  })
+
+  test('Antigravity aliases from a Claude parent follow the plan', () => {
+    for (const alias of ROUTED_ALIASES) {
+      for (const parent of ['claude-opus-4-6-thinking', 'claude-opus-5-5-high', 'claude-sonnet-5-5-medium']) {
+        const paid = resolveAntigravityOpus46AgentModel(alias, parent, 'antigravity', 'g1-pro-tier')
+        const ultra = resolveAntigravityOpus46AgentModel(alias, parent, 'antigravity', 'g1-ultra-tier')
+        const free = resolveAntigravityOpus46AgentModel(alias, parent, 'antigravity', 'free-tier')
+        assert(paid === 'claude-sonnet-5-5-low', `pro ${parent}/${alias}=${paid}`)
+        assert(ultra === 'claude-sonnet-5-5-low', `ultra ${parent}/${alias}=${ultra}`)
+        assert(free === 'claude-sonnet-4-6', `free ${parent}/${alias}=${free}`)
+      }
+      // Plan not discovered yet: a 5.5 parent implies a paid plan.
+      const unknown55 = resolveAntigravityOpus46AgentModel(alias, 'claude-opus-5-5-high', 'antigravity', null)
+      const unknown46 = resolveAntigravityOpus46AgentModel(alias, 'claude-sonnet-4-6', 'antigravity', null)
+      assert(unknown55 === 'claude-sonnet-5-5-low', `unknown 5.5/${alias}=${unknown55}`)
+      assert(unknown46 === 'claude-sonnet-4-6', `unknown 4.6/${alias}=${unknown46}`)
     }
   })
 
@@ -206,16 +233,19 @@ function main(): void {
     }
   })
 
-  test('Antigravity always uses its fast agent model for aliases', () => {
-    for (const parent of [
-      'claude-opus-4-6-thinking',
-      'claude-sonnet-4-6',
-      'gemini-3.1-pro-high',
-      'gemini-3.5-flash-low',
-    ]) {
+  test('Antigravity aliases: Gemini parents get the fast agent model, Claude parents stay on Claude', () => {
+    // No plan discovered in tests, so the parent's generation decides.
+    const expected: Array<[string, string]> = [
+      ['claude-opus-4-6-thinking', 'claude-sonnet-4-6'],
+      ['claude-sonnet-4-6', 'claude-sonnet-4-6'],
+      ['claude-opus-5-5-high', 'claude-sonnet-5-5-low'],
+      ['gemini-3.1-pro-high', 'gemini-3.7-flash-low'],
+      ['gemini-3.5-flash-low', 'gemini-3.7-flash-low'],
+    ]
+    for (const [parent, model] of expected) {
       for (const alias of ROUTED_ALIASES) {
         const resolved = resolveAgentAliasPolicy(alias, parent, 'antigravity')
-        assert(resolved === 'gemini-3.6-flash-medium', `${parent}/${alias}=${resolved}`)
+        assert(resolved === model, `${parent}/${alias}=${resolved}`)
       }
     }
   })

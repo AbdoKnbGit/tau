@@ -50,6 +50,7 @@ import {
   ANTIGRAVITY_ENDPOINT_PROD,
   ANTIGRAVITY_HUB_USER_AGENT,
 } from '../../../constants/antigravity.js'
+import { parseAntigravityClaudeTier } from '../../../utils/model/antigravityClaudeTiers.js'
 
 export const CODE_ASSIST_BASE = `${ANTIGRAVITY_ENDPOINT_PROD}/v1internal`
 export const ANTIGRAVITY_GENERATION_BASE = `${ANTIGRAVITY_ENDPOINT_DAILY}/v1internal`
@@ -429,6 +430,14 @@ export const ANTIGRAVITY_MODELS: readonly ModelInfo[] = [
   { id: 'gemini-3.1-pro-high', name: 'Gemini 3.1 Pro (High)', contextWindow: 1048576 },
   { id: 'gemini-3.1-pro-low', name: 'Gemini 3.1 Pro (Low)', contextWindow: 1048576 },
   { id: 'gemini-3-flash', name: 'Gemini 3 Flash', contextWindow: 1048576 },
+  // One wire id per effort level, served from the daily host to paid Google
+  // AI Pro/Ultra plans only (see utils/model/antigravityClaudeTiers.ts).
+  { id: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)', tags: ['pro-ultra'] },
+  { id: 'claude-opus-5-5-medium', name: 'Claude Opus 5.5 (Medium)', tags: ['pro-ultra'] },
+  { id: 'claude-opus-5-5-low', name: 'Claude Opus 5.5 (Low)', tags: ['pro-ultra'] },
+  { id: 'claude-sonnet-5-5-high', name: 'Claude Sonnet 5.5 (High)', tags: ['pro-ultra'] },
+  { id: 'claude-sonnet-5-5-medium', name: 'Claude Sonnet 5.5 (Medium)', tags: ['pro-ultra'] },
+  { id: 'claude-sonnet-5-5-low', name: 'Claude Sonnet 5.5 (Low)', tags: ['pro-ultra'] },
   { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
   { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
 ]
@@ -453,6 +462,24 @@ const ANTIGRAVITY_WIRE_MODEL_DISPLAY_NAMES = new Map<string, string>([
 // the picker invites bad sessions for no capability gain.
 export const ANTIGRAVITY_PICKER_MODELS: readonly ModelInfo[] =
   ANTIGRAVITY_MODELS.filter(model => model.id !== 'gemini-3-flash')
+
+/**
+ * The picker's Claude rows for the account's plan. Paid Google AI Pro and
+ * Ultra plans get Claude 5.5; their catalog no longer lists Claude 4.6. The
+ * free plan gets Claude 4.6 only, since 5.5 answers it with 404. With the plan
+ * still unknown (no project discovered yet) every row stays listed.
+ */
+export function antigravityPickerModelsForPlan(
+  tier: string | null,
+): readonly ModelInfo[] {
+  if (!tier) return ANTIGRAVITY_PICKER_MODELS
+  const paid = isPaidGeminiTier(tier)
+  return ANTIGRAVITY_PICKER_MODELS.filter(model => {
+    if (parseAntigravityClaudeTier(model.id)) return paid
+    if (model.id.includes('claude')) return !paid
+    return true
+  })
+}
 
 export const ANTIGRAVITY_MODEL_IDS = new Set([
   ...ANTIGRAVITY_MODELS.map(model => model.id),
@@ -635,6 +662,19 @@ export function getGeminiEntitledModelIds(
 export function describeAntigravityEntitlementGap(model: string): string | null {
   const normalized = model.toLowerCase().replace(/^models\//, '')
   if (!ANTIGRAVITY_MODEL_IDS.has(normalized)) return null
+
+  // The quota list behind `entitled` comes from production cloudcode-pa, which
+  // leaves these models out even on Pro accounts (only the daily host lists
+  // them), so judge them by the account's plan instead.
+  const claudeTier = parseAntigravityClaudeTier(normalized)
+  if (claudeTier) {
+    const plan = getGeminiTier('antigravity')
+    if (!plan || isPaidGeminiTier(plan)) return null
+    return [
+      `${claudeTier.model.name} on Antigravity is for paid Google AI Pro and Ultra plans, and this account is on ${plan === GEMINI_TIER_FREE ? 'the free plan' : `the "${plan}" plan`}.`,
+      'Antigravity answers a model the plan does not include with 404 or 429, which reads like a missing model or spent quota.',
+    ].join('\n')
+  }
 
   const entitled = getGeminiEntitledModelIds('antigravity')
   if (!entitled || entitled.length === 0) return null

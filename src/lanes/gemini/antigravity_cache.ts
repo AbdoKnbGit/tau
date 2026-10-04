@@ -15,8 +15,9 @@
  * character estimates for dense agent prompts. Streaming usage must be
  * finalized before it can consume a recovery opportunity.
  *
- * Prefix padding and extra agent pacing remain opt-in via
- * TAU_ANTIGRAVITY_MAX_CACHE=1. They are not a guarantee of lower total cost.
+ * Agent requests are padded to the cache minimum by default (see
+ * applyAntigravityPrefixPad); padding the main thread and extra agent pacing
+ * remain opt-in via TAU_ANTIGRAVITY_MAX_CACHE=1.
  * TAU_CACHE_DEBUG=1 records request hashes and final usage with correlation
  * IDs kept out of the wire payload; antigravity_trace.ts adds a row per HTTP
  * dispatch describing the final wire body, its timing and its connection.
@@ -113,22 +114,31 @@ export function appendAntigravityCacheDebugRow(row: Record<string, unknown>): vo
 // earns its keep on long, many-turn batch/agent runs. With it off, simple
 // prompts stay small and the implicit cache can warm from real conversation
 // content. Cache eligibility and coverage vary by model and server state.
-// TAU_ANTIGRAVITY_MAX_CACHE=1 adds padding toward the historical 17.4k target;
-// it does not guarantee reuse and adds tokens to every request.
+// TAU_ANTIGRAVITY_MAX_CACHE=1 also pads the main thread and other requests
+// toward the target below; it does not guarantee reuse and adds tokens to
+// every request.
 export function antigravityMaxCacheEnabled(): boolean {
   return process.env.TAU_ANTIGRAVITY_MAX_CACHE === '1'
 }
 
 // ─── Prefix padding ──────────────────────────────────────────────
 
-// Retain the historical opt-in padding target; default recovery adds no pad.
-const TARGET_TOKENS = 17_400
+// Live 2026-10-04, 3.7 Flash Low on the daily host: an 11k prompt never
+// cached and 14.3k flapped (miss, hit, miss), while 17.2k-22k prompts were
+// read by the very next request 2 s later. Reads come in ~4,090-token blocks,
+// so the prefix needs four whole blocks (~16.4k) plus margin.
+const TARGET_TOKENS = 18_000
 
 // Existing-content token estimate: assume ≥1 token per 5.5 chars.
 // English prose runs ~4-5 chars/token and JSON schemas ~3-4, so this
 // systematically UNDER-estimates the real token count — meaning the pad
 // overshoots the target rather than undershooting the cache minimum.
 const EXISTING_CHARS_PER_TOKEN = 5.5
+
+// Tool declarations are JSON schemas: a live agent's 55.5k characters of
+// tools were 13.4k tokens (4.1 chars/token). Estimating them at 5.5 padded
+// that agent ~4k tokens past the target on every request; 4.6 still errs low.
+const TOOL_CHARS_PER_TOKEN = 4.6
 
 // Pad filler measured at ~4.36 chars/token (counter digits keep the
 // tokenizer from over-compressing repetition). Provision at 4.6 so the
@@ -170,15 +180,20 @@ export function antigravityPrefixPad(tokens: number): string {
 }
 
 /**
- * Pad a request's stable system text toward the historical opt-in target.
+ * Pad a request's stable system text toward the cache minimum.
  * This is not a guarantee of server cache eligibility or coverage.
  *
- * Applies to every Antigravity Gemini request whose stable prefix
- * (system text + tool declarations) is estimated below that target —
- * main thread and agents alike. Over-target prompts are returned
- * unchanged, so naturally-large sessions never pay for padding. The
- * pad size is derived from turn-stable inputs only, so a given
- * conversation gets byte-identical padding on every turn of its run.
+ * Agents (`agent:*` query sources) are padded by default: a subagent sends
+ * many requests in quick succession from a fresh prefix, and below the
+ * minimum every one of them is paid in full (live 2026-10-04: a 10.7k
+ * general-purpose agent missed its first six requests). Cached tokens cost
+ * ~10% of uncached ones against the Gemini quota, so the extra prefix pays
+ * for itself. The pad is identical for every agent of the same size, so a
+ * later agent of the same type reads it on its first request.
+ * TAU_ANTIGRAVITY_MAX_CACHE=1 extends padding to every other request.
+ * Over-target prompts are returned unchanged, so naturally-large prompts
+ * never pay for padding. The pad size is derived from turn-stable inputs
+ * only, so a given conversation gets byte-identical padding on every turn.
  */
 export function applyAntigravityPrefixPad(
   stableText: string,
@@ -187,16 +202,20 @@ export function applyAntigravityPrefixPad(
 ): string {
   // Reports are already hard-bounded and intentionally non-cacheable. Padding
   // one to the implicit-cache minimum recreates the large cold request that
-  // /report is designed to avoid (about 17.4k inert tokens with max-cache on).
+  // /report is designed to avoid (about 18k inert tokens).
   if (querySource === 'report') return stableText
   if (process.env.TAU_ANTIGRAVITY_NO_PREFIX_PAD === '1') return stableText
-  // Default OFF — padding a small prompt to ~17.4k tokens makes simple,
-  // interactive turns slow for a cache win that natural session growth
-  // already provides. Opt in for token-cost-sensitive batch/agent runs.
-  if (!antigravityMaxCacheEnabled()) return stableText
+  // Main thread and side queries stay unpadded by default: the main thread
+  // grows past the minimum naturally, and a one-shot request never reads
+  // the entry its pad would write.
+  if (!querySource?.startsWith('agent:') && !antigravityMaxCacheEnabled()) {
+    return stableText
+  }
 
-  const existingChars = stableText.length + toolDeclarationChars
-  const estimatedTokens = Math.floor(existingChars / EXISTING_CHARS_PER_TOKEN)
+  const estimatedTokens = Math.floor(
+    stableText.length / EXISTING_CHARS_PER_TOKEN
+      + toolDeclarationChars / TOOL_CHARS_PER_TOKEN,
+  )
   const missing = TARGET_TOKENS - estimatedTokens
   if (missing <= 0) return stableText
 

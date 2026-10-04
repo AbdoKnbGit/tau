@@ -51,6 +51,7 @@ import {
   GEMINI_TOOL_REGISTRY,
 } from './tools.js'
 import {
+  appendAntigravityCacheDebugRow,
   applyAntigravityPrefixPad,
   guardAntigravityCommitWindow,
   recordAntigravityCacheRead,
@@ -58,6 +59,10 @@ import {
   writeAntigravityCacheDebugEntry,
   type AntigravityCacheRequestContext,
 } from './antigravity_cache.js'
+import {
+  cancelAntigravityClaudeKeepAlive,
+  scheduleAntigravityClaudeKeepAlive,
+} from './antigravity_claude_keepalive.js'
 import {
   freezeSessionVolatileText,
   volatileFreezeKey,
@@ -87,6 +92,7 @@ import {
 } from '../shared/mcp_bridge.js'
 import { geminiSafeToolName } from '../shared/gemini_schema.js'
 import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
+import { parseAntigravityClaudeTier } from '../../utils/model/antigravityClaudeTiers.js'
 import { selectGeminiToolsForRequest } from './lazy_tools.js'
 import {
   resolveThinkingBudget as resolveGeminiThinkingBudget,
@@ -166,6 +172,7 @@ export class GeminiLane implements Lane {
     const isAntigravityRequest = providerHint === 'antigravity' || isAntigravityModel
     const isAntigravityGemini =
       isAntigravityModel && isAntigravityGeminiModel(model)
+    const isAntigravityClaude = isAntigravityModel && !isAntigravityGemini
     // Snapshot semantics for EVERY request on this lane, not just Antigravity
     // Gemini: the API-key and Code Assist paths run Gemini's implicit cache,
     // which hashes contents[] just like Antigravity's, and Claude resold
@@ -216,10 +223,10 @@ export class GeminiLane implements Lane {
     const laneTools = buildLaneFunctionDeclarations(requestTools, schemaFamily)
     const functionDeclarations = laneTools.declarations
 
-    // Keep real system/tool/history prefixes stable. Padding is an optional
-    // legacy policy, not necessary to make current 3.8 agents cacheable;
-    // recovery uses model-specific measurements in antigravity_cache.ts.
-    // Padding stays off unless TAU_ANTIGRAVITY_MAX_CACHE=1. Claude on
+    // Keep real system/tool/history prefixes stable. Agents below the
+    // implicit-cache minimum get a fixed inert pad so their second request
+    // reads the first one's entry; everything else is padded only with
+    // TAU_ANTIGRAVITY_MAX_CACHE=1 (see applyAntigravityPrefixPad). Claude on
     // Antigravity remains exempt from Gemini padding and recovery.
     const stableText = isAntigravityGemini
       ? applyAntigravityPrefixPad(
@@ -337,6 +344,9 @@ export class GeminiLane implements Lane {
     let blockIndex = 0
     // Output-cap truncation: see ../shared/truncation.ts.
     let outputCapTruncated = false
+    // Claude's refusals arrive through Antigravity as a SAFETY finish with no
+    // content; reported as a refusal so the user sees why the turn is empty.
+    let safetyStop = false
     let inBlock: 'thinking' | 'text' | null = null
     let messageStartEmitted = false
     const toolCalls: Array<{
@@ -509,6 +519,9 @@ export class GeminiLane implements Lane {
       }
     }
 
+    // A new main-thread turn replaces any cache refresher, whatever the model.
+    if (querySource === 'repl_main_thread') cancelAntigravityClaudeKeepAlive()
+
     try {
       const stream = geminiApi.streamGenerateContent(request, signal)
 
@@ -537,6 +550,7 @@ export class GeminiLane implements Lane {
           // ceiling. The legacy gemini_to_anthropic adapter mapped it to
           // stop_reason 'max_tokens'; the native lane must too.
           if (isOutputCapTruncation(candidate.finishReason)) outputCapTruncated = true
+          if (isAntigravityClaude && isSafetyFinish(candidate.finishReason)) safetyStop = true
           for (const part of (candidate.content?.parts ?? []) as any[]) {
             // ── Thinking part ──
             if (part.thought === true && typeof part.text === 'string') {
@@ -877,10 +891,24 @@ export class GeminiLane implements Lane {
 
     // Decide stop reason: truncation first, then whether we emitted tool_use
     // blocks (the model wants to run tools) or the model finished its turn.
-    const stopReason = laneStopReason({
-      truncated: outputCapTruncated,
-      hadToolUse: toolCalls.length > 0,
-    })
+    const stopReason = safetyStop && toolCalls.length === 0
+      ? 'refusal'
+      : laneStopReason({
+        truncated: outputCapTruncated,
+        hadToolUse: toolCalls.length > 0,
+      })
+
+    if (isAntigravityClaude && querySource === 'repl_main_thread' && !signal.aborted) {
+      scheduleAntigravityClaudeKeepAlive(cacheRefresher(request), {
+        // A switch to another provider leaves this prompt behind. Required
+        // lazily: the provider module pulls the config graph into lane tests.
+        shouldContinue: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const providers = require('../../utils/model/providers.js') as typeof import('../../utils/model/providers.js')
+          return providers.getAPIProvider() === 'antigravity'
+        },
+      })
+    }
 
     yield {
       type: 'message_delta',
@@ -1609,6 +1637,49 @@ function buildLaneFunctionDeclarations(
   return result
 }
 
+// ─── Antigravity Claude: refusals and cache refresh ──────────────
+
+const SAFETY_FINISH_REASONS = new Set([
+  'SAFETY',
+  'PROHIBITED_CONTENT',
+  'BLOCKLIST',
+  'SPII',
+  'RECITATION',
+])
+
+function isSafetyFinish(reason: unknown): boolean {
+  return typeof reason === 'string' && SAFETY_FINISH_REASONS.has(reason.toUpperCase())
+}
+
+/**
+ * A one-token copy of `request`. Re-reading the prompt it cached restarts the
+ * entry's 5-minute TTL (see antigravity_claude_keepalive.ts).
+ */
+function cacheRefresher(
+  request: Record<string, unknown>,
+): (signal: AbortSignal) => Promise<void> {
+  const ping = structuredClone(request)
+  ping.generationConfig = {
+    ...(ping.generationConfig as Record<string, unknown> | undefined),
+    maxOutputTokens: 1,
+  }
+  return async signal => {
+    let usage: Record<string, unknown> | undefined
+    for await (const chunk of geminiApi.streamGenerateContent(structuredClone(ping), signal)) {
+      usage = (chunk as { usageMetadata?: Record<string, unknown> }).usageMetadata ?? usage
+    }
+    if (process.env.TAU_CACHE_DEBUG) {
+      appendAntigravityCacheDebugRow({
+        ts: new Date().toISOString(),
+        kind: 'keepalive',
+        model: ping.model,
+        promptTokenCount: usage?.promptTokenCount,
+        cachedContentTokenCount: usage?.cachedContentTokenCount ?? 0,
+      })
+    }
+  }
+}
+
 // ─── Request Builder ─────────────────────────────────────────────
 
 interface GeminiRequestConfig {
@@ -1792,7 +1863,18 @@ function buildAuthErrorMessage(err: any, model?: string): string {
     '',
   ]
 
-  if (isAntigravityOnly) {
+  // A plan without the Claude 5.5 ids gets 404 for them from the daily host.
+  const planGap = isAntigravityOnly && status === 404 && model && parseAntigravityClaudeTier(model)
+    ? describeAntigravityEntitlementGap(model)
+    : null
+
+  if (planGap) {
+    lines.push(
+      planGap,
+      '',
+      'What to do: pick another model with `/model`, or run `/login antigravity` with a Pro or Ultra account.',
+    )
+  } else if (isAntigravityOnly) {
     if (status === 404) {
       lines.push(
         'This model only routes through the Antigravity quota pool.',

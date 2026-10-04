@@ -22,7 +22,9 @@ import {
 import {
   extractAntigravityModels,
   hasAntigravity35FlashUsagePair,
+  parseAntigravityQuotaSummary,
   parseAntigravityUsage,
+  type AntigravityUsageMetric,
 } from './antigravityUsageParser.js'
 import {
   fireworksSummaryRange,
@@ -603,6 +605,20 @@ async function reportAntigravity(): Promise<ProviderUsageReport> {
   const accountLabel = account?.email
     ?? await fetchGoogleOAuthEmail(accessToken)
     ?? 'Antigravity OAuth'
+  const summaryMetrics = await fetchAntigravityQuotaSummaryMetrics(accessToken, project)
+  if (summaryMetrics) {
+    return {
+      ...baseReport(
+        'antigravity',
+        'ok',
+        'oauth',
+        'Google Code Assist',
+        'Fetched quota limits from Antigravity.',
+      ),
+      detail: `Account: ${accountLabel}. Each model group shares a weekly and a 5-hour limit, consumed in proportion to token cost.`,
+      metrics: summaryMetrics,
+    }
+  }
   let data: unknown
   try {
     data = await fetchAntigravityAvailableModels(accessToken, project)
@@ -767,6 +783,22 @@ async function reportAntigravityForStatusBar(): Promise<ProviderUsageReport> {
   }
 
   try {
+    const summaryMetrics = await fetchAntigravityQuotaSummaryMetrics(
+      credential.accessToken,
+      credential.projectId,
+    )
+    if (summaryMetrics) {
+      return {
+        ...baseReport(
+          'antigravity',
+          'ok',
+          'oauth',
+          'Google Code Assist',
+          'Quota limits from Antigravity.',
+        ),
+        metrics: summaryMetrics,
+      }
+    }
     const data = await fetchAntigravityQuotaCheaply(
       credential.accessToken,
       credential.projectId,
@@ -3102,6 +3134,40 @@ async function fetchAntigravityAvailableModels(
   if (_antigravityQuotaBase?.accessToken === accessToken) _antigravityQuotaBase = null
   if (bestData !== null) return bestData
   throw new Error(errors.join('; ') || 'no Antigravity quota response')
+}
+
+/** Credential for which no host served the quota summary. */
+let _antigravityQuotaSummaryUnavailable: string | null = null
+
+/**
+ * The weekly and 5-hour limits of each model group, as the Antigravity app
+ * shows them, from the first host in request order that answers with any.
+ *
+ * Null sends the caller to the per-model document. When no host serves the
+ * summary for a credential, it is not asked again for that credential, so a
+ * status bar refresh stays one request.
+ */
+async function fetchAntigravityQuotaSummaryMetrics(
+  accessToken: string,
+  projectId: string,
+): Promise<AntigravityUsageMetric[] | null> {
+  if (_antigravityQuotaSummaryUnavailable === accessToken) return null
+  const headers = antigravityApiHeaders(accessToken)
+  for (const base of ANTIGRAVITY_QUOTA_BASES) {
+    try {
+      const data = await fetchJson(`${base}/v1internal:retrieveUserQuotaSummary`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ project: projectId }),
+      })
+      const metrics = parseAntigravityQuotaSummary(data)
+      if (metrics.length > 0) return metrics
+    } catch {
+      // Try the next host.
+    }
+  }
+  _antigravityQuotaSummaryUnavailable = accessToken
+  return null
 }
 
 async function fetchJson(url: string, init: RequestInit = {}): Promise<unknown> {

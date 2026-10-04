@@ -309,6 +309,29 @@ test('an id match outranks a label that merely reads alike', () => {
   )
 })
 
+test('a model under two windows shows the one nearest its ceiling', () => {
+  // Antigravity's quota summary: each group has a weekly and a 5-hour limit.
+  // Live 2026-10-04 the Claude group read 26% used weekly and 11% used over
+  // 5 hours; the weekly figure is the one that stops work first.
+  const claudeIds = ['claude-sonnet-5-5-low', 'claude-opus-5-5-high']
+  _noteOutcome(
+    'antigravity',
+    _classifyReport(
+      report('ok', [
+        { label: 'Gemini Models · weekly limit', usedPercent: 0, modelKeys: ['gemini-3.8-flash-high'] },
+        { label: 'Claude and GPT models · weekly limit', usedPercent: 26, modelKeys: claudeIds },
+        { label: 'Claude and GPT models · 5-hour session limit', usedPercent: 11, modelKeys: claudeIds },
+      ]),
+    )!,
+  )
+
+  const weekly = getProviderQuotaOutcome('antigravity', 'claude-sonnet-5-5-low')
+  assert(
+    weekly?.kind === 'reading' && weekly.usedPercent === 26 && weekly.label?.includes('weekly'),
+    `expected the weekly 26%, got ${weekly?.kind === 'reading' ? `${weekly.label} ${weekly.usedPercent}` : '(none)'}`,
+  )
+})
+
 test('still matches by label when a provider publishes no ids', () => {
   // Everything except Antigravity reports windows without model ids, and the
   // textual match is what those rows have always relied on.

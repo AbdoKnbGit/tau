@@ -27,6 +27,7 @@ import {
 } from './model/model.js'
 import { getAPIProvider } from './model/providers.js'
 import { alibabaCatalogProviderId } from './model/alibabaCatalog.js'
+import { parseAntigravityClaudeTier } from './model/antigravityClaudeTiers.js'
 import {
   ensureModelPricesFresh,
   lookupCatalogPrice,
@@ -74,6 +75,15 @@ export const COST_TIER_4_20 = {
   inputTokens: 4,
   outputTokens: 20,
   promptCacheWriteTokens: 5,
+  promptCacheReadTokens: 0.2,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
+// Pricing tier for Sonnet 5.5: $2 input / $10 output per Mtok
+export const COST_TIER_2_10 = {
+  inputTokens: 2,
+  outputTokens: 10,
+  promptCacheWriteTokens: 2.5,
   promptCacheReadTokens: 0.2,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
@@ -190,6 +200,23 @@ function getGeminiModelCosts(model: string): ModelCosts | null {
 }
 
 /**
+ * Anthropic's list price for Antigravity's per-level Claude 5.5 ids, whose
+ * canonical name off the Anthropic providers is the generic 'claude-opus' /
+ * 'claude-sonnet' reading and so does not reach their price.
+ */
+function getAntigravityClaudeTierCosts(model: string): ModelCosts | null {
+  if (getAPIProvider() !== 'antigravity') return null
+  switch (parseAntigravityClaudeTier(model)?.model.id) {
+    case 'claude-opus-5-5':
+      return COST_TIER_4_20
+    case 'claude-sonnet-5-5':
+      return COST_TIER_2_10
+    default:
+      return null
+  }
+}
+
+/**
  * Get the cost tier for Opus 4.6 based on fast mode.
  */
 export function getOpus46CostTier(fastMode: boolean): ModelCosts {
@@ -266,6 +293,9 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts | null {
   // Check Gemini models first — they use prefix matching, not canonical names.
   const geminiCosts = getGeminiModelCosts(model)
   if (geminiCosts) return geminiCosts
+
+  const antigravityClaudeCosts = getAntigravityClaudeTierCosts(model)
+  if (antigravityClaudeCosts) return antigravityClaudeCosts
 
   const shortName = getCanonicalName(model)
 

@@ -30,6 +30,7 @@ import { resolveAgentAliasPolicy } from './agentAliasFallback.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
+import { parseAntigravityClaudeTier } from './antigravityClaudeTiers.js'
 import { shouldHonorSkillModelOverride } from './skillModel.js'
 import { capitalize } from '../stringUtils.js'
 
@@ -668,6 +669,13 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   if (getAPIProvider() === 'foundry') {
     // deployment ID is user-defined in Foundry, so it may have no relation to the actual model
     return undefined
+  }
+
+  // Antigravity's per-level Claude 5.5 ids, whose canonical name off the
+  // Anthropic providers is only the generic 'claude-opus' / 'claude-sonnet'.
+  if (getAPIProvider() === 'antigravity') {
+    const tier = parseAntigravityClaudeTier(modelId)
+    if (tier) return tier.model.marketingName
   }
 
   const has1m = modelId.toLowerCase().includes('[1m]')

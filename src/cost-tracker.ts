@@ -198,6 +198,9 @@ function resolveDisplayModelName(model: string): string {
   try {
     const provider = getAPIProvider()
     if (!isThirdPartyProvider(provider)) return getCanonicalName(model)
+    // Antigravity's ids are its real model names. It has no alias table, so
+    // the mapping below fell through to the generic default (gpt-5.4).
+    if (provider === 'antigravity') return model
     // Resolve Claude aliases to the provider's actual model name.
     const m = model.toLowerCase()
     const models = getProviderModelSet(provider)
