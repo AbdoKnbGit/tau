@@ -111,30 +111,18 @@ Forks are cheap because they share your prompt cache. Don't set \`model\` on a f
 
 ## Writing the prompt
 
-${forkEnabled ? 'When spawning a fresh agent (with a `subagent_type`), it starts with zero context. ' : ''}Brief the agent like a smart colleague who just walked into the room — it hasn't seen this conversation, doesn't know what you've tried, doesn't understand why this task matters.
-- Explain what you're trying to accomplish and why.
-- Describe what you've already learned or ruled out.
-- Give enough context about the surrounding problem that the agent can make judgment calls rather than just following a narrow instruction.
-- If you need a short response, say so ("report in under 200 words").
-- Lookups: hand over the exact command. Investigations: hand over the question — prescribed steps become dead weight when the premise is wrong.
+${forkEnabled ? 'When spawning a fresh agent (with a `subagent_type`), it starts with zero context. ' : ''}Brief the agent like a smart colleague who just walked into the room: it hasn't seen this conversation, doesn't know what you've tried or why the task matters. Give the goal and why, what you've learned or ruled out, and enough surrounding context for judgment calls, not just a narrow instruction. Need a short reply? Say so ("report in under 200 words"). Lookups: hand over the exact command. Investigations: hand over the question; prescribed steps become dead weight when the premise is wrong. ${forkEnabled ? 'For fresh agents, terse' : 'Terse'} command-style prompts produce shallow, generic work.
 
-${forkEnabled ? 'For fresh agents, terse' : 'Terse'} command-style prompts produce shallow, generic work.
-
-**Never delegate understanding.** Don't write "based on your findings, fix the bug" or "based on the research, implement it." Those phrases push synthesis onto the agent instead of doing it yourself. Write prompts that prove you understood: include file paths, line numbers, what specifically to change.
-
-An implementation prompt covers three things. A prompt missing any of them is not ready to send:
-- **Target** — the exact files and symbols in scope, and what is explicitly out of scope.
-- **Change** — what to add, remove, or rename; the APIs and patterns to follow.
-- **Acceptance** — the observable result that means it worked.
+**Never delegate understanding.** Don't write "based on your findings, fix the bug"; do the synthesis yourself and prove it with file paths, line numbers and exactly what to change. An implementation prompt is not ready until it covers:
+- **Target:** the exact files and symbols in scope, and what is out of scope.
+- **Change:** what to add, remove or rename; the APIs and patterns to follow.
+- **Acceptance:** the observable result that means it worked.
 
 ## Running agents side by side
 
-Parallel agents share one working tree. Two rules make that safe, and both are your job before you launch, not theirs to negotiate afterwards:
+Parallel agents share one working tree; making that safe is your job before launch. Settle shared contracts yourself: if one agent implements what another consumes, write the signature into both prompts, since agents cannot see each other's work and anything left open gets guessed twice, differently. Give each agent disjoint files: same-file edits may not merge, so a shared file gets one owner and the others depend on it instead of editing it.
 
-1. **Settle shared contracts up front.** If one agent implements an interface another consumes, decide the signature yourself and write it into both prompts. Agents cannot see each other's work, so anything left open gets guessed twice, differently.
-2. **Give each agent disjoint files.** Same-file edits from concurrent agents are not guaranteed to merge. When a change genuinely has to cross a shared boundary, name one agent as the owner of that file and have the others depend on it rather than edit it.
-
-Tell each parallel agent to skip formatters, linters, and project-wide test suites — those read files the others are still writing, so they block or report failures that aren't real. Run them once yourself after the last agent returns.
+Tell parallel agents to skip formatters, linters and project-wide tests, which read half-written files and block or report failures that aren't real; run them once yourself after the last agent returns.
 `
 
   const forkExamples = `Example usage:
@@ -180,35 +168,8 @@ ${AGENT_TOOL_NAME}({
 
   const currentExamples = `Example usage:
 
-<example_agent_descriptions>
-"test-runner": use this agent after you are done writing code to run tests
-"greeting-responder": use this agent to respond to user greetings with a friendly joke
-</example_agent_descriptions>
-
 <example>
-user: "Please write a function that checks if a number is prime"
-assistant: I'm going to use the ${FILE_WRITE_TOOL_NAME} tool to write the following code:
-<code>
-function isPrime(n) {
-  if (n <= 1) return false
-  for (let i = 2; i * i <= n; i++) {
-    if (n % i === 0) return false
-  }
-  return true
-}
-</code>
-<commentary>
-Since a significant piece of code was written and the task was completed, now use the test-runner agent to run the tests
-</commentary>
-assistant: Uses the ${AGENT_TOOL_NAME} tool to launch the test-runner agent
-</example>
-
-<example>
-user: "Hello"
-<commentary>
-Since the user is greeting, use the greeting-responder agent to respond with a friendly joke
-</commentary>
-assistant: "I'm going to use the ${AGENT_TOOL_NAME} tool to launch the greeting-responder agent"
+If available descriptions say "test-runner: run tests after code is written" and "greeting-responder: answer greetings with a joke": after using ${FILE_WRITE_TOOL_NAME} for a requested prime-checking function, launch test-runner with ${AGENT_TOOL_NAME}; for "Hello", launch greeting-responder.
 </example>
 `
 
@@ -224,16 +185,14 @@ assistant: "I'm going to use the ${AGENT_TOOL_NAME} tool to launch the greeting-
 ${effectiveAgents.map(agent => formatAgentLine(agent)).join('\n')}`
 
   // Shared core prompt used by both coordinator and non-coordinator modes
-  const shared = `Launch a new agent to handle complex, multi-step tasks autonomously.
-
-The ${AGENT_TOOL_NAME} tool launches specialized agents (subprocesses) that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
+  const shared = `${AGENT_TOOL_NAME} launches autonomous agents (subprocesses) for complex, multi-step tasks. Each type has its own capabilities and tools.
 
 ${agentListSection}
 
 ${
   forkEnabled
     ? `When using the ${AGENT_TOOL_NAME} tool, specify a subagent_type to use a specialized agent, or omit it to fork yourself — a fork inherits your full conversation context.`
-    : `When using the ${AGENT_TOOL_NAME} tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.`
+    : `Specify subagent_type to pick an agent type; if omitted, the general-purpose agent is used.`
 }`
 
   // Coordinator mode gets the slim prompt -- the coordinator system prompt
@@ -257,11 +216,11 @@ ${
   const whenNotToUseSection = forkEnabled
     ? ''
     : `
-When NOT to use the ${AGENT_TOOL_NAME} tool:
-- If you want to read a specific file path, use the ${FILE_READ_TOOL_NAME} tool or ${fileSearchHint} instead of the ${AGENT_TOOL_NAME} tool, to find the match more quickly
-- If you are searching for a specific class definition like "class Foo", use ${contentSearchHint} instead, to find the match more quickly
-- If you are searching for code within a specific file or set of 2-3 files, use the ${FILE_READ_TOOL_NAME} tool instead of the ${AGENT_TOOL_NAME} tool, to find the match more quickly
-- Other tasks that are not related to the agent descriptions above
+Don't use ${AGENT_TOOL_NAME} where a direct tool finds it faster:
+- A specific file path: use ${FILE_READ_TOOL_NAME} or ${fileSearchHint}.
+- A specific class definition (e.g. "class Foo"): use ${contentSearchHint}.
+- Code within 1-3 known files: use ${FILE_READ_TOOL_NAME}.
+- Tasks unrelated to the available agent descriptions.
 `
 
   // When listing via attachment, the "launch multiple agents" note is in the
@@ -270,7 +229,7 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
   const concurrencyNote =
     !listViaAttachment && getSubscriptionType() !== 'pro'
       ? `
-- Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses`
+- Launch agents concurrently whenever possible, for speed: multiple tool calls in one message.`
       : ''
 
   // Non-coordinator gets the full prompt with all sections
@@ -278,34 +237,33 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
 ${whenNotToUseSection}
 
 Usage notes:
-- Always include a short description (3-5 words) summarizing what the agent will do${concurrencyNote}
-- When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.${
+- Include a short (3-5 word) description of the task.${concurrencyNote}
+- The agent returns one message to you, invisible to the user; send the user a concise text summary.${
     // eslint-disable-next-line custom-rules/no-process-env-top-level
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&
     !isInProcessTeammate() &&
     !forkEnabled
       ? `
-- You can optionally run agents in the background using the run_in_background parameter. When an agent runs in the background, you will be automatically notified when it completes — do NOT sleep, poll, or proactively check on its progress. Continue with other work or respond to the user instead.
-- **Foreground vs background**: Use foreground (default) when you need the agent's results before you can proceed — e.g., research agents whose findings inform your next steps. Use background when you have genuinely independent work to do in parallel.`
+- Foreground (default) when you need the result to proceed (e.g. research whose findings inform your next step); run_in_background only for genuinely independent parallel work. You are notified on completion: do NOT sleep, poll or proactively check its progress; do other work or answer the user.`
       : ''
   }
-- Pass a short \`name\` (one or two words, lowercase) when you spawn. It is how you address the agent afterwards, and it is what the user sees while it runs.
-- To continue a previously spawned agent, use ${SEND_MESSAGE_TOOL_NAME} with the agent's \`name\` — or the \`agentId\` from its result — as the \`to\` field. A running agent picks the message up at its next tool round; a finished one is resumed from its transcript with its full context preserved. Prefer continuing an existing agent over spawning a fresh one for follow-up work: it already holds the context, and the resumed session reuses its warm prompt cache while a new spawn starts cold. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each Agent invocation starts fresh — provide a complete task description.'}
-- The agent's outputs should generally be trusted
-- Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.)${forkEnabled ? '' : ", since it is not aware of the user's intent"}
-- If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
-- If the user specifies that they want you to run agents "in parallel", you MUST send a single message with multiple ${AGENT_TOOL_NAME} tool use content blocks. For example, if you need to launch both a build-validator agent and a test-runner agent in parallel, send a single message with both tool calls.
-- You can optionally set \`isolation: "worktree"\` to run the agent in an isolated workspace. It uses Git/hooks when available and a filtered snapshot copy otherwise. The workspace is automatically cleaned up if the agent makes no changes; if changes are made, the workspace path is returned in the result.${
+- Pass a short lowercase \`name\` (1-2 words): it is how you address the agent and what the user sees while it runs.
+- For follow-ups, prefer ${SEND_MESSAGE_TOOL_NAME} with \`to\` set to the agent's \`name\` or returned \`agentId\`: a running agent gets it at its next tool round; a finished one resumes from its transcript with full context and a warm prompt cache, while a new spawn starts cold. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each new invocation starts fresh: provide a complete task description.'}
+- Generally trust agent outputs.
+- Say whether the agent should write code or only research (search, file reads, web fetches).${forkEnabled ? '' : " It doesn't know the user's intent."}
+- If an agent's description says to use it proactively, do so without waiting to be asked; use judgment.
+- If the user asks for agents "in parallel", you MUST send one message with multiple ${AGENT_TOOL_NAME} tool calls.
+- Optional \`isolation: "worktree"\`: an isolated workspace (Git/hooks when available, else a filtered snapshot copy); auto-cleaned if the agent changes nothing, otherwise the result gives its path.${
     process.env.USER_TYPE === 'ant'
       ? `\n- You can set \`isolation: "remote"\` to run the agent in a remote CCR environment. This is always a background task; you'll be notified when it completes. Use for long-running tasks that need a fresh sandbox.`
       : ''
   }${
     isInProcessTeammate()
       ? `
-- The run_in_background, name, team_name, and mode parameters are not available in this context. Only synchronous subagents are supported.`
+- Here, omit run_in_background, name, team_name, and mode: only synchronous subagents are supported.`
       : isTeammate()
         ? `
-- The name, team_name, and mode parameters are not available in this context — teammates cannot spawn other teammates. Omit them to spawn a subagent.`
+- Here, omit name, team_name, and mode: teammates can spawn subagents, not teammates.`
         : ''
   }${whenToForkSection}${writingThePromptSection}
 

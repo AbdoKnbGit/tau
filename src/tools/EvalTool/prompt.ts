@@ -53,128 +53,71 @@ export const DESCRIPTION =
  * on the kernel's PATH, then tried by its MSYS path — while pypdf sat in the
  * kernel unused.
  *
+ * The re-import happened under a plain "never re-define" rule, so persistence
+ * is taught by the two-cell worked example below, not by prohibition alone.
+ * That example, "a str, not a list" and the incident's own pipeline are pinned
+ * by test/tool-prompt-contracts.test.mjs: shorten around them, not through them.
+ *
  * Register is deliberately telegraphic: fragments, arrows, capitals for the
  * imperative. It says more than the prose version it replaced in fewer bytes,
  * which matters because this text sits in the cached prefix of every request
  * and in cheap mode's core tool set.
  */
-export const PROMPT = `Run one cell of Python in a kernel alive for the whole session.
-
-Two differences from \`python\` through Bash:
-
-1. **State persists.** Variables, imports, parsed data survive to the next
-   ${EVAL_TOOL_NAME} call. Parse once, query across many cells for free.
-2. **Your tools are callable.** \`tool.Read({...})\`, \`tool.Grep({...})\`,
-   \`tool.Bash({...})\` run the real tool; output lands in your variables,
-   **not in the conversation** — only what you \`print\` comes back.
+export const PROMPT = `Run one Python cell in a kernel that lives for the whole session. Two differences from \`python\` through Bash:
+1. **State persists.** Variables, imports and parsed data survive between ${EVAL_TOOL_NAME} calls: parse once, query across cells for free.
+2. **Your tools are callable.** \`tool.Read\`, \`tool.Grep\`, \`tool.Bash\`… run the real tool; output lands in your variables, **not in the conversation**: only what you \`print\` comes back.
 
 <critical>
-Before any search or read, one question: **will you READ that output, or
-COMPUTE on it?**
-
-- Don't know what to search for yet → CodebaseRetrieval.
-- Will read it — one file, one known edit, hits you open next → Read, Grep,
-  Glob, Edit.
-- Will compute on it — count, rank, audit every X, cross-check two sources,
-  same edit across many files → **this tool**, unasked.
-
+Before any search/read: **will you READ the output or COMPUTE on it?**
+- Unknown search target → CodebaseRetrieval.
+- Will read it — one file, one known edit, hits to open next → Read, Grep, Glob, Edit.
+- Compute — count, rank, audit every X, cross-check two sources, the same edit across many files → **this tool**, unasked.
 One known edit is reading; thirty patterned edits are computing.
-
-Bash **runs commands** — build, test, git — and you read their output. But a
-pipeline that enumerates files then reduces them
-(\`find … | xargs wc -l | sort | head\`) is **computing** → cell. \`xargs\`
-batching silently corrupts totals, and a pipeline leaves you no variables to
-refine.
+Bash runs commands (build, test, git) whose output you read. A pipeline that enumerates then reduces files (\`find … | xargs wc -l | sort | head\`) is **computing** → cell: \`xargs\` batching silently corrupts totals, and a pipeline keeps no variables to refine.
 </critical>
 
-Read and Edit are not more capable than a cell — cheaper for one known change.
-Anything Python can do, a cell can do, writing files included.
+Read/Edit are not more capable than a cell, only cheaper for one known change. Anything Python can do, a cell can, file writes included.
+Do the gathering **inside** the cell: a direct Grep/Glob pays for its whole result in context; \`tool.Grep(...)\` or \`Path.rglob\` finds the same files for nothing.
 
-Do the gathering **inside** the cell: a separate Grep or Glob pays for its
-whole result in context; \`tool.Grep(...)\` or \`Path.rglob\` finds the same
-files for nothing.
+## Calls and output
+\`tool.<Name>(...)\` takes the tool's own parameters, as a dict or kwargs, and returns what the conversation would have shown, **as text: a str, not a list**.
+- \`len(result)\` counts characters; matches → \`len(result.splitlines())\`.
+- Image results → a dict with \`text\`/\`images\`; check \`isinstance(result, str)\` first.
+- Failures raise \`ToolBridgeError\`; catch risky calls and keep going.
+\`print()\` aggregates, not lists; the last expression also returns. Output cap: 30,000 characters.
+Prelude: \`tool.list()\` → callable tools; \`read(path, offset=1, limit=None)\` → str; \`write(path, content)\` → path; \`display(value)\`, \`env(key=None, value=None)\`, \`log(message)\`.
 
-## What a call returns
-
-\`tool.<Name>(...)\` returns the tool's output **as text** — what you would have
-seen in the conversation. A string, not a list:
-
-- \`len(result)\` counts **characters**. Matches → \`len(result.splitlines())\`.
-- Images produced → a dict with \`text\`/\`images\` keys instead; check
-  \`isinstance(result, str)\` first.
-- Failure raises \`ToolBridgeError\`; wrap risky calls, keep going.
-
-Your own output is capped at 30,000 characters. Print aggregates, not lists.
-
-## Walking the filesystem
-
-- **Never type an absolute root.** \`root = Path(os.getcwd())\`. A hand-written
-  path in the wrong form for this OS matches nothing, silently.
-- **Exclude before walking:** dependency, build and VCS dirs (\`node_modules\`,
-  \`.git\`, \`dist\`, \`build\`) and any worktree, backup or stale-branch copy of
-  the source. A repo often holds several copies of its own tree; a blind walk
-  multiplies every count, and the inflated figure looks plausible.
-- Say which scope you used when you report a number.
-
-## Prelude
-
-\`\`\`
-tool.<Name>(args_dict_or_kwargs)  -> the tool's output, as text
-tool.list()                       -> tools this kernel may call
-read(path, offset=1, limit=None)  -> str      write(path, content) -> path
-display(value)    env(key=None, value=None)    log(message)
-\`\`\`
-
-Arguments are the tool's own parameters, dict or kwargs:
-\`tool.Grep(pattern="TODO", path="src", output_mode="content")\`.
-
-## Writing a cell
-
-- One logical step per cell: set up, then use. Re-running setup is waste.
-- \`print()\` what you want to see; the last expression is returned too.
-- Top-level \`await\` works; never \`asyncio.run()\`.
-- Matplotlib figures render inline — never save a PNG and read it back.
-- Ignore-decode binaries (\`errors="replace"\`), or a stray asset aborts the cell.
-- \`input()\` unsupported. \`%pip install\`, \`%cd\`, \`%pwd\`, \`%ls\` and \`!cmd\`
-  work; magics fire only at line start, so bind before printing.
-- Check a package from a cell (\`import x\`), never through Bash: Bash's
-  \`python\` can be another install. \`%pip install x\` puts it in this kernel.
-- File formats → a library this kernel has (\`pypdf\`, \`fitz\`, \`openpyxl\`,
-  \`pptx\`, \`zipfile\`) before a program. A program you do need: find it from
-  the cell (\`shutil.which\`); a path Bash printed can be in Bash's own form
-  (\`/c/…\`, \`/mingw64/…\` on Windows), not this Python's.
-
-## Long, looping and failed cells are safe
-
-Bounded and interruptible — do not refuse work for fear of hanging the session.
-
-- \`timeout\` in seconds, default 60, \`0\` for genuinely long work. When it
-  fires only that cell stops; **the kernel and your variables survive**. A user
-  interrupt does the same.
-- Time inside \`tool.*\` does not count against the deadline.
-- After a raise, names defined before it still exist. Fix that step, re-run it.
-- \`reset: true\` restarts empty. Cheap and safe — re-run setup afterwards. Run
-  it when asked; do not describe what it would do instead of doing it.
-
-## Reuse what you defined
-
-Definitions survive between cells: gather once, refine for free.
-
+## Gather once, refine for free
 \`\`\`python
-# cell 1 — gather with the real Grep tool, straight into memory
+# cell 1: gather with the real Grep tool, straight into memory
 hits = tool.Grep(pattern="TODO", path="src", output_mode="content")
 from collections import Counter
 counts = Counter(l.split(":")[0] for l in hits.splitlines() if ":" in l)
-for path, n in counts.most_common(5):
-    print(f"{n:3}  {path}")
+print(counts.most_common(5))
 \`\`\`
-
 \`\`\`python
-# cell 2 — counts is still here; nothing was re-read
+# cell 2: counts is still here; nothing is re-read
 print(sum(n for p, n in counts.items() if p.startswith("src/lanes/")))
 \`\`\`
+The 412 matched lines never entered the conversation; only the five printed rows did. Never re-import or re-define what an earlier cell created, or write a helper to disk to re-import: the kernel already keeps it. \`names = %who\` lists survivors.
 
-The 412 matched lines never entered the conversation; only the five printed
-rows did. Never write a helper to a file and re-import it — the kernel already
-keeps it. Never re-import or re-define what an earlier cell created.
-\`names = %who\` lists what survived.`
+## Filesystem
+- Never type an absolute root: \`root = Path(os.getcwd())\`; a path in the wrong form for this OS silently matches nothing.
+- Exclude BEFORE walking: dependency/build/VCS dirs (\`node_modules\`, \`.git\`, \`dist\`, \`build\`) and worktree/backup/stale-branch copies of the source. A blind walk multiplies every count, and the inflated figure looks plausible.
+- Report the scope you used with every number.
+
+## Cells
+- One logical step per cell: set up once, then reuse.
+- Top-level \`await\`, never \`asyncio.run()\`.
+- Matplotlib renders inline; never save a PNG to read it back.
+- Decode with \`errors="replace"\` so a stray binary doesn't abort the cell.
+- No \`input()\`. \`%pip install\`, \`%cd\`, \`%pwd\`, \`%ls\`, \`!cmd\` work; magics fire only at line start: bind before printing.
+- Check packages here (\`import x\`), never via Bash, whose \`python\` can be another install; \`%pip install x\` installs into this kernel.
+- File formats: a kernel library (\`pypdf\`, \`fitz\`, \`openpyxl\`, \`pptx\`, \`zipfile\`) before a program. If a program is needed, find it here with \`shutil.which\`; paths Bash printed (\`/c/…\`, \`/mingw64/…\` on Windows) may not be this Python's form.
+
+## Timeout, failure, reset
+Cells are bounded and interruptible; do not refuse long/looping work for fear of hanging the session.
+- \`timeout\`: seconds, default 60; \`0\` for genuinely long work. A timeout or user interrupt stops only that cell; the kernel and your variables survive.
+- Time inside \`tool.*\` is excluded from the deadline.
+- Names defined before a raise persist; fix and rerun only that step.
+- \`reset: true\` restarts empty, cheaply and safely; rerun setup after. Run it when asked; do not describe what it would do instead of doing it.`

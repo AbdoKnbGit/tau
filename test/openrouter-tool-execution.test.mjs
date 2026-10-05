@@ -37,7 +37,7 @@ const source = [r.TaskCreateTool, r.TaskUpdateTool, r.FileWriteTool, r.FileEditT
 const permission = { mode: 'default', alwaysAllowRules: {}, alwaysDenyRules: {}, alwaysAskRules: {} }
 
 test('OpenRouter workflow instructions agree with eager schemas; other provider guidance stays lazy', () => {
-  const enabled = new Set(['ProjectWorkflow', 'GitHistorySearch', 'InspectSite', 'WebBrowser',
+  const enabled = new Set(['ProjectWorkflow', 'GitHistorySearch',
     'Browser', 'PackageManager', 'VisualDesignAudit'])
   const prompt = r.runWithForcedProvider({ provider: 'openrouter' }, () => r.getUsingYourToolsSection(enabled))
   assert.doesNotMatch(prompt, /ToolSearch|named deferred tool/)

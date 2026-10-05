@@ -59,103 +59,63 @@ import { BROWSER_TOOL_NAME } from './constants.js'
 const DESCRIPTION =
   'Drive a real Chrome/Edge browser: read a page the cheap way (HTTP first, browser only when needed), observe numbered elements, click, fill, type, drag, upload, run JS, measure what actually rendered, extract structured data with provenance, watch for console/network errors, record and replay flows, screenshot, let the user point at the element they mean, and manage tabs. Every action reports what it actually changed. One tool, one action per call.'
 
-const PROMPT = `Operate a real Chromium browser (Chrome, Edge, or Brave) through the DevTools protocol. Unlike WebBrowser/InspectSite (static HTML fetch), this runs JavaScript: it works on React/Vue/SPA pages, clicks and types through real trusted input, reads the rendered DOM (including same-origin iframes), extracts page content as markdown, runs JS in the page, watches console/network (great for debugging web apps you are developing), uploads files, and handles tabs, dialogs, and downloads.
+const PROMPT = `Operate real Chromium (Chrome/Edge/Brave) through DevTools. Unlike a plain HTTP fetch, this runs JavaScript (React/Vue/SPA pages), clicks and types through real trusted input, and reads the rendered DOM, same-origin iframes included. Inside web pages prefer it to the Computer tool: it is DOM-aware and needs no screenshot per step.
 
-THE ONE RULE THAT PREVENTS ERRORS: every call is { "action": "<name>", ...params for that action }. Pick exactly one action. Provide only that action's params. Most actions return a fresh page observation, so continue from the returned state instead of guessing.
+RULES
+- THE ONE RULE: each call is { "action": "name", ...that action's params }. Exactly one action; only its params.
+- Loop: open once; observe before acting on a page you have not seen; act by @ref from the latest observation of the current tab, or by visible text. Most actions return a fresh observation: continue from it instead of guessing, and after DOM changes use its refs. observe finds what to act on; read is how you read.
+- NEVER guess coordinates for buttons, links, menus or close controls (the #1 source of wasted steps): coordinates are blind, and a guess clicks the wrong element (a nav link, another product) and destroys progress. x/y are ONLY for canvas/map/video/drawing surfaces without DOM targets, after a screenshot shows the location. ref/text override x/y. coordinate_guessing blocks blind clicks: stop, observe/screenshot, then use ref/text, not another coordinate.
+- Modals, popups, drawers, overlays: dismiss; never hunt the X with coordinates.
+- Every result has "Effect:" (step, URL/document change, DOM movement, elapsed time). "NO OBSERVABLE EFFECT" means URL, document, DOM and scroll are unchanged: the action did nothing; do NOT repeat it with a tweak. "unverified" means the page could not be sampled: unknown, not success.
+- When an action fails or does nothing, SEE the page, never try other numbers: re-observe for fresh refs (most failures are a changed DOM) or screenshot ({ "annotate": true } puts @N badges on what you see), then act by ref/text. After two failures of one tactic or blocker, change approach.
+- When the result attributes no effect to already selected/pressed, disabled, or unchanged select state, accept that explanation rather than retrying. If a target's centre is covered, the tool itself clicks an uncovered point inside it and says so; if that click still does nothing, the overlap is the likely cause.
+- NEVER describe appearance unless this turn's screenshot returned a "vision token" AND you received the image. Source code, OCR, another model's description, "[image not sent ...]", and screenshots saved via path are not seeing. Saved screenshots mint no token: report the path only. For visual facts without an image, use measure.
 
-EVIDENCE — THE PART THAT KEEPS YOU HONEST:
-- Every result carries an "Effect:" line: step number, whether the url changed, whether it is still the same document, how the interactive DOM moved, and how long it took. It is proof the action did something.
-- "NO OBSERVABLE EFFECT" means the url, the document, the DOM and the scroll position are all unchanged: your action did nothing. Do NOT repeat it with a tweak. Observe or screenshot, then act differently.
-- "unverified" means the page could not be sampled. Treat it as unknown, not as success.
-- NEVER describe how a page LOOKS unless a screenshot in this same turn returned a "vision token" and the image itself reached you. If the result holds "[image not sent ...]", OCR text or another model's description in place of the image, you have not seen the page. A screenshot saved with { "path": ... } is NOT shown to you and mints no token — you may say where it was saved, nothing about its appearance. Reading the source of a component is not seeing it.
-- For visual facts without an image, use measure: it returns what actually painted (colors, fonts that failed to load, contrast ratios, broken images, overflow).
+READ / SEE
+- get { url, surface?, maxChars? }: read a page the cheap way; use it instead of open+navigate+read for anything you only need to READ. HTTP first; Chromium only when the bytes prove it is needed (empty SPA shell, bot wall, 403/429, timeout). The reply names the rung: rung=http, or rung=chromium with the escalation reason. surface:"http"|"chromium" forces one.
+- observe: URL, title, scroll state and elements as @N tag "text" [role]; fields are named by their label. States: checked/unchecked, expanded/collapsed, selected, current page, pressed/not pressed, required, invalid, disabled. Same-origin iframe elements are marked [iframe] and work like any ref.
+- read { selector?, maxChars?, offset? }: rendered markdown with [text](url) links; defaults to the main content; selector scopes it (e.g. "#docs"). Long pages report their total length: page on with the offset each reply gives. Pages end at a sentence or paragraph. If the page shifted, the reply re-finds your place; if your text is gone it says stale_read instead of stitching two versions.
+- measure: what actually painted: viewport, background/text colors by area, fonts that fell back, WCAG contrast failures with real ratios, broken/oversized images, overflow, running animations, landmark boxes. Check a UI with it instead of inventing.
+- extract { fields, container?, limit? }: e.g. { "container":"article.product", "fields":{ "name":".title", "price":".price", "link":"a@href" } }. Every value comes with the selector that produced it; warnings flag selectors matching nothing or several elements, the same value in every row (the selector escaped the row), and login/redirect/wishlist links posing as item URLs. An unmatched container returns the page's actual repeating structures. Nothing outside that table came from the page. Never fill missing data from memory.
+- pick { text? }: only for a genuinely ambiguous target or the user's "this one", never to explore; visible browser only. The user's pointer outlines elements; their click returns the enclosing link/button/heading as the first @N, marked (picked), with tag, selector and text. Tell them to click once the "Tau:" bar shows; an earlier click reaches the page. Esc cancels; waits up to 2 minutes. The page ignores the pointer while picking: hover-open menus first.
+- screenshot { full?, ref?, annotate?, path? }: viewport by default; full:true whole page; ref one element; annotate:true overlays the latest @N badges. path saves instead of sending an image (use when the user wants the file, not you).
+- console { level?, filter?, limit?, clear? }: this tab's messages and uncaught exceptions; level error|warn|info|log|all.
+- network { filter?, failed?, limit?, clear?, bodies? }: this tab's requests as METHOD status url [type]; failed:true only errors/4xx/5xx; bodies:true adds request and response bodies of the newest listed requests (up to 3; narrow with filter), truncated, credentials masked. Debug the app you are building with console + network.
 
-THE LOOP:
-1. open — launch/attach the browser (once per session). Optionally pass url to land somewhere immediately.
-2. observe — the page as numbered interactive elements (ref @N, role, text). Always observe before acting on a page you have not seen. Elements inside same-origin iframes are included (marked [iframe]) and work like any other ref.
-3. read — the page CONTENT as markdown when you need to actually read something (articles, docs, search results, prices). observe finds what to act on; read is how you read.
-4. Act on a ref from the latest observation: click, fill, type, hover, press, drag, upload, scroll. Each returns the new observation.
-5. Repeat until done. Refs are only valid for the most recent observation of the current tab; after the DOM changes, use the refs from the observation you just received.
+NAVIGATE / ACT
+- open { url?, headless? }: launch/attach, once; headless defaults false so the user sees the window.
+- navigate { url }: http(s) or an existing local HTML file (open what you just built); "localhost:3000" gets http://, local paths file://.
+- back / forward: history. reload { hard? }: hard:true bypasses the cache (after a rebuild).
+- wait: { ms }, { selector, timeoutMs?, gone? } or { text, timeoutMs?, gone? }: waits for the selector/text to appear, or with gone:true to disappear (e.g. a spinner).
+- click { ref } (strongly preferred), or { text, nth? }; { x, y } only for the non-DOM surfaces above. double:true double-clicks.
+- fill { ref, value }: input/textarea/select; the value is read back and verified. Select options match value or visible label.
+- type { text, submit? }: into the focused field (click it first); submit:true presses Enter.
+- press { key }: one key, character or chord: Enter, Tab, Escape, Backspace, Delete, Space, arrows, Home/End, PageUp/PageDown, F1-F12, Control+a, Control+Shift+ArrowRight.
+- hover { ref } or { text }: opens hover menus/tooltips; the returned observation shows what appeared.
+- scroll { direction, amount? }: up|down|left|right|top|bottom; or { ref } to bring an element into view.
+- drag { ref, toRef }: real mouse path, automatic HTML5 drag/drop fallback.
+- upload { ref, files:["C:/path/report.pdf"] }: the file input, its label or a nearby upload control. Set files directly; NEVER open/wait for the native file picker (invisible here).
+- eval { js }: the escape hatch: page JavaScript, promises awaited, result JSON-serialized. Extract data in one shot, read computed styles, call the app's APIs; observe after it changes the DOM.
+- dismiss: closes the topmost modal/popup/drawer/lightbox via its close control or Escape.
+- pdf { path }: save the page as PDF.
+- resize { width, height, mobile? }: responsive testing; mobile:true emulates touch; 0 x 0 resets to the real window.
+- tabs lists; new_tab { url? }; switch_tab { tabIndex }; close_tab { tabIndex? }. A tab opened by a click is followed automatically.
+- close: shut the browser down when finished.
 
-HOW TO TARGET THINGS — READ THIS, IT IS THE #1 SOURCE OF WASTED STEPS:
-Act by @ref (from the latest observation) or by text. These are precise: the tool knows exactly which element you mean. NEVER guess (x, y) coordinates to find or reach a button, link, close-X, or menu. Coordinates are blind — you cannot see where things are, so guessing them clicks the wrong element (a nav link, a different product) and destroys your progress. Coordinates are ONLY for a canvas/map/video/drawing surface that has no DOM element, and only after a screenshot shows you exactly where to click.
+WATCH / FLOWS
+- watch { conditions:[...] } registers; with no conditions it checks them. console.error|console.warn|console.any|request.failed take an optional :substring; also selector.appears:CSS, selector.gone:CSS, text.appears:TEXT, url.matches:SUBSTRING. Register once and keep working: new console errors and failed requests reach you in later calls' warnings, with no console read each turn. Page conditions are evaluated when you call watch.
+- Successful navigate/click/fill/type/press/scroll/wait/dismiss actions are recorded automatically, by label rather than @ref. flow { mode:"save", name:"login" } writes .tau/flows/<name>.json; { mode:"run", name } replays them with no further calls and stops at the first step that no longer matches, naming it (the cheapest UI regression test: that step is what changed). Other modes: list; delete with name; clear drops the recording to start fresh.
 
-WHEN AN ACTION FAILS OR DOES NOTHING, the fix is always to SEE the page, never to try different coordinates:
-- Re-observe to get fresh @refs, then act by ref. (Most failures are just a changed DOM — refs went stale.)
-- screenshot when you need to SEE layout/visual state ({ "annotate": true } burns the @N badges into the image so you can match refs to what you see).
-- Then act by ref/text. Do not repeat a failed approach with tweaked numbers. If the same tactic fails twice, it is the wrong tactic — change it.
-- A click whose centre is covered is NOT abandoned: I click an uncovered point inside the target and tell you the centre was blocked. If that click then has no effect, the overlap is the likely reason.
-- When an action has no effect and the target's own state explains it (already selected, already pressed, disabled, inside a <select> that did not change value), the result says so. That is an answer, not a failure to retry.
-The tool BLOCKS repeated blind coordinate clicks on purpose (reason "coordinate_guessing"). That is a signal to stop guessing and observe/screenshot — not a hint to try yet another coordinate.
-
-CLOSING MODALS / POPUPS / OVERLAYS: use { "action": "dismiss" }. It finds the topmost dialog/popup/drawer/lightbox and clicks its close control (or sends Escape). Do NOT hunt for the X with coordinates. Cookie/consent banners are auto-dismissed on observe.
-
-SEE / READ:
-- get — { url, surface?, maxChars? } READ A PAGE THE CHEAP WAY. Fetches over HTTP first and only starts the browser when the bytes prove it is needed (empty SPA shell, bot wall, 403/429, timeout). The reply always says which rung answered ("rung=http" or "rung=chromium · escalated from http: ..."). Use this instead of open+navigate+read for anything you only want to READ. surface: "http" or "chromium" forces one rung.
-- measure — no params. MEASURED FACTS about what rendered: viewport, painted background/text colors by area, fonts that fell back because they never loaded, WCAG contrast failures with real ratios, broken and oversized images, elements overflowing the viewport, running animations, landmark boxes. This is how you check a UI without inventing it.
-- extract — { fields, container?, limit? } STRUCTURED SCRAPING WITH PROVENANCE. { "container": "article.product", "fields": { "name": ".title", "price": ".price", "link": "a@href" } }. Every value comes back with the selector that produced it, plus warnings you cannot get any other way: a selector that matched nothing, one that matched the same value in every row (it is reaching outside the row), one that matched several elements, and links that are really login/redirect/wishlist URLs rather than item URLs. If the container matches nothing you get the page's actual repeating structures to choose from. Nothing outside that table came from the page — do not fill gaps from memory.
-- observe — no params. url, title, elements as "@N tag \\"text\\" [role]", and scroll state. Form fields are named by their label. State shows when it applies: (checked)/(unchecked), (expanded)/(collapsed), (selected), (current page), (pressed)/(not pressed), (required), (invalid), (disabled).
-- read — { selector?, maxChars?, offset? }. Rendered page as markdown with [text](url) links. Defaults to the main content area; selector scopes it (e.g. "#docs"); long pages report total length — page through with the offset each reply gives. Pages end at a paragraph or sentence. If the page shifted between two reads the reply re-finds your place; if the text you read is gone, it says so (reason stale_read) instead of stitching two versions together.
-- pick — { text?: "Point at the price you mean" } hands the visible browser to the user: whatever their pointer is over is outlined, and the element they click (the link, button or heading it sits in) comes back as @N (first in the list, marked (picked)) with its tag, selector and text. Tell the user to click once the bar starting "Tau:" shows at the top of the page; a click before that reaches the page itself. Esc cancels; it waits up to 2 minutes for a person. While it waits the page does not react to the pointer, so to pick inside a menu that opens on hover, hover it open first, then pick. Use it only when the target is genuinely ambiguous or the user means "this one" on the page, never to explore. Not available while the browser is headless.
-- screenshot — optional { full: true } whole page, { ref: N } one element, { annotate: true } @N badges over the last observation, { path: "shot.png" } save to a file instead of returning into context (use path when the user wants the image, not you).
-- console — { level?, filter?, limit?, clear? }. This tab's console messages + uncaught exceptions. level: error|warn|info|log|all.
-- network — { filter?, failed?, limit?, clear?, bodies? }. This tab's requests as "METHOD status url [type]". failed: only errors/4xx/5xx. bodies: true adds the request payload and response body of the newest listed requests (up to 3; narrow with filter), cut short, credentials masked. Use console+network to debug the web app you are working on.
-
-NAVIGATE:
-- open — { url?, headless? } start the browser (headless default false so the user sees the window).
-- navigate — { url }. http(s) or a local file: "localhost:3000" becomes http://, an existing local HTML file path becomes file:// (open what you just built).
-- back / forward — history. reload — { hard? } reload the tab (hard: bypass cache after a rebuild).
-- wait — { ms: 1500 } pause, OR { selector: ".results", timeoutMs?, gone? }, OR { text: "Success", timeoutMs?, gone? } — wait until a CSS selector or visible text appears (gone: true → disappears, e.g. a spinner).
-
-ACT:
-- click — { ref: N } (STRONGLY PREFERRED) or { text: "Sign in", nth? } or { x, y } (canvas/map only, after a screenshot). If mixed accidentally, ref/text wins and x/y is ignored. { double: true } for double-click.
-- fill — { ref: N, value: "..." } set input/textarea/select; the value is read back and verified. For <select>, value matches an option by value or visible label.
-- type — { text: "..." } into the focused field (click it first). submit: true presses Enter after.
-- press — { key: "..." } one key or chord: Enter, Tab, Escape, Backspace, Delete, Space, arrows, Home/End, PageUp/PageDown, F1-F12, any single character, or chords like "Control+a", "Control+Shift+ArrowRight".
-- hover — { ref: N } or { text: "..." }. Opens hover menus/tooltips; the observation shows what appeared.
-- scroll — { direction: up|down|left|right|top|bottom, amount? } or { ref: N } to scroll that element into view.
-- drag — { ref: N, toRef: M } drag source onto target (real mouse path; falls back to HTML5 drag-and-drop events automatically).
-- upload — { ref: N, files: ["C:/path/report.pdf"] } set local file(s) on a file input. NEVER click a file-picker button and wait — the native OS dialog is invisible to this tool; upload sets files directly (the ref can be the input, its label, or a nearby upload control).
-- eval — { js: "..." } run JavaScript in the page, returns the JSON-serialized result (promises awaited). The escape hatch: extract structured data in one shot, read computed styles, call the app's own APIs. If your JS changed the DOM, observe afterwards.
-- dismiss — no params. Close the topmost modal/popup/overlay.
-- pdf — { path: "page.pdf" } save the current page as PDF.
-- resize — { width, height, mobile? } emulate a viewport for responsive testing (mobile: true also emulates touch; 0 x 0 resets to the real window).
-
-STANDING WATCH (the dev loop):
-- watch — { conditions: [...] } registers what you care about; { } with no conditions checks them. Conditions: console.error, console.warn, console.any, request.failed (all accept an optional ":substring" filter), selector.appears:CSS, selector.gone:CSS, text.appears:TEXT, url.matches:SUBSTRING.
-- Register once, then keep working: new console errors and failed requests are attached to the warnings of your later browser calls, so a runtime error in the app you are editing finds you instead of costing a console read every turn. Page conditions (selector/text/url) are evaluated when you call watch.
-
-FLOWS (stop paying for the same login twice):
-- Your successful navigate/click/fill/type/press/scroll/wait/dismiss actions are recorded automatically, by label rather than by @ref.
-- flow { mode: "save", name: "login" } writes them to .tau/flows/<name>.json. { mode: "run", name: "login" } replays them with no further calls from you and stops at the first step that no longer matches, naming that step. { mode: "list" }, { mode: "delete", name }, { mode: "clear" } (drop the recording and start fresh).
-- Replay is also the cheapest UI regression test you have: if a flow that worked yesterday diverges today, the step it names is what changed.
-
-TABS: tabs (list) / new_tab { url? } / switch_tab { tabIndex } / close_tab { tabIndex? }. A click that opens a new tab switches to it automatically.
-close — shut the browser down when the task is finished.
-
-AUTOMATIC BEHAVIORS (read the warnings, do not fight them):
-- JS dialogs (alert/confirm/prompt) are auto-accepted so they can never wedge the session; the dialog text shows up in warnings.
-- Downloads land in a known folder; "Download finished: name → path" appears in warnings.
-- Consent banners auto-dismissed; new tabs from clicks auto-followed; hidden lazy content nudged awake.
-- If the user focuses or interacts with another browser tab, the tool follows that active tab automatically and reports the handoff in warnings.
-
-RECOVERY (the reason field tells you which happened — adjust, do not retry blindly):
-- stale_ref — the page changed since your last observe. Observe and use the new refs.
-- element_covered — something is on top of your target, and the message says WHICH KIND, because the fix differs:
-  · a dialog/drawer/layer → dismiss it (the message says how many layers are open; close the topmost first), then retry with a fresh ref.
-  · fixed or sticky page furniture (header, language bar, cookie strip) → dismiss does nothing to page chrome. Scroll, or act on something else.
-  · a normal element painted above (z-index) → I already tried several points across the target and every one hit the blocker. Retrying is pointless and dismiss does not apply: it is a stacking defect in the page. Report it, or act on the covering element.
-  · no visible area → the element is off-screen or still animating in. Wait or scroll, then re-observe.
-  If the same blocker stops you twice the message says so: stop retrying and change approach.
-- coordinate_guessing — you are clicking blind coordinates. Stop. Observe (refs) or screenshot (see), then act by ref/text.
-- not_editable — that element is not an input, or it rejected text. Click the actual input first, or fill a different element.
-- no_match — your text/selector matched nothing (or only a negation like "Don't allow"). Observe and act by ref.
-- timeout — the waited-for condition never came. Read or observe to see what the page did instead.
-CAPTCHA/login walls are flagged in warnings — stop and ask the user to handle them in the browser window, then continue. (Anti-detection measures are on, so these should be rare.)
-
-SAFETY: actions that clearly pay, purchase, delete, or enter card data pause for user confirmation. Do not try to route around that; it is intended.
-
-Prefer this tool over the Computer tool for anything inside a web page — it is DOM-aware and does not burn tokens on screenshots for every step.`
+WARNINGS / RECOVERY
+Automatic behaviors (read the warnings; do not fight them): JS alert/confirm/prompt are auto-accepted, text reported; downloads land in a known folder ("Download finished: name → path"); observe dismisses consent banners; hidden lazy content is nudged awake. If the user focuses or uses another tab, the tool follows it and reports the handoff.
+The reason field names the failure; adjust, do not retry blindly:
+- stale_ref: the page changed; observe again and use fresh refs.
+- element_covered: the message names the blocker kind. Dialog/drawer/layer → dismiss the topmost (open-layer count reported), then use a fresh ref. Fixed/sticky header, language bar or cookie strip → dismiss cannot remove page chrome; scroll or act on something else. Normal z-index overlap → several points across the target already hit the blocker: a page stacking defect; report it or act on the covering element, never retry/dismiss. No visible area → off-screen or animating: wait or scroll, then observe.
+- not_editable: not an input, or it rejected text; click the actual input or fill another element.
+- no_match: text/selector matched nothing (or only a negation like "Don't allow"); observe and use a ref.
+- timeout: the condition never came; read/observe what the page did instead.
+CAPTCHA/login warnings: stop and ask the user to handle them in the browser, then continue (anti-detection is on, so these are rare).
+Actions that clearly pay, purchase, delete or enter card data pause for user confirmation; NEVER bypass it.`
 
 const ACTIONS = [
   'open',

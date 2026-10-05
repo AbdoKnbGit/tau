@@ -358,8 +358,6 @@ const READ_TOOLS = new Set([
   'WebFetch',
   'WebSearch',
   'Browser',
-  'WebBrowser',
-  'InspectSite',
   'CodebaseRetrieval',
   'GitHistorySearch',
   'RepoContextScout',

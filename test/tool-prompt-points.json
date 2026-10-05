@@ -1,0 +1,1598 @@
+{
+ "_about": [
+  "Points the pre-compression (HEAD de2e0189) Browser/Agent/Bash/Eval prompts made, one regex list per point.",
+  "A point is covered when every regex matches the rendered prompt (case-insensitive; whitespace may be collapsed).",
+  "Checked by test/tool-prompt-contracts.test.mjs. To drop a point on purpose, delete it here in the same change and say why.",
+  "platform: only checked when the Bash prompt renders for that platform. skipIfEnv: not rendered when that variable is truthy.",
+  "H27 and H28 predate HEAD: fixes the 076bb45f cost cut dropped and the runtime only half covers, restored 2026-10-05."
+ ],
+ "Browser": [
+  {
+   "id": "B01",
+   "point": "real Chromium via DevTools",
+   "all": [
+    "Chromium",
+    "DevTools"
+   ]
+  },
+  {
+   "id": "B02",
+   "point": "contrast with a static HTTP fetch (InspectSite/WebBrowser were removed)",
+   "all": [
+    "(WebBrowser/InspectSite \\(static HTML fetch\\)|Unlike a plain HTTP fetch)",
+    "runs JavaScript"
+   ]
+  },
+  {
+   "id": "B03",
+   "point": "runs JavaScript, SPA pages",
+   "all": [
+    "(React/Vue/SPA|JavaScript/SPAs)"
+   ]
+  },
+  {
+   "id": "B04",
+   "point": "trusted input, rendered DOM, iframes",
+   "all": [
+    "trusted",
+    "rendered DOM",
+    "iframe"
+   ]
+  },
+  {
+   "id": "B05",
+   "point": "prefer over Computer; no screenshot per step",
+   "all": [
+    "Computer",
+    "screenshots? (per|for every) step"
+   ]
+  },
+  {
+   "id": "B06",
+   "point": "exactly one action, only its params",
+   "all": [
+    "exactly one action",
+    "(only that action's params|only its params|no unrelated params)"
+   ]
+  },
+  {
+   "id": "B07",
+   "point": "THE ONE RULE salience",
+   "all": [
+    "THE ONE RULE"
+   ]
+  },
+  {
+   "id": "B08",
+   "point": "continue from the returned observation, not guesses",
+   "all": [
+    "fresh (page )?observation",
+    "instead of guessing"
+   ]
+  },
+  {
+   "id": "B09",
+   "point": "open once",
+   "all": [
+    "open.{0,40}once"
+   ]
+  },
+  {
+   "id": "B10",
+   "point": "observe before acting on an unseen page",
+   "all": [
+    "observe (before acting on a page you have not seen|an unseen page)"
+   ]
+  },
+  {
+   "id": "B11",
+   "point": "refs from the latest observation of the current tab",
+   "all": [
+    "(latest|most recent) observation of the current tab"
+   ]
+  },
+  {
+   "id": "B12",
+   "point": "after DOM changes use the new refs",
+   "all": [
+    "after (the )?DOM chang"
+   ]
+  },
+  {
+   "id": "B13",
+   "point": "observe finds controls; read reads",
+   "all": [
+    "observe finds",
+    "read (is how you read|reads content)"
+   ]
+  },
+  {
+   "id": "B14",
+   "point": "NEVER guess coordinates",
+   "all": [
+    "NEVER guess .{0,10}coordinates"
+   ]
+  },
+  {
+   "id": "B15",
+   "point": "coordinates are blind",
+   "all": [
+    "coordinates are blind"
+   ]
+  },
+  {
+   "id": "B16",
+   "point": "a guess clicks the wrong element",
+   "all": [
+    "wrong element"
+   ]
+  },
+  {
+   "id": "B17",
+   "point": "#1 source of wasted steps",
+   "all": [
+    "#1"
+   ]
+  },
+  {
+   "id": "B18",
+   "point": "x/y only for canvas/map/video/drawing after a screenshot",
+   "all": [
+    "canvas/map/video/drawing",
+    "after a screenshot"
+   ]
+  },
+  {
+   "id": "B19",
+   "point": "ref/text override x/y",
+   "all": [
+    "(ref/text (override|wins)|x/y is ignored)"
+   ]
+  },
+  {
+   "id": "B20",
+   "point": "coordinate_guessing: not a cue for another coordinate",
+   "all": [
+    "coordinate_guessing",
+    "(yet another coordinate|not another coordinate)"
+   ]
+  },
+  {
+   "id": "B21",
+   "point": "modals: dismiss, never hunt the X",
+   "all": [
+    "(hunt for the X|hunt the X|coordinate-hunt)"
+   ]
+  },
+  {
+   "id": "B22",
+   "point": "Effect line contents",
+   "all": [
+    "Effect:",
+    "(elapsed time|how long it took)"
+   ]
+  },
+  {
+   "id": "B23",
+   "point": "NO OBSERVABLE EFFECT definition",
+   "all": [
+    "NO OBSERVABLE EFFECT",
+    "scroll"
+   ]
+  },
+  {
+   "id": "B24",
+   "point": "do NOT repeat a no-effect action",
+   "all": [
+    "do not repeat it"
+   ]
+  },
+  {
+   "id": "B25",
+   "point": "unverified = unknown, not success",
+   "all": [
+    "unverified.{0,80}unknown, not (as )?success"
+   ]
+  },
+  {
+   "id": "B26",
+   "point": "unverified = page could not be sampled",
+   "all": [
+    "could not be sampled"
+   ]
+  },
+  {
+   "id": "B27",
+   "point": "on failure SEE the page",
+   "all": [
+    "SEE the page"
+   ]
+  },
+  {
+   "id": "B28",
+   "point": "most failures are a changed DOM",
+   "all": [
+    "most failures"
+   ]
+  },
+  {
+   "id": "B29",
+   "point": "annotate matches refs to what you see",
+   "all": [
+    "annotate",
+    "what you see"
+   ]
+  },
+  {
+   "id": "B30",
+   "point": "same tactic failing twice -> change",
+   "all": [
+    "(two failures of one tactic|fails twice)"
+   ]
+  },
+  {
+   "id": "B31",
+   "point": "covered centre: the tool clicks an uncovered point itself",
+   "all": [
+    "(I click an uncovered point|tool itself clicks an uncovered point)"
+   ]
+  },
+  {
+   "id": "B32",
+   "point": "then the overlap is the likely cause",
+   "all": [
+    "(overlap is the likely|suspect the reported overlap)"
+   ]
+  },
+  {
+   "id": "B33",
+   "point": "state explains no effect: accept, don't retry",
+   "all": [
+    "(an answer, not a failure to retry|accept that explanation)"
+   ]
+  },
+  {
+   "id": "B34",
+   "point": "no appearance claims without this turn's vision token",
+   "all": [
+    "vision token",
+    "this (same )?turn"
+   ]
+  },
+  {
+   "id": "B35",
+   "point": "OCR / other model / image not sent / source are not seeing",
+   "all": [
+    "OCR",
+    "\\[image not sent",
+    "(source code|source of a component)"
+   ]
+  },
+  {
+   "id": "B36",
+   "point": "saved screenshot mints no token",
+   "all": [
+    "mints? no token"
+   ]
+  },
+  {
+   "id": "B37",
+   "point": "measure for visual facts without an image",
+   "all": [
+    "visual facts without an image"
+   ]
+  },
+  {
+   "id": "B38",
+   "point": "get: cheap HTTP-first read with escalation",
+   "all": [
+    "HTTP first",
+    "empty SPA shell",
+    "403/429",
+    "rung=http",
+    "open\\+navigate\\+read",
+    "surface"
+   ]
+  },
+  {
+   "id": "B39",
+   "point": "measure contents",
+   "all": [
+    "WCAG",
+    "(fell back|fallback fonts|unloaded/fallback)",
+    "landmark"
+   ]
+  },
+  {
+   "id": "B40",
+   "point": "extract: provenance, warnings, no gap-filling",
+   "all": [
+    "a@href",
+    "(selector that produced it|source selectors)",
+    "(same value in every row|identical values across rows)",
+    "wishlist",
+    "repeating structures",
+    "(Never fill missing data from memory|do not fill gaps from memory)"
+   ]
+  },
+  {
+   "id": "B41",
+   "point": "observe output and states",
+   "all": [
+    "current page",
+    "not pressed",
+    "\\[iframe\\]"
+   ]
+  },
+  {
+   "id": "B42",
+   "point": "read: links, main content, offsets, stale_read",
+   "all": [
+    "\\[text\\]\\(url\\)",
+    "main content",
+    "offset",
+    "(paragraph|sentence)",
+    "stale_read"
+   ]
+  },
+  {
+   "id": "B43",
+   "point": "pick details",
+   "all": [
+    "Tau:",
+    "Esc",
+    "2 minutes",
+    "(hover it open first|hover-open menus)",
+    "never to explore",
+    "(headless|visible browser only)"
+   ]
+  },
+  {
+   "id": "B44",
+   "point": "screenshot params; path is for the user's file",
+   "all": [
+    "full",
+    "annotate",
+    "(path saves instead of sending an image|save to a file instead of returning)"
+   ]
+  },
+  {
+   "id": "B45",
+   "point": "console",
+   "all": [
+    "uncaught exceptions",
+    "error\\|warn\\|info\\|log\\|all"
+   ]
+  },
+  {
+   "id": "B46",
+   "point": "network",
+   "all": [
+    "METHOD.{0,3}status",
+    "4xx/5xx",
+    "credentials masked",
+    "(up to 3|newest 3)"
+   ]
+  },
+  {
+   "id": "B47",
+   "point": "debug apps with console + network",
+   "all": [
+    "debug"
+   ]
+  },
+  {
+   "id": "B48",
+   "point": "open: visible by default",
+   "all": [
+    "headless",
+    "(user sees|visible)"
+   ]
+  },
+  {
+   "id": "B49",
+   "point": "navigate: localhost and local files",
+   "all": [
+    "localhost:3000",
+    "file://"
+   ]
+  },
+  {
+   "id": "B50",
+   "point": "open what you just built",
+   "all": [
+    "open what you just built"
+   ]
+  },
+  {
+   "id": "B51",
+   "point": "reload hard after a rebuild",
+   "all": [
+    "bypass",
+    "rebuild"
+   ]
+  },
+  {
+   "id": "B52",
+   "point": "wait forms, gone, spinner",
+   "all": [
+    "timeoutMs",
+    "gone",
+    "spinner"
+   ]
+  },
+  {
+   "id": "B53",
+   "point": "click: ref strongly preferred, text nth, double",
+   "all": [
+    "strongly preferred",
+    "nth",
+    "double"
+   ]
+  },
+  {
+   "id": "B54",
+   "point": "fill verifies; select by value or label",
+   "all": [
+    "read.?back",
+    "visible label"
+   ]
+  },
+  {
+   "id": "B55",
+   "point": "type into focused field; submit",
+   "all": [
+    "focused field",
+    "submit"
+   ]
+  },
+  {
+   "id": "B56",
+   "point": "press key names and chords",
+   "all": [
+    "PageUp/PageDown",
+    "Control\\+Shift\\+ArrowRight"
+   ]
+  },
+  {
+   "id": "B57",
+   "point": "hover opens menus/tooltips",
+   "all": [
+    "tooltips"
+   ]
+  },
+  {
+   "id": "B58",
+   "point": "scroll directions and into view",
+   "all": [
+    "up\\|down\\|left\\|right\\|top\\|bottom",
+    "into view"
+   ]
+  },
+  {
+   "id": "B59",
+   "point": "drag: real mouse path, HTML5 fallback",
+   "all": [
+    "real mouse path",
+    "HTML5"
+   ]
+  },
+  {
+   "id": "B60",
+   "point": "upload: set files directly, never the native picker",
+   "all": [
+    "native (OS dialog|file picker)",
+    "(label|nearby upload control)"
+   ]
+  },
+  {
+   "id": "B61",
+   "point": "eval: escape hatch, awaited, JSON",
+   "all": [
+    "escape hatch",
+    "promises (are )?awaited",
+    "JSON"
+   ]
+  },
+  {
+   "id": "B62",
+   "point": "dismiss: topmost via close control or Escape",
+   "all": [
+    "topmost",
+    "Escape"
+   ]
+  },
+  {
+   "id": "B63",
+   "point": "pdf",
+   "all": [
+    "pdf"
+   ]
+  },
+  {
+   "id": "B64",
+   "point": "resize: mobile, 0 x 0 reset",
+   "all": [
+    "0 x 0"
+   ]
+  },
+  {
+   "id": "B65",
+   "point": "tabs; click-opened tabs followed",
+   "all": [
+    "switch_tab",
+    "(switches to it automatically|auto-follow|followed automatically)"
+   ]
+  },
+  {
+   "id": "B66",
+   "point": "close when finished",
+   "all": [
+    "close.{0,60}finished"
+   ]
+  },
+  {
+   "id": "B67",
+   "point": "watch: conditions, register once, evaluated on watch",
+   "all": [
+    "url\\.matches",
+    "register once",
+    "(evaluated when you call watch|evaluated on watch calls)"
+   ]
+  },
+  {
+   "id": "B68",
+   "point": "watch saves a console read every turn",
+   "all": [
+    "console read (every|each) turn"
+   ]
+  },
+  {
+   "id": "B69",
+   "point": "flows: by label, saved, replay names first mismatch",
+   "all": [
+    "by label",
+    "\\.tau/flows",
+    "(first step that no longer matches|first mismatched step)",
+    "clear"
+   ]
+  },
+  {
+   "id": "B70",
+   "point": "flow replay as a regression test",
+   "all": [
+    "regression"
+   ]
+  },
+  {
+   "id": "B71",
+   "point": "automatic behaviors",
+   "all": [
+    "auto-accepted",
+    "Download finished",
+    "consent",
+    "lazy",
+    "another (browser )?tab"
+   ]
+  },
+  {
+   "id": "B72",
+   "point": "don't fight the automatic behaviors",
+   "all": [
+    "(do not fight them|don't fight them)"
+   ]
+  },
+  {
+   "id": "B73",
+   "point": "adjust, don't retry blindly",
+   "all": [
+    "(do not retry blindly|don't retry blindly)"
+   ]
+  },
+  {
+   "id": "B74",
+   "point": "stale_ref",
+   "all": [
+    "stale_ref"
+   ]
+  },
+  {
+   "id": "B75",
+   "point": "element_covered kinds",
+   "all": [
+    "element_covered",
+    "(Fixed/sticky|fixed or sticky)",
+    "z-index",
+    "off-screen"
+   ]
+  },
+  {
+   "id": "B76",
+   "point": "z-index: stacking defect, report",
+   "all": [
+    "stacking defect"
+   ]
+  },
+  {
+   "id": "B77",
+   "point": "not_editable",
+   "all": [
+    "not_editable"
+   ]
+  },
+  {
+   "id": "B78",
+   "point": "no_match incl. negations",
+   "all": [
+    "no_match",
+    "Don't allow"
+   ]
+  },
+  {
+   "id": "B79",
+   "point": "timeout -> read/observe",
+   "all": [
+    "timeout.{0,60}(read|observe)"
+   ]
+  },
+  {
+   "id": "B80",
+   "point": "CAPTCHA/login: ask the user; rare",
+   "all": [
+    "CAPTCHA",
+    "(rare|anti-detection)"
+   ]
+  },
+  {
+   "id": "B81",
+   "point": "purchases pause for confirmation; never bypass",
+   "all": [
+    "(pay|purchase).{0,60}confirmation",
+    "(NEVER bypass|route around)"
+   ]
+  }
+ ],
+ "Agent": [
+  {
+   "id": "A01",
+   "point": "complex multi-step tasks, autonomously",
+   "all": [
+    "complex, multi-step tasks",
+    "autonom"
+   ]
+  },
+  {
+   "id": "A02",
+   "point": "subprocesses with type-specific tools",
+   "all": [
+    "subprocesses",
+    "capabilities"
+   ]
+  },
+  {
+   "id": "A03",
+   "point": "agent list",
+   "all": [
+    "Available agent types"
+   ]
+  },
+  {
+   "id": "A04",
+   "point": "subagent_type; default general-purpose",
+   "all": [
+    "subagent_type",
+    "general-purpose"
+   ]
+  },
+  {
+   "id": "A05",
+   "point": "when not to use",
+   "all": [
+    "specific file path",
+    "class Foo",
+    "(2-3 files|1-3 known files)",
+    "(not related to the agent descriptions|unrelated to the available agent descriptions)"
+   ]
+  },
+  {
+   "id": "A06",
+   "point": "...because a direct tool is faster",
+   "all": [
+    "(more quickly|faster)"
+   ]
+  },
+  {
+   "id": "A07",
+   "point": "3-5 word description",
+   "all": [
+    "3-5 word"
+   ]
+  },
+  {
+   "id": "A08",
+   "point": "one message back, invisible to the user",
+   "all": [
+    "(single|one) message",
+    "(not visible|invisible) to the user",
+    "concise (text )?summary"
+   ]
+  },
+  {
+   "id": "A09",
+   "point": "background: notified, no sleep/poll/proactive checks",
+   "all": [
+    "run_in_background",
+    "notif(ied|ies)",
+    "(do NOT sleep|don't sleep)",
+    "proactively check"
+   ],
+   "skipIfEnv": "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+  },
+  {
+   "id": "A10",
+   "point": "foreground when results inform the next step",
+   "all": [
+    "foreground",
+    "research.{0,60}next step"
+   ],
+   "skipIfEnv": "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+  },
+  {
+   "id": "A11",
+   "point": "background only for genuinely independent work",
+   "all": [
+    "genuinely independent"
+   ],
+   "skipIfEnv": "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+  },
+  {
+   "id": "A12",
+   "point": "name: 1-2 lowercase words, shown to the user",
+   "all": [
+    "(one or two words|1-2 words)",
+    "lowercase",
+    "(user sees|displaying it to the user)"
+   ]
+  },
+  {
+   "id": "A13",
+   "point": "SendMessage continuation and cache",
+   "all": [
+    "SendMessage",
+    "agentId",
+    "next tool round",
+    "transcript",
+    "warm",
+    "cold"
+   ]
+  },
+  {
+   "id": "A14",
+   "point": "each invocation starts fresh",
+   "all": [
+    "starts fresh",
+    "complete task description"
+   ]
+  },
+  {
+   "id": "A15",
+   "point": "trust outputs",
+   "all": [
+    "trust"
+   ]
+  },
+  {
+   "id": "A16",
+   "point": "code vs research; agent lacks the user's intent",
+   "all": [
+    "write code",
+    "research",
+    "(not aware of the user's intent|doesn't know the user's intent)"
+   ]
+  },
+  {
+   "id": "A17",
+   "point": "proactive only when the description says so",
+   "all": [
+    "description (mentions|says).{0,60}proactively"
+   ]
+  },
+  {
+   "id": "A18",
+   "point": "'in parallel' MUST be one message",
+   "all": [
+    "in parallel",
+    "MUST"
+   ]
+  },
+  {
+   "id": "A19",
+   "point": "worktree isolation",
+   "all": [
+    "isolation: \"worktree\"",
+    "snapshot",
+    "(cleaned up|auto-clean|auto-cleanup)",
+    "path"
+   ]
+  },
+  {
+   "id": "A20",
+   "point": "smart colleague framing",
+   "all": [
+    "smart colleague"
+   ]
+  },
+  {
+   "id": "A21",
+   "point": "it hasn't seen the conversation or your attempts",
+   "all": [
+    "(hasn't seen this conversation|no conversation context)",
+    "(what you've tried|ruled.out approaches)"
+   ]
+  },
+  {
+   "id": "A22",
+   "point": "goal and why",
+   "all": [
+    "(what you're trying to accomplish and why|goal and why)"
+   ]
+  },
+  {
+   "id": "A23",
+   "point": "learned or ruled out",
+   "all": [
+    "ruled.out"
+   ]
+  },
+  {
+   "id": "A24",
+   "point": "enough context for judgment calls",
+   "all": [
+    "judgment"
+   ]
+  },
+  {
+   "id": "A25",
+   "point": "ask for a short reply",
+   "all": [
+    "200 words"
+   ]
+  },
+  {
+   "id": "A26",
+   "point": "lookups: command; investigations: question",
+   "all": [
+    "exact command",
+    "(dead weight|brittle prescribed steps)"
+   ]
+  },
+  {
+   "id": "A27",
+   "point": "terse prompts give shallow work",
+   "all": [
+    "shallow"
+   ]
+  },
+  {
+   "id": "A28",
+   "point": "never delegate understanding",
+   "all": [
+    "Never delegate understanding",
+    "based on your findings"
+   ]
+  },
+  {
+   "id": "A29",
+   "point": "prove it: paths, line numbers, exact change",
+   "all": [
+    "line numbers"
+   ]
+  },
+  {
+   "id": "A30",
+   "point": "Target / Change / Acceptance",
+   "all": [
+    "Target",
+    "Change",
+    "Acceptance",
+    "(not ready|needs)"
+   ]
+  },
+  {
+   "id": "A31",
+   "point": "out of scope stated",
+   "all": [
+    "(out of scope|exclusions)"
+   ]
+  },
+  {
+   "id": "A32",
+   "point": "one working tree; your job before launch",
+   "all": [
+    "working tree",
+    "before (you )?launch"
+   ]
+  },
+  {
+   "id": "A33",
+   "point": "contracts: signature in both prompts",
+   "all": [
+    "signature",
+    "both prompts",
+    "(cannot see each other's work|seeing each other's work)"
+   ]
+  },
+  {
+   "id": "A34",
+   "point": "open contracts get guessed twice",
+   "all": [
+    "guessed twice"
+   ]
+  },
+  {
+   "id": "A35",
+   "point": "disjoint files; one owner",
+   "all": [
+    "disjoint files",
+    "merge",
+    "owner"
+   ]
+  },
+  {
+   "id": "A36",
+   "point": "skip formatters/linters/tests; run once after",
+   "all": [
+    "formatters",
+    "(failures that aren't real|spuriously)",
+    "(after the last agent returns|after all agents return)"
+   ]
+  },
+  {
+   "id": "A37",
+   "point": "proactive-use example",
+   "all": [
+    "test-runner",
+    "greeting-responder"
+   ]
+  }
+ ],
+ "Bash": [
+  {
+   "id": "H01",
+   "point": "executes bash, returns output",
+   "all": [
+    "Executes",
+    "output"
+   ]
+  },
+  {
+   "id": "H02",
+   "point": "cwd persists, shell state doesn't",
+   "all": [
+    "working directory persists",
+    "shell state does not"
+   ]
+  },
+  {
+   "id": "H03",
+   "point": "profile",
+   "all": [
+    "profile"
+   ]
+  },
+  {
+   "id": "H04",
+   "point": "bracketed directory note is authoritative",
+   "all": [
+    "bracketed directory note"
+   ]
+  },
+  {
+   "id": "H05",
+   "point": "dedicated tools over shell commands",
+   "all": [
+    "Prefer dedicated tools",
+    "NOT find or ls",
+    "NOT grep or rg",
+    "NOT cat/head/tail",
+    "NOT sed/awk",
+    "NOT echo >/cat <<EOF",
+    "NOT echo/printf"
+   ]
+  },
+  {
+   "id": "H06",
+   "point": "target the exact directory",
+   "all": [
+    "git -C",
+    "npm --prefix",
+    "docker compose -f",
+    "bare project command"
+   ]
+  },
+  {
+   "id": "H07",
+   "point": "verify dir and manifest; never guess",
+   "all": [
+    "manifest",
+    "Never guess paths"
+   ]
+  },
+  {
+   "id": "H08",
+   "point": "quote paths with spaces",
+   "all": [
+    "(paths containing spaces|paths \\((including|especially with) spaces\\))"
+   ]
+  },
+  {
+   "id": "H09",
+   "point": "plan_only only on request",
+   "all": [
+    "plan_only",
+    "routine preflight"
+   ]
+  },
+  {
+   "id": "H10",
+   "point": "timeout units and bounds",
+   "all": [
+    "milliseconds",
+    "default \\d+",
+    "maximum \\d+"
+   ]
+  },
+  {
+   "id": "H11",
+   "point": "charts as a data URI",
+   "all": [
+    "data:image/png;base64",
+    "plotext",
+    "Agg",
+    "in-memory buffer"
+   ]
+  },
+  {
+   "id": "H12",
+   "point": "background servers; never detach",
+   "all": [
+    "run_in_background: true",
+    "nohup",
+    "docker compose up -d",
+    "Tau tracks"
+   ]
+  },
+  {
+   "id": "H13",
+   "point": "quoting forms",
+   "all": [
+    "\"\\$var\"",
+    "\"\\$\\(command\\)\"",
+    "\"\\$\\{array\\[@\\]\\}\"",
+    "not backticks"
+   ]
+  },
+  {
+   "id": "H14",
+   "point": "failures, pipefail, redirection order",
+   "all": [
+    "if.?/.?\\|\\|",
+    "set -o pipefail",
+    ">file 2>&1"
+   ]
+  },
+  {
+   "id": "H15",
+   "point": "never parse ls; null-delimited",
+   "all": [
+    "parse .?ls",
+    "null-delimited"
+   ]
+  },
+  {
+   "id": "H16",
+   "point": "docker exec -i",
+   "all": [
+    "docker exec -i",
+    "-t"
+   ]
+  },
+  {
+   "id": "H17",
+   "point": "inline programs; heredoc",
+   "all": [
+    "python <<'PY'",
+    "TMPDIR"
+   ]
+  },
+  {
+   "id": "H18",
+   "point": "process substitution",
+   "all": [
+    "Process substitution"
+   ]
+  },
+  {
+   "id": "H19",
+   "point": "host vs remote paths",
+   "all": [
+    "remote/container path syntax"
+   ]
+  },
+  {
+   "id": "H20",
+   "point": "export vs NAME=value",
+   "all": [
+    "export NAME=value",
+    "NAME=value command"
+   ]
+  },
+  {
+   "id": "H21",
+   "point": "Windows Git Bash rules",
+   "all": [
+    "/c/path",
+    "C:/path",
+    "`NUL`",
+    "CRLF",
+    "command --help",
+    "MSYS2_ARG_CONV_EXCL",
+    "sh -c"
+   ],
+   "platform": "windows"
+  },
+  {
+   "id": "H22",
+   "point": "multiple commands",
+   "all": [
+    "parallel",
+    "&&",
+    "unquoted newlines"
+   ]
+  },
+  {
+   "id": "H23",
+   "point": "git safety",
+   "all": [
+    "Prefer new commits",
+    "amend",
+    "force-push",
+    "hook"
+   ]
+  },
+  {
+   "id": "H24",
+   "point": "waiting",
+   "all": [
+    "Do not sleep, poll, or retry",
+    "diagnose",
+    "status command"
+   ]
+  },
+  {
+   "id": "H25",
+   "point": "Git/GitHub workflow",
+   "all": [
+    "only when requested",
+    "git config",
+    "main/master",
+    "recent log",
+    "stage named files",
+    "secrets",
+    "empty commits",
+    "`gh`",
+    "70 characters",
+    "test plan",
+    "PR URL"
+   ]
+  },
+  {
+   "id": "H26",
+   "point": "hook failure -> fix, new commit",
+   "all": [
+    "(new commit rather than amending|after hook failure, fix the cause and make a new commit|If a hook fails, fix the cause)"
+   ]
+  },
+  {
+   "id": "H27",
+   "point": "no interactive git flags (dropped in 076bb45f, restored)",
+   "all": [
+    "git rebase -i",
+    "git add -i"
+   ]
+  },
+  {
+   "id": "H28",
+   "point": "multi-line commit messages through a quoted heredoc (dropped in 076bb45f, restored)",
+   "all": [
+    "commit messages? through a quoted heredoc"
+   ]
+  }
+ ],
+ "Eval": [
+  {
+   "id": "E01",
+   "point": "one Python cell, session-long kernel",
+   "all": [
+    "(cell of python|python cell)",
+    "(whole session|session-long)"
+   ]
+  },
+  {
+   "id": "E02",
+   "point": "state persists; parse once",
+   "all": [
+    "(state persists|persist (between|across)|survive (to|between))",
+    "(parse once|gather once)"
+   ]
+  },
+  {
+   "id": "E03",
+   "point": "tools callable; output stays out of the conversation; print returns",
+   "all": [
+    "(tools are callable|calls the real tool|run the real tool)",
+    "(not in the conversation|outside conversation)",
+    "(only what you .?print|print\\(\\))"
+   ]
+  },
+  {
+   "id": "E04",
+   "point": "READ vs COMPUTE question",
+   "all": [
+    "READ.{0,20}COMPUTE"
+   ]
+  },
+  {
+   "id": "E05",
+   "point": "unknown target -> CodebaseRetrieval",
+   "all": [
+    "(know what to search|unknown search target).{0,20}CodebaseRetrieval"
+   ]
+  },
+  {
+   "id": "E06",
+   "point": "read rung: one file, one known edit",
+   "all": [
+    "one file, one known edit"
+   ]
+  },
+  {
+   "id": "E07",
+   "point": "compute rung list, unasked",
+   "all": [
+    "count, rank, audit every X",
+    "cross-check",
+    "(same edit across many files|patterned edits across files)",
+    "unasked"
+   ]
+  },
+  {
+   "id": "E08",
+   "point": "one known edit vs thirty patterned edits",
+   "all": [
+    "thirty patterned edits"
+   ]
+  },
+  {
+   "id": "E09",
+   "point": "Bash runs commands; enumerate-then-reduce is computing",
+   "all": [
+    "Bash .{0,5}runs commands",
+    "enumerat\\w*( files)? then reduc"
+   ]
+  },
+  {
+   "id": "E10",
+   "point": "the concrete pipeline from the incident",
+   "all": [
+    "xargs wc -l \\| sort \\| head"
+   ]
+  },
+  {
+   "id": "E11",
+   "point": "xargs batching corrupts totals",
+   "all": [
+    "xargs.{0,5} batching (silently|can silently) corrupt"
+   ]
+  },
+  {
+   "id": "E12",
+   "point": "...stated firmly, not 'can'",
+   "all": [
+    "batching silently corrupts"
+   ]
+  },
+  {
+   "id": "E13",
+   "point": "pipeline leaves no variables",
+   "all": [
+    "no variables to refine"
+   ]
+  },
+  {
+   "id": "E14",
+   "point": "Read/Edit only cheaper for one known change",
+   "all": [
+    "cheaper for one known change"
+   ]
+  },
+  {
+   "id": "E15",
+   "point": "anything Python can do, file writes included",
+   "all": [
+    "anything python can do",
+    "(writing files|file writes)"
+   ]
+  },
+  {
+   "id": "E16",
+   "point": "gather inside the cell, and why",
+   "all": [
+    "Do the gathering \\*\\*inside\\*\\* the cell",
+    "(pays for its whole result|puts raw results) in context"
+   ]
+  },
+  {
+   "id": "E17",
+   "point": "in-cell gathering finds the same files for nothing",
+   "all": [
+    "finds the same files for nothing"
+   ]
+  },
+  {
+   "id": "E18",
+   "point": "result = what the conversation would have shown",
+   "all": [
+    "(what you would have\\s+seen in the conversation|what the conversation would have shown)"
+   ]
+  },
+  {
+   "id": "E19",
+   "point": "a string, not a list (firm)",
+   "all": [
+    "(a string, not a list|a str, not a list)"
+   ]
+  },
+  {
+   "id": "E20",
+   "point": "len counts characters; splitlines for matches",
+   "all": [
+    "len\\(result\\).{0,10}counts.{0,4}characters",
+    "splitlines"
+   ]
+  },
+  {
+   "id": "E21",
+   "point": "images -> dict; isinstance check",
+   "all": [
+    "text.?/.?images",
+    "isinstance\\(result, str\\)"
+   ]
+  },
+  {
+   "id": "E22",
+   "point": "ToolBridgeError; wrap and keep going",
+   "all": [
+    "ToolBridgeError",
+    "(keep going|continue)"
+   ]
+  },
+  {
+   "id": "E23",
+   "point": "30,000 cap; print aggregates, not lists",
+   "all": [
+    "30,000",
+    "aggregates, not lists"
+   ]
+  },
+  {
+   "id": "E24",
+   "point": "never type an absolute root",
+   "all": [
+    "never type an absolute root",
+    "Path\\(os\\.getcwd\\(\\)\\)"
+   ]
+  },
+  {
+   "id": "E25",
+   "point": "wrong-form path silently matches nothing",
+   "all": [
+    "(matches nothing, silently|silently match(es)? nothing)"
+   ]
+  },
+  {
+   "id": "E26",
+   "point": "exclude dirs before walking",
+   "all": [
+    "exclude before walking",
+    "node_modules"
+   ]
+  },
+  {
+   "id": "E27",
+   "point": "duplicate source copies inflate counts",
+   "all": [
+    "(worktree|stale-branch)",
+    "(multiplies every count|inflate counts)"
+   ]
+  },
+  {
+   "id": "E28",
+   "point": "the inflated figure looks plausible",
+   "all": [
+    "(looks plausible|plausible-looking)"
+   ]
+  },
+  {
+   "id": "E29",
+   "point": "report the scope with numbers",
+   "all": [
+    "(which scope you used|report scope|scope you used)"
+   ]
+  },
+  {
+   "id": "E30",
+   "point": "prelude signatures",
+   "all": [
+    "tool\\.list\\(\\)",
+    "read\\(path, offset=1, limit=None\\)",
+    "write\\(path, content\\)",
+    "display\\(value\\)",
+    "env\\(key=None, value=None\\)",
+    "log\\(message\\)"
+   ]
+  },
+  {
+   "id": "E31",
+   "point": "args are the tool's own params, dict or kwargs",
+   "all": [
+    "(tool's|its) own parameters",
+    "(dict or kwargs|args_dict_or_kwargs)",
+    "tool\\.Grep\\(pattern=\"TODO\""
+   ]
+  },
+  {
+   "id": "E32",
+   "point": "one step per cell; re-running setup is waste",
+   "all": [
+    "one logical step per cell",
+    "(re-running setup is waste|set up once|setup, then reuse)"
+   ]
+  },
+  {
+   "id": "E33",
+   "point": "last expression is returned",
+   "all": [
+    "last expression"
+   ]
+  },
+  {
+   "id": "E34",
+   "point": "top-level await, never asyncio.run",
+   "all": [
+    "top-level .?await",
+    "asyncio\\.run"
+   ]
+  },
+  {
+   "id": "E35",
+   "point": "matplotlib inline, never read a PNG back",
+   "all": [
+    "matplotlib",
+    "read (it )?back"
+   ]
+  },
+  {
+   "id": "E36",
+   "point": "errors=replace for binaries",
+   "all": [
+    "errors=\"replace\""
+   ]
+  },
+  {
+   "id": "E37",
+   "point": "no input(); magics; line start; bind first",
+   "all": [
+    "input\\(\\)",
+    "%pip install",
+    "line start",
+    "bind before printing"
+   ]
+  },
+  {
+   "id": "E38",
+   "point": "check packages in the kernel, not Bash's python",
+   "all": [
+    "import x",
+    "(another install|potentially different python)",
+    "%pip install x"
+   ]
+  },
+  {
+   "id": "E39",
+   "point": "file formats: libraries before programs",
+   "all": [
+    "pypdf",
+    "shutil\\.which",
+    "/mingw64/"
+   ]
+  },
+  {
+   "id": "E40",
+   "point": "bounded, interruptible; do not refuse",
+   "all": [
+    "interruptible",
+    "do not refuse"
+   ]
+  },
+  {
+   "id": "E41",
+   "point": "timeout semantics; kernel survives; interrupt same",
+   "all": [
+    "default 60",
+    "kernel and (your )?variables survive",
+    "user interrupt"
+   ]
+  },
+  {
+   "id": "E42",
+   "point": "time inside tool.* excluded",
+   "all": [
+    "tool\\.\\*.{0,40}deadline"
+   ]
+  },
+  {
+   "id": "E43",
+   "point": "names before a raise persist; fix that step",
+   "all": [
+    "(before a raise|after a raise)",
+    "(fix that step|only that step)"
+   ]
+  },
+  {
+   "id": "E44",
+   "point": "reset: run it, do not describe it",
+   "all": [
+    "reset: true",
+    "do not describe what it would do instead of doing it"
+   ]
+  },
+  {
+   "id": "E45",
+   "point": "worked example: gather in cell 1, reuse in cell 2",
+   "all": [
+    "# cell 1",
+    "# cell 2",
+    "Counter"
+   ]
+  },
+  {
+   "id": "E46",
+   "point": "412 lines never entered the conversation",
+   "all": [
+    "412 matched lines"
+   ]
+  },
+  {
+   "id": "E47",
+   "point": "never write a helper to disk to re-import",
+   "all": [
+    "(write a helper to (a file|disk)|write helpers to disk)"
+   ]
+  },
+  {
+   "id": "E48",
+   "point": "never re-import/redefine earlier names",
+   "all": [
+    "(re-import or re-define|re-import/redefine)"
+   ]
+  },
+  {
+   "id": "E49",
+   "point": "%who lists survivors",
+   "all": [
+    "%who"
+   ]
+  }
+ ]
+}

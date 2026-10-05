@@ -45,11 +45,9 @@ import { getAPIProvider } from '../utils/model/providers.js'
 import { parseAntigravityClaudeTier } from '../utils/model/antigravityClaudeTiers.js'
 import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/constants.js'
 import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
-import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
 import { EVAL_TOOL_NAME } from '../tools/EvalTool/constants.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
-import { WEB_BROWSER_TOOL_NAME } from '../tools/WebBrowserTool/constants.js'
 import { BROWSER_TOOL_NAME } from '../tools/BrowserTool/constants.js'
 import {
   EXPLORE_AGENT,
@@ -299,8 +297,6 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const hasProjectWorkflowTool = enabledTools.has(PROJECT_WORKFLOW_TOOL_NAME)
   const hasCodebaseRetrievalTool = enabledTools.has(CODEBASE_RETRIEVAL_TOOL_NAME)
   const hasGitHistorySearchTool = enabledTools.has(GIT_HISTORY_SEARCH_TOOL_NAME)
-  const hasInspectSiteTool = enabledTools.has(INSPECT_SITE_TOOL_NAME)
-  const hasWebBrowserTool = enabledTools.has(WEB_BROWSER_TOOL_NAME)
   const hasBrowserTool = enabledTools.has(BROWSER_TOOL_NAME)
   const hasPackageManagerTool = enabledTools.has(PACKAGE_MANAGER_TOOL_NAME)
   const hasEvalTool = enabledTools.has(EVAL_TOOL_NAME)
@@ -333,8 +329,8 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
     hasProjectWorkflowTool
       ? `${PROJECT_WORKFLOW_TOOL_NAME}: use before guessing build, lint, test, dev-server, package, preview, or deploy commands.`
       : null,
-    hasInspectSiteTool
-      ? `${INSPECT_SITE_TOOL_NAME}: use after a dev server or URL is available for HTTP/page checks before relying on code inspection alone.`
+    hasBrowserTool
+      ? `${BROWSER_TOOL_NAME}: once a dev server or URL is available, check the real page before relying on code inspection alone.`
       : null,
     hasVisualDesignAuditTool
       ? `${VISUAL_DESIGN_AUDIT_TOOL_NAME}: use for frontend/design tasks before finishing, paired with browser/app verification when possible.`
@@ -381,19 +377,9 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
           `When the user asks how something was solved before, when a regression may have history, or when mature code has prior patterns, ${useWorkflowTool(GIT_HISTORY_SEARCH_TOOL_NAME)} before editing. It is read-only and uses git log/show without changing refs.`,
         ]
       : []),
-    ...(hasInspectSiteTool
-      ? [
-          `For local web-app verification, after starting a dev server, ${useWorkflowTool(INSPECT_SITE_TOOL_NAME)} to verify HTTP reachability, expected text, forms, and same-origin assets. Use real browser/Chrome/Playwright MCP tools when screenshots, console errors, clicks, tabs, or authenticated state matter.`,
-        ]
-      : []),
-    ...(hasWebBrowserTool
-      ? [
-          `For local HTML artifacts, ${useWorkflowTool(WEB_BROWSER_TOOL_NAME)} when you need a compact page snapshot. Pass the artifact tool's absolute path or canonical htmlUrl/fileUrl directly; do not construct relative file URLs like file://.tau/... yourself.`,
-        ]
-      : []),
     ...(hasBrowserTool
       ? [
-          `When a task needs to read a live page, a page's rendered (post-JavaScript) content, clicking, typing, forms, multi-step web flows, file uploads, tabs, screenshots, scraping repeated rows, checking how a UI actually rendered, or debugging a web app via its console/network activity, ${useWorkflowTool(BROWSER_TOOL_NAME)}. Its get action reads over plain HTTP first and starts Chrome only when the page turns out to be client-rendered or walled, so reading is cheap; then open once, observe for numbered element refs, and click/fill/type/hover/drag by ref. measure reports what actually painted (colors, fonts that fell back, contrast, broken images, overflow) and extract returns rows with the selector each value came from; console/network expose the tab's logs and requests when verifying frontend changes. Prefer it over ${WEB_BROWSER_TOOL_NAME}/${INSPECT_SITE_TOOL_NAME} (static HTML only) for interactive or SPA pages.`,
+          `When a task needs to read a live page, a page's rendered (post-JavaScript) content, clicking, typing, forms, multi-step web flows, file uploads, tabs, screenshots, scraping repeated rows, checking how a UI actually rendered, or debugging a web app via its console/network activity, ${useWorkflowTool(BROWSER_TOOL_NAME)}. Its get action reads over plain HTTP first and starts Chrome only when the page turns out to be client-rendered or walled, so reading is cheap; then open once, observe for numbered element refs, and click/fill/type/hover/drag by ref. measure reports what actually painted (colors, fonts that fell back, contrast, broken images, overflow) and extract returns rows with the selector each value came from; console/network expose the tab's logs and requests when verifying frontend changes. For a local HTML artifact, navigate to the artifact tool's absolute path or canonical htmlUrl/fileUrl, never a hand-built relative file://.tau/... URL. To show the user a page in their own browser, run the OS opener (start, open or xdg-open) with ${BASH_TOOL_NAME}.`,
         ]
       : []),
     ...(hasPackageManagerTool
@@ -403,7 +389,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
       : []),
     ...(hasVisualDesignAuditTool
       ? [
-          `For frontend/design changes, ${useWorkflowTool(VISUAL_DESIGN_AUDIT_TOOL_NAME)} to scan styling, assets, responsive signals, and visual verification needs; pair it with ${hasInspectSiteTool ? `${INSPECT_SITE_TOOL_NAME} or ` : ''}browser tools when the app can run.`,
+          `For frontend/design changes, ${useWorkflowTool(VISUAL_DESIGN_AUDIT_TOOL_NAME)} to scan styling, assets, responsive signals, and visual verification needs; pair it with ${hasBrowserTool ? BROWSER_TOOL_NAME : 'browser tools'} when the app can run.`,
         ]
       : []),
     `Reserve using the ${BASH_TOOL_NAME} exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the ${BASH_TOOL_NAME} tool for these if it is absolutely necessary.`,

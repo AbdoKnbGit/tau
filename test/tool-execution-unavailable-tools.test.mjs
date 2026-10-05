@@ -16,8 +16,8 @@ const runtime = await loadMcpRuntime()
 // coverage honest if the list changes.
 const OPTIONAL_PREBUILT_TOOLS = [
   'ArtifactCanvas',
-  'InspectSite',
-  'WebBrowser',
+  'ProjectWorkflow',
+  'VisualDesignAudit',
   'Browser',
 ]
 

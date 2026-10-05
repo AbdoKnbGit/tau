@@ -74,8 +74,6 @@ import { WorkflowRecipeTool } from './tools/WorkflowRecipeTool/WorkflowRecipeToo
 import { ToolOutputRetrieveTool } from './tools/ToolOutputRetrieveTool/ToolOutputRetrieveTool.js'
 import { ChangeRiskTool } from './tools/ChangeRiskTool/ChangeRiskTool.js'
 import { GitHistorySearchTool } from './tools/GitHistorySearchTool/GitHistorySearchTool.js'
-import { InspectSiteTool } from './tools/InspectSiteTool/InspectSiteTool.js'
-import { WebBrowserTool } from './tools/WebBrowserTool/WebBrowserTool.js'
 import { BrowserTool } from './tools/BrowserTool/BrowserTool.js'
 import { ArtifactCanvasTool } from './tools/ArtifactCanvasTool/ArtifactCanvasTool.js'
 import { PackageManagerTool } from './tools/PackageManagerTool/PackageManagerTool.js'
@@ -223,7 +221,6 @@ export function getAllBaseTools(): Tools {
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(SuggestBackgroundPRTool ? [SuggestBackgroundPRTool] : []),
-    WebBrowserTool,
     BrowserTool,
     ...(isTodoV2Enabled()
       ? [TaskCreateTool, TaskGetTool, TaskUpdateTool, TaskListTool]
@@ -241,7 +238,6 @@ export function getAllBaseTools(): Tools {
     ToolOutputRetrieveTool,
     ChangeRiskTool,
     GitHistorySearchTool,
-    InspectSiteTool,
     ArtifactCanvasTool,
     PackageManagerTool,
     VisualDesignAuditTool,

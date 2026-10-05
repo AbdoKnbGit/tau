@@ -1,12 +1,10 @@
 import { ARTIFACT_CANVAS_TOOL_NAME } from '../tools/ArtifactCanvasTool/constants.js'
 import { BROWSER_TOOL_NAME } from '../tools/BrowserTool/constants.js'
 import { CHANGE_RISK_TOOL_NAME } from '../tools/ChangeRiskTool/constants.js'
-import { INSPECT_SITE_TOOL_NAME } from '../tools/InspectSiteTool/constants.js'
 import { NATIVE_SYSINFO_TOOL_NAME } from '../tools/NativeTools/constants.js'
 import { PACKAGE_MANAGER_TOOL_NAME } from '../tools/PackageManagerTool/constants.js'
 import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
 import { VISUAL_DESIGN_AUDIT_TOOL_NAME } from '../tools/VisualDesignAuditTool/constants.js'
-import { WEB_BROWSER_TOOL_NAME } from '../tools/WebBrowserTool/constants.js'
 
 export type PrebuiltToolToggleItem = {
   readonly id: string
@@ -49,20 +47,9 @@ export const PREBUILT_TOOL_TOGGLE_GROUPS = [
         toolNames: [CHANGE_RISK_TOOL_NAME],
       },
       {
-        id: INSPECT_SITE_TOOL_NAME,
-        purpose: 'Verify HTTP pages, expected text, assets, and simple forms.',
-        toolNames: [INSPECT_SITE_TOOL_NAME],
-      },
-      {
-        id: WEB_BROWSER_TOOL_NAME,
-        purpose:
-          'Open URLs/local files in the native browser or capture compact HTTP/local HTML snapshots.',
-        toolNames: [WEB_BROWSER_TOOL_NAME],
-      },
-      {
         id: BROWSER_TOOL_NAME,
         purpose:
-          'Drive a real Chrome/Edge browser: navigate, read the page as numbered elements, click, fill, type, scroll, screenshot, and manage tabs.',
+          'Read pages (HTTP first) and drive a real Chrome/Edge browser: click, fill, measure, extract, console/network, screenshots, tabs.',
         toolNames: [BROWSER_TOOL_NAME],
       },
       {

@@ -39,7 +39,7 @@ function getBackgroundUsageNote(): string | null {
   if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
     return null
   }
-  return 'For servers, watchers, tunnels, port-forwards, and other long-lived foreground work, set `run_in_background: true`. Do not detach inside `command` with `&`, `nohup`, `disown`, `echo $!`, `docker compose up -d`, or `docker run -d`; Tau tracks the task and reports completion.'
+  return 'For servers/watchers/tunnels/port-forwards and other long-lived work, set `run_in_background: true`. Never detach inside `command` with `&`, `nohup`, `disown`, `echo $!`, `docker compose up -d`, or `docker run -d`; Tau tracks completion.'
 }
 
 function getCommitAndPRInstructions(): string {
@@ -82,10 +82,9 @@ Use \`gh\` for GitHub issues, pull requests, checks, and releases.`
 
   return `# Git/GitHub
 
-- Commit, push, amend, or create a PR only when requested. Never change git config, skip hooks/signing, force-push main/master, or use destructive git commands without explicit authorization.
-- Before committing, inspect status, staged/unstaged diff, and recent log; stage named files, exclude secrets, and do not create empty commits. Prefer a new commit. If a hook fails, fix it and create a new commit rather than amending.${commitAttribution ? ` End the commit message with:\n${commitAttribution}` : ''}
-- Push only when requested. Use \`gh\` for GitHub work.
-- Before a PR, inspect the complete branch diff/history against its base. Keep the title under 70 characters; include a concise summary and test plan${prAttribution ? `, then append:\n${prAttribution}` : ''}. Return the PR URL.`
+- Commit, push, amend, or create a PR only when requested. Changing git config or force-pushing main/master requires explicit authorization.
+- Before committing, inspect status, staged/unstaged diff, and recent log; stage named files, exclude secrets, and never create empty commits.${commitAttribution ? ` End the commit message with:\n${commitAttribution}` : ''}
+- Use \`gh\` for GitHub work. Before a PR, inspect the complete branch diff/history against its base. Title: under 70 characters. Include a concise summary and test plan${prAttribution ? `, then append:\n${prAttribution}` : ''}. Return the PR URL.`
 }
 
 // SandboxManager merges config from multiple sources (settings layers, defaults,
@@ -156,44 +155,40 @@ function getSimpleSandboxSection(): string {
   const sandboxOverrideItems: Array<string | string[]> =
     allowUnsandboxedCommands
       ? [
-          'You should always default to running commands within the sandbox. Do NOT attempt to set `dangerouslyDisableSandbox: true` unless:',
+          'Default to sandboxed commands. Use `dangerouslyDisableSandbox: true` only when:',
           [
-            'The user *explicitly* asks you to bypass sandbox',
-            'A specific command just failed and you see evidence of sandbox restrictions causing the failure. Note that commands can fail for many reasons unrelated to the sandbox (missing files, wrong arguments, network issues, etc.).',
+            'The user explicitly requests bypass.',
+            'The command just failed with evidence of sandbox restrictions; missing files, wrong arguments, and unrelated network failures do not justify bypass.',
           ],
-          'Evidence of sandbox-caused failures includes:',
+          'Sandbox evidence includes:',
           [
             '"Operation not permitted" errors for file/network operations',
-            'Access denied to specific paths outside allowed directories',
-            'Network connection failures to non-whitelisted hosts',
+            'Access denied outside allowed directories',
+            'Connection failures to non-allowed hosts',
             'Unix socket connection errors',
           ],
-          'When you see evidence of sandbox-caused failure:',
+          'After a sandbox-caused failure:',
           [
-            "Immediately retry with `dangerouslyDisableSandbox: true` (don't ask, just do it)",
-            'Briefly explain what sandbox restriction likely caused the failure. Be sure to mention that the user can use the `/sandbox` command to manage restrictions.',
-            'This will prompt the user for permission',
+            'Immediately retry with `dangerouslyDisableSandbox: true`; the tool prompts for permission, so do not ask separately.',
+            'Briefly explain the likely restriction and mention `/sandbox` to manage restrictions.',
           ],
-          'Treat each command you execute with `dangerouslyDisableSandbox: true` individually. Even if you have recently run a command with this setting, you should default to running future commands within the sandbox.',
-          'Do not suggest adding sensitive paths like ~/.bashrc, ~/.zshrc, ~/.ssh/*, or credential files to the sandbox allowlist.',
+          'Decide bypass per command; return to sandbox by default afterward.',
+          'Never suggest allowlisting sensitive paths (~/.bashrc, ~/.zshrc, ~/.ssh/*, credentials).',
         ]
       : [
-          'All commands MUST run in sandbox mode - the `dangerouslyDisableSandbox` parameter is disabled by policy.',
-          'Commands cannot run outside the sandbox under any circumstances.',
-          'If a command fails due to sandbox restrictions, work with the user to adjust sandbox settings instead.',
+          '`dangerouslyDisableSandbox` is disabled by policy: every command MUST be sandboxed, without exception.',
+          'For sandbox-caused failures, work with the user to adjust sandbox settings.',
         ]
 
   const items: Array<string | string[]> = [
     ...sandboxOverrideItems,
-    'For temporary files, always use the `$TMPDIR` environment variable. TMPDIR is automatically set to the correct sandbox-writable directory in sandbox mode. Do NOT use `/tmp` directly - use `$TMPDIR` instead.',
+    'For temporary files, always use `$TMPDIR` (automatically sandbox-writable), never `/tmp` directly.',
   ]
 
   return [
     '',
     '## Command sandbox',
-    'By default, your command will be run in a sandbox. This sandbox controls which directories and network hosts commands may access or modify without an explicit override.',
-    '',
-    'The sandbox has the following restrictions:',
+    'Sandbox controls directory/network access and modification unless explicitly overridden:',
     restrictionsLines.join('\n'),
     '',
     ...prependBullets(items),
@@ -218,18 +213,16 @@ export function getSimplePrompt(): string {
     'Communication: Output text directly (NOT echo/printf)',
   ]
 
-  const avoidCommands = embedded
-    ? '`cat`, `head`, `tail`, `sed`, `awk`, or `echo`'
-    : '`find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo`'
-
   const multipleCommandsSubitems = [
-    `Send independent commands as parallel ${BASH_TOOL_NAME} calls; join dependent commands with \`&&\`. Use \`;\` only when later commands should run after a failure.`,
+    `Run independent commands as parallel ${BASH_TOOL_NAME} calls; join dependent commands with \`&&\`. Use \`;\` only to continue after failure.`,
     'Do not use unquoted newlines as command separators.',
   ]
 
   const gitSubitems = [
-    'Prefer new commits. Use destructive operations, amend, force-push, or hook/signing bypasses only when explicitly requested.',
-    'If a hook fails, fix the cause and retry as a new commit.',
+    'Prefer new commits; after hook failure, fix the cause and make a new commit. Destructive operations, amend, force-push, or hook/signing bypasses require explicit requests.',
+    // Dropped in 076bb45f. GIT_EDITOR=true keeps these from hanging, but
+    // `rebase -i` then silently does nothing and an editor commit aborts empty.
+    '`git rebase -i`/`git add -i` cannot work here (no editor or terminal input). Pass multi-line commit messages through a quoted heredoc.',
   ]
 
   const sleepSubitems = [
@@ -239,13 +232,13 @@ export function getSimplePrompt(): string {
           'Use the Monitor tool to stream events from a background process (each stdout line is a notification). For one-shot "wait until done," use Bash with run_in_background instead.',
         ]
       : []),
-    'For long-running work use `run_in_background`; Tau reports completion, so do not poll.',
+    'Use `run_in_background` for long work; Tau reports completion, so do not poll.',
     ...(feature('MONITOR_TOOL')
       ? [
           '`sleep N` as the first command with N ≥ 2 is blocked. If you need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.',
         ]
       : [
-          'For an external process, run its status command directly. If a deliberate delay is unavoidable, keep it short.',
+          'For external processes, run the status command directly; keep unavoidable delays short.',
         ]),
   ]
   const backgroundNote = getBackgroundUsageNote()
@@ -254,22 +247,21 @@ export function getSimplePrompt(): string {
   const commandBestPractices = getBashCommandBestPractices()
 
   const instructionItems: Array<string | string[]> = [
-    'Target the exact directory the user named. Put its absolute path in the command, pass it as an argument, or use the CLI\'s native location flag (for example `git -C`, `npm --prefix`, or `docker compose -f`). Do not run a bare project command in another cwd.',
-    'Before creating files or running project-specific build/test/package commands, verify the target directory and relevant manifest exist. Never guess paths.',
-    'Quote paths containing spaces and shell expansions unless splitting/globbing is intended.',
-    'Run normal Bash commands directly. Use `plan_only: true` only when the user explicitly asks for a dry-run plan; do not use it as a routine preflight for Python, package-manager, build, test, or cleanup commands.',
+    'Target the exact user-named directory by absolute path/argument or native flag (`git -C`, `npm --prefix`, `docker compose -f`); never run bare project commands in another cwd.',
+    'Before file creation or project build/test/package commands, verify the target directory and relevant manifest exist. Never guess paths.',
+    'Run commands directly; `plan_only: true` requires an explicit user request for a dry-run plan, never routine preflight for Python/package/build/test/cleanup commands.',
     `\`timeout\` is milliseconds; default ${getDefaultTimeoutMs()}, maximum ${getMaxTimeoutMs()}.`,
-    'To show the user a chart, plot, or rendered image, print a single `data:image/png;base64,...` URI as the entire stdout — Tau renders it inline in the terminal and sends it to you as an image. Prefer this over ASCII-art plotting libraries such as plotext. For matplotlib, use the Agg backend and savefig to an in-memory buffer.',
+    'For charts/plots/images, print one `data:image/png;base64,...` URI as the entire stdout; Tau renders it inline and sends you the image. Prefer this to ASCII plots (plotext). With matplotlib, use Agg and savefig to an in-memory buffer.',
     ...(backgroundNote !== null ? [backgroundNote] : []),
-    'Shell correctness rules:',
+    'Shell correctness:',
     commandBestPractices,
-    'Platform-specific shell rules:',
+    'Platform:',
     platformBestPractices,
-    'When issuing multiple commands:',
+    'Multiple commands:',
     multipleCommandsSubitems,
-    'For git commands:',
+    'Git:',
     gitSubitems,
-    'Avoid unnecessary `sleep` commands:',
+    'Waiting:',
     sleepSubitems,
     ...(embedded
       ? [
@@ -283,13 +275,9 @@ export function getSimplePrompt(): string {
   ]
 
   return [
-    'Executes a given bash command and returns its output.',
+    "Executes Bash and returns output. Working directory persists; shell state does not. Shell initializes from the user's bash/zsh profile. A result's bracketed directory note is authoritative.",
     '',
-    "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).",
-    '',
-    'A bracketed directory note in a result is authoritative. Shell state does not persist; target other directories with absolute paths or native location flags.',
-    '',
-    `Prefer dedicated tools over ${avoidCommands}:`,
+    'Prefer dedicated tools:',
     '',
     ...prependBullets(toolPreferenceItems),
     '',
