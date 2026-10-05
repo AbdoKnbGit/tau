@@ -3,6 +3,18 @@
 All notable changes to **Tau**, from the first release to the latest.
 Each version lists what was fixed or added, newest first.
 
+## v0.92.39 (2026-10-05)
+
+- Load skills from `.agents/skills`, the folder Codex, opencode and Cline use; when both folders have a skill with the same name, the `.claude` one wins (d7dbc04a)
+- Keep large WebSearch and WebFetch results useful: show the passages that match the query instead of each page's top, and stop half an emoji from ending up in the history (6d9027ee)
+- Add `/mascot`: an optional little figure above the prompt that shows what Tau is doing. It is off by default and never reaches the model (c9b07f17)
+- Make headings and tables easier to read (99c08ceb)
+- Fix leftover characters on screen, stray cursor movement and logo redraws, and respect `NO_COLOR` (c483c940)
+- Fix browser scrolling, screenshots, form labels and frames; add point-and-click picking, shadow DOM support and request/response inspection with credentials masked (268404b9)
+- Fix overlapping labels in Eval charts (1ea0c9a6)
+- Add Opus 5.5 and Sonnet 5.5 on Antigravity with low/medium/high levels, show the weekly and 5-hour limits in `/usage`, and fix `/effort`, `/cost` and prompt caching there (de2e0189)
+- Cut the Browser, Agent, Bash and Eval tool prompts by about 30% without losing any rule, and remove the InspectSite and WebBrowser tools, which Browser now covers (ca46fd8d)
+
 ## v0.92.38 (2026-10-01)
 
 - Keep background language servers off by default to reduce startup memory; enable them in `/config` when needed.

@@ -2,198 +2,166 @@
 
 ## Auth
 
-**`/login` - Start here**
-Pick a provider, enter your credentials, and Tau saves the setup. No env variables, no config hunt.
+**`/login`**
+Pick a provider and enter your credentials. Tau saves the setup, so there are no environment variables to set.
 
 ## Models
 
-**`/models` - Pick your model**
-Live model browser. Fetches the real catalog from your provider API, lets you search, filter, and set the active model.
+**`/models`**
+Browse the live model list from your provider, search it, and set the active model.
 
 ```
-/models                     open the full picker
-/models <query>             search active provider
-/models openrouter:kimi     search a specific provider
+/models                     open the picker
+/models <query>             search the active provider
+/models openrouter:kimi     search one provider
 /model kimi-k2-5            set a model directly
 ```
 
-**Favorites - quick switching between the models you actually use**
-Press `Ctrl+F` on any model in `/models` to star it. Starred models are pinned
-to the top of the quick picker (`Alt+P`), so hopping between, say, a Gemini on
-Antigravity and a DeepSeek is two keys instead of a walk through the browser.
-Each favorite remembers its provider, so picking one switches the lane too.
-Press `f` in the quick picker to star or unstar the highlighted model. Up to 12.
-
-## Web Search
-
-**`WebSearch` - Firecrawl-hosted web search**
-The `web_search` tool is hosted with Firecrawl and works across providers. Firecrawl offers 1k searches/month on free trials; just enter your API key.
-
-Setup is one step: `/login` -> **Firecrawl Search** -> paste your Firecrawl API key. After that, agents can search current web information automatically when a question needs live or recent data.
+**Favorites**
+Press `Ctrl+F` on a model in `/models` to star it. Starred models sit at the top of the quick picker (`Alt+P`) and remember their provider, so picking one switches the provider too. Press `f` in the quick picker to star or unstar. Up to 12.
 
 ## Voice
 
-**`/hey` - Start a voice conversation**
-Turns on voice conversation mode. Hold Space to talk, release to send, and Tau shows what it heard before submitting.
+**`/hey`**
+Start a voice conversation. Hold Space to talk and release to send. Tau shows what it heard before sending it.
 
-**`/bye` - End the voice conversation**
-Turns voice conversation mode off and stops any spoken reply that is still playing.
+**`/bye`**
+End the voice conversation and stop any reply still being spoken.
+
+> **Note:** voice uses OpenAI's voice models, so you need to log in with a ChatGPT Plus or Pro account first.
 
 ## Session
 
-**`/tree` - Navigate the session graph**
-Move through your conversation history like nodes, so branches and forks stay understandable. Arrows move, Enter resumes, typing filters, and **Ctrl+R renames the highlighted session** - any session in the tree, not just the one you are in. The new name is written to that session's own transcript, so it shows up in `/tree` and `/resume` from then on; renaming the active session also updates the name under the prompt, exactly like `/rename`.
+**`/tree`**
+Browse your sessions and their branches as a tree. Arrows move, Enter resumes, typing filters, and `Ctrl+R` renames the highlighted session. The new name also shows in `/resume`.
 
-**`/clone` - Clone the session**
-Create a copy of the current session when you want a backup or a clean duplicate to continue from.
+**`/clone`**
+Copy the current session, as a backup or a fresh starting point.
 
-**`/branch` - Open a fork**
-Start a fork from the current point in the session without losing the original path.
+**`/branch`**
+Fork the session from the current point and keep the original intact.
 
-**`/resume` - Continue later**
-Resume the last useful session or pick an older one when you want to continue where you left off.
+**`/resume`**
+Pick up the last session, or choose an older one.
 
-**`/compact-settings` - Configure automatic compaction**
-Adjust the compaction threshold, context cap, and **Preserve recent context**. Preservation is Off by default. When On, automatic compaction in the main conversation keeps a bounded set of recent exchanges word-for-word after the summary, preserving complete tool exchanges. The amount adapts to available space and can be reduced or omitted. Manual `/compact` and subagents are unchanged. Use `/compact-settings status` to inspect the settings, or `/compact-settings reset` to restore defaults, including preservation Off.
+**`/compact-settings`**
+Set the compaction threshold, the context cap, and **Preserve recent context**. When preservation is on, automatic compaction keeps the most recent exchanges word for word after the summary. It is off by default. Manual `/compact` and subagents are not affected.
 
-**`/files` - See which files Tau counts as read**
-Lists, sorted, the files Tau treats as already read in this session: files the model opened or @-mentioned, files it edited or wrote, and the CLAUDE.md and memory files loaded at startup. Useful when Edit says a file has not been read yet, or to see what `/compact` kept (it re-reads up to five files). Files read through shell commands or by subagents are not listed, and Tau tracks at most 100 files. Like other commands, the output is added to the conversation, so the model sees it on its next turn.
+```
+/compact-settings status    show the current settings
+/compact-settings reset     restore the defaults
+```
 
-## Orchestration
+**`/files`**
+List the files Tau counts as read in this session: files the model opened, @-mentioned, edited or wrote, plus the CLAUDE.md and memory files loaded at startup. Use it when Edit says a file has not been read yet. Files read through shell commands or by subagents are not listed, and the limit is 100 files.
 
-**`/team-mode` - Orchestrator with worker agents**
-Multi-provider agent orchestration. One coordinator delegates work to a team of workers and they communicate both **vertically** (coordinator <-> workers, for task delegation and result handoff) and **horizontally** (worker <-> worker, for direct collaboration without round-tripping through the coordinator). Each worker can run on a different provider/model, and the orchestrator automatically falls back when a worker fails so the team keeps moving.
+## Usage and reports
 
-## Monitoring and Reporting
+**`/usage`**
+Show provider usage live as you work.
 
-**`/usage` - Watch provider usage**
-Shows real streaming provider usage as it happens, so you can see provider consumption while working.
+**`/statistics`**
+Show activity and tool-call details for the current session.
 
-**`/statistics` - Review the current session**
-Shows statistics for the active session, including session activity and tool-call details.
-
-**`/report` - Generate a final report**
-Creates a clean content report for the session in Markdown, PDF, or HTML. This is for readable session quality, not usage statistics.
+**`/report`**
+Write a readable report of the session as Markdown, PDF or HTML.
 
 ## Shell commands
 
-**`!command` - Run a shell command yourself**
-Start your message with `!` to run a command directly, without asking the model. The command and its output are added to the conversation, so the model can see them on its next turn.
+**`!command`**
+Run a shell command yourself. The command and its output are added to the conversation, so the model sees them.
 
-**`!!command` - Run a shell command the model doesn't see**
-Use `!!` when you just want to check something, like `!!git status` or `!!ls`, without adding it to the conversation. As soon as you type the second `!`, the footer changes to `!! output not sent to model`. You still see the output (dimmed and marked `not sent to model`), but it is never sent to the model, not even after `/resume`, so it costs no tokens. `!! command` with a space works too, and a command you bring back with Up or Ctrl+R stays hidden.
+**`!!command`**
+Run a command the model never sees, for quick checks like `!!git status`. You still see the output, marked `not sent to model`, and it costs no tokens. A few differences from `!`:
 
-A few things work differently from `!`, so the model can't find out about the command later:
-
-- It always runs in the foreground. Ctrl+B won't move it to the background, and if it runs past the shell timeout it is stopped, because a background task tells the model when it finishes.
-- It can't change Tau's working folder. `!!cd dir` only affects that one command. Use `!cd dir` if you want the model to work there.
-- If Tau is busy, it waits in the queue and runs when the current turn ends. Esc and Up leave it in the queue, because anything pulled back from the queue comes back as a normal prompt.
-- `!!` removes one `!`. If your shell is PowerShell, where `!` means "not", type `!!!(Test-Path x)` to run `!(Test-Path x)`.
+- It always runs in the foreground and cannot be moved to the background with `Ctrl+B`.
+- `!!cd dir` does not change Tau's working folder. Use `!cd dir` for that.
+- If Tau is busy, it waits in the queue until the current turn ends.
+- In PowerShell, where `!` means "not", type `!!!(Test-Path x)` to run `!(Test-Path x)`.
 
 ## Features
 
-**`/tools` - Toggle optional prebuilt tools**
-Opens an interactive picker for optional Tau prebuilt tools. Basic agent tools stay fixed. Only available in normal power mode: cheap forces every optional tool off and full forces them all on, so `/tools` is hidden there.
+**`/mode`**
+Switch between `cheap` and `normal`.
+
+- `cheap`: a small, fixed set of core tools. Optional tools, skills, agents, plugins, MCP and LSP are turned off and hidden from the model, and large results are shown as short previews you can page through. Uses the fewest tokens.
+- `normal`: the default. Your `/tools` choices apply, and MCP, skills, agents and LSP load as configured.
 
 ```
-/tools                     open the picker
-/tools off AFT             hide AFT tools from the agent
-/tools on ProjectWorkflow  enable a tool again
-/tools status              print current state
+/mode          open the picker
+/mode cheap
+/mode normal
 ```
 
-**`/mode` - Switch Tau mode (cheap / normal)**
-One switch for how Tau operates, with a matching identity and accent color that cross-fades on change.
+Antigravity has no cheap mode. Switching to it moves the session to normal. Switching modes changes the tools and system prompt, so the prompt cache rebuilds on the next message.
 
-- `cheap` - a compact core-tool contract. Optional tools, skills, agents, plugins, MCP, and LSP are all off AND hidden from the model (system prompt and listings included); folder configs (`.claude/skills`, `.claude/agents`, `.mcp.json`, plugins) are ignored. Repetitive guidance is enforced by runtime guards, large results are parked with bounded previews and paginated retrieval, and every provider receives the whole compact schema block up front - cheap never hides a tool behind a lookup, so the model always has real parameter schemas and the request prefix stays byte-stable. Soft bronze accents.
-- `normal` - default behavior. Your `/tools` toggles apply; MCP, skills, agents, and LSP load as configured. Standard theme.
-- `full` - everything on. Every optional tool is enabled regardless of saved `/tools` toggles. Soft gold accents.
+**`/tools`**
+Turn optional tools on or off. Core tools always stay on. Only available in normal mode.
 
 ```
-/mode          open the picker (live palette preview)
-/mode cheap    minimal footprint
-/mode normal   back to default
-/mode full     everything on
+/tools                      open the picker
+/tools off AFT              hide a tool from the model
+/tools on ProjectWorkflow   turn it back on
+/tools status               show the current state
 ```
 
-Antigravity has no cheap mode. While it is the active provider, `cheap` is shown as unavailable in the picker and `/mode cheap` is refused. Switching to an Antigravity model from cheap mode, or launching on Antigravity with cheap saved, moves the session to normal and shows a notice.
+**`/fallback`**
+Set a fallback model so Tau keeps going when a model fails mid-session.
 
-Saved `/tools` toggles are never rewritten - cheap/full override them while active, and normal mode restores them (`/tools` appears in normal mode). Switching modes changes the tool set and system prompt once, so the prompt cache re-warms on the next message. Cheap then sends every schema eagerly on every provider and stays byte-stable for the rest of the session. In normal/full mode, optional schemas are deferred behind ToolSearch: client-native lanes append a loaded schema once and keep it, so each newly loaded batch can cause one additional expected re-warm but never removal or reordering, while Anthropic-native discovery keeps its physical tool block fixed and hides definitions server-side. A tool called before its schema arrived is not refused - its arguments are checked against the schema Tau holds locally and the call runs when they match, so a correct call costs no extra turn; only a parameter the schema does not define is rejected, and that rejection carries the real schema for a single direct retry.
+**`/dangerously-skip-permissions`**
+Skip permission prompts for this session. Only use it in a trusted sandbox. `/dangerously-skip-permissions off` turns prompts back on. To start in this mode, run `tau --dangerously-skip-permissions`.
 
-**`/fallback` - Recover automatically**
-Automatic recovery when a model fails mid-session. Configure a fallback and keep working through provider outages.
-
-**`/dangerously-skip-permissions` - Skip permission prompts in a trusted sandbox**
-Session-only Bypass Permissions mode. Tau shows a warning before enabling it, permission prompts include the same session option, and `/dangerously-skip-permissions off` returns to Default mode.
-
-Launch Tau directly in this mode:
-
-```bash
-tau --dangerously-skip-permissions
-```
-
-**`/whatsapp` - Remote control Tau from WhatsApp**
+**`/whatsapp`**
 Link WhatsApp and control Tau from your phone.
 
-**`/github` - GitHub automation (gh required)**
-GitHub workflows inside Tau, powered by the GitHub CLI.
+**`/github`**
+GitHub workflows through the GitHub CLI (`gh` required).
 
-- `issue` - Inspect issues for the current repo, or pass an issue URL to inspect that issue.
-- `pr` - Inspect pull requests (repo-local or via PR URL) and generate gh-backed actions.
-- `wrap` - Stage -> commit -> (optional changelog) -> push, with one permission gate before network writes.
-- `changelog` - Generate/update changelog notes from commit history in a consistent style.
-- `triage` - Classify issues (labels/status) with explicit confirmation before visible changes.
-- `release` - Release flow: inspect dirty working tree, check CI/CD workflow status, then tag/publish and list runs.
+- `issue`: look at the repo's issues, or one issue by URL.
+- `pr`: look at pull requests and act on them.
+- `wrap`: stage, commit, optionally update the changelog, and push, with one confirmation before anything is pushed.
+- `changelog`: write changelog notes from the commit history.
+- `triage`: label and sort issues, with confirmation before any change.
+- `release`: check the working tree and CI, then tag and publish.
 
-**`/safetest` - Run a file inside a disposable cloud sandbox**
-Upload one file to a fresh E2B VM, run it there, get a clean report back. The local machine never executes anything. Each run gets its own throwaway sandbox that's destroyed at the end.
+**`/safetest`**
+Run a file in a throwaway E2B cloud sandbox and get a report back. Nothing runs on your machine. Set it up once with `/login` -> **E2B Security**.
 
-Setup is one step: `/login` -> **E2B Security** -> pick "Auth login" (opens the E2B dashboard in your browser) or "API key" (just paste). After that, `/safetest` is ready - no env variables, no extra config.
+**`/pin`**
+Save a short instruction that Tau adds to the end of every message you send, such as "reply in French" or "only edit files in `src/`". It costs a few tokens per message and does not break the prompt cache.
 
-**`/pin` - Pin a constraint to every prompt**
-Save a sentence (or two) and Tau quietly appends it to the end of every message you send - a persistent reminder the model carries through the whole session without you retyping it. Use it for style rules ("reply in French"), guardrails ("never edit files outside `src/`"), or task focus ("stay on the auth refactor"). Cache-safe by design: only the dynamic tail of the user message changes, so your provider's prompt cache stays warm and the cost is a few extra tokens per turn.
+**`/learned`**
+After a substantial task, Tau can suggest one general lesson for you to approve, edit or skip. Approved lessons carry over to future sessions and projects. `/learned` lets you view, add, edit or delete lessons, or turn learning off.
 
-**`/learned` - Self-learning control hub**
-Tau learns as you work: after a substantial task (or on demand) it proposes one critical, general, reusable lesson - a framework gotcha, a whole class of bug to avoid, a hard-won constraint, or your own preference - for you to Approve / Edit / Skip, then carries approved ones into future sessions and projects. Approve and it's saved and used from the next session, no extra step; lessons are always a single portable principle, never project-specific trivia. Open `/learned` for a navigable menu: view what it has learned, learn from this session, edit or delete a lesson, or toggle self-learning on/off.
-
-**Message header - keep the date, time, and model on screen**
-Every assistant reply can carry a dim right-aligned header. Upstream only draws it inside the detailed transcript (Ctrl+O), so the usual way to keep the date or model visible while working was a `UserPromptSubmit`/`Stop` hook that injected the text into the conversation. One setting in `/config` - **Message header above replies** - does it as pure display instead; nothing is added to the prompt or the model's context. Highlight the row and press **Space** to cycle it:
+**Message header**
+Show the date, time or model above each reply. Set it in `/config` -> **Message header above replies** and press Space to cycle the options. It is display only and never sent to the model.
 
 ```
-off                      never drawn
-transcript               Ctrl+O only, time + model          (default, upstream)
+off                      never shown
+transcript               only in the Ctrl+O transcript (default)
 always:time              10:00 AM
 always:time+model        10:00 AM   claude-opus-5
 always:date+time         27 Aug 2026 10:00 AM
 always:date+time+model   27 Aug 2026 10:00 AM   claude-opus-5
 ```
 
-Leave `/config` with **Enter** to save - Escape reverts every change you made in the panel (that applies to every row in `/config`, not just this one). The setting is stored in the global config (`~/.claude.json`) as `messageHeaderMode`, so you can also set it by hand. It applies to the next reply: lines already printed in the scrollback keep the look they were drawn with, while the Ctrl+O transcript redraws in full and always reflects the current setting.
+Press Enter to leave `/config` and save. Escape discards your changes.
 
-**`/mascot` - Tau's mascot above the prompt**
-The little block figure from the logo can live above the prompt and act out what Tau is doing. He walks while it works, holds the τ up while the model thinks, hammers on an anvil while files change, sprints while commands run, and holds the τ up like a lantern while Tau reads or searches. When a tool fails he sees stars, and when a turn finishes cleanly he does a small hop. The τ gets heavier as the context fills: he slows down past 80%, then kneels near auto-compact. It turns bronze in cheap mode and gold in full mode.
+**`/mascot`**
+A small figure above the prompt that acts out what Tau is doing: walking while it works, hammering during edits, running during commands, and hopping when a turn ends. He slows down as the context fills up. He is off by default and purely visual, so nothing reaches the model. He needs a terminal of at least 40x24 with 256 colors.
 
 ```
 /mascot        toggle
-/mascot on     show him
-/mascot off    hide him
+/mascot on
+/mascot off
 ```
 
-He is off by default; **Tau mascot** in `/config` switches him too, stored as `mascotEnabled` in `~/.claude.json`. He is purely visual: nothing about him reaches the model or the prompt cache, and `/mascot` answers with a notification, not a transcript message. He takes 8 rows and needs a terminal at least 40x24 with 256 colors, so he stays hidden under `NO_COLOR`. With **Reduce motion** he stands still. He steps aside while a slash-command panel is open, and freezes while any part of him has scrolled out of view, so his animation never forces a full terminal redraw.
-
-**`/statusline` - Configure the status row under the prompt**
-Tau draws one status row beneath the prompt. By default it is the built-in session bar: current directory, provider/model, and a context-usage meter. `/statusline` hands the job to the `statusline-setup` agent, which writes a `statusLine` command into `~/.claude/settings.json` for you.
+**`/statusline`**
+Customize the row under the prompt. By default it shows the folder, provider and model, and context usage. `/statusline` writes a `statusLine` command into `~/.claude/settings.json` for you.
 
 ```
-/statusline                              import your shell PS1 (bash/zsh only)
-/statusline show git branch and model    describe the row you want instead
+/statusline                              import your shell prompt (bash/zsh)
+/statusline show git branch and model    describe what you want
 ```
 
-With no argument it reads `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, and `~/.profile` to convert an existing PS1. On Windows none of those exist, so pass a description instead.
-
-The row is controlled by two settings keys:
-
-- `statusLine` - `{ "type": "command", "command": "..." }`. The command receives a JSON blob on stdin (session, model, workspace, `context_window`, `rate_limits`, vim mode, agent, worktree) and its stdout becomes the row. Configuring one automatically hides the built-in bar, so the two never stack.
-- `sessionStatusBar` - a boolean controlling the built-in bar alone. Omit it for the automatic behavior above, `false` to turn the bar off entirely, `true` to keep it visible alongside a custom `statusLine` command.
-
-Set `sessionStatusBar: false` with no `statusLine` command and the row disappears. A `statusLine` command that cannot run - workspace trust not yet accepted, or `disableAllHooks` set - leaves the built-in bar in place rather than an empty row.
+On Windows, describe the row you want, since there is no shell prompt to import. Set `sessionStatusBar` to `false` to hide the default row, or `true` to show it alongside your own.
