@@ -33,6 +33,7 @@ import {
   lookupCatalogPrice,
 } from './modelPricingCatalog.js'
 import { getProviderModelSet } from './model/configs.js'
+import { getCommandCodeCatalogCosts } from './model/commandCodeCatalog.js'
 
 // @see https://platform.claude.com/docs/en/about-claude/pricing
 export type ModelCosts = {
@@ -217,6 +218,165 @@ function getAntigravityClaudeTierCosts(model: string): ModelCosts | null {
 }
 
 /**
+ * Published pricing for Command Code models from context.txt.
+ * Rates in USD per million tokens.
+ */
+function getCommandCodeModelCosts(model: string): ModelCosts | null {
+  if (getAPIProvider() !== 'commandcode') return null
+  const catalogCosts = getCommandCodeCatalogCosts(model)
+  if (catalogCosts) return catalogCosts
+
+  const leaf = (model.split('/').pop() ?? model).toLowerCase()
+
+  if (leaf.includes('kimi-k3')) {
+    return {
+      inputTokens: 3.00,
+      outputTokens: 15.00,
+      promptCacheReadTokens: 0.30,
+      promptCacheWriteTokens: 3.75,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('kimi-k2.6')) {
+    return {
+      inputTokens: 0.95,
+      outputTokens: 4.00,
+      promptCacheReadTokens: 0.16,
+      promptCacheWriteTokens: 1.1875,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('kimi-k2.5')) {
+    return {
+      inputTokens: 0.60,
+      outputTokens: 3.00,
+      promptCacheReadTokens: 0.10,
+      promptCacheWriteTokens: 0.75,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('qwen3.7-max') || leaf.includes('qwen3.8-max')) {
+    return {
+      inputTokens: 2.50,
+      outputTokens: 7.50,
+      promptCacheReadTokens: 0.50,
+      promptCacheWriteTokens: 3.13,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('qwen3.7-plus')) {
+    return {
+      inputTokens: 0.40,
+      outputTokens: 1.60,
+      promptCacheReadTokens: 0.08,
+      promptCacheWriteTokens: 0.50,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('minimax-m3')) {
+    return {
+      inputTokens: 0.30,
+      outputTokens: 1.20,
+      promptCacheReadTokens: 0.06,
+      promptCacheWriteTokens: 0.375,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('minimax-m2.7')) {
+    return {
+      inputTokens: 0.30,
+      outputTokens: 1.20,
+      promptCacheReadTokens: 0.06,
+      promptCacheWriteTokens: 0.375,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('minimax-m2.5')) {
+    return {
+      inputTokens: 0.30,
+      outputTokens: 1.20,
+      promptCacheReadTokens: 0.03,
+      promptCacheWriteTokens: 0.375,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('deepseek-v4-pro')) {
+    return {
+      inputTokens: 0.66,
+      outputTokens: 1.98,
+      promptCacheReadTokens: 0.022,
+      promptCacheWriteTokens: 0.825,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('deepseek-v4') || leaf.includes('deepseek-v4-flash')) {
+    return {
+      inputTokens: 0.15,
+      outputTokens: 0.60,
+      promptCacheReadTokens: 0.003,
+      promptCacheWriteTokens: 0.1875,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('glm-5.1')) {
+    return {
+      inputTokens: 1.40,
+      outputTokens: 4.40,
+      promptCacheReadTokens: 0.26,
+      promptCacheWriteTokens: 1.75,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('glm-5')) {
+    return {
+      inputTokens: 1.00,
+      outputTokens: 3.20,
+      promptCacheReadTokens: 0.20,
+      promptCacheWriteTokens: 1.25,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('gpt-5.6-luna')) {
+    return {
+      inputTokens: 0.20,
+      outputTokens: 1.20,
+      promptCacheReadTokens: 0.02,
+      promptCacheWriteTokens: 0.25,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('gpt-6-luna')) {
+    return {
+      inputTokens: 0.10,
+      outputTokens: 0.50,
+      promptCacheReadTokens: 0.01,
+      promptCacheWriteTokens: 0.125,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('gpt-5.3-codex')) {
+    return {
+      inputTokens: 2.00,
+      outputTokens: 8.00,
+      promptCacheReadTokens: 0.50,
+      promptCacheWriteTokens: 2.50,
+      webSearchRequests: 0.01,
+    }
+  }
+  if (leaf.includes('gpt-5.4-mini')) {
+    return {
+      inputTokens: 0.75,
+      outputTokens: 4.50,
+      promptCacheReadTokens: 0.075,
+      promptCacheWriteTokens: 0.9375,
+      webSearchRequests: 0.01,
+    }
+  }
+
+  return null
+}
+
+/**
  * Get the cost tier for Opus 4.6 based on fast mode.
  */
 export function getOpus46CostTier(fastMode: boolean): ModelCosts {
@@ -296,6 +456,9 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts | null {
 
   const antigravityClaudeCosts = getAntigravityClaudeTierCosts(model)
   if (antigravityClaudeCosts) return antigravityClaudeCosts
+
+  const commandCodeCosts = getCommandCodeModelCosts(model)
+  if (commandCodeCosts) return commandCodeCosts
 
   const shortName = getCanonicalName(model)
 

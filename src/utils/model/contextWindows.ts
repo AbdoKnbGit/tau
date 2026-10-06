@@ -17,6 +17,7 @@ import {
   getStoredContextWindow,
   persistProviderContextWindows,
 } from './contextWindowStore.js'
+import { getCommandCodeCatalogContextWindow } from './commandCodeCatalog.js'
 
 type ContextWindowMap = Record<string, number>
 
@@ -119,6 +120,45 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     'minimax-m2.5-highspeed': 196_000,
     'minimax-m2.1': 196_000,
     'minimax-m2.1-highspeed': 196_000,
+  },
+  commandcode: {
+    'moonshotai/kimi-k3': 1_000_000,
+    'kimi-k3': 1_000_000,
+    'moonshotai/kimi-k2.6': 256_000,
+    'kimi-k2.6': 256_000,
+    'moonshotai/kimi-k2.5': 256_000,
+    'kimi-k2.5': 256_000,
+    'qwen/qwen3.7-max': 1_000_000,
+    'qwen3.7-max': 1_000_000,
+    'qwen/qwen3.7-max-free': 1_000_000,
+    'qwen3.7-max-free': 1_000_000,
+    'qwen/qwen3.7-plus': 1_000_000,
+    'qwen3.7-plus': 1_000_000,
+    'qwen/qwen3.8-max': 1_000_000,
+    'qwen3.8-max': 1_000_000,
+    'qwen/qwen3.8-flash': 1_000_000,
+    'qwen3.8-flash': 1_000_000,
+    'minimaxai/minimax-m3': 1_000_000,
+    'minimax-m3': 1_000_000,
+    'minimaxai/minimax-m2.7': 204_800,
+    'minimax-m2.7': 204_800,
+    'minimaxai/minimax-m2.5': 196_000,
+    'minimax-m2.5': 196_000,
+    'deepseek/deepseek-v4-pro': 1_000_000,
+    'deepseek-v4-pro': 1_000_000,
+    'deepseek/deepseek-v4-flash': 1_000_000,
+    'deepseek-v4-flash': 1_000_000,
+    'zai-org/glm-5.1': 200_000,
+    'glm-5.1': 200_000,
+    'zai-org/glm-5': 200_000,
+    'glm-5': 200_000,
+    'gpt-6-luna': OPENAI_LONG_CONTEXT_WINDOW,
+    'gpt-5.6-luna': OPENAI_LONG_CONTEXT_WINDOW,
+    'gpt-5.3-codex': 272_000,
+    'gpt-5.4-mini': 272_000,
+    'claude-sonnet-4-6': 1_000_000,
+    'claude-opus-4-6': 1_000_000,
+    'claude-haiku-4-5': 200_000,
   },
 }
 
@@ -373,6 +413,15 @@ function lookupHostWindow(
     const catalogWindow = getAlibabaModelMeta(model)?.contextWindow
     if (catalogWindow !== undefined) {
       return catalogWindow
+    }
+  }
+
+  if (provider === 'commandcode') {
+    const catalogWindow = getCommandCodeCatalogContextWindow(model)
+    if (catalogWindow !== undefined) return catalogWindow
+    for (const candidate of candidates) {
+      const w = getCommandCodeCatalogContextWindow(candidate)
+      if (w !== undefined) return w
     }
   }
 

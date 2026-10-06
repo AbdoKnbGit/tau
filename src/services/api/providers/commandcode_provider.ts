@@ -26,6 +26,7 @@ import {
   isCommandCodeClaudeModel,
   supportsCommandCodeEffortSelection,
 } from '../../../utils/model/commandCodeThinking.js'
+import { getCommandCodeCatalogContextWindow } from '../../../utils/model/commandCodeCatalog.js'
 import type { OpenAIReasoningLevel } from '../../../utils/model/openaiReasoning.js'
 import { getSessionId } from '../../../bootstrap/state.js'
 import { foldersWithProjectFiles } from '../../../utils/projectFiles.js'
@@ -39,6 +40,7 @@ const commandCodeEnvironmentContextBySession = new Map<string, Promise<Record<st
 let fallbackCommandCodeAlphaSessionId: string | null = null
 
 const COMMAND_CODE_NATIVE_MODEL_IDS = [
+  'moonshotai/Kimi-K3',
   'moonshotai/Kimi-K2.6',
   'moonshotai/Kimi-K2.5',
   'Qwen/Qwen3.7-Max',
@@ -91,8 +93,8 @@ export class CommandCodeProvider extends OpenAIProvider {
     _thinking: ProviderRequestParams['thinking'],
   ): OpenAIReasoningLevel | undefined {
     const effort = getCommandCodeRequestEffort(model)
-    if (!effort || effort === 'max') return undefined
-    return effort
+    if (!effort || effort === 'none') return undefined
+    return effort as OpenAIReasoningLevel
   }
 
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
@@ -502,7 +504,7 @@ export class CommandCodeProvider extends OpenAIProvider {
     if (params.tools && params.tools.length > 0) body.tools = params.tools
     if (params.stop_sequences) body.stop_sequences = params.stop_sequences
 
-    if (effort) {
+    if (effort && effort !== 'none') {
       const budget = commandCodeAnthropicBudgetForEffort(effort)
       const maxTokens = Math.max(params.max_tokens, budget + 1)
       body.max_tokens = maxTokens
@@ -636,7 +638,7 @@ function toCommandCodeModelInfo(raw: RawCommandCodeModel): ModelInfo | null {
     raw.context_length,
     raw.contextLength,
     raw.max_context_length,
-  )
+  ) ?? getCommandCodeFallbackContextWindow(id)
   return {
     id,
     name,
@@ -652,6 +654,26 @@ function toCommandCodeModelInfo(raw: RawCommandCodeModel): ModelInfo | null {
   }
 }
 
+export function getCommandCodeFallbackContextWindow(modelId: string): number {
+  const catalogWindow = getCommandCodeCatalogContextWindow(modelId)
+  if (catalogWindow !== undefined) return catalogWindow
+  const leaf = (modelId.split('/').pop() ?? modelId).toLowerCase()
+  if (leaf.includes('kimi-k3')) return 1_000_000
+  if (leaf.includes('kimi-k2')) return 256_000
+  if (leaf.includes('qwen3.7-max') || leaf.includes('qwen3.8-max') || leaf.includes('qwen3.8-flash')) return 1_000_000
+  if (leaf.includes('qwen3.7-plus')) return 1_000_000
+  if (leaf.includes('minimax-m3')) return 1_000_000
+  if (leaf.includes('minimax-m2.7')) return 204_800
+  if (leaf.includes('minimax-m2.5')) return 196_000
+  if (leaf.includes('deepseek-v4')) return 1_000_000
+  if (leaf.includes('glm-5')) return 200_000
+  if (leaf.includes('luna')) return 1_050_000
+  if (leaf.includes('codex') || leaf.includes('mini')) return 272_000
+  if (leaf.includes('sonnet') || leaf.includes('opus')) return 1_000_000
+  if (leaf.includes('haiku')) return 200_000
+  return 200_000
+}
+
 function commandCodeTagsForModel(id: string): readonly string[] {
   const tags = new Set<string>()
   const lower = id.toLowerCase()
@@ -660,7 +682,8 @@ function commandCodeTagsForModel(id: string): readonly string[] {
     tags.add('fast')
   }
   if (
-    lower === 'gpt-5.3-codex'
+    lower.includes('kimi-k3')
+    || lower === 'gpt-5.3-codex'
     || lower.includes('sonnet-4-6')
     || lower.includes('kimi-k2.6')
     || lower.includes('qwen3.7-plus')
@@ -684,6 +707,7 @@ function fallbackModels(): ModelInfo[] {
     id,
     name: getCommandCodeModelDisplayName(id) ?? id,
     provider: inferCommandCodeUpstreamProvider(id),
+    contextWindow: getCommandCodeFallbackContextWindow(id),
     supportsToolCalling: true,
     tags: commandCodeTagsForModel(id),
   }))

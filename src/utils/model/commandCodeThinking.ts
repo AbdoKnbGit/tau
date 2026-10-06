@@ -1,9 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import {
+  getCommandCodeCatalogDisplayName,
+  getCommandCodeCatalogEfforts,
+} from './commandCodeCatalog.js'
 
 export type CommandCodeEffort =
   | 'default'
+  | 'none'
+  | 'minimal'
   | 'low'
   | 'medium'
   | 'high'
@@ -14,6 +20,8 @@ export type CommandCodeWireEffort = Exclude<CommandCodeEffort, 'default'>
 
 export const COMMAND_CODE_EFFORT_LEVELS: readonly CommandCodeEffort[] = [
   'default',
+  'none',
+  'minimal',
   'low',
   'medium',
   'high',
@@ -23,6 +31,8 @@ export const COMMAND_CODE_EFFORT_LEVELS: readonly CommandCodeEffort[] = [
 
 export const COMMAND_CODE_EFFORT_DESCRIPTIONS: Record<CommandCodeEffort, string> = {
   default: 'Use the provider default reasoning level',
+  none: 'Disable reasoning (standard generation)',
+  minimal: 'Minimal reasoning for lowest latency',
   low: 'Fast responses with lighter reasoning',
   medium: 'Balances speed and reasoning depth for everyday tasks',
   high: 'Greater reasoning depth for complex problems',
@@ -30,8 +40,99 @@ export const COMMAND_CODE_EFFORT_DESCRIPTIONS: Record<CommandCodeEffort, string>
   max: 'Maximum reasoning budget for the hardest problems',
 }
 
+const KIMI_K3_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'low',
+  'high',
+  'max',
+]
+
+const KIMI_K2_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'none',
+  'low',
+  'medium',
+  'high',
+]
+
+const DEEPSEEK_V4_PRO_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'low',
+  'medium',
+  'high',
+]
+
+const DEEPSEEK_V4_FLASH_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'none',
+  'low',
+  'medium',
+  'high',
+]
+
+const QWEN_MAX_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'none',
+  'low',
+  'medium',
+  'high',
+  'max',
+]
+
+const QWEN_STANDARD_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'none',
+  'low',
+  'medium',
+  'high',
+]
+
+const GLM_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'none',
+  'low',
+  'medium',
+  'high',
+]
+
+const MINIMAX_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'none',
+  'low',
+  'medium',
+  'high',
+]
+
+const GPT_FRONTIER_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'low',
+  'medium',
+  'high',
+  'max',
+]
+
+const GPT_LUNA_CODEX_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+]
+
+const GPT_STANDARD_EFFORTS: readonly CommandCodeEffort[] = [
+  'default',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'max',
+]
+
 const CLAUDE_REASONING_EFFORTS: readonly CommandCodeEffort[] = [
   'default',
+  'none',
   'low',
   'medium',
   'high',
@@ -39,16 +140,18 @@ const CLAUDE_REASONING_EFFORTS: readonly CommandCodeEffort[] = [
   'max',
 ]
 
-const GPT_REASONING_EFFORTS: readonly CommandCodeEffort[] = [
+const CLAUDE_HAIKU_EFFORTS: readonly CommandCodeEffort[] = [
   'default',
+  'none',
   'low',
   'medium',
   'high',
-  'xhigh',
 ]
 
 const GPT_54_MINI_EFFORTS: readonly CommandCodeEffort[] = [
   'default',
+  'none',
+  'minimal',
   'low',
   'medium',
   'high',
@@ -95,6 +198,36 @@ function isCommandCodeClaudeOpusOrSonnet(model: string): boolean {
   return m.includes('claude') && (m.includes('opus') || m.includes('sonnet'))
 }
 
+function isCommandCodeKimiK3(model: string): boolean {
+  const leaf = providerlessModel(model)
+  return leaf === 'kimi-k3' || leaf.includes('kimi-k3')
+}
+
+function isCommandCodeKimiK2(model: string): boolean {
+  const leaf = providerlessModel(model)
+  return leaf.includes('kimi') && !leaf.includes('k3')
+}
+
+function isCommandCodeDeepSeek(model: string): boolean {
+  const leaf = providerlessModel(model)
+  return leaf.includes('deepseek')
+}
+
+function isCommandCodeQwen(model: string): boolean {
+  const leaf = providerlessModel(model)
+  return leaf.includes('qwen') || leaf.includes('qwq')
+}
+
+function isCommandCodeGlm(model: string): boolean {
+  const leaf = providerlessModel(model)
+  return leaf.includes('glm')
+}
+
+function isCommandCodeMiniMax(model: string): boolean {
+  const leaf = providerlessModel(model)
+  return leaf.includes('minimax')
+}
+
 function isCommandCodeGptModel(model: string): boolean {
   const m = comparableModel(model)
   const leaf = providerlessModel(model)
@@ -109,12 +242,34 @@ function isGpt54Mini(model: string): boolean {
 export function commandCodeEffortLevelsForModel(
   model: string,
 ): readonly CommandCodeEffort[] {
-  if (isCommandCodeClaudeHaiku(model)) return ['default']
-  if (isCommandCodeClaudeOpusOrSonnet(model)) return CLAUDE_REASONING_EFFORTS
-  if (isCommandCodeGptModel(model)) {
-    return isGpt54Mini(model) ? GPT_54_MINI_EFFORTS : GPT_REASONING_EFFORTS
+  const catalogEfforts = getCommandCodeCatalogEfforts(model)
+  if (catalogEfforts && catalogEfforts.length > 0) {
+    return catalogEfforts
   }
-  return ['default']
+  if (isCommandCodeKimiK3(model)) return KIMI_K3_EFFORTS
+  if (isCommandCodeKimiK2(model)) return KIMI_K2_EFFORTS
+  if (isCommandCodeDeepSeek(model)) {
+    const leaf = providerlessModel(model)
+    return leaf.includes('pro') ? DEEPSEEK_V4_PRO_EFFORTS : DEEPSEEK_V4_FLASH_EFFORTS
+  }
+  if (isCommandCodeQwen(model)) {
+    const leaf = providerlessModel(model)
+    return (leaf.includes('max') || leaf.includes('omni')) ? QWEN_MAX_EFFORTS : QWEN_STANDARD_EFFORTS
+  }
+  if (isCommandCodeGlm(model)) return GLM_EFFORTS
+  if (isCommandCodeMiniMax(model)) return MINIMAX_EFFORTS
+  if (isCommandCodeClaudeModel(model)) {
+    return isCommandCodeClaudeHaiku(model) ? CLAUDE_HAIKU_EFFORTS : CLAUDE_REASONING_EFFORTS
+  }
+  if (isCommandCodeGptModel(model)) {
+    const leaf = providerlessModel(model)
+    if (leaf.includes('sol') || leaf.includes('astra')) return GPT_FRONTIER_EFFORTS
+    if (leaf.includes('luna') || leaf.includes('codex') || leaf.includes('mini')) {
+      return isGpt54Mini(model) ? GPT_54_MINI_EFFORTS : GPT_LUNA_CODEX_EFFORTS
+    }
+    return GPT_STANDARD_EFFORTS
+  }
+  return ['default', 'low', 'medium', 'high']
 }
 
 export function supportsCommandCodeEffortSelection(
@@ -199,9 +354,10 @@ export function cycleCommandCodeEffort(
 }
 
 export function getCommandCodeEffortLabel(effort: CommandCodeEffort): string {
-  return effort === 'xhigh'
-    ? 'XHigh'
-    : effort.charAt(0).toUpperCase() + effort.slice(1)
+  if (effort === 'xhigh') return 'XHigh'
+  if (effort === 'none') return 'Off'
+  if (effort === 'minimal') return 'Minimal'
+  return effort.charAt(0).toUpperCase() + effort.slice(1)
 }
 
 export function getCommandCodeRequestEffort(
@@ -215,6 +371,8 @@ export function commandCodeAnthropicBudgetForEffort(
   effort: CommandCodeWireEffort,
 ): number {
   switch (effort) {
+    case 'none': return 0
+    case 'minimal': return 1024
     case 'low': return 4000
     case 'medium': return 8000
     case 'high': return 16000
@@ -224,6 +382,9 @@ export function commandCodeAnthropicBudgetForEffort(
 }
 
 export function getCommandCodeModelDisplayName(modelId: string): string | null {
+  const catalogName = getCommandCodeCatalogDisplayName(modelId)
+  if (catalogName) return catalogName
+
   const leaf = modelId.split('/').pop() ?? modelId
   const normalized = leaf.toLowerCase()
   const full = modelId.toLowerCase()
@@ -252,10 +413,20 @@ export function getCommandCodeModelDisplayName(modelId: string): string | null {
       return 'DeepSeek V4 Flash'
     case 'deepseek-v4-pro':
       return 'DeepSeek V4 Pro'
+    case 'kimi-k3':
+    case 'moonshotai/kimi-k3':
+      return 'Kimi K3'
+    case 'kimi-k2.7-code':
+    case 'kimi-k2.7-code-highspeed':
+      return 'Kimi K2.7 Code'
     case 'kimi-k2.6':
       return 'Kimi K2.6'
     case 'kimi-k2.5':
       return 'Kimi K2.5'
+    case 'qwen3.8-max':
+      return 'Qwen 3.8 Max'
+    case 'qwen3.8-flash':
+      return 'Qwen 3.8 Flash'
     case 'qwen3.7-max':
       return 'Qwen 3.7 Max'
     case 'qwen3.7-plus':
@@ -273,8 +444,11 @@ export function getCommandCodeModelDisplayName(modelId: string): string | null {
     case 'glm-5':
       return 'GLM 5'
     default:
+      if (full.endsWith('/kimi-k3')) return 'Kimi K3'
+      if (full.endsWith('/kimi-k2.7-code')) return 'Kimi K2.7 Code'
       if (full.endsWith('/kimi-k2.6')) return 'Kimi K2.6'
       if (full.endsWith('/kimi-k2.5')) return 'Kimi K2.5'
+      if (full.endsWith('/qwen3.8-max')) return 'Qwen 3.8 Max'
       if (full.endsWith('/qwen3.7-max')) return 'Qwen 3.7 Max'
       if (full.endsWith('/qwen3.7-plus')) return 'Qwen 3.7 Plus'
       if (full.endsWith('/qwen3.7-max-free')) return 'Qwen 3.7 Max Free'
