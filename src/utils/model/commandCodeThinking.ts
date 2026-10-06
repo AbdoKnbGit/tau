@@ -228,6 +228,10 @@ export function getCommandCodeModelDisplayName(modelId: string): string | null {
   const normalized = leaf.toLowerCase()
   const full = modelId.toLowerCase()
   switch (normalized) {
+    case 'gpt-5.6-luna':
+      return 'GPT-5.6 Luna'
+    case 'gpt-6-luna':
+      return 'GPT-6 Luna'
     case 'gpt-5.3-codex':
       return 'GPT-5.3 Codex'
     case 'gpt-5.4-mini':

@@ -55,6 +55,8 @@ const COMMAND_CODE_NATIVE_MODEL_IDS = [
 
 const COMMAND_CODE_FALLBACK_MODEL_IDS = [
   ...COMMAND_CODE_NATIVE_MODEL_IDS,
+  'gpt-5.6-luna',
+  'gpt-6-luna',
   'gpt-5.3-codex',
   'gpt-5.4-mini',
   'claude-sonnet-4-6',
@@ -599,6 +601,7 @@ function isCommandCodeNativeAlphaModel(model: string): boolean {
 function isCommandCodeOpenAIModel(model: string): boolean {
   const normalized = comparableCommandCodeModel(model)
   const leaf = normalized.split('/').pop() ?? normalized
+  if (leaf.includes('luna')) return false
   return (
     leaf.startsWith('gpt-')
     || leaf.startsWith('o1')
@@ -653,7 +656,7 @@ function commandCodeTagsForModel(id: string): readonly string[] {
   const tags = new Set<string>()
   const lower = id.toLowerCase()
   if (supportsCommandCodeEffortSelection(id)) tags.add('reasoning')
-  if (lower.includes('mini') || lower.includes('haiku') || lower.includes('flash')) {
+  if (lower.includes('mini') || lower.includes('haiku') || lower.includes('flash') || lower.includes('luna')) {
     tags.add('fast')
   }
   if (
@@ -662,6 +665,7 @@ function commandCodeTagsForModel(id: string): readonly string[] {
     || lower.includes('kimi-k2.6')
     || lower.includes('qwen3.7-plus')
     || lower.includes('minimax-m3')
+    || lower.includes('luna')
   ) {
     tags.add('recommended')
   }
@@ -862,7 +866,8 @@ function commandCodeSystemToText(system?: string | SystemBlock[]): string | unde
 function commandCodeProjectSlug(): string {
   const cwd = process.cwd().replace(/\\/g, '/').replace(/\/+$/, '')
   const leaf = cwd.split('/').pop()
-  return leaf?.trim() || 'tau'
+  const slug = leaf?.trim().replace(/[^a-zA-Z0-9_-]/g, '_')
+  return slug || 'tau'
 }
 
 function commandCodeAlphaSessionId(): string {
@@ -877,15 +882,46 @@ function commandCodeAlphaSessionId(): string {
   return fallbackCommandCodeAlphaSessionId
 }
 
+const COMMAND_CODE_ENV_CONTEXT_TIMEOUT_MS = 3_000
+
+function defaultCommandCodeEnvironmentContext(workingDir = process.cwd()): Record<string, unknown> {
+  return {
+    workingDir,
+    date: new Date().toISOString().split('T')[0] ?? '',
+    environment: `${platform()}-${arch()}, Node.js ${process.version}`,
+    structure: [],
+    isGitRepo: false,
+    currentBranch: '',
+    mainBranch: '',
+    gitStatus: '',
+    recentCommits: [],
+  }
+}
+
 // Built once per session: the listing walks the project, and the request
-// bytes must not change between turns.
+// bytes must not change between turns. A slow mount or heavy git repository
+// falls back to minimal context rather than hanging the turn indefinitely.
 function getCommandCodeEnvironmentContext(sessionId: string): Promise<Record<string, unknown>> {
   const existing = commandCodeEnvironmentContextBySession.get(sessionId)
   if (existing) return existing
 
-  const context = buildCommandCodeEnvironmentContext()
-  commandCodeEnvironmentContextBySession.set(sessionId, context)
-  return context
+  const workingDir = process.cwd()
+  let timer: NodeJS.Timeout | undefined
+  const timeoutPromise = new Promise<Record<string, unknown>>(resolve => {
+    timer = setTimeout(() => {
+      resolve(defaultCommandCodeEnvironmentContext(workingDir))
+    }, COMMAND_CODE_ENV_CONTEXT_TIMEOUT_MS)
+  })
+
+  const contextPromise = Promise.race([
+    buildCommandCodeEnvironmentContext().catch(() => defaultCommandCodeEnvironmentContext(workingDir)),
+    timeoutPromise,
+  ]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+
+  commandCodeEnvironmentContextBySession.set(sessionId, contextPromise)
+  return contextPromise
 }
 
 async function buildCommandCodeEnvironmentContext(): Promise<Record<string, unknown>> {
@@ -930,9 +966,10 @@ async function commandCodeDirectoryStructure(workingDir: string): Promise<string
 
 function commandCodeIsGitRepository(workingDir: string): boolean {
   try {
-    execFileSync('git', ['rev-parse', '--git-dir'], {
+    execFileSync('git', ['--no-optional-locks', 'rev-parse', '--git-dir'], {
       cwd: workingDir,
       stdio: 'ignore',
+      timeout: 2_000,
     })
     return true
   } catch {
@@ -971,10 +1008,11 @@ function commandCodeRecentCommits(workingDir: string): string[] {
 
 function commandCodeGitOutput(workingDir: string, args: readonly string[]): string {
   try {
-    return execFileSync('git', [...args], {
+    return execFileSync('git', ['--no-optional-locks', ...args], {
       cwd: workingDir,
       encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2_500,
     }).trim()
   } catch {
     return ''
