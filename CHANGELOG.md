@@ -3,6 +3,11 @@
 All notable changes to **Tau**, from the first release to the latest.
 Each version lists what was fixed or added, newest first.
 
+## v0.92.40 (2026-10-06)
+
+- Fix Command Code project scans that could hang and correct Luna model routing.
+- Add Command Code reasoning-effort levels, context-window limits and model pricing.
+
 ## v0.92.39 (2026-10-05)
 
 - Load skills from `.agents/skills`, the folder Codex, opencode and Cline use; when both folders have a skill with the same name, the `.claude` one wins (d7dbc04a)
