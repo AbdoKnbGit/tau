@@ -8,6 +8,7 @@ import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEff
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 import { getAPIProvider } from '../../utils/model/providers.js';
 import { AntigravityEffort } from './antigravityEffort.js';
+import { modelSupportsReasoning, resolveOpenAIReasoningEffort, setOpenAIReasoningLevel } from '../../utils/model/openaiReasoning.js';
 const COMMON_HELP_ARGS = ['help', '-h', '--help'];
 type EffortCommandResult = {
   message: string;
@@ -27,6 +28,7 @@ function setEffortValue(effortValue: EffortValue): EffortCommandResult {
       };
     }
   }
+  if (getAPIProvider() === 'openai') setOpenAIReasoningLevel(undefined);
   logEvent('tengu_effort_command', {
     effort: effortValue as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
   });
@@ -63,7 +65,9 @@ function setEffortValue(effortValue: EffortValue): EffortCommandResult {
 }
 export function showCurrentEffort(appStateEffort: EffortValue | undefined, model: string): EffortCommandResult {
   const envOverride = getEffortEnvOverride();
-  const effectiveValue = envOverride === null ? undefined : envOverride ?? appStateEffort;
+  const effectiveValue = getAPIProvider() === 'openai' && modelSupportsReasoning(model)
+    ? resolveOpenAIReasoningEffort(model, appStateEffort ?? null)
+    : envOverride === null ? undefined : envOverride ?? appStateEffort;
   if (effectiveValue === undefined) {
     const level = getDisplayedEffortLevel(model, appStateEffort);
     return {
@@ -84,6 +88,7 @@ function unsetEffortLevel(): EffortCommandResult {
       message: `Failed to set effort level: ${result.error.message}`
     };
   }
+  if (getAPIProvider() === 'openai') setOpenAIReasoningLevel(undefined);
   logEvent('tengu_effort_command', {
     effort: 'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
   });

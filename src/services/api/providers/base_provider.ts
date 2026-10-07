@@ -169,6 +169,9 @@ export interface ProviderRequestParams {
     | { type: 'enabled'; budget_tokens: number }
     | { type: 'adaptive' }
     | { type: 'disabled' }
+  /** Request-scoped OpenAI effort. null explicitly selects the model default;
+   * undefined lets standalone provider calls inherit the session/settings. */
+  effortValue?: import('../../../utils/effort.js').EffortValue | null
 }
 
 export interface SystemBlock {

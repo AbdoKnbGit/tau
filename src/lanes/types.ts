@@ -133,6 +133,7 @@ export interface LaneProviderCallParams {
   temperature?: number
   stop_sequences?: string[]
   thinking?: ProviderRequestParams['thinking']
+  effortValue?: ProviderRequestParams['effortValue']
   signal: AbortSignal
   /** Stable claudex session id for provider-side prompt-cache affinity. */
   sessionId?: string

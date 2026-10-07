@@ -34,6 +34,7 @@ import {
 } from '../../utils/effort.js'
 import {
   modelSupportsReasoning,
+  getAllReasoningLevels,
   type OpenAIReasoningLevel,
 } from '../../utils/model/openaiReasoning.js'
 import {
@@ -76,12 +77,6 @@ const ANTHROPIC_OPUS_EFFORTS = [
   'xhigh',
   'max',
 ] as const
-const OPENAI_REASONING_EFFORTS: readonly OpenAIReasoningLevel[] = [
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-]
 
 type Props = {
   onDone: (
@@ -102,7 +97,7 @@ function effortOptionsFor(
   model: string,
 ): readonly string[] | null {
   // OpenAI reasoning models have their own reasoning_effort taxonomy.
-  if (modelSupportsReasoning(model)) return OPENAI_REASONING_EFFORTS
+  if (provider === 'openai' && modelSupportsReasoning(model)) return getAllReasoningLevels(model)
   // Anthropic low/medium/high/max — modelSupportsEffort already gates on
   // provider + model combo, so we reuse it here.
   if (provider === 'firstParty' && modelSupportsEffort(model)) {
@@ -201,6 +196,7 @@ export function SurfWizard({ onDone, initialProvider }: Props) {
   function handleModelSelected(
     provider: BrowsableModelProvider,
     modelId: string,
+    openaiEffort?: OpenAIReasoningLevel,
   ) {
     const pick: Pick = { provider, model: modelId }
     const options = effortOptionsFor(provider, modelId)
@@ -210,7 +206,7 @@ export function SurfWizard({ onDone, initialProvider }: Props) {
       return
     }
     // Move to effort picker; default to 'medium' (or index 1).
-    const defaultIdx = Math.max(0, options.indexOf('medium'))
+    const defaultIdx = Math.max(0, options.indexOf(openaiEffort ?? 'medium'))
     setPendingPick(pick)
     setEffortIndex(defaultIdx)
     setStep('effort')

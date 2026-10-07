@@ -103,11 +103,7 @@ import {
   setActiveProvider,
   type APIProvider,
 } from '../../utils/model/providers.js'
-import {
-  modelSupportsReasoning,
-  setOpenAIReasoningLevel,
-  type OpenAIReasoningLevel,
-} from '../../utils/model/openaiReasoning.js'
+import { parseEffortValue, type EffortValue } from '../../utils/effortValue.js'
 import { isSurfEnabled, recordSurfTurnStart } from '../../utils/surf/state.js'
 
 /**
@@ -117,14 +113,14 @@ import { isSurfEnabled, recordSurfTurnStart } from '../../utils/surf/state.js'
  * explicit model — explicit caller intent always wins.
  *
  * Side-effect: when surf IS routing this subagent, also swaps the active
- * provider and pushes the provider-native reasoning level (OpenAI models)
- * so the request lands on the right endpoint with the right effort. Also
+ * provider. Effort is returned for this agent's request-scoped state, so it
+ * cannot change the parent's or another agent's reasoning preference. Also
  * bumps the subagent turn counter for /surf status accounting.
  */
 function resolveSurfSubagentModel(args: {
   hasToolSpecifiedModel: boolean
   agentPinsModel: boolean
-}): string | null {
+}): { model: string; effort: EffortValue | undefined } | null {
   if (!isSurfEnabled()) return null
   if (args.hasToolSpecifiedModel || args.agentPinsModel) return null
 
@@ -134,17 +130,8 @@ function resolveSurfSubagentModel(args: {
   if (getAPIProvider() !== (target.provider as APIProvider)) {
     setActiveProvider(target.provider as APIProvider)
   }
-  if (
-    typeof target.effort === 'string' &&
-    modelSupportsReasoning(target.model) &&
-    (['low', 'medium', 'high', 'xhigh'] as readonly OpenAIReasoningLevel[]).includes(
-      target.effort as OpenAIReasoningLevel,
-    )
-  ) {
-    setOpenAIReasoningLevel(target.effort as OpenAIReasoningLevel)
-  }
   recordSurfTurnStart('subagent')
-  return target.model
+  return { model: target.model, effort: parseEffortValue(target.effort) }
 }
 
 /**
@@ -429,7 +416,7 @@ async function* runAgentWithoutProviderOverride({
   })
 
   const resolvedAgentModel = surfSubagentModel
-    ? surfSubagentModel
+    ? surfSubagentModel.model
     : getAgentModel(
         agentDefinition.model,
         toolUseContext.options.mainLoopModel,
@@ -580,7 +567,7 @@ async function* runAgentWithoutProviderOverride({
     const effortValue =
       agentDefinition.effort !== undefined
         ? agentDefinition.effort
-        : state.effortValue
+        : surfSubagentModel?.effort ?? state.effortValue
 
     if (
       toolPermissionContext === state.toolPermissionContext &&

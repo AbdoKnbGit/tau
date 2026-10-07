@@ -69,6 +69,7 @@ function commitModelSelection(args: {
     ...prev,
     mainLoopModel: model,
     mainLoopModelForSession: null,
+    ...(effort !== undefined ? { effortValue: effort } : {}),
   }))
 
   // Thinking-block signatures are only cryptographically verified by
@@ -174,6 +175,7 @@ function ModelPickerWrapper({
   function handleProviderSelect(
     provider: BrowsableModelProvider,
     modelId: string,
+    effort?: EffortLevel,
   ): void {
     logEvent('tengu_model_command_menu', {
       action: modelId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -185,7 +187,7 @@ function ModelPickerWrapper({
 
     commitModelSelection({
       model: modelId,
-      effort: undefined,
+      effort,
       isFastMode,
       setAppState,
       setMessages,

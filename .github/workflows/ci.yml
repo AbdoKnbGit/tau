@@ -111,6 +111,9 @@ jobs:
       - name: Build with esbuild (default, Node-only)
         run: npm run build
 
+      - name: Test OpenAI effort settings, request routing, and cache stability
+        run: node --test test/openai-effort.test.mjs test/openai-native-routing.test.mjs
+
       - name: Test copy selection after resume
         run: node --test test/copy-response.test.mjs
 

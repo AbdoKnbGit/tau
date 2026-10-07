@@ -130,8 +130,11 @@ async function main(): Promise<void> {
     for (const model of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-sol', 'openai/gpt-6-astra']) {
       assert(getAllReasoningLevels(model).at(-1) === 'max', `${model} should expose max`)
     }
-    for (const model of ['gpt-5.5', 'gpt-5', 'gpt-5-codex', 'gpt-4.1', 'o3']) {
+    for (const model of ['gpt-5.5', 'gpt-5.2', 'gpt-5.1-codex-max']) {
       assert(getAllReasoningLevels(model).at(-1) === 'xhigh', `${model} should stop at xhigh`)
+    }
+    for (const model of ['gpt-5', 'gpt-5-codex', 'gpt-5.1', 'o3']) {
+      assert(getAllReasoningLevels(model).at(-1) === 'high', `${model} should stop at high`)
     }
     setOpenAIReasoningLevel('xhigh')
     const selected = cycleOpenAIReasoningLevel('right', 'gpt-5.6-sol')

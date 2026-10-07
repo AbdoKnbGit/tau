@@ -1,4 +1,20 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import {
+  getEffortEnvOverride,
+  convertEffortValueToLevel,
+  type EffortLevel,
+  type EffortValue,
+} from './effortValue.js'
+export {
+  EFFORT_LEVELS,
+  isEffortLevel,
+  parseEffortValue,
+  getEffortEnvOverride,
+  isValidNumericEffort,
+  convertEffortValueToLevel,
+  type EffortLevel,
+  type EffortValue,
+} from './effortValue.js'
 import { isUltrathinkEnabled } from './thinking.js'
 import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
@@ -12,23 +28,6 @@ import {
   supportsCommandCodeEffortSelection,
 } from './model/commandCodeThinking.js'
 import { isEnvTruthy } from './envUtils.js'
-import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
-
-export type { EffortLevel }
-
-export const EFFORT_LEVELS = [
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  // tau-local top tier, first-party Anthropic Claude Opus 4.8 only. Maps to the
-  // strongest real Anthropic effort on the wire (see configureEffortParams in
-  // services/api/claude.ts); resolveAppliedEffort() clamps it away everywhere else.
-  'ultracode',
-] as const satisfies readonly EffortLevel[]
-
-export type EffortValue = EffortLevel | number
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
@@ -137,42 +136,20 @@ export function modelSupportsUltracodeEffort(model: string): boolean {
   return model.toLowerCase().includes('opus-4-8')
 }
 
-export function isEffortLevel(value: string): value is EffortLevel {
-  return (EFFORT_LEVELS as readonly string[]).includes(value)
-}
-
-export function parseEffortValue(value: unknown): EffortValue | undefined {
-  if (value === undefined || value === null || value === '') {
-    return undefined
-  }
-  if (typeof value === 'number' && isValidNumericEffort(value)) {
-    return value
-  }
-  const str = String(value).toLowerCase()
-  if (isEffortLevel(str)) {
-    return str
-  }
-  const numericValue = parseInt(str, 10)
-  if (!isNaN(numericValue) && isValidNumericEffort(numericValue)) {
-    return numericValue
-  }
-  return undefined
-}
-
 /**
  * Numeric values are model-default only and not persisted.
- * 'xhigh' and 'max' are session-scoped for external users (ants can persist them).
+ * Model support is checked at request time, not when saving preferences.
  * Write sites call this before saving to settings so the Zod schema
  * (which only accepts string levels) never rejects a write.
  */
 export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
-  if (value === 'low' || value === 'medium' || value === 'high') {
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max') {
     return value
   }
   if (
-    (value === 'xhigh' || value === 'max' || value === 'ultracode') &&
+    value === 'ultracode' &&
     process.env.USER_TYPE === 'ant'
   ) {
     return value
@@ -181,8 +158,6 @@ export function toPersistableEffort(
 }
 
 export function getInitialEffortSetting(): EffortLevel | undefined {
-  // toPersistableEffort filters 'max' for non-ants on read, so a manually
-  // edited settings.json doesn't leak session-scoped max into a fresh session.
   return toPersistableEffort(getInitialSettings().effortLevel)
 }
 
@@ -207,14 +182,6 @@ export function resolvePickerEffortPersistence(
 ): EffortLevel | undefined {
   const hadExplicit = priorPersisted !== undefined || toggledInPicker
   return hadExplicit || picked !== modelDefault ? picked : undefined
-}
-
-export function getEffortEnvOverride(): EffortValue | null | undefined {
-  const envOverride = process.env.CLAUDE_CODE_EFFORT_LEVEL
-  return envOverride?.toLowerCase() === 'unset' ||
-    envOverride?.toLowerCase() === 'auto'
-    ? null
-    : parseEffortValue(envOverride)
 }
 
 /**
@@ -278,8 +245,8 @@ export function getDisplayedEffortLevel(
     return effort === 'default' ? 'high' : effort
   }
   // OpenAI reasoning models have their own effort system
-  if (isThirdPartyProvider(provider) && modelSupportsReasoning(model)) {
-    return getOpenAIReasoningLevel(model) as EffortLevel
+  if (provider === 'openai' && modelSupportsReasoning(model)) {
+    return getOpenAIReasoningLevel(model, appStateEffort ?? null)
   }
   // Other third-party providers don't use Anthropic effort
   if (isThirdPartyProvider(provider)) {
@@ -309,8 +276,8 @@ export function getEffortSuffix(
     return effort === 'default' ? '' : ` with ${effort} effort`
   }
   // OpenAI reasoning models use their own effort system
-  if (isThirdPartyProvider(provider) && modelSupportsReasoning(model)) {
-    const level = getOpenAIReasoningLevel(model)
+  if (provider === 'openai' && modelSupportsReasoning(model)) {
+    const level = getOpenAIReasoningLevel(model, effortValue ?? null)
     return ` with ${level} effort`
   }
   // Other third-party providers don't use Anthropic effort — no suffix
@@ -319,27 +286,6 @@ export function getEffortSuffix(
   const resolved = resolveAppliedEffort(model, effortValue)
   if (resolved === undefined) return ''
   return ` with ${convertEffortValueToLevel(resolved)} effort`
-}
-
-export function isValidNumericEffort(value: number): boolean {
-  return Number.isInteger(value)
-}
-
-export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
-  if (typeof value === 'string') {
-    // Runtime guard: value may come from remote config (GrowthBook) where
-    // TypeScript types can't help us. Coerce unknown strings to 'high'
-    // rather than passing them through unchecked.
-    return isEffortLevel(value) ? value : 'high'
-  }
-  if (process.env.USER_TYPE === 'ant' && typeof value === 'number') {
-    if (value <= 50) return 'low'
-    if (value <= 85) return 'medium'
-    if (value <= 100) return 'high'
-    if (value <= 150) return 'xhigh'
-    return 'max'
-  }
-  return 'high'
 }
 
 /**
@@ -357,7 +303,7 @@ export function getEffortLevelDescription(level: EffortLevel): string {
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
     case 'xhigh':
-      return 'Extra high reasoning for supported Claude models'
+      return 'Extra high reasoning for supported models'
     case 'max':
       return 'Maximum capability with deepest reasoning'
     case 'ultracode':

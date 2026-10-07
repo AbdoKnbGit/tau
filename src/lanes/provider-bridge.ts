@@ -303,6 +303,7 @@ export class LaneBackedProvider implements BaseProvider {
         temperature: params.temperature,
         stop_sequences: params.stop_sequences,
         thinking: params.thinking,
+        effortValue: params.effortValue,
         signal: controller.signal,
         ...(sessionId ? { sessionId } : {}),
         ...(params.querySource ? { querySource: params.querySource } : {}),

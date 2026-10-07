@@ -62,9 +62,8 @@ import { OPENAI_CODEX_MODELS } from '../../../utils/model/openaiGptModels.js'
 import { recordProviderRateLimits } from '../providerRateLimits.js'
 import { ProviderHttpError } from '../transport_error.js'
 import {
-  getOpenAIReasoningLevel,
-  isReasoningLevelExplicit,
-  modelSupportsReasoning,
+  resolveOpenAIReasoningEffort,
+  resolveOpenAIRequestEffort,
   type OpenAIReasoningLevel,
 } from '../../../utils/model/openaiReasoning.js'
 
@@ -176,21 +175,17 @@ export class OpenAIProvider extends BaseProvider {
   /**
    * Resolve the reasoning_effort to send with the request.
    *
-   * Priority: user-selected level from /models picker → Anthropic thinking
-   * budget mapping → default 'medium'.
+   * OpenAI uses the shared settings/session resolver. Other providers retain
+   * their own reasoning controls; a global OpenAI preference must not leak.
    */
   protected resolveReasoningEffort(
     model: string,
-    thinking: ProviderRequestParams['thinking'],
+    _thinking: ProviderRequestParams['thinking'],
+    effortValue?: ProviderRequestParams['effortValue'],
   ): OpenAIReasoningLevel | undefined {
-    if (!modelSupportsReasoning(model)) return undefined
-
-    // Only send reasoning_effort when the user explicitly chose a level
-    // via ← → in the model picker. Sending it unsolicited to models that
-    // don't support it causes 500 errors on OpenAI's API.
-    if (isReasoningLevelExplicit()) return getOpenAIReasoningLevel(model)
-
-    return undefined
+    return this.name === 'openai'
+      ? resolveOpenAIReasoningEffort(model, effortValue)
+      : undefined
   }
 
   // ─── Payload optimization ───────────────────────────────────────
@@ -254,6 +249,12 @@ export class OpenAIProvider extends BaseProvider {
   // ─── API methods ───────────────────────────────────────────────
 
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
+    if (this.name === 'openai') {
+      params = {
+        ...params,
+        effortValue: await resolveOpenAIRequestEffort(this.resolveModel(params.model), params.effortValue) ?? null,
+      }
+    }
     const optimized = this.optimizeParams(params)
     const model = this.resolveModel(optimized.model)
     this._adoptRequestSessionId(optimized.sessionId)
@@ -303,7 +304,7 @@ export class OpenAIProvider extends BaseProvider {
     if (optimized.stop_sequences) body.stop = optimized.stop_sequences
 
     // Send reasoning_effort for Codex / o-series models.
-    const effort = this.resolveReasoningEffort(model, optimized.thinking)
+    const effort = this.resolveReasoningEffort(model, optimized.thinking, optimized.effortValue)
     if (effort) body.reasoning_effort = effort
     this.finalizeChatCompletionsBody(body, model, optimized, messages, tools)
 
@@ -337,6 +338,12 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
+    if (this.name === 'openai') {
+      params = {
+        ...params,
+        effortValue: await resolveOpenAIRequestEffort(this.resolveModel(params.model), params.effortValue) ?? null,
+      }
+    }
     const optimized = this.optimizeParams(params)
     const model = this.resolveModel(optimized.model)
     this._adoptRequestSessionId(optimized.sessionId)
@@ -380,7 +387,7 @@ export class OpenAIProvider extends BaseProvider {
     if (optimized.stop_sequences) body.stop = optimized.stop_sequences
 
     // Send reasoning_effort for Codex / o-series models.
-    const effort = this.resolveReasoningEffort(model, optimized.thinking)
+    const effort = this.resolveReasoningEffort(model, optimized.thinking, optimized.effortValue)
     if (effort) body.reasoning_effort = effort
     this.finalizeChatCompletionsBody(body, model, optimized, messages, tools)
 
@@ -681,7 +688,7 @@ export class OpenAIProvider extends BaseProvider {
     }
 
     // Nested reasoning.effort for Responses API
-    const effort = this.resolveReasoningEffort(model, params.thinking)
+    const effort = this.resolveReasoningEffort(model, params.thinking, params.effortValue)
     if (effort) body.reasoning = { effort }
 
     const { url, headers } = this._responsesEndpoint()
@@ -733,7 +740,7 @@ export class OpenAIProvider extends BaseProvider {
       body.tool_choice = 'auto'
     }
 
-    const effort = this.resolveReasoningEffort(model, params.thinking)
+    const effort = this.resolveReasoningEffort(model, params.thinking, params.effortValue)
     if (effort) body.reasoning = { effort }
 
     const { url, headers } = this._responsesEndpoint()

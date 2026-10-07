@@ -67,8 +67,8 @@ import {
   type CodexUsage,
 } from './api.js'
 import {
-  getOpenAIReasoningLevel,
-  isReasoningLevelExplicit,
+  resolveOpenAIReasoningEffort,
+  resolveOpenAIRequestEffort,
 } from '../../utils/model/openaiReasoning.js'
 import { OPENAI_AGENT_MODEL, OPENAI_CODEX_MODELS } from '../../utils/model/openaiGptModels.js'
 
@@ -105,6 +105,9 @@ export class CodexLane implements Lane {
     params: LaneProviderCallParams,
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
     const { model, messages, system, tools, max_tokens, thinking, signal, sessionId } = params
+    // Resolve before selecting the singleton client's cache session. No await
+    // may separate that selection from capturing the request's cache key.
+    const effort = await resolveOpenAIRequestEffort(model, params.effortValue)
 
     codexApi.setSessionCacheKey(sessionId)
 
@@ -183,13 +186,9 @@ export class CodexLane implements Lane {
       ? `${CODEX_TOOL_USAGE_RULES}\n${rawInstructions}`
       : rawInstructions
 
-    // Map thinking param → Codex reasoning config. Anthropic's adaptive /
-    // enabled with budget_tokens mapping:
-    //   disabled → no reasoning field
-    //   adaptive / enabled (low budget) → low
-    //   enabled with mid budget → medium
-    //   enabled with high budget → high
-    const reasoning = resolveReasoning(thinking, model)
+    // Effort is independent of Anthropic thinking budgets. Use the same
+    // preference resolution as the picker and the OpenAI provider.
+    const reasoning = resolveReasoning(thinking, model, effort ?? null)
 
     // Request body must match codex-rs's `ResponsesApiRequest` wire
     // shape exactly. Native codex DOES NOT send `max_output_tokens` or
@@ -798,29 +797,12 @@ function firstFiniteNumber(...values: unknown[]): number | undefined {
 }
 
 export function resolveReasoning(
-  thinking: LaneProviderCallParams['thinking'] | undefined,
+  _thinking: LaneProviderCallParams['thinking'] | undefined,
   model: string,
+  effortValue?: LaneProviderCallParams['effortValue'],
 ): CodexReasoningConfig | undefined {
-  // Reasoning-capable families. GPT-5 and later (GPT-6, ...) and o-series
-  // accept reasoning; most classic gpt-4.x variants don't. Default to
-  // 'medium' when we're sure, otherwise omit (some endpoints 400 on unknown
-  // reasoning fields).
-  const m = model.toLowerCase()
-  const reasoningCapable =
-    /^gpt-(?:[5-9]|[1-9]\d)/.test(m) || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('o5') || m.startsWith('codex-')
-  if (!reasoningCapable) return undefined
-
-  if (isReasoningLevelExplicit()) {
-    return { effort: getOpenAIReasoningLevel(model), summary: 'auto' }
-  }
-
-  if (!thinking || thinking.type === 'disabled') return undefined
-
-  if (thinking.type === 'adaptive') return { effort: 'medium', summary: 'auto' }
-  const budget = (thinking as any).budget_tokens as number | undefined
-  const effort: CodexReasoningConfig['effort'] =
-    budget == null ? 'medium' : budget < 2000 ? 'low' : budget < 8000 ? 'medium' : 'high'
-  return { effort, summary: 'auto' }
+  const effort = resolveOpenAIReasoningEffort(model, effortValue)
+  return effort ? { effort, summary: 'auto' } : undefined
 }
 
 // Walk the conversation history and map each assistant tool_use.id to a

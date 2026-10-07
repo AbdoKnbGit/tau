@@ -19,10 +19,11 @@ import {
   type SectionedModelInfo,
 } from '../utils/model/providerCatalog.js'
 import {
-  cycleOpenAIReasoningLevel,
+  getNextOpenAIReasoningLevel,
   getOpenAIReasoningLevel,
   getReasoningLabel,
   modelSupportsReasoning,
+  type OpenAIReasoningLevel,
 } from '../utils/model/openaiReasoning.js'
 import {
   FAVORITE_MARKER,
@@ -91,9 +92,11 @@ import { hasStoredKey } from '../services/api/auth/api_key_manager.js'
 
 type Props = {
   initialProvider: BrowsableModelProvider
-  onSelect: (provider: BrowsableModelProvider, modelId: string) => void
+  onSelect: (provider: BrowsableModelProvider, modelId: string, effort?: OpenAIReasoningLevel) => void
   onCancel: () => void
   lockedProvider?: BrowsableModelProvider
+  /** Some consumers select only a model, without an effort field to save. */
+  allowOpenAIEffortSelection?: boolean
 }
 
 type Step = 'provider' | 'models'
@@ -262,6 +265,7 @@ export function ProviderModelPicker({
   onSelect,
   onCancel,
   lockedProvider,
+  allowOpenAIEffortSelection = true,
 }: Props) {
   const [step, setStep] = useState<Step>(lockedProvider ? 'models' : 'provider')
   const [selectedProviderIndex, setSelectedProviderIndex] = useState(() =>
@@ -275,7 +279,7 @@ export function ProviderModelPicker({
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [sections, setSections] = useState<ProviderModelSection[]>([])
-  const [, setReasoningTick] = useState(0)
+  const [openaiEffort, setOpenaiEffort] = useState<OpenAIReasoningLevel>()
   const [, setDirectThinkingTick] = useState(0)
   // Bumped to force a re-render after toggling provider-owned per-model effort.
   // The actual effort state lives in the provider utility modules.
@@ -295,6 +299,8 @@ export function ProviderModelPicker({
   const [favoriteNotice, setFavoriteNotice] = useState<string | null>(null)
   // The current model only picks which effort chip opens first.
   const mainLoopModel = useAppStateMaybeOutsideOfProvider(s => s.mainLoopModel)
+  const appStateEffort = useAppStateMaybeOutsideOfProvider(s => s.effortValue ?? null)
+  const displayedOpenaiEffort = openaiEffort ?? appStateEffort
 
   const selectedProvider =
     lockedProvider
@@ -436,6 +442,7 @@ export function ProviderModelPicker({
         onSelect(
           selectedProvider,
           getSelectedModelId(selectedProvider, row.model, variantSelections),
+          selectedProvider === 'openai' ? openaiEffort : undefined,
         )
       }
       return
@@ -544,13 +551,14 @@ export function ProviderModelPicker({
       if (
         row?.kind === 'model'
         && selectedProvider === 'openai'
+        && allowOpenAIEffortSelection
         && modelSupportsReasoning(row.model.id)
       ) {
-        cycleOpenAIReasoningLevel(
+        setOpenaiEffort(getNextOpenAIReasoningLevel(
           key.leftArrow ? 'left' : 'right',
           row.model.id,
-        )
-        setReasoningTick(tick => tick + 1)
+          displayedOpenaiEffort,
+        ))
         return
       }
 
@@ -792,7 +800,7 @@ export function ProviderModelPicker({
                   selectedProvider,
                   getSelectedModelId(selectedProvider, model, variantSelections),
                 )
-              const isReasoning = selectedProvider === 'openai' && modelSupportsReasoning(model.id)
+              const isReasoning = allowOpenAIEffortSelection && selectedProvider === 'openai' && modelSupportsReasoning(model.id)
               // Every V4 row carries the same None/Low/High/Max ladder.
               const isDeepseekV4 =
                 selectedProvider === 'deepseek' && supportsDeepSeekEffortSelection(model.id)
@@ -881,7 +889,7 @@ export function ProviderModelPicker({
                   )}
                   {isReasoning && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ {getReasoningLabel(getOpenAIReasoningLevel(model.id))} ▶
+                      {' '}◀ {getReasoningLabel(getOpenAIReasoningLevel(model.id, displayedOpenaiEffort))} ▶
                     </Text>
                   )}
                   {isDeepseekV4 && deepseekEffort && (

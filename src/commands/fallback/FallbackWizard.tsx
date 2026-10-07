@@ -3,6 +3,7 @@ import * as React from 'react'
 import { useState } from 'react'
 import { Box, Text } from '../../ink.js'
 import { ProviderModelPicker } from '../../components/ProviderModelPicker.js'
+import type { OpenAIReasoningLevel } from '../../utils/model/openaiReasoning.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import { saveGlobalConfig } from '../../utils/config.js'
 import {
@@ -34,14 +35,14 @@ export function FallbackWizard({
 
   const currentStep = targets.length + 1
 
-  function handleSelect(provider: BrowsableModelProvider, modelId: string) {
+  function handleSelect(provider: BrowsableModelProvider, modelId: string, openaiEffort?: OpenAIReasoningLevel) {
     const selection = resolveProviderModelSelection(provider, modelId)
     const next = [
       ...targets,
       {
         provider,
         model: selection.modelId,
-        effort: selection.effort,
+        effort: provider === 'openai' ? openaiEffort : selection.effort,
       },
     ]
 

@@ -2237,6 +2237,9 @@ async function* queryModel(
       metadata: getAPIMetadata(),
       max_tokens: maxOutputTokens,
       thinking,
+      // Keep OpenAI effort scoped to this request (CLI, /effort, agents and
+      // SDK settings already flow through options), outside prompt content.
+      ...(requestProvider === 'openai' && { effortValue: options.effortValue ?? null }),
       ...(temperature !== undefined && { temperature }),
       ...(contextManagement &&
         useBetas &&

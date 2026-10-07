@@ -87,12 +87,9 @@ export function applySettingsChange(
       ...prev,
       settings: newSettings,
       toolPermissionContext: newContext,
-      // Only propagate a defined new value — when the disk key is absent
-      // (e.g. /effort max for non-ants writes undefined; --effort CLI flag),
-      // prev.settings.effortLevel can be stale (internal writes suppress the
-      // watcher that would resync AppState.settings), so effortChanged would
-      // be true and we'd wipe a session-scoped value held in effortValue.
-      ...(effortChanged && newEffort !== undefined
+      // Clear a removed setting only when the session was following it.
+      // An unrelated write must not erase a distinct CLI/session override.
+      ...(effortChanged && (newEffort !== undefined || prev.effortValue === prevEffort)
         ? { effortValue: newEffort }
         : {}),
     }

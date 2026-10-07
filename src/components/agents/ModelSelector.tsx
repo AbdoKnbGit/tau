@@ -102,6 +102,7 @@ export function ModelSelector({
       <ProviderModelPicker
         initialProvider={selectedProvider}
         lockedProvider={selectedProvider}
+        allowOpenAIEffortSelection={false}
         onSelect={(provider, model) =>
           onComplete(model, provider as APIProvider)
         }

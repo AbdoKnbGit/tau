@@ -35,6 +35,7 @@ import {
 } from '../../voice/voiceConversation.js'
 import { getClineEffortLabel, setClineEffort } from '../../utils/model/clineThinking.js'
 import { isClinePassProvider } from '../../utils/model/clinePassCatalog.js'
+import type { OpenAIReasoningLevel } from '../../utils/model/openaiReasoning.js'
 
 function renderSearchBadges(tags?: readonly string[]): string {
   if (!tags || tags.length === 0) {
@@ -66,7 +67,7 @@ function ModelsPickerWrapper({
   const currentModel = useAppState((s: AppState) => s.mainLoopModel)
   const initialProvider = lockedProvider ?? getDefaultBrowsableProvider(currentProvider)
 
-  function handleSelect(provider: BrowsableModelProvider, modelId: string) {
+  function handleSelect(provider: BrowsableModelProvider, modelId: string, openaiEffort?: OpenAIReasoningLevel) {
     if (isVoiceConversationProvider(provider)) {
       const result = setSelectedLiveVoice(modelId)
       if (result.error) {
@@ -83,6 +84,7 @@ function ModelsPickerWrapper({
     }
 
     const selection = resolveProviderModelSelection(provider, modelId)
+    if (provider === 'openai' && openaiEffort !== undefined) selection.effort = openaiEffort
 
     if (isClinePassProvider(provider) && selection.clineEffort) {
       setClineEffort(selection.modelId, selection.clineEffort)

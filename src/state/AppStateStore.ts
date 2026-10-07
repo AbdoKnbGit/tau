@@ -571,7 +571,7 @@ export function getDefaultAppState(): AppState {
     },
     authVersion: 0,
     initialMessage: null,
-    effortValue: undefined,
+    effortValue: initialSettings.effortLevel,
     activeOverlays: new Set<string>(),
     fastMode: false,
   }
