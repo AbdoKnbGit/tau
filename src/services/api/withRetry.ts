@@ -56,6 +56,7 @@ import {
 } from '../rateLimitMocking.js'
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
+import { withProviderRetryState, type ProviderRetryState } from './providerRetryBudget.js'
 
 const abortError = () => new APIUserAbortError()
 
@@ -228,6 +229,9 @@ export async function* withRetry<T>(
   options: RetryOptions,
 ): AsyncGenerator<SystemAPIErrorMessage, T> {
   const maxRetries = getMaxRetries(options)
+  // Native fast retries must not receive a fresh allowance on every outer
+  // attempt. The context stays off the wire and is isolated between turns.
+  const providerRetryState: ProviderRetryState = new Map()
   const retryContext: RetryContext = {
     model: options.model,
     thinkingConfig: options.thinkingConfig,
@@ -301,7 +305,7 @@ export async function* withRetry<T>(
         client = await getClient()
       }
 
-      return await operation(client, attempt, retryContext)
+      return await withProviderRetryState(providerRetryState, () => operation(client!, attempt, retryContext))
     } catch (error) {
       // Native-lane setup now runs inside this retry boundary. Normalize a
       // caller cancellation before logging or classification so Escape never

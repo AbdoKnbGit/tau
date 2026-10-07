@@ -125,13 +125,10 @@ function main(): void {
     )
   })
 
-  test('pinned host gets the long grace window instead of the 6s punt', () => {
-    // A cache-missing turn on a HEALTHY host holds headers 5-23s; punting it
-    // to the other host re-bills the whole prompt cold on a separate cache
-    // pool. Once a session is pinned, only a genuinely hung host may punt.
+  test('pinned host uses the shared first-output deadline instead of a 30s restart', () => {
     assert(
-      antigravityGeminiEndpointTimeoutMs(0, 2, true) === 30_000,
-      'pinned first endpoint should get the 30s grace window',
+      antigravityGeminiEndpointTimeoutMs(0, 2, true) === 0,
+      'pinned host must not be cancelled before the shared setup deadline',
     )
     assert(
       antigravityGeminiEndpointTimeoutMs(1, 2, true) === 0,

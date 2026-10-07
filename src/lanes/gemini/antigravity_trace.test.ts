@@ -189,6 +189,32 @@ try {
     assert.ok(!log.includes(secret), `debug log leaked ${secret}`)
   }
 
+  // Quiet quota replays share the wire request while each dispatch remains
+  // independently correlatable in local diagnostics, for both transports.
+  for (const streaming of [true, false]) {
+    reset()
+    replies = [
+      { kind: 'status', status: 429 },
+      { kind: 'status', status: 429 },
+      { kind: 'status', status: 429 },
+      { kind: 'ok', cached: 16_384 },
+    ]
+    const { request, requestId } = makeRequest([user(USER_TEXT), signedCall, toolResult])
+    if (streaming) await stream(request)
+    else await geminiApi.generateContent(request)
+    const quotaRows = rows().filter(r => r.kind === 'dispatch')
+    assert.equal(calls.length, 4)
+    assert.equal(quotaRows.length, 4)
+    assert.ok(quotaRows.every(r => r.requestId === requestId))
+    assert.equal(new Set(quotaRows.map(r => r.attemptId)).size, 4, 'same-envelope replays reused a local trace id')
+    assert.equal(new Set(quotaRows.map(r => r.upstreamRequestId)).size, 1, 'quota replay changed the wire request id')
+    for (const call of calls) assert.deepEqual(call, calls[0], 'tracing changed a quota replay')
+    const quotaAttempts = rows().filter(r => r.kind === 'attempt')
+    assert.deepEqual(quotaAttempts.map(r => r.attemptId), quotaRows.map(r => r.attemptId))
+    assert.deepEqual(quotaAttempts.map(r => r.outcome), ['http-error', 'http-error', 'http-error', 'completed'])
+    assert.equal(quotaAttempts[3].usage.cached, 16_384)
+  }
+
   // ── 3. Verdicts compare with the last COMPLETED dispatch of the stream. ──
   reset()
   process.env.TAU_CACHE_DEBUG = '1'
@@ -294,7 +320,7 @@ try {
     Object.assign(process.env, savedEnv)
   }
 
-  console.log('Antigravity dispatch trace passed: flag-off parity, hop/retry correlation, final-wire verdicts, identity vs config, signature strip, abandoned reads, overlap, no prompt text')
+  console.log('Antigravity dispatch trace passed: flag-off parity, hop/retry correlation, unique quota-replay ids, final-wire verdicts, identity vs config, signature strip, abandoned reads, overlap, no prompt text')
 } finally {
   globalThis.fetch = originalFetch
   ;(geminiApi as any).antigravityOAuthToken = previousToken

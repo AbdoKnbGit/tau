@@ -42,7 +42,8 @@ import { markFailedToolResults } from './shared/tool_error_text.js'
 import { decideImageSupport } from './shared/vision_capability.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { createRetryableConnectionError } from '../services/api/transport_error.js'
-import { isAntigravityModelId } from '../services/api/providers/gemini_code_assist.js'
+import { isAntigravityModelId, isAntigravityGeminiModel } from '../services/api/providers/gemini_code_assist.js'
+import { getProviderSetupWindow, ProviderSetupTimeoutError } from '../services/api/providerRetryBudget.js'
 
 /**
  * Lanes whose wire format always carries attachments natively. Their
@@ -125,8 +126,20 @@ async function primeFirstProviderEvent(
   controller: AbortController,
   providerHint: string | undefined,
   callerSignal?: AbortSignal,
+  resolvedModel?: string,
 ): Promise<IteratorResult<AnthropicStreamEvent>> {
   const timeoutMs = nativeFirstEventTimeoutMs(providerHint)
+  // A slow warm Gemini host may need more than 30s before sending headers.
+  // Give it this whole setup window, and never restart that window on an
+  // outer retry. Once content starts, the timer is removed in finally below.
+  const setupWindow = timeoutMs !== null && resolvedModel && isAntigravityGeminiModel(resolvedModel)
+    ? getProviderSetupWindow('antigravity-gemini', timeoutMs)
+    : undefined
+  const remainingMs = setupWindow ? setupWindow.deadlineAt - Date.now() : timeoutMs
+  if (callerSignal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  if (remainingMs !== null && remainingMs <= 0) {
+    throw new ProviderSetupTimeoutError('Antigravity Gemini', setupWindow!.timeoutMs)
+  }
   let timeout: ReturnType<typeof setTimeout> | undefined
   let abortListener: (() => void) | undefined
   const callerAbort = new Promise<never>((_, reject) => {
@@ -140,19 +153,19 @@ async function primeFirstProviderEvent(
   })
   const firstEvent = iterator.next()
   const watchdog = new Promise<never>((_, reject) => {
-    if (timeoutMs === null) return
+    if (remainingMs === null) return
     timeout = setTimeout(() => {
       const timeoutError = new Error(
         `Stream idle timeout - no chunks received for ${timeoutMs}ms`,
       )
       reject(
-        createRetryableConnectionError(
+        setupWindow ? new ProviderSetupTimeoutError('Antigravity Gemini', setupWindow.timeoutMs) : createRetryableConnectionError(
           'Native provider stream setup timed out',
           timeoutError,
         ),
       )
       controller.abort()
-    }, timeoutMs)
+    }, remainingMs)
   })
   try {
     return await Promise.race([firstEvent, callerAbort, watchdog])
@@ -332,6 +345,7 @@ export class LaneBackedProvider implements BaseProvider {
         controller,
         providerHint,
         callerSignal,
+        resolvedModel,
       )
     } catch (error) {
       controller.abort()

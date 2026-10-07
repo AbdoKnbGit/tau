@@ -70,6 +70,7 @@ import {
   selectActiveAntigravityAccount,
 } from '../shared/antigravity_auth.js'
 import { parseGeminiApiSSE as parseGeminiApiSSEEvent } from './api_sse.js'
+import { getProviderRetryBudget } from '../../services/api/providerRetryBudget.js'
 
 // Duplicated from services/api/errors.ts to avoid pulling in its
 // transitive import of utils/messages.ts (which has build-time-only
@@ -266,6 +267,36 @@ export async function* parseGeminiApiSSE(
 const AI_STUDIO_BASE = 'https://generativelanguage.googleapis.com/v1beta'
 const ANTIGRAVITY_GEMINI_MAX_RETRY_ATTEMPTS = 2
 const ANTIGRAVITY_GEMINI_MAX_RETRY_WAIT_MS = 4_000
+const ANTIGRAVITY_QUOTA_FAST_RETRIES = 3
+
+/**
+ * Try a short same-host replay before the existing endpoint recovery policy.
+ * The caller reuses its serialized envelope and headers. A bare 429 is an
+ * endpoint refusal, not proof that the account has exhausted its allowance:
+ * when this local budget ends, the normal host fallback must still run.
+ */
+async function retryAntigravityQuota(
+  response: Response,
+  body: string,
+  budget: { remaining: number },
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  if (budget.remaining === 0) return false
+  const cls = classifyGeminiError(response.status, body)
+  if (cls.kind !== 'retryable-quota') return false
+  const retryAfterMs = Math.max(
+    cls.retryAfterMs ?? 0,
+    parseRetryAfter(response.headers.get('retry-after')) ?? 0,
+  )
+  // Long server hints belong to the existing recovery path. The quick
+  // same-host prelude must not shorten them or suppress endpoint fallback.
+  if (!Number.isFinite(retryAfterMs) || retryAfterMs > ANTIGRAVITY_GEMINI_MAX_RETRY_WAIT_MS) return false
+  budget.remaining--
+  // Yield at 0 ms as well, so cancellation can stop the next dispatch.
+  await delayWithAbort(retryAfterMs, signal)
+  return true
+}
 
 class EndpointTimeoutError extends Error {
   constructor(message: string) {
@@ -585,6 +616,9 @@ class GeminiApiClient {
       // outside retryWithBackoff and the cleared cache was moot).
       let reonboardsLeft = 1
       let sigStripsLeft = 1
+      const quotaRetryBudget = isAntigravityGeminiRoute(oauthRouting.executor, model)
+        ? getProviderRetryBudget(`antigravity-quota:${model}`, ANTIGRAVITY_QUOTA_FAST_RETRIES)
+        : { remaining: ANTIGRAVITY_QUOTA_FAST_RETRIES }
       const basesForExecutor = (executor: 'cli' | 'antigravity') =>
         codeAssistGenerationBasesForModel(executor, model, tauStableSessionId, tauQuerySource)
       const urlForBase = (base: string) => `${base}:streamGenerateContent?alt=sse`
@@ -629,14 +663,14 @@ class GeminiApiClient {
           // Endpoint affinity: each host runs its own implicit-cache pool, so
           // once this process has cache equity on a host, slowness alone must
           // not re-route requests — a detour re-bills the whole prompt cold on
-          // the other pool. Only the pinned first attempt gets the long grace
-          // window; real failures (HTTP errors, network) still fall through,
+          // the other pool. The bridge bounds setup time across retries;
+          // real failures (HTTP errors, network) still fall through,
           // and whichever host serves becomes the process-wide pin.
           const onPinnedHost = fastAntigravityGemini
             && antigravityGeminiStickyBase(tauStableSessionId) === bases[0]
           // First attempt on the pinned host absorbs transient failures via
-          // retryWithBackoff (same host, Retry-After honored, account
-          // rotation applied) instead of hopping to the sibling cache pool.
+          // retryWithBackoff on the same account/host before hopping to the
+          // sibling cache pool.
           const pinnedFirstAttempt = onPinnedHost && attemptNo <= 1
           let lastEndpointError: unknown
           let dispatch: AntigravityDispatchAttempt | undefined
@@ -646,7 +680,7 @@ class GeminiApiClient {
             const transport = fastAntigravityGemini ? antigravityTransportIfNeeded(urls[i]!, !!trace) : undefined
             dispatch = fastAntigravityGemini
               ? trace?.attempt({
-                attempt: attemptNo,
+                attempt: attemptNo + ANTIGRAVITY_QUOTA_FAST_RETRIES - quotaRetryBudget.remaining,
                 hop: i,
                 hopReason,
                 url: urls[i]!,
@@ -713,6 +747,17 @@ class GeminiApiClient {
             }
             errText = await resp.text().catch(() => '')
             dispatch?.end('http-error', { status: resp.status, errorBody: errText })
+            // Keep fast retries on the primary cache host. Once it failed,
+            // probe each fallback once instead of spending three more round
+            // trips on its 429 before the warm host can be tried again.
+            if (executor === 'antigravity' && resp.status === 429
+              && (!fastAntigravityGemini || i === 0)
+              && await retryAntigravityQuota(resp, errText, quotaRetryBudget, signal)) {
+              // Replay the same host, credentials, requestId and prompt bytes.
+              // Once the fast retries end, continue normal fallback below.
+              i--
+              continue
+            }
             // The backend refusing an envelope field turns the envelope off for
             // the process; this request is sent again without it below.
             const rejectedFields = rejectAntigravityTrajectoryOn(resp.status, errText, trajectory)
@@ -954,6 +999,9 @@ class GeminiApiClient {
     if (oauthRouting) {
       let reonboardsLeft = 1
       let sigStripsLeft = 1
+      const quotaRetryBudget = isAntigravityGeminiRoute(oauthRouting.executor, model)
+        ? getProviderRetryBudget(`antigravity-quota:${model}`, ANTIGRAVITY_QUOTA_FAST_RETRIES)
+        : { remaining: ANTIGRAVITY_QUOTA_FAST_RETRIES }
       const basesForExecutor = (executor: 'cli' | 'antigravity') =>
         codeAssistGenerationBasesForModel(executor, model, tauStableSessionId, tauQuerySource)
       const urlForBase = (base: string) => `${base}:generateContent`
@@ -990,14 +1038,14 @@ class GeminiApiClient {
           // Endpoint affinity: each host runs its own implicit-cache pool, so
           // once this process has cache equity on a host, slowness alone must
           // not re-route requests — a detour re-bills the whole prompt cold on
-          // the other pool. Only the pinned first attempt gets the long grace
-          // window; real failures (HTTP errors, network) still fall through,
+          // the other pool. The bridge bounds setup time across retries;
+          // real failures (HTTP errors, network) still fall through,
           // and whichever host serves becomes the process-wide pin.
           const onPinnedHost = fastAntigravityGemini
             && antigravityGeminiStickyBase(tauStableSessionId) === bases[0]
           // First attempt on the pinned host absorbs transient failures via
-          // retryWithBackoff (same host, Retry-After honored, account
-          // rotation applied) instead of hopping to the sibling cache pool.
+          // retryWithBackoff on the same account/host before hopping to the
+          // sibling cache pool.
           const pinnedFirstAttempt = onPinnedHost && attemptNo <= 1
           let lastEndpointError: unknown
           let dispatch: AntigravityDispatchAttempt | undefined
@@ -1007,7 +1055,7 @@ class GeminiApiClient {
             const transport = fastAntigravityGemini ? antigravityTransportIfNeeded(urls[i]!, !!trace) : undefined
             dispatch = fastAntigravityGemini
               ? trace?.attempt({
-                attempt: attemptNo,
+                attempt: attemptNo + ANTIGRAVITY_QUOTA_FAST_RETRIES - quotaRetryBudget.remaining,
                 hop: i,
                 hopReason,
                 url: urls[i]!,
@@ -1074,6 +1122,14 @@ class GeminiApiClient {
             }
             errText = await resp.text().catch(() => '')
             dispatch?.end('http-error', { status: resp.status, errorBody: errText })
+            // Match streaming: spend fast retries on the primary cache host,
+            // retaining one fallback probe and the existing recovery loop.
+            if (executor === 'antigravity' && resp.status === 429
+              && (!fastAntigravityGemini || i === 0)
+              && await retryAntigravityQuota(resp, errText, quotaRetryBudget, signal)) {
+              i--
+              continue
+            }
             // The backend refusing an envelope field turns the envelope off for
             // the process; this request is sent again without it below.
             const rejectedFields = rejectAntigravityTrajectoryOn(resp.status, errText, trajectory)

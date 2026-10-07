@@ -138,17 +138,17 @@ export function antigravityGeminiEndpointTimeoutMs(
   if (endpointIndex >= endpointCount - 1) return 0
 
   if (onPinnedHost) {
-    // The session's implicit-cache entry lives on the pinned (first) host.
-    // Falling over re-bills the whole prompt cold on the other host, and a
-    // cache-missing turn on a HEALTHY host regularly holds headers 5-23s
-    // before the first token — so only a genuinely hung host is worth
-    // abandoning once a session has cache equity.
+    // Headers can arrive after 30s on a working host, especially with long
+    // context and reasoning. Cancelling and restarting then can repeatedly
+    // discard the only request capable of serving the warm cache. The bridge
+    // bounds time to first output across all retries; do not add an earlier
+    // default host timeout. Explicit machine overrides remain supported.
     const raw = process.env.TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS
     if (raw) {
       const n = Number.parseInt(raw, 10)
       if (Number.isFinite(n) && n >= 0) return n
     }
-    return ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS
+    return 0
   }
 
   const raw = process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT_TIMEOUT_MS
@@ -205,7 +205,6 @@ export function shouldTryNextAntigravityGeminiEndpoint(
 // failures still do), and when a fallback DOES serve, the pin migrates so a
 // real outage costs one cold turn total instead of one per flap.
 
-const ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS = 30_000
 const ANTIGRAVITY_GEMINI_AFFINITY_GLOBAL_KEY = '<antigravity-gemini>'
 const ANTIGRAVITY_GEMINI_AFFINITY_CAP = 256
 
