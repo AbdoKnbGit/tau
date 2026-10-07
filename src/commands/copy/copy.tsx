@@ -16,9 +16,9 @@ import { setClipboard } from '../../ink/termio/osc.js';
 import { Box, Text } from '../../ink.js';
 import { logEvent } from '../../services/analytics/index.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
-import type { AssistantMessage, Message } from '../../types/message.js';
+import type { Message } from '../../types/message.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
-import { extractTextContent, stripPromptXMLTags } from '../../utils/messages.js';
+import { extractTextContent, isEmptyMessageText, stripPromptXMLTags, SYNTHETIC_MESSAGES } from '../../utils/messages.js';
 import { countCharInString } from '../../utils/stringUtils.js';
 const COPY_DIR = join(tmpdir(), 'claude');
 const RESPONSE_FILENAME = 'response.md';
@@ -44,7 +44,7 @@ function extractCodeBlocks(markdown: string): CodeBlock[] {
 
 /**
  * Walk messages newest-first, returning text from assistant messages that
- * actually said something (skips tool-use-only turns and API errors).
+ * actually said something (skips synthetic/empty text, tool-only turns and API errors).
  * Index 0 = latest, 1 = second-to-latest, etc. Caps at MAX_LOOKBACK.
  */
 export function collectRecentAssistantTexts(messages: Message[]): string[] {
@@ -52,9 +52,15 @@ export function collectRecentAssistantTexts(messages: Message[]): string[] {
   for (let i = messages.length - 1; i >= 0 && texts.length < MAX_LOOKBACK; i--) {
     const msg = messages[i];
     if (msg?.type !== 'assistant' || msg.isApiErrorMessage) continue;
-    const content = (msg as AssistantMessage).message.content;
+    const content = msg.message.content;
     if (!Array.isArray(content)) continue;
-    const text = extractTextContent(content, '\n\n');
+    // Filter individual blocks so a sentinel cannot hide real text beside it.
+    // Leave stored history intact: recovery placeholders are still needed by the API.
+    const text = extractTextContent(content.filter(block =>
+      block.type === 'text' &&
+      !SYNTHETIC_MESSAGES.has(block.text) &&
+      !isEmptyMessageText(block.text)
+    ), '\n\n');
     if (text) texts.push(text);
   }
   return texts;
