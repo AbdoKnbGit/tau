@@ -37,6 +37,7 @@ import type {
   ProviderTool,
 } from '../../services/api/providers/base_provider.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { isAntigravityRetryHandled } from './antigravity_retry.js'
 import type {
   Lane,
   LaneRunContext,
@@ -690,6 +691,13 @@ export class GeminiLane implements Lane {
         }
       }
     } catch (err: any) {
+      // Antigravity owns its complete, bounded recovery budget. Preserve the
+      // terminal marker even after output so outer layers cannot regenerate
+      // the request or turn the failure into ordinary assistant text.
+      if (isAntigravityRetryHandled(err)) {
+        currentCall = null
+        throw err
+      }
       // If the server says the cached content doesn't exist (404 or
       // specific string), invalidate so the next call builds fresh.
       if (

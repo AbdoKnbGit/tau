@@ -74,7 +74,7 @@ async function request(streaming: boolean, model = MODEL, source = 'repl_main_th
       { role: 'model', parts: [{ text: 'Read the inventory.', thoughtSignature: 'unchanged-signature' }] },
       { role: 'user', parts: [{ text: 'Reply OK.' }] },
     ],
-    generationConfig: { temperature: 0, thinkingConfig: { thinkingLevel: 'low' } },
+    generationConfig: { temperature: 0, maxOutputTokens: 128, thinkingConfig: { thinkingLevel: 'low' } },
     [TAU_STABLE_SESSION_ID_FIELD]: SESSION,
     [TAU_QUERY_SOURCE_FIELD]: source,
   }
@@ -118,19 +118,18 @@ async function test(name: string, fn: () => Promise<void>): Promise<void> {
   console.log(`  ok ${name}`)
 }
 
-const retryableQuota = (err: unknown): boolean => {
+const exhaustedQuota = (err: unknown): boolean => {
   assert.ok(err instanceof GeminiApiError)
   assert.equal(err.status, 429)
-  assert.equal(err.isRetryable, true)
-  assert.equal(isRetryableProviderError(err), true, 'inline retries disabled the existing retry controller')
+  assert.equal(err.isRetryable, false)
+  assert.equal(isRetryableProviderError(err), false, 'outer retry must not restart native recovery')
   return true
 }
-
+const originalRandom = Math.random
 try {
+  Math.random = () => 0.5
   delete process.env.TAU_CACHE_DEBUG
   delete process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT
-  process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT_TIMEOUT_MS = '0'
-  process.env.TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS = '0'
   geminiApi.configure({ apiKey: undefined, cliOAuthToken: undefined, antigravityOAuthToken: 'local-test-token' })
   globalThis.fetch = (async (input, init) => {
     const url = String(input)
@@ -138,7 +137,6 @@ try {
     sent.push({ url, body: String(init?.body), headers: Object.fromEntries(new Headers(init?.headers)) })
     return respond(url, init)
   }) as typeof fetch
-  // Deterministic clock for wait hints, no real quota/network traffic.
   globalThis.setTimeout = ((fn: (...args: any[]) => void, ms?: number, ...args: any[]) => {
     waits.push(ms ?? 0)
     return originalTimer(() => { duringWait?.(); fn(...args) }, 0)
@@ -147,150 +145,90 @@ try {
   for (const streaming of [true, false]) {
     const mode = streaming ? 'stream' : 'json'
     for (const model of codeAssist.ANTIGRAVITY_MODEL_IDS) {
-      for (const source of ['repl_main_thread', 'report']) {
-        await test(`${mode} ${model} ${source}: three invisible identical retries recover`, async () => {
+      for (const source of ['repl_main_thread', 'report', 'compact', 'agent']) {
+        await test(`${mode} ${model} ${source}: three invisible identical daily retries recover`, async () => {
           respond = url => sent.length <= 3 ? quota() : success(url)
           await request(streaming, model, source)
           assert.equal(sent.length, 4)
-          assert.deepEqual(waits, [0, 0, 0], 'bare 429 added backoff')
+          assert.deepEqual(waits, [500, 1000, 2000])
+          assert.ok(sent.every(call => new URL(call.url).hostname === 'daily-cloudcode-pa.googleapis.com'))
           assertSameRequest()
         })
       }
     }
-    await test(`${mode}: exhausted primary still falls back to a healthy daily host`, async () => {
-      respond = url => url.startsWith(codeAssist.CODE_ASSIST_BASE + ':') ? quota() : success(url)
-      await request(streaming)
-      assert.equal(sent.length, 5)
-      assertIdenticalDispatches(sent.slice(0, 4))
-      assert.ok(sent[4]!.url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE + ':'))
-      assert.equal(sent[4]!.body, sent[0]!.body, 'endpoint fallback rebuilt the envelope')
-      assert.deepEqual(sent[4]!.headers, sent[0]!.headers)
-      assert.equal(onboardingCalls, 1)
-      assert.deepEqual(waits, [0, 0, 0])
-      assert.ok(codeAssist.antigravityGeminiHostCooldownMs(codeAssist.CODE_ASSIST_BASE) > 0)
-      assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), codeAssist.ANTIGRAVITY_GENERATION_BASE)
+    await test(`${mode}: exhausted daily stops after four attempts, including outer invocations`, async () => {
+      const state = new Map()
+      for (let i = 0; i < 3; i++) {
+        await assert.rejects(withProviderRetryState(state, () => request(streaming)), exhaustedQuota)
+      }
+      assert.equal(sent.length, 4)
+      assert.deepEqual(waits, [500, 1000, 2000])
+      assertIdenticalDispatches()
     })
-    await test(`${mode}: pinned primary retains fallback and report cooldown recovery`, async () => {
-      codeAssist.recordAntigravityGeminiServedBase(SESSION, codeAssist.CODE_ASSIST_BASE)
-      respond = url => url.startsWith(codeAssist.CODE_ASSIST_BASE + ':') ? quota() : success(url)
-      await request(streaming)
-      assert.equal(sent.length, 6, 'pinned host must keep its original extra attempt before fallback')
-      assertIdenticalDispatches(sent.slice(0, 4))
-      assert.ok(sent.slice(0, 5).every(call => call.url.startsWith(codeAssist.CODE_ASSIST_BASE + ':')))
-      assert.ok(sent[5]!.url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE + ':'))
-      assert.deepEqual(waits.slice(0, 3), [0, 0, 0])
-      assert.equal(waits.length, 4)
-      assert.ok(waits[3]! >= 350 && waits[3]! <= 650, 'original pinned-host backoff changed')
-      assert.equal(onboardingCalls, 2)
-      assert.ok(codeAssist.antigravityGeminiHostCooldownMs(codeAssist.CODE_ASSIST_BASE) > 0)
-      assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), codeAssist.CODE_ASSIST_BASE, 'one fallback must retain pin hysteresis')
-      await request(streaming, MODEL, 'report')
-      assert.equal(sent.length, 7)
-      assert.ok(sent[6]!.url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE + ':'), 'report ignored the exhausted-host cooldown')
-    })
-    await test(`${mode}: all hosts failing keeps recovery retryable with one added budget`, async () => {
-      await assert.rejects(request(streaming), retryableQuota)
-      assert.equal(sent.length, 7, 'the three inline retries must not restart per host or outer attempt')
-      assertIdenticalDispatches(sent.slice(0, 4))
-      assert.deepEqual(sent.map(call => new URL(call.url).hostname), [
-        'cloudcode-pa.googleapis.com', 'cloudcode-pa.googleapis.com',
-        'cloudcode-pa.googleapis.com', 'cloudcode-pa.googleapis.com',
-        'daily-cloudcode-pa.googleapis.com', 'cloudcode-pa.googleapis.com',
-        'daily-cloudcode-pa.googleapis.com',
-      ])
-      assert.equal(waits.filter(ms => ms === 0).length, 3)
-      assert.equal(onboardingCalls, 2)
-    })
-    await test(`${mode}: no retries on success`, async () => {
+    await test(`${mode}: no retries or waits on success`, async () => {
       respond = success
       await request(streaming)
       assert.equal(sent.length, 1)
       assert.deepEqual(waits, [])
     })
-    await test(`${mode}: warm daily timeout probes production once then recovers on daily`, async () => {
-      codeAssist.recordAntigravityGeminiServedBase(SESSION, codeAssist.ANTIGRAVITY_GENERATION_BASE)
-      process.env.TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS = '30000'
-      respond = (url, init) => {
-        if (sent.length === 1) {
-          return new Promise<Response>((_resolve, reject) => {
-            init!.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
-          })
-        }
-        return url.startsWith(codeAssist.CODE_ASSIST_BASE + ':') ? quota() : success(url)
-      }
-      try {
-        await request(streaming)
-        assert.deepEqual(sent.map(call => new URL(call.url).hostname), [
-          'daily-cloudcode-pa.googleapis.com', 'cloudcode-pa.googleapis.com',
-          'daily-cloudcode-pa.googleapis.com',
-        ], 'fallback 429 delayed the warm-host recovery')
-        assert.equal(waits.filter(ms => ms === 0).length, 0, 'fallback spent the fast-retry budget')
-        assert.equal(waits.filter(ms => ms === 30000).length, 2, 'warm-host timeout changed')
-        assert.equal(sent[0]!.body, sent[1]!.body, 'fallback changed the serialized envelope')
-        for (const call of sent) {
-          assert.deepEqual(JSON.parse(call.body).request, JSON.parse(sent[0]!.body).request, 'recovery changed the cache prefix')
-          assert.deepEqual(call.headers, sent[0]!.headers)
-        }
-        assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), codeAssist.ANTIGRAVITY_GENERATION_BASE)
-      } finally {
-        process.env.TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS = '0'
-      }
-    })
-    await test(`${mode}: a previously refusing fallback remains available for recovery`, async () => {
-      codeAssist.recordAntigravityGeminiServedBase(SESSION, codeAssist.ANTIGRAVITY_GENERATION_BASE)
+    await test(`${mode}: mixed quota, capacity and connection errors share one allowance`, async () => {
       respond = url => {
-        if (url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE + ':')) throw new TypeError('fetch failed')
-        return sent.length === 2 ? quota() : success(url)
+        if (sent.length === 1) return quota()
+        if (sent.length === 2) return new Response('Unavailable', { status: 503 })
+        if (sent.length === 3) throw new TypeError('fetch failed')
+        return success(url)
       }
       await request(streaming)
-      assert.equal(sent.length, 4, 'recovery lost the fallback after its first refusal')
-      assert.equal(waits.filter(ms => ms === 0).length, 0)
-      assert.ok(sent[3]!.url.startsWith(codeAssist.CODE_ASSIST_BASE + ':'))
-    })
-    await test(`${mode}: outer invocations share one fast-retry allowance without losing fallback`, async () => {
-      const state = new Map()
-      for (let attempt = 0; attempt < 3; attempt++) {
-        await assert.rejects(withProviderRetryState(state, () => request(streaming)), retryableQuota)
-      }
-      assert.equal(sent.length, 15, 'three outer invocations replenished the inline budget')
-      assert.equal(waits.filter(ms => ms === 0).length, 3)
-      assert.equal(sent.filter(call => call.url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE + ':')).length, 6, 'outer budget suppressed fallback recovery')
-      const previousCount = sent.length
-      respond = url => sent.length - previousCount <= 3 ? quota() : success(url)
-      await withProviderRetryState(new Map(), () => request(streaming))
-      assert.equal(sent.length - previousCount, 4, 'a new user operation inherited an exhausted allowance')
-    })
-    await test(`${mode}: explicit RetryInfo and Retry-After use the longer delay`, async () => {
-      respond = url => sent.length === 1 ? quota({ 'Retry-After': '0.25' }, [
-        { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '0.1s' },
-      ]) : success(url)
-      await request(streaming)
-      assert.deepEqual(waits, [250])
+      assert.equal(sent.length, 4)
       assertSameRequest()
+      assert.deepEqual(waits, [500, 1000, 2000])
     })
-    for (const hint of ['60', 'Infinity']) {
-      await test(`${mode}: ${hint}s cooldown skips inline retries and preserves fallback`, async () => {
-        respond = url => url.startsWith(codeAssist.CODE_ASSIST_BASE + ':') ? quota({ 'Retry-After': hint }) : success(url)
+    await test(`${mode}: network error at the budget boundary cannot add a fifth request`, async () => {
+      respond = () => {
+        if (sent.length <= 3) return quota()
+        throw new TypeError('fetch failed')
+      }
+      await assert.rejects(request(streaming), err => {
+        assert.equal(isRetryableProviderError(err), false)
+        return err instanceof TypeError
+      })
+      assert.equal(sent.length, 4)
+      assertIdenticalDispatches()
+    })
+    for (const [header, body, expected] of [['0.25', '0.1s', 250], ['1', '20s', 20000], ['30', '2s', 30000]] as const) {
+      await test(`${mode}: RetryInfo and Retry-After respect longer ${expected}ms hint`, async () => {
+        respond = url => sent.length === 1 ? quota({ 'Retry-After': header }, [
+          { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: body },
+        ]) : success(url)
         await request(streaming)
-        assert.equal(sent.length, 2)
-        assert.ok(sent[1]!.url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE + ':'))
+        assert.deepEqual(waits, [expected], 'server delay was shortened or replaced')
+        assertSameRequest()
+      })
+    }
+    for (const hint of ['60', 'Infinity']) {
+      await test(`${mode}: long ${hint}s server cooldown stops immediately`, async () => {
+        respond = () => quota({ 'Retry-After': hint })
+        await assert.rejects(request(streaming), exhaustedQuota)
+        assert.equal(sent.length, 1)
         assert.deepEqual(waits, [])
       })
     }
-    await test(`${mode}: terminal quota skips inline retries and preserves endpoint checks`, async () => {
-      respond = () => quota(undefined, [{
-        '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'INSUFFICIENT_G1_CREDITS_BALANCE',
-      }])
-      await assert.rejects(request(streaming), err => {
-        assert.ok(err instanceof GeminiApiError)
-        assert.equal(err.status, 429)
-        assert.equal(err.isRetryable, false)
-        return true
-      })
-      assert.equal(sent.length, 2, 'terminal quota must retain the pre-existing host checks')
+    await test(`${mode}: Antigravity quotaResetDelay is honored as a long cooldown`, async () => {
+      respond = () => quota(undefined, [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+        reason: 'QUOTA_EXHAUSTED', metadata: { quotaResetDelay: '5m12s' } }])
+      await assert.rejects(request(streaming), exhaustedQuota)
+      assert.equal(sent.length, 1)
       assert.deepEqual(waits, [])
     })
-    await test(`${mode}: abort while waiting prevents a second request`, async () => {
+    for (const reason of ['INSUFFICIENT_G1_CREDITS_BALANCE', 'DAILY_LIMIT_EXCEEDED', 'BILLING_ACCOUNT_SPEND_LIMIT_EXCEEDED']) {
+      await test(`${mode}: ${reason} has no pointless retries`, async () => {
+        respond = () => quota(undefined, [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason }])
+        await assert.rejects(request(streaming), exhaustedQuota)
+        assert.equal(sent.length, 1)
+        assert.deepEqual(waits, [])
+      })
+    }
+    await test(`${mode}: abort during backoff prevents another dispatch`, async () => {
       const controller = new AbortController()
       respond = () => quota({ 'Retry-After': '0.5' })
       duringWait = () => controller.abort()
@@ -301,32 +239,52 @@ try {
       await assert.rejects(request(streaming, MODEL, 'repl_main_thread', AbortSignal.abort()), { name: 'AbortError' })
       assert.equal(sent.length, 0)
     })
-    await test(`${mode}: 400 is not a quota retry`, async () => {
-      respond = () => new Response('Invalid request', { status: 400 })
-      await assert.rejects(request(streaming), err => err instanceof GeminiApiError && err.status === 400)
-      assert.equal(sent.length, 1)
-      assert.deepEqual(waits, [])
+    for (const body of ['Invalid request', 'Corrupted thought signature']) {
+      await test(`${mode}: ${body} does not rewrite history to retry`, async () => {
+        respond = () => new Response(body, { status: 400 })
+        await assert.rejects(request(streaming), err => err instanceof GeminiApiError && err.status === 400)
+        assert.equal(sent.length, 1)
+        assert.deepEqual(waits, [])
+      })
+    }
+    await test(`${mode}: an account config change cannot switch the in-flight request`, async () => {
+      duringWait = () => geminiApi.configure({ antigravityOAuthToken: 'different-account-token' })
+      respond = url => sent.length === 1 ? quota() : success(url)
+      try {
+        await request(streaming)
+        assertSameRequest()
+      } finally { geminiApi.configure({ antigravityOAuthToken: 'local-test-token' }) }
     })
-    await test(`${mode}: network failure after inline retries still falls back`, async () => {
-      respond = url => {
-        if (sent.length <= 3) return quota()
-        if (sent.length === 4) throw new TypeError('fetch failed')
-        return success(url)
-      }
-      await request(streaming)
-      assert.equal(sent.length, 5)
-      assertIdenticalDispatches(sent.slice(0, 4))
-      assert.ok(sent[4]!.url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE + ':'))
-    })
-    await test(`${mode}: a new non-retryable error after 429 is surfaced unchanged`, async () => {
-      respond = () => sent.length <= 3 ? quota() : new Response('Invalid request', { status: 400 })
-      await assert.rejects(request(streaming), err => err instanceof GeminiApiError && err.status === 400)
-      assert.equal(sent.length, 4)
-      assertIdenticalDispatches()
-      assert.deepEqual(waits, [0, 0, 0])
+    await test(`${mode}: 401 refresh preserves envelope and account with only a new token`, async () => {
+      const originalRefresh = (geminiApi as any)._refreshOAuthToken
+      let refreshes = 0
+      ;(geminiApi as any)._refreshOAuthToken = async () => { refreshes++; return 'refreshed-same-account-token' }
+      respond = url => sent.length === 1 ? new Response('Unauthorized', { status: 401 }) : success(url)
+      try {
+        await request(streaming)
+        assert.equal(refreshes, 1)
+        assert.equal(sent.length, 2)
+        assert.equal(sent[0]!.body, sent[1]!.body)
+        assert.notEqual(sent[0]!.headers.authorization, sent[1]!.headers.authorization)
+        assert.deepEqual(waits, [0])
+      } finally { (geminiApi as any)._refreshOAuthToken = originalRefresh }
     })
   }
 
+  await test('stream disconnect before first output is recovered on daily with identical bytes', async () => {
+    respond = url => sent.length === 1 ? new Response(new ReadableStream({
+      start(controller) { controller.error(new TypeError('fetch failed')) },
+    })) : success(url)
+    await request(true)
+    assert.equal(sent.length, 2)
+    assertSameRequest()
+  })
+  await test('empty stream before output is recovered within the same budget', async () => {
+    respond = url => sent.length <= 3 ? new Response('data: [DONE]\n\n') : success(url)
+    await request(true)
+    assert.equal(sent.length, 4)
+    assertSameRequest()
+  })
   await test('partial streamed output is never replayed', async () => {
     respond = () => new Response(new ReadableStream({
       start(controller) {
@@ -337,45 +295,46 @@ try {
     const chunks = []
     await assert.rejects(async () => {
       for await (const chunk of geminiApi.streamGenerateContent({ model: MODEL, contents: [] })) chunks.push(chunk)
-    }, /fetch failed/)
+    }, err => {
+      assert.equal(isRetryableProviderError(err), false)
+      return err instanceof TypeError
+    })
     assert.equal(chunks.length, 1)
     assert.equal(sent.length, 1)
   })
-
   await test('concurrent requests each own a three-retry budget', async () => {
     respond = url => {
       const streaming = url.includes(':streamGenerateContent')
       const calls = sent.filter(value => value.url.includes(':streamGenerateContent') === streaming)
       return calls.length <= 3 ? quota() : success(url)
     }
-    await Promise.all([request(true), request(false)])
+    await Promise.all([
+      withProviderRetryState(new Map(), () => request(true)),
+      withProviderRetryState(new Map(), () => request(false)),
+    ])
     for (const streaming of [true, false]) {
       const calls = sent.filter(value => value.url.includes(':streamGenerateContent') === streaming)
       assert.equal(calls.length, 4)
-      for (const call of calls) assert.deepEqual(call, calls[0])
+      assertIdenticalDispatches(calls)
     }
   })
-
   await test('a later user request receives a fresh budget', async () => {
-    respond = url => sent.length % 4 === 0 ? success(url) : quota()
+    await assert.rejects(request(true), exhaustedQuota)
+    const oldCount = sent.length
+    respond = url => sent.length - oldCount <= 3 ? quota() : success(url)
     await request(true)
-    assert.equal(sent.length, 4)
-    await request(true)
-    assert.equal(sent.length, 8)
+    assert.equal(sent.length - oldCount, 4)
   })
-
-  await test('Gemini CLI keeps its existing backoff', async () => {
+  await test('Gemini CLI keeps its existing endpoint and backoff', async () => {
     geminiApi.configure({ cliOAuthToken: 'local-cli-token' })
     try {
       respond = url => sent.length === 1 ? quota() : success(url)
       await request(true, 'gemini-2.5-flash')
       assert.equal(sent.length, 2)
-      assert.ok(waits.some(ms => ms >= 1400 && ms <= 2600), 'CLI incorrectly used instant Antigravity retries')
-    } finally {
-      geminiApi.configure({ cliOAuthToken: undefined })
-    }
+      assert.ok(sent.every(call => new URL(call.url).hostname === 'cloudcode-pa.googleapis.com'))
+      assert.deepEqual(waits, [2000])
+    } finally { geminiApi.configure({ cliOAuthToken: undefined }) }
   })
-
   const laneRequest = async (events: any[]) => {
     for await (const event of new GeminiLane().streamAsProvider({
       model: MODEL, providerHint: 'antigravity', sessionId: SESSION,
@@ -395,14 +354,15 @@ try {
     assert.equal(events.findLast(e => e.type === 'message_delta').usage.cache_read_input_tokens, 20000)
     assert.equal(events.filter(e => e.delta?.type === 'text_delta').map(e => e.delta.text).join(''), 'OK')
   })
-  await test('lane exhaustion throws once without persisting an assistant error turn', async () => {
+  await test('lane exhaustion throws once without an assistant error turn', async () => {
     const events: any[] = []
-    await assert.rejects(laneRequest(events), retryableQuota)
-    assert.equal(sent.length, 7)
+    await assert.rejects(laneRequest(events), exhaustedQuota)
+    assert.equal(sent.length, 4)
     assert.deepEqual(events, [])
   })
-  console.log(`Antigravity quota retry: ${passed} cases passed`)
+  console.log(`Antigravity daily retry: ${passed} cases passed`)
 } finally {
+  Math.random = originalRandom
   globalThis.fetch = originalFetch
   globalThis.setTimeout = originalTimer
   geminiApi.configure({ apiKey: undefined, cliOAuthToken: undefined, antigravityOAuthToken: undefined })

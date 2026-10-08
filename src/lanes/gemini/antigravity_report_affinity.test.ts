@@ -36,13 +36,11 @@ const previousTokens = {
   cliOAuthToken: (geminiApi as any).cliOAuthToken,
 }
 const requests: Array<{ base: string; body: any }> = []
-let forceChatFallback = false
 
 function reset(): void {
   codeAssist._resetAntigravityGeminiAffinityForTest()
   codeAssist._resetAntigravityGeminiHostCooldownForTest()
   requests.length = 0
-  forceChatFallback = false
 }
 
 async function request(streaming: boolean, querySource: string, model = MODEL): Promise<void> {
@@ -68,15 +66,12 @@ try {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const base = url.split(':streamGenerateContent')[0]!.split(':generateContent')[0]!
-    assert.ok([PROD, DAILY].includes(base), `unexpected network target: ${url}`)
+    assert.equal(base, DAILY, `unexpected network target: ${url}`)
     const body = JSON.parse(String(init?.body))
     requests.push({ base, body })
     assert.equal(body.project, 'report-affinity-test-project')
     assert.equal(body.request.sessionId, SESSION)
     assert.equal(body.request[TAU_QUERY_SOURCE_FIELD], undefined)
-    if (forceChatFallback && base === PROD) {
-      return new Response('not served here', { status: 404 })
-    }
     const response = { candidates: [{ content: { parts: [{ text: '# Report' }] } }] }
     return url.includes(':streamGenerateContent')
       ? new Response(`data: ${JSON.stringify({ response })}\n\n`, {
@@ -87,43 +82,29 @@ try {
 
   for (const model of MODELS) {
     for (const streaming of [true, false]) {
-    reset()
-    await request(streaming, 'report', model)
-    assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), undefined,
-      'a report must not establish the conversation host pin')
+      reset()
+      await request(streaming, 'report', model)
+      assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), undefined,
+        'a report must not establish the conversation host pin')
 
-    codeAssist.recordAntigravityGeminiServedBase(SESSION, PROD)
-    codeAssist.recordAntigravityGeminiHostExhausted(PROD)
-    requests.length = 0
-    await request(streaming, 'report', model)
-    await request(streaming, 'report', model)
-    assert.deepEqual(requests.map(value => value.base), [DAILY, DAILY])
-    assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), PROD,
-      'successful reports on another host must not migrate the conversation')
+      // Retired production state and exhausted daily bookkeeping must not
+      // send any one-shot, main or agent request to a sibling endpoint.
+      codeAssist.recordAntigravityGeminiServedBase(SESSION, PROD)
+      codeAssist.recordAntigravityGeminiHostExhausted(DAILY)
+      requests.length = 0
+      for (const source of ['report', 'repl_main_thread', 'agent:default', 'compact', 'quota_check']) {
+        await request(streaming, source, model)
+      }
+      assert.deepEqual(requests.map(value => value.base), [DAILY, DAILY, DAILY, DAILY, DAILY])
+      if (codeAssist.isAntigravityGeminiModel(model)) {
+        assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), DAILY)
+      }
 
-    // Report fallback serves must not advance the chat's migration streak.
-    // Claude has no own pin; its reports must not affect the Gemini process
-    // pin either. Exercise that with real Gemini chat requests around them.
-    const chatModel = codeAssist.isAntigravityGeminiModel(model) ? model : MODEL
-    forceChatFallback = true
-    await request(streaming, 'repl_main_thread', chatModel)
-    assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), PROD,
-      'one real chat fallback must still leave the original pin intact')
-    await request(streaming, 'report', model)
-    assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), PROD,
-      `${model}: interleaved report advanced the chat's pending migration`)
-    await request(streaming, 'repl_main_thread', chatModel)
-    assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), DAILY,
-      'two real chat fallbacks must still migrate the pin')
-
-    // A report served by the pin must not reset a genuine chat fallback.
-    reset()
-    codeAssist.recordAntigravityGeminiServedBase(SESSION, PROD)
-    codeAssist.recordAntigravityGeminiServedBase(SESSION, DAILY)
-    await request(streaming, 'report', model)
-    codeAssist.recordAntigravityGeminiServedBase(SESSION, DAILY)
-    assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), DAILY,
-      'an interleaved report must not reset the conversation migration streak')
+      // A report preserves an existing successful conversation host.
+      codeAssist.recordAntigravityGeminiServedBase(SESSION, DAILY)
+      await request(streaming, 'report', model)
+      assert.equal(codeAssist.antigravityGeminiStickyBase(SESSION), DAILY,
+        'report changed the conversation host')
     }
   }
   console.log(`Antigravity report endpoint affinity tests passed: ${MODELS.length} models and aliases, streaming and non-streaming`)

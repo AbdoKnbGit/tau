@@ -75,6 +75,22 @@ async function collect(chunks: string[]): Promise<GeminiStreamChunk[]> {
 async function main(): Promise<void> {
   console.log('gemini code assist sse parser:')
 
+  await test('wire normalization leaves caller configuration and Claude history unchanged', () => {
+    const input = {
+      generationConfig: { maxOutputTokens: 128, temperature: 0 },
+      contents: [{ role: 'model', parts: [
+        { functionResponse: { name: 'lookup', response: { result: 'ok' } } },
+        { thoughtSignature: 'original-signature' },
+      ] }],
+    }
+    const before = JSON.stringify(input)
+    const gemini = wrapForCodeAssist('gemini-3.8-flash-low', 'project', input)
+    assert((gemini.request.generationConfig as any).maxOutputTokens === undefined, 'Gemini wire normalization missing')
+    const claude = wrapForCodeAssist('claude-sonnet-4-6', 'project', input)
+    assert((claude.request.contents as any)[0].role === 'user', 'Claude tool response role was not normalized')
+    assert(JSON.stringify(input) === before, 'wire normalization mutated caller input')
+  })
+
   await test('parses multi-line usage event with cache reads', async () => {
     const chunks = await collect([
       'data: {"response":{\n',
@@ -268,102 +284,37 @@ async function main(): Promise<void> {
     )
   })
 
-  await test('a quota-refusing generation host is tried last next time', async () => {
-    // Measured live 2026-09-04: prod answered 429 for every request shape
-    // while daily/sandbox served the identical bodies. Default order is
-    // prod-first, so a one-shot request (/report) burned its whole retry
-    // budget re-probing the dead host while long chats hopped past it.
+  await test('quota cooldown cannot route any request away from daily', async () => {
     _resetAntigravityGeminiHostCooldownForTest()
-    const model = 'gemini-3.5-flash-low'
-    const before = codeAssistGenerationBasesForModel('antigravity', model)
-    assert(before.length >= 2, `expected multiple hosts, got ${before.length}`)
-
-    recordAntigravityGeminiHostExhausted(before[0]!)
-
-    // A conversation turn KEEPS its warm host. Each host runs its own
-    // implicit-cache pool, so demoting the pinned host after one 429 would
-    // re-bill the whole prompt on a cold pool — the cost the pin exists to
-    // avoid. Only the one-shot report, which has no cache equity, reorders.
-    for (const chatSource of [undefined, 'repl_main_thread', 'agent:default']) {
-      const chat = codeAssistGenerationBasesForModel(
-        'antigravity', model, undefined, chatSource,
-      )
-      assert(
-        chat[0] === before[0],
-        `${chatSource ?? 'untagged'}: chat lost its warm host to a 429 cooldown`,
-      )
+    try {
+      const daily = 'https://daily-cloudcode-pa.googleapis.com/v1internal'
+      recordAntigravityGeminiHostExhausted(daily, 120000)
+      for (const model of ['gemini-3.8-flash-high', 'claude-sonnet-4-6']) {
+        for (const querySource of [undefined, 'repl_main_thread', 'agent:default', 'report', 'quota_check', 'compact']) {
+          const bases = codeAssistGenerationBasesForModel('antigravity', model, undefined, querySource)
+          assert(bases.length === 1 && bases[0] === daily,
+            model + '/' + querySource + ': cooldown changed the generation host')
+        }
+      }
+    } finally {
+      _resetAntigravityGeminiHostCooldownForTest()
     }
-
-    const after = codeAssistGenerationBasesForModel(
-      'antigravity', model, undefined, 'report',
-    )
-    assert(
-      after[0] !== before[0],
-      `exhausted host stayed first: ${after[0]}`,
-    )
-    assert(
-      after[after.length - 1] === before[0],
-      `exhausted host was not moved last: ${after.join(' , ')}`,
-    )
-    assert(
-      after.length === before.length,
-      'a host was dropped instead of demoted',
-    )
-
-    // Every host cooling down must still produce a request rather than an
-    // empty list — stale bookkeeping cannot be allowed to fail locally.
-    for (const base of before) recordAntigravityGeminiHostExhausted(base)
-    const allCold = codeAssistGenerationBasesForModel(
-      'antigravity', model, undefined, 'report',
-    )
-    assert(
-      allCold.length === before.length && allCold[0] === before[0],
-      'all-cold fell back to something other than the original order',
-    )
-
-    // Non-Antigravity executors are untouched.
-    _resetAntigravityGeminiHostCooldownForTest()
-    const cli = codeAssistGenerationBasesForModel(
-      'cli', 'gemini-2.5-pro', undefined, 'report',
-    )
-    assert(cli.length === 1, `cli host list changed: ${cli.join(' , ')}`)
-    _resetAntigravityGeminiHostCooldownForTest()
   })
 
-  await test('host counts are per-model, not one global number', async () => {
-    // Gemini and Claude on Antigravity have different host lists, so anything
-    // budgeting attempts per host has to ask rather than assume.
-    const gemini = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low')
-    const claude = codeAssistGenerationBasesForModel('antigravity', 'claude-sonnet-4-6')
-    assert(
-      antigravityGenerationHostCount('gemini-3.5-flash-low') === gemini.length,
-      `gemini host count ${antigravityGenerationHostCount('gemini-3.5-flash-low')} != ${gemini.length}`,
-    )
-    assert(
-      antigravityGenerationHostCount('claude-sonnet-4-6') === claude.length,
-      `claude host count ${antigravityGenerationHostCount('claude-sonnet-4-6')} != ${claude.length}`,
-    )
-    assert(antigravityGenerationHostCount(undefined) >= 1, 'unknown model got no hosts')
+  await test('all Antigravity models have one daily generation host', async () => {
+    for (const model of ['gemini-3.8-flash-high', 'claude-sonnet-4-6', undefined]) {
+      assert(antigravityGenerationHostCount(model) === 1, 'unexpected host count for ' + model)
+    }
   })
 
-  await test('keeps Antigravity generation endpoint fallbacks scoped to Antigravity', async () => {
+  await test('daily-only Antigravity generation preserves Gemini CLI production routing', async () => {
     const antigravityBases = codeAssistGenerationBases('antigravity')
-    assert(antigravityBases.length === 3, `antigravity bases=${antigravityBases.length}`)
-    assert(
-      antigravityBases[0] === 'https://daily-cloudcode-pa.googleapis.com/v1internal',
-      `primary Antigravity base=${antigravityBases[0]}`,
-    )
-    assert(
-      antigravityBases[1] === 'https://cloudcode-pa.googleapis.com/v1internal',
-      `fallback Antigravity base=${antigravityBases[1]}`,
-    )
-    assert(
-      antigravityBases[2] === 'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal',
-      `last Antigravity base=${antigravityBases[2]}`,
-    )
+    assert(antigravityBases.length === 1, 'Antigravity retained a fallback')
+    assert(antigravityBases[0] === 'https://daily-cloudcode-pa.googleapis.com/v1internal',
+      'Antigravity did not use daily')
     const cliBases = codeAssistGenerationBases('cli')
-    assert(cliBases.length === 1, `cli bases=${cliBases.length}`)
-    assert(cliBases[0] === 'https://cloudcode-pa.googleapis.com/v1internal', `cli base=${cliBases[0]}`)
+    assert(cliBases.length === 1, 'Gemini CLI host count changed')
+    assert(cliBases[0] === 'https://cloudcode-pa.googleapis.com/v1internal', 'Gemini CLI host changed')
   })
 
   await test('keeps user-managed standard tiers classified for Gemini CLI', async () => {

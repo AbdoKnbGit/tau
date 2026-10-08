@@ -140,7 +140,7 @@ try {
   assert.equal(idParts(mainAgain).trajectoryId, main[0]!.trajectoryId)
   assert.equal(idParts(mainAgain).step, 5, 'a helper advanced the main counter')
 
-  // ── 4. Hops share an attempt's id; retries and failures consume steps, never reused. ──
+  // ── 4. Retries retain one operation identity; a new operation advances its step. ──
   reset()
   replies = [
     { kind: 'status', status: 503, body: '{"error":{"code":503,"status":"UNAVAILABLE"}}' },
@@ -148,16 +148,15 @@ try {
     { kind: 'ok' },
   ]
   await stream(request())
-  const [hop0, hop1, retry] = bodies.map(idParts)
-  assert.equal(hop0!.step, 2)
-  assert.equal(hop1!.step, 2, 'endpoint hops of one attempt share its request id')
-  assert.equal(bodies[0].requestId, bodies[1].requestId)
-  assert.equal(retry!.step, 3, 'a retry attempt gets the next step')
+  assert.equal(bodies.length, 3)
+  assert.deepEqual(bodies.map(body => idParts(body).step), [2, 2, 2])
+  assert.equal(new Set(bodies.map(body => body.requestId)).size, 1, 'retry changed the persistent request id')
+  assert.equal(new Set(bodies.map(body => JSON.stringify(body))).size, 1, 'retry changed envelope or prompt bytes')
   replies = [{ kind: 'throw' }, { kind: 'throw' }, { kind: 'throw' }, { kind: 'throw' }]
   await assert.rejects(stream(request()))
-  assert.deepEqual(bodies.slice(3).map(b => idParts(b).step), [4, 4, 5, 5])
+  assert.deepEqual(bodies.slice(3).map(b => idParts(b).step), [3, 3, 3, 3])
   await stream(request())
-  assert.equal(idParts(bodies.at(-1)).step, 6, 'a failed request rewound or reused a step')
+  assert.equal(idParts(bodies.at(-1)).step, 4, 'a failed request rewound or reused a step')
 
   // ── 5. Model and project are part of the trajectory scope. ──
   const mainTrajectory = idParts(bodies.at(-1)).trajectoryId
@@ -169,7 +168,7 @@ try {
   project = 'trajectory-project'
   await stream(request())
   assert.equal(idParts(bodies.at(-1)).trajectoryId, mainTrajectory)
-  assert.equal(idParts(bodies.at(-1)).step, 7)
+  assert.equal(idParts(bodies.at(-1)).step, 5)
 
   // ── 6. The profile is chosen once per stream. ──
   reset()
@@ -200,7 +199,7 @@ try {
   delete process.env.TAU_ANTIGRAVITY_TRAJECTORY
   process.env.TAU_CACHE_DEBUG = '1'
   replies = [{ kind: 'status', status: 400, body: JSON.stringify({ error: { code: 400, message: 'Corrupted thought signature.', status: 'INVALID_ARGUMENT' } }) }]
-  await stream(request())
+  await assert.rejects(stream(request()), /Corrupted thought signature/)
   assert.equal(trajectory.antigravityTrajectoryRejection(), undefined, 'an unrelated 400 disabled the envelope')
   replies = [{ kind: 'status', status: 400, body: JSON.stringify({ error: { code: 400, message: 'Invalid JSON payload received. Unknown name "labels" at \'request\': Cannot find field.', status: 'INVALID_ARGUMENT' } }) }]
   const before = bodies.length
@@ -215,12 +214,12 @@ try {
   assert.equal(bodies.at(-1).request.labels, undefined)
   const rows = readFileSync(LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line))
   const profiles = rows.filter(r => r.kind === 'dispatch').map(r => r.profile.trajectory)
-  assert.deepEqual(profiles, ['minimal', 'minimal', 'minimal', 'rejected', 'rejected'])
+  assert.deepEqual(profiles, ['minimal', 'minimal', 'rejected', 'rejected'])
   assert.ok(rows.some(r => r.kind === 'endpoint' && r.event === 'trajectory-rejected'))
-  const rejectedDispatch = rows.filter(r => r.kind === 'dispatch')[2]
+  const rejectedDispatch = rows.filter(r => r.kind === 'dispatch')[1]
   assert.equal(rejectedDispatch.labels.trajectory_id, idParts(bodies[before]).trajectoryId, 'dispatch rows must show the labels that were sent')
 
-  console.log('Antigravity trajectory envelope passed: switched-off parity, on by default, prompt bytes, id/labels contract, agent/helper isolation, hops/retries/failures, scope, sticky profile, reset, rejection resend')
+  console.log('Antigravity trajectory envelope passed: switched-off parity, on by default, prompt bytes, id/labels contract, agent/helper isolation, persistent retries/failures, scope, sticky profile, reset, rejection resend')
 } finally {
   globalThis.fetch = originalFetch
   ;(geminiApi as any).antigravityOAuthToken = previousToken

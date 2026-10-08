@@ -37,12 +37,19 @@ export interface GoogleErrorDetails {
   reason?: string
   domain?: string
   metadata?: Record<string, string>
-  quotaFailures?: Array<{ subject?: string; description?: string }>
+  quotaFailures?: Array<{
+    subject?: string
+    description?: string
+    quotaMetric?: string
+    quotaId?: string
+    quotaDimensions?: Record<string, string>
+  }>
   retryDelaySeconds?: number
   validationLink?: string
   validationDescription?: string
   learnMoreUrl?: string
   insufficientCredits?: boolean
+  terminalQuota?: boolean
 }
 
 export interface ClassifiedGeminiError {
@@ -52,6 +59,57 @@ export interface ClassifiedGeminiError {
 }
 
 // ─── Body parsing ────────────────────────────────────────────────
+
+const TERMINAL_QUOTA_REASONS = new Set([
+  'DAILY_LIMIT_EXCEEDED', 'DAILY_QUOTA_EXCEEDED', 'DAILY_QUOTA_EXHAUSTED',
+  'WEEKLY_LIMIT_EXCEEDED', 'WEEKLY_QUOTA_EXCEEDED', 'WEEKLY_QUOTA_EXHAUSTED',
+  'MONTHLY_LIMIT_EXCEEDED', 'MONTHLY_QUOTA_EXCEEDED', 'MONTHLY_QUOTA_EXHAUSTED',
+  'BILLING_LIMIT_EXCEEDED', 'BILLING_QUOTA_EXCEEDED', 'BILLING_HARD_LIMIT_REACHED',
+  'BILLING_ACCOUNT_SPEND_LIMIT_EXCEEDED', 'PROJECT_SPEND_LIMIT_EXCEEDED',
+  'SPEND_LIMIT_EXCEEDED', 'SPENDING_LIMIT_EXCEEDED', 'SPENDING_LIMIT_REACHED',
+  'INSUFFICIENT_G1_CREDITS_BALANCE', 'INSUFFICIENT_CREDITS', 'CREDITS_EXHAUSTED',
+])
+
+function quotaIdentifier(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+}
+
+function isLongPeriodQuota(value: string): boolean {
+  const identifier = quotaIdentifier(value)
+  return /(?:^|_)(?:DAILY|WEEKLY|MONTHLY|PER_(?:DAY|WEEK|MONTH))(?:_|$)/.test(identifier)
+    || /^(?:DAY|WEEK|MONTH)$/.test(identifier)
+    || /^1\/(?:d|day|wk|week|mo|month)(?:\/|$)/i.test(value)
+}
+
+function hasExplicitQuotaCap(metadata: Record<string, string>): boolean {
+  return Object.entries(metadata).some(([key, value]) => (
+    /^(?:QUOTA_(?:LIMIT|LIMIT_NAME|ID|METRIC|PERIOD|UNIT|TYPE)|LIMIT_(?:NAME|TYPE|PERIOD))$/.test(quotaIdentifier(key))
+    && (isLongPeriodQuota(value) || TERMINAL_QUOTA_REASONS.has(quotaIdentifier(value)))
+  ))
+}
+
+function hasExplicitCapMessage(message: string): boolean {
+  // A generic "quota exhausted" or "capacity" message is not proof of a
+  // terminal cap: the same account may recover on the next short retry.
+  return /\b(?:daily|weekly|monthly|billing|spend(?:ing)?)\s+(?:\w+\s+){0,2}(?:quota|limit|cap)\b.{0,40}\b(?:exceeded|exhausted|reached)\b/i.test(message)
+    || /\b(?:exceeded|exhausted|reached)\b.{0,40}\b(?:daily|weekly|monthly|billing|spend(?:ing)?)\s+(?:\w+\s+){0,2}(?:quota|limit|cap)\b/i.test(message)
+}
+
+function stringFields(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+}
+
+/** RetryInfo uses protobuf seconds; Antigravity metadata also uses Go durations. */
+function durationSeconds(value: unknown): number | undefined {
+  if (typeof value !== 'string' || !/^(?:\d+(?:\.\d+)?(?:ms|us|ns|h|m|s))+$/.test(value)) return undefined
+  const scales: Record<string, number> = { h: 3600, m: 60, s: 1, ms: 0.001, us: 0.000001, ns: 0.000000001 }
+  let seconds = 0
+  for (const part of value.matchAll(/(\d+(?:\.\d+)?)(ms|us|ns|h|m|s)/g)) {
+    seconds += Number(part[1]) * scales[part[2]!]!
+  }
+  return Number.isFinite(seconds) ? seconds : undefined
+}
 
 /**
  * Best-effort parse of a Google API error body.
@@ -84,7 +142,10 @@ export function parseGoogleErrorDetails(body: string): GoogleErrorDetails {
   const code = (root as { code?: unknown }).code
   if (typeof code === 'number') out.code = code
   const message = (root as { message?: unknown }).message
-  if (typeof message === 'string') out.message = message
+  if (typeof message === 'string') {
+    out.message = message
+    if (hasExplicitCapMessage(message)) out.terminalQuota = true
+  }
   const status = (root as { status?: unknown }).status
   if (typeof status === 'string') {
     out.status = status
@@ -98,45 +159,64 @@ export function parseGoogleErrorDetails(body: string): GoogleErrorDetails {
 
   for (const d of details) {
     if (!d || typeof d !== 'object') continue
-    const type = (d as { '@type'?: string })['@type'] ?? ''
+    const type = (d as { '@type'?: unknown })['@type']
+    if (typeof type !== 'string') continue
 
     if (type.endsWith('ErrorInfo')) {
       const info = d as {
-        reason?: string
-        domain?: string
-        metadata?: Record<string, string>
+        reason?: unknown
+        domain?: unknown
+        metadata?: unknown
       }
-      if (info.reason) out.reason = info.reason
-      if (info.domain) out.domain = info.domain
-      if (info.metadata) out.metadata = info.metadata
-      if (info.reason === 'INSUFFICIENT_G1_CREDITS_BALANCE') {
+      if (typeof info.reason === 'string') {
+        out.reason = info.reason
+        if (TERMINAL_QUOTA_REASONS.has(quotaIdentifier(info.reason))) out.terminalQuota = true
+      }
+      if (typeof info.domain === 'string') out.domain = info.domain
+      const metadata = stringFields(info.metadata)
+      if (metadata) {
+        out.metadata = { ...out.metadata, ...metadata }
+        if (hasExplicitQuotaCap(metadata)) out.terminalQuota = true
+        const resetDelay = durationSeconds(metadata.quotaResetDelay)
+        if (resetDelay !== undefined) out.retryDelaySeconds = Math.max(out.retryDelaySeconds ?? 0, resetDelay)
+      }
+      if (typeof info.reason === 'string' && quotaIdentifier(info.reason) === 'INSUFFICIENT_G1_CREDITS_BALANCE') {
         out.insufficientCredits = true
       }
     } else if (type.endsWith('QuotaFailure')) {
       const qf = d as {
-        violations?: Array<{ subject?: string; description?: string }>
+        violations?: unknown[]
       }
       if (Array.isArray(qf.violations)) {
-        out.quotaFailures = qf.violations.map(v => ({
-          subject: v.subject,
-          description: v.description,
-        }))
+        for (const value of qf.violations) {
+          const violation = stringFields(value)
+          if (!violation) continue
+          const quotaDimensions = stringFields((value as { quotaDimensions?: unknown }).quotaDimensions)
+          ;(out.quotaFailures ??= []).push({
+            subject: violation.subject,
+            description: violation.description,
+            quotaMetric: violation.quotaMetric,
+            quotaId: violation.quotaId,
+            quotaDimensions,
+          })
+          if (
+            [violation.quotaId, violation.quotaMetric].some(v => v !== undefined && isLongPeriodQuota(v))
+            || (violation.description !== undefined && hasExplicitCapMessage(violation.description))
+            || (quotaDimensions !== undefined && hasExplicitQuotaCap(quotaDimensions))
+          ) out.terminalQuota = true
+        }
       }
     } else if (type.endsWith('RetryInfo')) {
-      const ri = d as { retryDelay?: string }
-      if (typeof ri.retryDelay === 'string') {
-        // e.g. "42s" or "1.500s"
-        const m = ri.retryDelay.match(/^(\d+(?:\.\d+)?)s$/)
-        if (m) out.retryDelaySeconds = parseFloat(m[1]!)
-      }
+      const retryDelay = durationSeconds((d as { retryDelay?: unknown }).retryDelay)
+      if (retryDelay !== undefined) out.retryDelaySeconds = Math.max(out.retryDelaySeconds ?? 0, retryDelay)
     } else if (type.endsWith('Help')) {
       const help = d as {
         links?: Array<{ url?: string; description?: string }>
       }
       if (Array.isArray(help.links)) {
         for (const link of help.links) {
-          if (!link.url) continue
-          const desc = (link.description ?? '').toLowerCase()
+          if (!link || typeof link.url !== 'string') continue
+          const desc = typeof link.description === 'string' ? link.description.toLowerCase() : ''
           if (desc.includes('validat') || desc.includes('verify')) {
             out.validationLink = link.url
             out.validationDescription = link.description ?? undefined
@@ -175,7 +255,7 @@ export function classifyGeminiError(
   // some return 200 with an inline error envelope).
   if (
     lowered.includes('prompt is too long')
-    || lowered.includes('token limit')
+    || (lowered.includes('token limit') && status !== 429 && !details.terminalQuota)
     || lowered.includes('context window')
     || lowered.includes('context length')
     || details.reason === 'PROMPT_TOO_LONG'
@@ -215,15 +295,8 @@ export function classifyGeminiError(
   if (status === 429) {
     // Split: if ErrorInfo says it's a terminal quota (daily cap, billing
     // exhausted) we don't retry this credential. Otherwise transient.
-    if (details.insufficientCredits) {
+    if (details.insufficientCredits || details.terminalQuota) {
       return { kind: 'terminal-quota', details, retryAfterMs }
-    }
-    if (
-      details.reason === 'RATE_LIMIT_EXCEEDED'
-      || details.reason === 'RESOURCE_EXHAUSTED'
-      || !details.reason
-    ) {
-      return { kind: 'retryable-quota', details, retryAfterMs }
     }
     return { kind: 'retryable-quota', details, retryAfterMs }
   }

@@ -22,7 +22,6 @@ import {
   executorForModel,
   parseCodeAssistSSE,
   unwrapCodeAssistResponse,
-  recordAntigravityGeminiHostExhausted,
   wrapForCodeAssist,
   wrapForGeminiCLI,
   geminiCLIApiHeaders,
@@ -70,7 +69,7 @@ import {
   selectActiveAntigravityAccount,
 } from '../shared/antigravity_auth.js'
 import { parseGeminiApiSSE as parseGeminiApiSSEEvent } from './api_sse.js'
-import { getProviderRetryBudget } from '../../services/api/providerRetryBudget.js'
+import { markAntigravityRetryHandled, retryAntigravityRequest } from './antigravity_retry.js'
 
 // Duplicated from services/api/errors.ts to avoid pulling in its
 // transitive import of utils/messages.ts (which has build-time-only
@@ -265,38 +264,6 @@ export async function* parseGeminiApiSSE(
 // ─── API Client ──────────────────────────────────────────────────
 
 const AI_STUDIO_BASE = 'https://generativelanguage.googleapis.com/v1beta'
-const ANTIGRAVITY_GEMINI_MAX_RETRY_ATTEMPTS = 2
-const ANTIGRAVITY_GEMINI_MAX_RETRY_WAIT_MS = 4_000
-const ANTIGRAVITY_QUOTA_FAST_RETRIES = 3
-
-/**
- * Try a short same-host replay before the existing endpoint recovery policy.
- * The caller reuses its serialized envelope and headers. A bare 429 is an
- * endpoint refusal, not proof that the account has exhausted its allowance:
- * when this local budget ends, the normal host fallback must still run.
- */
-async function retryAntigravityQuota(
-  response: Response,
-  body: string,
-  budget: { remaining: number },
-  signal?: AbortSignal,
-): Promise<boolean> {
-  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-  if (budget.remaining === 0) return false
-  const cls = classifyGeminiError(response.status, body)
-  if (cls.kind !== 'retryable-quota') return false
-  const retryAfterMs = Math.max(
-    cls.retryAfterMs ?? 0,
-    parseRetryAfter(response.headers.get('retry-after')) ?? 0,
-  )
-  // Long server hints belong to the existing recovery path. The quick
-  // same-host prelude must not shorten them or suppress endpoint fallback.
-  if (!Number.isFinite(retryAfterMs) || retryAfterMs > ANTIGRAVITY_GEMINI_MAX_RETRY_WAIT_MS) return false
-  budget.remaining--
-  // Yield at 0 ms as well, so cancellation can stop the next dispatch.
-  await delayWithAbort(retryAfterMs, signal)
-  return true
-}
 
 class EndpointTimeoutError extends Error {
   constructor(message: string) {
@@ -309,18 +276,19 @@ function isAntigravityGeminiRoute(executor: 'cli' | 'antigravity', model: string
   return executor === 'antigravity' && isAntigravityGeminiModel(model)
 }
 
-function antigravityGeminiRetryOptions(
+function antigravityRetryOptions(
   signal: AbortSignal | undefined,
-  enabled: boolean,
+  executor: 'cli' | 'antigravity',
+  model: string,
 ): RetryOptions {
-  if (!enabled) return { signal }
-  return {
-    signal,
-    maxAttempts: ANTIGRAVITY_GEMINI_MAX_RETRY_ATTEMPTS,
-    initialDelayMs: 500,
-    maxDelayMs: 2_000,
-    maxRetryAfterMs: ANTIGRAVITY_GEMINI_MAX_RETRY_WAIT_MS,
-  }
+  return { signal, ...(executor === 'antigravity' && { antigravityModel: model }) }
+}
+
+/** Respect both Google RetryInfo and HTTP Retry-After; neither may be shortened. */
+function responseRetryAfter(response: Response, cls: ClassifiedGeminiError): number | undefined {
+  const header = parseRetryAfter(response.headers.get('retry-after'))
+  if (header === undefined) return cls.retryAfterMs
+  return Math.max(header, cls.retryAfterMs ?? 0)
 }
 
 async function fetchCodeAssistEndpoint(
@@ -605,20 +573,19 @@ class GeminiApiClient {
     // TAU_CACHE_DEBUG only: one row per HTTP dispatch of this request.
     const trace = startAntigravityDispatchTrace(request, tauStableSessionId)
 
-    // OAuth path → Code Assist proxy (cloudcode-pa.googleapis.com). Uses the
-    // same request envelopes and header sets that CLIProxyAPI emits so quota
-    // routes to the right pool (free Code Assist vs Antigravity).
+    // OAuth uses each executor's generation endpoint: Antigravity stays on
+    // daily, while Gemini CLI keeps its Code Assist endpoint and retry policy.
     const oauthRouting = this._tokenForModel(model)
     if (oauthRouting) {
-      // Per-attempt state: re-resolve projectId each attempt so that a
-      // stale-project 403 that clears the cache gets a fresh project on
-      // the next attempt (before this fix, projectId was captured once
-      // outside retryWithBackoff and the cleared cache was moot).
+      // Stale-project recovery can invalidate discovery; transient retries
+      // preserve the original account, project and serialized request.
       let reonboardsLeft = 1
       let sigStripsLeft = 1
-      const quotaRetryBudget = isAntigravityGeminiRoute(oauthRouting.executor, model)
-        ? getProviderRetryBudget(`antigravity-quota:${model}`, ANTIGRAVITY_QUOTA_FAST_RETRIES)
-        : { remaining: ANTIGRAVITY_QUOTA_FAST_RETRIES }
+      // Snapshot the account and prepared wire request for this operation.
+      // Only an explicit auth/project or rejected-envelope repair invalidates it.
+      let routing = oauthRouting
+      let project: { id: string | null } | undefined
+      let wire: { serialized: string; trajectory?: AntigravityTrajectoryAttempt } | undefined
       const basesForExecutor = (executor: 'cli' | 'antigravity') =>
         codeAssistGenerationBasesForModel(executor, model, tauStableSessionId, tauQuerySource)
       const urlForBase = (base: string) => `${base}:streamGenerateContent?alt=sse`
@@ -626,51 +593,43 @@ class GeminiApiClient {
       const rotation = getAntigravityRotation()
       let attemptNo = 0
       // The traced dispatch whose response body the stream below reads.
-      const served: { attempt?: AntigravityDispatchAttempt } = {}
+      const served: {
+        attempt?: AntigravityDispatchAttempt
+        iterator?: AsyncGenerator<GeminiStreamChunk>
+        first?: IteratorResult<GeminiStreamChunk>
+        fetchMs?: number
+      } = {}
 
       const response = await retryWithBackoff(
         async () => {
           attemptNo++
-          // Re-pick the token each attempt so a refreshed access token is
-          // picked up mid-retry. The account itself never changes: routing is
-          // pinned to the authenticated account (see _tokenForModel).
-          const routing = this._tokenForModel(model)
-          if (!routing) {
-            throw new GeminiApiError(0, 'No OAuth credentials available', undefined, {
-              kind: 'non-retryable',
-              details: {},
-            })
-          }
+          // Auth refresh updates this operation's token without re-selecting an account.
           const { token, executor, accountEmail } = routing
-          const projectId = await ensureCodeAssistReady(token, executor)
-          const trajectory = antigravityTrajectoryFor(request, executor, model, accountEmail, projectId)
-          const wrappedBody = executor === 'antigravity'
-            ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId), undefined, trajectory?.identity)
-            : wrapForGeminiCLI(model, projectId, body)
+          project ??= { id: await ensureCodeAssistReady(token, executor) }
+          if (!wire) {
+            const trajectory = antigravityTrajectoryFor(request, executor, model, accountEmail, project.id)
+            const wrappedBody = executor === 'antigravity'
+              ? wrapForCodeAssist(model, project.id, withTauStableSessionId(body, tauStableSessionId), undefined, trajectory?.identity)
+              : wrapForGeminiCLI(model, project.id, body)
+            wire = {
+              trajectory,
+              serialized: JSON.stringify(wrappedBody).replace(/"thoughtSignature"\s*:/g, '"thought_signature":'),
+            }
+          }
+          const { serialized, trajectory } = wire
           const headers = executor === 'antigravity'
             ? antigravityApiHeaders(token)
             : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
-          // Code Assist uses proto-json snake_case — rename thoughtSignature
-          // on the wire. One string replace on the outgoing payload; cheap.
-          const serialized = JSON.stringify(wrappedBody)
-            .replace(/"thoughtSignature"\s*:/g, '"thought_signature":')
 
           let resp: Response | null = null
           let errText = ''
           const bases = basesForExecutor(executor)
           const urls = bases.map(urlForBase)
           const fastAntigravityGemini = isAntigravityGeminiRoute(executor, model)
-          // Endpoint affinity: each host runs its own implicit-cache pool, so
-          // once this process has cache equity on a host, slowness alone must
-          // not re-route requests — a detour re-bills the whole prompt cold on
-          // the other pool. The bridge bounds setup time across retries;
-          // real failures (HTTP errors, network) still fall through,
-          // and whichever host serves becomes the process-wide pin.
+          // Antigravity generation stays on daily. Keep the request envelope
+          // stable while the provider bridge bounds the first-output wait.
           const onPinnedHost = fastAntigravityGemini
             && antigravityGeminiStickyBase(tauStableSessionId) === bases[0]
-          // First attempt on the pinned host absorbs transient failures via
-          // retryWithBackoff on the same account/host before hopping to the
-          // sibling cache pool.
           const pinnedFirstAttempt = onPinnedHost && attemptNo <= 1
           let lastEndpointError: unknown
           let dispatch: AntigravityDispatchAttempt | undefined
@@ -680,7 +639,7 @@ class GeminiApiClient {
             const transport = fastAntigravityGemini ? antigravityTransportIfNeeded(urls[i]!, !!trace) : undefined
             dispatch = fastAntigravityGemini
               ? trace?.attempt({
-                attempt: attemptNo + ANTIGRAVITY_QUOTA_FAST_RETRIES - quotaRetryBudget.remaining,
+                attempt: attemptNo,
                 hop: i,
                 hopReason,
                 url: urls[i]!,
@@ -747,32 +706,12 @@ class GeminiApiClient {
             }
             errText = await resp.text().catch(() => '')
             dispatch?.end('http-error', { status: resp.status, errorBody: errText })
-            // Keep fast retries on the primary cache host. Once it failed,
-            // probe each fallback once instead of spending three more round
-            // trips on its 429 before the warm host can be tried again.
-            if (executor === 'antigravity' && resp.status === 429
-              && (!fastAntigravityGemini || i === 0)
-              && await retryAntigravityQuota(resp, errText, quotaRetryBudget, signal)) {
-              // Replay the same host, credentials, requestId and prompt bytes.
-              // Once the fast retries end, continue normal fallback below.
-              i--
-              continue
-            }
             // The backend refusing an envelope field turns the envelope off for
             // the process; this request is sent again without it below.
             const rejectedFields = rejectAntigravityTrajectoryOn(resp.status, errText, trajectory)
             if (rejectedFields) {
               envelopeRejected = true
               logEndpoint('trajectory-rejected', { status: resp.status, fields: rejectedFields, attempt: attemptNo })
-            }
-            // Hosts meter quota separately. Remember a refusal so the next
-            // request — especially a one-shot like /report, which cannot
-            // afford to re-probe a dead host — starts somewhere that serves.
-            if (executor === 'antigravity' && resp.status === 429) {
-              recordAntigravityGeminiHostExhausted(
-                bases[i]!,
-                classifyGeminiError(resp.status, errText).retryAfterMs,
-              )
             }
             if (shouldTryNextAntigravityGeminiEndpoint(executor, model, resp.status, i, urls.length, pinnedFirstAttempt)) {
               hopReason = `status ${resp.status}`
@@ -794,12 +733,12 @@ class GeminiApiClient {
           }
           if (!resp.ok) {
             const cls = classifyGeminiError(resp.status, errText)
-            const retryAfterMs = cls.retryAfterMs
-              ?? parseRetryAfter(resp.headers.get('retry-after'))
+            const retryAfterMs = responseRetryAfter(resp, cls)
 
             // A refused trajectory envelope is not the account's fault: retry
             // once without it (it is now off) instead of failing the turn.
             if (envelopeRejected) {
+              wire = undefined
               throw new GeminiApiError(resp.status, errText, 0, {
                 kind: 'transient',
                 details: cls.details,
@@ -843,12 +782,13 @@ class GeminiApiClient {
             //         403 for silently-expired tokens, so refresh too.
             if (cls.kind === 'auth-stale' && reonboardsLeft > 0) {
               reonboardsLeft--
-              if (resp.status === 401) {
-                await this._refreshOAuthToken(executor, accountEmail)
-              } else {
+              if (resp.status !== 401) {
                 clearCodeAssistCache(executor)
-                await this._refreshOAuthToken(executor, accountEmail)
+                project = undefined
+                wire = undefined
               }
+              const refreshed = await this._refreshOAuthToken(executor, accountEmail)
+              if (refreshed) routing = { ...routing, token: refreshed }
               throw new GeminiApiError(resp.status, errText, 0, {
                 kind: 'transient',
                 details: cls.details,
@@ -861,7 +801,8 @@ class GeminiApiClient {
             // a continuity hint; dropping them trades a re-think for
             // the request not failing outright.
             if (
-              resp.status === 400
+              executor !== 'antigravity'
+              && resp.status === 400
               && /corrupted thought signature/i.test(errText)
               && sigStripsLeft > 0
             ) {
@@ -875,6 +816,7 @@ class GeminiApiClient {
                 })
               }
               this._stripThoughtSignaturesFromBody(body)
+              wire = undefined
               throw new GeminiApiError(resp.status, errText, 0, {
                 kind: 'transient',
                 details: cls.details,
@@ -892,6 +834,28 @@ class GeminiApiClient {
             })
           }
 
+          served.fetchMs = Date.now() - _ttftStart
+          if (executor === 'antigravity') {
+            // A 200 header is not output. Recover a connection dropped before
+            // the first SSE chunk under the same budget and identical envelope.
+            const iterator = parseCodeAssistSSE(resp.body, envelope => dispatch?.envelope(envelope))
+            try {
+              const first = await iterator.next()
+              if (first.done) {
+                throw new GeminiApiError(0, 'Stream ended before any response', undefined, {
+                  kind: 'transient', details: {},
+                })
+              }
+              served.iterator = iterator
+              served.first = first
+            } catch (error) {
+              dispatch?.end(signal?.aborted ? 'aborted' : 'failed', { error })
+              await iterator.return(undefined).catch(() => {})
+              await resp.body.cancel().catch(() => {})
+              throw error
+            }
+          }
+
           // Success feedback (against the account that served this attempt).
           if (accountEmail && executor === 'antigravity') {
             const account = rotation.list().find(a => a.email === accountEmail)
@@ -901,21 +865,28 @@ class GeminiApiClient {
           served.attempt = dispatch
           return resp
         },
-        antigravityGeminiRetryOptions(
-          signal,
-          isAntigravityGeminiRoute(oauthRouting.executor, model),
-        ),
+        antigravityRetryOptions(signal, oauthRouting.executor, model),
       )
 
       // Code Assist SSE frames are wrapped as `{ response: <chunk> }`.
-      const _fetchMs = Date.now() - _ttftStart
+      const _fetchMs = served.fetchMs ?? Date.now() - _ttftStart
       let _firstChunk = true
       let _thoughts = 0
       let _output = 0
       const tracedAttempt = served.attempt
       try {
         const observeEnvelope = tracedAttempt && ((envelope: object) => tracedAttempt.envelope(envelope))
-        for await (const chunk of parseCodeAssistSSE(response.body!, observeEnvelope)) {
+        const chunks = served.iterator
+          ? (async function* () {
+            try {
+              yield served.first!.value as GeminiStreamChunk
+              yield* served.iterator!
+            } finally {
+              await served.iterator!.return(undefined).catch(() => {})
+            }
+          })()
+          : parseCodeAssistSSE(response.body!, observeEnvelope)
+        for await (const chunk of chunks) {
           tracedAttempt?.chunk(chunk)
           if (_firstChunk) {
             _firstChunk = false
@@ -933,6 +904,7 @@ class GeminiApiClient {
         tracedAttempt?.end('completed')
       } catch (err) {
         tracedAttempt?.end(signal?.aborted ? 'aborted' : 'failed', { error: err })
+        if (oauthRouting.executor === 'antigravity' && !signal?.aborted) markAntigravityRetryHandled(err)
         throw err
       } finally {
         // Reached without an outcome only when the consumer stopped reading.
@@ -999,9 +971,11 @@ class GeminiApiClient {
     if (oauthRouting) {
       let reonboardsLeft = 1
       let sigStripsLeft = 1
-      const quotaRetryBudget = isAntigravityGeminiRoute(oauthRouting.executor, model)
-        ? getProviderRetryBudget(`antigravity-quota:${model}`, ANTIGRAVITY_QUOTA_FAST_RETRIES)
-        : { remaining: ANTIGRAVITY_QUOTA_FAST_RETRIES }
+      // Snapshot the account and prepared wire request for this operation.
+      // Only an explicit auth/project or rejected-envelope repair invalidates it.
+      let routing = oauthRouting
+      let project: { id: string | null } | undefined
+      let wire: { serialized: string; trajectory?: AntigravityTrajectoryAttempt } | undefined
       const basesForExecutor = (executor: 'cli' | 'antigravity') =>
         codeAssistGenerationBasesForModel(executor, model, tauStableSessionId, tauQuerySource)
       const urlForBase = (base: string) => `${base}:generateContent`
@@ -1011,41 +985,32 @@ class GeminiApiClient {
       const data = await retryWithBackoff(
         async () => {
           attemptNo++
-          const routing = this._tokenForModel(model)
-          if (!routing) {
-            throw new GeminiApiError(0, 'No OAuth credentials available', undefined, {
-              kind: 'non-retryable',
-              details: {},
-            })
-          }
           const { token, executor, accountEmail } = routing
-          const projectId = await ensureCodeAssistReady(token, executor)
-          const trajectory = antigravityTrajectoryFor(request, executor, model, accountEmail, projectId)
-          const wrappedBody = executor === 'antigravity'
-            ? wrapForCodeAssist(model, projectId, withTauStableSessionId(body, tauStableSessionId), undefined, trajectory?.identity)
-            : wrapForGeminiCLI(model, projectId, body)
+          project ??= { id: await ensureCodeAssistReady(token, executor) }
+          if (!wire) {
+            const trajectory = antigravityTrajectoryFor(request, executor, model, accountEmail, project.id)
+            const wrappedBody = executor === 'antigravity'
+              ? wrapForCodeAssist(model, project.id, withTauStableSessionId(body, tauStableSessionId), undefined, trajectory?.identity)
+              : wrapForGeminiCLI(model, project.id, body)
+            wire = {
+              trajectory,
+              serialized: JSON.stringify(wrappedBody).replace(/"thoughtSignature"\s*:/g, '"thought_signature":'),
+            }
+          }
+          const { serialized, trajectory } = wire
           const headers = executor === 'antigravity'
             ? antigravityApiHeaders(token)
             : { ...geminiCLIApiHeaders(token, model), 'Connection': 'keep-alive' }
-          const serialized = JSON.stringify(wrappedBody)
-            .replace(/"thoughtSignature"\s*:/g, '"thought_signature":')
 
           let resp: Response | null = null
           let errText = ''
           const bases = basesForExecutor(executor)
           const urls = bases.map(urlForBase)
           const fastAntigravityGemini = isAntigravityGeminiRoute(executor, model)
-          // Endpoint affinity: each host runs its own implicit-cache pool, so
-          // once this process has cache equity on a host, slowness alone must
-          // not re-route requests — a detour re-bills the whole prompt cold on
-          // the other pool. The bridge bounds setup time across retries;
-          // real failures (HTTP errors, network) still fall through,
-          // and whichever host serves becomes the process-wide pin.
+          // Antigravity generation stays on daily. Keep the request envelope
+          // stable while the provider bridge bounds the first-output wait.
           const onPinnedHost = fastAntigravityGemini
             && antigravityGeminiStickyBase(tauStableSessionId) === bases[0]
-          // First attempt on the pinned host absorbs transient failures via
-          // retryWithBackoff on the same account/host before hopping to the
-          // sibling cache pool.
           const pinnedFirstAttempt = onPinnedHost && attemptNo <= 1
           let lastEndpointError: unknown
           let dispatch: AntigravityDispatchAttempt | undefined
@@ -1055,7 +1020,7 @@ class GeminiApiClient {
             const transport = fastAntigravityGemini ? antigravityTransportIfNeeded(urls[i]!, !!trace) : undefined
             dispatch = fastAntigravityGemini
               ? trace?.attempt({
-                attempt: attemptNo + ANTIGRAVITY_QUOTA_FAST_RETRIES - quotaRetryBudget.remaining,
+                attempt: attemptNo,
                 hop: i,
                 hopReason,
                 url: urls[i]!,
@@ -1122,29 +1087,12 @@ class GeminiApiClient {
             }
             errText = await resp.text().catch(() => '')
             dispatch?.end('http-error', { status: resp.status, errorBody: errText })
-            // Match streaming: spend fast retries on the primary cache host,
-            // retaining one fallback probe and the existing recovery loop.
-            if (executor === 'antigravity' && resp.status === 429
-              && (!fastAntigravityGemini || i === 0)
-              && await retryAntigravityQuota(resp, errText, quotaRetryBudget, signal)) {
-              i--
-              continue
-            }
             // The backend refusing an envelope field turns the envelope off for
             // the process; this request is sent again without it below.
             const rejectedFields = rejectAntigravityTrajectoryOn(resp.status, errText, trajectory)
             if (rejectedFields) {
               envelopeRejected = true
               logEndpoint('trajectory-rejected', { status: resp.status, fields: rejectedFields, attempt: attemptNo })
-            }
-            // Hosts meter quota separately. Remember a refusal so the next
-            // request — especially a one-shot like /report, which cannot
-            // afford to re-probe a dead host — starts somewhere that serves.
-            if (executor === 'antigravity' && resp.status === 429) {
-              recordAntigravityGeminiHostExhausted(
-                bases[i]!,
-                classifyGeminiError(resp.status, errText).retryAfterMs,
-              )
             }
             if (shouldTryNextAntigravityGeminiEndpoint(executor, model, resp.status, i, urls.length, pinnedFirstAttempt)) {
               hopReason = `status ${resp.status}`
@@ -1166,12 +1114,12 @@ class GeminiApiClient {
           }
           if (!resp.ok) {
             const cls = classifyGeminiError(resp.status, errText)
-            const retryAfterMs = cls.retryAfterMs
-              ?? parseRetryAfter(resp.headers.get('retry-after'))
+            const retryAfterMs = responseRetryAfter(resp, cls)
 
             // A refused trajectory envelope is not the account's fault: retry
             // once without it (it is now off) instead of failing the turn.
             if (envelopeRejected) {
+              wire = undefined
               throw new GeminiApiError(resp.status, errText, 0, {
                 kind: 'transient',
                 details: cls.details,
@@ -1202,12 +1150,13 @@ class GeminiApiClient {
 
             if (cls.kind === 'auth-stale' && reonboardsLeft > 0) {
               reonboardsLeft--
-              if (resp.status === 401) {
-                await this._refreshOAuthToken(executor, accountEmail)
-              } else {
+              if (resp.status !== 401) {
                 clearCodeAssistCache(executor)
-                await this._refreshOAuthToken(executor, accountEmail)
+                project = undefined
+                wire = undefined
               }
+              const refreshed = await this._refreshOAuthToken(executor, accountEmail)
+              if (refreshed) routing = { ...routing, token: refreshed }
               throw new GeminiApiError(resp.status, errText, 0, {
                 kind: 'transient',
                 details: cls.details,
@@ -1216,7 +1165,8 @@ class GeminiApiClient {
             }
 
             if (
-              resp.status === 400
+              executor !== 'antigravity'
+              && resp.status === 400
               && /corrupted thought signature/i.test(errText)
               && sigStripsLeft > 0
             ) {
@@ -1230,6 +1180,7 @@ class GeminiApiClient {
                 })
               }
               this._stripThoughtSignaturesFromBody(body)
+              wire = undefined
               throw new GeminiApiError(resp.status, errText, 0, {
                 kind: 'transient',
                 details: cls.details,
@@ -1246,10 +1197,7 @@ class GeminiApiClient {
 
           return dispatch ? dispatch.readJson(resp, signal) : resp.json()
         },
-        antigravityGeminiRetryOptions(
-          signal,
-          isAntigravityGeminiRoute(oauthRouting.executor, model),
-        ),
+        antigravityRetryOptions(signal, oauthRouting.executor, model),
       )
       return unwrapCodeAssistResponse(data) as GeminiStreamChunk
     }
@@ -1440,19 +1388,16 @@ export class GeminiApiError extends Error {
   }
 
   /**
-   * Whether the outer retryWithBackoff loop should back off and retry
-   * without operator intervention. Auth-stale and retryable-quota are
-   * retried HERE (via the fetch closure) with a bounded counter rather
-   * than through isRetryable, because they need side effects between
-   * attempts (cache clear / credential rotate).
+   * Whether the native retry controller may recover this failure. Auth
+   * repair happens in the fetch closure. Completed Antigravity recovery
+   * shadows this getter with false so outer layers cannot restart it.
    */
   get isRetryable(): boolean {
     switch (this.kind) {
       case 'transient':
         return true
       case 'retryable-quota':
-        // Rotation happens inline; backoff loop also retries so that a
-        // single-account setup still gets exponential wait.
+        // A transient refusal retries the same account and prepared request.
         return true
       case 'prompt-too-long':
       case 'validation-required':
@@ -1489,7 +1434,7 @@ interface RetryOptions {
   maxAttempts?: number
   initialDelayMs?: number
   maxDelayMs?: number
-  maxRetryAfterMs?: number
+  antigravityModel?: string
 }
 
 const RETRYABLE_NETWORK_CODES = new Set([
@@ -1547,6 +1492,9 @@ async function retryWithBackoff<T>(
   opts: RetryOptions = {},
 ): Promise<T> {
   const { signal } = opts
+  if (opts.antigravityModel) {
+    return retryAntigravityRequest(fn, opts.antigravityModel, isRetryableTransport, signal)
+  }
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
@@ -1572,10 +1520,6 @@ async function retryWithBackoff<T>(
       } else {
         const jitter = currentDelay * 0.3 * (Math.random() * 2 - 1) // ±30%
         waitMs = Math.max(0, currentDelay + jitter)
-      }
-
-      if (opts.maxRetryAfterMs !== undefined) {
-        waitMs = Math.min(waitMs, opts.maxRetryAfterMs)
       }
 
       await delayWithAbort(waitMs, signal)

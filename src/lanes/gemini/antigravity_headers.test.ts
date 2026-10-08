@@ -16,6 +16,8 @@ import {
   antigravityGeminiEndpointTimeoutMs,
   antigravityGeminiStickyBase,
   codeAssistGenerationBase,
+  codeAssistGenerationBases,
+  antigravityGenerationHostCount,
   codeAssistGenerationBasesForModel,
   recordAntigravityGeminiServedBase,
   shouldTryNextAntigravityGeminiEndpoint,
@@ -63,8 +65,7 @@ function main(): void {
       codeAssistGenerationBase('antigravity') === ANTIGRAVITY_GENERATION_BASE,
       'Antigravity generation base should use daily endpoint',
     )
-    // Non-sandbox daily channel — the real client's primary, with reliable
-    // implicit-cache reads (the sandbox host is a 404 fallback only now).
+    // Native Antigravity uses the non-sandbox daily generation endpoint.
     assert(
       ANTIGRAVITY_GENERATION_BASE === 'https://daily-cloudcode-pa.googleapis.com/v1internal',
       `wrong Antigravity generation base: ${ANTIGRAVITY_GENERATION_BASE}`,
@@ -75,192 +76,92 @@ function main(): void {
     )
   })
 
-  test('Antigravity Gemini prefers the production host (latency), Claude keeps daily', () => {
-    const sandbox = 'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal'
-
-    // Gemini-Antigravity: prod first, daily second (known-good cache).
-    // Sandbox is opt-in only; it is too flaky for the default fallback path.
-    const gemini = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low')
-    assert(gemini[0] === CODE_ASSIST_BASE, `gemini primary should be prod, got ${gemini[0]}`)
-    assert(gemini[1] === ANTIGRAVITY_GENERATION_BASE, `gemini fallback should be daily, got ${gemini[1]}`)
-    assert(!gemini.includes(sandbox), 'gemini default path should not include sandbox')
-
-    // Claude-on-Antigravity: untouched — daily first, exactly as before.
-    const claude = codeAssistGenerationBasesForModel('antigravity', 'claude-sonnet-4-6')
-    assert(claude[0] === ANTIGRAVITY_GENERATION_BASE, `claude primary must stay daily, got ${claude[0]}`)
-    assert(claude[1] === CODE_ASSIST_BASE, `claude fallback should be prod, got ${claude[1]}`)
+  test('all Antigravity models and request sources use daily only', () => {
+    for (const model of ['gemini-3.8-flash-high', 'gemini-3.5-flash-low', 'claude-sonnet-4-6', 'claude-opus-5-5-high']) {
+      for (const source of [undefined, 'repl_main_thread', 'agent:default', 'report', 'compact', 'quota_check']) {
+        const bases = codeAssistGenerationBasesForModel('antigravity', model, 'session', source)
+        assert(bases.length === 1 && bases[0] === ANTIGRAVITY_GENERATION_BASE,
+          model + '/' + source + ': generation left daily')
+      }
+      assert(antigravityGenerationHostCount(model) === 1, model + ': multiple hosts counted')
+    }
+    assert(codeAssistGenerationBases('antigravity').join() === ANTIGRAVITY_GENERATION_BASE,
+      'executor-level routing must also use daily only')
+    assert(codeAssistGenerationBasesForModel('cli', 'gemini-2.5-pro').join() === CODE_ASSIST_BASE,
+      'Gemini CLI routing must stay unchanged')
   })
 
-  test('TAU_ANTIGRAVITY_GEMINI_ENDPOINT overrides the Gemini primary', () => {
-    process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT = 'daily'
+  test('retired endpoint overrides cannot restore production or sandbox generation', () => {
+    const previous = process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT
     try {
-      const bases = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low')
-      assert(bases[0] === ANTIGRAVITY_GENERATION_BASE, `=daily must put daily first, got ${bases[0]}`)
+      for (const value of ['prod', 'daily', 'sandbox', 'unknown']) {
+        process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT = value
+        const bases = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.8-flash-high')
+        assert(bases.length === 1 && bases[0] === ANTIGRAVITY_GENERATION_BASE,
+          'legacy override ' + value + ' changed the generation host')
+      }
     } finally {
-      delete process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT
+      if (previous === undefined) delete process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT
+      else process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT = previous
     }
   })
 
-  test('TAU_ANTIGRAVITY_GEMINI_ENDPOINT=sandbox is explicit opt-in', () => {
-    const sandbox = 'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal'
-    process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT = 'sandbox'
+  test('cold and warm requests share the bridge deadline without an early restart', () => {
+    const names = ['TAU_ANTIGRAVITY_GEMINI_ENDPOINT_TIMEOUT_MS', 'TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS']
+    const previous = names.map(name => process.env[name])
     try {
-      const bases = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low')
-      assert(bases[0] === sandbox, `=sandbox must put sandbox first, got ${bases[0]}`)
-      assert(bases[1] === CODE_ASSIST_BASE, `=sandbox should keep prod fallback, got ${bases[1]}`)
-      assert(bases[2] === ANTIGRAVITY_GENERATION_BASE, `=sandbox should keep daily final, got ${bases[2]}`)
+      for (const name of names) process.env[name] = '1'
+      for (const pinned of [false, true]) {
+        assert(antigravityGeminiEndpointTimeoutMs(0, 1, pinned) === 0,
+          'retired timeout override must not cancel a healthy daily request')
+      }
     } finally {
-      delete process.env.TAU_ANTIGRAVITY_GEMINI_ENDPOINT
+      names.forEach((name, index) => {
+        if (previous[index] === undefined) delete process.env[name]
+        else process.env[name] = previous[index]
+      })
     }
   })
 
-  test('Antigravity Gemini short timeout is only a fallback probe', () => {
-    assert(
-      antigravityGeminiEndpointTimeoutMs(0, 2) === 6_000,
-      'first endpoint should keep the fast probe timeout',
-    )
-    assert(
-      antigravityGeminiEndpointTimeoutMs(1, 2) === 0,
-      'final fallback must not be killed by the short probe timeout',
-    )
-  })
-
-  test('pinned host uses the shared first-output deadline instead of a 30s restart', () => {
-    assert(
-      antigravityGeminiEndpointTimeoutMs(0, 2, true) === 0,
-      'pinned host must not be cancelled before the shared setup deadline',
-    )
-    assert(
-      antigravityGeminiEndpointTimeoutMs(1, 2, true) === 0,
-      'final fallback stays un-timed even when pinned',
-    )
-    process.env.TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS = '45000'
-    try {
-      assert(
-        antigravityGeminiEndpointTimeoutMs(0, 2, true) === 45_000,
-        'TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS must override the grace window',
-      )
-      assert(
-        antigravityGeminiEndpointTimeoutMs(0, 2) === 6_000,
-        'sticky override must not leak into the unpinned probe timeout',
-      )
-    } finally {
-      delete process.env.TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS
-    }
-  })
-
-  test('endpoint affinity is process-wide: agents inherit the pinned host', () => {
+  test('agents and keyless calls retain the successful daily host', () => {
     _resetAntigravityGeminiAffinityForTest()
     try {
-      // The daily host served a request → the WHOLE process follows it. All
-      // sessions in one process share prefix material (repo, system prompt,
-      // cloned conversations), so their entries live in one host's pool; a
-      // per-session pin let an agent's first request race the 6s probe and
-      // get punted to the other pool (61.5k-token cold, observed live).
       recordAntigravityGeminiServedBase('main-session', ANTIGRAVITY_GENERATION_BASE)
-      const main = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low', 'main-session')
-      assert(main[0] === ANTIGRAVITY_GENERATION_BASE, `pinned process must go daily-first, got ${main[0]}`)
-      assert(main.includes(CODE_ASSIST_BASE), 'prod must stay available as fallback')
-
-      const agent = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low', 'tau-agent-xyz')
-      assert(agent[0] === ANTIGRAVITY_GENERATION_BASE, `agent must inherit the process pin, got ${agent[0]}`)
-
-      const keyless = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low')
-      assert(keyless[0] === ANTIGRAVITY_GENERATION_BASE, `keyless requests share the pin, got ${keyless[0]}`)
-
-      // Claude-on-Antigravity ignores affinity entirely — pin the process to
-      // prod and Claude must still order daily-first.
-      recordAntigravityGeminiServedBase('main-session', CODE_ASSIST_BASE)
-      const claude = codeAssistGenerationBasesForModel('antigravity', 'claude-sonnet-4-6', 'main-session')
-      assert(claude[0] === ANTIGRAVITY_GENERATION_BASE, `claude order must stay daily-first, got ${claude[0]}`)
+      for (const session of ['main-session', 'tau-agent-xyz', undefined]) {
+        assert(antigravityGeminiStickyBase(session) === ANTIGRAVITY_GENERATION_BASE,
+          'daily success was not shared with ' + session)
+        assert(codeAssistGenerationBasesForModel('antigravity', 'gemini-3.8-flash-high', session).join()
+          === ANTIGRAVITY_GENERATION_BASE, 'session left daily')
+      }
     } finally {
       _resetAntigravityGeminiAffinityForTest()
     }
   })
 
-  test('pin migrates only after two consecutive fallback serves', () => {
+  test('historical production or sandbox pins cannot replace daily', () => {
     _resetAntigravityGeminiAffinityForTest()
     try {
-      recordAntigravityGeminiServedBase('sess-m', CODE_ASSIST_BASE)
-      // One detour (transient network blip re-served by daily) must NOT drag
-      // the whole process off the host holding its cache equity.
-      recordAntigravityGeminiServedBase('sess-m', ANTIGRAVITY_GENERATION_BASE)
-      assert(
-        antigravityGeminiStickyBase('sess-m') === CODE_ASSIST_BASE,
-        'a single fallback serve must not migrate the pin',
-      )
-      // A second consecutive detour = the pinned host is really failing.
-      recordAntigravityGeminiServedBase('sess-m', ANTIGRAVITY_GENERATION_BASE)
-      assert(
-        antigravityGeminiStickyBase('sess-m') === ANTIGRAVITY_GENERATION_BASE,
-        'two consecutive fallback serves must migrate the pin',
-      )
-      // A pinned-host serve resets the streak: alternating blips never migrate.
-      recordAntigravityGeminiServedBase('sess-m', CODE_ASSIST_BASE) // streak 1
-      recordAntigravityGeminiServedBase('sess-m', ANTIGRAVITY_GENERATION_BASE) // pinned serve, reset
-      recordAntigravityGeminiServedBase('sess-m', CODE_ASSIST_BASE) // streak 1 again
-      assert(
-        antigravityGeminiStickyBase('sess-m') === ANTIGRAVITY_GENERATION_BASE,
-        'interleaved pinned serves must keep resetting the streak',
-      )
+      const foreign = [CODE_ASSIST_BASE, 'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal']
+      for (const base of foreign) recordAntigravityGeminiServedBase('old-session', base)
+      assert(antigravityGeminiStickyBase('old-session') === undefined, 'foreign host was retained')
+      recordAntigravityGeminiServedBase('main-session', ANTIGRAVITY_GENERATION_BASE)
+      for (const base of foreign) recordAntigravityGeminiServedBase('old-session', base)
+      assert(antigravityGeminiStickyBase('main-session') === ANTIGRAVITY_GENERATION_BASE,
+        'foreign host replaced daily')
     } finally {
       _resetAntigravityGeminiAffinityForTest()
     }
   })
 
-  test('foreign pins are ignored in ordering; keyless requests share the pin', () => {
-    _resetAntigravityGeminiAffinityForTest()
-    try {
-      // A pin that is not in the current base list (env flipped mid-process)
-      // must not corrupt the order — default order wins.
-      const sandbox = 'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal'
-      recordAntigravityGeminiServedBase('sess-x', sandbox)
-      recordAntigravityGeminiServedBase('sess-x', sandbox)
-      const bases = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low', 'sess-x')
-      assert(bases[0] === CODE_ASSIST_BASE, `foreign pin must be ignored, got ${bases[0]}`)
-
-      // No session key → same process-wide slot.
-      _resetAntigravityGeminiAffinityForTest()
-      recordAntigravityGeminiServedBase(undefined, ANTIGRAVITY_GENERATION_BASE)
-      const globalBases = codeAssistGenerationBasesForModel('antigravity', 'gemini-3.5-flash-low')
-      assert(globalBases[0] === ANTIGRAVITY_GENERATION_BASE, 'keyless requests share the global pin')
-    } finally {
-      _resetAntigravityGeminiAffinityForTest()
+  test('no HTTP status enables cross-host retry', () => {
+    for (const model of ['gemini-3.8-flash-high', 'claude-sonnet-4-6']) {
+      for (const status of [400, 401, 403, 404, 408, 429, 499, 500, 502, 503, 504]) {
+        for (const pinned of [false, true]) {
+          assert(!shouldTryNextAntigravityGeminiEndpoint('antigravity', model, status, 0, 2, pinned),
+            model + ': HTTP ' + status + ' enabled a host hop')
+        }
+      }
     }
-  })
-
-  test('pinned sessions do not status-hop on the first attempt', () => {
-    const gemini = 'gemini-3.5-flash-low'
-    // Unpinned (first-ever request): transient statuses hop for availability.
-    assert(
-      shouldTryNextAntigravityGeminiEndpoint('antigravity', gemini, 429, 0, 2) === true,
-      'unpinned 429 should hop',
-    )
-    // Pinned first attempt: stay home — retryWithBackoff retries the pinned
-    // host (Retry-After honored) instead of paying a cold on the sibling pool.
-    assert(
-      shouldTryNextAntigravityGeminiEndpoint('antigravity', gemini, 429, 0, 2, true) === false,
-      'pinned first-attempt 429 must NOT hop',
-    )
-    assert(
-      shouldTryNextAntigravityGeminiEndpoint('antigravity', gemini, 503, 0, 2, true) === false,
-      'pinned first-attempt 503 must NOT hop',
-    )
-    // 404 = host does not serve this route — deterministic, hops even pinned.
-    assert(
-      shouldTryNextAntigravityGeminiEndpoint('antigravity', gemini, 404, 0, 2, true) === true,
-      'pinned 404 must still hop',
-    )
-    // Later chain positions are not the pinned host — flag does not apply.
-    assert(
-      shouldTryNextAntigravityGeminiEndpoint('antigravity', gemini, 429, 1, 3, true) === true,
-      'mid-chain hop must stay allowed',
-    )
-    // Claude-on-Antigravity never uses this policy at all.
-    assert(
-      shouldTryNextAntigravityGeminiEndpoint('antigravity', 'claude-sonnet-4-6', 429, 0, 2) === false,
-      'claude must not use the gemini hop policy',
-    )
   })
 
   test('legacy project-discovery headers use the same minimal Hub identity', () => {

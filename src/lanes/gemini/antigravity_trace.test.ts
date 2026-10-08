@@ -133,7 +133,7 @@ try {
     reset()
     if (debug) process.env.TAU_CACHE_DEBUG = '1'
     else delete process.env.TAU_CACHE_DEBUG
-    // Streaming with a hop and a retry, then non-streaming.
+    // Streaming with two retries on daily, then non-streaming.
     replies = [{ kind: 'status', status: 503 }, { kind: 'status', status: 503 }, { kind: 'ok', cached: 0 }, { kind: 'ok', cached: 16_384 }]
     await stream(makeRequest([user(USER_TEXT), signedCall, toolResult]).request)
     await geminiApi.generateContent(makeRequest([user(USER_TEXT)]).request)
@@ -147,7 +147,7 @@ try {
   assert.ok(plain.every(call => !call.initKeys.includes('dispatcher')), 'the default path must not bring its own dispatcher')
   assert.ok(plain[0]!.body.includes('"thought_signature"'), 'fixture must exercise the wire rename')
 
-  // ── 2. Correlation of a hop and a retry. ──
+  // ── 2. Correlation of retries with one persistent wire request. ──
   const tracedRows = rows()
   const dispatches = tracedRows.filter(r => r.kind === 'dispatch')
   const attempts = tracedRows.filter(r => r.kind === 'attempt')
@@ -155,13 +155,12 @@ try {
   assert.equal(tracedRows[0].build, 'source')
   assert.ok(tracedRows.every(r => r.runId === cache.ANTIGRAVITY_CACHE_DEBUG_RUN_ID), 'every row carries the run id')
   const streamDispatches = dispatches.filter(r => r.requestId === dispatches[0].requestId)
-  assert.deepEqual(streamDispatches.map(r => r.attemptId.split(':')[1]), ['1.0', '1.1', '2.0'])
-  assert.equal(streamDispatches[1].hopReason, 'status 503')
-  assert.equal(streamDispatches[0].upstreamRequestId, streamDispatches[1].upstreamRequestId, 'hops of one attempt share the upstream request id')
-  assert.notEqual(streamDispatches[1].upstreamRequestId, streamDispatches[2].upstreamRequestId, 'a retry is a new upstream request')
+  assert.equal(streamDispatches.length, 3)
+  assert.equal(new Set(streamDispatches.map(r => r.attemptId)).size, 3, 'each retry needs a unique local dispatch id')
+  assert.equal(new Set(streamDispatches.map(r => r.upstreamRequestId)).size, 1, 'retry changed the persistent wire request id')
   const wireIds = calls.slice(0, 3).map(call => JSON.parse(call.body).requestId)
   assert.deepEqual(streamDispatches.map(r => r.upstreamRequestId), wireIds, 'dispatch rows must name the id actually sent')
-  assert.deepEqual(streamDispatches.map(r => r.origin), ['cloudcode-pa.googleapis.com', 'daily-cloudcode-pa.googleapis.com', 'cloudcode-pa.googleapis.com'])
+  assert.deepEqual(streamDispatches.map(r => r.origin), Array(3).fill('daily-cloudcode-pa.googleapis.com'))
   assert.equal(streamDispatches[0].wireSessionId, '-4242')
   assert.equal(streamDispatches[0].sessionId, 'trace-session')
   assert.equal(streamDispatches[0].wireModel, 'gemini-3.8-flash-tiered')
@@ -247,16 +246,15 @@ try {
   const failedAttempts = rows().filter(r => r.kind === 'attempt' && r.requestId === firstOf[2].requestId)
   assert.ok(failedAttempts.length >= 2 && failedAttempts.every(r => r.outcome === 'network-error' && r.error.causeCode === 'ECONNRESET'))
 
-  // ── 4. Signature strip: the retried bytes are a prefix rewrite. ──
+  // ── 4. A rejected signature never triggers a history rewrite. ──
   reset()
   await stream(makeRequest(base).request)
   replies = [{ kind: 'status', status: 400, body: JSON.stringify({ error: { code: 400, message: 'Corrupted thought signature.', status: 'INVALID_ARGUMENT' } }) }]
-  await stream(makeRequest([...base, model('ok'), user('next')]).request)
+  await assert.rejects(stream(makeRequest([...base, model('ok'), user('next')]).request), /Corrupted thought signature/)
   const stripRows = rows().filter(r => r.kind === 'dispatch')
-  assert.equal(stripRows.length, 3)
+  assert.equal(stripRows.length, 2)
   assert.equal(stripRows[1].verdict, 'ok: clean prefix extension')
-  assert.equal(stripRows[2].verdict, 'BREAK: history block 1/3 rewritten', 'signature strip must surface as a rewrite')
-  assert.ok(stripRows[2].rewritten.before[0].includes('+sig') && !stripRows[2].rewritten.after[0].includes('+sig'))
+  assert.ok(calls.at(-1)!.body.includes('thought_signature'), 'the original signature was removed')
 
   // ── 5. A consumer that stops reading leaves an abandoned attempt. ──
   reset()
@@ -305,7 +303,7 @@ try {
   const savedEnv = { ...process.env }
   try {
     for (const name of ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY', 'no_proxy', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'NODE_OPTIONS', 'CLAUDE_CODE_CLIENT_CERT', 'CLAUDE_CODE_CLIENT_KEY']) delete process.env[name]
-    const url = 'https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse'
+    const url = 'https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse'
     assert.deepEqual(describeAntigravityTransport(url), { dispatcher: 'global', route: 'direct', tls: 'default', runtime: 'bun' })
     process.env.HTTPS_PROXY = 'http://proxy.test:3128'
     process.env.NODE_OPTIONS = '--use-system-ca'
@@ -320,7 +318,7 @@ try {
     Object.assign(process.env, savedEnv)
   }
 
-  console.log('Antigravity dispatch trace passed: flag-off parity, hop/retry correlation, unique quota-replay ids, final-wire verdicts, identity vs config, signature strip, abandoned reads, overlap, no prompt text')
+  console.log('Antigravity dispatch trace passed: flag-off parity, daily retry correlation, unique dispatch ids, final-wire verdicts, stable wire identity, preserved signatures, abandoned reads, overlap, no prompt text')
 } finally {
   globalThis.fetch = originalFetch
   ;(geminiApi as any).antigravityOAuthToken = previousToken

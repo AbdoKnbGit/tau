@@ -139,27 +139,19 @@ try {
     })
   }
 
-  await test('old 30s override reproduces six cancellations and the misleading fallback 429', async () => {
+  await test('retired 30s override cannot restart a healthy daily request', async () => {
     process.env.TAU_ANTIGRAVITY_GEMINI_STICKY_TIMEOUT_MS = '30000'
-    respond = (url, init) => url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE)
-      ? delayedHeaders(45000, init.signal)
-      : Response.json({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'Resource has been exhausted (e.g. check quota).' } }, { status: 429 })
-    const state = new Map()
-    const result = track((async () => {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          return await withProviderRetryState(state, () => provider.create(params))
-        } catch (error) {
-          if (attempt === 2) throw error
-        }
-      }
-    })())
-    await tick(210000)
-    assert.match((result.error as Error)?.message, /Gemini API error 429/)
-    assert.equal(sent.length, 12)
-    const daily = sent.filter(call => call.url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE))
-    assert.equal(daily.length, 6)
-    assert.ok(daily.every(call => call.signal?.aborted), 'old cutoff did not reproduce the logged failure')
+    const result = track(provider.create(params))
+    await tick(30001)
+    assert.equal(result.done, false)
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0]!.signal?.aborted, false)
+    await tick(14999)
+    assert.equal(result.error, undefined)
+    assert.equal(result.done, true)
+    assert.equal((result.value as any).content[0].text, 'OK')
+    assert.equal(sent.length, 1)
+    assert.ok(sent[0]!.url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE))
   })
 
   await test('the setup deadline never cancels or replays a stream after output starts', async () => {
@@ -244,15 +236,17 @@ try {
     assert.equal(sent.length, 1)
   })
 
-  await test('real HTTP errors still reach a working fallback', async () => {
-    respond = url => url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE)
+  await test('transient HTTP errors recover on daily with the same request bytes', async () => {
+    let refusals = 0
+    respond = () => ++refusals < 4
       ? new Response('temporarily unavailable', { status: 503 }) : success()
     const result = track(provider.create(params))
-    await tick(1000)
+    await tick(30000)
     assert.equal(result.error, undefined)
     assert.equal(result.done, true)
-    assert.equal(sent.length, 3)
-    assert.ok(sent[2]!.url.startsWith(codeAssist.CODE_ASSIST_BASE))
+    assert.equal(sent.length, 4)
+    assert.ok(sent.every(call => call.url.startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE)))
+    assert.equal(new Set(sent.map(call => call.body)).size, 1, 'HTTP recovery changed request identity')
     assert.equal((result.value as any).content[0].text, 'OK')
   })
   console.log(`Antigravity slow setup: ${passed} cases passed`)

@@ -5,14 +5,17 @@
  */
 
 import assert from 'node:assert/strict'
+import { mock } from 'bun:test'
 import { APIConnectionError } from '@anthropic-ai/sdk'
 import { ANTIGRAVITY_MODEL_IDS } from '../../services/api/providers/gemini_code_assist.js'
-import {
+// Request tests do not need the picker and its build-only SDK imports.
+mock.module('../../services/api/providers/gemini_provider.js', () => ({ resolveCliModelsForPicker: () => [] }))
+const {
   GeminiApiError,
   geminiApi,
   TAU_STABLE_SESSION_ID_FIELD,
-} from './api.js'
-import { GeminiLane } from './loop.js'
+} = await import('./api.js')
+const { GeminiLane } = await import('./loop.js')
 
 async function main(): Promise<void> {
   const originalStream = geminiApi.streamGenerateContent

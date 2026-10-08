@@ -14,6 +14,7 @@ import {
   parseGoogleErrorDetails,
   isReonboardCase,
   isRotationCase,
+  isBackoffRetryCase,
 } from './quota.js'
 
 let passed = 0
@@ -233,6 +234,138 @@ function main(): void {
       cls.details.message === 'Resource has been exhausted (e.g. check quota).',
       `bad message: ${cls.details.message}`,
     )
+  })
+
+  const quotaError = (details: unknown[], message = 'Resource has been exhausted (e.g. check quota).') => JSON.stringify({
+    error: { code: 429, status: 'RESOURCE_EXHAUSTED', message, details },
+  })
+  const errorInfo = (reason: string, metadata?: Record<string, unknown>) => ({
+    '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason, metadata,
+  })
+  const quotaFailure = (violations: unknown[]) => ({
+    '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations,
+  })
+
+  for (const reason of [
+    'DAILY_LIMIT_EXCEEDED', 'DAILY_QUOTA_EXHAUSTED', 'WEEKLY_QUOTA_EXCEEDED',
+    'MONTHLY_LIMIT_EXCEEDED', 'BILLING_HARD_LIMIT_REACHED', 'BILLING_LIMIT_EXCEEDED',
+    'SPEND_LIMIT_EXCEEDED', 'INSUFFICIENT_G1_CREDITS_BALANCE', 'INSUFFICIENT_CREDITS',
+  ]) {
+    test(`429 structured ${reason} is terminal and never backs off`, () => {
+      const cls = classifyGeminiError(429, quotaError([errorInfo(reason)]))
+      assert(cls.kind === 'terminal-quota', `got ${cls.kind}`)
+      assert(!isBackoffRetryCase(cls), 'must not retry an explicit cap')
+    })
+  }
+
+  for (const metadata of [
+    { quota_limit: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' },
+    { quotaLimit: 'DailyGenerateContentRequests' },
+    { quota_period: 'DAY' },
+    { quotaUnit: '1/d/{project}' },
+  ]) {
+    test(`429 structured quota metadata ${JSON.stringify(metadata)} is terminal`, () => {
+      const cls = classifyGeminiError(429, quotaError([errorInfo('RATE_LIMIT_EXCEEDED', metadata)]))
+      assert(cls.kind === 'terminal-quota', `got ${cls.kind}`)
+    })
+  }
+
+  test('429 daily QuotaFailure quotaId remains terminal when followed by RPM violations', () => {
+    const cls = classifyGeminiError(429, quotaError([
+      quotaFailure([{
+        quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+        quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+        quotaDimensions: { model: 'gemini-3.1-pro', location: 'global' },
+      }]),
+      quotaFailure([{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }]),
+      errorInfo('RATE_LIMIT_EXCEEDED'),
+    ]))
+    assert(cls.kind === 'terminal-quota', `got ${cls.kind}`)
+    assert(cls.details.quotaFailures?.length === 2, 'should retain all violations')
+    assert(cls.details.quotaFailures[0]?.quotaDimensions?.model === 'gemini-3.1-pro', 'dimensions lost')
+  })
+
+  test('daily token allowance is a quota cap, not a prompt length error', () => {
+    const cls = classifyGeminiError(429, quotaError([
+      quotaFailure([{ description: 'Daily token limit exceeded' }]),
+    ], 'Daily token limit exceeded'))
+    assert(cls.kind === 'terminal-quota', `got ${cls.kind}`)
+  })
+
+  test('message identifying a daily cap is terminal without details', () => {
+    const cls = classifyGeminiError(429, quotaError([], 'You have reached your daily quota limit.'))
+    assert(cls.kind === 'terminal-quota', `got ${cls.kind}`)
+  })
+
+  test('a later generic ErrorInfo cannot erase explicit credits exhaustion', () => {
+    const cls = classifyGeminiError(429, quotaError([
+      errorInfo('INSUFFICIENT_G1_CREDITS_BALANCE'), errorInfo('RESOURCE_EXHAUSTED'),
+    ]))
+    assert(cls.kind === 'terminal-quota', `got ${cls.kind}`)
+    assert(cls.details.insufficientCredits, 'credit exhaustion lost')
+  })
+
+  for (const reason of ['RESOURCE_EXHAUSTED', 'QUOTA_EXHAUSTED', 'RATE_LIMIT_EXCEEDED', 'UNKNOWN_QUOTA']) {
+    test(`429 ambiguous ${reason} remains retryable`, () => {
+      const cls = classifyGeminiError(429, quotaError([errorInfo(reason)]))
+      assert(cls.kind === 'retryable-quota', `got ${cls.kind}`)
+    })
+  }
+
+  test('per-minute token allowance remains retryable and is not prompt-too-long', () => {
+    const cls = classifyGeminiError(429, quotaError([
+      quotaFailure([{ quotaId: 'GenerateTokensPerMinutePerProjectPerModel', description: 'Token limit exceeded' }]),
+      errorInfo('RATE_LIMIT_EXCEEDED', { quota_limit: 'GenerateTokensPerMinutePerProjectPerModel' }),
+    ]))
+    assert(cls.kind === 'retryable-quota', `got ${cls.kind}`)
+  })
+
+  test('daily words outside quota fields do not mark a terminal cap', () => {
+    const cls = classifyGeminiError(429, quotaError([
+      errorInfo('RATE_LIMIT_EXCEEDED', { service: 'daily-cloudcode-pa.googleapis.com', model: 'daily-model', billing_account: 'daily-project' }),
+      quotaFailure([{ subject: 'projects/daily', description: 'RPM exceeded' }]),
+    ]))
+    assert(cls.kind === 'retryable-quota', `got ${cls.kind}`)
+  })
+
+  test('Antigravity capacity message and subsecond reset stay retryable', () => {
+    const cls = classifyGeminiError(429, quotaError([
+      errorInfo('RATE_LIMIT_EXCEEDED', { quotaResetDelay: '479.417207ms', uiMessage: 'true' }),
+      { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '0.479417207s' },
+    ], 'You have exhausted your capacity on this model. Your quota will reset after 0s.'))
+    assert(cls.kind === 'retryable-quota', `got ${cls.kind}`)
+    assert(cls.retryAfterMs === 479, `got ${cls.retryAfterMs}`)
+  })
+
+  test('long metadata reset is exposed to retry policy without inferring a permanent quota cap', () => {
+    const cls = classifyGeminiError(429, quotaError([
+      errorInfo('RATE_LIMIT_EXCEEDED', { quotaResetDelay: '2h39m12.5s' }),
+    ]))
+    assert(cls.kind === 'retryable-quota', `got ${cls.kind}`)
+    assert(cls.retryAfterMs === 9_552_500, `got ${cls.retryAfterMs}`)
+  })
+
+  for (const reverse of [false, true]) {
+    test(`longest structured delay wins regardless of order (${reverse})`, () => {
+      const details = [
+        errorInfo('RATE_LIMIT_EXCEEDED', { quotaResetDelay: '45s' }),
+        { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '1s' },
+      ]
+      const cls = classifyGeminiError(429, quotaError(reverse ? details.reverse() : details))
+      assert(cls.retryAfterMs === 45_000, `got ${cls.retryAfterMs}`)
+    })
+  }
+
+  test('malformed detail fields cannot crash quota recovery', () => {
+    const cls = classifyGeminiError(429, quotaError([
+      null, 12, { '@type': 42 },
+      { '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: {}, metadata: { quota_period: 1 } },
+      quotaFailure([null, 123, { quotaId: {} }]),
+      { '@type': 'type.googleapis.com/google.rpc.Help', links: [null, { url: 'https://example.test', description: 42 }] },
+      errorInfo('RATE_LIMIT_EXCEEDED', { quotaResetDelay: 'not-a-duration' }),
+    ]))
+    assert(cls.kind === 'retryable-quota', `got ${cls.kind}`)
+    assert(cls.retryAfterMs === undefined, `got ${cls.retryAfterMs}`)
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

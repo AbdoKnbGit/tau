@@ -272,6 +272,7 @@ import {
   type RetryContext,
   withRetry,
 } from './withRetry.js'
+import { shouldSuppressAntigravityReplay } from './antigravityReplayGuard.js'
 
 // Define a type that represents valid JSON values
 type JsonValue = string | number | boolean | null | JsonObject | JsonArray
@@ -2293,6 +2294,7 @@ async function* queryModel(
   // Gates the non-streaming fallback: retrying after a tool has started would
   // regenerate the same tool_use and double-execute it (inc-4258).
   let toolUseStartedThisAttempt = false
+  let receivedProviderEventThisAttempt = false
   let usage: NonNullableUsage = EMPTY_USAGE
   let costUSD = 0
   let stopReason: BetaStopReason | null = null
@@ -2444,6 +2446,7 @@ async function* queryModel(
     partialMessage = undefined
     contentBlocks.length = 0
     toolUseStartedThisAttempt = false
+    receivedProviderEventThisAttempt = false
     usage = EMPTY_USAGE
     stopReason = null
     isAdvisorInProgress = false
@@ -2595,6 +2598,7 @@ async function* queryModel(
         // Network progress resets the watchdog without leaking partial output
         // into the transcript, UI or public SDK stream.
         if (streamProvider === 'openrouter' && (part as { type: string }).type === 'openrouter_progress') continue
+        receivedProviderEventThisAttempt = true
         const now = Date.now()
 
         // Detect and log streaming stalls (only after first event to avoid counting TTFB)
@@ -3228,6 +3232,14 @@ async function* queryModel(
       // starts a tool, then the non-streaming retry produces the same tool_use
       // and runs it again. See inc-4258.
       const disableFallback =
+        // Native AGY setup owns recovery. Once any event has arrived, even
+        // an EOF with no final usage must not silently regenerate its text,
+        // reasoning, or tools through the non-streaming fallback.
+        shouldSuppressAntigravityReplay(
+          streamingError,
+          streamProvider,
+          receivedProviderEventThisAttempt,
+        ) ||
         isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK) ||
         getFeatureValue_CACHED_MAY_BE_STALE(
           'tengu_disable_streaming_to_non_streaming_fallback',
@@ -3401,6 +3413,7 @@ async function* queryModel(
     const is404StreamCreationError =
       !didFallBackToNonStreaming &&
       errorFromRetry instanceof CannotRetryError &&
+      !shouldSuppressAntigravityReplay(errorFromRetry.originalError, requestProvider, false) &&
       errorFromRetry.originalError instanceof APIError &&
       errorFromRetry.originalError.status === 404
 

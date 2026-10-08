@@ -57,6 +57,7 @@ import {
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 import { withProviderRetryState, type ProviderRetryState } from './providerRetryBudget.js'
+import { isAntigravityRetryHandled } from '../../lanes/gemini/antigravity_retry.js'
 
 const abortError = () => new APIUserAbortError()
 
@@ -312,6 +313,13 @@ export async function* withRetry<T>(
       // becomes a persisted assistant API error.
       const userAbort = getAPIUserAbortError(error, options.signal)
       if (userAbort) throw userAbort
+
+      // Native Antigravity recovery already consumed this request's budget
+      // or found a terminal failure. Neither persistent mode nor fast-mode
+      // fallback may issue another generation or expose retry notices.
+      if (isAntigravityRetryHandled(error)) {
+        throw new CannotRetryError(error, retryContext)
+      }
 
       lastError = error
       logForDebugging(

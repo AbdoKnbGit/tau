@@ -321,11 +321,8 @@ async function generateReportMarkdown({
   const runOnce = (): Promise<string> =>
     requestReportMarkdown({ reportContext, format, skill, context })
 
-  // Antigravity meters quota per generation host, and the lane keeps its retry
-  // budget deliberately small so interactive turns stay fast. A chat session
-  // absorbs a refused host across many turns; a one-shot report cannot, so it
-  // gets its own patience and sweeps the hosts. Every other provider keeps the
-  // original single-request path unchanged. See antigravityReport.ts.
+  // Native Antigravity recovery owns the entire daily retry budget. The
+  // report wrapper must not replay a final error returned as assistant text.
   if (!usesAntigravityReportPath(getAPIProvider(), context.options.mainLoopModel)) {
     return runOnce()
   }

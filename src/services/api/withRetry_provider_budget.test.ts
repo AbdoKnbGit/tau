@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mock } from 'bun:test'
 import { fileURLToPath } from 'node:url'
 import type { ProviderRetryBudget } from './providerRetryBudget.js'
+import { APIConnectionError, APIUserAbortError } from '@anthropic-ai/sdk'
 
 // Exercise the real retry controller, async-local scope, and error
 // classification without loading unrelated UI, analytics, or credentials.
@@ -25,7 +26,8 @@ for (const [path, names] of stubs) {
   mock.module(fileURLToPath(new URL(path, import.meta.url)), () =>
     Object.fromEntries(names.map(name => [name, () => false])))
 }
-mock.module('bun:bundle', () => ({ feature: () => false }))
+let unattendedRetry = false
+mock.module('bun:bundle', () => ({ feature: (name: string) => name === 'UNATTENDED_RETRY' && unattendedRetry }))
 mock.module('./errors.js', () => ({ REPEATED_529_ERROR_MESSAGE: 'overloaded' }))
 mock.module('../../utils/errors.js', () => ({ errorMessage: (error: Error) => error.message }))
 const sleeps: number[] = []
@@ -41,6 +43,8 @@ mock.module('../../utils/fastMode.js', () => ({
 
 const { withRetry, CannotRetryError } = await import('./withRetry.js')
 const { getProviderRetryBudget, getProviderSetupWindow, ProviderSetupTimeoutError } = await import('./providerRetryBudget.js')
+const { markAntigravityRetryHandled } = await import('../../lanes/gemini/antigravity_retry.js')
+const previousUnattended = process.env.CLAUDE_CODE_UNATTENDED_RETRY
 
 const MODEL = 'gemini-3.8-flash-high'
 const BUDGET_KEY = `antigravity-quota:${MODEL}`
@@ -75,6 +79,45 @@ async function test(name: string, run: () => Promise<void>): Promise<void> {
 }
 
 try {
+  for (const fastMode of [false, true]) {
+    for (const persistent of [false, true]) {
+      await test(`native Antigravity exhaustion never restarts or emits notices (fast=${fastMode}, persistent=${persistent})`, async () => {
+        unattendedRetry = persistent
+        process.env.CLAUDE_CODE_UNATTENDED_RETRY = persistent ? '1' : '0'
+        for (const failure of [
+          quota(),
+          quota(60_000),
+          Object.assign(new Error('Gemini API error 400: invalid request'), { status: 400 }),
+          new APIConnectionError({ message: 'fetch failed', cause: new Error('ECONNRESET') }),
+        ]) {
+          markAntigravityRetryHandled(failure)
+          let attempts = 0
+          await assert.rejects(complete(withRetry(getClient, async () => {
+            attempts++
+            throw failure
+          }, { ...options, fastMode, maxRetries: 10 })), error =>
+            error instanceof CannotRetryError && error.originalError === failure)
+          assert.equal(attempts, 1, 'outer layer replayed native recovery')
+          assert.deepEqual(sleeps, [])
+          assert.equal(cooldowns, 0, 'native recovery changed speed/model')
+        }
+        unattendedRetry = false
+        process.env.CLAUDE_CODE_UNATTENDED_RETRY = '0'
+      })
+    }
+  }
+
+  await test('cancellation still takes precedence over an exhausted native retry', async () => {
+    const controller = new AbortController()
+    const failure = quota()
+    markAntigravityRetryHandled(failure)
+    await assert.rejects(complete(withRetry(getClient, async () => {
+      controller.abort()
+      throw failure
+    }, { ...options, signal: controller.signal })), error => error instanceof APIUserAbortError)
+    assert.deepEqual(sleeps, [])
+  })
+
   for (const scenario of [
     { name: 'standard retry', fastMode: false, retryAfterMs: undefined, cooldowns: 0 },
     { name: 'fast mode with short wait', fastMode: true, retryAfterMs: 10, cooldowns: 0 },
@@ -251,5 +294,7 @@ try {
 
   console.log(`Provider retry budget: ${passed} cases passed`)
 } finally {
+  if (previousUnattended === undefined) delete process.env.CLAUDE_CODE_UNATTENDED_RETRY
+  else process.env.CLAUDE_CODE_UNATTENDED_RETRY = previousUnattended
   mock.restore()
 }
