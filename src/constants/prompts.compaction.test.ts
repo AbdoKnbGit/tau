@@ -57,7 +57,9 @@ assert.match(staticPrompt, /Subagents\/delegation, skills, plugins, MCP, and LSP
 assert.match(staticPrompt, /notebooks.*plan mode.*snapshots.*web fetch/s)
 assert.match(staticPrompt, /preserve required evidence, caveats, decisions, and next steps/)
 assert.match(staticPrompt, /file_path:line_number/)
-assert.ok(staticBytes <= 5_000, `cheap static prompt is ${staticBytes} bytes`)
+// Allow the shared tool-use and final-answer guidance; this is a byte budget,
+// not a runtime token limit.
+assert.ok(staticBytes <= 6_500, `cheap static prompt is ${staticBytes} bytes`)
 assert.deepEqual(
   buildCheapStaticPromptSections(cheapTools, 'Test style'),
   staticSections,
