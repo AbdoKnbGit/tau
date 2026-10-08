@@ -353,8 +353,15 @@ test("installer security flags override inherited npm script settings for one pr
     npm_config_bin_links: "false",
   };
 
-  assert.deepEqual(createInstallerEnvironment(original), { PATH: "/usr/bin" });
+  assert.deepEqual(createInstallerEnvironment(original), {
+    PATH: "/usr/bin",
+    SHARP_IGNORE_GLOBAL_LIBVIPS: "1",
+  });
   assert.equal(original.NPM_CONFIG_IGNORE_SCRIPTS, "true");
+  assert.equal(
+    createInstallerEnvironment({ SHARP_IGNORE_GLOBAL_LIBVIPS: "0" }).SHARP_IGNORE_GLOBAL_LIBVIPS,
+    "0",
+  );
 });
 
 test("installer leases serialize contenders and release for the next run", (t) => {

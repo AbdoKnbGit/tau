@@ -450,6 +450,9 @@ export async function installGlobalPackage(
     }
     const updateEnvironment = {
       ...process.env,
+      ...(!('SHARP_IGNORE_GLOBAL_LIBVIPS' in process.env)
+        ? { SHARP_IGNORE_GLOBAL_LIBVIPS: '1' }
+        : {}),
       ...createUpdateLockHandoffEnvironment(
         lockHandoff,
         'TAU_UPDATE_LOCK',

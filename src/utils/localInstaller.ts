@@ -69,6 +69,11 @@ function createNpmInstallEnvironment(): NodeJS.ProcessEnv {
       delete env[key]
     }
   }
+
+  if (!('SHARP_IGNORE_GLOBAL_LIBVIPS' in env)) {
+    env.SHARP_IGNORE_GLOBAL_LIBVIPS = '1'
+  }
+
   return env
 }
 

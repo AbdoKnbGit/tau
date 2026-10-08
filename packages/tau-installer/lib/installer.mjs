@@ -177,6 +177,10 @@ export function createInstallerEnvironment(env = process.env) {
     }
   }
 
+  if (!("SHARP_IGNORE_GLOBAL_LIBVIPS" in childEnv)) {
+    childEnv.SHARP_IGNORE_GLOBAL_LIBVIPS = "1";
+  }
+
   return childEnv;
 }
 
