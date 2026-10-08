@@ -26,6 +26,7 @@ export const QWEN_TOOL_REGISTRY: LaneToolRegistration[] = [
         file_path: { type: 'string', description: 'Absolute path to the file.' },
         offset: { type: 'number', description: '1-based line number to start reading from.' },
         limit: { type: 'number', description: 'Number of lines to read.' },
+        include_source_maps: { type: 'boolean', description: 'Include inline source maps verbatim instead of markers; bypass automatic skeletons.' },
       },
       required: ['file_path'],
     },
@@ -33,6 +34,7 @@ export const QWEN_TOOL_REGISTRY: LaneToolRegistration[] = [
       const out: Record<string, unknown> = { file_path: native.file_path }
       if (typeof native.offset === 'number') out.offset = Math.max(0, (native.offset as number) - 1)
       if (typeof native.limit === 'number') out.limit = native.limit
+      if (native.include_source_maps != null) out.include_source_maps = native.include_source_maps
       return out
     },
     adaptOutput(output) {

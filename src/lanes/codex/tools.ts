@@ -131,6 +131,10 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
           type: 'number',
           description: 'Maximum number of lines to read.',
         },
+        include_source_maps: {
+          type: 'boolean',
+          description: 'Include inline source maps verbatim instead of markers; bypass automatic skeletons.',
+        },
       },
       required: ['file_path'],
     },
@@ -138,6 +142,7 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
       const out: Record<string, unknown> = { file_path: native.file_path }
       if (native.offset != null) out.offset = native.offset
       if (native.limit != null) out.limit = native.limit
+      if (native.include_source_maps != null) out.include_source_maps = native.include_source_maps
       return out
     },
     adaptOutput(output) {

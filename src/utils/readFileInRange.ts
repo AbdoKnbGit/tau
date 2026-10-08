@@ -45,6 +45,8 @@ const FAST_PATH_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
 
 export type ReadFileRangeResult = {
   content: string
+  /** Optional bounded snapshot from the SAME read, for syntax-aware views. */
+  fullContent?: string
   lineCount: number
   totalLines: number
   totalBytes: number
@@ -76,7 +78,7 @@ export async function readFileInRange(
   maxLines?: number,
   maxBytes?: number,
   signal?: AbortSignal,
-  options?: { truncateOnByteLimit?: boolean },
+  options?: { truncateOnByteLimit?: boolean; captureFullContent?: boolean },
 ): Promise<ReadFileRangeResult> {
   signal?.throwIfAborted()
   const truncateOnByteLimit = options?.truncateOnByteLimit ?? false
@@ -102,13 +104,17 @@ export async function readFileInRange(
     }
 
     const text = await readFile(filePath, { encoding: 'utf8', signal })
-    return readFileInRangeFast(
+    const result = readFileInRangeFast(
       text,
       stats.mtimeMs,
       offset,
       maxLines,
       truncateOnByteLimit ? maxBytes : undefined,
     )
+    if (options?.captureFullContent && Buffer.byteLength(text) <= FAST_PATH_MAX_SIZE) {
+      result.fullContent = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+    }
+    return result
   }
 
   return readFileInRangeStreaming(
@@ -118,6 +124,7 @@ export async function readFileInRange(
     maxBytes,
     truncateOnByteLimit,
     signal,
+    (options?.captureFullContent ?? false) && (!stats.isFile() || stats.size <= FAST_PATH_MAX_SIZE),
   )
 }
 
@@ -213,6 +220,7 @@ type StreamState = {
   isFirstChunk: boolean
   resolveMtime: (ms: number) => void
   mtimeReady: Promise<number>
+  fullContent: string | undefined
 }
 
 function streamOnOpen(this: StreamState, fd: number): void {
@@ -230,6 +238,14 @@ function streamOnData(this: StreamState, chunk: string): void {
   }
 
   this.totalBytesRead += Buffer.byteLength(chunk)
+  // Parsing needs the complete lexical context (a range may begin inside a
+  // template string). Bound the optional snapshot; on overflow callers keep
+  // the original view rather than guessing which text is a comment.
+  if (this.fullContent !== undefined) {
+    this.fullContent = this.totalBytesRead <= FAST_PATH_MAX_SIZE
+      ? this.fullContent + chunk
+      : undefined
+  }
   if (
     !this.truncateOnByteLimit &&
     this.maxBytes !== undefined &&
@@ -336,6 +352,9 @@ function streamOnEnd(this: StreamState): void {
       totalBytes: this.totalBytesRead,
       readBytes: Buffer.byteLength(content, 'utf8'),
       mtimeMs,
+      ...(this.fullContent !== undefined
+        ? { fullContent: this.fullContent.replace(/\r\n/g, '\n') }
+        : {}),
       ...(truncated ? { truncatedByBytes: true } : {}),
     })
   })
@@ -348,6 +367,7 @@ function readFileInRangeStreaming(
   maxBytes: number | undefined,
   truncateOnByteLimit: boolean,
   signal?: AbortSignal,
+  captureFullContent = false,
 ): Promise<ReadFileRangeResult> {
   return new Promise((resolve, reject) => {
     const state: StreamState = {
@@ -370,6 +390,7 @@ function readFileInRangeStreaming(
       isFirstChunk: true,
       resolveMtime: () => {},
       mtimeReady: null as unknown as Promise<number>,
+      fullContent: captureFullContent ? '' : undefined,
     }
     state.mtimeReady = new Promise<number>(r => {
       state.resolveMtime = r

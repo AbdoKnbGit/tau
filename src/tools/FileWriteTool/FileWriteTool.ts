@@ -235,6 +235,13 @@ export const FileWriteTool = buildTool({
     }
 
     const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
+    if (readTimestamp?.sourceMapsOmitted) {
+      return {
+        result: false,
+        message: 'Inline source maps were omitted from a prior Read. Read the whole file with include_source_maps: true before replacing it, or use Edit to change only the visible source.',
+        errorCode: 2,
+      }
+    }
     if (!readTimestamp || readTimestamp.isPartialView) {
       // Never overwrite a file the model has not read in full. When the file
       // fits, the refusal shows it and records a full read, so the next write
@@ -365,6 +372,9 @@ export const FileWriteTool = buildTool({
     if (meta !== null) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
       const lastRead = readFileState.get(fullFilePath)
+      if (lastRead?.sourceMapsOmitted) {
+        throw new Error('Read the whole file with include_source_maps: true before replacing it, or use Edit to change only the visible source.')
+      }
       if (!lastRead || lastWriteTime > lastRead.timestamp) {
         // Timestamp indicates modification, but on Windows timestamps can change
         // without content changes (cloud sync, antivirus, etc.). For full reads,

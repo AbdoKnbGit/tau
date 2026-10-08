@@ -93,6 +93,7 @@ import { semanticNumber } from '../../utils/semanticNumber.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 import { getDefaultFileReadingLimits } from './limits.js'
+import { inlineSourceMapView, supportsInlineSourceMaps } from './inlineSourceMaps.js'
 import {
   buildSkeleton,
   fileReadTokenLimitAdvice,
@@ -281,7 +282,10 @@ const inputSchema = lazySchema(() =>
       'The number of lines to read. Only provide if the file is too large to read at once.',
     ),
     skeleton: semanticBoolean(z.boolean().optional()).describe(
-      'Return code structure with bodies elided. Large supported code files auto-skeleton on whole-file reads; false forces full content. Markers give exact offset/limit ranges.',
+      'Return code structure with bodies elided. Large code files auto-skeleton; false expands bodies. Markers give exact offset/limit ranges.',
+    ),
+    include_source_maps: semanticBoolean(z.boolean().optional()).describe(
+      'Include inline source-map comments verbatim and bypass automatic skeletons. Default hides recognized maps; cannot combine with skeleton: true.',
     ),
     pages: z
       .string()
@@ -626,12 +630,15 @@ export const FileReadTool = buildTool({
     return { result: true }
   },
   async call(
-    { file_path, offset = 1, limit = undefined, skeleton, pages },
+    { file_path, offset = 1, limit = undefined, skeleton, include_source_maps = false, pages },
     context,
     _canUseTool?,
     parentMessage?,
   ) {
     const { readFileState, fileReadingLimits } = context
+    if (include_source_maps && skeleton === true) {
+      throw new Error('include_source_maps: true requires skeleton: false or omitted.')
+    }
 
     const defaults = getDefaultFileReadingLimits()
     const maxSizeBytes =
@@ -701,6 +708,7 @@ export const FileReadTool = buildTool({
     if (
       existingState &&
       !existingState.isPartialView &&
+      (existingState.sourceMapsIncluded ?? false) === include_source_maps &&
       existingState.offset !== undefined
     ) {
       const rangeMatch =
@@ -753,6 +761,7 @@ export const FileReadTool = buildTool({
     let skeletonMode: SkeletonMode = skeleton === true ? 'explicit' : 'off'
     if (
       skeleton === undefined &&
+      !include_source_maps &&
       offset <= 1 &&
       limit === undefined &&
       pages === undefined &&
@@ -785,6 +794,7 @@ export const FileReadTool = buildTool({
         context,
         parentMessage?.message.id,
         skeletonMode,
+        include_source_maps,
       )
       return markPagesIgnored(result)
     } catch (error) {
@@ -810,6 +820,7 @@ export const FileReadTool = buildTool({
               context,
               parentMessage?.message.id,
               skeletonMode,
+              include_source_maps,
             )
             return markPagesIgnored(result)
           } catch (altError) {
@@ -1086,6 +1097,7 @@ async function callInner(
   context: ToolUseContext,
   messageId: string | undefined,
   skeletonMode: SkeletonMode = 'off',
+  includeSourceMaps = false,
 ): Promise<{
   data: Output
   newMessages?: ReturnType<typeof createUserMessage>[]
@@ -1441,6 +1453,7 @@ async function callInner(
         offset: undefined,
         limit: undefined,
         isPartialView: true,
+        ...(readFileState.get(fullFilePath)?.sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
       })
       recordFileRead(fullFilePath, context.agentId)
       context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
@@ -1489,26 +1502,40 @@ async function callInner(
 
   // --- Text file (single async read via readFileInRange) ---
   const lineOffset = offset === 0 ? 0 : offset - 1
-  const { content, lineCount, totalLines, totalBytes, readBytes, mtimeMs } =
+  const { content, fullContent, lineCount, totalLines, totalBytes, readBytes, mtimeMs } =
     await readFileInRange(
       resolvedFilePath,
       lineOffset,
       limit,
       limit === undefined ? maxSizeBytes : undefined,
       context.abortController.signal,
+      { captureFullContent: !includeSourceMaps && supportsInlineSourceMaps(ext) },
     )
+
+  // Build the view once, before storing any tool result. Replaying history or
+  // switching providers must never rewrite previously-sent prompt bytes.
+  const view = includeSourceMaps
+    ? { content, omitted: false }
+    : await inlineSourceMapView(content, fullContent, ext, lineOffset)
+  context.abortController.signal.throwIfAborted()
 
   // Pass the requested skeleton flag: when skeleton was asked for (explicit
   // or auto) but produced nothing (no elidable body / unsupported), we fell
   // through to this full read. If it overflows, the error must not loop the
   // model back to skeleton.
-  await validateContentTokens(content, ext, maxTokens, skeletonMode !== 'off')
+  await validateContentTokens(view.content, ext, maxTokens, skeletonMode !== 'off')
 
+  const sourceMapsOmitted = view.omitted || (
+    readFileState.get(fullFilePath)?.sourceMapsOmitted === true &&
+    !(lineOffset === 0 && lineCount === totalLines)
+  )
   readFileState.set(fullFilePath, {
     content,
     timestamp: Math.floor(mtimeMs),
     offset,
     limit,
+    sourceMapsIncluded: includeSourceMaps,
+    ...(sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
   })
   recordFileRead(fullFilePath, context.agentId)
   context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
@@ -1523,7 +1550,7 @@ async function callInner(
     type: 'text' as const,
     file: {
       filePath: file_path,
-      content,
+      content: view.content,
       numLines: lineCount,
       startLine: offset,
       totalLines,

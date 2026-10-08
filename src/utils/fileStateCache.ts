@@ -12,6 +12,12 @@ export type FileState = {
   // Edit/Write must require an explicit Read first. `content` here holds the
   // RAW disk bytes (for getChangedFiles diffing), not what the model saw.
   isPartialView?: boolean
+  // Raw content is retained, but the model saw source-map markers. Unlike a
+  // skeleton, visible source is verbatim and ranged Edit's stale-read checks
+  // must still run. Full-file Write requires a read including the maps first.
+  sourceMapsOmitted?: boolean
+  /** Last Read's view mode, so a raw request never dedups against a marker. */
+  sourceMapsIncluded?: boolean
 }
 
 // Default max entries for read file state caches

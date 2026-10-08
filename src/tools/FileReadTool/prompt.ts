@@ -41,7 +41,8 @@ ${lineFormat}
       ? '\n- PDFs support `pages`; PDFs over 10 pages require a range, with at most 20 pages per call.'
       : ''
   }
-- Large supported code files may return an automatic structure skeleton. Follow its exact offset/limit markers for bodies, or pass \`skeleton: false\` for full content. Read the edited range verbatim before Edit.
+- Large code files may return a skeleton. Use its offset/limit markers or \`skeleton: false\` to expand bodies. Read the edited range verbatim before Edit.
+- Inline source maps may be replaced by markers at their original lines. Use \`include_source_maps: true\` to inspect them or before replacing the whole file. Other source stays verbatim in range reads.
 - Notebooks return cells and outputs.${
     isOfficeParseEnabled()
       ? `\n- Read Word/Excel/OpenDocument files directly here; ${BASH_TOOL_NAME} extraction loses structure. Conversion requires first-use approval and returns read-only markdown. PowerPoint/ODS/ODP are unsupported.`

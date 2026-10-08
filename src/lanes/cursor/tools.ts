@@ -1229,6 +1229,7 @@ function _adaptCursorReadInput(native: Record<string, unknown>): Record<string, 
     (start != null && _asNumber(native.limit) != null ? start + _asNumber(native.limit)! - 1 : undefined)
 
   const result: Record<string, unknown> = { file_path: filePath }
+  if (native.include_source_maps != null) result.include_source_maps = native.include_source_maps
   if (start != null) {
     result.offset = Math.max(0, start - 1)
     if (end != null) result.limit = Math.max(1, end - start + 1)

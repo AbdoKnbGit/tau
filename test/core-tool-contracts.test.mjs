@@ -50,7 +50,7 @@ try {
 const contracts = [
   ['BashTool', 9_000, ['command', 'timeout', 'description', 'run_in_background', 'plan_only', 'syntax_confirmed', 'command_parts', 'dangerouslyDisableSandbox']],
   ['TodoWriteTool', 1_500, ['todos']],
-  ['FileReadTool', 2_200, ['file_path', 'offset', 'limit', 'skeleton', 'pages']],
+  ['FileReadTool', 2_600, ['file_path', 'offset', 'limit', 'skeleton', 'include_source_maps', 'pages']],
   ['FileEditTool', 1_500, ['file_path', 'old_string', 'new_string', 'replace_all']],
   ['FileWriteTool', 900, ['file_path', 'content']],
   ['NotebookEditTool', 1_500, ['notebook_path', 'cell_id', 'new_source', 'cell_type', 'edit_mode']],

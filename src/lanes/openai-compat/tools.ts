@@ -63,11 +63,13 @@ export const OPENAI_COMPAT_TOOL_REGISTRY: LaneToolRegistration[] = [
         path: { type: 'string', description: 'Path to the file.' },
         start_line: { type: 'number', description: 'Start line (1-based). Optional.' },
         end_line: { type: 'number', description: 'End line (1-based, inclusive). Optional.' },
+        include_source_maps: { type: 'boolean', description: 'Include inline source maps verbatim instead of markers; bypass automatic skeletons.' },
       },
       required: ['path'],
     },
     adaptInput(native) {
       const result: Record<string, unknown> = { file_path: native.path }
+      if (native.include_source_maps != null) result.include_source_maps = native.include_source_maps
       if (native.start_line != null) {
         result.offset = (native.start_line as number) - 1
         if (native.end_line != null) {

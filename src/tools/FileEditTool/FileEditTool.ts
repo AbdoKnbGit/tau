@@ -357,6 +357,7 @@ export const FileEditTool = buildTool({
         timestamp: getFileModificationTime(fullFilePath),
         offset: undefined,
         limit: undefined,
+        ...(readTimestamp.sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
       }
       toolUseContext.readFileState.set(fullFilePath, seeded)
       readTimestamp = seeded
@@ -645,6 +646,7 @@ export const FileEditTool = buildTool({
     // file absent) is never mistaken for a no-op and dropped.
     if (fileExists && updatedFile === originalFileContents) {
       readFileState.set(absoluteFilePath, {
+        ...(readFileState.get(absoluteFilePath)?.sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
         content: originalFileContents,
         timestamp: getFileModificationTime(absoluteFilePath),
         offset: undefined,
@@ -695,6 +697,7 @@ export const FileEditTool = buildTool({
 
     // 6. Update read timestamp, to invalidate stale writes
     readFileState.set(absoluteFilePath, {
+      ...(readFileState.get(absoluteFilePath)?.sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
       content: updatedFile,
       timestamp: getFileModificationTime(absoluteFilePath),
       offset: undefined,

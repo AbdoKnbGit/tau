@@ -145,7 +145,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'read_file',
     implId: 'Read',
     nativeDescription:
-      "Reads and returns the content of a specified file. To maintain context efficiency, you MUST use 'start_line' and 'end_line' for targeted, surgical reads of specific sections. For your safety, the tool will automatically truncate output exceeding 2000 lines, 1000 characters per line, or 10MB in size; however, triggering these limits is considered token-inefficient. Always retrieve only the minimum content necessary for your next step. Handles text, images (PNG, JPG, GIF, WEBP, SVG, BMP), audio files (MP3, WAV, AIFF, AAC, OGG, FLAC), and PDF files.",
+      "Read a file. Use start_line/end_line for targeted reads. Inline source maps may be replaced by numbered markers; use include_source_maps to inspect them. Large whole-file reads may return a structure skeleton. Supports text, images and PDFs.",
     nativeSchema: {
       type: 'object',
       properties: {
@@ -161,6 +161,10 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
           type: 'number',
           description: 'Optional: The 1-based line number to end reading at (inclusive).',
         },
+        include_source_maps: {
+          type: 'boolean',
+          description: 'Include inline source maps verbatim and bypass automatic skeletons.',
+        },
       },
       required: ['file_path'],
     },
@@ -169,6 +173,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
         file_path: native.file_path,
       }
       // Gemini uses 1-based start_line/end_line
+      if (native.include_source_maps != null) result.include_source_maps = native.include_source_maps
       // Shared Read uses 0-based offset + limit
       if (native.start_line != null) {
         result.offset = (native.start_line as number) - 1

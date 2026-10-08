@@ -1454,6 +1454,7 @@ function implToNativeInput(
       const offset = input.offset as number | undefined
       const limit = input.limit as number | undefined
       const out: Record<string, unknown> = { file_path: input.file_path }
+      if (input.include_source_maps != null) out.include_source_maps = input.include_source_maps
       if (offset != null) {
         out.start_line = offset + 1
         if (limit != null) out.end_line = offset + limit
