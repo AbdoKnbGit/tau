@@ -58,7 +58,7 @@ jobs:
                 brew install ripgrep
                 ;;
               Windows)
-                choco install ripgrep --yes --no-progress
+                pwsh -NoProfile -File .github/scripts/ensure-ripgrep.ps1
                 ;;
               *)
                 echo "Unsupported runner OS: $RUNNER_OS" >&2
@@ -110,6 +110,9 @@ jobs:
 
       - name: Build with esbuild (default, Node-only)
         run: npm run build
+
+      - name: Test source-map reads and cache stability
+        run: node --test test/file-read-source-maps.test.mjs test/core-tool-contracts.test.mjs test/tool-result-budget.test.mjs
 
       - name: Test OpenAI effort settings, request routing, and cache stability
         run: node --test test/openai-effort.test.mjs test/openai-native-routing.test.mjs
@@ -340,10 +343,9 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
-            choco install ripgrep --yes --no-progress
-          }
-          rg --version
+          node --test test/ci-ripgrep.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./.github/scripts/ensure-ripgrep.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $installStatus = 1
