@@ -3,6 +3,16 @@
 All notable changes to **Tau**, from the first release to the latest.
 Each version lists what was fixed or added, newest first.
 
+## v0.92.41 (2026-10-08)
+
+- Handle Antigravity retries smoothly with a shared retry budget and keep slow responses from being cut off prematurely (213f34c2)
+- Fix copying assistant responses after resuming a session by filtering out empty synthetic text blocks (ee1a9146)
+- Fix OpenAI reasoning-effort settings to ensure chosen effort levels apply correctly across requests without breaking prompt caching (77904dd8)
+- Route Antigravity generations to the daily endpoint and prevent duplicate replay during retries (2c3ddca6)
+- Strip inline source-map bloat from file reads by default while keeping full content accessible on demand (61bac30c)
+- Fix Windows CI ripgrep installation by handling transient package manager retries (0112d9e6)
+- Prevent installation and update failures caused by sharp trying to compile from source on systems with global libvips (c2060733)
+
 ## v0.92.40 (2026-10-06)
 
 - Fix Command Code project scans that could hang and correct Luna model routing.
