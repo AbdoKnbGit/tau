@@ -173,25 +173,21 @@ export function formatCommandsWithinBudget(
 export const getPrompt = memoize(async (_cwd: string): Promise<string> => {
   return `Execute a skill within the main conversation
 
-When users ask you to perform tasks, check if any of the available skills match. Skills provide specialized capabilities and domain knowledge.
+For tasks, check available skills (specialized capabilities/domain knowledge), listed in conversation system-reminder messages.
 
-When users reference a "slash command" or "/<something>" (e.g., "/commit", "/review-pr"), they are referring to a skill. Use this tool to invoke it.
+"Slash command" or "/<something>" (e.g., "/commit", "/review-pr") means a skill: invoke it here.
 
-How to invoke:
-- Use this tool with the skill name and optional arguments
-- Examples:
-  - \`skill: "pdf"\` - invoke the pdf skill
-  - \`skill: "commit", args: "-m 'Fix bug'"\` - invoke with arguments
-  - \`skill: "review-pr", args: "123"\` - invoke with arguments
-  - \`skill: "ms-office-suite:pdf"\` - invoke using fully qualified name
+Pass its name and optional arguments:
+- \`skill: "pdf"\`
+- \`skill: "commit", args: "-m 'Fix bug'"\`
+- \`skill: "review-pr", args: "123"\`
+- \`skill: "ms-office-suite:pdf"\` (fully qualified name)
 
 Important:
-- Available skills are listed in system-reminder messages in the conversation
-- When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
+- When a skill matches the request, BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE any other response about the task
 - NEVER mention a skill without actually calling this tool
-- Do not invoke a skill that is already running
-- Do not use this tool for built-in CLI commands (like /help, /clear, etc.)
-- If you see a <${COMMAND_NAME_TAG}> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again
+- Do not invoke an already-running skill or a built-in CLI command (/help, /clear, etc.)
+- A <${COMMAND_NAME_TAG}> tag in the current turn means the skill is ALREADY loaded: follow its instructions directly; do not invoke it again
 `
 })
 

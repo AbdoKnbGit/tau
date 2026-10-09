@@ -31,22 +31,22 @@ export function renderPromptTemplate(
   maxSizeInstruction: string,
   offsetInstruction: string,
 ): string {
-  return `Read one local file by absolute path. Missing or unreadable files return an actionable error.
+  return `Read one local file by absolute path. Missing/unreadable files return an actionable error.
 
 - Reads at most ${MAX_LINES_TO_READ} lines by default${maxSizeInstruction}
 ${offsetInstruction}
 ${lineFormat}
-- Images are returned visually, and are also rendered inline in the user's terminal. To *show* the user a chart, plot or diagram, save it as a PNG and read it here — do not print ASCII art. Terminals without color support fall back to a one-line summary.${
+- Images return visually and inline in the user's terminal (one-line summary without color support). To *show* a chart, plot or diagram, save as PNG and read here; do not print ASCII art.${
     isPDFSupported()
       ? '\n- PDFs support `pages`; PDFs over 10 pages require a range, with at most 20 pages per call.'
       : ''
   }
-- Large code files may return a skeleton. Use its offset/limit markers or \`skeleton: false\` to expand bodies. Read the edited range verbatim before Edit.
-- Inline source maps may be replaced by markers at their original lines. Use \`include_source_maps: true\` to inspect them or before replacing the whole file. Other source stays verbatim in range reads.
+- Large code files may return a skeleton: expand bodies with its offset/limit markers or \`skeleton: false\`. Read the edited range verbatim before Edit.
+- Inline source maps may become markers at their original lines. Use \`include_source_maps: true\` to inspect them or before replacing the whole file. Other source stays verbatim in range reads.
 - Notebooks return cells and outputs.${
     isOfficeParseEnabled()
       ? `\n- Read Word/Excel/OpenDocument files directly here; ${BASH_TOOL_NAME} extraction loses structure. Conversion requires first-use approval and returns read-only markdown. PowerPoint/ODS/ODP are unsupported.`
       : ''
   }
-- Files only, not directories. Use ${BASH_TOOL_NAME} for directory listings. Read screenshot paths with this tool.`
+- Files only, not directories; use ${BASH_TOOL_NAME} for directory listings. Read screenshot paths here.`
 }

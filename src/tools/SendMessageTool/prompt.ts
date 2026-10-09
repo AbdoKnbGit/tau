@@ -16,15 +16,15 @@ export function getPrompt(): string {
   const swarms = isAgentSwarmsEnabled()
 
   const subagentSection = `
-Continue an agent you spawned with the Agent tool. Address it by the \`name\` you gave it, or by the \`agentId\` returned in its result:
+Continue an agent you spawned with the Agent tool by its given \`name\` or returned \`agentId\`:
 
 \`\`\`json
 {"to": "auth-refactor", "summary": "narrow the scope", "message": "Skip the config module — another agent owns it. Finish the token path only."}
 \`\`\`
 
-A **running** agent receives your message at its next tool round. A **finished or stopped** agent is resumed from its transcript with its full context intact, and you are notified when it completes again.
+Running agents receive messages at their next tool round. Finished/stopped agents resume their full-context transcript and notify you on completion.
 
-Prefer continuing an existing agent over spawning a fresh one for follow-up work: it already holds the context, and on providers that key their prompt cache per agent the resumed session reuses its warm prefix while a new spawn starts cold.`
+Prefer continuing an existing agent for follow-ups: it retains context and, on providers caching per agent, reuses its warm prefix; new spawns start cold.`
 
   const teammateSection = swarms
     ? `
@@ -35,12 +35,8 @@ Prefer continuing an existing agent over spawning a fresh one for follow-up work
 {"to": "researcher", "summary": "assign task 1", "message": "start on task #1"}
 \`\`\`
 
-| \`to\` | |
-|---|---|
-| \`"researcher"\` | Teammate by name |
-| \`"*"\` | Broadcast to all teammates — expensive (linear in team size), use only when everyone genuinely needs it |
-
-Messages from teammates are delivered automatically; you don't check an inbox. Refer to teammates by name, never by UUID. When relaying, don't quote the original — it's already rendered to the user.`
+Address teammates by name (never UUID). \`"*"\` broadcasts to all teammates: expensive (linear in team size), use only when everyone genuinely needs it.
+Messages arrive automatically; do not check an inbox. When relaying, do not quote the original; it is already rendered to the user.`
     : ''
 
   const udsSection = feature('UDS_INBOX')
@@ -48,14 +44,14 @@ Messages from teammates are delivered automatically; you don't check an inbox. R
 
 ## Cross-session
 
-Use \`ListPeers\` to discover targets, then:
+Discover targets with \`ListPeers\`, then:
 
 \`\`\`json
 {"to": "uds:/tmp/cc-socks/1234.sock", "message": "check if tests pass over there"}
 {"to": "bridge:session_01AbCd...", "message": "what branch are you on?"}
 \`\`\`
 
-A listed peer is alive and will process your message — no "busy" state; messages enqueue and drain at the receiver's next tool round. Your message arrives wrapped as \`<cross-session-message from="...">\`. **To reply to an incoming message, copy its \`from\` attribute as your \`to\`.**`
+Listed peers are alive and process messages; no "busy" state: messages enqueue and drain at the receiver's next tool round. Messages arrive as \`<cross-session-message from="...">\`. **To reply, copy its \`from\` attribute as your \`to\`.**`
     : ''
 
   const protocolSection = swarms
@@ -63,14 +59,14 @@ A listed peer is alive and will process your message — no "busy" state; messag
 
 ## Protocol responses (legacy)
 
-If you receive a JSON message with \`type: "shutdown_request"\` or \`type: "plan_approval_request"\`, respond with the matching \`_response\` type — echo the \`request_id\`, set \`approve\` true/false:
+For a JSON message with \`type: "shutdown_request"\` or \`type: "plan_approval_request"\`, use the matching \`_response\` type, echo \`request_id\`, set \`approve\` true/false:
 
 \`\`\`json
 {"to": "team-lead", "message": {"type": "shutdown_response", "request_id": "...", "approve": true}}
 {"to": "researcher", "message": {"type": "plan_approval_response", "request_id": "...", "approve": false, "feedback": "add error handling"}}
 \`\`\`
 
-Approving shutdown terminates your process. Rejecting plan sends the teammate back to revise. Don't originate \`shutdown_request\` unless asked. Don't send structured JSON status messages — use TaskUpdate.`
+Approving shutdown terminates your process; rejecting a plan sends the teammate back to revise. Do not originate \`shutdown_request\` unless asked. Use TaskUpdate, not structured JSON status messages.`
     : ''
 
   return `

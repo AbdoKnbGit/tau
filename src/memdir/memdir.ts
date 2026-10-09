@@ -240,10 +240,10 @@ export function buildMemoryLines(
         '',
         ...MEMORY_FRONTMATTER_EXAMPLE,
         '',
-        '- Keep the name, description, and type fields in memory files up-to-date with the content',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
+        "- Keep name, description, and type consistent with memory content.",
+        "- Organize by topic, not chronology.",
+        "- Update or remove wrong/outdated memories.",
+        "- Before writing, check for an existing memory to update; never duplicate.",
       ]
     : [
         '## How to save memories',
@@ -257,10 +257,10 @@ export function buildMemoryLines(
         `**Step 2** — add a pointer to that file in \`${ENTRYPOINT_NAME}\`. \`${ENTRYPOINT_NAME}\` is an index, not a memory — each entry should be one line, under ~150 characters: \`- [Title](file.md) — one-line hook\`. It has no frontmatter. Never write memory content directly into \`${ENTRYPOINT_NAME}\`.`,
         '',
         `- \`${ENTRYPOINT_NAME}\` is always loaded into your conversation context — lines after ${MAX_ENTRYPOINT_LINES} will be truncated, so keep the index concise`,
-        '- Keep the name, description, and type fields in memory files up-to-date with the content',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
+        "- Keep name, description, and type consistent with memory content.",
+        "- Organize by topic, not chronology.",
+        "- Update or remove wrong/outdated memories.",
+        "- Before writing, check for an existing memory to update; never duplicate.",
       ]
 
   const lines: string[] = [
@@ -268,9 +268,9 @@ export function buildMemoryLines(
     '',
     `You have a persistent, file-based memory system at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`,
     '',
-    "You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.",
+    "Build memory over time so future conversations understand the user, their collaboration preferences, behaviors to avoid or repeat, and the context behind their work.",
     '',
-    'If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.',
+    "If the user explicitly asks to remember something, save it immediately under the best-fitting type. If the user asks to forget, find and remove the relevant entry.",
     '',
     ...TYPES_SECTION_INDIVIDUAL,
     ...WHAT_NOT_TO_SAVE_SECTION,
@@ -282,9 +282,9 @@ export function buildMemoryLines(
     ...TRUSTING_RECALL_SECTION,
     '',
     '## Memory and other forms of persistence',
-    'Memory is one of several persistence mechanisms available to you as you assist the user in a given conversation. The distinction is often that memory can be recalled in future conversations and should not be used for persisting information that is only useful within the scope of the current conversation.',
-    '- When to use or update a plan instead of memory: If you are about to start a non-trivial implementation task and would like to reach alignment with the user on your approach you should use a Plan rather than saving this information to memory. Similarly, if you already have a plan within the conversation and you have changed your approach persist that change by updating the plan rather than saving a memory.',
-    '- When to use or update tasks instead of memory: When you need to break your work in current conversation into discrete steps or keep track of your progress use tasks instead of saving to memory. Tasks are great for persisting information about the work that needs to be done in the current conversation, but memory should be reserved for information that will be useful in future conversations.',
+    "Memory is one persistence mechanism for future conversations; never use it for information useful only in the current conversation.",
+    "- If seeking user alignment before non-trivial implementation, use a Plan, not memory. If your approach changes during an existing plan, update that plan instead of saving a memory.",
+    "- Use or update tasks, not memory, for current-conversation work steps, progress, and remaining work. Reserve memory for information useful in future conversations.",
     '',
     ...(extraGuidelines ?? []),
     '',
@@ -296,8 +296,9 @@ export function buildMemoryLines(
 }
 
 /**
- * Cheap-mode memory contract. The normal prompt above is intentionally left
- * unchanged because its examples are eval-tuned. This version states each
+ * Cheap-mode memory contract. The normal prompt above keeps its eval-tuned
+ * examples verbatim (type descriptions were tightened, examples were not) and
+ * its evaluated recall/exclusion guidance unchanged. This version states each
  * behavioral invariant once and relies on the closed schema instead of
  * carrying examples for every type on every request.
  */
