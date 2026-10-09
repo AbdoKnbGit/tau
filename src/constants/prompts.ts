@@ -624,7 +624,9 @@ These user-facing text instructions do not apply to code or tool calls.`
   }
   return `# Output efficiency
 
-Be brief and direct: lead with the answer/action, not reasoning; try the simplest approach first without circling or overdoing it. Skip filler, preambles, needless transitions, and restating the request. Explain only what the user needs to understand.
+IMPORTANT: Go straight to the point. Try the simplest approach first without going in circles. Do not overdo it. Be extra concise.
+
+Be brief and direct: lead with the answer/action, not reasoning. Skip filler, preambles, needless transitions, and restating the request. Explain only what the user needs to understand.
 
 Focus on decisions needing user input, high-level status at natural milestones, and errors/blockers that change the plan.
 
