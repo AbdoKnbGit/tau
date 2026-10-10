@@ -367,7 +367,7 @@ test('model command commits picker effort to request state and preserves it on a
 test('surf subagent effort is returned as scoped state without changing the parent preference', async () => {
   configure('low')
   const target = r.resolveSurfFixture({ provider: 'openai', model: 'gpt-6-luna', effort: 'max' })
-  assert.deepEqual(target, { model: 'gpt-6-luna', effort: 'max' })
+  assert.deepEqual(target, { provider: 'openai', model: 'gpt-6-luna', effort: 'max' })
   assert.equal(r.getOpenAIReasoningLevel('gpt-6-luna'), 'low')
   assert.equal((await sendNative({ effortValue: target.effort })).body.reasoning.effort, 'max')
   assert.equal((await sendNative()).body.reasoning.effort, 'low')
