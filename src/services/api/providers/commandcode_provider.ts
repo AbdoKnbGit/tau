@@ -17,6 +17,7 @@ import {
   type SystemBlock,
 } from './base_provider.js'
 import { OpenAIProvider } from './openai_provider.js'
+import { CommandCodeUsageAccumulator } from './commandcode_usage.js'
 import { getProviderModelSet } from '../../../utils/model/configs.js'
 import {
   commandCodeAnthropicBudgetForEffort,
@@ -280,6 +281,7 @@ export class CommandCodeProvider extends OpenAIProvider {
     model: string,
   ): AsyncGenerator<AnthropicStreamEvent> {
     const message = emptyAlphaMessage(model)
+    const usage = new CommandCodeUsageAccumulator()
     let blockIndex = 0
     let currentBlock: AnthropicContentBlock | null = null
     let currentKind: 'text' | 'thinking' | null = null
@@ -300,6 +302,11 @@ export class CommandCodeProvider extends OpenAIProvider {
 
       if (type === 'error') {
         throw new Error(`Command Code API stream error: ${commandCodeAlphaErrorDetail(event)}`)
+      }
+
+      if (type === 'finish-step' || type === 'finish_step') {
+        usage.addStep(event.usage)
+        continue
       }
 
       if (type === 'text-delta' || type === 'text_delta' || type === 'output_text_delta') {
@@ -398,20 +405,11 @@ export class CommandCodeProvider extends OpenAIProvider {
         for await (const stop of closeBlock()) yield stop
         const stopReason = alphaStopReason(firstString(event.finishReason, event.finish_reason, event.rawFinishReason))
         message.stop_reason = stopReason
-        applyAlphaUsage(message, alphaUsageFromEvent(event))
+        message.usage = usage.finish(event.totalUsage, event.total_usage, event.usage)
         yield {
           type: 'message_delta',
           delta: { stop_reason: stopReason, stop_sequence: null },
-          usage: {
-            output_tokens: message.usage.output_tokens,
-            input_tokens: message.usage.input_tokens,
-            ...(message.usage.cache_read_input_tokens
-              ? { cache_read_input_tokens: message.usage.cache_read_input_tokens }
-              : {}),
-            ...(message.usage.cache_creation_input_tokens
-              ? { cache_creation_input_tokens: message.usage.cache_creation_input_tokens }
-              : {}),
-          },
+          usage: { ...message.usage },
         }
         yield { type: 'message_stop' }
         return
@@ -420,13 +418,11 @@ export class CommandCodeProvider extends OpenAIProvider {
 
     for await (const stop of closeBlock()) yield stop
     message.stop_reason = 'end_turn'
+    message.usage = usage.finish()
     yield {
       type: 'message_delta',
       delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: {
-        output_tokens: message.usage.output_tokens,
-        input_tokens: message.usage.input_tokens,
-      },
+      usage: { ...message.usage },
     }
     yield { type: 'message_stop' }
   }
@@ -1123,85 +1119,6 @@ function alphaStopReason(value: string | null): AnthropicMessage['stop_reason'] 
   return 'end_turn'
 }
 
-function alphaUsageFromEvent(event: CommandCodeAlphaEvent): unknown {
-  return firstDefined(event.totalUsage, event.total_usage, event.usage)
-}
-
-function applyAlphaUsage(message: AnthropicMessage, usage: unknown): void {
-  if (!isRecord(usage)) return
-  const input = firstNumber(usage.inputTokens, usage.input_tokens, usage.promptTokens, usage.prompt_tokens)
-  const output = firstNumber(usage.outputTokens, usage.output_tokens, usage.completionTokens, usage.completion_tokens)
-  if (output !== null) message.usage.output_tokens = output
-
-  const details = firstRecord(
-    usage.inputTokenDetails,
-    usage.input_token_details,
-    usage.promptTokensDetails,
-    usage.prompt_tokens_details,
-  )
-  const cacheRead = firstNumber(
-    details?.cacheReadTokens,
-    details?.cacheReadInputTokens,
-    details?.cacheHitTokens,
-    details?.cache_read_tokens,
-    details?.cache_read_input_tokens,
-    details?.cache_hit_tokens,
-    details?.cachedTokens,
-    details?.cached_tokens,
-    usage.cacheReadTokens,
-    usage.cacheReadInputTokens,
-    usage.cacheHitTokens,
-    usage.cacheHitInputTokens,
-    usage.cache_read_input_tokens,
-    usage.cache_read_tokens,
-    usage.cache_hit_tokens,
-    usage.cache_hit_input_tokens,
-    usage.cachedInputTokens,
-    usage.cachedTokens,
-    usage.cached_input_tokens,
-    usage.cached_tokens,
-  )
-  const cacheWrite = firstNumber(
-    details?.cacheWriteTokens,
-    details?.cacheWriteInputTokens,
-    details?.cacheCreationTokens,
-    details?.cache_write_tokens,
-    details?.cache_write_input_tokens,
-    details?.cache_creation_tokens,
-    details?.cacheCreationInputTokens,
-    details?.cache_creation_input_tokens,
-    usage.cacheWriteTokens,
-    usage.cacheWriteInputTokens,
-    usage.cacheCreationInputTokens,
-    usage.cacheCreationTokens,
-    usage.cache_write_tokens,
-    usage.cache_write_input_tokens,
-    usage.cache_creation_input_tokens,
-    usage.cache_creation_tokens,
-  )
-
-  if (input !== null) {
-    const noCacheInput = firstNumber(
-      details?.noCacheTokens,
-      details?.no_cache_tokens,
-      details?.uncachedTokens,
-      details?.uncached_tokens,
-      usage.noCacheTokens,
-      usage.no_cache_tokens,
-      usage.uncachedInputTokens,
-      usage.uncached_input_tokens,
-    )
-    if (noCacheInput !== null) {
-      message.usage.input_tokens = Math.max(0, noCacheInput)
-    } else {
-      const cachedInput = Math.max(0, (cacheRead ?? 0) + (cacheWrite ?? 0))
-      message.usage.input_tokens = Math.max(0, input - cachedInput)
-    }
-  }
-  if (cacheRead !== null && cacheRead > 0) message.usage.cache_read_input_tokens = cacheRead
-  if (cacheWrite !== null && cacheWrite > 0) message.usage.cache_creation_input_tokens = cacheWrite
-}
-
 function alphaToolInput(event: CommandCodeAlphaEvent): Record<string, unknown> {
   const input = firstDefined(event.input, event.args, event.arguments)
   if (isRecord(input)) return input
@@ -1281,13 +1198,6 @@ function firstNumber(...values: unknown[]): number | null {
 function firstBoolean(...values: unknown[]): boolean | null {
   for (const value of values) {
     if (typeof value === 'boolean') return value
-  }
-  return null
-}
-
-function firstRecord(...values: unknown[]): RawCommandCodeModel | null {
-  for (const value of values) {
-    if (isRecord(value)) return value
   }
   return null
 }
