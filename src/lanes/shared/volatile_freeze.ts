@@ -24,6 +24,7 @@
 
 import type { ProviderMessage } from '../../services/api/providers/base_provider.js'
 import { resetOpenRouterContext, type PromptSnapshotResetOptions } from '../openai-compat/openrouter_context.js'
+import { statedWorkingDirectory } from './working_directory.js'
 
 const _volatileBySession = new Map<string, string>()
 
@@ -59,16 +60,20 @@ export function freezeSessionVolatileText(
  * the first user message so sessionless callers still freeze per-conversation
  * (the first user message is the one part of history that never changes).
  * The model is part of the key because a mid-session model switch builds a
- * different prompt — its snapshot must not leak across models.
+ * different prompt — its snapshot must not leak across models. So is the
+ * working directory the block states (EnterWorktree, ExitWorktree): see
+ * working_directory.ts.
  */
 export function volatileFreezeKey(
   lane: string,
   model: string,
   sessionId: string | undefined,
   messages: ProviderMessage[],
+  volatileText = '',
 ): string {
   const session = sessionId?.trim() || hashText(firstUserText(messages))
-  return `${lane}:${model.toLowerCase()}:${session}`
+  const directory = statedWorkingDirectory(volatileText)
+  return `${lane}:${model.toLowerCase()}:${session}${directory ? `:${directory}` : ''}`
 }
 
 function firstUserText(messages: ProviderMessage[]): string {

@@ -762,6 +762,24 @@ async function main(): Promise<void> {
     assert(out === 'env-B', `clearChain should re-seed on next call; got ${JSON.stringify(out)}`)
   })
 
+  await test('frozen volatile anchor: a working-directory scope seeds once per directory and replays on return', () => {
+    codexApi.clearChain()
+    codexApi.setSessionCacheKey('tau-root')
+    const repo = 'C:/repo'
+    const worktree = 'C:/repo/.claude/worktrees/probe'
+    assert(codexApi.getOrSeedFrozenVolatile('gpt-5.6-luna', 'env-repo', repo) === 'env-repo', 'first directory did not seed')
+    assert(codexApi.getOrSeedFrozenVolatile('gpt-5.6-luna', 'env-repo-later', repo) === 'env-repo', 'same directory did not stay frozen')
+    // EnterWorktree: the new directory's env reaches the model once, then freezes.
+    assert(codexApi.getOrSeedFrozenVolatile('gpt-5.6-luna', 'env-worktree', worktree) === 'env-worktree', 'worktree replayed the old folder')
+    assert(codexApi.getOrSeedFrozenVolatile('gpt-5.6-luna', 'env-worktree-later', worktree) === 'env-worktree', 'worktree anchor did not freeze')
+    // ExitWorktree: the original anchor comes back byte for byte.
+    assert(codexApi.getOrSeedFrozenVolatile('gpt-5.6-luna', 'env-repo-after', repo) === 'env-repo', 'returning did not replay the original anchor')
+    // Unscoped anchors (subagents, side sessions) keep their model-only key.
+    codexApi.setSessionCacheKey('tau-agent-x')
+    assert(codexApi.getOrSeedFrozenVolatile('gpt-5.6-luna', 'agent-env') === 'agent-env', 'agent anchor did not seed')
+    assert(codexApi.getOrSeedFrozenVolatile('gpt-5.6-luna', 'agent-env-later') === 'agent-env', 'agent anchor did not stay frozen')
+  })
+
   await test('session cache key isolates and restores volatile anchors across side requests', () => {
     codexApi.clearChain()
     codexApi.setSessionCacheKey('tau-session-a')

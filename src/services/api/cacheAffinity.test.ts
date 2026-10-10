@@ -308,8 +308,8 @@ async function main(): Promise<void> {
       assert(resolve('mistral', 'synthetic-fork', 'agent:builtin:fork') === 'synthetic-root', 'synthetic fork changed policy')
       assert(resolve('mistral', 'synthetic-summary', 'agent_summary') === 'synthetic-root', 'synthetic fork summary started cold')
       assert(resolve('mistral', 'synthetic-nested', 'compact') === 'synthetic-root', 'nested synthetic fork helper started cold')
-      // The new parent-source metadata must not change another provider's
-      // established routing. Only Mistral consumes it.
+      // The parent-source metadata must not change another provider's
+      // established routing. Only the per-agent-session providers consume it.
       for (const provider of ['openai', 'openrouter'] as const) {
         const existingOwner = resolve(provider, 'synthetic-fork', 'agent:builtin:general-purpose')
         assert(resolve(provider, 'synthetic-summary', 'agent_summary') === existingOwner, `${provider} routing changed`)
@@ -317,6 +317,53 @@ async function main(): Promise<void> {
     } finally {
       releaseNested()
       releaseSummary()
+    }
+  })
+
+  await test('gives DeepSeek, GLM, Moonshot and MiniMax agents identities of their own, like Mistral', () => {
+    for (const provider of ['deepseek', 'glm', 'moonshot', 'minimax'] as const) {
+      const resolve = (agentId: string | undefined, querySource: string) => resolveProviderRequestSessionId({
+        provider,
+        rootSessionId: 'direct-root',
+        ...(agentId && { agentId: agentId as AgentId }),
+        querySource: querySource as QuerySource,
+      })
+      const a = resolve('direct-a', 'agent:builtin:general-purpose')
+      assert(typeof a === 'string' && a.startsWith('tau-agent-'), `${provider}: agent kept the root: ${a}`)
+      assert(a === resolve('direct-a', 'agent:custom'), `${provider}: resume changed the agent identity`)
+      assert(a !== resolve('direct-b', 'agent:builtin:general-purpose'), `${provider}: agents collided`)
+      assert(resolve('direct-a', 'repl_main_thread') === 'direct-root', `${provider}: main thread left the root`)
+      assert(resolve('direct-a', 'sdk') === 'direct-root', `${provider}: SDK left the root`)
+      assert(resolve('direct-fork', 'agent:builtin:fork') === 'direct-root', `${provider}: synthetic fork left the root`)
+      assert(resolve('hook-a', 'hook_agent') === 'direct-root', `${provider}: hook agent policy changed`)
+      assert(resolve(undefined, 'generate_session_title') === 'direct-root', `${provider}: side-query policy changed`)
+      assert(resolve(undefined, 'report')!.startsWith('tau-query-'), `${provider}: report policy changed`)
+      const releaseMain = registerForkedAgent('direct-main-helper' as AgentId, undefined)
+      const releaseAgent = registerForkedAgent('direct-agent-helper' as AgentId, 'direct-a' as AgentId)
+      const releaseSynthetic = registerForkedAgent(
+        'direct-synthetic-summary' as AgentId,
+        'direct-fork' as AgentId,
+        'agent:builtin:fork' as QuerySource,
+      )
+      try {
+        assert(resolve('direct-main-helper', 'prompt_suggestion') === 'direct-root', `${provider}: main helper left the root`)
+        assert(resolve('direct-agent-helper', 'agent_summary') === a, `${provider}: agent helper left its agent`)
+        assert(resolve('direct-synthetic-summary', 'agent_summary') === 'direct-root', `${provider}: synthetic fork summary left the root`)
+      } finally {
+        releaseSynthetic()
+        releaseAgent()
+        releaseMain()
+      }
+    }
+    // Every other root-keyed provider keeps its agents on the root session.
+    for (const provider of ['copilot', 'agentrouter', 'opencode', 'opencodego', 'lxd', 'fireworks', 'cloudflare', 'cline', 'clinepass'] as const) {
+      const sessionId = resolveProviderRequestSessionId({
+        provider,
+        rootSessionId: 'direct-root',
+        agentId: 'direct-a' as AgentId,
+        querySource: 'agent:builtin:general-purpose' as QuerySource,
+      })
+      assert(sessionId === 'direct-root', `${provider}: agent routing changed: ${sessionId}`)
     }
   })
 

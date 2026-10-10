@@ -3768,7 +3768,7 @@ function buildDeepSeekCacheStableMessages(
   const { stable, volatile } = splitSystemPromptForCache(systemText)
   const out = convertHistoryToOpenAI(messages, stable, 'deepseek', model)
   const frozen = freezeSessionVolatileText(
-    volatileFreezeKey('deepseek', model, cacheSessionId, messages),
+    volatileFreezeKey('deepseek', model, cacheSessionId, messages, volatile),
     volatile,
   ).trim()
   if (!frozen) return out

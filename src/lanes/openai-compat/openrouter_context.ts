@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { ProviderMessage } from '../../services/api/providers/base_provider.js'
+import { statedWorkingDirectory } from '../shared/working_directory.js'
 
 type FunctionTool = {
   function: { name: string; parameters: Record<string, unknown>; strict?: boolean }
@@ -28,7 +29,9 @@ function isConversationSource(querySource: string | undefined): boolean {
  * it resends the conversation's prefix, so it uses the conversation's
  * snapshot, frozen system prompt and tool order included. Any other helper
  * keeps a snapshot of its own. `system` is the caller's system prompt before
- * freezing.
+ * freezing; the working directory it states is part of both keys, so a
+ * snapshot frozen before EnterWorktree/ExitWorktree is never replayed into a
+ * turn that states another directory (see working_directory.ts).
  */
 export function openRouterContextKey(
   route: string,
@@ -41,8 +44,9 @@ export function openRouterContextKey(
   const lineage = sessionId || createHash('sha256')
     .update(JSON.stringify(messages.find(message => message.role === 'user') ?? null))
     .digest('hex')
-  const own = JSON.stringify([route, model, lineage, querySource ?? ''])
-  const base = JSON.stringify([route, model, lineage])
+  const directory = statedWorkingDirectory(system)
+  const own = JSON.stringify([route, model, lineage, querySource ?? '', ...(directory ? [directory] : [])])
+  const base = JSON.stringify([route, model, lineage, ...(directory ? [directory] : [])])
   const systemHash = createHash('sha256').update(system).digest('hex')
   if (!isConversationSource(querySource)) {
     const conversation = conversations.get(base)

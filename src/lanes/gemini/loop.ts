@@ -192,7 +192,7 @@ export class GeminiLane implements Lane {
     // Lineage keying hands every clone the main conversation's exact frozen
     // bytes; standalone agents hash their own first message as before.
     const volatileText = freezeSessionVolatileText(
-      volatileFreezeKey('gemini', model, isAntigravityGemini ? undefined : sessionId, messages),
+      volatileFreezeKey('gemini', model, isAntigravityGemini ? undefined : sessionId, messages, split.volatileText),
       split.volatileText,
     )
 

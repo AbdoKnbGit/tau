@@ -367,7 +367,9 @@ export class CodexApiClient {
    * Codex client switches between them. A subagent's anchor is its own env
    * (a worktree agent's working directory included), and a resumed subagent
    * replays it. The inner model key keeps `/models` swaps isolated inside
-   * each session.
+   * each session; the inner key also carries the working directory the
+   * prompt states (lanes/shared/working_directory.ts), so the first turn after
+   * EnterWorktree/ExitWorktree reaches the model with its own env.
    */
   private frozenVolatileBySession: Map<string, Map<string, string>> = new Map()
 
@@ -446,8 +448,12 @@ export class CodexApiClient {
    * for the cache prefix to hit.
    *
    * Pure no-op when `currentText` is empty (no anchor needed).
+   *
+   * `scope` splits the model's anchor further: each scope seeds once and
+   * replays its own copy, so returning to an earlier scope replays the
+   * anchor it had.
    */
-  getOrSeedFrozenVolatile(model: string, currentText: string): string {
+  getOrSeedFrozenVolatile(model: string, currentText: string, scope?: string): string {
     if (!currentText) return ''
     const sessionKey = this.sessionCacheKey
     let frozenByModel = this.frozenVolatileBySession.get(sessionKey)
@@ -469,9 +475,10 @@ export class CodexApiClient {
         this.frozenVolatileBySession.delete(oldest)
       }
     }
-    const cached = frozenByModel.get(model)
+    const anchorKey = scope === undefined ? model : `${model}\0${scope}`
+    const cached = frozenByModel.get(anchorKey)
     if (cached !== undefined) return cached
-    frozenByModel.set(model, currentText)
+    frozenByModel.set(anchorKey, currentText)
     return currentText
   }
 

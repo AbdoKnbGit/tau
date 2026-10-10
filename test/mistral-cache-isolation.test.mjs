@@ -39,6 +39,7 @@ function fixture() {
     resetMicrocompactState: noop,
   }
   for (const path of [
+    'src/lanes/shared/working_directory.ts',
     'src/services/api/cacheAffinity.ts',
     'src/lanes/openai-compat/openrouter_context.ts',
     'src/lanes/shared/volatile_freeze.ts',

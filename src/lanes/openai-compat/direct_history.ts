@@ -16,7 +16,7 @@ export function buildDirectHistory(
   const split = dynamic >= 0
   const stable = split ? system.slice(0, dynamic).trimEnd() : system
   const volatile = split ? system.slice(dynamic + (marker >= 0 ? boundary.length : 0)).trimStart() : ''
-  const frozen = freezeSessionVolatileText(volatileFreezeKey(provider, model, sessionId, messages), volatile).trim()
+  const frozen = freezeSessionVolatileText(volatileFreezeKey(provider, model, sessionId, messages, volatile), volatile).trim()
   return [
     ...(stable ? [{ role: 'system' as const, content: stable }] : []),
     ...(frozen ? [{ role: 'user' as const, content: `<dynamic_context>\n${frozen}\n</dynamic_context>` }] : []),

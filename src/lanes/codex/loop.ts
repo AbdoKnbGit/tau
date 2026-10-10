@@ -47,6 +47,7 @@ import {
   CODEX_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
 import { describeUnsendableMedia } from '../shared/media_blocks.js'
+import { statedWorkingDirectory } from '../shared/working_directory.js'
 import { toCodexToolParameters } from './tool_schema.js'
 import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
 import {
@@ -157,7 +158,13 @@ export class CodexLane implements Lane {
     // turns get the same captured copy back. `clearChain()` wipes
     // it so a fresh conversation captures fresh env.
     if (volatileSystemText) {
-      const frozenAnchor = codexApi.getOrSeedFrozenVolatile(model, volatileSystemText)
+      // One anchor per working directory the prompt states, so the first
+      // turn after EnterWorktree/ExitWorktree reaches the model with its env.
+      const frozenAnchor = codexApi.getOrSeedFrozenVolatile(
+        model,
+        volatileSystemText,
+        statedWorkingDirectory(volatileSystemText),
+      )
       if (frozenAnchor) {
         inputItems.unshift({
           type: 'message',
