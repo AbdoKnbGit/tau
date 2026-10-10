@@ -17,9 +17,6 @@ const NATIVE_SYNTAX_STYLES: Partial<Record<ThemeName, string>> = {
   dark: 'github-dark',
 }
 
-const TRAILING_ANSI_SPACE_RE =
-  /(?:(?:\x1B\[[0-?]*[ -/]*[@-~])*[ \t]+(?:\x1B\[[0-?]*[ -/]*[@-~])*)+$/u
-
 const highlightCache = new Map<string, string | null>()
 // Keys with an async highlight currently in flight. Dedupes identical requests
 // and, with MAX_INFLIGHT_HIGHLIGHTS, bounds how many subprocesses run at once.
@@ -43,14 +40,54 @@ function languageFromPathOrHint(filePathOrLanguage: string | undefined): string 
   return ext
 }
 
-function trimRenderedLine(line: string): string {
-  let trimmed = line.replace(/[ \t]+$/u, '')
-  while (trimmed !== '') {
-    const next = trimmed.replace(TRAILING_ANSI_SPACE_RE, '')
-    if (next === trimmed) break
-    trimmed = next
+function isBlank(code: number): boolean {
+  return code === 0x20 || code === 0x09
+}
+
+function isCodeInRange(code: number, low: number, high: number): boolean {
+  return code >= low && code <= high
+}
+
+/**
+ * Index of the ESC opening the CSI sequence (ESC [, parameters, intermediates,
+ * final byte) whose final byte is at `last`, or -1 when none ends there.
+ */
+function csiStartEndingAt(line: string, last: number): number {
+  if (!isCodeInRange(line.charCodeAt(last), 0x40, 0x7e)) return -1
+  let i = last - 1
+  // Intermediates (0x20-0x2F) sit right before the final byte, parameters
+  // (0x30-0x3F) before them.
+  while (i >= 0 && isCodeInRange(line.charCodeAt(i), 0x20, 0x2f)) i--
+  while (i >= 0 && isCodeInRange(line.charCodeAt(i), 0x30, 0x3f)) i--
+  if (i < 1 || line.charCodeAt(i) !== 0x5b || line.charCodeAt(i - 1) !== 0x1b) {
+    return -1
   }
-  return trimmed
+  return i - 1
+}
+
+/**
+ * Drops trailing blanks, including blanks wrapped in escape codes: the run of
+ * spaces, tabs and CSI sequences at the end of the line goes when it holds at
+ * least one space or tab. A backward scan, so linear in the line. The regex it
+ * replaces backtracked exponentially on indented lines (seconds at 20 spaces,
+ * hours at 32) and froze the UI when a deeply indented highlight landed.
+ */
+export function trimRenderedLine(line: string): string {
+  let end = line.length
+  while (end > 0 && isBlank(line.charCodeAt(end - 1))) end--
+  let start = end
+  let sawBlank = false
+  while (start > 0) {
+    if (isBlank(line.charCodeAt(start - 1))) {
+      start--
+      sawBlank = true
+      continue
+    }
+    const csiStart = csiStartEndingAt(line, start - 1)
+    if (csiStart < 0) break
+    start = csiStart
+  }
+  return line.slice(0, sawBlank ? start : end)
 }
 
 function normalizeRendered(rendered: string | null): string | null {
