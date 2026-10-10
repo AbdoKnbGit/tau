@@ -26,7 +26,7 @@ const WIRE_ALIASES: Record<string, string> = {
   'gemini-3.5-flash-low': 'gemini-3.5-flash-extra-low',
   'gemini-3.1-pro-high': 'gemini-pro-agent',
 }
-for (const generation of ['3.6', '3.7', '3.8']) {
+for (const generation of ['3.6', '3.8']) {
   for (const level of ['low', 'medium', 'high']) {
     WIRE_ALIASES[`gemini-${generation}-flash-${level}`] = `gemini-${generation}-flash-tiered`
   }

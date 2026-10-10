@@ -300,19 +300,15 @@ export function getAntigravityModelDisplayName(model: string): string | null {
 
 export function resolveAntigravityWireModel(model: string): string {
   const normalized = model.toLowerCase()
-  // 3.6/3.7/3.8 Flash each expose ONE tiered wire model per generation; the
-  // picker's Low/Medium/High rides in generationConfig.thinkingConfig
-  // .thinkingLevel (see lanes/gemini/thinking.ts). Keeping all three levels
-  // on a single upstream id also keeps the implicit cache warm when the user
-  // switches level mid-session — the backend entry is keyed on the prompt
-  // prefix under that model, so per-level ids would split it three ways.
-  // The backend also serves per-level ids (`gemini-3.8-flash-high`, ...) for
-  // these generations; if a tiered id is ever rejected with a 404, returning
-  // `normalized` here is the whole fix.
+  // 3.6 and 3.8 keep their shared tiered wire models; the picker's level
+  // rides in generationConfig.thinkingConfig.thinkingLevel.
+  // 3.7 must preserve its per-level id: the daily endpoint returned 404 for
+  // gemini-3.7-flash-tiered but accepted gemini-3.7-flash-medium (2026-10-10).
   // Enumerated on purpose: 3.5 and older Flash use different wire keys
   // entirely (below), so a generic `gemini-3.\d+` match would break them.
   const tiered = normalized.match(/^gemini-(3\.[6-8])-flash-(?:high|medium|low)$/)
   if (tiered) {
+    if (tiered[1] === '3.7') return normalized
     return `gemini-${tiered[1]}-flash-tiered`
   }
   if (normalized === 'gemini-3.1-pro-high') {

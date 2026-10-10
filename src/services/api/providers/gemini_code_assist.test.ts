@@ -155,20 +155,26 @@ async function main(): Promise<void> {
     )
   })
 
-  await test('routes level-based Flash picker variants through the tiered Antigravity model', async () => {
-    // 3.6 / 3.7 / 3.8 each offer Low/Medium/High in the picker and ride one
-    // tiered wire model per generation, so switching level keeps the
-    // session's implicit-cache entry (one upstream id, not three).
+  await test('preserves 3.7 Flash wire ids while keeping 3.6 and 3.8 tiered', async () => {
     for (const generation of ['3.6', '3.7', '3.8'] as const) {
       for (const [level, label] of [['high', 'High'], ['medium', 'Medium'], ['low', 'Low']] as const) {
         const id = `gemini-${generation}-flash-${level}`
+        const wireId = generation === '3.7' ? id : `gemini-${generation}-flash-tiered`
         const name = `Gemini ${generation} Flash (${label})`
         const pickerModel = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
         assert(pickerModel?.name === name, `missing ${name} from Antigravity picker`)
         assert(executorForModel(id) === 'antigravity', `${id} must use Antigravity`)
         assert(
-          resolveAntigravityWireModel(id) === `gemini-${generation}-flash-tiered`,
-          `${id} must use the tiered wire model`,
+          resolveAntigravityWireModel(id) === wireId,
+          `${id} must use ${wireId}`,
+        )
+        assert(resolveAntigravityWireModel(id.toUpperCase()) === wireId, `${id} must normalize case`)
+        const thinkingConfig = { thinkingLevel: level, includeThoughts: false }
+        const wrapped = wrapForCodeAssist(id, 'project', { generationConfig: { thinkingConfig } })
+        assert(wrapped.model === wireId, `${id} envelope must use ${wireId}`)
+        assert(
+          (wrapped.request.generationConfig as any).thinkingConfig.thinkingLevel === level,
+          `${id} must preserve its thinking level`,
         )
         // Membership in the Antigravity Gemini set is what turns on the
         // implicit-cache discipline (prefix pad, commit-window pacing,
