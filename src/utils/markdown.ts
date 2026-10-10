@@ -173,13 +173,24 @@ export function formatToken(
         )
         .join('')
     }
-    case 'list_item':
-      return (token.tokens ?? [])
-        .map(
-          _ =>
-            `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, token, highlight)}`,
+    case 'list_item': {
+      const body = (token.tokens ?? [])
+        .map(_ =>
+          formatToken(_, theme, listDepth + 1, orderedListNumber, token, highlight),
         )
         .join('')
+      if (!body) return ''
+      // The marker goes on the item's first line only. Later lines (a
+      // paragraph's continuation lines, code blocks, nested lists, text after
+      // a code block) are indented under the item's text instead of repeating
+      // the marker or starting at column 0.
+      const marker = `${orderedListNumber === null ? '-' : getListNumber(listDepth + 1, orderedListNumber) + '.'} `
+      const indent = ' '.repeat(marker.length)
+      return body
+        .split(EOL)
+        .map((line, i) => (i === 0 ? marker + line : line ? indent + line : line))
+        .join(EOL)
+    }
     case 'paragraph':
       return (
         (token.tokens ?? [])
@@ -199,7 +210,8 @@ export function formatToken(
         return token.text
       }
       if (parent?.type === 'list_item') {
-        return `${orderedListNumber === null ? '-' : getListNumber(listDepth, orderedListNumber) + '.'} ${token.tokens ? token.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(token.text)}${EOL}`
+        // The list_item case adds the marker and the indentation.
+        return `${token.tokens ? token.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(token.text)}${EOL}`
       }
       return linkifyIssueReferences(token.text)
     case 'table': {
