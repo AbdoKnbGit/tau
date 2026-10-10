@@ -68,6 +68,7 @@ import { registerCleanup } from './cleanupRegistry.js'
 import { updateSessionName } from './concurrentSessions.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
+import { isModelAlias } from './model/aliases.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { isFsInaccessible } from './errors.js'
@@ -277,6 +278,34 @@ export type AgentMetadata = {
   /** Model the caller asked for at spawn (AgentTool `model`), so a resumed
    * agent keeps running on it instead of switching to the main-loop model. */
   model?: string
+  /** Exact route used by a Mistral worker. Resume keeps this pair even if the
+   * parent switches provider/model or the agent definition changes. Optional
+   * so other providers and older transcripts retain their existing behavior. */
+  mistralRoute?: { provider: 'mistral'; model: string }
+}
+
+/** Metadata comes from JSON on disk, so never trust a saved route by type alone. */
+export function getMistralAgentResumeRoute(
+  metadata: unknown,
+): AgentMetadata['mistralRoute'] {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return undefined
+  }
+  const route = (metadata as Record<string, unknown>).mistralRoute
+  if (!route || typeof route !== 'object' || Array.isArray(route)) {
+    return undefined
+  }
+  const { provider, model } = route as Record<string, unknown>
+  if (provider !== 'mistral' || typeof model !== 'string') return undefined
+  const concreteModel = model.trim()
+  if (
+    !concreteModel ||
+    concreteModel.toLowerCase() === 'inherit' ||
+    isModelAlias(concreteModel.toLowerCase())
+  ) {
+    return undefined
+  }
+  return { provider: 'mistral', model: concreteModel }
 }
 
 /**

@@ -99,7 +99,30 @@ export function freezeOpenRouterTools<T extends FunctionTool>(key: string, tools
     .map(tool => structuredClone(tool) as T)
 }
 
-export function resetOpenRouterContext(): void {
+export type PromptSnapshotResetOptions = {
+  /** Background compaction must not unfreeze other Mistral conversations.
+   * With no target session, preserve every Mistral snapshot. Other providers
+   * retain their existing reset behavior. */
+  preserveOtherMistralSessions?: boolean
+  mistralSessionId?: string
+}
+
+export function resetOpenRouterContext(options?: PromptSnapshotResetOptions): void {
+  if (options?.preserveOtherMistralSessions) {
+    const shouldReset = (key: string): boolean => {
+      // Both stores use [route, model, session, ...] keys. Match the provider
+      // prefix, not a substring of a URL/model that could mention Mistral.
+      const [route, , session] = JSON.parse(key) as string[]
+      return !route?.startsWith('mistral:') || session === options.mistralSessionId
+    }
+    for (const key of snapshots.keys()) {
+      if (shouldReset(key)) snapshots.delete(key)
+    }
+    for (const key of conversations.keys()) {
+      if (shouldReset(key)) conversations.delete(key)
+    }
+    return
+  }
   snapshots.clear()
   conversations.clear()
 }

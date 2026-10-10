@@ -23,7 +23,7 @@
  */
 
 import type { ProviderMessage } from '../../services/api/providers/base_provider.js'
-import { resetOpenRouterContext } from '../openai-compat/openrouter_context.js'
+import { resetOpenRouterContext, type PromptSnapshotResetOptions } from '../openai-compat/openrouter_context.js'
 
 const _volatileBySession = new Map<string, string>()
 
@@ -106,9 +106,9 @@ function hashText(text: string): string {
  *
  * Costs one prefix re-warm, which a genuine prompt change costs anyway.
  */
-export function resetSessionVolatileFreeze(): void {
+export function resetSessionVolatileFreeze(options?: PromptSnapshotResetOptions): void {
   _volatileBySession.clear()
-  resetOpenRouterContext()
+  resetOpenRouterContext(options)
 }
 
 export function _resetSessionVolatileFreezeForTest(): void {

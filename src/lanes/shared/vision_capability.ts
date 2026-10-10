@@ -24,6 +24,8 @@
  * picked yesterday is still known today.
  */
 
+import { getMistralModelMeta } from '../../utils/model/mistralCatalog.js'
+
 const memory = new Map<string, boolean>()
 let loaded = false
 let dirty = false
@@ -117,6 +119,12 @@ export function modelAcceptsImages(
   model: string | undefined,
 ): boolean | undefined {
   if (!provider || !model) return undefined
+  // Available before /models is opened; don't freeze a known vision model as
+  // text-only on its first attachment because the runtime catalog is cold.
+  if (provider === 'mistral') {
+    const meta = getMistralModelMeta(model)
+    if (meta) return meta.vision
+  }
   load()
 
   const direct = memory.get(keyFor(provider, model))

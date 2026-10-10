@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { getSessionId } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { getUserContext } from '../../context.js'
@@ -7,6 +8,8 @@ import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
 import { clearSessionMessagesCache } from '../../utils/sessionStorage.js'
 import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
+import type { AgentId } from '../../types/ids.js'
+import { getMistralCompactionSessionId } from '../api/cacheAffinity.js'
 import { resetMicrocompactState } from './microCompact.js'
 
 /**
@@ -28,7 +31,7 @@ import { resetMicrocompactState } from './microCompact.js'
  * pass querySource — undefined is only safe for callers that are
  * genuinely main-thread-only (/compact, /clear).
  */
-export function runPostCompactCleanup(querySource?: QuerySource): void {
+export function runPostCompactCleanup(querySource?: QuerySource, agentId?: AgentId): void {
   // Subagents (agent:*) run in the same process and share module-level
   // state with the main thread. Only reset main-thread module-level state
   // (context-collapse, memory file cache) for main-thread compacts.
@@ -59,7 +62,16 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     getUserContext.cache.clear?.()
     resetGetMemoryFilesCache('compact')
   }
-  clearSystemPromptSections()
+  // A worker/helper compact must not unfreeze the main Mistral prefix. Only
+  // independent workers reset their own snapshots; helpers share a parent's
+  // snapshot and leave it intact. Main /compact and /clear still reset all.
+  // An agent id with a missing source is ambiguous, not a main-thread reset.
+  const resetAllMistralSnapshots = isMainThreadCompact &&
+    (querySource !== undefined || agentId === undefined)
+  clearSystemPromptSections(resetAllMistralSnapshots ? undefined : {
+    preserveOtherMistralSessions: true,
+    mistralSessionId: getMistralCompactionSessionId(getSessionId(), agentId, querySource),
+  })
   clearClassifierApprovals()
   clearSpeculativeChecks()
   // Intentionally NOT calling resetSentSkillNames(): re-injecting the full

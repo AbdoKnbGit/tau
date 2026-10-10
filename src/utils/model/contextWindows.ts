@@ -13,6 +13,7 @@ import {
 } from './antigravityClaudeTiers.js'
 import { getOpencodeContextWindow } from './opencodeModelsDevCatalog.js'
 import { getDirectModelMeta, isDirectProvider } from './directProviderCatalog.js'
+import { getMistralModelMeta } from './mistralCatalog.js'
 import {
   getStoredContextWindow,
   persistProviderContextWindows,
@@ -427,6 +428,11 @@ function lookupHostWindow(
 
   if (isDirectProvider(provider)) {
     const window = getDirectModelMeta(provider, model)?.contextWindow
+    if (window !== undefined) return window
+  }
+
+  if (provider === 'mistral') {
+    const window = getMistralModelMeta(model)?.contextWindow
     if (window !== undefined) return window
   }
 

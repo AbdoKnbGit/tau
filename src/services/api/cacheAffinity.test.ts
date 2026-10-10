@@ -15,6 +15,11 @@ import type { AgentId } from '../../types/ids.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import { runWithForcedProvider } from '../../utils/forcedProvider.js'
 import { resolveEffectiveAPIProvider } from './providerRouting.js'
+import {
+  freezeOpenRouterSystem,
+  openRouterContextKey,
+  resetOpenRouterContext,
+} from '../../lanes/openai-compat/openrouter_context.js'
 
 let passed = 0
 let failed = 0
@@ -207,6 +212,112 @@ async function main(): Promise<void> {
     assert(resolve(undefined, 'compact') === 'root-session', 'main compaction left the root')
     // A hook agent is no conversation agent: it keeps the root.
     assert(resolve('hook-1', 'hook_agent') === 'root-session', 'hook agent left the root')
+  })
+
+  await test('isolates Mistral agent identities while preserving resume and root policies', () => {
+    const resolve = (agentId: string | undefined, querySource: string, rootSessionId = 'mistral-root') => resolveProviderRequestSessionId({
+      provider: 'mistral',
+      rootSessionId,
+      ...(agentId && { agentId: agentId as AgentId }),
+      querySource: querySource as QuerySource,
+    })
+    const agent = resolve('mistral-a', 'agent:builtin:general-purpose')
+    assert(agent?.startsWith('tau-agent-'), `agent=${agent}`)
+    assert(agent !== resolve('mistral-b', 'agent:builtin:general-purpose'), 'independent agents collided')
+    assert(agent === resolve('mistral-a', 'agent:custom'), 'resume changed agent identity')
+    assert(agent !== resolve('mistral-a', 'agent:custom', 'another-root'), 'sessions collided')
+    assert(resolve('fork-child', 'agent:builtin:fork') === 'mistral-root', 'synthetic fork left root')
+    assert(resolve('mistral-a', 'repl_main_thread') === 'mistral-root', 'main thread left root')
+    assert(resolve('mistral-a', 'sdk') === 'mistral-root', 'SDK left root')
+    assert(resolve('hook-a', 'hook_agent') === 'mistral-root', 'unregistered helper policy changed')
+    assert(resolve(undefined, 'generate_session_title') === 'mistral-root', 'side-query policy changed')
+    assert(resolve('mistral-a', 'agent:custom', '   ') === undefined, 'empty root gained an identity')
+  })
+
+  await test('keeps Mistral registered helpers on their main or agent conversation through nested forks', () => {
+    const resolve = (agentId: string, querySource: string) => resolveProviderRequestSessionId({
+      provider: 'mistral',
+      rootSessionId: 'mistral-root',
+      agentId: agentId as AgentId,
+      querySource: querySource as QuerySource,
+    })
+    const releaseMain = registerForkedAgent('mistral-main-helper' as AgentId, undefined)
+    const releaseMainNested = registerForkedAgent('mistral-main-nested' as AgentId, 'mistral-main-helper' as AgentId)
+    const releaseAgent = registerForkedAgent('mistral-agent-helper' as AgentId, 'mistral-a' as AgentId)
+    const releaseNested = registerForkedAgent('mistral-agent-nested' as AgentId, 'mistral-agent-helper' as AgentId)
+    const agent = resolve('mistral-a', 'agent:builtin:general-purpose')
+    try {
+      for (const source of ['prompt_suggestion', 'agent_summary', 'compact', 'session_memory', 'side_question']) {
+        assert(resolve('mistral-main-helper', source) === 'mistral-root', `${source} main helper left root`)
+        assert(resolve('mistral-main-nested', source) === 'mistral-root', `${source} nested main helper left root`)
+        assert(resolve('mistral-agent-helper', source) === agent, `${source} helper left its agent`)
+        assert(resolve('mistral-agent-nested', source) === agent, `${source} nested helper left its agent`)
+      }
+    } finally {
+      releaseNested()
+      releaseAgent()
+      releaseMainNested()
+      releaseMain()
+    }
+    assert(resolve('mistral-agent-helper', 'compact') === 'mistral-root', 'released helper kept stale affinity')
+  })
+
+  await test('Mistral same-type agents keep distinct frozen system prompts and helpers reuse the right snapshot', () => {
+    resetOpenRouterContext()
+    const resolve = (agentId: string, querySource: string) => resolveProviderRequestSessionId({
+      provider: 'mistral',
+      rootSessionId: 'mistral-snapshot-root',
+      agentId: agentId as AgentId,
+      querySource: querySource as QuerySource,
+    })
+    const key = (agentId: string, querySource: string, system: string) => openRouterContextKey(
+      'mistral:https://api.mistral.ai/v1', 'mistral-large-2512',
+      resolve(agentId, querySource), querySource, [], system,
+    )
+    const release = registerForkedAgent('mistral-snapshot-helper' as AgentId, 'mistral-snapshot-a' as AgentId)
+    try {
+      const a = key('mistral-snapshot-a', 'agent:builtin:general-purpose', 'Agent A working directory')
+      assert(freezeOpenRouterSystem(a, 'Agent A working directory') === 'Agent A working directory', 'agent A system changed')
+      const b = key('mistral-snapshot-b', 'agent:builtin:general-purpose', 'Agent B working directory')
+      assert(a !== b, 'same-type agents shared a frozen snapshot')
+      assert(freezeOpenRouterSystem(b, 'Agent B working directory') === 'Agent B working directory', 'agent B received agent A system')
+      const helper = key('mistral-snapshot-helper', 'agent_summary', 'Agent A working directory')
+      assert(helper === a, 'agent A helper followed the newest agent instead of its parent')
+      assert(freezeOpenRouterSystem(helper, 'Agent A working directory') === 'Agent A working directory', 'agent A helper received another system')
+      assert(key('mistral-snapshot-a', 'agent:builtin:general-purpose', 'Agent A working directory') === a, 'resumed agent lost its snapshot')
+    } finally {
+      release()
+      resetOpenRouterContext()
+    }
+  })
+
+  await test('Mistral synthetic-root-fork summaries retain root affinity, including nested helpers', () => {
+    const resolve = (provider: 'mistral' | 'openai' | 'openrouter', agentId: string, querySource: string) => resolveProviderRequestSessionId({
+      provider,
+      rootSessionId: 'synthetic-root',
+      agentId: agentId as AgentId,
+      querySource: querySource as QuerySource,
+    })
+    const releaseSummary = registerForkedAgent(
+      'synthetic-summary' as AgentId,
+      'synthetic-fork' as AgentId,
+      'agent:builtin:fork' as QuerySource,
+    )
+    const releaseNested = registerForkedAgent('synthetic-nested' as AgentId, 'synthetic-summary' as AgentId)
+    try {
+      assert(resolve('mistral', 'synthetic-fork', 'agent:builtin:fork') === 'synthetic-root', 'synthetic fork changed policy')
+      assert(resolve('mistral', 'synthetic-summary', 'agent_summary') === 'synthetic-root', 'synthetic fork summary started cold')
+      assert(resolve('mistral', 'synthetic-nested', 'compact') === 'synthetic-root', 'nested synthetic fork helper started cold')
+      // The new parent-source metadata must not change another provider's
+      // established routing. Only Mistral consumes it.
+      for (const provider of ['openai', 'openrouter'] as const) {
+        const existingOwner = resolve(provider, 'synthetic-fork', 'agent:builtin:general-purpose')
+        assert(resolve(provider, 'synthetic-summary', 'agent_summary') === existingOwner, `${provider} routing changed`)
+      }
+    } finally {
+      releaseNested()
+      releaseSummary()
+    }
   })
 
   await test('keeps Codex (openai) forked helpers on the cache of the conversation they fork', () => {

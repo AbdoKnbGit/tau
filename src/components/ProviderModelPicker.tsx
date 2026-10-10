@@ -805,7 +805,7 @@ export function ProviderModelPicker({
               const isDeepseekV4 =
                 selectedProvider === 'deepseek' && supportsDeepSeekEffortSelection(model.id)
               const deepseekEffort = isDeepseekV4 ? getDeepSeekEffort(model.id) : undefined
-              const directMeta = isDirectProvider(selectedProvider) ? getDirectModelMeta(selectedProvider, model.id) : undefined
+              const directMeta = isDirectProvider(selectedProvider) || isDirectThinkingProvider(selectedProvider) ? getDirectModelMeta(selectedProvider, model.id) : undefined
               const directEffort = isDirectThinkingProvider(selectedProvider) && directEffortLevels(selectedProvider, model.id).length > 1
                 ? getDirectEffort(selectedProvider, model.id) : undefined
               const isClineThinking = selectedProvider === 'cline' && supportsClineThinkingSelection(model.id, model.tags)
@@ -876,7 +876,7 @@ export function ProviderModelPicker({
                     {isSelected ? '> ' : '  '}
                     {label}
                   </Text>
-                  {isDirectProvider(selectedProvider) && (
+                  {(isDirectProvider(selectedProvider) || isDirectThinkingProvider(selectedProvider)) && (
                     <Text dimColor>{' '}[{model.contextWindow?.toLocaleString('en-US') ?? 'unknown'} context]</Text>
                   )}
                   {isDirectThinkingProvider(selectedProvider) && directMeta?.reasoning && !directEffort && (

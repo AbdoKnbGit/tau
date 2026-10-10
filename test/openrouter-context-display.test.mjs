@@ -49,6 +49,40 @@ test('Codex (openai) keeps the measured context while the next response streams'
   assert.equal(usage(messages, 'openai').usedTokens, 69_900)
 })
 
+test('Mistral keeps the last measured prompt through thinking and tool blocks, then accepts new usage', () => {
+  const messages = [response('completed', 552, 63_980)]
+  assert.equal(usage(messages, 'mistral').usedTokens, 64_532)
+  messages.push(response('thinking', 0), response('tool', 0))
+  assert.equal(usage(messages, 'mistral').usedTokens, 64_532,
+    'provisional zero usage must not replace a measured prompt with the rough baseline')
+  messages.at(-1).message.usage.input_tokens = 65_023
+  assert.equal(usage(messages, 'mistral').usedTokens, 65_023,
+    'a fully uncached measurement must replace the preceding cached measurement')
+  messages.push(response('smaller-prompt', 0, 40_000), response('next-thinking', 0))
+  assert.equal(usage(messages, 'mistral').usedTokens, 40_000,
+    'fully cached and genuinely smaller prompts are valid new measurements')
+})
+
+test('Mistral clears old usage at compaction and accepts the first post-compaction measurement', () => {
+  const messages = [response('before-compact', 68_000)]
+  messages.push({ type: 'system', subtype: 'compact_boundary', uuid: 'boundary' })
+  assert.equal(usage(messages, 'mistral').usedTokens, 71_000,
+    'pre-compaction usage must not leak into the new context')
+  messages.push(response('after-compact-thinking', 0))
+  assert.ok(usage(messages, 'mistral').usedTokens >= 71_000,
+    'initial context estimation remains available while the first response streams')
+  messages.push(response('after-compact', 15_000), response('pending', 0))
+  assert.equal(usage(messages, 'mistral').usedTokens, 15_000)
+})
+
+test('Mistral uses the initial context baseline only until its first measured response', () => {
+  assert.equal(usage([], 'mistral').usedTokens, 71_000)
+  const messages = [response('first-thinking', 0)]
+  assert.ok(usage(messages, 'mistral').usedTokens >= 71_000)
+  messages.push(response('first-completed', 54_000))
+  assert.equal(usage(messages, 'mistral').usedTokens, 54_000)
+})
+
 test('other providers keep their existing pending-usage display policy', () => {
   const messages = [response('completed', 54_000), response('pending', 0)]
   assert.ok(usage(messages, 'deepseek').usedTokens >= 71_000)

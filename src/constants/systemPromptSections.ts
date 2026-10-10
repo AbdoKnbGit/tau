@@ -6,6 +6,7 @@ import {
 } from '../bootstrap/state.js'
 // Dependency-light snapshot stores; neither imports prompt construction.
 import { resetSessionVolatileFreeze } from '../lanes/shared/volatile_freeze.js'
+import type { PromptSnapshotResetOptions } from '../lanes/openai-compat/openrouter_context.js'
 
 type ComputeFn = () => string | null | Promise<string | null>
 
@@ -64,7 +65,7 @@ export async function resolveSystemPromptSections(
  * Also resets beta header latches so a fresh conversation gets fresh
  * evaluation of AFK/fast-mode/cache-editing headers.
  */
-export function clearSystemPromptSections(): void {
+export function clearSystemPromptSections(options?: PromptSnapshotResetOptions): void {
   clearSystemPromptSectionState()
   clearBetaHeaderLatches()
   // The cache-aware lanes (Gemini/Antigravity, OpenRouter, DeepSeek) freeze the
@@ -72,5 +73,5 @@ export function clearSystemPromptSections(): void {
   // cache stays byte-stable. That snapshot has to die with the section cache it
   // came from — otherwise a deliberate rebuild (/mode, /team-mode, post-compact)
   // recomputes the section and the lane still replays the pre-change bytes.
-  resetSessionVolatileFreeze()
+  resetSessionVolatileFreeze(options)
 }

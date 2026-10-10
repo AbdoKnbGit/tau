@@ -1,6 +1,7 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { capitalize } from '../stringUtils.js'
-import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
+import { MODEL_ALIASES } from './aliases.js'
+import { MISTRAL_AGENT_MODEL, resolveMistralAgentModelSpec } from './mistralAgentModel.js'
 import {
   pinnedAgentModelOutranksAlias,
   resolveAgentAliasPolicy,
@@ -29,11 +30,10 @@ export type AgentModelOption = {
 }
 
 /**
- * Get the default subagent model. Returns 'inherit' so subagents inherit
- * the model from the parent thread.
+ * Get the implicit default. Explicit `inherit` remains a separate choice.
  */
-export function getDefaultSubagentModel(): string {
-  return 'inherit'
+export function getDefaultSubagentModel(provider = getAPIProvider()): string {
+  return provider === 'mistral' ? MISTRAL_AGENT_MODEL : 'inherit'
 }
 
 /**
@@ -47,10 +47,27 @@ export function getDefaultSubagentModel(): string {
 export function getAgentModel(
   agentModel: string | undefined,
   parentModel: string,
-  toolSpecifiedModel?: ModelAlias,
+  toolSpecifiedModel?: string,
   permissionMode?: PermissionMode,
   agentProvider?: APIProvider,
 ): string {
+  if (getAPIProvider() === 'mistral') {
+    const spec = resolveMistralAgentModelSpec({
+      agentModel,
+      toolModel: toolSpecifiedModel,
+      defaultModel: getForcedProvider() === undefined
+        ? process.env.CLAUDE_CODE_SUBAGENT_MODEL
+        : undefined,
+    })
+    return spec === 'inherit'
+      ? getRuntimeMainLoopModel({
+          permissionMode: permissionMode ?? 'default',
+          mainLoopModel: parentModel,
+          exceeds200kTokens: false,
+        })
+      : spec
+  }
+
   // Extract Bedrock region prefix from parent model to inherit for subagents.
   // This ensures subagents use the same cross-region inference profile (e.g., "eu.", "us.")
   // as the parent, which is required when IAM permissions only allow specific regions.
@@ -176,8 +193,9 @@ export function getAgentModelDisplay(
   if (provider) {
     return `${PROVIDER_DISPLAY_NAMES[provider]} / ${model ?? 'inherit from parent'}`
   }
-  // When model is omitted, getDefaultSubagentModel() returns 'inherit' at runtime
-  if (!model) return 'Inherit from parent (default)'
+  if (!model) return getDefaultSubagentModel() === MISTRAL_AGENT_MODEL
+    ? 'Mistral Large 3 (default)'
+    : 'Inherit from parent (default)'
   if (model === 'inherit') return 'Inherit from parent'
   return capitalize(model)
 }

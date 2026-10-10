@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   })
 
   await test('a tier alias on a provider with no fixed tier is rejected', () => {
-    for (const provider of ['fireworks', 'openai', 'kiro', 'mistral', 'nim']) {
+    for (const provider of ['fireworks', 'openai', 'kiro', 'nim']) {
       const agent = parse({ provider, model: 'sonnet' })
       assert(
         agent!.providerConfigError?.includes('tier alias') === true,
@@ -120,6 +120,7 @@ async function main(): Promise<void> {
       ['foundry', 'sonnet[1m]'],
       ['antigravity', 'opus'],
       ['openrouter', 'sonnet'],
+      ['mistral', 'haiku'],
     ]
     for (const [provider, model] of allowed) {
       const agent = parse({ provider, model })

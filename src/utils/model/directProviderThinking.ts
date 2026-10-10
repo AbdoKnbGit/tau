@@ -1,4 +1,4 @@
-/** Per-model controls, scoped to GLM, Moonshot and MiniMax's native APIs. */
+/** Per-model controls for GLM, Moonshot, MiniMax and Mistral's native APIs. */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -6,6 +6,7 @@ import { getDirectModelMeta, type DirectThinkingProvider } from './directProvide
 import { getGlmThinking } from './glmThinking.js'
 import { isDirectProvider, isDirectThinkingProvider } from './directProviderCatalog.js'
 import { deepseekEffortLevelsFor, supportsDeepSeekEffortSelection } from './deepseekThinking.js'
+import { getMistralModelMeta } from './mistralCatalog.js'
 
 let loadedPath = ''
 let selections: Record<string, string> = {}
@@ -24,6 +25,10 @@ function load(): void {
   } catch { /* Use provider defaults. */ }
 }
 function key(provider: DirectThinkingProvider, model: string): string {
+  if (provider === 'mistral') {
+    // Native aliases share one effort selection.
+    return `${provider}:${getMistralModelMeta(model)?.id ?? model.trim().toLowerCase()}`
+  }
   return `${provider}:${model.trim().toLowerCase()}`
 }
 
@@ -66,7 +71,7 @@ export function directEffortLabel(effort: string): string {
 
 /** Text search gets the same context and capability information as the picker. */
 export function directModelDetails(provider: string, model: string, contextWindow?: number): string {
-  if (!isDirectProvider(provider)) return ''
+  if (!isDirectProvider(provider) && !isDirectThinkingProvider(provider)) return ''
   const context = ` [${contextWindow?.toLocaleString('en-US') ?? 'unknown'} context]`
   const levels = isDirectThinkingProvider(provider) ? directEffortLevels(provider, model)
     : supportsDeepSeekEffortSelection(model) ? deepseekEffortLevelsFor(model) : []

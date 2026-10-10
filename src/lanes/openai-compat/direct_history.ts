@@ -38,6 +38,7 @@ export function convertDirectHistory(
     if (!assistant.length) return
     const reasoning = assistant.filter(b => b.type === 'thinking').map(b => b.thinking ?? '').join('')
     const converted = convert([{ role: 'assistant', content: assistant }])
+    if (!converted.length && reasoning) converted.push({ role: 'assistant', content: null })
     for (const msg of converted) {
       if (msg.role === 'assistant' && reasoning) msg.reasoning_content = reasoning
     }

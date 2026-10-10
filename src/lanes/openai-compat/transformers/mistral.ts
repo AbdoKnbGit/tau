@@ -12,29 +12,15 @@
  *   on replayed history.
  * - Prompt caching uses top-level `prompt_cache_key`; Anthropic
  *   `cache_control` markers stay stripped by the shared compat loop.
- * - Magistral models want a specific thinking-template injected.
+ * - Reasoning is model-specific; Mistral replays it as ThinkChunk content.
  */
 
 import type { Transformer, TransformContext } from './base.js'
 import type { ModelInfo } from '../../../services/api/providers/base_provider.js'
 import type { OpenAIChatRequest, OpenAIChatMessage } from './shared_types.js'
-
-const MISTRAL_CHAT_CATALOG: readonly ModelInfo[] = [
-  { id: 'devstral-latest', name: 'Devstral 2', contextWindow: 256_000, supportsToolCalling: true, tags: ['tools'] },
-  { id: 'devstral-medium-latest', name: 'Devstral Medium', contextWindow: 256_000, supportsToolCalling: true, tags: ['tools'] },
-  { id: 'devstral-small-latest', name: 'Devstral Small', contextWindow: 256_000, supportsToolCalling: true, tags: ['tools', 'fast'] },
-  { id: 'devstral-2512', name: 'Devstral 2 (25.12)', contextWindow: 256_000, supportsToolCalling: true, tags: ['tools'] },
-  { id: 'mistral-medium-3-5', name: 'Mistral Medium 3.5', contextWindow: 256_000, supportsToolCalling: true, tags: ['tools', 'reasoning'] },
-  { id: 'mistral-medium-latest', name: 'Mistral Medium', supportsToolCalling: true, tags: ['tools', 'reasoning'] },
-  { id: 'codestral-latest', name: 'Codestral', contextWindow: 128_000, supportsToolCalling: true, tags: ['tools'] },
-  { id: 'codestral-2508', name: 'Codestral (25.08)', contextWindow: 128_000, supportsToolCalling: true, tags: ['tools'] },
-  { id: 'mistral-large-latest', name: 'Mistral Large 3', contextWindow: 256_000, supportsToolCalling: true, tags: ['tools'] },
-  { id: 'mistral-large-2512', name: 'Mistral Large 3 (25.12)', contextWindow: 256_000, supportsToolCalling: true, tags: ['tools'] },
-  { id: 'mistral-small-latest', name: 'Mistral Small 4', contextWindow: 256_000, supportsToolCalling: true, tags: ['tools', 'reasoning', 'fast'] },
-  { id: 'mistral-small-2603', name: 'Mistral Small 4 (26.03)', contextWindow: 256_000, supportsToolCalling: true, tags: ['tools', 'reasoning', 'fast'] },
-]
-
-const MAGISTRAL_SYSTEM_PREFIX = `A user will ask you to solve a task. You should first draft your thinking process (inner monologue) until you have derived the final answer. Afterwards, write a self-contained summary of your thoughts. Return your plan + answer in the chat directly — do not use tags.`
+import { filterMistralCatalog, getMistralModelMeta, mistralStaticCatalog } from '../../../utils/model/mistralCatalog.js'
+import { getDirectEffort } from '../../../utils/model/directProviderThinking.js'
+import { MISTRAL_AGENT_MODEL } from '../../../utils/model/mistralAgentModel.js'
 
 export const mistralTransformer: Transformer = {
   id: 'mistral',
@@ -59,22 +45,45 @@ export const mistralTransformer: Transformer = {
       return rest as OpenAIChatMessage
     })
 
-    if (ctx.isReasoning && isMistralReasoningModel(body.model)) {
-      body.reasoning_effort = 'high'
+    const meta = getMistralModelMeta(body.model)
+    delete body.thinking
+    delete body.reasoning
+    delete body.reasoning_effort
+    if (meta?.reasoning) {
+      body.reasoning_effort = getDirectEffort('mistral', body.model) as OpenAIChatRequest['reasoning_effort']
     }
+    if (meta && typeof body.max_tokens === 'number') {
+      body.max_tokens = Math.min(body.max_tokens, meta.maxOutputTokens)
+    }
+    // The shared history converter reassembles complete assistant turns.
+    // Mistral accepts thinking inside content, not reasoning_content.
+    body.messages = body.messages.map(message => {
+      const { reasoning_content, reasoning, reasoning_details: _details, ...rest } = message
+      const trace = reasoning_content ?? reasoning
+      if (rest.role === 'assistant' && trace) {
+        const content = typeof rest.content === 'string'
+          ? (rest.content ? [{ type: 'text', text: rest.content }] : []) : rest.content ?? []
+        rest.content = [{ type: 'thinking', thinking: [{ type: 'text', text: trace }] }, ...content]
+      }
+      return rest
+    })
+    return body
+  },
 
-    if (ctx.isReasoning && body.model.toLowerCase().includes('magistral')) {
-      const already = body.messages.some(m => m.role === 'system'
-        && typeof m.content === 'string'
-        && m.content.includes('draft your thinking process'))
-      if (!already) {
-        body.messages = [
-          { role: 'system', content: MAGISTRAL_SYSTEM_PREFIX },
-          ...body.messages,
-        ]
+  normalizeStreamDelta(delta): void {
+    if (!Array.isArray(delta.content)) return
+    const text: string[] = []
+    const thinking: string[] = []
+    for (const chunk of delta.content) {
+      if (chunk.type === 'text' && typeof chunk.text === 'string') text.push(chunk.text)
+      if (chunk.type === 'thinking' && Array.isArray(chunk.thinking)) {
+        for (const inner of chunk.thinking) {
+          if (inner.type === 'text' && typeof inner.text === 'string') thinking.push(inner.text)
+        }
       }
     }
-    return body
+    delta.content = text.join('')
+    if (thinking.length) delta.reasoning_content = thinking.join('')
   },
 
   schemaDropList(): Set<string> {
@@ -95,13 +104,13 @@ export const mistralTransformer: Transformer = {
       m.includes('codestral')
       || m.includes('devstral')
       || m.includes('magistral')
-      || m === 'mistral-medium-3-5'
+      || getMistralModelMeta(m)?.id === 'mistral-medium-3-5'
     ) return 'edit_block'
     return 'str_replace'
   },
 
   smallFastModel(_model: string): string | null {
-    return 'mistral-small-latest'
+    return MISTRAL_AGENT_MODEL
   },
 
   cacheControlMode(): 'none' | 'passthrough' | 'last-only' {
@@ -109,12 +118,11 @@ export const mistralTransformer: Transformer = {
   },
 
   staticCatalog(): ModelInfo[] {
-    return [...MISTRAL_CHAT_CATALOG]
+    return mistralStaticCatalog()
   },
 
   filterModelCatalog(models: Array<{ id: string; name?: string }>): Array<{ id: string; name?: string }> {
-    const kept = models.filter(model => isMistralCodingCatalogModel(model.id))
-    return kept.length > 0 ? kept : models
+    return filterMistralCatalog(models)
   },
 
   preferLiveModelCatalog(): boolean {
@@ -177,6 +185,7 @@ function isValidMistralToolCall(call: NonNullable<OpenAIChatMessage['tool_calls'
 
 function hasMistralRenderableAssistantContent(message: OpenAIChatMessage): boolean {
   if (message.role !== 'assistant') return true
+  if (message.reasoning_content || message.reasoning) return true
   if (message.tool_calls?.some(isValidMistralToolCall)) return true
   if (typeof message.content === 'string') return message.content.trim().length > 0
   if (Array.isArray(message.content)) {
@@ -234,28 +243,4 @@ function sanitizeMistralToolCallAdjacency(messages: OpenAIChatMessage[]): OpenAI
 
   if (pending) finalizePendingToolCalls(out, pending)
   return out.filter(hasMistralRenderableAssistantContent)
-}
-
-function isMistralCodingCatalogModel(model: string): boolean {
-  const m = model.toLowerCase()
-  return m === 'devstral-latest'
-    || m === 'devstral-medium-latest'
-    || m === 'devstral-small-latest'
-    || m === 'devstral-2512'
-    || m === 'mistral-medium-3-5'
-    || m === 'mistral-medium-latest'
-    || m === 'codestral-latest'
-    || m === 'codestral-2508'
-    || m === 'mistral-large-latest'
-    || m === 'mistral-large-2512'
-    || m === 'mistral-small-latest'
-    || m === 'mistral-small-2603'
-}
-
-function isMistralReasoningModel(model: string): boolean {
-  const m = model.toLowerCase()
-  return m.includes('magistral')
-    || m.startsWith('mistral-small')
-    || m === 'mistral-medium-3-5'
-    || m === 'mistral-medium-latest'
 }

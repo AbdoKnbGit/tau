@@ -559,6 +559,7 @@ export async function runForkedAgent({
   const releaseForkedAgent = registerForkedAgent(
     isolatedToolUseContext.agentId,
     toolUseContext.agentId,
+    toolUseContext.options.querySource,
   )
 
   // Run the query loop with isolated context (cache-safe params preserved)

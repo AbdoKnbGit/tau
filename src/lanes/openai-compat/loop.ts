@@ -49,6 +49,7 @@ import {
 } from './opencode_responses.js'
 import { readSseDataPayloads } from './sse_payloads.js'
 import { recordCompatCacheDebug } from './cache_debug.js'
+import { beginMistralCacheDebug } from './mistral_cache_debug.js'
 import {
   freezeOpenRouterSystem,
   freezeOpenRouterTools,
@@ -106,6 +107,7 @@ import {
 } from '../../utils/model/openrouterStrictSchema.js'
 import { buildDirectHistory, convertDirectHistory } from './direct_history.js'
 import { isDirectProvider, isDirectThinkingProvider, listDirectProviderModels } from '../../utils/model/directProviderCatalog.js'
+import { mistralModelInfo } from '../../utils/model/mistralCatalog.js'
 import {
   getOpencodeEffort,
   isOpencodeThinkingModel,
@@ -196,7 +198,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (m.startsWith('kimi-') || m.includes('moonshot')) return 'moonshot'
   if (m.startsWith('minimax-') || m.includes('minimax')) return 'minimax'
   if (m.startsWith('llama') || m.startsWith('mixtral') || m.startsWith('gemma')) return 'groq'
-  if (m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) return 'mistral'
+  if (m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-') || m.startsWith('zai-glm-')) return 'mistral'
   // qwen removed — handled by the dedicated Qwen lane (src/lanes/qwen/).
   return 'generic'
 }
@@ -390,7 +392,7 @@ export class OpenAICompatLane implements Lane {
       const c = this.configs.get('groq')!
       return { ...c, provider: 'groq' }
     }
-    if ((m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-')) && this.configs.has('mistral')) {
+    if ((m.startsWith('mistral-') || m.startsWith('magistral-') || m.startsWith('codestral-') || m.startsWith('zai-glm-')) && this.configs.has('mistral')) {
       const c = this.configs.get('mistral')!
       return { ...c, provider: 'mistral' }
     }
@@ -536,8 +538,9 @@ export class OpenAICompatLane implements Lane {
     const rawSystemText = typeof system === 'string'
       ? system
       : (system ?? []).map(b => b.text).join('\n\n')
-    const openRouterSnapshotKey = provider === 'openrouter'
-      ? openRouterContextKey('native', model, cacheSessionId, querySource, messages, rawSystemText)
+    const freezePrompt = provider === 'openrouter' || provider === 'mistral'
+    const openRouterSnapshotKey = freezePrompt
+      ? openRouterContextKey(provider === 'mistral' ? `mistral:${cfg.baseUrl}` : 'native', model, cacheSessionId, querySource, messages, rawSystemText)
       : ''
 
     // Per-model tool filter: small-tier models (e.g. Groq Llama on free
@@ -589,10 +592,10 @@ export class OpenAICompatLane implements Lane {
           ? `${toolUsageRules}\n${rawSystemText}`
           : toolUsageRules)
       : rawSystemText
-    const systemText = provider === 'openrouter'
+    const systemText = freezePrompt
       ? freezeOpenRouterSystem(openRouterSnapshotKey, assembledSystemText)
       : assembledSystemText
-    const openaiTools = provider === 'openrouter'
+    const openaiTools = freezePrompt
       ? freezeOpenRouterTools(openRouterSnapshotKey, builtTools)
       : builtTools
 
@@ -617,6 +620,8 @@ export class OpenAICompatLane implements Lane {
             model,
             cacheSessionId,
           )
+        : provider === 'mistral'
+          ? convertHistoryToOpenAI(messages, stripSystemDynamicBoundary(systemText), provider, model)
         : isDirectThinkingProvider(provider)
           ? buildDirectCacheStableMessages(messages, systemText, provider, model, cacheSessionId)
           : convertHistoryToOpenAI(
@@ -662,9 +667,9 @@ export class OpenAICompatLane implements Lane {
     // Appended after every cached message, so the prefix stays byte-identical.
     if (provider === 'openrouter' && openRouterNote) body.messages.push({ role: 'user', content: openRouterNote })
 
-    // TAU_CACHE_DEBUG: fingerprint the prefix and report the first segment that
-    // diverged from the previous turn — the exact point the upstream cache goes
-    // cold. No-op unless the env var is set. See cache_debug.ts.
+    // TAU_CACHE_DEBUG: report the first changed tracked prefix segment.
+    // A stable prefix does not guarantee an upstream cache hit.
+    // No-op unless the env var is set. See cache_debug.ts.
     recordCompatCacheDebug(provider, model, cacheSessionId, body, querySource)
 
     // Ollama branch: skip the OpenAI-compat /v1 path entirely and use
@@ -696,6 +701,15 @@ export class OpenAICompatLane implements Lane {
       cacheWriteTokens > 0
         ? Math.max(0, reportedCachedInputTokens - cacheWriteTokens)
         : reportedCachedInputTokens
+    const mistralCacheDebug = beginMistralCacheDebug(provider, body, querySource, messageId)
+    const diagnosticUsage = () => ({
+      prompt_tokens: inputTokens,
+      input_tokens: Math.max(0, inputTokens - cacheReadTokens() - cacheWriteTokens),
+      output_tokens: outputTokens,
+      cache_read_input_tokens: cacheReadTokens(),
+      cache_creation_input_tokens: cacheWriteTokens,
+      reasoning_tokens: reasoningTokens,
+    })
 
     // Content-block state.
     let currentBlockIndex = 0
@@ -769,6 +783,7 @@ export class OpenAICompatLane implements Lane {
           signal,
         })
       } catch (err: any) {
+        mistralCacheDebug?.finish(isAbortError(err, signal) ? 'aborted' : 'transport_error', diagnosticUsage())
         // A request that never received a response produced nothing durable.
         // Throw into the shared retry controller instead of persisting an
         // assistant error turn, which would shift every provider's cache prefix.
@@ -780,6 +795,7 @@ export class OpenAICompatLane implements Lane {
       // rate limit headers of any response, and this is the path real traffic
       // takes. The legacy openai_provider shim harvests separately.
       recordProviderRateLimits(provider, response.headers)
+      mistralCacheDebug?.response(response)
       if (response.ok) break
 
       errText = await response.text().catch(() => '')
@@ -804,6 +820,7 @@ export class OpenAICompatLane implements Lane {
     }
 
     if (!response.ok) {
+      mistralCacheDebug?.finish('http_error', diagnosticUsage())
       if (provider === 'openrouter') {
         // A rejection is not the assistant's reply. Emitted as text it was
         // saved as the model's own words and replayed on every later turn.
@@ -862,6 +879,7 @@ export class OpenAICompatLane implements Lane {
 
     if (provider === 'openrouter' && openRouterRecovery) response = await openRouterCompletionAsSSE(response)
     if (!response.body) {
+      mistralCacheDebug?.finish('empty_response', diagnosticUsage())
       throw new Error('OpenAI-compat: empty response body')
     }
 
@@ -879,6 +897,7 @@ export class OpenAICompatLane implements Lane {
     let buffer = ''
     const openRouterFrames = openRouterToolStream ? new OpenRouterSSEDecoder() : undefined
     let openRouterServedProvider: string | undefined
+    let streamReadCompleted = false
 
     try {
       reading: while (true) {
@@ -911,6 +930,7 @@ export class OpenAICompatLane implements Lane {
             }
             continue
           }
+          mistralCacheDebug?.frame(chunk)
           if (openRouterToolStream) {
             try {
               chunk = openRouterToolStream.accept(chunk)
@@ -1159,7 +1179,14 @@ export class OpenAICompatLane implements Lane {
 
         if (done) break
       }
+      streamReadCompleted = true
+    } catch (error) {
+      mistralCacheDebug?.finish(isAbortError(error, signal) ? 'aborted' : 'stream_error', diagnosticUsage())
+      throw error
     } finally {
+      if (!streamReadCompleted) {
+        mistralCacheDebug?.finish(signal?.aborted ? 'aborted' : 'consumer_closed', diagnosticUsage())
+      }
       if (openRouterToolStream) await reader.cancel().catch(() => {})
       reader.releaseLock()
     }
@@ -1294,6 +1321,7 @@ export class OpenAICompatLane implements Lane {
       !signal?.aborted &&
       provider !== 'lmstudio'
     ) {
+      mistralCacheDebug?.finish('empty_response', diagnosticUsage())
       throw new APIConnectionError({
         message: `${provider} returned an empty response (no content, reasoning, or tool calls).`,
         cause: new Error('EMPTY_RESPONSE'),
@@ -1309,6 +1337,7 @@ export class OpenAICompatLane implements Lane {
       truncated: outputCapTruncated,
       hadToolUse: emittedAnyToolUse,
     })
+    mistralCacheDebug?.finish(signal?.aborted ? 'aborted' : 'success', diagnosticUsage())
     yield {
       type: 'message_delta',
       delta: { stop_reason: stopReason },
@@ -1353,7 +1382,7 @@ export class OpenAICompatLane implements Lane {
     const now = Date.now()
     const cacheKey = providerFilter ?? '__all__'
     const liveOnlyCatalog =
-      providerFilter !== undefined && isDirectProvider(providerFilter)
+      providerFilter !== undefined && (isDirectProvider(providerFilter) || providerFilter === 'mistral')
     const cached = _modelsCacheByProvider.get(cacheKey)
     if (!liveOnlyCatalog && cached && now - cached.at < MODELS_CACHE_TTL_MS) {
       return cached.models
@@ -1416,7 +1445,7 @@ export class OpenAICompatLane implements Lane {
           const visible = providerName === 'opencode' && cfg.apiKey === 'public'
             ? filtered.filter(isOpencodeAnonymousCatalogModel)
             : filtered
-          if (visible.length > 0) {
+          if (visible.length > 0 || providerName === 'mistral') {
             return providerName === 'cloudflare'
               ? mergeCatalogModels(visible, fixed)
               : visible
@@ -2591,36 +2620,11 @@ function toMistralCatalogModel(model: CompatCatalogModel): ModelInfo | null {
   }
 
   const capabilities = model.capabilities
-  if (capabilities?.completion_chat === false) {
-    return null
-  }
-
-  const tags: string[] = []
-  if (capabilities?.function_calling === true) tags.push('tools')
-  if (isMistralReasoningModelId(model.id)) tags.push('reasoning')
-
-  return {
-    id: model.id,
-    name: typeof model.name === 'string' && model.name.length > 0
-      ? model.name
-      : model.id,
-    contextWindow: model.max_context_length ?? model.context_length,
-    supportsToolCalling: capabilities?.function_calling,
-    tags: tags.length > 0 ? tags : undefined,
-    ...(typeof model.owned_by === 'string' && model.owned_by.length > 0
-      ? { provider: model.owned_by }
-      : { provider: 'Mistral' }),
-  }
-}
-
-function isMistralReasoningModelId(modelId: string): boolean {
-  const m = modelId.toLowerCase()
-  return (
-    m.includes('magistral') ||
-    m.startsWith('mistral-small') ||
-    m === 'mistral-medium-3-5' ||
-    m === 'mistral-medium-latest'
-  )
+  const lifecycle = model as CompatCatalogModel & { status?: string; deprecated?: boolean; deprecation?: string | null }
+  if (capabilities?.completion_chat === false || capabilities?.function_calling === false
+    || lifecycle.deprecated === true || /deprecated|retired/i.test(lifecycle.status ?? '')
+    || (lifecycle.deprecation && Date.parse(lifecycle.deprecation) <= Date.now())) return null
+  return mistralModelInfo(model.id, model.max_context_length ?? model.context_length)
 }
 
 async function listLmStudioNativeModels(
@@ -3544,6 +3548,9 @@ function applyProviderResponseQuirks(chunk: any, provider: ProviderType): any {
   const choice = chunk?.choices?.[0]
   if (!choice) return chunk
   const delta = choice.delta ?? {}
+  if (provider === 'mistral') {
+    getTransformer('mistral').normalizeStreamDelta?.(delta, choice.finish_reason ?? null)
+  }
 
   // Groq: returns `reasoning` on deltas; normalize to reasoning_content
   // for uniform downstream handling (not strictly required with our

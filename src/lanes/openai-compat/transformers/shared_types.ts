@@ -12,7 +12,7 @@ export interface CacheControl {
 
 export interface OpenAIChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content?: string | null | Array<{ type: string; text?: string; image_url?: unknown; cache_control?: CacheControl }>
+  content?: string | null | Array<{ type: string; text?: string; thinking?: Array<{ type: 'text'; text: string }>; image_url?: unknown; cache_control?: CacheControl }>
   reasoning_content?: string
   reasoning?: string
   reasoning_details?: Record<string, unknown>[]

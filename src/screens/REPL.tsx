@@ -5248,7 +5248,7 @@ export function REPL({
               proactiveModule?.setContextBlocked(false);
             }
             setConversationId(randomUUID());
-            runPostCompactCleanup(context.options.querySource);
+            runPostCompactCleanup(context.options.querySource, context.agentId);
             if (direction === 'from') {
               const r = textForResubmit(message);
               if (r) {

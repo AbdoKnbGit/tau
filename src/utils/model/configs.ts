@@ -777,19 +777,19 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     defaultTier: 'pro',
     tiers: {
       free: {
-        opus:   process.env.MISTRAL_MODEL_OPUS_FREE   ?? 'mistral-small-latest',
-        sonnet: process.env.MISTRAL_MODEL_SONNET_FREE ?? 'mistral-small-latest',
-        haiku:  process.env.MISTRAL_MODEL_HAIKU_FREE  ?? 'mistral-small-latest',
+        opus:   process.env.MISTRAL_MODEL_OPUS_FREE   ?? 'mistral-large-4',
+        sonnet: process.env.MISTRAL_MODEL_SONNET_FREE ?? 'mistral-large-4',
+        haiku:  process.env.MISTRAL_MODEL_HAIKU_FREE  ?? 'mistral-large-4',
       },
       pro: {
-        opus:   process.env.MISTRAL_MODEL_OPUS   ?? 'mistral-medium-3-5',
-        sonnet: process.env.MISTRAL_MODEL_SONNET ?? 'devstral-latest',
-        haiku:  process.env.MISTRAL_MODEL_HAIKU  ?? 'mistral-small-latest',
+        opus:   process.env.MISTRAL_MODEL_OPUS   ?? 'mistral-large-4',
+        sonnet: process.env.MISTRAL_MODEL_SONNET ?? 'zai-glm-5-3',
+        haiku:  process.env.MISTRAL_MODEL_HAIKU  ?? 'mistral-large-4',
       },
       plus: {
-        opus:   process.env.MISTRAL_MODEL_OPUS   ?? 'mistral-medium-3-5',
-        sonnet: process.env.MISTRAL_MODEL_SONNET ?? 'devstral-latest',
-        haiku:  process.env.MISTRAL_MODEL_HAIKU  ?? 'mistral-small-latest',
+        opus:   process.env.MISTRAL_MODEL_OPUS   ?? 'mistral-large-4',
+        sonnet: process.env.MISTRAL_MODEL_SONNET ?? 'zai-glm-5-3',
+        haiku:  process.env.MISTRAL_MODEL_HAIKU  ?? 'mistral-large-4',
       },
     },
   },

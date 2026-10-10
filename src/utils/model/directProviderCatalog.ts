@@ -9,9 +9,10 @@ import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import { isEssentialTrafficOnly } from '../privacyLevel.js'
 import { recordModelVision } from '../../lanes/shared/vision_capability.js'
 import seed from './directProviderSeed.json'
+import { getMistralModelMeta } from './mistralCatalog.js'
 
 export type DirectProvider = 'deepseek' | 'glm' | 'moonshot' | 'minimax'
-export type DirectThinkingProvider = Exclude<DirectProvider, 'deepseek'>
+export type DirectThinkingProvider = Exclude<DirectProvider, 'deepseek'> | 'mistral'
 export interface DirectModelMeta {
   name: string
   contextWindow: number
@@ -37,7 +38,7 @@ export function isDirectProvider(provider: string): provider is DirectProvider {
   return ['deepseek', 'glm', 'moonshot', 'minimax'].includes(provider)
 }
 export function isDirectThinkingProvider(provider: string): provider is DirectThinkingProvider {
-  return ['glm', 'moonshot', 'minimax'].includes(provider)
+  return ['glm', 'moonshot', 'minimax', 'mistral'].includes(provider)
 }
 
 export function directCatalogSurface(provider: DirectProvider, baseUrl?: string): string {
@@ -148,7 +149,8 @@ function rowsFor(provider: DirectProvider): Record<string, DirectModelMeta> {
   return catalog[surface] ?? catalog[surface.replace(/-coding-plan$/, '').replace(/-cn$/, '')] ?? {}
 }
 
-export function getDirectModelMeta(provider: DirectProvider, model: string): DirectModelMeta | undefined {
+export function getDirectModelMeta(provider: DirectProvider | DirectThinkingProvider, model: string): DirectModelMeta | undefined {
+  if (provider === 'mistral') return getMistralModelMeta(model)
   const id = model.trim().toLowerCase()
   const row = rowsFor(provider)[id]
   if (!row) return undefined

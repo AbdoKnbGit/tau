@@ -18,10 +18,10 @@ import {
   filterWhitespaceOnlyAssistantMessages,
 } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
-import type { ModelAlias } from '../../utils/model/aliases.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
 import {
   getAgentTranscript,
+  getMistralAgentResumeRoute,
   readAgentMetadata,
 } from '../../utils/sessionStorage.js'
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js'
@@ -34,7 +34,10 @@ import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
-import { runWithAgentProvider } from '../../utils/forcedProvider.js'
+import {
+  runWithAgentProvider,
+  runWithForcedProvider,
+} from '../../utils/forcedProvider.js'
 import { setAgentResolvedModel } from './agentModelManager.js'
 import { getAgentConversation } from './resumeParity.js'
 import { runAgent } from './runAgent.js'
@@ -87,9 +90,14 @@ export async function resumeAgentBackground({
   const resumedMessages = liveConversation
     ? withoutOrphans
     : filterWhitespaceOnlyAssistantMessages(withoutOrphans)
-  // The model the spawn asked for; without it a resumed agent would switch to
-  // the main-loop model (a different model is a different prompt cache).
-  const spawnModel = meta?.model as ModelAlias | undefined
+  // A Mistral worker resumes on its exact original route, including explicit
+  // inherit/fork spawns. Re-resolving an alias against today's parent/provider
+  // could silently change the model, the context limit, and its prompt cache.
+  // Old metadata and other providers keep their existing resolution behavior.
+  const mistralRoute = getMistralAgentResumeRoute(meta)
+  const spawnModel = mistralRoute?.model ?? meta?.model
+  const withResumeProvider = <T>(fn: () => T): T =>
+    mistralRoute ? runWithForcedProvider(mistralRoute, fn) : fn()
   const resumedReplacementState = reconstructForSubagentResume(
     toolUseContext.contentReplacementState,
     resumedMessages,
@@ -144,19 +152,23 @@ export async function resumeAgentBackground({
       const additionalWorkingDirectories = Array.from(
         appState.toolPermissionContext.additionalWorkingDirectories.keys(),
       )
-      const defaultSystemPrompt = await getSystemPrompt(
-        toolUseContext.options.tools,
-        toolUseContext.options.mainLoopModel,
-        additionalWorkingDirectories,
-        toolUseContext.options.mcpClients,
+      const defaultSystemPrompt = await withResumeProvider(() =>
+        getSystemPrompt(
+          toolUseContext.options.tools,
+          mistralRoute?.model ?? toolUseContext.options.mainLoopModel,
+          additionalWorkingDirectories,
+          toolUseContext.options.mcpClients,
+        ),
       )
-      forkParentSystemPrompt = buildEffectiveSystemPrompt({
-        mainThreadAgentDefinition,
-        toolUseContext,
-        customSystemPrompt: toolUseContext.options.customSystemPrompt,
-        defaultSystemPrompt,
-        appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
-      })
+      forkParentSystemPrompt = withResumeProvider(() =>
+        buildEffectiveSystemPrompt({
+          mainThreadAgentDefinition,
+          toolUseContext,
+          customSystemPrompt: toolUseContext.options.customSystemPrompt,
+          defaultSystemPrompt,
+          appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
+        }),
+      )
     }
     if (!forkParentSystemPrompt) {
       throw new Error(
@@ -168,13 +180,15 @@ export async function resumeAgentBackground({
   // Resolve model for analytics metadata (runAgent resolves its own
   // internally). Scoped to the agent's provider so a pinned agent is not
   // reported under the session provider's alias policy.
-  const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () =>
-    getAgentModel(
-      selectedAgent.model,
-      toolUseContext.options.mainLoopModel,
-      spawnModel,
-      permissionMode,
-      selectedAgent.provider,
+  const resolvedAgentModel = withResumeProvider(() =>
+    runWithAgentProvider(selectedAgent.provider, () =>
+      getAgentModel(
+        selectedAgent.model,
+        toolUseContext.options.mainLoopModel,
+        spawnModel,
+        permissionMode,
+        selectedAgent.provider,
+      ),
     ),
   )
 
@@ -183,7 +197,9 @@ export async function resumeAgentBackground({
   // or a stale one left by whichever agent last spawned under this type.
   setAgentResolvedModel(selectedAgent.agentType, {
     model: resolvedAgentModel,
-    ...(selectedAgent.provider ? { provider: selectedAgent.provider } : {}),
+    ...((mistralRoute?.provider ?? selectedAgent.provider)
+      ? { provider: mistralRoute?.provider ?? selectedAgent.provider }
+      : {}),
   })
 
   const workerPermissionContext = {
@@ -192,7 +208,9 @@ export async function resumeAgentBackground({
   }
   const workerTools = isResumedFork
     ? toolUseContext.options.tools
-    : assembleToolPool(workerPermissionContext, appState.mcp.tools)
+    : withResumeProvider(() =>
+        assembleToolPool(workerPermissionContext, appState.mcp.tools),
+      )
 
   const runAgentParams: Parameters<typeof runAgent>[0] = {
     agentDefinition: selectedAgent,
@@ -268,33 +286,35 @@ export async function resumeAgentBackground({
   // runAsyncAgentLifecycle's finally already releases the scope.
   beginAgentFileScope(agentBackgroundTask.agentId, uiDescription)
 
-  void runWithAgentContext(asyncAgentContext, () =>
-    wrapWithCwd(() =>
-      runAsyncAgentLifecycle({
-        taskId: agentBackgroundTask.agentId,
-        abortController: agentBackgroundTask.abortController!,
-        makeStream: onCacheSafeParams =>
-          runAgent({
-            ...runAgentParams,
-            override: {
-              ...runAgentParams.override,
-              agentId: asAgentId(agentBackgroundTask.agentId),
-              abortController: agentBackgroundTask.abortController!,
-            },
-            onCacheSafeParams,
-          }),
-        metadata,
-        description: uiDescription,
-        toolUseContext,
-        rootSetAppState,
-        agentIdForCleanup: agentId,
-        enableSummarization:
-          isCoordinatorMode() ||
-          isForkSubagentEnabled() ||
-          getSdkAgentProgressSummariesEnabled(),
-        getWorktreeResult: async () =>
-          resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
-      }),
+  void withResumeProvider(() =>
+    runWithAgentContext(asyncAgentContext, () =>
+      wrapWithCwd(() =>
+        runAsyncAgentLifecycle({
+          taskId: agentBackgroundTask.agentId,
+          abortController: agentBackgroundTask.abortController!,
+          makeStream: onCacheSafeParams =>
+            runAgent({
+              ...runAgentParams,
+              override: {
+                ...runAgentParams.override,
+                agentId: asAgentId(agentBackgroundTask.agentId),
+                abortController: agentBackgroundTask.abortController!,
+              },
+              onCacheSafeParams,
+            }),
+          metadata,
+          description: uiDescription,
+          toolUseContext,
+          rootSetAppState,
+          agentIdForCleanup: agentId,
+          enableSummarization:
+            isCoordinatorMode() ||
+            isForkSubagentEnabled() ||
+            getSdkAgentProgressSummariesEnabled(),
+          getWorktreeResult: async () =>
+            resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
+        }),
+      ),
     ),
   )
 

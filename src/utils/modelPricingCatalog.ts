@@ -40,6 +40,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 // Reads the environment and nothing else, so this module still loads alone.
 import { isEssentialTrafficOnly } from './privacyLevel.js'
+import { getMistralModelMeta } from './model/mistralCatalog.js'
 
 const CONFIG_DIR = join(homedir(), '.config', 'claude-code')
 const CACHE_FILE = join(CONFIG_DIR, 'model-prices.json')
@@ -418,7 +419,11 @@ export function lookupCatalogPrice(
 
   const current = loadTable()
   const rows = current?.providers[providerId]
-  if (!rows) return null
+  // Mistral's documented aliases are absent from models.dev in some releases.
+  // Prefer a downloaded rate (including future sale changes), then use the
+  // verified offline rate. Never borrow a GLM price from a different host.
+  const mistral = tauProvider === 'mistral' ? getMistralModelMeta(model) : undefined
+  if (!rows) return mistral ? rowToPrice(mistral.price, contextTokens) : null
 
   const row =
     rows[model]
@@ -429,6 +434,7 @@ export function lookupCatalogPrice(
     // differ only by that substitution, so this cannot cross-match one model's
     // price onto another.
     ?? rows[model.toLowerCase().replace(/\./g, '-')]
+    ?? (mistral ? [mistral.id, ...mistral.aliases].map(id => rows[id]).find(Boolean) ?? mistral.price : undefined)
   return row ? rowToPrice(row, contextTokens) : null
 }
 

@@ -10,6 +10,7 @@
  *    use GPT-5.6 Luna for every tier;
  *  - Antigravity uses its provider-specific Gemini Flash-low model;
  *  - OpenRouter uses the requested free Nemotron agent model;
+ *  - Mistral uses Mistral Large 3 for every tier;
  *  - Anthropic-native routes keep their existing tier resolution;
  *  - every other provider inherits the exact live session model.
  *
@@ -24,6 +25,7 @@
 import { isModelAlias } from './aliases.js'
 import { resolveAntigravityOpus46AgentModel } from './antigravityAgentModel.js'
 import { OPENAI_AGENT_MODEL } from './openaiGptModels.js'
+import { MISTRAL_AGENT_MODEL } from './mistralAgentModel.js'
 import type { APIProvider } from './providers.js'
 
 export { OPENAI_AGENT_MODEL }
@@ -67,6 +69,7 @@ export function resolveAgentAliasPolicy(
   if (!isModelAlias(normalize(spec))) return undefined
 
   if (provider === 'openrouter') return OPENROUTER_AGENT_MODEL
+  if (provider === 'mistral') return MISTRAL_AGENT_MODEL
   if (provider === 'antigravity') {
     return resolveAntigravityOpus46AgentModel(spec, parentModel, provider) ?? undefined
   }
@@ -142,8 +145,9 @@ export function resolvesAgentAliasIndependently(provider: APIProvider): boolean 
     provider === 'bedrock' ||
     provider === 'vertex' ||
     provider === 'foundry' ||
-    // These two map every alias to a fixed model of their own.
+    // These providers map every alias to a fixed model of their own.
     provider === 'antigravity' ||
+    provider === 'mistral' ||
     provider === 'openrouter'
   )
 }

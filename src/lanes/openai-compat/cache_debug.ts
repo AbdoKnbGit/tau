@@ -9,13 +9,14 @@
  * cache_control normalized OUT (gateways strip it before the upstream, so it is
  * not real content churn), diffs against the previous request of the same
  * stream (main thread, one agent, or a side query against the main thread), and
- * reports the FIRST diverging segment — the exact point the cache goes cold.
+ * reports the FIRST diverging segment that can prevent prefix reuse.
  *
  * Enable with TAU_CACHE_DEBUG=1. Output: a one-line verdict on stderr plus a
  * JSONL row per request at <tmpdir>/tau-compat-cache-debug.jsonl. A verdict of
- * "clean prefix extension" every turn means the prefix is byte-stable and any
- * uncached tokens are genuinely-new content (expected); a "BREAK at segment N"
- * names the churning segment so the fix is surgical, not a guess.
+ * "clean prefix extension" means the tracked, normalized prompt segments are
+ * unchanged. It does not guarantee a cache hit: server retention, untracked
+ * request settings or missing usage details can still explain reported misses.
+ * A "BREAK at segment N" identifies a changed segment for investigation.
  */
 
 import { appendFileSync } from 'node:fs'

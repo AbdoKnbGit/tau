@@ -61,25 +61,34 @@ function usesRootProviderSession(querySource: QuerySource): boolean {
  * While a fork runs, this maps its agentId to the agentId of the conversation
  * it forked (undefined for the main thread).
  */
-const forkedAgentParents = new Map<AgentId, AgentId | undefined>()
+const forkedAgentParents = new Map<AgentId, {
+  agentId: AgentId | undefined
+  querySource?: QuerySource
+}>()
 
 /** Records a running fork; call the returned function when it ends. */
 export function registerForkedAgent(
   forkAgentId: AgentId | undefined,
   parentAgentId: AgentId | undefined,
+  parentQuerySource?: QuerySource,
 ): () => void {
   if (!forkAgentId || forkAgentId === parentAgentId) return () => {}
-  forkedAgentParents.set(forkAgentId, parentAgentId)
+  forkedAgentParents.set(forkAgentId, { agentId: parentAgentId, querySource: parentQuerySource })
   return () => {
     forkedAgentParents.delete(forkAgentId)
   }
 }
 
 /** The agent whose conversation a request resends: a fork resolves to what it forked. */
-function forkedConversationAgentId(agentId: AgentId): AgentId | undefined {
+function forkedConversationAgentId(agentId: AgentId, honorParentRootPolicy = false): AgentId | undefined {
   let current: AgentId | undefined = agentId
   for (let hop = 0; current && forkedAgentParents.has(current) && hop < 16; hop++) {
-    current = forkedAgentParents.get(current)
+    const parent = forkedAgentParents.get(current)!
+    // Synthetic Agent-tool forks use the root session even though they have
+    // an agent id. Their progress summaries must follow that same policy.
+    // Only Mistral opts into this metadata; other provider routing is unchanged.
+    if (honorParentRootPolicy && parent.querySource && usesRootProviderSession(parent.querySource)) return undefined
+    current = parent.agentId
   }
   return current
 }
@@ -97,6 +106,20 @@ function derivedProviderSessionId(
     .slice(0, 32)
 
   return `tau-${kind}-${digest}`
+}
+
+/** Only an independent worker owns a Mistral snapshot that its compaction
+ * may reset. Helpers share an owner's prefix; compacting a private helper
+ * branch must not reset that owner. Missing identity preserves snapshots. */
+export function getMistralCompactionSessionId(
+  rootSessionId: string,
+  agentId: AgentId | undefined,
+  querySource: QuerySource | undefined,
+): string | undefined {
+  const root = rootSessionId.trim()
+  if (!root || !agentId || !querySource?.startsWith('agent:') ||
+      usesRootProviderSession(querySource) || forkedAgentParents.has(agentId)) return undefined
+  return derivedProviderSessionId(root, 'agent', agentId)
 }
 
 export function resolveProviderRequestSessionId({
@@ -144,6 +167,19 @@ export function resolveProviderRequestSessionId({
         : derivedProviderSessionId(root, 'agent', owner)
     }
     return derivedProviderSessionId(root, 'query', querySource)
+  }
+
+  // Mistral freezes system/tools by request session, model, and query source.
+  // Independent agents of the same type otherwise share the first agent's
+  // frozen system prompt. Give ordinary agents stable conversation identities;
+  // a registered helper must still read the conversation it actually forked.
+  // Unregistered side queries retain their existing root-session policy.
+  if (provider === 'mistral' && agentId) {
+    const owner = forkedConversationAgentId(agentId, true)
+    if (owner === undefined) return root
+    if (owner !== agentId || querySource.startsWith('agent:')) {
+      return derivedProviderSessionId(root, 'agent', owner)
+    }
   }
 
   // The Codex lane (openai) keys its prompt_cache_key, its session headers and

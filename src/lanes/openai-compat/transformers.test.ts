@@ -1008,21 +1008,18 @@ async function main(): Promise<void> {
     TRANSFORMERS.mistral.transformRequest(body, mkCtx('mistral-medium-3-5', true))
     assert(body.reasoning_effort === 'high', `reasoning_effort=${body.reasoning_effort}`)
   })
-  test('mistral keeps Magistral thinking-template injection', () => {
+  test('mistral does not inject prompts or effort for retired Magistral models', () => {
     const body = mkBody('magistral-medium-latest')
+    const messages = JSON.stringify(body.messages)
     TRANSFORMERS.mistral.transformRequest(body, mkCtx('magistral-medium-latest', true))
-    assert(body.messages[0]?.role === 'system', `first role=${body.messages[0]?.role}`)
-    assert(
-      typeof body.messages[0]?.content === 'string'
-        && body.messages[0].content.includes('draft your thinking process'),
-      'missing Magistral thinking template',
-    )
+    assert(JSON.stringify(body.messages) === messages, 'unexpected retired-model prompt injection')
+    assert(body.reasoning_effort === undefined, 'retired model received effort')
   })
   test('mistral advertises live-first catalog with documented fallback rows', () => {
     assert(TRANSFORMERS.mistral.preferLiveModelCatalog?.() === true,
       'expected live /models to be preferred')
     const ids = (TRANSFORMERS.mistral.staticCatalog?.() ?? []).map(m => m.id)
-    for (const id of ['mistral-medium-3-5', 'devstral-latest', 'devstral-medium-latest', 'mistral-small-latest', 'codestral-latest']) {
+    for (const id of ['mistral-large-4', 'zai-glm-5-3', 'mistral-medium-3-5', 'mistral-large-2512']) {
       assert(ids.includes(id), `mistral catalog missing ${id}`)
     }
     assert(!ids.includes('ministral-3b-latest'), 'mistral coding catalog should not include small non-coding fallback models')
@@ -1037,10 +1034,10 @@ async function main(): Promise<void> {
       { id: 'codestral-latest' },
     ]) ?? []
     const ids = filtered.map(model => model.id)
-    assert(ids.includes('devstral-latest'), 'expected devstral-latest kept')
-    assert(ids.includes('devstral-medium-latest'), 'expected devstral-medium-latest kept')
+    assert(!ids.includes('devstral-latest'), 'retired Devstral leaked')
+    assert(!ids.includes('devstral-medium-latest'), 'retired Devstral Medium leaked')
     assert(ids.includes('mistral-medium-3-5'), 'expected mistral-medium-3-5 kept')
-    assert(ids.includes('codestral-latest'), 'expected codestral-latest kept')
+    assert(!ids.includes('codestral-latest'), '128K Codestral leaked')
     assert(!ids.includes('voxtral-mini-2507'), 'non-chat/coding model leaked')
     assert(!ids.includes('ministral-3b-latest'), 'small non-coding fallback model leaked')
   })
@@ -1645,8 +1642,8 @@ async function main(): Promise<void> {
     const caps = resolveCapabilities('glm', 'glm-5')
     assert(caps.supportsReasoning, 'should support reasoning')
   })
-  test('mistral-small is reasoning-capable', () => {
-    const caps = resolveCapabilities('mistral', 'mistral-small-latest')
+  test('mistral-large-4 is reasoning-capable', () => {
+    const caps = resolveCapabilities('mistral', 'mistral-large-4')
     assert(caps.supportsReasoning, 'should support reasoning')
   })
   test('plain llama-3.1 is NOT reasoning-capable', () => {

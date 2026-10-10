@@ -22,6 +22,7 @@ import {
   resolveAgentAliasPolicy,
 } from './agentAliasFallback.js'
 import type { APIProvider } from './providers.js'
+import { MISTRAL_AGENT_MODEL } from './mistralAgentModel.js'
 
 let passed = 0
 let failed = 0
@@ -259,6 +260,21 @@ function main(): void {
     }
   })
 
+  test('Mistral aliases use the dated Large 3 model regardless of the parent', () => {
+    for (const parent of ['mistral-large-4', 'zai-glm-5-3', '', 'mistral-medium-3-5']) {
+      for (const alias of ROUTED_ALIASES) {
+        for (const spec of [alias, `  ${alias.toUpperCase()}  `]) {
+          assert(resolveAgentAliasPolicy(spec, parent, 'mistral') === MISTRAL_AGENT_MODEL,
+            `${parent}/${spec} did not select Large 3`)
+        }
+      }
+    }
+    for (const spec of ['inherit', 'mistral-large-4', 'zai-glm-5-3']) {
+      assert(resolveAgentAliasPolicy(spec, 'mistral-large-4', 'mistral') === undefined,
+        `Explicit ${spec} was replaced`)
+    }
+  })
+
   test('every other provider inherits the exact parent model', () => {
     const cases: Array<[APIProvider, string]> = [
       ['gemini', 'gemini-3.1-pro-preview'],
@@ -335,6 +351,7 @@ function main(): void {
     ['openrouter', 'qwen/qwen3-max'],
     ['antigravity', 'gemini-3-pro-high'],
     ['firstParty', 'claude-opus-4-6'],
+    ['mistral', 'zai-glm-5-3'],
   ]
 
   test('a tier alias never displaces a pinned agent model', () => {

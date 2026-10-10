@@ -31,7 +31,7 @@ import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
 import { filterDeniedAgents, getDenyRuleForAgent } from '../../utils/permissions/permissions.js';
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js';
-import { writeAgentMetadata } from '../../utils/sessionStorage.js';
+import { readAgentMetadata, writeAgentMetadata } from '../../utils/sessionStorage.js';
 import { sleep } from '../../utils/sleep.js';
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js';
 import { asSystemPrompt } from '../../utils/systemPromptType.js';
@@ -57,8 +57,7 @@ import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } 
 import { getPrompt } from './prompt.js';
 import { runAgent } from './runAgent.js';
 import { runWithAgentProvider, runWithForcedProvider } from '../../utils/forcedProvider.js';
-import { isAPIProvider } from '../../utils/model/providers.js';
-import type { ModelAlias } from '../../utils/model/aliases.js';
+import { getAPIProvider, isAPIProvider } from '../../utils/model/providers.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -89,7 +88,7 @@ const baseInputSchema = lazySchema(() => z.object({
   description: z.string().describe('A short (3-5 word) description of the task'),
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
-  model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe("Optional model override for this agent. Takes precedence over the agent definition's model frontmatter, except on an agent pinned to a provider, which keeps its own model. If omitted, uses the agent definition's model, or inherits from the parent."),
+  model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe("Optional model tier for this agent. Provider-pinned agents keep their configured model. On Mistral, tiers default to Large 3 and preserve concrete or inherit choices in agent definitions; an omitted model also defaults to Large 3. Other providers use their configured alias/inheritance rules."),
   model_id: z.string().optional().describe('Optional fully-qualified model id (e.g. "gemini-3-flash", "kimi-k2.6", "deepseek-v3.1"). Used when the model is not Anthropic Sonnet/Opus/Haiku. Takes priority over the `model` enum when both are set. Pair with `provider` to pin the lane. Set it only when the user asked for this model or the agent definition requires it; otherwise omit it.'),
   provider: z.string().optional().describe('Optional APIProvider name (e.g. "kiro", "antigravity", "moonshot") that this agent must route through, regardless of the session-global provider. Use it to run one spawn on a different lane than the rest of the session; pair it with model_id to pin the exact model. An unrecognized name is ignored. Set it only when the user asked for this provider or the agent definition requires it; otherwise omit it so the agent uses the provider configured for this session.'),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
@@ -246,9 +245,8 @@ export const AgentTool = buildTool({
     // "route to the wrong lane or error out with 'model not found' — neither
     // of which the user is responsible for". Validation buys that protection
     // without the capability loss: an invented provider name is dropped
-    // exactly as before (silently, no error), and model_id only survives
-    // alongside a real provider because a model id means nothing without a
-    // lane.
+    // exactly as before (silently, no error). Mistral also accepts model_id
+    // on its already selected lane; resolve that after selecting the agent.
     //
     // A named-but-unconfigured provider still fails at request time — but that
     // is not a new hazard: an agent definition's own `provider:` frontmatter
@@ -257,7 +255,6 @@ export const AgentTool = buildTool({
       rawProviderParam !== undefined && isAPIProvider(rawProviderParam)
         ? rawProviderParam
         : undefined;
-    const modelIdParam = providerParam !== undefined ? rawModelIdParam : undefined;
 
     // Provider override — pin every getAPIProvider() call inside this agent's
     // lifecycle to the requested provider, so one spawn can run on a different
@@ -272,12 +269,6 @@ export const AgentTool = buildTool({
     // broken the object literal's method ordering.
     const _runBody = async () => {
     const startTime = Date.now();
-    // model_id takes priority over the sonnet/opus/haiku enum so a spawn can
-    // be pinned to e.g. gemini-3-flash or kimi-k2.6 — the
-    // downstream getAgentModel() accepts any model alias and falls back to
-    // parseUserSpecifiedModel() when the value isn't a known tier alias.
-    const modelParam = modelIdParam ?? modelEnumParam;
-    const model = isCoordinatorMode() ? undefined : modelParam;
 
     // Get app state for permission mode and agent filtering
     const appState = toolUseContext.getAppState();
@@ -326,6 +317,14 @@ export const AgentTool = buildTool({
       }
       selectedAgent = found;
     }
+
+    const effectiveProvider = runWithAgentProvider(selectedAgent.provider, getAPIProvider);
+    const modelIdParam = providerParam !== undefined
+      ? rawModelIdParam
+      : rawProviderParam === undefined && effectiveProvider === 'mistral'
+        ? rawModelIdParam?.trim() || undefined
+        : undefined;
+    const model = isCoordinatorMode() ? undefined : modelIdParam ?? modelEnumParam;
 
     // Capture for type narrowing — `let selectedAgent` prevents TS from
     // narrowing property types across the if-else assignment above.
@@ -380,20 +379,17 @@ export const AgentTool = buildTool({
     }
 
     // Resolve agent params for logging (these are already resolved in runAgent)
-    // model is widened to `string | undefined` to support model_id; cast to
-    // ModelAlias is safe — getAgentModel runs through parseUserSpecifiedModel
-    // which accepts arbitrary canonical model strings.
     // Resolve under the agent's own provider: getAgentModel() consults the
     // active provider's alias policy, and outside this scope that is the
     // session provider — which would hand a pinned agent a model its provider
     // does not serve (and put that wrong name in its env-details prompt).
-    const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () => getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, (isForkPath ? undefined : model) as ModelAlias | undefined, permissionMode, selectedAgent.provider));
+    const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () => getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode, selectedAgent.provider));
     // Record what this agent actually resolved to so the tool tag can show the
     // real model rather than the alias the caller passed. A pinned agent keeps
     // its own model, so the request and the result can differ.
     setAgentResolvedModel(selectedAgent.agentType, {
       model: resolvedAgentModel,
-      ...(selectedAgent.provider ? { provider: selectedAgent.provider } : {})
+      ...(effectiveProvider === 'mistral' ? { provider: effectiveProvider } : selectedAgent.provider ? { provider: selectedAgent.provider } : {})
     });
     logEvent('tengu_agent_tool_selected', {
       agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -587,10 +583,7 @@ export const AgentTool = buildTool({
       canUseTool,
       isAsync: shouldRunAsync,
       querySource: toolUseContext.options.querySource ?? getQuerySourceForAgent(selectedAgent.agentType, isBuiltInAgent(selectedAgent)),
-      // model is widened to string|undefined for model_id support; cast back
-      // to ModelAlias is safe — runAgent forwards into getAgentModel which
-      // resolves arbitrary model strings via parseUserSpecifiedModel.
-      model: (isForkPath ? undefined : model) as ModelAlias | undefined,
+      model: isForkPath ? undefined : model,
       // Fork path: pass parent's system prompt AND parent's exact tool
       // array (cache-identical prefix). workerTools is rebuilt under
       // permissionMode 'bubble' which differs from the parent's mode, so
@@ -654,11 +647,15 @@ export const AgentTool = buildTool({
           // Clear worktreePath from metadata so resume doesn't try to use
           // a deleted directory. Fire-and-forget to match runAgent's
           // writeAgentMetadata handling.
+          const savedMetadata = effectiveProvider === 'mistral'
+            ? await readAgentMetadata(asAgentId(earlyAgentId)).catch(() => null)
+            : null;
           void writeAgentMetadata(asAgentId(earlyAgentId), {
             agentType: selectedAgent.agentType,
             description,
             spawnedAsync: shouldRunAsync,
-            ...(!isForkPath && model && { model })
+            ...(!isForkPath && model && { model }),
+            ...(savedMetadata?.mistralRoute && { mistralRoute: savedMetadata.mistralRoute })
           }).catch(_err => logForDebugging(`Failed to clear worktree metadata: ${_err}`));
           return {};
         }

@@ -65,7 +65,6 @@ import {
   getMessagesAfterCompactBoundary,
 } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
-import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
   clearAgentTranscriptSubdir,
   recordSidechainTranscript,
@@ -89,7 +88,9 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import {
   canApplyAgentProvider,
+  getForcedProviderContext,
   runWithForcedProvider,
+  type ForcedProviderContext,
 } from '../../utils/forcedProvider.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
@@ -120,18 +121,24 @@ import { isSurfEnabled, recordSurfTurnStart } from '../../utils/surf/state.js'
 function resolveSurfSubagentModel(args: {
   hasToolSpecifiedModel: boolean
   agentPinsModel: boolean
-}): { model: string; effort: EffortValue | undefined } | null {
+  scopedProvider?: boolean
+}): { provider: APIProvider; model: string; effort: EffortValue | undefined } | null {
   if (!isSurfEnabled()) return null
   if (args.hasToolSpecifiedModel || args.agentPinsModel) return null
 
   const target = getGlobalConfig().surfPhaseTargets?.subagent
   if (!target || !target.provider || !target.model) return null
 
-  if (getAPIProvider() !== (target.provider as APIProvider)) {
+  if (!args.scopedProvider && getAPIProvider() !== (target.provider as APIProvider)) {
     setActiveProvider(target.provider as APIProvider)
   }
   recordSurfTurnStart('subagent')
-  return { model: target.model, effort: parseEffortValue(target.effort) }
+  return { provider: target.provider as APIProvider, model: target.model, effort: parseEffortValue(target.effort) }
+}
+
+type MistralAgentRouting = {
+  model: string
+  surf: ReturnType<typeof resolveSurfSubagentModel>
 }
 
 /**
@@ -350,7 +357,7 @@ async function* runAgentWithoutProviderOverride({
     abortController?: AbortController
     agentId?: AgentId
   }
-  model?: ModelAlias
+  model?: string
   maxTurns?: number
   /** Preserve toolUseResult on messages for subagents with viewable transcripts */
   preserveToolUseResults?: boolean
@@ -391,7 +398,7 @@ async function* runAgentWithoutProviderOverride({
    * during long single-block streams (e.g. thinking) where no assistant
    * message is yielded for >60s. */
   onQueryProgress?: () => void
-}): AsyncGenerator<Message, void> {
+}, mistralRouting?: MistralAgentRouting): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
   const appState = toolUseContext.getAppState()
@@ -409,13 +416,14 @@ async function* runAgentWithoutProviderOverride({
   // `model` or the agent definition pins its own model, those are honored
   // — we only override the implicit "inherit from parent" path. This
   // preserves /surf off ⇒ no change in behavior.
-  const surfSubagentModel = resolveSurfSubagentModel({
+  const surfSubagentModel = mistralRouting ? mistralRouting.surf : resolveSurfSubagentModel({
     hasToolSpecifiedModel: model !== undefined,
     agentPinsModel:
-      agentDefinition.model !== undefined && agentDefinition.model !== 'inherit',
+      agentDefinition.model !== undefined &&
+      (agentDefinition.model !== 'inherit' || getAPIProvider() === 'mistral'),
   })
 
-  const resolvedAgentModel = surfSubagentModel
+  const resolvedAgentModel = mistralRouting?.model ?? (surfSubagentModel
     ? surfSubagentModel.model
     : getAgentModel(
         agentDefinition.model,
@@ -425,7 +433,7 @@ async function* runAgentWithoutProviderOverride({
         // Pinned agents keep their own model when the caller passes a bare
         // tier alias — the alias has no meaning on the pinned lane.
         agentDefinition.provider,
-      )
+      ))
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
 
@@ -832,18 +840,24 @@ async function* runAgentWithoutProviderOverride({
   }
 
   // Record initial messages before the query loop starts, plus the agentType
-  // so resume can route correctly when subagent_type is omitted. Both writes
-  // are fire-and-forget — persistence failure shouldn't block the agent.
+  // so resume can route correctly when subagent_type is omitted. Persistence
+  // failures are logged without failing the agent.
   void recordSidechainTranscript(initialMessages, agentId).catch(_err =>
     logForDebugging(`Failed to record sidechain transcript: ${_err}`),
   )
-  void writeAgentMetadata(agentId, {
+  const metadataWrite = writeAgentMetadata(agentId, {
     agentType: agentDefinition.agentType,
     ...(worktreePath && { worktreePath }),
     ...(description && { description }),
     spawnedAsync: spawnShapeAsync,
     ...(model && { model }),
+    ...(getAPIProvider() === 'mistral' && {
+      mistralRoute: { provider: 'mistral' as const, model: resolvedAgentModel },
+    }),
   }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
+  // A completed Mistral worker must be resumable immediately, and worktree
+  // cleanup must not race this write and erase its resolved route.
+  if (getAPIProvider() === 'mistral') await metadataWrite
 
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
@@ -1031,13 +1045,47 @@ export async function* runAgent(options: RunAgentOptions) {
   }
 
   const provider = options.agentDefinition.provider
-  if (!canApplyAgentProvider(provider)) {
+  let context: ForcedProviderContext | undefined = canApplyAgentProvider(provider)
+    ? { provider, source: 'agent' }
+    : undefined
+  const effectiveProvider = context?.provider ?? getAPIProvider()
+  let mistralRouting: MistralAgentRouting | undefined
+  if (effectiveProvider === 'mistral') {
+    const parentProviderContext = getForcedProviderContext()
+    // Resolve before adding our automatic scope so an unpinned worker still
+    // sees its explicit environment default. Pin the resulting route across
+    // awaits/yields: changing the parent's provider cannot reroute a worker.
+    const prepare = (): MistralAgentRouting => {
+      const forced = getForcedProviderContext()
+      const surf = forced && forced.source !== 'agent'
+        ? null
+        : resolveSurfSubagentModel({
+            hasToolSpecifiedModel: options.model !== undefined,
+            agentPinsModel: options.agentDefinition.model !== undefined,
+            scopedProvider: true,
+          })
+      return {
+        surf,
+        model: surf?.model ?? getAgentModel(
+          options.agentDefinition.model,
+          options.toolUseContext.options.mainLoopModel,
+          options.model,
+          options.toolUseContext.getAppState().toolPermissionContext.mode,
+          options.agentDefinition.provider,
+        ),
+      }
+    }
+    mistralRouting = context ? runWithForcedProvider(context, prepare) : prepare()
+    context = parentProviderContext && parentProviderContext.source !== 'agent'
+      ? parentProviderContext
+      : { provider: mistralRouting.surf?.provider ?? 'mistral', source: 'agent' }
+  }
+  if (!context) {
     yield* runAgentWithoutProviderOverride(options)
     return
   }
 
-  const context = { provider, source: 'agent' as const }
-  const iterator = runAgentWithoutProviderOverride(options)
+  const iterator = runAgentWithoutProviderOverride(options, mistralRouting)
 
   try {
     while (true) {
