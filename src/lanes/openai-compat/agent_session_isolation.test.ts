@@ -113,6 +113,10 @@ test('reads the working directory an environment block states, and nothing else'
   expect(statedWorkingDirectory('Notes.\nWorking directory: /tmp/repo/.claude/worktrees/agent-a\r\nPlatform: linux')).toBe('/tmp/repo/.claude/worktrees/agent-a')
   expect(statedWorkingDirectory('- To install an MCP server, check the working directory first.')).toBeUndefined()
   expect(statedWorkingDirectory('')).toBeUndefined()
+  // Cheap mode states its folder as CWD.
+  expect(statedWorkingDirectory('# Environment\n- CWD: /home/u/proj\n- Git repository: true')).toBe('/home/u/proj')
+  // The environment block's own label wins over a line quoted earlier.
+  expect(statedWorkingDirectory('Memory: Working directory: was /old\nWorking directory: /old\n - Primary working directory: /repo')).toBe('/repo')
 })
 
 // The main thread's system prompt is built once per turn (query.ts), and

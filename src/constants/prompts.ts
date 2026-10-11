@@ -3,7 +3,7 @@ import { type as osType, version as osVersion, release as osRelease } from 'os'
 import { env } from '../utils/env.js'
 import { getIsGit } from '../utils/git.js'
 import { getCwd } from '../utils/cwd.js'
-import { getIsNonInteractiveSession } from '../bootstrap/state.js'
+import { getIsNonInteractiveSession, getOriginalCwd } from '../bootstrap/state.js'
 import { getCurrentWorktreeSession } from '../utils/worktree.js'
 import { getSessionStartDate } from './common.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
@@ -1024,7 +1024,11 @@ export async function computeSimpleEnvInfo(
     ? `Assistant knowledge cutoff is ${cutoff}.`
     : null
 
-  const cwd = getCwd()
+  // The session root, not the shell's folder: EnterWorktree and ExitWorktree
+  // move the root, while a cd inside the project only moves the shell, and
+  // the cwd_awareness reminder reports that folder every turn. A block that
+  // followed every cd would rebuild, and lose its prompt cache, each time.
+  const cwd = getOriginalCwd()
   const isWorktree = getCurrentWorktreeSession() !== null
 
   const envItems = [
@@ -1068,7 +1072,8 @@ export async function computeCheapEnvInfo(
   additionalWorkingDirectories?: string[],
 ): Promise<string> {
   const [isGit, unameSR] = await Promise.all([getIsGit(), getUnameSR()])
-  const cwd = getCwd()
+  // The session root, as in computeSimpleEnvInfo.
+  const cwd = getOriginalCwd()
   const isWorktree = getCurrentWorktreeSession() !== null
   const items = [
     `CWD: ${cwd}`,
