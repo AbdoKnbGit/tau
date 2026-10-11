@@ -117,6 +117,9 @@ jobs:
       - name: Test OpenAI effort settings, request routing, and cache stability
         run: node --test test/openai-effort.test.mjs test/openai-native-routing.test.mjs
 
+      - name: Test ToolSearch wording and the environment block's folder
+        run: node --test test/tool-search-wording.test.mjs test/env-working-directory.test.mjs
+
       - name: Test copy selection after resume
         run: node --test test/copy-response.test.mjs
 
