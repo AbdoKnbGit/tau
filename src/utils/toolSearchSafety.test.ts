@@ -361,7 +361,7 @@ test('Groq small-tier eager calls are not guarded while native lanes stay lazy',
   }
 
   assert(
-    providerModelSupportsClientSideToolDiscovery('glm', 'glm-4.6'),
+    providerModelSupportsClientSideToolDiscovery('vercel', 'openai/gpt-5.4'),
     'supported native lane was disabled',
   )
   const nativeDecision = decideLazyToolCall({
@@ -507,7 +507,7 @@ test('cheap mode is eager and normal keeps discovery on eligible transports', ()
     'cheap client-native discovery must be eager/cache-stable',
   )
   for (const mode of ['normal', 'full'] as const) {
-    assert(!shouldDisableToolDeferralForProvider('glm', mode), `glm/${mode}`)
+    assert(!shouldDisableToolDeferralForProvider('vercel', mode), `vercel/${mode}`)
   }
   for (const mode of ['cheap', 'normal', 'full'] as const) {
     assert(shouldDisableToolDeferralForProvider('cursor', mode), `cursor/${mode}`)
@@ -525,7 +525,7 @@ test('cheap mode is eager and normal keeps discovery on eligible transports', ()
 })
 
 test('prefix-cache providers keep schemas eager in every power mode', () => {
-  for (const provider of ['deepseek', 'mimo', 'alibaba', 'fireworks', 'moonshot', 'cloudflare', 'mistral', 'lxd'] as const) {
+  for (const provider of ['deepseek', 'mimo', 'alibaba', 'fireworks', 'moonshot', 'cloudflare', 'mistral', 'lxd', 'glm', 'minimax'] as const) {
     assert(!providerModelSupportsClientSideToolDiscovery(provider), `${provider} unexpectedly deferred tools`)
     for (const mode of ['cheap', 'normal', 'full'] as const) {
       assert(shouldDisableToolDeferralForProvider(provider, mode), `${provider}/${mode} rewrites cached tool schemas`)

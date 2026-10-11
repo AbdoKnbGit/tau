@@ -37,8 +37,9 @@ const block = (body: OpenAIChatRequest) => body.messages
   .find(m => m.role === 'user' && typeof m.content === 'string' && m.content.startsWith('<dynamic_context>'))?.content
 const toolNames = (body: OpenAIChatRequest) => (body.tools ?? []).map(t => t.function.name)
 
-// Tau defers tools behind ToolSearch on GLM and MiniMax only; DeepSeek and
-// Moonshot always receive every tool (toolDeferralPolicy.ts).
+// All four receive every tool eagerly (toolDeferralPolicy.ts). GLM and
+// MiniMax still drive the lane's ToolSearch path here: a request that does
+// carry ToolSearch must keep an agent's loads out of the main thread's tools.
 const PROVIDERS = [
   { provider: 'deepseek', model: 'deepseek-v4-flash', defers: false },
   { provider: 'glm', model: 'glm-4.7', defers: true },

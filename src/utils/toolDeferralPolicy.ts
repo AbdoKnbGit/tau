@@ -60,8 +60,12 @@ export function providerSupportsClientSideToolDiscovery(
  * call (mimo 75%, fireworks 50%, deepseek 44%).
  *
  * Two shapes qualify, and neither gives Tau a breakpoint to re-anchor on:
- *   - automatic/implicit prefix caching (deepseek, mimo, and alibaba, whose
- *     Model Studio implicit cache is always on and cannot be disabled)
+ *   - automatic/implicit prefix caching (deepseek, mimo, alibaba, whose
+ *     Model Studio implicit cache is always on and cannot be disabled, glm,
+ *     whose Z.ai context cache is implicit, and minimax, which matches tools,
+ *     then system, then messages on its own). Tau freezes the environment
+ *     block of glm and minimax for that cache (direct_history.ts); a load
+ *     rewrote the tool block in front of it anyway.
  *   - a session-pinned `prompt_cache_key` reusing one backend's KV cache
  *     (fireworks, moonshot, cloudflare, mistral, lxd)
  *
@@ -70,8 +74,7 @@ export function providerSupportsClientSideToolDiscovery(
  *   - vercel / requesty / copilot / iflow — these pass
  *     `cache_control` through and place breakpoints themselves, so the lane
  *     re-warms on its own terms.
- *   - minimax, glm, groq, nim — no prefix-cache pin at all (minimax actively
- *     deletes `prompt_cache_key`), so deferral costs them nothing.
+ *   - groq, nim — no prefix-cache pin at all, so deferral costs them nothing.
  *   - ollama / lmstudio — local, where the scarce resource is context window
  *     rather than a billed cache; schema savings are worth the re-prefill.
  *   - gemini — already excluded via isAntigravityModelId, whose comment
@@ -86,6 +89,8 @@ const EXACT_PREFIX_CACHE_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'cloudflare',
   'mistral',
   'lxd',
+  'glm',
+  'minimax',
 ])
 
 /**

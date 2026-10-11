@@ -50,8 +50,7 @@ export function providerUsesStableRequestSession(provider: string): boolean {
  * Lanes that key per-conversation client state by the request session, so an
  * ordinary agent needs a session of its own (resolveProviderRequestSessionId).
  * Mistral freezes system/tools by it. DeepSeek, GLM, Moonshot and MiniMax
- * freeze the environment block (working directory, git status, memory) by it,
- * and GLM and MiniMax also keep the deferred tools a conversation loaded.
+ * freeze the environment block (working directory, git status, memory) by it.
  */
 const PER_AGENT_SESSION_PROVIDERS = new Set<string>([
   'mistral',
@@ -188,11 +187,11 @@ export function resolveProviderRequestSessionId({
   // On the root session an agent is served the parent's frozen state: Mistral
   // agents of the same type shared the first one's system prompt, and on
   // DeepSeek, GLM, Moonshot and MiniMax a worktree agent was told the parent's
-  // working directory while a GLM/MiniMax agent's ToolSearch loads grew the
-  // parent's tool block. Give ordinary agents stable conversation identities,
-  // kept by a SendMessage resume; a registered helper must still read the
-  // conversation it actually forked. Unregistered side queries retain their
-  // existing root-session policy.
+  // working directory (and, while GLM and MiniMax deferred tools, an agent's
+  // ToolSearch loads grew the parent's tool block). Give ordinary agents
+  // stable conversation identities, kept by a SendMessage resume; a
+  // registered helper must still read the conversation it actually forked.
+  // Unregistered side queries retain their existing root-session policy.
   if (PER_AGENT_SESSION_PROVIDERS.has(provider) && agentId) {
     const owner = forkedConversationAgentId(agentId, true)
     if (owner === undefined) return root

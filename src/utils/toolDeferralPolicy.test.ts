@@ -38,12 +38,13 @@ console.log('tool deferral cache policy:')
 // Automatic prefix cache, or a session-pinned prompt_cache_key.
 const EXCLUDED: APIProvider[] = [
   'deepseek', 'mimo', 'fireworks', 'moonshot', 'cloudflare', 'mistral', 'lxd',
+  'glm', 'minimax',
 ] as APIProvider[]
 
 // Explicit cache_control breakpoints, or no prefix-cache pin at all.
 const STILL_LAZY: APIProvider[] = [
   'vercel', 'requesty', 'copilot', 'iflow',
-  'minimax', 'glm', 'ollama', 'lmstudio',
+  'ollama', 'lmstudio',
 ] as APIProvider[]
 
 test('the excluded set is exactly the exact-prefix-cache providers', () => {
