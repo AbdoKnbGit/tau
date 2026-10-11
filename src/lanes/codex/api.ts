@@ -23,7 +23,20 @@
  *   codex-rs/login/src/auth/default_client.rs   (originator, User-Agent)
  *   codex-rs/model-provider-info/src/lib.rs     (ChatGPT base URL)
  *   codex-rs/core/src/client.rs                 (store/include flags)
+ *
+ * With a ChatGPT login, requests go over codex-rs's Responses WebSocket
+ * instead (websocket.ts): the same body on one kept connection per
+ * conversation, which keeps every follow-up on the server that holds its
+ * cached prefix. HTTP stays the fallback and the API-key/Azure path.
  */
+
+import { appendFileSync } from 'fs'
+import {
+  CodexResponsesSockets,
+  CodexWebSocketHttpError,
+  CodexWebSocketUnavailable,
+  type CodexSocketResponse,
+} from './websocket.js'
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -319,6 +332,8 @@ function isAzureResponsesBaseUrl(baseUrl: string): boolean {
 export const FROZEN_VOLATILE_SESSION_LIMIT = 64
 
 export class CodexApiClient {
+  /** Kept Responses WebSocket connections, one per conversation. */
+  private readonly sockets = new CodexResponsesSockets()
   private apiKey: string | null = null
   /** Populated lazily in resolvedBaseUrl() based on which auth is active. */
   private explicitBaseUrl: string | null = null
@@ -424,6 +439,19 @@ export class CodexApiClient {
   clearChain(): void {
     this.cacheSessionId = null
     this.frozenVolatileBySession.clear()
+    this.sockets.closeAll()
+  }
+
+  /**
+   * Native Codex sends every ChatGPT-backend request over the Responses
+   * WebSocket. API keys and Azure keep HTTP; TAU_CODEX_WEBSOCKET=0 forces
+   * HTTP; a refused handshake switches it off for a while.
+   */
+  private get usesWebSocket(): boolean {
+    return !!this.chatgptAccessToken
+      && !this.isAzureResponsesEndpoint
+      && process.env.TAU_CODEX_WEBSOCKET !== '0'
+      && this.sockets.available
   }
 
   /**
@@ -547,6 +575,47 @@ export class CodexApiClient {
       },
     }
 
+    if (this.usesWebSocket) {
+      let started: CodexSocketResponse | undefined
+      try {
+        // Retried before the first event exactly like the HTTP request below.
+        started = await retryWithBackoff(async () => {
+          try {
+            return await this.sockets.start(
+              `${this.baseUrl}/responses`,
+              this.buildHeaders(request.prompt_cache_key),
+              body as unknown as Record<string, unknown>,
+              request.prompt_cache_key?.trim() || this.sessionCacheKey,
+              signal,
+            )
+          } catch (error) {
+            if (error instanceof CodexWebSocketHttpError) throw new CodexApiError(error.status, error.body, parseRetryAfter(error.retryAfter ?? null))
+            throw error
+          }
+        }, { signal })
+      } catch (error) {
+        // Handshake refused or the connection is busy: this request goes over HTTP.
+        if (!(error instanceof CodexWebSocketUnavailable)) throw error
+      }
+      if (started) {
+        try {
+          logCacheUsage('websocket', started.first, started.connection)
+          yield started.first as CodexStreamEvent
+          for await (const event of started.rest) {
+            logCacheUsage('websocket', event, started.connection)
+            yield event as CodexStreamEvent
+          }
+        } catch (error) {
+          if (error instanceof CodexWebSocketHttpError) throw new CodexApiError(error.status, error.body, parseRetryAfter(error.retryAfter ?? null))
+          throw error
+        } finally {
+          // The reader can stop at the first event; release the connection.
+          await started.rest.return()
+        }
+        return
+      }
+    }
+
     const response = await retryWithBackoff(
       async () => {
         const resp = await fetch(`${this.baseUrl}/responses`, {
@@ -600,7 +669,9 @@ export class CodexApiClient {
               // The event field is authoritative; fall back to parsed.type
               // if the server omitted an explicit `event:` line.
               const type = currentEvent ?? parsed.type ?? 'unknown'
-              yield { ...parsed, type } as CodexStreamEvent
+              const event = { ...parsed, type }
+              logCacheUsage('http', event)
+              yield event as CodexStreamEvent
             } catch {
               // Skip malformed JSON payloads rather than crashing the stream.
             }
@@ -709,6 +780,28 @@ function getNetworkErrorCode(error: unknown): string | undefined {
     cur = (cur as any).cause
   }
   return undefined
+}
+
+/**
+ * TAU_CODEX_CACHE_LOG=<file>: one JSON line per completed request with its
+ * transport, prompt and cached tokens. The transcript does not carry
+ * per-request usage for this lane, and cache work needs it.
+ */
+function logCacheUsage(transport: 'websocket' | 'http', event: { type?: unknown; response?: unknown }, connection?: number): void {
+  const file = process.env.TAU_CODEX_CACHE_LOG
+  if (!file || event.type !== 'response.completed') return
+  const usage = (event.response as { usage?: { input_tokens?: number; input_tokens_details?: { cached_tokens?: number } } } | undefined)?.usage
+  try {
+    appendFileSync(file, `${JSON.stringify({
+      at: new Date().toISOString(),
+      transport,
+      ...(connection !== undefined ? { connection } : {}),
+      prompt: usage?.input_tokens ?? null,
+      cached: usage?.input_tokens_details?.cached_tokens ?? null,
+    })}\n`)
+  } catch {
+    // A debug log must never fail a request.
+  }
 }
 
 function isRetryableTransport(error: unknown): boolean {

@@ -11,6 +11,9 @@ const tempRoot = realpathSync(tmpdir())
 const fixtureDirectory = mkdtempSync(join(tempRoot, 'tau-openai-native-'))
 process.env.CLAUDE_CONFIG_DIR = fixtureDirectory
 process.env.DISABLE_TELEMETRY = '1'
+// The fetch fixture below sees HTTP requests only; keep the Codex lane's
+// ChatGPT WebSocket transport (tested in openai-websocket.test.mjs) off.
+process.env.TAU_CODEX_WEBSOCKET = '0'
 const openaiEnv = ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_CHATGPT_ACCESS_TOKEN',
   'OPENAI_CHATGPT_ACCOUNT_ID', 'OPENAI_CHATGPT_ID_TOKEN', 'CLAUDEX_NATIVE_LANES']
 for (const key of openaiEnv) delete process.env[key]

@@ -11,6 +11,9 @@ const tempRoot = realpathSync(tmpdir())
 const fixture = mkdtempSync(join(tempRoot, 'tau-effort-'))
 process.env.CLAUDE_CONFIG_DIR = fixture
 process.env.DISABLE_TELEMETRY = '1'
+// The fetch fixture below sees HTTP requests only; keep the Codex lane's
+// ChatGPT WebSocket transport (tested in openai-websocket.test.mjs) off.
+process.env.TAU_CODEX_WEBSOCKET = '0'
 delete process.env.USER_TYPE
 delete process.env.CLAUDE_CODE_EFFORT_LEVEL
 const settingsPath = join(fixture, 'settings.json')
