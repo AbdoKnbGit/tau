@@ -17,6 +17,7 @@ import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { recordVisitedDir } from '../../bootstrap/state.js'
+import { getMemoryIndexWarning } from '../../memdir/memoryIndexGuard.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { countLinesChanged } from '../../utils/diff.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -817,6 +818,9 @@ export const FileEditTool = buildTool({
       noOp,
     } = data
 
+    const memoryWarning = getMemoryIndexWarning(filePath)
+    const memorySuffix = memoryWarning ? `\n\n${memoryWarning}` : ''
+
     // No-op edit: nothing was written. Say so explicitly (and terminally) so
     // the model doesn't read "updated successfully" and loop trying to force a
     // change that is already in place. Covers both old_string === new_string
@@ -826,7 +830,7 @@ export const FileEditTool = buildTool({
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: `No changes made to ${filePath}: the file already contains the requested text (the edit was a no-op or had already been applied). Nothing was written — do not retry this edit. If you intended a different change, Read the file and base old_string on its current content.`,
+        content: `No changes made to ${filePath}: the file already contains the requested text (the edit was a no-op or had already been applied). Nothing was written — do not retry this edit. If you intended a different change, Read the file and base old_string on its current content.${memorySuffix}`,
       }
     }
 
@@ -845,14 +849,14 @@ export const FileEditTool = buildTool({
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.${snippetSuffix}${warningSuffix}`,
+        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.${memorySuffix}${snippetSuffix}${warningSuffix}`,
       }
     }
 
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: `The file ${filePath} has been updated successfully${modifiedNote}.${snippetSuffix}${warningSuffix}`,
+      content: `The file ${filePath} has been updated successfully${modifiedNote}.${memorySuffix}${snippetSuffix}${warningSuffix}`,
     }
   },
 } satisfies ToolDef<ReturnType<typeof inputSchema>, FileEditOutput>)

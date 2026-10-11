@@ -19,6 +19,7 @@ import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { recordVisitedDir } from '../../bootstrap/state.js'
+import { getMemoryIndexWarning } from '../../memdir/memoryIndexGuard.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { countLinesChanged, getPatchForDisplay } from '../../utils/diff.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -576,15 +577,17 @@ export const FileWriteTool = buildTool({
     { filePath, type, syntaxWarning, importWarning, noOp },
     toolUseID,
   ) {
+    const warnings = [getMemoryIndexWarning(filePath), syntaxWarning, importWarning]
+      .filter(Boolean)
+      .join('\n')
+    const warningSuffix = warnings ? `\n\n${warnings}` : ''
     if (noOp) {
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: getFileWriteNoOpMessage(filePath),
+        content: getFileWriteNoOpMessage(filePath) + warningSuffix,
       }
     }
-    const warnings = [syntaxWarning, importWarning].filter(Boolean).join('\n')
-    const warningSuffix = warnings ? `\n\n${warnings}` : ''
     switch (type) {
       case 'create':
         return {

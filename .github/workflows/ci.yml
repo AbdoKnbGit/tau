@@ -114,6 +114,9 @@ jobs:
       - name: Test source-map reads and cache stability
         run: node --test test/file-read-source-maps.test.mjs test/core-tool-contracts.test.mjs test/tool-result-budget.test.mjs
 
+      - name: Test memory index reminders
+        run: node --test test/memory-index-guard.test.mjs test/memory-index-tool-results.test.mjs
+
       - name: Test OpenAI effort settings, request routing, and cache stability
         run: node --test test/openai-effort.test.mjs test/openai-native-routing.test.mjs
 
