@@ -62,9 +62,10 @@ import {
 } from '../../services/api/adapters/openai_to_anthropic.js'
 import { loadProviderKey } from '../../services/api/auth/api_key_manager.js'
 import {
-  OPENAI_COMPAT_TOOL_USAGE_RULES,
   appendStrictParamsHint,
+  buildOpenAICompatToolUsageRules,
 } from '../shared/mcp_bridge.js'
+import { TOOL_SEARCH_TOOL_NAME } from '../../tools/ToolSearchTool/constants.js'
 import {
   KILO_FALLBACK_MODELS,
   KILO_FALLBACK_FREE_IDS,
@@ -90,7 +91,8 @@ const KILO_CONTEXT_EXCEEDED_MARKERS = [
   'too long',
 ]
 
-const KILO_TOOL_USAGE_RULES = `${OPENAI_COMPAT_TOOL_USAGE_RULES}
+// `discovery`: the request carries ToolSearch (see buildOpenAICompatToolUsageRules).
+const kiloToolUsageRules = (discovery: boolean) => `${buildOpenAICompatToolUsageRules(discovery)}
 <kilocode_tool_quirks>
 KiloCode must call the tools using the schema names shown in this session, not aliases remembered from other coding CLIs:
 - AskUserQuestion.questions must be an array of question objects, not a JSON string.
@@ -274,7 +276,7 @@ export class KiloLane implements Lane {
     }
 
     const preserveCacheControl = this._supportsPromptCache(params.model)
-    const system = this._prependToolUsageRules(params.system, params.tools.length > 0)
+    const system = this._prependToolUsageRules(params.system, params.tools)
     // KiloCode routes to whichever upstream model is selected. Sending an image
     // to one that cannot take it is a hard `404 No endpoints found that support
     // image input`, which fails the whole turn rather than just the attachment.
@@ -409,23 +411,24 @@ export class KiloLane implements Lane {
 
   private _prependToolUsageRules(
     system: string | SystemBlock[],
-    hasTools: boolean,
+    tools: readonly { name: string }[],
   ): string | SystemBlock[] {
-    if (!hasTools) return system
+    if (tools.length === 0) return system
+    const rules = kiloToolUsageRules(tools.some(tool => tool.name === TOOL_SEARCH_TOOL_NAME))
     if (typeof system === 'string') {
       return system
-        ? `${KILO_TOOL_USAGE_RULES}\n${system}`
-        : KILO_TOOL_USAGE_RULES
+        ? `${rules}\n${system}`
+        : rules
     }
 
     const blocks = [...system]
     if (blocks.length === 0) {
-      return [{ type: 'text', text: KILO_TOOL_USAGE_RULES }]
+      return [{ type: 'text', text: rules }]
     }
 
     const first = blocks[0] as SystemBlock & { cache_control?: { type: string } }
     return [
-      { ...first, text: `${KILO_TOOL_USAGE_RULES}\n${first.text}` },
+      { ...first, text: `${rules}\n${first.text}` },
       ...blocks.slice(1),
     ]
   }

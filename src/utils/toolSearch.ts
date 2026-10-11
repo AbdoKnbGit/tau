@@ -43,7 +43,10 @@ import {
 import { providerSupportsAnthropicToolSearch } from './model/providerCapabilities.js'
 import { getPowerModeFromSettings } from './powerMode.js'
 import { getInitialSettings } from './settings/settings.js'
-import { providerModelSupportsClientSideToolDiscovery } from './toolDeferralPolicy.js'
+import {
+  providerModelSupportsClientSideToolDiscovery,
+  providerSupportsClientSideToolDiscovery,
+} from './toolDeferralPolicy.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
 
@@ -215,6 +218,29 @@ export function isNativeLaneToolSearchEnabled(model?: string): boolean {
 
 export function isGeminiNativeToolSearchEnabled(model?: string): boolean {
   return getAPIProvider() === 'gemini' && isNativeLaneToolSearchEnabled(model)
+}
+
+/**
+ * Whether requests for `model` carry ToolSearch, by the synchronous gates the
+ * request path applies (claude.ts): client-side discovery on a native lane for
+ * this provider and model, or Anthropic tool search on a model that accepts
+ * tool_reference. Prompt text that says to load a tool with ToolSearch follows
+ * this, so it never names a tool the request does not send: OpenRouter,
+ * OpenCode, the exact-prefix providers, NIM's fast set, Groq's small tier,
+ * cheap mode and the dedicated lanes all receive every schema eagerly. The
+ * async tst-auto threshold is not replicated (see
+ * getDeferredToolsDeltaAttachment).
+ */
+export function isToolSearchOfferedForModel(model: string): boolean {
+  if (!isToolSearchEnabledOptimistic()) return false
+  const provider = getAPIProvider()
+  if (providerSupportsClientSideToolDiscovery(provider)) {
+    return isNativeLaneToolSearchEnabled(model)
+  }
+  return (
+    providerSupportsAnthropicToolSearch(provider) &&
+    modelSupportsToolReference(model)
+  )
 }
 
 /**

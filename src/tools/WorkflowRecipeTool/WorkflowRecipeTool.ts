@@ -4,7 +4,15 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { Text } from '../../ink.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import {
+  isToolSearchOfferedForModel,
+  isToolSearchToolAvailable,
+} from '../../utils/toolSearch.js'
 import { WORKFLOW_RECIPE_TOOL_NAME } from './constants.js'
+
+// Kept only where requests carry ToolSearch (see call below).
+const TOOL_SEARCH_COST_CONTROL =
+  'Use deferred tools through ToolSearch when they are not currently loaded.'
 
 const RECIPE_VALUES = [
   'auto',
@@ -259,7 +267,7 @@ function recipeFor(
         costControls: [
           'Avoid broad file reads until the scout returns ranked context.',
           'Keep snippets and retrieved files capped.',
-          'Use deferred tools through ToolSearch when they are not currently loaded.',
+          TOOL_SEARCH_COST_CONTROL,
         ],
         reviewAndVerify: reviewSteps(risk),
         stopConditions: [
@@ -315,9 +323,14 @@ export const WorkflowRecipeTool = buildTool({
   renderToolResultMessage(output) {
     return renderText(output.title)
   },
-  async call(input) {
-    const recipe = inferRecipe(input.task, input.recipe)
-    return { data: recipeFor(recipe, input.risk) }
+  async call(input, context) {
+    const recipe = recipeFor(inferRecipe(input.task, input.recipe), input.risk)
+    const toolSearchOffered = isToolSearchToolAvailable(context.options.tools)
+      && isToolSearchOfferedForModel(context.options.mainLoopModel)
+    if (!toolSearchOffered) {
+      recipe.costControls = recipe.costControls.filter(item => item !== TOOL_SEARCH_COST_CONTROL)
+    }
+    return { data: recipe }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     const lines = [

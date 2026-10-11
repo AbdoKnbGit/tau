@@ -85,8 +85,8 @@ import { getPowerShellEdition } from '../../utils/shell/powershellDetection.js'
 import {
   appendStrictParamsHint,
   buildOpenAICompatToolUsageRules,
-  OPENAI_COMPAT_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
+import { TOOL_SEARCH_TOOL_NAME } from '../../tools/ToolSearchTool/constants.js'
 import { getTransformer, type ProviderId } from './transformers/index.js'
 import { resolveEditFormat } from './capabilities.js'
 import {
@@ -579,14 +579,17 @@ export class OpenAICompatLane implements Lane {
     }
     const builtTools = buildOpenAITools(filteredTools, provider, model, buildToolsCtx)
 
-    // Prepend OPENAI_COMPAT_TOOL_USAGE_RULES to the system message when
-    // tools are present — in-context reminder of schema authority for
-    // providers that don't enforce `strict: true` server-side (Mistral,
-    // generic long-tail). Small-tier models (Groq Llama free TPM) can
-    // opt out via `skipToolUsagePreamble` to save input tokens.
+    // Prepend the tool usage rules to the system message when tools are
+    // present — in-context reminder of schema authority for providers that
+    // don't enforce `strict: true` server-side (Mistral, generic long-tail).
+    // Small-tier models (Groq Llama free TPM) can opt out via
+    // `skipToolUsagePreamble` to save input tokens. The rules describe
+    // ToolSearch loading only when this request carries ToolSearch; every
+    // provider that gets its schemas eagerly is told to call tools directly.
     const skipPreamble = transformerForTools.skipToolUsagePreamble?.(model) ?? false
-    const toolUsageRules = provider === 'openrouter'
-      ? buildOpenAICompatToolUsageRules(false) : OPENAI_COMPAT_TOOL_USAGE_RULES
+    const toolUsageRules = buildOpenAICompatToolUsageRules(
+      filteredTools.some(tool => tool.name === TOOL_SEARCH_TOOL_NAME),
+    )
     const assembledSystemText = builtTools.length > 0 && !skipPreamble
       ? (rawSystemText
           ? `${toolUsageRules}\n${rawSystemText}`

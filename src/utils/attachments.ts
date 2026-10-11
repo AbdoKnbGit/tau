@@ -164,6 +164,7 @@ import { getMermaidDiagramsChange } from './mermaidDiagramsReminder.js'
 import { getUndrawnMermaidReasons } from './mermaidDiagramFeedback.js'
 import type { QuerySource } from '../constants/querySource.js'
 import { getAPIProvider } from './model/providers.js'
+import { providerSupportsClientSideToolDiscovery } from './toolDeferralPolicy.js'
 import { getProviderFilteredToolCallDecision } from './toolSearchCallGuard.js'
 import {
   getDeferredToolsDelta,
@@ -1561,12 +1562,13 @@ export function getDeferredToolsDeltaAttachment(
   if (!isToolSearchEnabledOptimistic()) return []
   if (!modelSupportsToolReference(model)) return []
   if (!isToolSearchToolAvailable(tools)) return []
-  // Gemini lane with lazy tools declined for this model (Antigravity): every
+  // A native lane that declines lazy tools for this model (Antigravity ids on
+  // the Gemini lane, Groq's small tier on the openai-compat lane): every
   // schema ships inline and ToolSearch is stripped from the request, so
   // announcing "available via ToolSearch" would point at a tool that isn't
-  // there. Openai-compat native lanes have no per-model opt-out — unchanged.
+  // there.
   if (
-    getAPIProvider() === 'gemini' &&
+    providerSupportsClientSideToolDiscovery(getAPIProvider()) &&
     !isNativeLaneToolSearchEnabled(model)
   ) {
     return []

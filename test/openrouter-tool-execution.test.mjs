@@ -36,15 +36,17 @@ const source = [r.TaskCreateTool, r.TaskUpdateTool, r.FileWriteTool, r.FileEditT
   })]
 const permission = { mode: 'default', alwaysAllowRules: {}, alwaysDenyRules: {}, alwaysAskRules: {} }
 
-test('OpenRouter workflow instructions agree with eager schemas; other provider guidance stays lazy', () => {
+test('OpenRouter workflow instructions agree with eager schemas', () => {
   const enabled = new Set(['ProjectWorkflow', 'GitHistorySearch',
     'Browser', 'PackageManager', 'VisualDesignAudit'])
-  const prompt = r.runWithForcedProvider({ provider: 'openrouter' }, () => r.getUsingYourToolsSection(enabled))
-  assert.doesNotMatch(prompt, /ToolSearch|named deferred tool/)
-  assert.match(prompt, /call ProjectWorkflow/)
-  assert.match(prompt, /call Browser/)
-  const control = r.runWithForcedProvider({ provider: 'opencode' }, () => r.getUsingYourToolsSection(enabled))
-  assert.match(control, /load ProjectWorkflow with ToolSearch/)
+  // OpenCode is eager too. Providers that keep ToolSearch are covered by
+  // test/tool-search-wording.test.mjs.
+  for (const provider of ['openrouter', 'opencode']) {
+    const prompt = r.runWithForcedProvider({ provider }, () => r.getUsingYourToolsSection(enabled, model))
+    assert.doesNotMatch(prompt, /ToolSearch|named deferred tool/)
+    assert.match(prompt, /call ProjectWorkflow/)
+    assert.match(prompt, /call Browser/)
+  }
 })
 
 async function schemas() {

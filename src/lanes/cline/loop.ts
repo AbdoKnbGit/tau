@@ -36,8 +36,9 @@ import { getProviderBaseUrl } from '../../utils/auth.js'
 import { loadProviderKey } from '../../services/api/auth/api_key_manager.js'
 import { refreshClineOAuth } from '../../services/api/auth/oauth_services.js'
 import {
-  OPENAI_COMPAT_TOOL_USAGE_RULES,
+  buildOpenAICompatToolUsageRules,
 } from '../shared/mcp_bridge.js'
+import { TOOL_SEARCH_TOOL_NAME } from '../../tools/ToolSearchTool/constants.js'
 import {
   createRetryableConnectionError,
   isAbortError,
@@ -535,7 +536,7 @@ export class ClineLane implements Lane {
     }
 
     const model = stripClineEffortVariant(params.model)
-    const system = this._prependToolUsageRules(params.system, params.tools.length > 0)
+    const system = this._prependToolUsageRules(params.system, params.tools)
     // Cline routes to whichever upstream model is selected, so carrying an
     // image over the wire says nothing about the model being able to read it.
     // When it cannot, swap in the OCR/description text rather than shipping
@@ -760,23 +761,27 @@ export class ClineLane implements Lane {
 
   private _prependToolUsageRules(
     system: string | SystemBlock[],
-    hasTools: boolean,
+    tools: readonly { name: string }[],
   ): string | SystemBlock[] {
-    if (!hasTools) return system
+    if (tools.length === 0) return system
+    // ToolSearch loading is described only when this request carries ToolSearch.
+    const rules = buildOpenAICompatToolUsageRules(
+      tools.some(tool => tool.name === TOOL_SEARCH_TOOL_NAME),
+    )
     if (typeof system === 'string') {
       return system
-        ? `${OPENAI_COMPAT_TOOL_USAGE_RULES}\n${system}`
-        : OPENAI_COMPAT_TOOL_USAGE_RULES
+        ? `${rules}\n${system}`
+        : rules
     }
 
     const blocks = [...system]
     if (blocks.length === 0) {
-      return [{ type: 'text', text: OPENAI_COMPAT_TOOL_USAGE_RULES }]
+      return [{ type: 'text', text: rules }]
     }
 
     const first = blocks[0] as SystemBlock & { cache_control?: { type: string } }
     return [
-      { ...first, text: `${OPENAI_COMPAT_TOOL_USAGE_RULES}\n${first.text}` },
+      { ...first, text: `${rules}\n${first.text}` },
       ...blocks.slice(1),
     ]
   }

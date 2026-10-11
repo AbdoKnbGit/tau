@@ -42,6 +42,7 @@ import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt
 import { PROJECT_WORKFLOW_TOOL_NAME } from '../tools/ProjectWorkflowTool/constants.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/constants.js'
 import { getAPIProvider } from '../utils/model/providers.js'
+import { isToolSearchOfferedForModel } from '../utils/toolSearch.js'
 import { parseAntigravityClaudeTier } from '../utils/model/antigravityClaudeTiers.js'
 import { CODEBASE_RETRIEVAL_TOOL_NAME } from '../tools/CodebaseRetrievalTool/constants.js'
 import { GIT_HISTORY_SEARCH_TOOL_NAME } from '../tools/GitHistorySearchTool/constants.js'
@@ -294,10 +295,15 @@ const TOOL_EFFICIENCY_SECTION = `# Efficient tool use
 - Filter or aggregate bulk data with available tools; return findings and source references.
 - Finish the work and required validation, then stop. Recheck for changes, failures, or unresolved risks; never skip needed evidence to meet a call limit.`
 
-function getUsingYourToolsSection(enabledTools: Set<string>): string {
-  const openRouterEager = getAPIProvider() === 'openrouter'
-  const useWorkflowTool = (name: string) => openRouterEager
-    ? `call ${name}` : `load ${name} with ${TOOL_SEARCH_TOOL_NAME}`
+function getUsingYourToolsSection(enabledTools: Set<string>, model: string): string {
+  // Name ToolSearch only when this session's requests carry it. Providers that
+  // receive every schema eagerly would otherwise be told to load tools through
+  // a ToolSearch they never get. The pool check runs first: it is the cheap
+  // half, and without ToolSearch in the pool nothing can load anyway.
+  const toolSearchOffered = enabledTools.has(TOOL_SEARCH_TOOL_NAME)
+    && isToolSearchOfferedForModel(model)
+  const useWorkflowTool = (name: string) => toolSearchOffered
+    ? `load ${name} with ${TOOL_SEARCH_TOOL_NAME}` : `call ${name}`
   const taskToolName = [TASK_CREATE_TOOL_NAME, TODO_WRITE_TOOL_NAME].find(n =>
     enabledTools.has(n),
   )
@@ -356,7 +362,7 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const providedToolSubitems = [
     ...(workflowToolOrientationItems.length > 0
       ? [
-          `When a trigger below matches an unresolved need, ${openRouterEager ? 'call the named tool using its declared schema' : `load the named deferred tool with ${TOOL_SEARCH_TOOL_NAME}`}. Use standard tools for exact evidence, edits, and commands. Skip workflow discovery when known targets or existing evidence already provide the next step, or when the needed tool is unavailable.`,
+          `When a trigger below matches an unresolved need, ${toolSearchOffered ? `load the named deferred tool with ${TOOL_SEARCH_TOOL_NAME}` : 'call the named tool using its declared schema'}. Use standard tools for exact evidence, edits, and commands. Skip workflow discovery when known targets or existing evidence already provide the next step, or when the needed tool is unavailable.`,
           ...workflowToolOrientationItems,
         ]
       : []),
@@ -906,7 +912,7 @@ ${CYBER_RISK_INSTRUCTION}`,
             ? getSimpleDoingTasksSection()
             : null,
           getActionsSection(),
-          getUsingYourToolsSection(enabledTools),
+          getUsingYourToolsSection(enabledTools, model),
           TOOL_EFFICIENCY_SECTION,
           getCheapModeToolsSection(),
           getSimpleToneAndStyleSection(),
