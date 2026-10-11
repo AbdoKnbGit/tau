@@ -1,8 +1,11 @@
+import { isAbsolute, relative } from 'path'
+
 import {
   DEFAULT_CELL_TIMEOUT_SEC,
   MAX_BRIDGE_LINES,
   MAX_CELL_TIMEOUT_SEC,
   MAX_RESULT_CHARS,
+  MAX_WRITTEN_FILE_LINES,
 } from './constants.js'
 
 /**
@@ -141,4 +144,27 @@ export function summarizeBridgeCalls(calls: readonly BridgeCallRecord[]): string
     }
   }
   return `\n[tool bridge]\n${lines.join('\n')}`
+}
+
+/**
+ * Files the cell changed with plain Python rather than through a file tool.
+ * The model sees what the cell touched, and that an edit tool will want those
+ * files read again first: its read-before-edit check would otherwise fail on
+ * the next edit. Paths under `cwd` print relative to it.
+ */
+export function summarizeWrittenFiles(paths: readonly string[], cwd: string, skipped: readonly string[] = []): string {
+  if (paths.length === 0) return ''
+  const show = (path: string): string => {
+    const rel = relative(cwd, path)
+    return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : path
+  }
+  const lines = paths.slice(0, MAX_WRITTEN_FILE_LINES).map(path => `  ${show(path)}`)
+  const more = paths.length - MAX_WRITTEN_FILE_LINES
+  if (more > 0) lines.push(`  and ${more} more`)
+  let note = `\n[files written by this cell]\n${lines.join('\n')}\nRead them again before editing them with a file tool.`
+  if (skipped.length > 0) {
+    const rest = skipped.length - MAX_WRITTEN_FILE_LINES
+    note += `\nNot backed up for /rewind (too large, or too many new files): ${skipped.slice(0, MAX_WRITTEN_FILE_LINES).map(show).join(', ')}${rest > 0 ? `, and ${rest} more` : ''}`
+  }
+  return note
 }

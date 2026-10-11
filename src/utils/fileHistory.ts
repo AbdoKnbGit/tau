@@ -52,6 +52,16 @@ export type FileHistoryState = {
 }
 
 const MAX_SNAPSHOTS = 100
+/**
+ * Files code writes (an Eval cell) are tracked only up to this size. Bigger
+ * ones are generated data or checkpoints, and every later snapshot would copy
+ * them whole.
+ */
+export const MAX_BATCH_BACKUP_BYTES = 5 * 1024 * 1024
+/** Past this many new files, a cell is writing bulk output: the rest stay untracked. */
+export const MAX_BATCH_CREATED_FILES = 100
+/** A diff slower than this counts as a full rewrite, so the rewind screens never stall. */
+const DIFF_TIMEOUT_MS = 200
 export type DiffStats =
   | {
       filesChanged?: string[]
@@ -190,6 +200,118 @@ export async function fileHistoryTrackEdit(
       return state
     }
   })
+}
+
+/**
+ * Many files tracked as one change, in two steps. `backup` copies a file's
+ * current content at once, so call it before the file changes (`createdFile`
+ * when the caller saw the path missing: there is nothing to copy). `commit`
+ * adds every pending backup to the most recent snapshot in one update.
+ *
+ * fileHistoryTrackEdit records a transcript entry per file, and each carries
+ * the whole snapshot: fine for a few edits, quadratic when one Python cell
+ * writes hundreds of files. Commit before anything else can track one of the
+ * pending paths, or that tracker sees it untracked and overwrites its v1
+ * backup with content that already changed.
+ */
+export function createFileHistoryBatch(
+  updateFileHistoryState: (
+    updater: (prev: FileHistoryState) => FileHistoryState,
+  ) => void,
+  messageId: UUID,
+): {
+  backup(filePath: string, options?: { createdFile?: boolean }): Promise<void>
+  commit(): Promise<void>
+  /** Files left untracked: over MAX_BATCH_BACKUP_BYTES, or past MAX_BATCH_CREATED_FILES. */
+  readonly skipped: ReadonlySet<string>
+} {
+  const pending = new Map<string, FileHistoryBackup>()
+  // New files by tracking path, sized at commit once the cell has written them.
+  const created = new Map<string, string>()
+  const skipped = new Set<string>()
+  const isTracked = (trackingPath: string): boolean => {
+    let tracked = false
+    updateFileHistoryState(state => {
+      tracked = Boolean(state.snapshots.at(-1)?.trackedFileBackups[trackingPath])
+      return state
+    })
+    return tracked
+  }
+
+  return {
+    skipped,
+    async backup(filePath, { createdFile = false } = {}) {
+      if (!fileHistoryEnabled()) return
+      const trackingPath = maybeShortenFilePath(filePath)
+      if (pending.has(trackingPath) || skipped.has(filePath) || isTracked(trackingPath)) return
+      try {
+        if (createdFile) {
+          if (created.size >= MAX_BATCH_CREATED_FILES) {
+            skipped.add(filePath)
+            return
+          }
+          created.set(trackingPath, filePath)
+        } else if ((await sizeOf(filePath)) > MAX_BATCH_BACKUP_BYTES) {
+          skipped.add(filePath)
+          return
+        }
+        pending.set(trackingPath, await createBackup(createdFile ? null : filePath, 1))
+      } catch (error) {
+        logError(error)
+        logEvent('tengu_file_history_track_edit_failed', {})
+      }
+    },
+    async commit() {
+      if (pending.size === 0) return
+      for (const [trackingPath, filePath] of created) {
+        if (!pending.has(trackingPath)) continue
+        try {
+          const size = await sizeOf(filePath)
+          // Gone again (a temp file): nothing to restore either way.
+          if (size < 0) pending.delete(trackingPath)
+          else if (size > MAX_BATCH_BACKUP_BYTES) {
+            pending.delete(trackingPath)
+            skipped.add(filePath)
+          }
+        } catch (error) {
+          logError(error)
+        }
+      }
+      if (pending.size === 0) return
+      const entries = [...pending]
+      pending.clear()
+      updateFileHistoryState(state => {
+        const mostRecentSnapshot = state.snapshots.at(-1)
+        if (!mostRecentSnapshot) return state
+        const added = entries.filter(([path]) => !mostRecentSnapshot.trackedFileBackups[path])
+        if (added.length === 0) return state
+        const trackedFiles = new Set(state.trackedFiles)
+        for (const [path] of added) trackedFiles.add(path)
+        const updatedMostRecentSnapshot = {
+          ...mostRecentSnapshot,
+          trackedFileBackups: {
+            ...mostRecentSnapshot.trackedFileBackups,
+            ...Object.fromEntries(added),
+          },
+        }
+        const snapshots = state.snapshots.slice()
+        snapshots[snapshots.length - 1] = updatedMostRecentSnapshot
+        const updatedState = { ...state, snapshots, trackedFiles }
+        maybeDumpStateForDebug(updatedState)
+        void recordFileHistorySnapshot(messageId, updatedMostRecentSnapshot, true).catch(error => {
+          logError(new Error(`FileHistory: Failed to record snapshot: ${error}`))
+        })
+        for (const [, backup] of added) {
+          logEvent('tengu_file_history_track_edit_success', {
+            isNewFile: backup.backupFileName === null,
+            version: backup.version,
+          })
+        }
+        logForDebugging(`FileHistory: Tracked ${added.length} file modification(s) in one batch`)
+        return updatedState
+      })
+    },
+  }
 }
 
 /**
@@ -484,6 +606,74 @@ export async function fileHistoryGetDiffStats(
 }
 
 /**
+ * What one stretch of the conversation did to the tracked files: the snapshot
+ * taken at `fromMessageId` against the one taken at `toMessageId`, or against
+ * the files on disk when `toMessageId` is undefined. Unlike the tool results
+ * in the transcript, this sees every write file history recorded, Eval cells
+ * and notebook edits included. Undefined when either snapshot is gone.
+ */
+export async function fileHistoryGetDiffStatsBetween(
+  state: FileHistoryState,
+  fromMessageId: UUID,
+  toMessageId: UUID | undefined,
+): Promise<DiffStats> {
+  if (!fileHistoryEnabled()) {
+    return undefined
+  }
+  const from = state.snapshots.findLast(snapshot => snapshot.messageId === fromMessageId)
+  const to = toMessageId === undefined
+    ? undefined
+    : state.snapshots.findLast(snapshot => snapshot.messageId === toMessageId)
+  if (!from || (toMessageId !== undefined && !to)) {
+    return undefined
+  }
+
+  const results = await Promise.all(
+    Object.entries(from.trackedFileBackups).map(async ([trackingPath, backup]) => {
+      try {
+        const filePath = maybeExpandFilePath(trackingPath)
+        const before = backup.backupFileName
+        let after: string | null
+        if (to) {
+          const next = to.trackedFileBackups[trackingPath]
+          // Same backup on both sides: the file did not change in between.
+          if (!next || next.backupFileName === before) return null
+          after = next.backupFileName === null ? null : await readFileAsyncOrNull(resolveBackupPath(next.backupFileName))
+        } else {
+          const changed = before === null
+            ? await pathExists(filePath)
+            : await checkOriginFileChanged(filePath, before)
+          if (!changed) return null
+          after = await readFileAsyncOrNull(filePath)
+        }
+        const beforeContent = before === null ? null : await readFileAsyncOrNull(resolveBackupPath(before))
+        if (beforeContent === null && after === null) return null
+        const stats = countLineChanges(beforeContent ?? '', after ?? '')
+        // A file made or removed counts even when it is empty.
+        if (stats.insertions || stats.deletions || (beforeContent === null) !== (after === null)) {
+          return { filePath, ...stats }
+        }
+        return null
+      } catch (error) {
+        logError(error)
+        return null
+      }
+    }),
+  )
+
+  const filesChanged: string[] = []
+  let insertions = 0
+  let deletions = 0
+  for (const r of results) {
+    if (!r) continue
+    filesChanged.push(r.filePath)
+    insertions += r.insertions
+    deletions += r.deletions
+  }
+  return { filesChanged, insertions, deletions }
+}
+
+/**
  * Lightweight boolean-only check: would rewinding to this message change any
  * file on disk? Uses the same stat/content comparison as the non-dry-run path
  * of applySnapshot (checkOriginFileChanged) instead of computeDiffStatsForFile,
@@ -702,15 +892,7 @@ async function computeDiffStatsForFile(
     filesChanged.push(originalFile)
 
     // Compute the diff
-    const changes = diffLines(originalContent ?? '', backupContent ?? '')
-    changes.forEach(c => {
-      if (c.added) {
-        insertions += c.count || 0
-      }
-      if (c.removed) {
-        deletions += c.count || 0
-      }
-    })
+    ;({ insertions, deletions } = countLineChanges(originalContent ?? '', backupContent ?? ''))
   } catch (error) {
     logError(new Error(`FileHistory: Error generating diffStats: ${error}`))
   }
@@ -719,6 +901,35 @@ async function computeDiffStatsForFile(
     filesChanged,
     insertions,
     deletions,
+  }
+}
+
+/** Lines added and removed from `before` to `after`; a diff that runs too long counts as a full rewrite. */
+function countLineChanges(before: string, after: string): { insertions: number; deletions: number } {
+  const changes = diffLines(before, after, { timeout: DIFF_TIMEOUT_MS })
+  if (!changes) return { insertions: countLines(after), deletions: countLines(before) }
+  let insertions = 0
+  let deletions = 0
+  for (const change of changes) {
+    if (change.added) insertions += change.count || 0
+    if (change.removed) deletions += change.count || 0
+  }
+  return { insertions, deletions }
+}
+
+function countLines(text: string): number {
+  if (!text) return 0
+  const lines = text.split('\n').length
+  return text.endsWith('\n') ? lines - 1 : lines
+}
+
+/** Size in bytes, or -1 when the file does not exist. */
+async function sizeOf(filePath: string): Promise<number> {
+  try {
+    return (await stat(filePath)).size
+  } catch (e: unknown) {
+    if (isENOENT(e)) return -1
+    throw e
   }
 }
 

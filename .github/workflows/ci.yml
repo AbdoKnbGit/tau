@@ -134,6 +134,9 @@ jobs:
       - name: Test Mermaid rendering and rewind
         run: node --test test/mermaid-rendering.test.mjs
 
+      - name: Test file history for code writes and the rewind list
+        run: node --test test/file-history-eval.test.mjs
+
       - name: Test foreground agent cancellation and background handoff
         run: node --test test/foreground-agent-cancellation.test.mjs
 

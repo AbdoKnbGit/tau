@@ -25,6 +25,7 @@ import {
   resolveTimeoutMs,
   splitFailure,
   summarizeBridgeCalls,
+  summarizeWrittenFiles,
 } from './format.js'
 import { PYTHON_KERNEL_SOURCE } from './kernelSource.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
@@ -378,6 +379,47 @@ test('failed bridge calls stay visible even in the aggregate', () => {
 
 test('no output produces no bridge section', () => {
   assert(summarizeBridgeCalls([]) === '', 'empty call list produced a section')
+})
+
+test('files a cell wrote are listed relative to the folder', () => {
+  const cwd = join('/work', 'site')
+  const summary = summarizeWrittenFiles(
+    [join(cwd, 'README.md'), join(cwd, 'docs', 'faq.md'), join('/elsewhere', 'notes.md')],
+    cwd,
+  )
+  assert(summary.startsWith('\n[files written by this cell]\n'), summary)
+  assert(summary.includes(`  README.md\n  ${join('docs', 'faq.md')}\n`), summary)
+  assert(summary.includes(`  ${join('/elsewhere', 'notes.md')}`), 'an outside path must stay absolute')
+  assert(summary.endsWith('Read them again before editing them with a file tool.'), summary)
+  assert(summarizeWrittenFiles([], cwd) === '', 'no writes produced a section')
+})
+
+test('a long list of written files is capped', () => {
+  const cwd = join('/work', 'site')
+  const paths = Array.from({ length: 40 }, (_, i) => join(cwd, `f${i}.md`))
+  const summary = summarizeWrittenFiles(paths, cwd)
+  assert(summary.includes('  f11.md') && !summary.includes('  f12.md'), summary)
+  assert(summary.includes('  and 28 more'), summary)
+})
+
+test('files left out of /rewind are named', () => {
+  const cwd = join('/work', 'ml')
+  const written = [join(cwd, 'train.py'), join(cwd, 'model.pt')]
+  const summary = summarizeWrittenFiles(written, cwd, [join(cwd, 'model.pt')])
+  assert(summary.includes('Read them again before editing them with a file tool.\n'), summary)
+  assert(summary.endsWith('Not backed up for /rewind (too large, or too many new files): model.pt'), summary)
+  const many = Array.from({ length: 15 }, (_, i) => join(cwd, 'out', `s${i}.json`))
+  assert(summarizeWrittenFiles(many, cwd, many).endsWith(', and 3 more'), 'a long skipped list must be capped')
+  assert(!summarizeWrittenFiles(written, cwd).includes('Not backed up'), 'nothing skipped, nothing said')
+})
+
+test('the kernel source keeps the write-backup hook', () => {
+  // The hook is the whole /rewind guarantee for plain Python writes: it must
+  // be installed and must cover every way a cell changes a file.
+  assert(PYTHON_KERNEL_SOURCE.includes('sys.addaudithook(_back_up_before_change)'), 'hook not installed')
+  for (const event of ['"open"', '"os.rename"', '"os.remove"', '"os.truncate"', '"shutil.rmtree"']) {
+    assert(PYTHON_KERNEL_SOURCE.includes(event), `hook misses ${event}`)
+  }
 })
 
 test('a bridge error is capped so it cannot fill the screen', () => {

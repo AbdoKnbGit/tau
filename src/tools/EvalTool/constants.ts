@@ -51,6 +51,8 @@ export const PROBE_TIMEOUT_MS = 4_000
 export const MAX_RESULT_CHARS = 30_000
 /** Bridge-call lines echoed into the model-facing result before aggregating. */
 export const MAX_BRIDGE_LINES = 12
+/** Files a cell wrote with plain Python, listed by name before a count. */
+export const MAX_WRITTEN_FILE_LINES = 12
 
 /**
  * Tools the kernel may NOT call through `tool.<name>(...)`.

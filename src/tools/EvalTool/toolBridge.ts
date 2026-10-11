@@ -49,6 +49,20 @@ export type BridgeRegistration = {
   onCall: (record: BridgeCallRecord) => void
   /** Suspends the cell deadline while a call is in flight. */
   budget: DeadlineBudget
+  /**
+   * Called before a plain Python write (open "w", os.replace, os.remove...)
+   * first changes an absolute path in this cell, so the host can back the file
+   * up for /rewind the way Edit does. A path that did not exist yet comes in a
+   * later batch with `created`: there was nothing to save, only the fact that
+   * the cell made it. Not a tool call: never shown as one.
+   */
+  trackWrite?: (absolutePath: string, options: { created: boolean }) => Promise<void>
+  /**
+   * Records the backups `trackWrite` took. Called before any bridged tool
+   * runs: a tool.Edit on a file the cell already wrote must find it tracked,
+   * or it would back the file up again with the changed content.
+   */
+  commitWrites?: () => Promise<void> | void
 }
 
 /**
@@ -199,6 +213,7 @@ async function invoke(
   // forever — every later cell would otherwise report that agent's identity.
   // Anything keyed on the running agent reads this: subagent file-write
   // ownership, and per-agent analytics attribution.
+  await entry.commitWrites?.()
   const cellAgentId = entry.toolUseContext.agentId
   const ambient = getAgentContext()
   const invoke = () =>
@@ -252,6 +267,28 @@ async function handle(
       .sort()
   }
 
+  if (pathname === '/v1/track') {
+    const paths = Array.isArray(body.paths)
+      ? body.paths.filter((path): path is string => typeof path === 'string')
+      : []
+    const track = entry.trackWrite
+    if (!track || paths.length === 0) return 0
+    const created = body.created === true
+    // The kernel waits on this before letting the write through, so a slow
+    // backup is not the cell hanging.
+    entry.budget.enter()
+    try {
+      for (const path of paths) {
+        await track(path, { created }).catch(error =>
+          logForDebugging(`Eval write backup failed for ${path}: ${String(error)}`, { level: 'warn' }),
+        )
+      }
+    } finally {
+      entry.budget.exit()
+    }
+    return paths.length
+  }
+
   const name = typeof body.name === 'string' ? body.name : ''
   if (!name) throw new Error('Missing tool name.')
   const args = (body.args && typeof body.args === 'object' ? body.args : {}) as Record<string, unknown>
@@ -292,7 +329,7 @@ async function startServer(): Promise<{ server: Server; info: BridgeInfo }> {
     }
 
     const pathname = (req.url ?? '').split('?')[0] ?? ''
-    if (req.method !== 'POST' || (pathname !== '/v1/tool' && pathname !== '/v1/tools')) {
+    if (req.method !== 'POST' || !['/v1/tool', '/v1/tools', '/v1/track'].includes(pathname)) {
       reply(404, { ok: false, error: 'not found' })
       return
     }

@@ -1,11 +1,19 @@
+import { isAbsolute } from 'path'
 import { z } from 'zod/v4'
 
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
+import { createFileHistoryBatch } from '../../utils/fileHistory.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { pathInAllowedWorkingPath } from '../../utils/permissions/filesystem.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { EVAL_TOOL_NAME } from './constants.js'
-import { clampOutput, resolveTimeoutMs, summarizeBridgeCalls } from './format.js'
+import {
+  clampOutput,
+  resolveTimeoutMs,
+  summarizeBridgeCalls,
+  summarizeWrittenFiles,
+} from './format.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
 import {
   describeMissingPythonModule,
@@ -179,6 +187,9 @@ export const EvalTool = buildTool({
     })
 
     const bridgeCalls: BridgeCallRecord[] = []
+    const writtenFiles = new Set<string>()
+    // One file-history update for the whole cell, not one per file written.
+    const writes = createFileHistoryBatch(toolUseContext.updateFileHistoryState, parentMessage.uuid)
     const budget = new DeadlineBudget()
     const unregister = registerBridgeSession(sessionKey, {
       tools: toolUseContext.options.tools,
@@ -188,6 +199,16 @@ export const EvalTool = buildTool({
       signal: toolUseContext.abortController.signal,
       onCall: record => bridgeCalls.push(record),
       budget,
+      // A plain Python write is about to change this file: back it up the way
+      // Edit does, so /rewind restores it. Only the session's working folders
+      // count; a cell's temp files and caches are not the user's work.
+      trackWrite: async (path, { created }) => {
+        if (!isAbsolute(path)) return
+        if (!pathInAllowedWorkingPath(path, toolUseContext.getAppState().toolPermissionContext)) return
+        writtenFiles.add(path)
+        await writes.backup(path, { createdFile: created })
+      },
+      commitWrites: () => writes.commit(),
     })
 
     try {
@@ -202,6 +223,9 @@ export const EvalTool = buildTool({
         // instead of retrying against a corpse.
         discardKernel(agentId, cwd)
       }
+      // Before the note: committing sizes the new files and settles which
+      // ones stay untracked.
+      await writes.commit()
 
       const segments: string[] = []
       if (outcome.stdout) segments.push(outcome.stdout.replace(/\n+$/, ''))
@@ -222,7 +246,7 @@ export const EvalTool = buildTool({
       for (const display of textDisplays) segments.push(display.data)
 
       const joined = segments.join('\n').trim()
-      const withBridge = `${joined}${summarizeBridgeCalls(bridgeCalls)}`
+      const withBridge = `${joined}${summarizeBridgeCalls(bridgeCalls)}${summarizeWrittenFiles([...writtenFiles], cwd, [...writes.skipped])}`
       const clamped = clampOutput(
         withBridge.trim() ||
           (outcome.ok
@@ -273,6 +297,7 @@ export const EvalTool = buildTool({
       return { data }
     } finally {
       unregister()
+      await writes.commit()
     }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {

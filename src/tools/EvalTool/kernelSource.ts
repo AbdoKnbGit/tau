@@ -221,6 +221,147 @@ def _bridge_post(path, payload):
     return data.get("value")
 
 
+# tool.Edit and write() reach the host's file tools, which back a file up
+# before changing it so /rewind can restore it. Plain Python writes did not:
+# open(..., "w"), Path.write_text, os.replace, os.remove, shutil.rmtree. This
+# audit hook (PEP 578) asks the host to back a file up the first time a cell is
+# about to change it. The host decides which paths count and records the
+# backup the way an Edit does. The hook never blocks a write: a failed backup
+# is the same as no backup.
+_BACKUP_EVENTS = frozenset(("open", "os.rename", "os.remove", "os.truncate", "shutil.rmtree"))
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+_RMTREE_BACKUP_LIMIT = 1000
+# A file that does not exist yet has nothing to save; it only has to be
+# recorded as created, so those go to the host in batches instead of one
+# round trip each, and the rest of the batch when the cell ends.
+_NEW_FILE_BATCH = 200
+_backed_up = set()
+_new_files = []
+_backup_state = threading.local()
+# One kept-alive connection: a fresh one per file cost about 12 ms on Windows,
+# which a cell writing hundreds of files would feel.
+_backup_conn = None
+_backup_lock = threading.Lock()
+
+
+def _post_backup(paths, created=False):
+    global _backup_conn
+    import http.client
+
+    base, token, session = _bridge_config()
+    body = json.dumps({"paths": paths, "created": created, "session": session, "run": _current_id}).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer " + token}
+    with _backup_lock:
+        # The second try covers a connection the host closed while idle.
+        for _attempt in (0, 1):
+            try:
+                if _backup_conn is None:
+                    _backup_conn = http.client.HTTPConnection(base.split("://", 1)[-1], timeout=120)
+                _backup_conn.request("POST", "/v1/track", body=body, headers=headers)
+                _backup_conn.getresponse().read()
+                return
+            except Exception:
+                try:
+                    _backup_conn.close()
+                except Exception:
+                    pass
+                _backup_conn = None
+
+
+def _opens_for_writing(args):
+    mode = args[1] if len(args) > 1 else None
+    if isinstance(mode, str):
+        return any(ch in mode for ch in "wax+")
+    flags = args[2] if len(args) > 2 else 0
+    return isinstance(flags, int) and bool(flags & _WRITE_FLAGS)
+
+
+def _backup_path(value):
+    if value is None or isinstance(value, int):
+        return None
+    try:
+        path = os.fsdecode(os.fspath(value))
+    except (TypeError, ValueError):
+        return None
+    if not path or "__pycache__" in path.replace("\\", "/").split("/"):
+        return None
+    return os.path.abspath(path)
+
+
+def _files_under(folder):
+    found = []
+    for parent, dirs, files in os.walk(folder):
+        dirs[:] = [name for name in dirs if name != "__pycache__"]
+        for name in files:
+            found.append(os.path.join(parent, name))
+            if len(found) >= _RMTREE_BACKUP_LIMIT:
+                return found
+    return found
+
+
+def _is_dir_fd(value):
+    # CPython reports an unset dir_fd as -1 (os.*) or None (shutil.rmtree).
+    return isinstance(value, int) and value >= 0
+
+
+def _targets(event, args):
+    # A dir_fd makes a path relative to a folder this hook cannot see; those
+    # calls are skipped rather than guessed. shutil.rmtree reports its folder
+    # before deleting, which covers the fd-relative deletes it makes inside.
+    if event == "open":
+        return (args[0],) if args and _opens_for_writing(args) else ()
+    if event == "os.rename":
+        if len(args) >= 4 and (_is_dir_fd(args[2]) or _is_dir_fd(args[3])):
+            return ()
+        return tuple(args[:2])
+    if event == "os.remove":
+        if len(args) >= 2 and _is_dir_fd(args[1]):
+            return ()
+        return tuple(args[:1])
+    if event == "os.truncate":
+        return tuple(args[:1])
+    if event == "shutil.rmtree":
+        if not args or (len(args) >= 2 and _is_dir_fd(args[1])):
+            return ()
+        folder = _backup_path(args[0])
+        return tuple(_files_under(folder)) if folder and os.path.isdir(folder) else ()
+    return ()
+
+
+def _flush_new_files():
+    with _backup_lock:
+        batch = _new_files[:]
+        del _new_files[:]
+    if batch:
+        _post_backup(batch, created=True)
+
+
+def _back_up_before_change(event, args):
+    if event not in _BACKUP_EVENTS or not _cell_running.is_set():
+        return
+    if getattr(_backup_state, "busy", False):
+        return
+    _backup_state.busy = True
+    try:
+        existing = []
+        for value in _targets(event, args):
+            path = _backup_path(value)
+            if path and path not in _backed_up:
+                _backed_up.add(path)
+                if os.path.lexists(path):
+                    existing.append(path)
+                else:
+                    _new_files.append(path)
+        if existing:
+            _post_backup(existing)
+        if len(_new_files) >= _NEW_FILE_BATCH:
+            _flush_new_files()
+    except Exception:
+        pass
+    finally:
+        _backup_state.busy = False
+
+
 class _ToolCallable:
     __slots__ = ("_name",)
 
@@ -968,6 +1109,8 @@ def _user_traceback(exc):
 def _handle_exec(request):
     global _current_id, _exec_count, _chart_audits_left, _chart_repair_figures_left, _chart_limit_hit
     _current_id = str(request.get("id", ""))
+    _backed_up.clear()
+    del _new_files[:]
     code = request.get("code") or ""
     cancelled = False
     ok = True
@@ -1050,6 +1193,10 @@ def _handle_exec(request):
     finally:
         _chart_cache.clear()
         _chart_notes.clear()
+        try:
+            _flush_new_files()
+        except Exception:
+            pass
         _cell_running.clear()
         proxy_out.flush()
         proxy_err.flush()
@@ -1069,6 +1216,7 @@ def _handle_exec(request):
 
 def main():
     port = _start_cancel_server()
+    sys.addaudithook(_back_up_before_change)
     USER_NS.update(_prelude())
     cwd = os.environ.get("TAU_EVAL_CWD")
     if cwd and os.path.isdir(cwd):

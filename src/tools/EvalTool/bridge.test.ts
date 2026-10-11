@@ -9,6 +9,9 @@
  * come back as Python data. Everything else is plumbing around it.
  */
 
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { dirname, join, relative, sep } from 'path'
 import { z } from 'zod/v4'
 
 import { PythonKernel } from './kernel.js'
@@ -67,6 +70,9 @@ async function withBridge(
   options: {
     tools: unknown[]
     decide?: (name: string) => Decision
+    cwd?: string
+    trackWrite?: (path: string, options: { created: boolean }) => Promise<void>
+    commitWrites?: () => void
   },
   body: (kernel: PythonKernel, calls: BridgeCallRecord[]) => Promise<void>,
 ): Promise<void> {
@@ -89,10 +95,12 @@ async function withBridge(
     signal: controller.signal,
     onCall: record => calls.push(record),
     budget: new DeadlineBudget(),
+    trackWrite: options.trackWrite,
+    commitWrites: options.commitWrites,
   })
 
   const kernel = new PythonKernel({
-    cwd: process.cwd(),
+    cwd: options.cwd ?? process.cwd(),
     bridgeUrl: info.url,
     bridgeToken: info.token,
     bridgeSession: sessionKey,
@@ -337,6 +345,186 @@ async function main(): Promise<void> {
       body: JSON.stringify({ session: 'x', name: 'Read', args: {} }),
     })
     assert(response.status === 403, `expected 403, got ${response.status}`)
+  })
+
+  await asyncTest('plain Python writes ask for a backup before the file changes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tau-eval-backup-'))
+    const seed: Record<string, string> = {
+      'edit.txt': 'one',
+      'append.txt': 'two',
+      'src.txt': 'three',
+      'dst.txt': 'four',
+      'gone.txt': 'five',
+      'keep.txt': 'six',
+      'tree/a.txt': 'seven',
+      'tree/b.txt': 'eight',
+    }
+    for (const [name, text] of Object.entries(seed)) {
+      mkdirSync(dirname(join(dir, name)), { recursive: true })
+      writeFileSync(join(dir, name), text)
+    }
+    // What each existing file held when the host was asked: a backup taken
+    // then is only worth anything if the write has not landed yet. A new file
+    // has nothing to save and must arrive flagged as created.
+    const seen = new Map<string, string | null>()
+    try {
+      await withBridge(
+        {
+          tools: [],
+          cwd: dir,
+          trackWrite: async (path, { created }) => {
+            const name = relative(dir, path).split(sep).join('/')
+            seen.set(name, created ? null : existsSync(path) ? readFileSync(path, 'utf8') : 'MISSING')
+          },
+        },
+        async (kernel, calls) => {
+          const code = [
+            'from pathlib import Path',
+            'import os, shutil',
+            'Path("edit.txt").write_text("ONE")',
+            'Path("edit.txt").write_text("ONE AGAIN")',
+            'with open("append.txt", "a") as f:',
+            '    f.write("+")',
+            'Path("new.txt").write_text("fresh")',
+            'os.replace("src.txt", "dst.txt")',
+            'os.remove("gone.txt")',
+            'print(open("keep.txt").read())',
+            'shutil.rmtree("tree")',
+            'os.makedirs("__pycache__", exist_ok=True)',
+            'Path("__pycache__/x.pyc").write_bytes(b"0")',
+          ].join('\n')
+          const outcome = await kernel.execute(code, { timeoutMs: 20_000 })
+          assert(outcome.ok, `cell failed: ${outcome.error?.evalue}`)
+          assert(outcome.stdout.includes('six'), `read-only open broke: ${outcome.stdout}`)
+          assert(calls.length === 0, `backups showed up as tool calls: ${JSON.stringify(calls)}`)
+        },
+      )
+      const expected: Record<string, string | null> = {
+        'append.txt': 'two',
+        'dst.txt': 'four',
+        'edit.txt': 'one',
+        'gone.txt': 'five',
+        'new.txt': null,
+        'src.txt': 'three',
+        'tree/a.txt': 'seven',
+        'tree/b.txt': 'eight',
+      }
+      const got = Object.fromEntries([...seen.entries()].sort(([a], [b]) => a.localeCompare(b)))
+      assert(
+        JSON.stringify(got) === JSON.stringify(expected),
+        `backups asked for: ${JSON.stringify(got)}`,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await asyncTest('a cell creating many files records every one as created', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tau-eval-backup-'))
+    writeFileSync(join(dir, 'existing.txt'), 'before')
+    const seen = new Map<string, string | null>()
+    try {
+      await withBridge(
+        {
+          tools: [],
+          cwd: dir,
+          trackWrite: async (path, { created }) => {
+            seen.set(relative(dir, path), created ? null : readFileSync(path, 'utf8'))
+          },
+        },
+        async kernel => {
+          const outcome = await kernel.execute(
+            'from pathlib import Path\nfor i in range(250):\n    Path(f"f{i}.txt").write_text("x")\nPath("existing.txt").write_text("after")',
+            { timeoutMs: 60_000 },
+          )
+          assert(outcome.ok, `cell failed: ${outcome.error?.evalue}`)
+        },
+      )
+      const created = [...seen.entries()].filter(([, v]) => v === null).length
+      assert(created === 250, `expected 250 created files, got ${created}`)
+      assert(seen.get('existing.txt') === 'before', `existing file backup: ${seen.get('existing.txt')}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await asyncTest('backups are recorded before a bridged tool runs', async () => {
+    // tool.Edit on a file the cell already wrote must find it tracked, or it
+    // would back the file up again with the changed content.
+    const dir = mkdtempSync(join(tmpdir(), 'tau-eval-backup-'))
+    writeFileSync(join(dir, 'a.txt'), 'before')
+    const order: string[] = []
+    try {
+      await withBridge(
+        {
+          tools: [fakeTool('Read', () => {
+            order.push('tool')
+            return 'ok'
+          })],
+          cwd: dir,
+          trackWrite: async path => {
+            order.push(`backup ${relative(dir, path)}`)
+          },
+          commitWrites: () => {
+            order.push('commit')
+          },
+        },
+        async kernel => {
+          const outcome = await kernel.execute(
+            'from pathlib import Path\nPath("a.txt").write_text("after")\ntool.Read(file_path="a.txt")',
+            { timeoutMs: 20_000 },
+          )
+          assert(outcome.ok, `cell failed: ${outcome.error?.evalue}`)
+        },
+      )
+      assert(
+        JSON.stringify(order) === JSON.stringify(['backup a.txt', 'commit', 'tool']),
+        `order: ${JSON.stringify(order)}`,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await asyncTest('a failing backup never blocks the write', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tau-eval-backup-'))
+    try {
+      await withBridge(
+        {
+          tools: [],
+          cwd: dir,
+          trackWrite: async () => {
+            throw new Error('disk full')
+          },
+        },
+        async kernel => {
+          const outcome = await kernel.execute(
+            'from pathlib import Path\nPath("out.txt").write_text("done")\nprint(Path("out.txt").read_text())',
+            { timeoutMs: 20_000 },
+          )
+          assert(outcome.ok, `cell failed: ${outcome.error?.evalue}`)
+          assert(outcome.stdout.includes('done'), `write did not land: ${outcome.stdout}`)
+        },
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await asyncTest('writes still work when the host tracks nothing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tau-eval-backup-'))
+    try {
+      await withBridge({ tools: [], cwd: dir }, async kernel => {
+        const outcome = await kernel.execute(
+          'import os\nopen("a.txt", "w").write("x")\nos.replace("a.txt", "b.txt")\nprint(sorted(os.listdir(".")))',
+          { timeoutMs: 20_000 },
+        )
+        assert(outcome.ok, `cell failed: ${outcome.error?.evalue}`)
+        assert(outcome.stdout.includes("['b.txt']"), outcome.stdout)
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   await asyncTest('the bridge only listens on loopback', async () => {
