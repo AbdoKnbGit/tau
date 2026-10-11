@@ -69,9 +69,11 @@ assert.ok(tools.every(Boolean), 'all four tools must be present in the registry'
 test('prompt compression leaves all four parameter schemas unchanged', async () => {
   // Fingerprints of the full serialized input schemas before prompt compression:
   // names, types, descriptions, enums, defaults, bounds and required fields.
+  // Agent's was re-pinned after a677b2b reworded its `model` description for
+  // Mistral routing; with the old sentence it still hashes to b8d1fa71...
   const expected = {
     Browser: '365799a28a08395d81600c65806f5cc465b8362d07d5e3f7f729fbac2c5980d4',
-    Agent: 'b8d1fa710090cadc8a8ec59eb409b06d97829a32408275bcac7acf805a443b0a',
+    Agent: '22e6ea016a31c1c1cb909e7cc2663fa309efa7307c4ee78689315062011fbfdc',
     Bash: '753cf35982446613ce9c6768358e8702a64dd0cc3ea6f69b056c66f778d92a4b',
     Eval: '2599a200679af39f9daaa3938e69dc4a09a48eae6fbc6903211f836aaa0948d6',
   }

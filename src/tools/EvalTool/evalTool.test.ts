@@ -260,11 +260,11 @@ test('cheap mode tells the model the kernel is still available', () => {
   assert(at !== -1, 'the cheap-mode section was renamed')
   const section = source.slice(at, source.indexOf('\n}', at))
   assert(
-    section.includes('persistent kernel'),
+    section.includes('persistent Python kernel'),
     'cheap mode no longer affirms the kernel capability',
   )
   assert(
-    section.includes('Delegation is off'),
+    /Subagents\/delegation\b[^.]*\bare off\b/.test(section),
     'cheap mode no longer explains why the kernel matters there',
   )
 })
