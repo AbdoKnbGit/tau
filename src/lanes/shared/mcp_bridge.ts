@@ -195,9 +195,14 @@ Bash autonomy: run them yourself. Skill tool: use relevant skills; Only use list
 `
 
 /**
- * Codex tool-usage rules. Matches Codex's concise native tone from the
- * captured system prompt — "tool calls are structured, follow schema
- * exactly, apply_patch is the edit primitive."
+ * Codex tool-usage rules, in Codex's concise native tone. They name no
+ * tools: the request's tool list is the whole inventory (this lane never
+ * defers schemas), and a name written here either repeats that list or
+ * points GPT models at a Codex-native tool Tau does not send (apply_patch,
+ * exec, update_plan, ...), which costs failed calls and tool hunts through
+ * the shell. Tau's prompt still says Read/Bash where this lane sends
+ * read_file/shell; the "same job" rule maps those without listing them.
+ * Static text, so it never moves the cached prefix.
  */
 export const CODEX_TOOL_USAGE_RULES = `<tool_use_rules>
 ${MCP_INSTRUCTION_UPDATES_GUIDANCE}
@@ -206,7 +211,7 @@ Tool parameter schemas are authoritative. Never call a tool with missing require
 
 Each tool description ends with a "STRICT PARAMETERS:" line listing required fields first. Use it as your quick reference before you emit the call.
 
-For file edits, apply_patch is the primary edit primitive — use it for all in-place modifications. Use write_file only for brand-new files.
+Your tool list is complete: call only the tools it lists, by their exact names. Where these instructions name a tool that is not listed, use the listed tool with the same job. If a capability seems missing, use the closest listed tool instead of hunting for unlisted tool names through shell or code.
 
 When a shell or tool call fails, diagnose first: exit code, error text, binary/path/shell. Make ONE focused fix; don't iterate cosmetic variants (swap shells, retry same path, tweak flags). Blind retries waste input tokens — if two attempts fail the same way, stop and investigate. For unfamiliar CLIs, check \`--help\` once before invoking.
 </tool_use_rules>

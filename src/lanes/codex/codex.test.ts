@@ -20,6 +20,7 @@ import {
 import { assembleCodexSystemPrompt } from './prompt.js'
 import { CODEX_TOOL_REGISTRY, getCodexRegistrationByNativeName } from './tools.js'
 import { findCodexToolSchemaViolations } from './tool_schema.js'
+import { CODEX_TOOL_USAGE_RULES } from '../shared/mcp_bridge.js'
 import {
   cycleOpenAIReasoningLevel,
   getAllReasoningLevels,
@@ -229,6 +230,17 @@ async function main(): Promise<void> {
         assert(!deepContainsKey(tool.parameters, key), `${tool.name} ${key} leaked`)
       }
     }
+  })
+
+  await test('Codex rules name no tool the request does not declare', () => {
+    // Tau's own names go through the same renaming a real session's tools get.
+    const tauTools = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'Eval']
+      .map(name => ({ name, description: name, input_schema: { type: 'object', properties: {} } }))
+    const declared = new Set((buildCodexToolsFromRequest(tauTools as any) ?? []).map(tool => tool.name))
+    // In the prose (tags stripped), snake_case words are tool names.
+    const named = CODEX_TOOL_USAGE_RULES.replace(/<[^>]*>/g, '').match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []
+    const undeclared = [...new Set(named)].filter(name => !declared.has(name))
+    assert(undeclared.length === 0, `rules name undeclared tools: ${undeclared.join(', ')}`)
   })
 
   await test('optional fields stay optional on the wire (no all-required, no nullable rewrite)', () => {
