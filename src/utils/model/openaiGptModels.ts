@@ -3,12 +3,13 @@ import type { APIProvider } from './providers.js'
 
 /**
  * The OpenAI (Codex) model catalog, shared by the Codex lane and the legacy
- * OpenAI provider. Ids and windows are models.dev's (2026-09-26): every
- * GPT-6 and GPT-5.6 model has a 1,050,000-token window whose prompt ceiling
+ * OpenAI provider. Ids and windows are models.dev's (GPT-6.1 Sol checked
+ * 2026-10-12): every listed model has a 1,050,000-token window whose prompt ceiling
  * is 922,000 tokens; contextWindows.ts holds compaction to that ceiling from
  * the same catalog.
  */
 export const OPENAI_CODEX_MODELS: readonly ModelInfo[] = [
+  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', contextWindow: 1050000, supportsToolCalling: true, tags: ['reasoning'] },
   { id: 'gpt-6-sol', name: 'GPT-6 Sol', contextWindow: 1050000, supportsToolCalling: true, tags: ['recommended', 'reasoning'] },
   { id: 'gpt-6-astra', name: 'GPT-6 Astra', contextWindow: 1050000, supportsToolCalling: true, tags: ['reasoning'] },
   { id: 'gpt-6-luna', name: 'GPT-6 Luna', contextWindow: 1050000, supportsToolCalling: true, tags: ['fast', 'reasoning'] },

@@ -261,6 +261,25 @@ async function main(): Promise<void> {
       }
       sockets.closeAll()
       assert((caught as { code?: string })?.code === 'ECONNRESET', `got ${String(caught)}`)
+      assert((caught as { closeCode?: number })?.closeCode === 1006, 'abrupt close must keep its code')
+      assert(typeof (caught as { closeReason?: string })?.closeReason === 'string', 'close details must preserve the runtime reason')
+      assert(String(caught).includes('code 1006'), `missing close details: ${String(caught)}`)
+    })
+  })
+
+  await test('a close frame preserves its code and server reason', async () => {
+    await withServer(ws => {
+      send(ws, { type: 'response.created', response: { id: 'r' } })
+      setTimeout(() => ws.close(1011, 'fixture backend restart'), 20)
+    }, async url => {
+      const sockets = new CodexResponsesSockets()
+      const started = await sockets.start(`${url}/responses`, {}, { input: [] }, 'k')
+      let caught: unknown
+      try { await drain(started) } catch (error) { caught = error }
+      sockets.closeAll()
+      assert((caught as { closeCode?: number })?.closeCode === 1011, `got ${String(caught)}`)
+      assert((caught as { closeReason?: string })?.closeReason === 'fixture backend restart', `got ${String(caught)}`)
+      assert(String(caught).includes('code 1011: fixture backend restart'), `missing close details: ${String(caught)}`)
     })
   })
 

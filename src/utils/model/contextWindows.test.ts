@@ -62,6 +62,7 @@ const PAYLOAD = {
   },
   openai: {
     models: {
+      'gpt-6.1-sol': { limit: { context: 1_050_000, input: 922_000, output: 128_000 } },
       'gpt-5.5': { limit: { context: 1_050_000, input: 922_000, output: 128_000 } },
     },
   },
@@ -78,6 +79,27 @@ function useCatalogue(payload: unknown): void {
 }
 
 console.log('context windows:')
+
+test('GPT-6.1 Sol has its input ceiling before a catalog or picker is loaded', () => {
+  useCatalogue({})
+  assert(getProviderCatalogContextWindow('gpt-6.1-sol', 'openai') === 922_000,
+    'expected the 922K OpenAI input ceiling without a catalog')
+  assert(getProviderCatalogContextWindow('gpt-6.1-sol', 'openrouter') === undefined,
+    'OpenAI fallback must not change another host')
+})
+
+test('GPT-6.1 Sol stays within the input limit after /models records its total window', () => {
+  recordProviderModelContextWindows('openai', [
+    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', contextWindow: 1_050_000 },
+  ])
+  for (const catalog of [{}, PAYLOAD]) {
+    useCatalogue(catalog)
+    for (const model of ['gpt-6.1-sol', 'openai/gpt-6.1-sol', 'gpt-6.1-sol-xhigh']) {
+      assert(getProviderCatalogContextWindow(model, 'openai') === 922_000,
+        `expected 922K input ceiling for ${model}`)
+    }
+  }
+})
 
 test('OpenCode Zen claude-fable-5-1 gets its real 1M window, not the 200K default', () => {
   useCatalogue(PAYLOAD)

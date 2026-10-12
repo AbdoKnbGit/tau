@@ -15,7 +15,8 @@ const fixtureDirectory = mkdtempSync(join(tempRoot, 'tau-openai-ws-'))
 process.env.CLAUDE_CONFIG_DIR = fixtureDirectory
 process.env.DISABLE_TELEMETRY = '1'
 const openaiEnv = ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_CHATGPT_ACCESS_TOKEN',
-  'OPENAI_CHATGPT_ACCOUNT_ID', 'OPENAI_CHATGPT_ID_TOKEN', 'CLAUDEX_NATIVE_LANES', 'TAU_CODEX_WEBSOCKET']
+  'OPENAI_CHATGPT_ACCOUNT_ID', 'OPENAI_CHATGPT_ID_TOKEN', 'CLAUDEX_NATIVE_LANES', 'TAU_CODEX_WEBSOCKET',
+  'CLAUDE_CODE_EFFORT_LEVEL']
 for (const key of openaiEnv) delete process.env[key]
 
 const r = await loadMcpRuntime({
@@ -99,12 +100,13 @@ test.beforeEach(() => {
   r.installNativeLaneReadinessResolver(r.providerUsesNativeLane)
 })
 
-async function send(sessionId = 'conversation-fixture') {
+async function send(sessionId = 'conversation-fixture', overrides = {}) {
   const shim = r.createProviderShim('openai', 'repl_main_thread')
   assert.equal(shim._provider.name, 'codex')
   const response = await shim.beta.messages.create({
     model: 'gpt-5.6-luna', messages: [{ role: 'user', content: 'hello' }],
     system: 'Fixture instructions', tools: [], max_tokens: 64, sessionId, stream: true,
+    ...overrides,
   })
   const received = []
   for await (const event of response) received.push(event)
@@ -137,6 +139,44 @@ test('the socket carries the same request body HTTP would send', async () => {
   assert.equal(type, 'response.create')
   assert.deepEqual(include, httpInclude ?? [])
   assert.deepEqual(overSocket, overHttp)
+})
+
+test('GPT-6.1 Sol is listed by the native lane with the published total window', async () => {
+  const shim = r.createProviderShim('openai', 'repl_main_thread')
+  const models = await shim._provider.listModels()
+  const model = models.find(model => model.id === 'gpt-6.1-sol')
+  assert.equal(model?.name, 'GPT-6.1 Sol')
+  assert.equal(model?.contextWindow, 1_050_000)
+  assert.equal(model?.supportsToolCalling, true)
+  assert.ok(model?.tags?.includes('reasoning'))
+})
+
+test('GPT-6.1 Sol sends all five efforts identically over HTTP and WebSocket with a stable prefix', async () => {
+  const levels = ['low', 'medium', 'high', 'xhigh', 'max']
+  for (const websocket of [false, true]) {
+    process.env.TAU_CODEX_WEBSOCKET = websocket ? '1' : '0'
+    r.codexApi.clearChain()
+    for (const effortValue of levels) {
+      // Repeated requests prove the same model/effort has a stable body.
+      for (let repeat = 0; repeat < 2; repeat++) {
+        await send('conversation-fixture', { model: 'gpt-6.1-sol', effortValue })
+      }
+    }
+  }
+  assert.equal(seen.connections.length, 1)
+  assert.equal(seen.httpRequests.length, levels.length * 2)
+  assert.equal(seen.socketRequests.length, levels.length * 2)
+  for (let i = 0; i < seen.httpRequests.length; i++) {
+    const { type, ...socketBody } = seen.socketRequests[i]
+    const httpBody = seen.httpRequests[i]
+    assert.equal(type, 'response.create')
+    assert.deepEqual(socketBody, httpBody)
+    assert.equal(httpBody.model, 'gpt-6.1-sol')
+    assert.deepEqual(httpBody.reasoning, { effort: levels[Math.floor(i / 2)], summary: 'auto' })
+    assert.equal(httpBody.prompt_cache_key, 'conversation-fixture')
+    assert.equal(httpBody.service_tier, undefined)
+    assert.deepEqual({ ...httpBody, reasoning: seen.httpRequests[0].reasoning }, seen.httpRequests[0])
+  }
 })
 
 test('another conversation gets its own socket', async () => {

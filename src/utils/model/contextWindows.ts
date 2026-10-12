@@ -47,9 +47,10 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
       ]),
     ),
   ),
-  // GPT-6 on the OpenAI (Codex) provider, per models.dev (2026-09-26). The
-  // 922,000-token prompt ceiling comes from the same catalog when it is loaded.
+  // GPT-6 on the OpenAI (Codex) provider, per models.dev (2026-09-26;
+  // GPT-6.1 Sol added 2026-10-12). Input ceilings are applied separately below.
   openai: {
+    'gpt-6.1-sol': OPENAI_LONG_CONTEXT_WINDOW,
     'gpt-6-sol': OPENAI_LONG_CONTEXT_WINDOW,
     'gpt-6-luna': OPENAI_LONG_CONTEXT_WINDOW,
     'gpt-6-astra': OPENAI_LONG_CONTEXT_WINDOW,
@@ -485,7 +486,11 @@ function capToPromptCeiling(
   if (ANTHROPIC_NATIVE_PROVIDERS.has(provider)) {
     return window
   }
+  // GPT-6.1 Sol: models.dev's OpenAI row (2026-10-12). Keep its input
+  // ceiling even before the catalog is cached, including after /models
+  // records the larger total window. Other hosts retain their own limits.
   const ceiling = lookupCatalogPromptCeiling(provider, candidates)
+    ?? (provider === 'openai' && candidates.includes('gpt-6.1-sol') ? 922_000 : undefined)
   return ceiling !== undefined && ceiling < window ? ceiling : window
 }
 

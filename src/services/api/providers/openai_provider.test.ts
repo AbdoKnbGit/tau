@@ -42,7 +42,7 @@ async function main(): Promise<void> {
 
   const originalFetch = globalThis.fetch
   try {
-    await test('shows only the current curated OpenAI GPT-6 and GPT-5.6 models', async () => {
+    await test('shows only the current curated OpenAI GPT-6.1, GPT-6 and GPT-5.6 models', async () => {
       globalThis.fetch = (async () =>
         new Response(JSON.stringify({
           data: [
@@ -56,6 +56,7 @@ async function main(): Promise<void> {
       const provider = new OpenAIProvider({ apiKey: 'test-key' })
       const models = await provider.listModels()
       const curated = [
+        ['gpt-6.1-sol', 'GPT-6.1 Sol'],
         ['gpt-6-sol', 'GPT-6 Sol'],
         ['gpt-6-astra', 'GPT-6 Astra'],
         ['gpt-6-luna', 'GPT-6 Luna'],
@@ -107,6 +108,8 @@ async function main(): Promise<void> {
         messages: [{ role: 'user', content: 'hi' }],
         max_tokens: 100,
         sessionId: 'tau-session-stable',
+        // Isolate the cache-key assertion from the user's settings cascade.
+        effortValue: 'high',
       })
 
       assert(capturedUrl.endsWith('/chat/completions'), `unexpected URL ${capturedUrl}`)

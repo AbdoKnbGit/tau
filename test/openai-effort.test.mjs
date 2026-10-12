@@ -189,12 +189,13 @@ test('auto/unset clears stale picker state and suppresses inherited effort and t
   assert.equal(r.getInitialEffortSetting(), undefined)
   assert.equal(r.getOpenAIReasoningLevel('gpt-6-luna'), 'medium')
   for (const send of [sendNative, sendLegacy]) {
-    assert.equal((await send({ effortValue: null })).body.reasoning, undefined)
+    assert.deepEqual((await send({ effortValue: null })).body.reasoning,
+      send === sendNative ? { summary: 'auto' } : undefined)
     configure('max')
     for (const env of ['auto', 'unset']) {
       process.env.CLAUDE_CODE_EFFORT_LEVEL = env
       const { body } = await send({ effortValue: 'xhigh', thinking: { type: 'enabled', budget_tokens: 16000 } })
-      assert.equal(body.reasoning, undefined)
+      assert.deepEqual(body.reasoning, send === sendNative ? { summary: 'auto' } : undefined)
       assert.equal(body.reasoning_effort, undefined)
       assert.equal(r.getDisplayedEffortLevel('gpt-6-luna', 'xhigh'), 'medium')
     }
@@ -206,7 +207,7 @@ test('invalid settings do not erase other settings or send an invalid API value'
   for (const value of ['ultra', 'invalid', 42, null, {}, []]) {
     configure(value)
     assert.equal(r.getInitialEffortSetting(), undefined)
-    assert.equal((await sendNative()).body.reasoning, undefined)
+    assert.deepEqual((await sendNative()).body.reasoning, { summary: 'auto' })
   }
   configure('xhigh')
   process.env.CLAUDE_CODE_EFFORT_LEVEL = 'invalid'
@@ -278,19 +279,38 @@ test('concurrent request efforts do not mutate the session preference', async ()
   assert.equal(r.getOpenAIReasoningLevel('gpt-6-luna'), 'xhigh')
 })
 
-test('effort changes preserve prompt bytes, tool order, session affinity and store policy', async () => {
-  for (const send of [sendNative, sendLegacy]) {
-    const first = (await send({ effortValue: 'low' })).body
-    const repeated = (await send({ effortValue: 'low' })).body
-    assert.deepEqual(repeated, first)
-    const changed = (await send({ effortValue: 'max' })).body
-    assert.equal(changed.reasoning.effort, 'max')
-    assert.deepEqual({ ...changed, reasoning: first.reasoning }, first)
-    assert.equal(changed.store, false)
-    assert.equal(changed.prompt_cache_key, 'effort-session')
-    assert.equal(changed.effortValue, undefined, 'internal override must not leak to the wire')
+test('GPT-6.1 Sol reads and sends every supported effort without a downgrade', async () => {
+  assert.deepEqual(r.getAllReasoningLevels('gpt-6.1-sol'), levels)
+  for (const level of levels) {
+    configure(level)
+    assert.equal(r.getOpenAIReasoningLevel('gpt-6.1-sol'), level)
+    for (const send of [sendNative, sendLegacy]) {
+      const { body } = await send({ model: 'gpt-6.1-sol' })
+      assert.equal(body.model, 'gpt-6.1-sol')
+      assert.deepEqual(body.reasoning, send === sendNative
+        ? { effort: level, summary: 'auto' } : { effort: level })
+      assert.equal(body.service_tier, undefined, 'catalog modes must not enable themselves')
+    }
   }
+  configure('low')
+  assert.equal((await sendNative({ model: 'gpt-6.1-sol', effortValue: 'xhigh' })).body.reasoning.effort, 'xhigh')
 })
+
+for (const model of ['gpt-6-luna', 'gpt-6.1-sol']) {
+  test(`${model}: effort changes preserve prompt bytes, tool order, session affinity and store policy`, async () => {
+    for (const send of [sendNative, sendLegacy]) {
+      const first = (await send({ model, effortValue: 'low' })).body
+      const repeated = (await send({ model, effortValue: 'low' })).body
+      assert.deepEqual(repeated, first)
+      const changed = (await send({ model, effortValue: 'max' })).body
+      assert.equal(changed.reasoning.effort, 'max')
+      assert.deepEqual({ ...changed, reasoning: first.reasoning }, first)
+      assert.equal(changed.store, false)
+      assert.equal(changed.prompt_cache_key, 'effort-session')
+      assert.equal(changed.effortValue, undefined, 'internal override must not leak to the wire')
+    }
+  })
+}
 
 test('canceling a picker preview cannot change the effective session effort', async () => {
   configure('high')
@@ -334,7 +354,7 @@ test('environment parsing rejects malformed numeric overrides and handles whites
   assert.equal(r.parseEffortValue('  XHIGH  '), 'xhigh')
   configure('xhigh')
   process.env.CLAUDE_CODE_EFFORT_LEVEL = '  AUTO  '
-  assert.equal(r.resolveReasoning(undefined, 'gpt-6-luna'), undefined)
+  assert.deepEqual(r.resolveReasoning(undefined, 'gpt-6-luna'), { summary: 'auto' })
   process.env.CLAUDE_CODE_EFFORT_LEVEL = '12junk'
   assert.equal(r.resolveReasoning(undefined, 'gpt-6-luna').effort, 'xhigh')
   assert.equal(r.resolveReasoning(undefined, 'gpt-6-luna', 'ultracode').effort, 'max')

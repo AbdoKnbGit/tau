@@ -257,7 +257,8 @@ export function enqueueAgentNotification({
 </${TASK_NOTIFICATION_TAG}>`;
   enqueuePendingNotification({
     value: message,
-    mode: 'task-notification'
+    mode: 'task-notification',
+    taskNotificationType: 'local_agent'
   });
 }
 

@@ -13,6 +13,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os'
 import { dirname, join, relative, sep } from 'path'
 import { z } from 'zod/v4'
+import { getAgentContext, runWithAgentContext } from '../../utils/agentContext.js'
+import { getForcedProvider, runWithForcedProvider } from '../../utils/forcedProvider.js'
+import type { APIProvider } from '../../utils/model/providerRegistry.js'
 
 import { PythonKernel } from './kernel.js'
 import { resolvePythonInterpreter } from './pythonRuntime.js'
@@ -69,6 +72,9 @@ type Decision = { behavior: 'allow' | 'deny'; message?: string }
 async function withBridge(
   options: {
     tools: unknown[]
+    provider?: APIProvider
+    model?: string
+    agentId?: string
     decide?: (name: string) => Decision
     cwd?: string
     trackWrite?: (path: string, options: { created: boolean }) => Promise<void>
@@ -84,7 +90,12 @@ async function withBridge(
   const unregister = registerBridgeSession(sessionKey, {
     // The fakes only need to satisfy the fields the bridge actually reads.
     tools: options.tools as never,
-    toolUseContext: { abortController: controller } as never,
+    provider: getForcedProvider() ?? options.provider,
+    toolUseContext: {
+      abortController: controller,
+      agentId: options.agentId,
+      options: { mainLoopModel: options.model },
+    } as never,
     canUseTool: (async (tool: { name: string }, input: unknown) => {
       const decision = options.decide?.(tool.name) ?? { behavior: 'allow' as const }
       return decision.behavior === 'allow'
@@ -120,6 +131,151 @@ async function main(): Promise<void> {
     return
   }
   console.log('\ntool bridge (python -> host -> tool -> python)')
+
+  for (const model of ['gpt-6-sol', 'gpt-5.6-luna']) {
+    await asyncTest(`${model}: Codex aliases adapt inputs and return Tau results`, async () => {
+      const seen: Array<{ name: string; input: Record<string, unknown> }> = []
+      const read = {
+        ...fakeTool('Read', input => {
+          seen.push({ name: 'Read', input })
+          return 'file contents'
+        }),
+        inputSchema: z.object({ file_path: z.string(), offset: z.number().optional() }),
+      }
+      const bash = {
+        ...fakeTool('Bash', input => {
+          seen.push({ name: 'Bash', input })
+          return 'shell result'
+        }),
+        inputSchema: z.object({ command: z.string(), workdir: z.string(), run_in_background: z.boolean() }),
+      }
+      const grep = {
+        ...fakeTool('Grep', input => {
+          seen.push({ name: 'Grep', input })
+          return 'grep result'
+        }),
+        inputSchema: z.object({ pattern: z.string(), glob: z.string(), output_mode: z.string() }),
+      }
+      await withBridge({ provider: 'openai', model, tools: [read, bash, grep] }, async (kernel, calls) => {
+        const outcome = await kernel.execute([
+          'assert tool.read_file(file_path="demo.txt", offset=2) == tool.Read(file_path="demo.txt", offset=2)',
+          `assert tool.shell(command="echo hello", directory=${JSON.stringify(process.cwd())}, run_in_background=True) == "shell result"`,
+          'assert tool.search_code(pattern="needle", include="*.ts", output_mode="content") == "grep result"',
+          'names = tool.list()',
+          'assert "Read" in names and "read_file (Read)" in names',
+          'assert "shell (Bash)" in names and "search_code (Grep)" in names',
+          'assert not any("apply_patch" in name or "list_directory" in name for name in names)',
+        ].join('\n'), { timeoutMs: 20_000 })
+        assert(outcome.ok, outcome.error?.traceback ?? 'alias cell failed')
+        assert(JSON.stringify(seen[0]?.input) === JSON.stringify(seen[1]?.input), 'read alias differs from Tau call')
+        assert(seen[2]?.input.workdir === process.cwd(), 'shell directory did not adapt to workdir')
+        assert(seen[3]?.input.glob === '*.ts', 'search include did not adapt to glob')
+        assert(calls.map(call => call.name).join(',') === 'Read,Read,Bash,Grep', 'calls did not retain Tau identities')
+      })
+    })
+  }
+
+  await asyncTest('undeclared, absent, unknown and other-lane aliases keep the existing error', async () => {
+    await withBridge({ provider: 'openai', tools: [fakeTool('Read', () => 'ok')] }, async kernel => {
+      const outcome = await kernel.execute([
+        'for name in ["apply_patch", "list_directory", "write_file", "run_shell_command", "not_a_tool"]:',
+        '    try:',
+        '        getattr(tool, name)({})',
+        '        raise AssertionError("unexpected alias: " + name)',
+        '    except ToolBridgeError as error:',
+        '        assert str(error) == name + " is not a tool in this session. Call tool.list() to see what is available."',
+      ].join('\n'), { timeoutMs: 20_000 })
+      assert(outcome.ok, outcome.error?.traceback ?? 'unexpected lookup result')
+    })
+  })
+
+  await asyncTest('exact tool names win over native aliases', async () => {
+    await withBridge({
+      provider: 'openai',
+      tools: [fakeTool('Read', () => 'Tau Read'), fakeTool('read_file', () => 'exact name')],
+    }, async kernel => {
+      const outcome = await kernel.execute([
+        'assert tool.read_file(file_path="x") == "exact name"',
+        'assert tool.Read(file_path="x") == "Tau Read"',
+        'assert "read_file" in tool.list() and "read_file (Read)" not in tool.list()',
+      ].join('\n'), { timeoutMs: 20_000 })
+      assert(outcome.ok, outcome.error?.traceback ?? 'exact name lost')
+    })
+  })
+
+  await asyncTest('alias calls retain permission and bridge eligibility checks', async () => {
+    let ran = false
+    await withBridge({
+      provider: 'openai',
+      tools: [fakeTool('Read', () => { ran = true; return 'never' }), interactiveFakeTool('Write')],
+      decide: name => ({ behavior: 'deny', message: `denied ${name}` }),
+    }, async kernel => {
+      const outcome = await kernel.execute([
+        'try:',
+        '    tool.read_file(file_path="x")',
+        'except ToolBridgeError as error:',
+        '    assert "denied Read" in str(error)',
+        'else:',
+        '    raise AssertionError("permission skipped")',
+        'try:',
+        '    tool.write_file(file_path="x", content="y")',
+        'except ToolBridgeError as error:',
+        '    assert "cannot run from inside a cell" in str(error)',
+        'else:',
+        '    raise AssertionError("interactive alias accepted")',
+        'assert "write_file (Write)" not in tool.list()',
+      ].join('\n'), { timeoutMs: 20_000 })
+      assert(outcome.ok, outcome.error?.traceback ?? 'permission cell failed')
+      assert(!ran, 'denied alias ran')
+    })
+  })
+
+  await asyncTest('provider routing belongs to the cell, including pinned subagents', async () => {
+    for (const provider of ['openai', 'gemini'] as const) {
+      const agentId = `alias-${provider}`
+      await runWithAgentContext({ agentId, agentType: 'subagent' }, () =>
+        runWithForcedProvider({ provider }, () => withBridge({
+          // Deliberately give the other global provider/model. The agent's
+          // pin remains authoritative under existing provider routing.
+          provider: provider === 'openai' ? 'gemini' : 'openai',
+          model: provider === 'openai' ? 'gemini-2.5-pro' : 'gpt-6-sol',
+          agentId,
+          tools: [fakeTool('Read', () => {
+            assert(getForcedProvider() === provider, 'listener inherited another provider')
+            assert(getAgentContext()?.agentId === agentId, 'listener inherited another agent')
+            return 'owner restored'
+          })],
+          decide: () => {
+            assert(getForcedProvider() === provider, 'permission checked under wrong provider')
+            assert(getAgentContext()?.agentId === agentId, 'permission checked under wrong agent')
+            return { behavior: 'allow' }
+          },
+        }, async kernel => {
+          const code = provider === 'openai'
+            ? 'assert tool.read_file(file_path="x") == "owner restored"'
+            : [
+                'assert tool.Read(file_path="x") == "owner restored"',
+                'assert "read_file (Read)" not in tool.list()',
+                'try:',
+                '    tool.read_file(file_path="x")',
+                'except ToolBridgeError as error:',
+                '    assert "is not a tool in this session" in str(error)',
+                'else:',
+                '    raise AssertionError("OpenAI alias leaked to Gemini")',
+              ].join('\n')
+          const outcome = await kernel.execute(code, { timeoutMs: 20_000 })
+          assert(outcome.ok, outcome.error?.traceback ?? 'provider scope failed')
+        })),
+      )
+    }
+  })
+
+  await asyncTest('unpinned provider correction uses the owning cell model', async () => {
+    await withBridge({ provider: 'gemini', model: 'gpt-5.6-luna', tools: [fakeTool('Read', () => 'routed')] }, async kernel => {
+      const outcome = await kernel.execute('assert tool.read_file(file_path="x") == "routed"', { timeoutMs: 20_000 })
+      assert(outcome.ok, outcome.error?.traceback ?? 'effective provider was ignored')
+    })
+  })
 
   await asyncTest('a cell calls a real tool and gets its text back', async () => {
     await withBridge(

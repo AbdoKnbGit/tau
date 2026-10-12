@@ -352,6 +352,15 @@ export function getCodexRegistrationByNativeName(name: string): LaneToolRegistra
   return _byNativeName.get(name)
 }
 
+/** The registration actually declared for a session tool, in wire order. */
+export function getCodexRegistrationForTool(name: string): LaneToolRegistration | undefined {
+  // Several entries can share an implementation (shell/list_directory). Only
+  // the first is declared for that Tau name; an unused registry entry is not
+  // an alias the model was offered.
+  return CODEX_TOOL_REGISTRY.find(reg => reg.implId === name)
+    ?? getCodexRegistrationByNativeName(name)
+}
+
 const _byNativeName = new Map<string, LaneToolRegistration>()
 function ensureIndexed(): void {
   if (_byNativeName.size > 0) return

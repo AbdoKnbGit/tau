@@ -230,7 +230,7 @@ export class PythonKernel {
    */
   async execute(
     code: string,
-    opts: { timeoutMs: number; signal?: AbortSignal; budget?: DeadlineBudget },
+    opts: { timeoutMs: number; signal?: AbortSignal; budget?: DeadlineBudget; cwd?: string },
   ): Promise<CellOutcome> {
     if (!this.isAlive()) await this.start()
     // `#onFrame` is a single slot, so two overlapping cells would steal each
@@ -404,7 +404,7 @@ export class PythonKernel {
       }
 
       try {
-        this.#send({ type: 'exec', id, code })
+        this.#send({ type: 'exec', id, code, ...(opts.cwd !== undefined && { cwd: opts.cwd }) })
       } catch (sendError) {
         // The timers are armed above; without clearing them here the poll
         // interval would outlive the rejected call and tick forever.

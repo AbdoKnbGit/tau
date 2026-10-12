@@ -46,7 +46,7 @@ export type CodexInputItem =
   | { type: 'function_call_output'; call_id: string; output: string }
   | { type: 'custom_tool_call'; call_id: string; name: string; input: string }
   | { type: 'custom_tool_call_output'; call_id: string; output: string }
-  | { type: 'reasoning'; id?: string; summary?: Array<{ type: 'summary_text'; text: string }>; content?: Array<{ type: 'reasoning_text'; text: string }> }
+  | { type: 'reasoning'; id?: string; encrypted_content?: string; summary?: Array<{ type: 'summary_text'; text: string }>; content?: Array<{ type: 'reasoning_text'; text: string }> }
 
 export type CodexContentPart =
   | { type: 'input_text'; text: string }
@@ -128,7 +128,7 @@ export type CodexStreamEvent =
 
 export type CodexOutputItem =
   | { type: 'message'; id: string; role: 'assistant'; content: Array<{ type: 'output_text'; text: string; annotations?: unknown[] }> }
-  | { type: 'reasoning'; id: string; summary?: Array<{ type: 'summary_text'; text: string }>; content?: Array<{ type: 'reasoning_text'; text: string }> }
+  | { type: 'reasoning'; id: string; encrypted_content?: string; summary?: Array<{ type: 'summary_text'; text: string }>; content?: Array<{ type: 'reasoning_text'; text: string }> }
   | { type: 'function_call'; id: string; call_id: string; name: string; arguments: string }
   | { type: 'custom_tool_call'; id: string; call_id: string; name: string; input: string }
 

@@ -89,6 +89,7 @@ async function run(tools: any[]): Promise<{ events: any[]; error?: unknown }> {
       system: 'Use the tools.',
       tools,
       max_tokens: 1000,
+      effortValue: null,
       signal: new AbortController().signal,
       sessionId: 'backstop-session',
     } as any)) {

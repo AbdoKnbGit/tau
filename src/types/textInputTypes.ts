@@ -309,6 +309,8 @@ export type QueuedCommand = {
   mode: PromptInputMode
   /** Defaults to the priority implied by `mode` when enqueued. */
   priority?: QueuePriority
+  /** Internal task provenance; never inferred from model-visible XML text. */
+  taskNotificationType?: 'local_agent'
   uuid?: UUID
   orphanedPermission?: OrphanedPermission
   /** Raw pasted contents including images. Images are resized at execution time. */

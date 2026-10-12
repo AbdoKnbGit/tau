@@ -163,9 +163,13 @@ class ResponsesSocket {
       heard()
       this.onFrame?.(data.toString())
     })
-    this.socket.on('close', () => {
+    this.socket.on('close', (code, reason) => {
       this.closed = true
-      this.onEnd?.(connectionReset('websocket closed before the response completed'))
+      const closeReason = reason.toString('utf8').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200)
+      this.onEnd?.(Object.assign(
+        connectionReset(`websocket closed before the response completed (code ${code}${closeReason ? `: ${closeReason}` : '; no close reason received'})`),
+        { closeCode: code, closeReason },
+      ))
     })
     this.socket.on('error', error => this.onEnd?.(connectionReset(`websocket error: ${error.message}`)))
   }

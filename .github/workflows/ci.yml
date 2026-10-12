@@ -118,7 +118,7 @@ jobs:
         run: node --test test/memory-index-guard.test.mjs test/memory-index-tool-results.test.mjs
 
       - name: Test OpenAI effort settings, request routing, and cache stability
-        run: node --test test/openai-effort.test.mjs test/openai-native-routing.test.mjs test/openai-websocket.test.mjs
+        run: node --test test/openai-effort.test.mjs test/openai-native-routing.test.mjs test/openai-websocket.test.mjs test/openai-reasoning-normalization.test.mjs test/openai-reasoning-transport.test.mjs test/openai-agent-completion.test.mjs
 
       - name: Test ToolSearch wording and the environment block's folder
         run: node --test test/tool-search-wording.test.mjs test/env-working-directory.test.mjs
@@ -442,5 +442,13 @@ jobs:
           bun run src/lanes/openai-compat/opencode_routes.test.ts
           bun run src/lanes/openai-compat/opencode_go.test.ts
           bun run src/lanes/openai-compat/network_retry.test.ts
+      - name: Test OpenAI reasoning, Eval, and agent notification regressions
+        run: |
+          bun run src/lanes/codex/reasoning.test.ts
+          bun run src/lanes/codex/stream_retry.test.ts
+          bun run src/lanes/codex/tool_schema_backstop.test.ts
+          bun run src/tools/EvalTool/bridge.test.ts
+          bun run src/tools/EvalTool/registry.test.ts
+          bun run src/utils/midTurnNotifications.test.ts
       - run: npm run build:bun
       - run: node dist/cli.mjs --version

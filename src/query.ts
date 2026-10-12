@@ -57,6 +57,8 @@ import {
   stripSignatureBlocks,
 } from './utils/messages.js'
 import { getAPIProvider } from './utils/model/providers.js'
+import { resolveEffectiveAPIProvider } from './services/api/providerRouting.js'
+import { isMidTurnNotification } from './utils/midTurnNotifications.js'
 import {
   buildLoopBreakerGuidance,
   collectToolCalls,
@@ -483,6 +485,9 @@ async function* queryLoop(
       querySource,
     )
     messagesForQuery = microcompactResult.messages
+    if (microcompactResult.boundaryMessage) {
+      yield microcompactResult.boundaryMessage
+    }
     // For cached microcompact (cache editing), defer boundary message until after
     // the API response so we can use actual cache_deleted_input_tokens.
     // Gated behind feature() so the string is eliminated from external builds.
@@ -1892,11 +1897,11 @@ async function* queryLoop(
     // Get queued commands snapshot before processing attachments.
     // These will be sent as attachments so Claude can respond to them in the current turn.
     //
-    // Drain pending notifications. LocalShellTask completions are 'next' and
-    // drain here, after the tool round. Other task types (agent/workflow/
-    // framework) still default to 'later': they arrive between turns, or at
-    // a Sleep where that tool is built in. If all task types move to 'next',
-    // this branch could go.
+    // Drain pending notifications after the tool round. OpenAI main loops
+    // also receive local-agent completions now, without waiting for the model
+    // to end its turn. Resolve the receiving loop's provider here: a completed
+    // child may have been pinned to a different provider. Other later-priority
+    // notifications keep their existing between-turn/Sleep delivery.
     //
     // Slash commands are excluded from mid-turn drain — they must go through
     // processSlashCommand after the turn ends (via useQueueProcessor), not be
@@ -1913,9 +1918,14 @@ async function* queryLoop(
     const isMainThread =
       querySource.startsWith('repl_main_thread') || querySource === 'sdk'
     const currentAgentId = toolUseContext.agentId
+    const receiverProvider = resolveEffectiveAPIProvider(
+      getAPIProvider(),
+      currentModel,
+    )
     const queuedCommandsSnapshot = getCommandsByMaxPriority(
-      sleepRan ? 'later' : 'next',
+      sleepRan || (isMainThread && receiverProvider === 'openai') ? 'later' : 'next',
     ).filter(cmd => {
+      if (!isMidTurnNotification(cmd, { sleepRan, isMainThread, provider: receiverProvider })) return false
       if (isSlashCommand(cmd)) return false
       if (isMainThread) return cmd.agentId === undefined
       // Subagents only drain task-notifications addressed to them — never

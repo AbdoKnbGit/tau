@@ -8,6 +8,7 @@
 
 import type { QuerySource } from '../../../constants/querySource.js'
 import type { OpenRouterReasoning } from '../../../lanes/openai-compat/openrouter_reasoning.js'
+import type { CodexReasoningState } from '../../../lanes/codex/reasoning.js'
 
 export interface ProviderStreamResult {
   [Symbol.asyncIterator](): AsyncIterator<AnthropicStreamEvent>
@@ -35,6 +36,7 @@ export interface AnthropicContentBlock {
   // Gemini round-trip: thought_signature on functionCall parts
   _gemini_thought_signature?: string
   _openrouter_reasoning?: OpenRouterReasoning
+  _codex_reasoning?: CodexReasoningState
   _openrouter_tool_call_id?: string
   // Set by a lane decoder when this call's streamed arguments could not be
   // decoded. On the block, not in `input`, because native adaptation
@@ -204,6 +206,7 @@ export interface ProviderContentBlock {
   // Gemini round-trip: thought_signature on tool_use blocks
   _gemini_thought_signature?: string
   _openrouter_reasoning?: OpenRouterReasoning
+  _codex_reasoning?: CodexReasoningState
   _openrouter_tool_call_id?: string
   // See services/mcp/decodeStatus.ts.
   _tau_decode_status?: { category: string; fragmentLength?: number }

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
-import { loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
+import { fixtureContext, fixtureTool, loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
 
 // File history for writes that come from code (Eval cells): what gets tracked,
 // and what the /rewind list says each stretch of the conversation changed.
@@ -16,12 +16,18 @@ process.env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING = '1'
 delete process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
 
 const r = await loadMcpRuntime({
-  paths: ['src/utils/fileHistory.ts', 'src/components/MessageSelector.tsx'],
+  paths: ['src/utils/fileHistory.ts', 'src/components/MessageSelector.tsx',
+    'src/tools/EvalTool/EvalTool.ts', 'src/utils/forcedProvider.ts', 'src/utils/cwd.ts',
+    'src/utils/agentContext.ts', 'src/utils/model/providers.ts'],
   exports: ['createFileHistoryBatch', 'fileHistoryGetDiffStatsBetween', 'fileHistoryMakeSnapshot',
-    'MAX_BATCH_BACKUP_BYTES', 'MAX_BATCH_CREATED_FILES', 'turnHasUnpatchedWrites'],
+    'MAX_BATCH_BACKUP_BYTES', 'MAX_BATCH_CREATED_FILES', 'turnHasUnpatchedWrites',
+    'EvalTool', 'acquireKernel', 'discardKernel', 'resolvePythonInterpreter', 'getCwd',
+    'runWithCwdOverride', 'runWithForcedProvider', 'runWithAgentContext', 'getAgentContext',
+    'getAPIProvider', 'setActiveProvider'],
 })
 
-test.after(() => {
+test.after(async () => {
+  await r.disposeToolBridge()
   const resolved = realpathSync(fixture)
   const child = relative(tempRoot, resolved)
   assert.ok(child && !child.startsWith('..') && !isAbsolute(child), 'unsafe fixture cleanup path')
@@ -140,4 +146,73 @@ test('only stretches with an Eval or notebook call read file history', () => {
   assert.equal(r.turnHasUnpatchedWrites(messages, two, three), false)
   assert.equal(r.turnHasUnpatchedWrites(messages, three, undefined), true)
   assert.equal(r.turnHasUnpatchedWrites(messages, randomUUID(), undefined), false)
+})
+
+test('real EvalTool wires aliases and persistent cwd to the owning effective provider', { timeout: 60_000 }, async t => {
+  if (!r.resolvePythonInterpreter()) return t.skip('No Python interpreter available')
+  const routes = [
+    { global: 'gemini', pin: 'openai', model: 'gpt-6-sol', openai: true },
+    { global: 'openai', pin: 'gemini', model: 'gpt-5.6-luna', openai: false },
+    { global: 'gemini', model: 'gpt-5.6-luna', openai: true },
+    { global: 'openai', model: 'gemini-2.5-pro', openai: false },
+  ]
+  const previousProvider = r.getAPIProvider()
+  try {
+    for (const [index, route] of routes.entries()) {
+      const root = workDir(`provider-${index}`)
+      const sub = join(root, 'sub folder ü')
+      mkdirSync(sub)
+      const agentId = `eval-provider-${index}`
+      const messageId = randomUUID()
+      const h = history(messageId)
+      const read = fixtureTool({ name: 'Read', async call() { return { data: 'fixture contents' } } })
+      const context = fixtureContext([read], { agentId, updateFileHistoryState: h.update })
+      context.options.mainLoopModel = route.model
+      const parent = { type: 'assistant', uuid: messageId, message: { role: 'assistant', content: [] } }
+      r.setActiveProvider(route.global)
+      let permissionCalls = 0
+      const cell = (cwd, code) => r.runWithAgentContext({ agentId, agentType: 'subagent' }, () =>
+        r.runWithCwdOverride(cwd, () => {
+          const run = () => r.EvalTool.call({ code, timeout: 15 }, context, async (tool, input) => {
+            assert.equal(tool.name, 'Read')
+            assert.deepEqual(input, { file_path: 'fixture.txt' })
+            assert.equal(r.getAPIProvider(), route.pin ?? route.global)
+            assert.equal(r.getAgentContext()?.agentId, agentId)
+            assert.equal(r.getCwd(), cwd)
+            permissionCalls++
+            return { behavior: 'allow', updatedInput: input }
+          }, parent)
+          return route.pin ? r.runWithForcedProvider({ provider: route.pin }, run) : run()
+        }),
+      )
+      try {
+        const aliasCode = route.openai
+          ? 'assert tool.read_file(file_path="fixture.txt") == "fixture contents"'
+          : [
+              'assert "read_file (Read)" not in tool.list()',
+              'try:',
+              '    tool.read_file(file_path="fixture.txt")',
+              'except ToolBridgeError as error:',
+              '    assert str(error) == "read_file is not a tool in this session. Call tool.list() to see what is available."',
+              'else:',
+              '    raise AssertionError("OpenAI alias leaked to another provider")',
+            ].join('\n')
+        const setup = await cell(root, `x = 42\nassert tool.Read(file_path="fixture.txt") == "fixture contents"\n${aliasCode}`)
+        assert.equal(setup.data.ok, true, `${JSON.stringify(route)}: ${setup.data.text}`)
+        assert.equal(permissionCalls, route.openai ? 2 : 1)
+        const next = await cell(sub, 'import os\nprint(globals().get("x", "missing"))\nprint(os.getcwd())')
+        assert.equal(next.data.ok, true, next.data.text)
+        assert.deepEqual(next.data.text.split(/\r?\n/), [route.openai ? '42' : 'missing', realpathSync(sub)], JSON.stringify(route))
+        assert.equal(next.data.kernelRestarted, false)
+      } finally {
+        for (const cwd of route.openai ? [root] : [root, sub]) {
+          const { kernel } = await r.acquireKernel({ agentId, cwd, reset: false, followSessionCwd: route.openai })
+          await kernel.shutdown()
+          r.discardKernel(agentId, cwd, route.openai)
+        }
+      }
+    }
+  } finally {
+    r.setActiveProvider(previousProvider)
+  }
 })

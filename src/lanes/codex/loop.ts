@@ -40,6 +40,7 @@ import type {
 } from '../types.js'
 import {
   getCodexRegistrationByNativeName,
+  getCodexRegistrationForTool,
   CODEX_TOOL_REGISTRY,
 } from './tools.js'
 import {
@@ -49,6 +50,8 @@ import {
 import { describeUnsendableMedia } from '../shared/media_blocks.js'
 import { statedWorkingDirectory } from '../shared/working_directory.js'
 import { toCodexToolParameters } from './tool_schema.js'
+import { codexReasoningForBlocks, type CodexReasoningState } from './reasoning.js'
+import { streamCodexWithNoOutputRetry } from './stream_retry.js'
 import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
 import {
   createRetryableConnectionError,
@@ -70,6 +73,7 @@ import {
 import {
   resolveOpenAIReasoningEffort,
   resolveOpenAIRequestEffort,
+  modelSupportsReasoning,
 } from '../../utils/model/openaiReasoning.js'
 import { OPENAI_AGENT_MODEL, OPENAI_CODEX_MODELS } from '../../utils/model/openaiGptModels.js'
 
@@ -135,7 +139,8 @@ export class CodexLane implements Lane {
     const toolUseIdToCallId = buildToolUseIdToCallIdMap(messages)
 
     // Convert Anthropic history → Responses API input items.
-    const inputItems = convertHistoryToCodex(messages, toolUseIdToCallId)
+    const replayModel = modelSupportsReasoning(model) && !codexApi.isAzureResponsesEndpoint ? model : undefined
+    const inputItems = convertHistoryToCodex(messages, toolUseIdToCallId, replayModel)
 
     // Anchor a frozen copy of the volatile system tail as a
     // `developer` input item at position 0 — same bytes every turn
@@ -195,7 +200,7 @@ export class CodexLane implements Lane {
 
     // Effort is independent of Anthropic thinking budgets. Use the same
     // preference resolution as the picker and the OpenAI provider.
-    const reasoning = resolveReasoning(thinking, model, effort ?? null)
+    const reasoning = resolveReasoning(thinking, model, effort ?? null, !codexApi.isAzureResponsesEndpoint)
 
     // Request body must match codex-rs's `ResponsesApiRequest` wire
     // shape exactly. Native codex DOES NOT send `max_output_tokens` or
@@ -282,10 +287,24 @@ export class CodexLane implements Lane {
     // Tool-call assembly state. Codex streams arguments as deltas, so we
     // accumulate them until output_item.done fires with the full item.
     const toolCallBuffers = new Map<number, { callId: string; name: string; args: string; isCustom: boolean; anthropicIndex: number }>()
+    const reasoningBlocks = new Map<number, CodexReasoningState>()
+    const summaryParts = new Map<number, { index: number; hasText: boolean; needsSeparator: boolean }>()
+    let pendingReasoning: CodexReasoningState['items'] = []
+    const takeReasoning = (): { _codex_reasoning?: CodexReasoningState } => {
+      if (!pendingReasoning.length) return {}
+      const state = { model, items: pendingReasoning }
+      pendingReasoning = []
+      return { _codex_reasoning: state }
+    }
 
     try {
-      for await (const ev of codexApi.streamResponses(request, signal)) {
+      for await (const ev of streamCodexWithNoOutputRetry(request, signal)) {
         if (signal.aborted) break
+
+        if (ev.type === 'codex.retry_pending') {
+          yield { type: 'ping' }
+          continue
+        }
 
         // Some usage info can arrive on response.created / .in_progress,
         // most lands on response.completed. Emit message_start as soon
@@ -318,15 +337,17 @@ export class CodexLane implements Lane {
             yield {
               type: 'content_block_start',
               index: anthropicIndex,
-              content_block: { type: 'text', text: '' },
+              content_block: { type: 'text', text: '', ...takeReasoning() },
             }
           } else if (item.type === 'reasoning') {
             const anthropicIndex = nextBlockIndex++
             openBlocks.set(outputIndex, { anthropicIndex, kind: 'thinking' })
+            const state: CodexReasoningState = { model, items: [] }
+            reasoningBlocks.set(outputIndex, state)
             yield {
               type: 'content_block_start',
               index: anthropicIndex,
-              content_block: { type: 'thinking', thinking: '' },
+              content_block: { type: 'thinking', thinking: '', ...(replayModel && { _codex_reasoning: state }) },
             }
           } else if (item.type === 'function_call' || item.type === 'custom_tool_call') {
             const isCustom = item.type === 'custom_tool_call'
@@ -357,15 +378,43 @@ export class CodexLane implements Lane {
           continue
         }
 
+        if (ev.type === 'response.reasoning_summary_part.added') {
+          const outputIndex = (ev as any).output_index as number
+          const index = (ev as any).summary_index as number
+          const previous = summaryParts.get(outputIndex)
+          if (previous && previous.index !== index) {
+            previous.index = index
+            previous.needsSeparator = previous.hasText
+          } else if (!previous) {
+            summaryParts.set(outputIndex, { index, hasText: false, needsSeparator: false })
+          }
+          continue
+        }
+
         if (ev.type === 'response.reasoning_summary_text.delta' || ev.type === 'response.reasoning_text.delta') {
           const outputIndex = (ev as any).output_index as number
           const delta = (ev as any).delta as string
           const open = openBlocks.get(outputIndex)
           if (open && open.kind === 'thinking') {
+            let text = delta
+            if (ev.type === 'response.reasoning_summary_text.delta') {
+              const index = (ev as any).summary_index ?? 0
+              const part = summaryParts.get(outputIndex) ?? { index, hasText: false, needsSeparator: false }
+              if (part.index !== index) {
+                part.index = index
+                part.needsSeparator = part.hasText
+              }
+              if (delta) {
+                if (part.needsSeparator) text = `\n\n${delta}`
+                part.hasText = true
+                part.needsSeparator = false
+              }
+              summaryParts.set(outputIndex, part)
+            }
             yield {
               type: 'content_block_delta',
               index: open.anthropicIndex,
-              delta: { type: 'thinking_delta', thinking: delta },
+              delta: { type: 'thinking_delta', thinking: text },
             }
           }
           continue
@@ -389,6 +438,16 @@ export class CodexLane implements Lane {
 
         if (ev.type === 'response.output_item.done') {
           const outputIndex = (ev as any).output_index as number
+          const item = (ev as any).item
+          if (replayModel && item?.type === 'reasoning' && typeof item.id === 'string' && typeof item.encrypted_content === 'string' && item.encrypted_content) {
+            const saved = {
+              id: item.id,
+              encrypted_content: item.encrypted_content,
+              summary: Array.isArray(item.summary) ? structuredClone(item.summary) : [],
+            }
+            reasoningBlocks.get(outputIndex)?.items.push(saved)
+            pendingReasoning.push(saved)
+          }
 
           // Close text / reasoning blocks on their output_index.
           const open = openBlocks.get(outputIndex)
@@ -449,6 +508,7 @@ export class CodexLane implements Lane {
               name: repairedToolCall.toolName,
               input: {},
               ...(decoded && toolDecodeFields(decoded)),
+              ...takeReasoning(),
             },
           }
           yield {
@@ -807,9 +867,11 @@ export function resolveReasoning(
   _thinking: LaneProviderCallParams['thinking'] | undefined,
   model: string,
   effortValue?: LaneProviderCallParams['effortValue'],
+  requestSummary = true,
 ): CodexReasoningConfig | undefined {
   const effort = resolveOpenAIReasoningEffort(model, effortValue)
-  return effort ? { effort, summary: 'auto' } : undefined
+  if (effort) return { effort, summary: 'auto' }
+  return requestSummary && modelSupportsReasoning(model) ? { summary: 'auto' } : undefined
 }
 
 // Walk the conversation history and map each assistant tool_use.id to a
@@ -839,8 +901,10 @@ function buildToolUseIdToCallIdMap(
 export function convertHistoryToCodex(
   messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
   toolUseIdToCallId: Map<string, string>,
+  replayModel?: string,
 ): CodexInputItem[] {
   const out: CodexInputItem[] = []
+  const replayedReasoning = new Set<string>()
   // Build a name lookup for tool_result → function_call_output name.
   const callIdToName = new Map<string, string>()
 
@@ -947,6 +1011,9 @@ export function convertHistoryToCodex(
 
     if (textParts.length > 0) {
       out.push({ type: 'message', role: msg.role, content: textParts })
+    }
+    if (msg.role === 'assistant') {
+      out.push(...codexReasoningForBlocks(msg.content, replayModel, replayedReasoning))
     }
     out.push(...tailItems)
     if (trailingImageParts.length > 0) {
@@ -1148,8 +1215,7 @@ function buildCodexToolDeclarations(
   const out: CodexToolSpec[] = []
   const externalNames = new Set<string>()
   for (const tool of tools) {
-    const reg = CODEX_TOOL_REGISTRY.find(r => r.implId === tool.name)
-      ?? getCodexRegistrationByNativeName(tool.name)
+    const reg = getCodexRegistrationForTool(tool.name)
     if (reg) {
       if (reg.nativeName === 'apply_patch') {
         // Freeform tools can't take `strict: true`; they aren't JSON.

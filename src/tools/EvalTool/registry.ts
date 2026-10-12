@@ -7,12 +7,13 @@ import { PythonKernel } from './kernel.js'
 import { ensureToolBridge } from './toolBridge.js'
 
 /**
- * One kernel per (session, agent, cwd).
+ * One kernel per (session, agent) on OpenAI; other providers retain their
+ * existing per-directory kernels.
  *
  * Keyed by agent as well as session so a subagent never inherits the main
  * thread's namespace — two agents sharing a `df` variable would be a
- * spectacular source of confusion, and their cells interleave. Keyed by cwd
- * because the kernel chdir's at startup and puts cwd on sys.path.
+ * spectacular source of confusion, and their cells interleave. OpenAI cells
+ * sync their cwd before execution without discarding the Python namespace.
  */
 
 type Entry = { kernel: PythonKernel; sessionKey: string }
@@ -25,8 +26,10 @@ function normalizeCwd(cwd: string): string {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
-export function kernelKey(agentId: string | undefined, cwd: string): string {
-  return `${getSessionId()}:${agentId ?? 'main'}:${normalizeCwd(cwd)}`
+export function kernelKey(agentId: string | undefined, cwd: string, followSessionCwd = false): string {
+  return followSessionCwd
+    ? `${getSessionId()}:${agentId ?? 'main'}:openai`
+    : `${getSessionId()}:${agentId ?? 'main'}:${normalizeCwd(cwd)}`
 }
 
 function ensureCleanupHook(): void {
@@ -57,9 +60,10 @@ export async function acquireKernel(options: {
   agentId: string | undefined
   cwd: string
   reset: boolean
+  followSessionCwd?: boolean
 }): Promise<{ kernel: PythonKernel; sessionKey: string; restarted: boolean }> {
   ensureCleanupHook()
-  const key = kernelKey(options.agentId, options.cwd)
+  const key = kernelKey(options.agentId, options.cwd, options.followSessionCwd)
   const existing = kernels.get(key)
 
   if (existing && existing.kernel.isAlive()) {
@@ -91,8 +95,8 @@ export async function acquireKernel(options: {
 }
 
 /** Drop a kernel that reported itself unusable so the next call starts clean. */
-export function discardKernel(agentId: string | undefined, cwd: string): void {
-  const key = kernelKey(agentId, cwd)
+export function discardKernel(agentId: string | undefined, cwd: string, followSessionCwd = false): void {
+  const key = kernelKey(agentId, cwd, followSessionCwd)
   const entry = kernels.get(key)
   if (!entry) return
   kernels.delete(key)

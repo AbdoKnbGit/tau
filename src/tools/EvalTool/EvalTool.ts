@@ -3,6 +3,8 @@ import { z } from 'zod/v4'
 
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
+import { resolveEffectiveAPIProvider } from '../../services/api/providerRouting.js'
 import { createFileHistoryBatch } from '../../utils/fileHistory.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { pathInAllowedWorkingPath } from '../../utils/permissions/filesystem.js'
@@ -180,10 +182,13 @@ export const EvalTool = buildTool({
     const startedAt = Date.now()
     const cwd = getCwd()
     const agentId = toolUseContext.agentId
+    const provider = resolveEffectiveAPIProvider(getAPIProvider(), toolUseContext.options.mainLoopModel)
+    const followSessionCwd = provider === 'openai'
     const { kernel, sessionKey, restarted } = await acquireKernel({
       agentId,
       cwd,
       reset: input.reset === true,
+      followSessionCwd,
     })
 
     const bridgeCalls: BridgeCallRecord[] = []
@@ -193,6 +198,7 @@ export const EvalTool = buildTool({
     const budget = new DeadlineBudget()
     const unregister = registerBridgeSession(sessionKey, {
       tools: toolUseContext.options.tools,
+      provider,
       toolUseContext,
       canUseTool,
       parentMessage,
@@ -216,12 +222,13 @@ export const EvalTool = buildTool({
         timeoutMs: resolveTimeoutMs(input.timeout),
         signal: toolUseContext.abortController.signal,
         budget,
+        ...(followSessionCwd && { cwd }),
       })
 
       if (outcome.crashed) {
         // The kernel is unusable; make sure the next call gets a fresh one
         // instead of retrying against a corpse.
-        discardKernel(agentId, cwd)
+        discardKernel(agentId, cwd, followSessionCwd)
       }
       // Before the note: committing sizes the new files and settles which
       // ones stay untracked.

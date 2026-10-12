@@ -1,5 +1,9 @@
 import { decodeToolArguments, toolDecodeFields } from '../services/mcp/decodeStatus.js'
-import { getAPIProvider } from './model/providers.js'
+import { getAPIProvider, type APIProvider } from './model/providers.js'
+import { normalizeModelStringForAPI } from './model/model.js'
+import { resolveEffectiveAPIProvider } from '../services/api/providerRouting.js'
+import { stripCodexReasoningFromBlock } from '../lanes/codex/reasoning.js'
+import type { CodexReasoningState } from '../lanes/codex/reasoning.js'
 import { restoreOpenRouterToolIdMetadata } from '../lanes/openai-compat/openrouter_tool_ids.js'
 import { feature } from 'bun:bundle'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
@@ -2010,8 +2014,52 @@ function relocateToolReferenceSiblings(
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
+  options: { provider?: APIProvider; model?: string } = {},
 ): (UserMessage | AssistantMessage)[] {
   const preserveOpenRouterReasoning = getAPIProvider() === 'openrouter'
+  const preserveCodexReasoning =
+    (options.provider ?? resolveEffectiveAPIProvider(getAPIProvider(), options.model)) === 'openai'
+  // Compare the same model identity sent to the provider, without UI context tags.
+  const codexModel = options.model ? normalizeModelStringForAPI(options.model) : undefined
+  const invalidCodexReasoningMessages = new Set<Message>()
+  if (preserveCodexReasoning) {
+    // A switch away and back must not revive an earlier model's state. Ignore
+    // synthetic acknowledgements: they are not responses from another model.
+    let lastModelSwitch = -1
+    let lastCompaction = -1
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i]!
+      if (
+        message.type === 'system' &&
+        (message.subtype === 'compact_boundary' || message.subtype === 'microcompact_boundary')
+      ) lastCompaction = i
+      if (
+        codexModel && message.type === 'assistant' && !message.isVirtual &&
+        message.message.model && message.message.model !== SYNTHETIC_MODEL &&
+        message.message.model !== codexModel
+      ) lastModelSwitch = i
+    }
+    const boundary = messages[lastCompaction]
+    const boundaryTime = boundary ? Date.parse(boundary.timestamp) : NaN
+    const segment = boundary && isCompactBoundaryMessage(boundary)
+      ? boundary.compactMetadata?.preservedSegment
+      : undefined
+    const preservedUuids = new Set(segment?.messageUuids ?? [])
+    const preservedHead = segment ? messages.findIndex(m => m.uuid === segment.headUuid) : -1
+    const preservedTail = segment ? messages.findIndex(m => m.uuid === segment.tailUuid) : -1
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i]!
+      // Compaction can keep old messages AFTER its boundary and restore them
+      // from the original JSONL records on resume. Check their original time
+      // and the explicit preserved segment, not just their array position.
+      if (
+        i <= lastModelSwitch || i <= lastCompaction ||
+        (Number.isFinite(boundaryTime) && Date.parse(message.timestamp) <= boundaryTime) ||
+        preservedUuids.has(message.uuid) ||
+        (preservedHead >= 0 && preservedTail >= preservedHead && i >= preservedHead && i <= preservedTail)
+      ) invalidCodexReasoningMessages.add(message)
+    }
+  }
   // Build set of available tool names for filtering unavailable tool references
   const availableToolNames = new Set(tools.map(t => t.name))
 
@@ -2231,6 +2279,11 @@ export function normalizeMessagesForAPI(
             message: {
               ...message.message,
               content: message.message.content.map(block => {
+                const reasoning = (block as { _codex_reasoning?: CodexReasoningState })._codex_reasoning
+                if (
+                  !preserveCodexReasoning || invalidCodexReasoningMessages.has(message) ||
+                  (codexModel && reasoning?.model !== codexModel)
+                ) block = stripCodexReasoningFromBlock(block)
                 if (block.type === 'tool_use') {
                   // OpenRouter state is stored in the transcript but is not a
                   // valid Anthropic tool_use field after a provider switch.
@@ -2342,7 +2395,9 @@ export function normalizeMessagesForAPI(
   // compaction slicing away intervening messages between a failed streaming
   // response and its retry). Without this, consecutive assistant messages with
   // mismatched thinking block signatures cause API 400 errors.
-  const withFilteredOrphans = filterOrphanedThinkingOnlyMessages(relocated)
+  const withFilteredOrphans = filterOrphanedThinkingOnlyMessages(relocated, {
+    preserveTerminalCodexReasoning: false,
+  })
 
   // Order matters: strip trailing thinking first, THEN filter whitespace-only
   // messages. The reverse order has a bug: a message like [text("\n\n"), thinking("...")]
@@ -5006,13 +5061,37 @@ function apiSideOf(message: Message): 'user' | 'assistant' | null {
 }
 
 /** The assistant turn sent in place of one that has no sendable content. */
-function toNoContentAssistant<T extends AssistantMessage>(message: T): T {
+function toNoContentAssistant<T extends AssistantMessage>(
+  message: T,
+  reasoningContent = message.message.content,
+): T {
+  // Resume runs this before provider routing. Keep Codex's opaque state on the
+  // existing placeholder; normalizeMessagesForAPI strips it for other routes,
+  // model switches, and compacted history before any request is constructed.
+  const items: CodexReasoningState['items'] = []
+  const seen = new Set<string>()
+  for (const block of reasoningContent) {
+    const state = (block as { _codex_reasoning?: CodexReasoningState })._codex_reasoning
+    if (state?.model !== message.message.model || !Array.isArray(state.items)) continue
+    for (const item of state.items) {
+      if (seen.has(item.id)) continue
+      seen.add(item.id)
+      items.push(item)
+    }
+  }
   return {
     ...message,
     message: {
       ...message.message,
       content: [
-        { type: 'text' as const, text: NO_CONTENT_MESSAGE, citations: [] },
+        {
+          type: 'text' as const,
+          text: NO_CONTENT_MESSAGE,
+          citations: [],
+          ...(items.length > 0 && {
+            _codex_reasoning: { model: message.message.model, items },
+          }),
+        },
       ],
     },
   }
@@ -5035,7 +5114,7 @@ function dropKeepingAnswerTurns<T extends Message>(
     message => message.type === 'assistant' && removable(message),
   )
   if (!remove.includes(true)) return { messages, dropped: 0 }
-  const keep = new Set<number>()
+  const keep = new Map<number, AssistantMessage['message']['content']>()
   for (let i = 0; i < messages.length; i++) {
     if (!remove[i]) continue
     // A run of removable messages, with only unsent messages between them.
@@ -5054,7 +5133,15 @@ function dropKeepingAnswerTurns<T extends Message>(
       apiSideOf(messages[prev]!) === 'user' &&
       apiSideOf(messages[next]!) === 'user'
     ) {
-      keep.add(i)
+      const first = messages[i] as T & AssistantMessage
+      // A reasoning-only response can be persisted as several same-ID blocks.
+      // The single placeholder must retain each item's state across resume.
+      keep.set(i, messages.slice(i, runEnd + 1).flatMap(message =>
+        message.type === 'assistant' && message.message.id === first.message.id &&
+        message.message.model === first.message.model
+          ? message.message.content
+          : [],
+      ))
     }
     i = runEnd
   }
@@ -5063,7 +5150,7 @@ function dropKeepingAnswerTurns<T extends Message>(
   messages.forEach((message, index) => {
     if (!remove[index]) out.push(message)
     else if (keep.has(index)) {
-      out.push(toNoContentAssistant(message as T & AssistantMessage))
+      out.push(toNoContentAssistant(message as T & AssistantMessage, keep.get(index)))
     } else dropped++
   })
   return { messages: out, dropped }
@@ -5197,13 +5284,23 @@ function ensureNonEmptyAssistantContent(
  */
 export function filterOrphanedThinkingOnlyMessages(
   messages: (UserMessage | AssistantMessage)[],
+  options?: { preserveTerminalCodexReasoning?: boolean },
 ): (UserMessage | AssistantMessage)[]
 export function filterOrphanedThinkingOnlyMessages(
   messages: Message[],
+  options?: { preserveTerminalCodexReasoning?: boolean },
 ): Message[]
 export function filterOrphanedThinkingOnlyMessages(
   messages: Message[],
+  { preserveTerminalCodexReasoning = true }: { preserveTerminalCodexReasoning?: boolean } = {},
 ): Message[] {
+  // Resume can run before the next user message exists. Retain the last
+  // OpenAI response's opaque state until that message is appended, when the
+  // normal answer-turn placeholder can carry it. Request normalization opts
+  // out so its final-assistant filtering and text bytes stay unchanged.
+  const terminal = preserveTerminalCodexReasoning
+    ? messages.findLast(message => apiSideOf(message) !== null)
+    : undefined
   // First pass: collect message.ids that have non-thinking content
   // These will be merged later in normalizeMessagesForAPI()
   const messageIdsWithNonThinkingContent = new Set<string>()
@@ -5235,6 +5332,16 @@ export function filterOrphanedThinkingOnlyMessages(
 
     if (!allThinking) {
       return false // Has non-thinking content, keep it
+    }
+
+    if (
+      terminal?.type === 'assistant' && msg.message.id === terminal.message.id &&
+      content.some(block => {
+        const state = (block as { _codex_reasoning?: CodexReasoningState })._codex_reasoning
+        return state?.model === msg.message.model && Array.isArray(state.items) && state.items.length > 0
+      })
+    ) {
+      return false
     }
 
     // It's thinking-only. Keep it if there's another message with same id
@@ -5278,8 +5385,8 @@ export function stripSignatureBlocks(messages: Message[]): Message[] {
         if (isConnectorTextBlock(block)) return false
       }
       return true
-    })
-    if (filtered.length === content.length) return msg
+    }).map(stripCodexReasoningFromBlock)
+    if (filtered.length === content.length && filtered.every((block, i) => block === content[i])) return msg
 
     // Strip to [] even for thinking-only messages. Streaming yields each
     // content block as a separate same-id AssistantMessage (claude.ts:2150),

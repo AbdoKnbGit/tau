@@ -18,7 +18,7 @@ export const PYTHON_KERNEL_SOURCE: string = String.raw`
 
 Protocol: NDJSON over stdin/stdout, one JSON object per line, UTF-8.
 
-  host -> kernel   {"type":"exec","id":str,"code":str}
+  host -> kernel   {"type":"exec","id":str,"code":str,"cwd":str?}
                    {"type":"reset","id":str}
                    {"type":"exit"}
 
@@ -69,6 +69,7 @@ _emit_lock = threading.Lock()
 _raw_stdout = sys.stdout
 _current_id = ""
 _exec_count = 0
+_session_path_entry = None
 # Independent limits: one chart must not consume another chart's retries.
 # The outer limits still bound unusually large batches and repeated displays.
 _CHART_MAX_AUDITS = 32
@@ -1106,6 +1107,22 @@ def _user_traceback(exc):
     return "".join([header, *body, message])
 
 
+def _set_session_cwd(path):
+    global _session_path_entry
+    os.chdir(path)
+    current = os.getcwd()
+    if _session_path_entry == current:
+        return
+    # Replace only the search-path entry installed by the host. Do not collect
+    # every folder the conversation has visited, or imports use stale files.
+    if _session_path_entry is not None and _session_path_entry in sys.path:
+        sys.path.remove(_session_path_entry)
+    _session_path_entry = None
+    if current not in sys.path:
+        sys.path.insert(0, current)
+        _session_path_entry = current
+
+
 def _handle_exec(request):
     global _current_id, _exec_count, _chart_audits_left, _chart_repair_figures_left, _chart_limit_hit
     _current_id = str(request.get("id", ""))
@@ -1131,6 +1148,8 @@ def _handle_exec(request):
         except Exception:
             source = code
         try:
+            if request.get("cwd") is not None:
+                _set_session_cwd(request["cwd"])
             value = _run_cell(source)
             _exec_count += 1
             if value is not None:
@@ -1215,6 +1234,7 @@ def _handle_exec(request):
 
 
 def main():
+    global _session_path_entry
     port = _start_cancel_server()
     sys.addaudithook(_back_up_before_change)
     USER_NS.update(_prelude())
@@ -1223,6 +1243,7 @@ def main():
         os.chdir(cwd)
         if cwd not in sys.path:
             sys.path.insert(0, cwd)
+            _session_path_entry = cwd
     _emit({"type": "ready", "cancelPort": port, "version": KERNEL_VERSION})
 
     while True:

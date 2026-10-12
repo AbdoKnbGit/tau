@@ -9,9 +9,11 @@ import { GLOB_TOOL_NAME } from '../../tools/GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from '../../tools/GrepTool/prompt.js'
 import { WEB_FETCH_TOOL_NAME } from '../../tools/WebFetchTool/prompt.js'
 import { WEB_SEARCH_TOOL_NAME } from '../../tools/WebSearchTool/prompt.js'
-import type { Message } from '../../types/message.js'
+import type { Message, SystemMicrocompactBoundaryMessage } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
+import { resolveEffectiveAPIProvider } from '../api/providerRouting.js'
 import { SHELL_TOOL_NAMES } from '../../utils/shell/shellToolUtils.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
@@ -214,6 +216,7 @@ export type PendingCacheEdits = {
 
 export type MicrocompactResult = {
   messages: Message[]
+  boundaryMessage?: SystemMicrocompactBoundaryMessage
   compactionInfo?: {
     pendingCacheEdits?: PendingCacheEdits
   }
@@ -266,7 +269,18 @@ export async function microcompactMessages(
   // warm cache, and we just established it's cold.
   const timeBasedResult = maybeTimeBasedMicrocompact(messages, querySource)
   if (timeBasedResult) {
-    return timeBasedResult
+    const model = toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
+    if (resolveEffectiveAPIProvider(getAPIProvider(), model) === 'openai') {
+      // A local rewrite invalidates opaque reasoning too. Persist a boundary
+      // so resuming original transcript records cannot revive that state.
+      // Load lazily: messages imports API code that also uses microcompact.
+      const { createMicrocompactBoundaryMessage } = await import('../../utils/messages.js')
+      const boundaryMessage = createMicrocompactBoundaryMessage(
+        'auto', 0, timeBasedResult.tokensSaved, timeBasedResult.clearedToolIds, [],
+      )
+      return { messages: [...timeBasedResult.messages, boundaryMessage], boundaryMessage }
+    }
+    return { messages: timeBasedResult.messages }
   }
 
   // Only run cached MC for the main thread to prevent forked agents
@@ -446,7 +460,7 @@ export function evaluateTimeBasedTrigger(
 function maybeTimeBasedMicrocompact(
   messages: Message[],
   querySource: QuerySource | undefined,
-): MicrocompactResult | null {
+): { messages: Message[]; tokensSaved: number; clearedToolIds: string[] } | null {
   const trigger = evaluateTimeBasedTrigger(messages, querySource)
   if (!trigger) {
     return null
@@ -467,6 +481,7 @@ function maybeTimeBasedMicrocompact(
   }
 
   let tokensSaved = 0
+  const clearedToolIds = new Set<string>()
   const result: Message[] = messages.map(message => {
     if (message.type !== 'user' || !Array.isArray(message.message.content)) {
       return message
@@ -479,6 +494,7 @@ function maybeTimeBasedMicrocompact(
         block.content !== TIME_BASED_MC_CLEARED_MESSAGE
       ) {
         tokensSaved += calculateToolResultTokens(block)
+        clearedToolIds.add(block.tool_use_id)
         touched = true
         return { ...block, content: TIME_BASED_MC_CLEARED_MESSAGE }
       }
@@ -526,5 +542,5 @@ function maybeTimeBasedMicrocompact(
     notifyCacheDeletion(querySource)
   }
 
-  return { messages: result }
+  return { messages: result, tokensSaved, clearedToolIds: [...clearedToolIds] }
 }

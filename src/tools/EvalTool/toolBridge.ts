@@ -1,4 +1,5 @@
 import { getAgentContext, runWithAgentContext } from '../../utils/agentContext.js'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'crypto'
 import { createServer, type Server } from 'http'
 
@@ -6,6 +7,10 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 
 import { findToolByName, type Tool, type Tools, type ToolUseContext } from '../../Tool.js'
 import { logForDebugging } from '../../utils/debug.js'
+import type { APIProvider } from '../../utils/model/providerRegistry.js'
+import { resolveEffectiveAPIProvider } from '../../services/api/providerRouting.js'
+import { getCodexRegistrationForTool } from '../../lanes/codex/tools.js'
+import type { LaneToolRegistration } from '../../lanes/types.js'
 import { EVAL_BRIDGE_BLOCKED_TOOLS } from './constants.js'
 import type { BridgeCallRecord } from './format.js'
 
@@ -42,6 +47,8 @@ export type { BridgeCallRecord } from './format.js'
 
 export type BridgeRegistration = {
   tools: Tools
+  /** Resolved in the cell owner's scope, including a pinned agent provider. */
+  provider?: APIProvider
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
   parentMessage: ParentMessage
@@ -99,7 +106,12 @@ export class DeadlineBudget {
 
 export type BridgeInfo = { url: string; token: string }
 
-const registrations = new Map<string, BridgeRegistration>()
+type RegisteredBridgeSession = BridgeRegistration & {
+  nativeAliases: Map<string, LaneToolRegistration>
+  runInContext: ReturnType<typeof AsyncLocalStorage.snapshot>
+}
+
+const registrations = new Map<string, RegisteredBridgeSession>()
 let serverPromise: Promise<{ server: Server; info: BridgeInfo }> | null = null
 const bridgeToken = randomUUID()
 
@@ -120,6 +132,19 @@ function isBlockedFromBridge(tool: Tool): boolean {
   // from inside a cell. Asking each tool beats maintaining a list of names.
   if (tool.requiresUserInteraction?.()) return true
   return EVAL_BRIDGE_BLOCKED_TOOLS.has(tool.name)
+}
+
+function resolveBridgeTool(entry: RegisteredBridgeSession, name: string): {
+  tool: Tool
+  alias?: LaneToolRegistration
+} | undefined {
+  // Exact Tau names always win, including a custom tool whose name happens
+  // to match a lane-native name. Preserve existing Tau aliases as well.
+  const known = entry.tools.find(tool => tool.name === name) ?? findToolByName(entry.tools, name)
+  if (known) return { tool: known }
+  const alias = entry.nativeAliases.get(name)
+  const tool = alias && entry.tools.find(tool => tool.name === alias.implId)
+  return tool ? { tool, alias } : undefined
 }
 
 function textFromContent(content: unknown): { text: string; images: Array<{ mime: string; data: string }> } {
@@ -153,7 +178,7 @@ function describeCall(name: string, args: Record<string, unknown>): string {
 }
 
 async function invoke(
-  entry: BridgeRegistration,
+  entry: RegisteredBridgeSession,
   name: string,
   rawArgs: unknown,
 ): Promise<unknown> {
@@ -161,13 +186,13 @@ async function invoke(
   // available-tool list, which then appeared twice in the transcript — once in
   // the Python traceback and again in the bridge summary — for one typo.
   // `tool.list()` is one call away if the model needs the inventory.
-  const known = findToolByName(entry.tools, name)
-  if (known && isBlockedFromBridge(known)) {
+  const resolved = resolveBridgeTool(entry, name)
+  const tool = resolved?.tool
+  if (tool && isBlockedFromBridge(tool)) {
     throw new Error(
       `${name} cannot run from inside a cell: it acts on the session (or needs an answer from the user), not the workspace. Call it directly as a tool instead.`,
     )
   }
-  const tool = known ? findToolByName(bridgeableTools(entry.tools), name) : undefined
   if (!tool) {
     throw new Error(
       `${name} is not a tool in this session. Call tool.list() to see what is available.`,
@@ -177,7 +202,8 @@ async function invoke(
     throw new Error(`tool.${name}(...) aborted: the cell was interrupted.`)
   }
 
-  const args = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as Record<string, unknown>
+  const nativeArgs = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as Record<string, unknown>
+  const args = resolved?.alias ? resolved.alias.adaptInput(nativeArgs) : nativeArgs
   const parsed = tool.inputSchema.safeParse(args)
   if (!parsed.success) {
     const issues = parsed.error.issues
@@ -187,7 +213,7 @@ async function invoke(
     throw new Error(`tool.${name}(...) got invalid arguments — ${issues}`)
   }
 
-  const toolUseId = `eval-${name}-${randomUUID()}`
+  const toolUseId = `eval-${tool.name}-${randomUUID()}`
   const decision = await entry.canUseTool(
     tool,
     parsed.data as Record<string, unknown>,
@@ -261,10 +287,27 @@ async function handle(
     )
   }
 
+  // The listener belongs to its first caller. Restore THIS cell's complete
+  // async scope, including a subagent's forced provider, before permissions,
+  // aliases, file tracking, or execution read contextual state.
+  return entry.runInContext(() => handleRegistered(entry, body, pathname))
+}
+
+async function handleRegistered(
+  entry: RegisteredBridgeSession,
+  body: Record<string, unknown>,
+  pathname: string,
+): Promise<unknown> {
+
   if (pathname === '/v1/tools') {
-    return bridgeableTools(entry.tools)
-      .map(tool => tool.name)
-      .sort()
+    const names = bridgeableTools(entry.tools).map(tool => tool.name)
+    for (const [name, alias] of entry.nativeAliases) {
+      const resolved = resolveBridgeTool(entry, name)
+      if (resolved?.alias && !isBlockedFromBridge(resolved.tool)) {
+        names.push(`${name} (${alias.implId})`)
+      }
+    }
+    return names.sort()
   }
 
   if (pathname === '/v1/track') {
@@ -292,13 +335,14 @@ async function handle(
   const name = typeof body.name === 'string' ? body.name : ''
   if (!name) throw new Error('Missing tool name.')
   const args = (body.args && typeof body.args === 'object' ? body.args : {}) as Record<string, unknown>
+  const displayName = resolveBridgeTool(entry, name)?.tool.name ?? name
 
   const started = Date.now()
   entry.budget.enter()
   try {
     const value = await invoke(entry, name, args)
     entry.onCall({
-      name,
+      name: displayName,
       detail: describeCall(name, args),
       ms: Date.now() - started,
     })
@@ -306,7 +350,7 @@ async function handle(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     entry.onCall({
-      name,
+      name: displayName,
       detail: describeCall(name, args),
       ms: Date.now() - started,
       error: message,
@@ -407,9 +451,29 @@ export function registerBridgeSession(
   sessionKey: string,
   entry: BridgeRegistration,
 ): () => void {
-  registrations.set(sessionKey, entry)
+  // Capture while still in the owning agent's call tree. Agent context and
+  // forced-provider context use separate AsyncLocalStorage instances.
+  const provider = entry.provider && resolveEffectiveAPIProvider(
+    entry.provider,
+    entry.toolUseContext.options?.mainLoopModel,
+  )
+  const nativeAliases = new Map<string, LaneToolRegistration>()
+  if (provider === 'openai') {
+    for (const tool of entry.tools) {
+      const reg = getCodexRegistrationForTool(tool.name)
+      if (reg && reg.nativeName !== tool.name && entry.tools.some(tool => tool.name === reg.implId)) {
+        nativeAliases.set(reg.nativeName, reg)
+      }
+    }
+  }
+  const registered: RegisteredBridgeSession = {
+    ...entry,
+    nativeAliases,
+    runInContext: AsyncLocalStorage.snapshot(),
+  }
+  registrations.set(sessionKey, registered)
   return () => {
-    if (registrations.get(sessionKey) === entry) registrations.delete(sessionKey)
+    if (registrations.get(sessionKey) === registered) registrations.delete(sessionKey)
   }
 }
 
