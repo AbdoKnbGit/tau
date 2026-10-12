@@ -1,7 +1,8 @@
 // TAU_MCP_TEST_BUNDLE=<isolated test build>/cli.mjs node --test test/openai-agent-completion.test.mjs
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import test from 'node:test'
@@ -27,7 +28,14 @@ for (const model of ['gpt-6-sol', 'gpt-5.6-luna']) {
     ))
     Object.assign(env, {
       HOME: join(root, 'home'), USERPROFILE: join(root, 'home'), APPDATA: join(root, 'appdata'), LOCALAPPDATA: join(root, 'localappdata'),
+      // Exercise CI startup locally too. This is a real CLI run with the
+      // preload's Responses fixture, not NODE_ENV=test's VCR replay path.
+      CI: 'true', NODE_ENV: 'production',
       CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1', TAU_SKIP_PREFLIGHT: '1',
+      // Shared CLI startup checks Anthropic auth under CI/NODE_ENV=test,
+      // even with OpenAI selected. The preload intercepts every fetch; this
+      // dummy value satisfies startup without reading real credentials.
+      ANTHROPIC_API_KEY: 'sk-ant-local-notification-test',
       OPENAI_API_KEY: 'sk-proj-local-notification-test', OPENAI_BASE_URL: 'https://notification-test.invalid/v1',
       TAU_NOTIFICATION_TEST_LOG: log,
     })
@@ -42,7 +50,7 @@ for (const model of ['gpt-6-sol', 'gpt-5.6-luna']) {
     try {
       const exit = await new Promise((resolveExit, reject) => {
         child.on('error', reject)
-        child.on('exit', resolveExit)
+        child.on('close', resolveExit)
       })
       const records = readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
       assert.equal(exit, 0, `CLI exited ${exit}: ${stderr.slice(-1500)}\n${stdout.slice(-1500)}`)
@@ -59,7 +67,7 @@ for (const model of ['gpt-6-sol', 'gpt-5.6-luna']) {
       const cleanupPath = realpathSync(root)
       const childPath = relative(realpathSync(tmpdir()), cleanupPath)
       assert.ok(childPath && !childPath.startsWith('..') && !isAbsolute(childPath), 'unsafe fixture cleanup path')
-      rmSync(cleanupPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      await rm(cleanupPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 }
