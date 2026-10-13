@@ -298,7 +298,7 @@ export class CodexLane implements Lane {
     }
 
     try {
-      for await (const ev of streamCodexWithNoOutputRetry(request, signal)) {
+      for await (const ev of streamCodexWithNoOutputRetry(request, signal, params.turnId)) {
         if (signal.aborted) break
 
         if (ev.type === 'codex.retry_pending') {

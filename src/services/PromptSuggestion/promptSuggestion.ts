@@ -311,6 +311,14 @@ export async function generateSuggestion(
   promptId: PromptVariant,
   cacheSafeParams: CacheSafeParams,
 ): Promise<{ suggestion: string | null; generationRequestId: string | null }> {
+  // Codex suggestions resend the conversation and can occupy its WebSocket.
+  // Guard generation itself so CLI, SDK opt-in and pipelined callers all
+  // skip the fork, without changing the preference for other providers.
+  if (getAPIProvider() === 'openai') {
+    logSuggestionSuppressed('provider_disabled', undefined, promptId)
+    return { suggestion: null, generationRequestId: null }
+  }
+
   const prompt = SUGGESTION_PROMPTS[promptId]
 
   // Deny tools via callback, NOT by passing tools:[] - that busts cache (0% hit)

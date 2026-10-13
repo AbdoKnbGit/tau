@@ -2241,6 +2241,9 @@ async function* queryModel(
       // Keep OpenAI effort scoped to this request (CLI, /effort, agents and
       // SDK settings already flow through options), outside prompt content.
       ...(requestProvider === 'openai' && { effortValue: options.effortValue ?? null }),
+      ...(requestProvider === 'openai' && options.queryTracking?.chainId && {
+        turnId: options.queryTracking.chainId,
+      }),
       ...(temperature !== undefined && { temperature }),
       ...(contextManagement &&
         useBetas &&

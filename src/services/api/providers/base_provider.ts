@@ -157,6 +157,8 @@ export interface ProviderRequestParams {
   /** Provider-side cache/session affinity key. Used by native lanes that can
    * route repeated requests to the same prompt-cache backend. */
   sessionId?: string
+  /** Internal OpenAI routing lifetime: shared by tool rounds of one query chain. */
+  turnId?: string
   /** Caller source used by lane bridges to derive an isolated cache key when
    * no explicit provider-side sessionId is present. */
   querySource?: QuerySource | string

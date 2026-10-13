@@ -48,6 +48,7 @@ function hasOutput(event: CodexStreamEvent): boolean {
 export async function* streamCodexWithNoOutputRetry(
   request: CodexResponsesRequest,
   signal: AbortSignal,
+  turnId?: string,
 ): AsyncGenerator<CodexStreamEvent> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const pending: CodexStreamEvent[] = []
@@ -55,7 +56,7 @@ export async function* streamCodexWithNoOutputRetry(
     let started = false
     let completed = false
     try {
-      for await (const event of codexApi.streamResponses(request, signal)) {
+      for await (const event of codexApi.streamResponses(request, signal, turnId)) {
         if (signal.aborted) return
         started = true
         const failure = transientStreamFailure(event)

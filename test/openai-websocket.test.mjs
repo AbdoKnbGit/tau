@@ -48,7 +48,7 @@ const events = id => [
 ]
 
 // One local server for both transports. `refuse` answers upgrades with 426.
-const seen = { connections: [], socketRequests: [], httpRequests: [], refuse: false }
+const seen = { connections: [], socketRequests: [], httpRequests: [], refuse: false, turnState: false }
 const server = createServer((req, res) => {
   let raw = ''
   req.on('data', chunk => { raw += chunk })
@@ -70,6 +70,7 @@ server.on('upgrade', (req, socket, head) => {
     seen.connections.push(req.headers)
     ws.on('message', data => {
       seen.socketRequests.push(JSON.parse(data.toString()))
+      if (seen.turnState) ws.send(JSON.stringify({ type: 'response.metadata', headers: { 'x-codex-turn-state': 'routing-fixture' } }))
       for (const event of events(`resp-ws-${seen.socketRequests.length}`)) ws.send(JSON.stringify(event))
     })
   })
@@ -95,6 +96,7 @@ test.beforeEach(() => {
   seen.socketRequests.length = 0
   seen.httpRequests.length = 0
   seen.refuse = false
+  seen.turnState = false
   r.codexApi.clearChain()
   r.resetReadiness()
   r.installNativeLaneReadinessResolver(r.providerUsesNativeLane)
@@ -124,6 +126,16 @@ test('a ChatGPT login streams every request of a conversation over one kept sock
   assert.equal(headers.authorization, 'Bearer oauth-fixture')
   assert.equal(headers.originator, 'codex_cli_rs')
   assert.equal(headers.session_id, 'conversation-fixture')
+})
+
+test('the provider bridge carries turn identity without sending it as a request field', async () => {
+  seen.turnState = true
+  await send('conversation-fixture', { turnId: 'one-user-turn' })
+  await send('conversation-fixture', { turnId: 'one-user-turn' })
+  await send('conversation-fixture', { turnId: 'next-user-turn' })
+  assert.deepEqual(seen.socketRequests.map(body => body.client_metadata['x-codex-turn-state']), [undefined, 'routing-fixture', undefined])
+  assert.ok(seen.socketRequests.every(body => body.turnId === undefined))
+  assert.equal(seen.connections.length, 1)
 })
 
 test('the socket carries the same request body HTTP would send', async () => {

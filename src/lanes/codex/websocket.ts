@@ -137,12 +137,16 @@ class ResponsesSocket {
     /** The endpoint and login the handshake authenticated. */
     readonly identity: string,
     private readonly silenceLimitMs: number,
+    onHandshakeHeaders?: (headers: Record<string, unknown>) => void,
   ) {
     this.socket = new WebSocket(url, {
       headers,
       perMessageDeflate: false,
       handshakeTimeout: CONNECT_TIMEOUT_MS,
     })
+    // Only a newly opened socket's upgrade belongs to this turn. Reusing a
+    // socket on a later turn must not replay the old handshake's state.
+    if (onHandshakeHeaders) this.socket.once('upgrade', response => onHandshakeHeaders(response.headers))
     this.ready = new Promise<void>((resolve, reject) => {
       this.socket.once('open', () => resolve())
       this.socket.once('unexpected-response', (req, res) => {
@@ -350,6 +354,7 @@ export class CodexResponsesSockets {
     body: Record<string, unknown>,
     key: string,
     signal?: AbortSignal,
+    onHandshakeHeaders?: (headers: Record<string, unknown>) => void,
   ): Promise<CodexSocketResponse> {
     if (signal?.aborted) throw abortError()
     let socket = this.sockets.get(key)
@@ -363,7 +368,7 @@ export class CodexResponsesSockets {
       const handshake: Record<string, string> = { ...headers, 'OpenAI-Beta': OPENAI_BETA }
       delete handshake['Content-Type']
       delete handshake['Accept']
-      socket = new ResponsesSocket(url.replace(/^http/i, 'ws'), handshake, identity, this.silenceLimitMs)
+      socket = new ResponsesSocket(url.replace(/^http/i, 'ws'), handshake, identity, this.silenceLimitMs, onHandshakeHeaders)
       this.sockets.delete(key)
       this.sockets.set(key, socket)
       this.evictOldest(key)
@@ -395,7 +400,7 @@ export class CodexResponsesSockets {
       // A kept connection the server dropped while idle fails before any
       // event: open a fresh one now instead of waiting out a retry backoff.
       if (reused && (error as { code?: string })?.code === 'ECONNRESET' && !signal?.aborted) {
-        return this.start(url, headers, body, key, signal)
+        return this.start(url, headers, body, key, signal, onHandshakeHeaders)
       }
       throw error
     }

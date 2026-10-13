@@ -61,6 +61,12 @@ for (const model of ['gpt-6-sol', 'gpt-5.6-luna']) {
         `next model request did not contain the completed agent notification: ${JSON.stringify(records.map(({ input, ...record }) => record))}\n${JSON.stringify(nextParent?.input).slice(-6000)}\n${stdout.slice(-2500)}\n${stderr.slice(-1500)}`)
       assert.ok(stdout.includes('NOTIFICATION_DELIVERED_MIDTURN'), stdout.slice(-1500))
       assert.ok(!stdout.includes('NOTIFICATION_MISSING'), 'model ended its turn before receiving the completion')
+      const parentRequests = records.filter(record => record.kind === 'parent-request')
+      assert.equal(parentRequests[0].sentTurnState, null)
+      assert.ok(parentRequests.slice(1).every(record => record.sentTurnState === 'parent-routing-token'),
+        'tool rounds must preserve the server-issued token for the query chain')
+      assert.ok(parentRequests.every(record => record.leakedTurnId === undefined))
+      assert.equal(records[finishedIndex].sentTurnState, null, 'the agent must not borrow its parent turn state')
     } finally {
       clearTimeout(timer)
       child.kill()

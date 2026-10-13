@@ -137,6 +137,8 @@ export interface LaneProviderCallParams {
   signal: AbortSignal
   /** Stable claudex session id for provider-side prompt-cache affinity. */
   sessionId?: string
+  /** Internal OpenAI turn identity; never serialized as a Responses body field. */
+  turnId?: string
   /** Logical caller source used for diagnostics and cache-key isolation. */
   querySource?: ProviderRequestParams['querySource']
   /**

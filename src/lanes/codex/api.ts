@@ -26,11 +26,13 @@
  *
  * With a ChatGPT login, requests go over codex-rs's Responses WebSocket
  * instead (websocket.ts): the same body on one kept connection per
- * conversation, which keeps every follow-up on the server that holds its
- * cached prefix. HTTP stays the fallback and the API-key/Azure path.
+ * conversation, preserving connection affinity. Server-issued turn state is
+ * replayed within each turn; neither hint guarantees a cache hit. HTTP stays
+ * the fallback and the API-key/Azure path.
  */
 
-import { appendFileSync } from 'fs'
+import { CodexCacheDiagnostics, type CodexCacheCapture } from './cacheDiagnostics.js'
+import { CODEX_TURN_STATE_HEADER, CodexTurnStates } from './turnState.js'
 import {
   CodexResponsesSockets,
   CodexWebSocketHttpError,
@@ -334,6 +336,8 @@ export const FROZEN_VOLATILE_SESSION_LIMIT = 64
 export class CodexApiClient {
   /** Kept Responses WebSocket connections, one per conversation. */
   private readonly sockets = new CodexResponsesSockets()
+  private readonly cacheDiagnostics = new CodexCacheDiagnostics()
+  private readonly turnStates = new CodexTurnStates()
   private apiKey: string | null = null
   /** Populated lazily in resolvedBaseUrl() based on which auth is active. */
   private explicitBaseUrl: string | null = null
@@ -389,6 +393,12 @@ export class CodexApiClient {
   private frozenVolatileBySession: Map<string, Map<string, string>> = new Map()
 
   configure(opts: { apiKey?: string; baseUrl?: string; chatgptAccessToken?: string; chatgptAccountId?: string; chatgptIdToken?: string }): void {
+    if ((opts.apiKey !== undefined && opts.apiKey !== this.apiKey) ||
+      (opts.baseUrl !== undefined && (opts.baseUrl || null) !== this.explicitBaseUrl) ||
+      (opts.chatgptAccessToken !== undefined && opts.chatgptAccessToken !== this.chatgptAccessToken) ||
+      (opts.chatgptAccountId !== undefined && opts.chatgptAccountId !== this.chatgptAccountId)) {
+      this.turnStates.clear()
+    }
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
     if (opts.baseUrl !== undefined) this.explicitBaseUrl = opts.baseUrl || null
     if (opts.chatgptAccessToken !== undefined) this.chatgptAccessToken = opts.chatgptAccessToken
@@ -439,6 +449,7 @@ export class CodexApiClient {
   clearChain(): void {
     this.cacheSessionId = null
     this.frozenVolatileBySession.clear()
+    this.turnStates.clear()
     this.sockets.closeAll()
   }
 
@@ -559,7 +570,10 @@ export class CodexApiClient {
   async *streamResponses(
     request: CodexResponsesRequest,
     signal?: AbortSignal,
+    turnId?: string,
   ): AsyncGenerator<CodexStreamEvent> {
+    const sessionId = request.prompt_cache_key?.trim() || this.sessionCacheKey
+    const turnState = this.turnStates.get(sessionId, turnId)
     // `store` defaults to the Azure-only behavior codex-rs ships with.
     // Callers can still override by passing `store` explicitly. We also
     // inject `client_metadata.x-codex-installation-id` so the backend
@@ -574,8 +588,17 @@ export class CodexApiClient {
         'x-codex-installation-id': this.installationId,
       },
     }
+    let cacheCapture: CodexCacheCapture | undefined
 
     if (this.usesWebSocket) {
+      const socketBody = turnState.value ? {
+        ...body,
+        client_metadata: { ...body.client_metadata, [CODEX_TURN_STATE_HEADER]: turnState.value },
+      } : body
+      cacheCapture = this.cacheDiagnostics.capture({
+        ...socketBody,
+        include: socketBody.include ?? [],
+      }, undefined, sessionId)
       let started: CodexSocketResponse | undefined
       try {
         // Retried before the first event exactly like the HTTP request below.
@@ -583,10 +606,11 @@ export class CodexApiClient {
           try {
             return await this.sockets.start(
               `${this.baseUrl}/responses`,
-              this.buildHeaders(request.prompt_cache_key),
-              body as unknown as Record<string, unknown>,
-              request.prompt_cache_key?.trim() || this.sessionCacheKey,
+              this.buildHeaders(sessionId, turnState.value),
+              socketBody as unknown as Record<string, unknown>,
+              sessionId,
               signal,
+              headers => turnState.captureHeaders(headers),
             )
           } catch (error) {
             if (error instanceof CodexWebSocketHttpError) throw new CodexApiError(error.status, error.body, parseRetryAfter(error.retryAfter ?? null))
@@ -599,10 +623,12 @@ export class CodexApiClient {
       }
       if (started) {
         try {
-          logCacheUsage('websocket', started.first, started.connection)
+          turnState.captureEvent(started.first)
+          this.logCacheCompletion(cacheCapture, 'websocket', started.first, started.connection)
           yield started.first as CodexStreamEvent
           for await (const event of started.rest) {
-            logCacheUsage('websocket', event, started.connection)
+            turnState.captureEvent(event)
+            this.logCacheCompletion(cacheCapture, 'websocket', event, started.connection)
             yield event as CodexStreamEvent
           }
         } catch (error) {
@@ -616,6 +642,7 @@ export class CodexApiClient {
       }
     }
 
+    cacheCapture = this.cacheDiagnostics.capture(body, cacheCapture, sessionId)
     const response = await retryWithBackoff(
       async () => {
         const resp = await fetch(`${this.baseUrl}/responses`, {
@@ -623,7 +650,7 @@ export class CodexApiClient {
           // The request captured its session before any await. Use that same
           // key for headers so concurrent side requests cannot race the
           // singleton client's currently selected session.
-          headers: this.buildHeaders(request.prompt_cache_key),
+          headers: this.buildHeaders(sessionId, turnState.value),
           body: JSON.stringify(body),
           signal,
         })
@@ -633,6 +660,7 @@ export class CodexApiClient {
           throw new CodexApiError(resp.status, errText, retryAfterMs)
         }
         if (!resp.body) throw new CodexApiError(0, 'No response body')
+        turnState.capture(resp.headers.get(CODEX_TURN_STATE_HEADER))
         return resp
       },
       { signal },
@@ -670,7 +698,8 @@ export class CodexApiClient {
               // if the server omitted an explicit `event:` line.
               const type = currentEvent ?? parsed.type ?? 'unknown'
               const event = { ...parsed, type }
-              logCacheUsage('http', event)
+              turnState.captureEvent(event)
+              this.logCacheCompletion(cacheCapture, 'http', event)
               yield event as CodexStreamEvent
             } catch {
               // Skip malformed JSON payloads rather than crashing the stream.
@@ -699,6 +728,7 @@ export class CodexApiClient {
         'x-codex-installation-id': this.installationId,
       },
     }
+    const cacheCapture = this.cacheDiagnostics.capture(body)
     return retryWithBackoff(
       async () => {
         const resp = await fetch(`${this.baseUrl}/responses`, {
@@ -712,15 +742,29 @@ export class CodexApiClient {
           const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'))
           throw new CodexApiError(resp.status, errText, retryAfterMs)
         }
-        return resp.json()
+        const response = await resp.json()
+        this.cacheDiagnostics.logCompletion(cacheCapture, 'http', response?.usage)
+        return response
       },
       { signal },
     )
   }
 
-  private buildHeaders(requestSessionId?: string): Record<string, string> {
+  private logCacheCompletion(
+    capture: CodexCacheCapture | undefined,
+    transport: 'websocket' | 'http',
+    event: { type?: unknown; response?: unknown },
+    connection?: number,
+  ): void {
+    if (event.type !== 'response.completed') return
+    const usage = (event.response as { usage?: unknown } | undefined)?.usage
+    this.cacheDiagnostics.logCompletion(capture, transport, usage, connection)
+  }
+
+  private buildHeaders(requestSessionId?: string, turnState?: string): Record<string, string> {
     const sid = requestSessionId?.trim() || this.sessionCacheKey
     const headers: Record<string, string> = {
+      ...(turnState ? { [CODEX_TURN_STATE_HEADER]: turnState } : {}),
       'Content-Type': 'application/json',
       'Accept': 'text/event-stream',
       // codex-rs: build_conversation_headers → `session_id: <conv_id>`.
@@ -780,28 +824,6 @@ function getNetworkErrorCode(error: unknown): string | undefined {
     cur = (cur as any).cause
   }
   return undefined
-}
-
-/**
- * TAU_CODEX_CACHE_LOG=<file>: one JSON line per completed request with its
- * transport, prompt and cached tokens. The transcript does not carry
- * per-request usage for this lane, and cache work needs it.
- */
-function logCacheUsage(transport: 'websocket' | 'http', event: { type?: unknown; response?: unknown }, connection?: number): void {
-  const file = process.env.TAU_CODEX_CACHE_LOG
-  if (!file || event.type !== 'response.completed') return
-  const usage = (event.response as { usage?: { input_tokens?: number; input_tokens_details?: { cached_tokens?: number } } } | undefined)?.usage
-  try {
-    appendFileSync(file, `${JSON.stringify({
-      at: new Date().toISOString(),
-      transport,
-      ...(connection !== undefined ? { connection } : {}),
-      prompt: usage?.input_tokens ?? null,
-      cached: usage?.input_tokens_details?.cached_tokens ?? null,
-    })}\n`)
-  } catch {
-    // A debug log must never fail a request.
-  }
 }
 
 function isRetryableTransport(error: unknown): boolean {

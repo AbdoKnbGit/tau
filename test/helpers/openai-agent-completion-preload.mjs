@@ -8,7 +8,7 @@ let releaseChild
 const parentContinued = new Promise(resolve => { releaseChild = resolve })
 const log = value => appendFileSync(process.env.TAU_NOTIFICATION_TEST_LOG, JSON.stringify(value) + '\n')
 
-function response(action) {
+function response(action, turnState) {
   const id = `resp_notification_${++sequence}`
   const events = []
   const event = (type, fields) => events.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`)
@@ -25,7 +25,9 @@ function response(action) {
     event('response.output_item.done', { output_index: 0, item })
   }
   event('response.completed', { response: { id, usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 } } })
-  return new Response(events.join(''), { headers: { 'content-type': 'text/event-stream' } })
+  return new Response(events.join(''), { headers: { 'content-type': 'text/event-stream',
+    ...(turnState ? { 'x-codex-turn-state': turnState } : {}),
+  } })
 }
 
 globalThis.fetch = async (input, init = {}) => {
@@ -34,11 +36,12 @@ globalThis.fetch = async (input, init = {}) => {
     return new Response('{}', { headers: { 'content-type': 'application/json' } })
   }
   const body = JSON.parse(String(init.body))
+  const sentTurnState = new Headers(init.headers).get('x-codex-turn-state')
   const users = (body.input ?? []).filter(item => item.role === 'user')
   const initial = JSON.stringify(users[0]?.content ?? '')
   if (initial.includes('NOTIFICATION_CHILD')) {
     await parentContinued
-    log({ kind: 'child-finished', model: body.model })
+    log({ kind: 'child-finished', model: body.model, sentTurnState })
     return response('NOTIFICATION_CHILD_DONE')
   }
   if (!initial.includes('NOTIFICATION_PARENT')) return response('ok')
@@ -49,12 +52,12 @@ globalThis.fetch = async (input, init = {}) => {
     const text = JSON.stringify(item)
     return text.includes('<task-notification>') && text.includes('NOTIFICATION_CHILD_DONE')
   })
-  log({ kind: 'parent-request', round: parentRound, notified, model: body.model, input: body.input })
+  log({ kind: 'parent-request', round: parentRound, notified, model: body.model, input: body.input, sentTurnState, leakedTurnId: body.turnId })
   if (parentRound++ === 0) {
     return response({ name: 'Agent', input: {
       subagent_type: 'general-purpose', description: 'Complete notification test',
       prompt: 'NOTIFICATION_CHILD: return the requested result.', run_in_background: true,
-    } })
+    } }, 'parent-routing-token')
   }
   if (notified) return response('NOTIFICATION_DELIVERED_MIDTURN')
   if (parentRound > 5) return response('NOTIFICATION_MISSING')

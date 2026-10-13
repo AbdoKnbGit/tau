@@ -306,6 +306,7 @@ export class LaneBackedProvider implements BaseProvider {
         effortValue: params.effortValue,
         signal: controller.signal,
         ...(sessionId ? { sessionId } : {}),
+        ...(lane.name === 'codex' && params.turnId ? { turnId: params.turnId } : {}),
         ...(params.querySource ? { querySource: params.querySource } : {}),
         providerHint: providerHint,
       })
