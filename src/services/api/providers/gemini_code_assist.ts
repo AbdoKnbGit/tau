@@ -190,6 +190,9 @@ export function antigravityGenerationHostCount(_model: string | undefined): numb
 // daily Antigravity endpoint. They share the `userAgent: "antigravity"`
 // envelope but need small content-level fixes (see wrapForCodeAssist).
 export const ANTIGRAVITY_MODELS: readonly ModelInfo[] = [
+  { id: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)', contextWindow: 1048576 },
+  { id: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)', contextWindow: 1048576 },
+  { id: 'gemini-4-argon-low', name: 'Gemini 4 Argon (Low)', contextWindow: 1048576 },
   { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', contextWindow: 1048576 },
   { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)', contextWindow: 1048576 },
   { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)', contextWindow: 1048576 },
@@ -228,15 +231,18 @@ const ANTIGRAVITY_WIRE_MODEL_DISPLAY_NAMES = new Map<string, string>([
   ['gemini-3-flash-low', 'Gemini 3 Flash (Low)'],
 ])
 
-// Model-picker subset: `gemini-3-flash` stays fully ROUTABLE (it remains in
-// ANTIGRAVITY_MODELS / ANTIGRAVITY_MODEL_IDS so saved configs and explicit
-// --model flags keep working, with all cache discipline applied) but is
-// hidden from model selection — its serving channel commits the implicit
-// cache slowly (~40-50s vs 10-20s on 3.5-flash) and misses replicas often
-// (live-measured 64-71% vs 85-93% on 3.5-flash/Claude), so offering it in
-// the picker invites bad sessions for no capability gain.
+// Retired picker rows stay in the routing registry so saved sessions and
+// explicit model ids retain their executor, wire mapping and cache guards.
+// The picker offers Argon and 3.8 Flash; the original 3 Flash stays hidden.
+export function isHiddenAntigravityPickerModel(model: string): boolean {
+  const normalized = model.toLowerCase().replace(/^models\//, '')
+  return normalized === 'gemini-3-flash'
+    || /^gemini-3\.[567]-flash-(?:high|medium|low)$/.test(normalized)
+    || /^gemini-3\.1-pro-(?:high|low)$/.test(normalized)
+}
+
 export const ANTIGRAVITY_PICKER_MODELS: readonly ModelInfo[] =
-  ANTIGRAVITY_MODELS.filter(model => model.id !== 'gemini-3-flash')
+  ANTIGRAVITY_MODELS.filter(model => !isHiddenAntigravityPickerModel(model.id))
 
 /**
  * The picker's Claude rows for the account's plan. Paid Google AI Pro and
@@ -300,6 +306,9 @@ export function getAntigravityModelDisplayName(model: string): string | null {
 
 export function resolveAntigravityWireModel(model: string): string {
   const normalized = model.toLowerCase()
+  // Argon uses the requested per-level id. Do not alias it to a Flash
+  // backend or invent a shared tiered id; each level keeps its identity.
+  if (/^gemini-4-argon-(?:high|medium|low)$/.test(normalized)) return normalized
   // 3.6 and 3.8 keep their shared tiered wire models; the picker's level
   // rides in generationConfig.thinkingConfig.thinkingLevel.
   // 3.7 must preserve its per-level id: the daily endpoint returned 404 for
@@ -454,7 +463,7 @@ export function describeAntigravityEntitlementGap(model: string): string | null 
   const wireModel = resolveAntigravityWireModel(normalized).toLowerCase()
   if (entitledSet.has(normalized) || entitledSet.has(wireModel)) return null
 
-  const alternatives = ANTIGRAVITY_MODELS
+  const alternatives = ANTIGRAVITY_PICKER_MODELS
     .map(candidate => candidate.id)
     .filter(id =>
       entitledSet.has(id) || entitledSet.has(resolveAntigravityWireModel(id).toLowerCase()))

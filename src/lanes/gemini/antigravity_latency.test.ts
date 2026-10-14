@@ -42,16 +42,33 @@ function main(): void {
     assert(cfg.includeThoughts === true, `includeThoughts=${String(cfg.includeThoughts)}`)
   })
 
-  test('level-based Flash variants preserve their Antigravity thinking level', () => {
-    // The tiered wire model is shared by all three levels, so thinkingLevel
-    // is the ONLY thing that carries the picker choice upstream.
-    for (const generation of ['3.6', '3.7', '3.8'] as const) {
+  test('Flash and Argon variants preserve their Antigravity thinking level', () => {
+    // Preserve the chosen level for both shared and per-level wire models.
+    for (const family of ['3.6-flash', '3.7-flash', '3.8-flash', '4-argon'] as const) {
       for (const level of ['low', 'medium', 'high'] as const) {
-        const id = `gemini-${generation}-flash-${level}`
+        const id = `gemini-${family}-${level}`
         const cfg = resolveThinkingConfig(id, -1)
         assert(cfg.thinkingLevel === level, `${id} thinkingLevel=${String(cfg.thinkingLevel)}`)
         assert(cfg.includeThoughts === false, `${id} includeThoughts=${String(cfg.includeThoughts)}`)
+        assert(!('thinkingBudget' in cfg), `${id} must use level-based reasoning`)
       }
+    }
+  })
+
+  test('Argon respects existing explicit thought and level overrides', () => {
+    const previous = process.env.TAU_GEMINI_THINKING
+    try {
+      for (const [override, expected] of [['medium', 'medium'], ['off', 'low']]) {
+        process.env.TAU_GEMINI_THINKING = override
+        const cfg = resolveThinkingConfig('gemini-4-argon-high', 1024, {
+          type: 'enabled', budget_tokens: 1024,
+        })
+        assert(cfg.thinkingLevel === expected, `override ${override} was lost`)
+        assert(cfg.includeThoughts === true, 'explicit thoughts were lost')
+      }
+    } finally {
+      if (previous === undefined) delete process.env.TAU_GEMINI_THINKING
+      else process.env.TAU_GEMINI_THINKING = previous
     }
   })
 

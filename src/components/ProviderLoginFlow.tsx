@@ -497,7 +497,7 @@ export function ProviderLoginFlow({ provider, onDone }: Props) {
       ]
     : isAntigravity
       ? [
-          { method: 'oauth_antigravity', label: 'Antigravity login (Gemini 3 Flash / 3.1 Pro high/low)' },
+          { method: 'oauth_antigravity', label: 'Antigravity login (Gemini 4 Argon / 3.8 Flash)' },
         ]
       : isKiro
         ? [

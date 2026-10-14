@@ -1,4 +1,4 @@
-/** Run: bun test src/services/api/providers/antigravity_project_cache.test.ts */
+/** Run: bun test ./src/services/api/providers/antigravity_project_cache.test.ts */
 import { afterAll, beforeEach, expect, mock, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import * as os from 'node:os'
@@ -59,20 +59,32 @@ test('an ownerless legacy project is rediscovered using the request credential',
 
 test('entitlement diagnostics follow the request credential instead of another login', async () => {
   const fetchNow = globalThis.fetch
+  const argonModels = ['gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-argon-high']
   globalThis.fetch = (async (input, init) => {
     if (String(input).endsWith(':retrieveUserQuota')) {
       const token = new Headers(init?.headers).get('authorization')
-      return Response.json({ buckets: [{ modelId: token === 'Bearer account-A'
-        ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered' }] })
+      // 3.7 and Argon use per-level ids; 3.8 still shares a tiered wire id.
+      const models = token === 'Bearer account-A'
+        ? ['gemini-3.7-flash-low', ...argonModels] : ['gemini-3.8-flash-tiered']
+      return Response.json({ buckets: models.map(modelId => ({ modelId })) })
     }
     return fetchNow(input, init)
   }) as typeof fetch
   await ensureCodeAssistReady('account-A', 'antigravity')
   expect(describeAntigravityEntitlementGap('gemini-3.7-flash-low')).toBeNull()
-  expect(describeAntigravityEntitlementGap('gemini-3.8-flash-low')).toContain('gemini-3.8-flash-low')
+  const gap = describeAntigravityEntitlementGap('gemini-3.8-flash-low')
+  expect(gap).toContain('gemini-3.8-flash-low')
+  expect(gap).not.toContain('gemini-3.7-flash-low') // retired suggestions stay hidden
+  for (const model of argonModels) {
+    expect(describeAntigravityEntitlementGap(model)).toBeNull()
+    expect(gap).toContain(model)
+  }
   await ensureCodeAssistReady('account-B', 'antigravity')
   expect(describeAntigravityEntitlementGap('gemini-3.8-flash-low')).toBeNull()
   expect(describeAntigravityEntitlementGap('gemini-3.7-flash-low')).toContain('gemini-3.7-flash-low')
+  for (const model of argonModels) {
+    expect(describeAntigravityEntitlementGap(model)).toContain(model)
+  }
 })
 
 test('Claude 5.5 entitlement follows the account plan, not the production quota list', async () => {

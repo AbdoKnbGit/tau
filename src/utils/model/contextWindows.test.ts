@@ -175,6 +175,19 @@ test('a host models.dev does not list still resolves from the static tables', ()
   assert(window === 1_048_576, `expected the Gemini 3 family window, got ${window}`)
 })
 
+test('Argon resolves its full context before the picker or remote catalog is loaded', () => {
+  useCatalogue({})
+  for (const level of ['low', 'medium', 'high']) {
+    const id = `gemini-4-argon-${level}`
+    for (const model of [id, `models/${id}`, `antigravity-${id}`, id.toUpperCase()]) {
+      assert(getProviderCatalogContextWindow(model, 'antigravity') === 1_048_576,
+        `${model} must have the 1,048,576-token window`)
+    }
+  }
+  assert(getProviderCatalogContextWindow('gemini-4-unknown', 'antigravity') === undefined,
+    'Argon context must not invent limits for unrelated Gemini 4 models')
+})
+
 test('with no catalogue entry an unknown model stays unknown', () => {
   useCatalogue({})
   const window = getProviderCatalogContextWindow('claude-fable-5-1', 'opencode')

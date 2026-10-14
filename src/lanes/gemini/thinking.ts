@@ -15,7 +15,7 @@ export function resolveThinkingBudget(
 /**
  * Build the right shape of `thinkingConfig` for the target model.
  *
- * Gemini 3.x Antigravity models advertise LEVEL-based thinking ("low",
+ * Gemini 3.x and Argon Antigravity models use LEVEL-based thinking ("low",
  * "medium", "high") via the model registry. For those models, keep the
  * reasoning level but do not stream visible thoughts by default; visible
  * thoughts are slow and made simple turns feel like high-effort reasoning.
@@ -35,7 +35,7 @@ export function resolveThinkingConfig(
 
   const lower = model.toLowerCase()
   let level: 'low' | 'medium' | 'high' | null = null
-  const levelMatch = lower.match(/^gemini-\d+(?:\.\d+)?-(?:pro|flash)-(high|medium|low)$/)
+  const levelMatch = lower.match(/^gemini-(?:\d+(?:\.\d+)?-(?:pro|flash)|4-argon)-(high|medium|low)$/)
   if (levelMatch) level = levelMatch[1] as 'low' | 'medium' | 'high'
   else if (/^gemini-3(?:\.\d+)?-flash$/.test(lower)) level = 'low'
 

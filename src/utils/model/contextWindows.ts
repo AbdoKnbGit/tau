@@ -198,6 +198,7 @@ const KNOWN_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
   'gpt-4': 8_192,
 
   // Google Gemini catalogs.
+  'gemini-4-argon': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-3.1-pro': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-3.1-pro-high': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-3.1-pro-low': GEMINI_LONG_CONTEXT_WINDOW,
@@ -260,6 +261,7 @@ const PREFIX_CONTEXT_WINDOWS: ContextWindowMap = {
   'gpt-5.1-codex-mini': 272_000,
   'gpt-5.1': 272_000,
   'gpt-5-mini': 272_000,
+  'gemini-4-argon': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-3.5-flash': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-3.1-pro': GEMINI_LONG_CONTEXT_WINDOW,
   'gemini-3.1-flash-lite': GEMINI_LONG_CONTEXT_WINDOW,

@@ -56,10 +56,10 @@ function main(): void {
 
   test('Antigravity subagents with no model of their own get the family agent model', () => {
     for (const spec of [undefined, 'inherit']) {
-      for (const parent of ['gemini-3.8-flash-high', 'gemini-3.7-flash-medium', 'gemini-3.6-flash-low', 'gemini-3.1-pro-high']) {
+      for (const parent of ['gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-argon-high', 'gemini-3.8-flash-high', 'gemini-3.7-flash-medium', 'gemini-3.6-flash-low', 'gemini-3.1-pro-high']) {
         for (const plan of ['free-tier', 'g1-pro-tier', 'g1-ultra-tier', null]) {
           const model = resolveAntigravityOpus46AgentModel(spec, parent, 'antigravity', plan)
-          assert(model === 'gemini-3.7-flash-low', `${plan} ${parent}/${spec}=${model}`)
+          assert(model === 'gemini-3.8-flash-low', `${plan} ${parent}/${spec}=${model}`)
         }
       }
       for (const parent of ['claude-opus-5-5-medium', 'claude-opus-5-5-high', 'claude-sonnet-5-5-high', 'claude-sonnet-5-5-low']) {
@@ -76,8 +76,8 @@ function main(): void {
   })
 
   test('Antigravity explicit model ids are honoured on either family', () => {
-    for (const explicit of ['claude-opus-5-5-high', 'gemini-3.8-flash-high', 'claude-sonnet-4-6']) {
-      for (const parent of ['claude-opus-5-5-medium', 'gemini-3.8-flash-high']) {
+    for (const explicit of ['claude-opus-5-5-high', 'gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-argon-high', 'gemini-3.8-flash-high', 'gemini-3.7-flash-low', 'claude-sonnet-4-6']) {
+      for (const parent of ['claude-opus-5-5-medium', 'gemini-4-argon-high', 'gemini-3.8-flash-high']) {
         const model = resolveAntigravityOpus46AgentModel(explicit, parent, 'antigravity', 'g1-pro-tier')
         assert(model === null, `${parent}/${explicit} was redirected to ${model}`)
       }
@@ -88,7 +88,7 @@ function main(): void {
     for (const alias of ROUTED_ALIASES) {
       for (const plan of [null, 'free-tier', 'g1-pro-tier']) {
         const resolved = resolveAntigravityOpus46AgentModel(alias, 'gemini-3.1-pro-high', 'antigravity', plan)
-        assert(resolved === 'gemini-3.7-flash-low', `${plan}/${alias}=${resolved}`)
+        assert(resolved === 'gemini-3.8-flash-low', `${plan}/${alias}=${resolved}`)
       }
     }
   })
@@ -240,8 +240,12 @@ function main(): void {
       ['claude-opus-4-6-thinking', 'claude-sonnet-4-6'],
       ['claude-sonnet-4-6', 'claude-sonnet-4-6'],
       ['claude-opus-5-5-high', 'claude-sonnet-5-5-low'],
-      ['gemini-3.1-pro-high', 'gemini-3.7-flash-low'],
-      ['gemini-3.5-flash-low', 'gemini-3.7-flash-low'],
+      ['gemini-4-argon-low', 'gemini-3.8-flash-low'],
+      ['gemini-4-argon-medium', 'gemini-3.8-flash-low'],
+      ['gemini-4-argon-high', 'gemini-3.8-flash-low'],
+      ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'],
+      ['gemini-3.1-pro-high', 'gemini-3.8-flash-low'],
+      ['gemini-3.5-flash-low', 'gemini-3.8-flash-low'],
     ]
     for (const [parent, model] of expected) {
       for (const alias of ROUTED_ALIASES) {

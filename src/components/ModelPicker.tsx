@@ -4,6 +4,7 @@ import * as React from 'react';
 import { useCallback, useMemo, useState } from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
+import { isHiddenAntigravityPickerModel } from '../services/api/providers/gemini_code_assist.js';
 import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled } from 'src/utils/fastMode.js';
 import { Box, Text, useInput } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
@@ -134,12 +135,14 @@ export function ModelPicker(t0) {
   // A favorited model is removed from its usual position rather than shown
   // twice, so the star always means "this one moved to the top".
   const selectOptions = useMemo(() => {
-    const pinned = favorites.map(favorite => ({
+    // Retired catalog rows stay hidden even when saved or currently selected;
+    // this only filters the picker, leaving preferences and session routing intact.
+    const pinned = favorites.filter(favorite => favorite.provider !== 'antigravity' || !isHiddenAntigravityPickerModel(favorite.model)).map(favorite => ({
       value: favoriteOptionValue(favorite),
       label: `${FAVORITE_MARKER} ${favoriteDisplayLabel(favorite)}`,
       description: favoriteDescription(favorite)
     }));
-    const rest = optionsWithInitial.filter((opt: ModelOption) => opt.value === null || !isFavoriteModel(activeProvider, opt.value)).map(_temp3);
+    const rest = optionsWithInitial.filter((opt: ModelOption) => opt.value === null || ((activeProvider !== 'antigravity' || !isHiddenAntigravityPickerModel(opt.value)) && !isFavoriteModel(activeProvider, opt.value))).map(_temp3);
     return [...pinned, ...rest];
   }, [favorites, optionsWithInitial, activeProvider]);
   const initialFocusValue = selectOptions.some(_ => _.value === focusTarget) ? focusTarget : selectOptions[0]?.value ?? undefined;

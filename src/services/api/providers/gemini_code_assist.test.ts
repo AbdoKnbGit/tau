@@ -24,6 +24,8 @@ import {
   _resetAntigravityGeminiHostCooldownForTest,
   getAntigravityModelDisplayName,
   isAntigravityGeminiModel,
+  isAntigravityModelId,
+  isHiddenAntigravityPickerModel,
   parseCodeAssistSSE,
   resolveAntigravityWireModel,
   wrapForCodeAssist,
@@ -162,7 +164,9 @@ async function main(): Promise<void> {
         const wireId = generation === '3.7' ? id : `gemini-${generation}-flash-tiered`
         const name = `Gemini ${generation} Flash (${label})`
         const pickerModel = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
-        assert(pickerModel?.name === name, `missing ${name} from Antigravity picker`)
+        assert(getAntigravityModelDisplayName(id) === name, `${id} lost its display name`)
+        assert(generation === '3.8' ? pickerModel?.name === name : pickerModel === undefined,
+          `${id} has the wrong picker visibility`)
         assert(executorForModel(id) === 'antigravity', `${id} must use Antigravity`)
         assert(
           resolveAntigravityWireModel(id) === wireId,
@@ -192,7 +196,7 @@ async function main(): Promise<void> {
       'gemini-3-flash must not appear in the model picker',
     )
     assert(
-      ANTIGRAVITY_PICKER_MODELS.some(model => model.id === 'gemini-3.5-flash-low'),
+      ANTIGRAVITY_PICKER_MODELS.some(model => model.id === 'gemini-3.8-flash-low'),
       'picker must keep the healthy Antigravity models',
     )
     // Still fully routable for saved configs / explicit --model:
@@ -202,6 +206,53 @@ async function main(): Promise<void> {
       isAntigravityGeminiModel('gemini-3-flash'),
       'cache discipline must still cover explicit gemini-3-flash use',
     )
+  })
+
+  await test('picker offers only Argon and 3.8 Flash while retired Gemini sessions keep cache routing', () => {
+    const visible = ANTIGRAVITY_PICKER_MODELS.filter(model => model.id.startsWith('gemini-'))
+    const expected = ['gemini-4-argon', 'gemini-3.8-flash']
+      .flatMap(model => ['high', 'medium', 'low'].map(level => `${model}-${level}`))
+    assert(JSON.stringify(visible.map(model => model.id)) === JSON.stringify(expected),
+      `unexpected Gemini picker rows: ${visible.map(model => model.id).join(', ')}`)
+    for (const id of [
+      ...['3.7', '3.6', '3.5'].flatMap(version =>
+        ['high', 'medium', 'low'].map(level => `gemini-${version}-flash-${level}`)),
+      'gemini-3.1-pro-high', 'gemini-3.1-pro-low',
+    ]) {
+      assert(!visible.some(model => model.id === id), `${id} must be hidden`)
+      assert(isHiddenAntigravityPickerModel(`models/${id.toUpperCase()}`),
+        `${id} saved favorite/current row must also be hidden`)
+      assert(executorForModel(id) === 'antigravity', `${id} lost its executor`)
+      assert(isAntigravityGeminiModel(id), `${id} lost its cache guards`)
+    }
+    for (const id of [...expected, 'claude-sonnet-5-5-low', 'gemini-3.1-pro-preview', 'custom-model']) {
+      assert(!isHiddenAntigravityPickerModel(id), `${id} must not be hidden`)
+    }
+  })
+
+  await test('Argon tiers retain their wire ids, thinking levels and stable request prefix', () => {
+    for (const [level, label] of [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] as const) {
+      const id = `gemini-4-argon-${level}`
+      const row = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
+      assert(row?.name === `Gemini 4 Argon (${label})`, `${id} display name`)
+      assert(row?.contextWindow === 1_048_576, `${id} context window`)
+      assert(executorForModel(id) === 'antigravity', `${id} executor`)
+      assert(isAntigravityModelId(id), `${id} lazy tool opt-out`)
+      assert(isAntigravityGeminiModel(id), `${id} implicit-cache guards`)
+      assert(resolveAntigravityWireModel(id.toUpperCase()) === id, `${id} wire normalization`)
+      const request = {
+        sessionId: 'argon-stable-session',
+        systemInstruction: { parts: [{ text: 'Stable system prefix' }] },
+        contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+        generationConfig: { thinkingConfig: { thinkingLevel: level, includeThoughts: false } },
+      }
+      const before = JSON.stringify(request)
+      const wrapped = wrapForCodeAssist(id, 'project', request)
+      assert(wrapped.model === id, `${id} wire id changed`)
+      assert(wrapped.userAgent === 'antigravity', `${id} wrong envelope`)
+      assert(JSON.stringify(wrapped.request) === before, `${id} request prefix or thinking changed`)
+      assert(JSON.stringify(request) === before, `${id} caller input mutated`)
+    }
   })
 
   await test('wraps Gemini 3.5 Flash variants with the Antigravity wire model', async () => {
