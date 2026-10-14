@@ -3,6 +3,34 @@
 All notable changes to **Tau**, from the first release to the latest.
 Each version lists what was fixed or added, newest first.
 
+## v0.92.42 (2026-10-14)
+
+- Add Gemini 4 Argon on Antigravity, keep older models available to saved sessions, and use Gemini 3.8 Flash Low for automatic Gemini subagents (1761101b)
+- Fix Windows CI ripgrep setup with a verified upstream fallback when Chocolatey fails (521231ab)
+- Honor each model's reasoning-effort choice and inherit supported settings in Auto while preserving cache keys and required reasoning history (a192169f)
+- Keep OpenAI routing state scoped to each turn, add cache diagnostics, and disable prompt suggestions that compete for the conversation's connection (0ccc4202)
+- Fix mocked OpenAI agent-completion tests during CI startup and wait for child output before cleanup (aa905389)
+- Add GPT-6.1 Sol, recover interrupted OpenAI replies, preserve reasoning on resume, keep Eval state across folder changes, and deliver background completions during active turns (3737feaf)
+- Send ChatGPT Codex requests over a persistent Responses WebSocket to improve connection affinity, with HTTP fallback and cache-usage logging (26f64bf1)
+- Back up plain Python file changes from Eval for /rewind and report files that exceed the tracking limits (15b3363e)
+- Keep Codex tool guidance tied to the tools actually available so models stop looking for an undeclared apply_patch tool (d02801b0)
+- Update stale Agent schema and Eval prompt test expectations (7ffceb07)
+- Remind models to link saved memory files from MEMORY.md, including writes and edits made through Eval (9b59c3d9)
+- Run tool-discovery wording and working-directory tests in cross-platform CI (d4ec51b9)
+- Keep the session root stable in the environment block so ordinary folder changes do not invalidate prompt caches (fa8b0663)
+- Send GLM and MiniMax every tool up front to avoid rewriting the cached tool list during a session (5e5f0a28)
+- Mention ToolSearch only when the request actually includes it, so models can use tools already available to them (2342cceb)
+- Fix Gemini 3.7 routing by preserving its Low, Medium and High model IDs (e4e13c87)
+- Fix the scoped subagent provider expectation in CI (a9d49aed)
+- Fix Command Code cached-token reporting from streaming steps and raw provider usage (0420f0fe)
+- Give subagents their own session state and keep environment blocks aligned with subagent and worktree folders (d56ac6b2)
+- Refresh Mistral models, reasoning choices, context limits and cache accounting; isolate worker prompts, routing and compaction from the main session (a677b2ba)
+- Fix numbered list items repeating their marker after code blocks and align continuation text and nested lists (56f703dd)
+- Fix Ctrl+O freezing on deeply indented code in dark themes (89cada0b)
+- Restore the extra-concise output instruction (1f1b870b)
+- Shorten system, memory and tool prompts while preserving their rules and tool schemas (e41dad86)
+- Improve search and output guidance to reuse evidence, batch independent calls, and start with known files or symbols (21c9c749)
+
 ## v0.92.41 (2026-10-08)
 
 - Handle Antigravity retries smoothly with a shared retry budget and keep slow responses from being cut off prematurely (213f34c2)
