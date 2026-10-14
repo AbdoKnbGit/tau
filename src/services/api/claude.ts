@@ -2241,6 +2241,11 @@ async function* queryModel(
       // Keep OpenAI effort scoped to this request (CLI, /effort, agents and
       // SDK settings already flow through options), outside prompt content.
       ...(requestProvider === 'openai' && { effortValue: options.effortValue ?? null }),
+      // Provider-native choices remain separate; this is only their inherited
+      // session/settings fallback, never a prompt field or a global mutation.
+      ...(!['openai', 'firstParty', 'bedrock', 'vertex', 'foundry', 'gemini', 'antigravity'].includes(requestProvider) && {
+        effortValue: options.effortValue ?? null,
+      }),
       ...(requestProvider === 'openai' && options.queryTracking?.chainId && {
         turnId: options.queryTracking.chainId,
       }),

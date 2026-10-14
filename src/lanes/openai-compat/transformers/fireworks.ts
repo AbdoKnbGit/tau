@@ -27,12 +27,12 @@
  * mid-stream, which is why the cache-hit count read as null before).
  *
  * Reasoning: Fireworks accepts an OpenAI-compatible `reasoning_effort`
- * (low/medium/high). We forward the lane's effort hint when the user has
- * reasoning enabled; we never send `none`/false (some rows reject it), so
- * non-reasoning models are left untouched.
+ * with model-specific tiers. Share the picker's capability guard so fixed
+ * and unknown models retain their server defaults.
  */
 
 import type { ModelInfo } from '../../../services/api/providers/base_provider.js'
+import { getCompatRequestEffort } from '../../../utils/model/compatEffort.js'
 import type { HeaderContext, Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 
@@ -137,11 +137,9 @@ export const fireworksTransformer: Transformer = {
     // perf_metrics (the usage block omits prompt_tokens_details mid-stream),
     // so without this the cache-hit count is never populated.
     body.perf_metrics_in_response = true
-    // Forward reasoning effort only when the user has reasoning on. Never
-    // send 'none'/false here — non-reasoning rows reject it.
-    if (ctx.isReasoning && ctx.reasoningEffort) {
-      body.reasoning_effort = ctx.reasoningEffort
-    }
+    const effort = getCompatRequestEffort('fireworks', body.model, ctx.effortValue)
+    if (effort) body.reasoning_effort = effort
+    else delete body.reasoning_effort
     return body
   },
 

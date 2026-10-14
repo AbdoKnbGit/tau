@@ -171,7 +171,7 @@ export class OpenRouterProvider extends OpenAIProvider {
     messages: OpenAIMessage[],
     tools: OpenAITool[] | undefined,
   ): void {
-    applyOpenRouterReasoning(body, model, params.thinking)
+    applyOpenRouterReasoning(body, model, params.thinking, params.effortValue)
     const sessionKey = this.cacheSessionKeyForModel(model)
     body.session_id = sessionKey
     body.prompt_cache_key = sessionKey
@@ -270,17 +270,19 @@ function applyOpenRouterReasoning(
   body: Record<string, unknown>,
   model: string,
   thinking: ProviderRequestParams['thinking'],
+  effortValue?: ProviderRequestParams['effortValue'],
 ): void {
   if (!getOpenRouterReasoningMeta(model)) return
   const enabled = !!thinking && thinking.type !== 'disabled'
-  const reasoning = resolveOpenRouterReasoningField(model, {
+  const reasoning = resolveOpenRouterReasoningField(model, effortValue === undefined ? {
     enabled,
     effort: reasoningEffortFromThinking(thinking),
-  })
+  } : undefined, effortValue)
   // An off-ladder effort is a 400 whether or not a replacement is going out,
   // so the base class's value goes either way.
   delete body.reasoning_effort
   if (reasoning) body.reasoning = reasoning
+  else delete body.reasoning
 }
 
 /** Anthropic thinking budget → the low/medium/high scale, as the lane maps it. */

@@ -1,3 +1,4 @@
+import { getCompatRequestEffort } from '../../../utils/model/compatEffort.js'
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 
@@ -66,9 +67,7 @@ function applyOpenAIReasoningEffort(
   body: OpenAIChatRequest,
   ctx: TransformContext,
 ): void {
-  if (!ctx.isReasoning || !ctx.reasoningEffort) return
-  const m = body.model.toLowerCase()
-  if (m.includes('openai/gpt-5') || m.includes('openai/o1') || m.includes('openai/o3') || m.includes('openai/o4')) {
-    body.reasoning_effort = ctx.reasoningEffort
-  }
+  const effort = getCompatRequestEffort('vercel', body.model, ctx.effortValue)
+  if (effort) body.reasoning_effort = effort
+  else delete body.reasoning_effort
 }

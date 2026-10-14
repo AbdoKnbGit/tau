@@ -679,6 +679,7 @@ export class ClineLane implements Lane {
         temperature: params.temperature,
         stopSequences: params.stop_sequences,
         thinking: params.thinking,
+        effortValue: params.effortValue,
         promptCache: cacheShape !== null,
       })
 
@@ -733,6 +734,7 @@ export class ClineLane implements Lane {
     temperature?: number
     stopSequences?: string[]
     thinking?: LaneProviderCallParams['thinking']
+    effortValue?: LaneProviderCallParams['effortValue']
     promptCache?: boolean
   }): Record<string, unknown> {
     // A request for more output than the model can give is refused outright.
@@ -755,7 +757,7 @@ export class ClineLane implements Lane {
     }
 
     // Thinking fields name only a stop on the model's own ladder.
-    applyClineReasoningFields(body, resolveClineReasoningFields(opts.model))
+    applyClineReasoningFields(body, resolveClineReasoningFields(opts.model, opts.effortValue))
     return body
   }
 

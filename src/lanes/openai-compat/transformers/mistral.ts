@@ -50,7 +50,7 @@ export const mistralTransformer: Transformer = {
     delete body.reasoning
     delete body.reasoning_effort
     if (meta?.reasoning) {
-      body.reasoning_effort = getDirectEffort('mistral', body.model) as OpenAIChatRequest['reasoning_effort']
+      body.reasoning_effort = getDirectEffort('mistral', body.model, ctx.effortValue) as OpenAIChatRequest['reasoning_effort']
     }
     if (meta && typeof body.max_tokens === 'number') {
       body.max_tokens = Math.min(body.max_tokens, meta.maxOutputTokens)

@@ -21,6 +21,7 @@
  */
 
 import { OpenAIProvider } from './openai_provider.js'
+import { getCompatEffort } from '../../../utils/model/compatEffort.js'
 import type {
   ProviderConfig,
   ProviderRequestParams,
@@ -52,6 +53,14 @@ const GROQ_TOOLS = new Set([
 
 export class GroqProvider extends OpenAIProvider {
   readonly name = 'groq'
+
+  protected override finalizeChatCompletionsBody(
+    body: Record<string, unknown>, model: string, params: ProviderRequestParams,
+  ): void {
+    const effort = getCompatEffort('groq', model, params.effortValue)
+    if (effort) body.reasoning_effort = effort
+    else delete body.reasoning_effort
+  }
 
   constructor(config: ProviderConfig) {
     super({

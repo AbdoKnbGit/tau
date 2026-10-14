@@ -28,7 +28,6 @@ import {
   supportsCommandCodeEffortSelection,
 } from '../../../utils/model/commandCodeThinking.js'
 import { getCommandCodeCatalogContextWindow } from '../../../utils/model/commandCodeCatalog.js'
-import type { OpenAIReasoningLevel } from '../../../utils/model/openaiReasoning.js'
 import { getSessionId } from '../../../bootstrap/state.js'
 import { foldersWithProjectFiles } from '../../../utils/projectFiles.js'
 
@@ -89,13 +88,12 @@ export class CommandCodeProvider extends OpenAIProvider {
     )
   }
 
-  protected resolveReasoningEffort(
-    model: string,
-    _thinking: ProviderRequestParams['thinking'],
-  ): OpenAIReasoningLevel | undefined {
-    const effort = getCommandCodeRequestEffort(model)
-    if (!effort || effort === 'none') return undefined
-    return effort as OpenAIReasoningLevel
+  protected override finalizeChatCompletionsBody(
+    body: Record<string, unknown>, model: string, params: ProviderRequestParams,
+  ): void {
+    const effort = getCommandCodeRequestEffort(model, params.effortValue)
+    if (effort) body.reasoning_effort = effort
+    else delete body.reasoning_effort
   }
 
   async stream(params: ProviderRequestParams): Promise<ProviderStreamResult> {
@@ -264,7 +262,7 @@ export class CommandCodeProvider extends OpenAIProvider {
       requestParams.tools = toCommandCodeAlphaTools(params.tools)
     }
 
-    const effort = getCommandCodeRequestEffort(model)
+    const effort = getCommandCodeRequestEffort(model, params.effortValue)
     if (effort) requestParams.reasoning_effort = effort
 
     return {
@@ -488,7 +486,7 @@ export class CommandCodeProvider extends OpenAIProvider {
     model: string,
     stream: boolean,
   ): Record<string, unknown> {
-    const effort = getCommandCodeRequestEffort(model)
+    const effort = getCommandCodeRequestEffort(model, params.effortValue)
     const body: Record<string, unknown> = {
       model,
       max_tokens: params.max_tokens,

@@ -234,11 +234,12 @@ export const opencodeTransformer: Transformer = {
       const effort = resolveOpencodeCatalogEffort(
         provider,
         body.model,
-        ctx.isReasoning ? ctx.reasoningEffort : null,
+        ctx.effortValue === undefined && ctx.isReasoning ? ctx.reasoningEffort : null,
+        ctx.effortValue,
       )
       if (effort) body.reasoning_effort = effort
     } else if (isReasoningCapable(body.model)) {
-      const effort = getOpencodeEffort(body.model, provider)
+      const effort = getOpencodeEffort(body.model, provider, ctx.effortValue)
       const m = body.model.toLowerCase()
       if (effort !== 'default') {
         // Anthropic upstream — `thinking.budget_tokens`. The gateway converts
@@ -333,7 +334,7 @@ export const opencodeTransformer: Transformer = {
       // global /effort cycle) but we found no per-model override, honor
       // the bridge's effort hint as well. This preserves existing behavior
       // for users who only ever used the global cycle.
-      if (effort === 'default' && ctx.isReasoning && ctx.reasoningEffort) {
+      if (effort === 'default' && ctx.effortValue === undefined && ctx.isReasoning && ctx.reasoningEffort) {
         if (isGptOrOSeries(body.model)) {
           body.reasoning_effort = ctx.reasoningEffort
           body.reasoning = { effort: ctx.reasoningEffort }

@@ -44,7 +44,7 @@ export const deepseekTransformer: Transformer = {
     // DEEPSEEK_BASE_URL is a custom/proxied model: it keeps the caller's
     // thinking budget and never gets an effort field it may not understand.
     const isV4 = isDeepSeekV4ThinkingModel(ctx.model)
-    const effort = isV4 ? resolveDeepSeekRequestEffort(ctx.model) : null
+    const effort = isV4 ? resolveDeepSeekRequestEffort(ctx.model, ctx.effortValue) : null
     const thinkingEnabled = isV4 ? effort !== null : ctx.isReasoning
 
     if (thinkingEnabled) {

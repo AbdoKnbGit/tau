@@ -94,8 +94,8 @@ export const lxdTransformer: Transformer = {
     const meta = getLxdModelMeta(ctx.model)
     const supported = meta?.reasoningEfforts ?? []
     if (supported.length > 0) {
-      const picked = resolveLxdRequestEffort(ctx.model)
-      const fallback = ctx.isReasoning ? ctx.reasoningEffort : null
+      const picked = resolveLxdRequestEffort(ctx.model, ctx.effortValue)
+      const fallback = ctx.effortValue === undefined && ctx.isReasoning ? ctx.reasoningEffort : null
       const effort = picked ?? fallback
       if (effort && supported.includes(effort)) {
         body.reasoning_effort = effort

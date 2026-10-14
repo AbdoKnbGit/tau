@@ -9,6 +9,7 @@ import { updateSettingsForSource } from '../../utils/settings/settings.js';
 import { getAPIProvider } from '../../utils/model/providers.js';
 import { AntigravityEffort } from './antigravityEffort.js';
 import { modelSupportsReasoning, resolveOpenAIReasoningEffort, setOpenAIReasoningLevel } from '../../utils/model/openaiReasoning.js';
+import { executeProviderEffort, usesProviderEffort } from '../../utils/model/providerEffort.js';
 const COMMON_HELP_ARGS = ['help', '-h', '--help'];
 type EffortCommandResult = {
   message: string;
@@ -64,6 +65,8 @@ function setEffortValue(effortValue: EffortValue): EffortCommandResult {
   };
 }
 export function showCurrentEffort(appStateEffort: EffortValue | undefined, model: string): EffortCommandResult {
+  const nativeResult = executeProviderEffort(getAPIProvider(), model, '', appStateEffort ?? null);
+  if (nativeResult) return nativeResult;
   const envOverride = getEffortEnvOverride();
   const effectiveValue = getAPIProvider() === 'openai' && modelSupportsReasoning(model)
     ? resolveOpenAIReasoningEffort(model, appStateEffort ?? null)
@@ -138,6 +141,18 @@ function ShowCurrentEffort(t0) {
 function _temp(s) {
   return s.effortValue;
 }
+function ApplyProviderEffortAndClose({ args, onDone }: { args: string; onDone: LocalJSXCommandOnDone }) {
+  const model = useMainLoopModel();
+  const effortValue = useAppState(_temp);
+  const applied = React.useRef(false);
+  React.useEffect(() => {
+    if (applied.current) return;
+    applied.current = true;
+    const result = executeProviderEffort(getAPIProvider(), model, args, effortValue ?? null);
+    if (result) onDone(result.message);
+  }, [model, effortValue, args, onDone]);
+  return null;
+}
 function ApplyEffortAndClose(t0) {
   const $ = _c(6);
   const {
@@ -177,6 +192,9 @@ function ApplyEffortAndClose(t0) {
 }
 export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, args?: string): Promise<React.ReactNode> {
   args = args?.trim() || '';
+  if (usesProviderEffort(getAPIProvider())) {
+    return <ApplyProviderEffortAndClose args={args} onDone={onDone} />;
+  }
   if (COMMON_HELP_ARGS.includes(args)) {
     onDone('Usage: /effort [low|medium|high|xhigh|max|ultracode|auto]\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extra high reasoning for supported Claude models\n- max: Maximum capability with deepest reasoning\n- ultracode: Maximum reasoning, Claude Opus 4.8 only\n- auto: Use the default effort level for your model');
     return;

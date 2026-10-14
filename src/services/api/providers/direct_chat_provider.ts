@@ -15,7 +15,7 @@ export class DirectChatProvider extends OpenAIProvider {
       turns => anthropicMessagesToOpenAI(turns))
     getTransformer(this.name).transformRequest(body as unknown as OpenAIChatRequest, {
       model, isReasoning: !!params.thinking && params.thinking.type !== 'disabled',
-      reasoningEffort: null, sessionId: params.sessionId,
+      reasoningEffort: null, effortValue: params.effortValue, sessionId: params.sessionId,
     })
   }
 }

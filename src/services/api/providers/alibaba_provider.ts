@@ -40,7 +40,7 @@ export class AlibabaProvider extends OpenAIProvider {
   protected override finalizeChatCompletionsBody(
     body: Record<string, unknown>,
     model: string,
-    _params: ProviderRequestParams,
+    params: ProviderRequestParams,
     _messages: OpenAIMessage[],
     _tools: OpenAITool[] | undefined,
   ): void {
@@ -53,7 +53,7 @@ export class AlibabaProvider extends OpenAIProvider {
 
     // Only fields the row published — an `enable_thinking` on a model that
     // does not take one is a 400.
-    const thinking = resolveAlibabaThinkingFields(model)
+    const thinking = resolveAlibabaThinkingFields(model, undefined, params.effortValue)
     delete body.enable_thinking
     delete body.reasoning_effort
     delete body.thinking_budget

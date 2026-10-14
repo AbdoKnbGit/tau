@@ -38,6 +38,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 import { getAlibabaModelMeta } from './alibabaCatalog.js'
 
 /**
@@ -144,11 +145,11 @@ function save(): void {
  * not keep riding on a model that has since dropped it — that is exactly the
  * 400 this module exists to prevent.
  */
-export function getAlibabaEffort(model: string): AlibabaEffort {
+export function getAlibabaEffort(model: string, fallback?: EffortFallback): AlibabaEffort {
   load()
   const stored = _cache[model.trim().toLowerCase()]
-  if (stored && alibabaEffortLevelsFor(model).includes(stored)) return stored
-  return ALIBABA_DEFAULT_STOP
+  if (stored && stored !== ALIBABA_DEFAULT_STOP && alibabaEffortLevelsFor(model).includes(stored)) return stored
+  return selectInheritedEffort(alibabaEffortLevelsFor(model), fallback) ?? ALIBABA_DEFAULT_STOP
 }
 
 /**
@@ -158,7 +159,11 @@ export function getAlibabaEffort(model: string): AlibabaEffort {
  * the session's thinking budget instead of being overwritten by it.
  */
 export function hasExplicitAlibabaEffort(model: string): boolean {
-  return getAlibabaEffort(model) !== ALIBABA_DEFAULT_STOP
+  return getAlibabaEffort(model, null) !== ALIBABA_DEFAULT_STOP
+}
+
+export function clearAlibabaEffort(model: string): void {
+  setAlibabaEffort(model, ALIBABA_DEFAULT_STOP)
 }
 
 export function setAlibabaEffort(model: string, effort: AlibabaEffort): void {
@@ -204,14 +209,15 @@ export function getAlibabaEffortLabel(effort: AlibabaEffort): string {
 export function resolveAlibabaThinkingFields(
   model: string,
   fallback?: AlibabaThinkingFallback,
+  effortFallback?: EffortFallback,
 ): AlibabaThinkingFields {
   const meta = getAlibabaModelMeta(model)
   if (!meta || !meta.reasoning) return {}
 
-  const stop = getAlibabaEffort(model)
+  const stop = getAlibabaEffort(model, effortFallback)
 
   if (stop === ALIBABA_DEFAULT_STOP) {
-    if (!fallback) return {}
+    if (!fallback || effortFallback !== undefined) return {}
     const fields: AlibabaThinkingFields = {}
     // The toggle is the only field safe to derive from the session budget:
     // it is a plain boolean the row declared it accepts.

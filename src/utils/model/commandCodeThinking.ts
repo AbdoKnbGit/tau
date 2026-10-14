@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 import {
   getCommandCodeCatalogDisplayName,
   getCommandCodeCatalogEfforts,
@@ -157,9 +158,12 @@ const GPT_54_MINI_EFFORTS: readonly CommandCodeEffort[] = [
   'high',
 ]
 
-const STORE_PATH = join(homedir(), '.claude', 'commandcode-thinking.json')
+function storePath(): string {
+  return process.env.TAU_COMMANDCODE_THINKING_STORE
+    ?? join(homedir(), '.claude', 'commandcode-thinking.json')
+}
 
-let _loaded = false
+let _loadedPath: string | undefined
 let _cache: Record<string, CommandCodeEffort> = {}
 
 function normalizeModel(model: string): string {
@@ -269,7 +273,7 @@ export function commandCodeEffortLevelsForModel(
     }
     return GPT_STANDARD_EFFORTS
   }
-  return ['default', 'low', 'medium', 'high']
+  return ['default']
 }
 
 export function supportsCommandCodeEffortSelection(
@@ -280,11 +284,13 @@ export function supportsCommandCodeEffortSelection(
 }
 
 function load(): void {
-  if (_loaded) return
-  _loaded = true
+  const path = storePath()
+  if (_loadedPath === path) return
+  _loadedPath = path
+  _cache = {}
   try {
-    if (!existsSync(STORE_PATH)) return
-    const raw = readFileSync(STORE_PATH, 'utf8')
+    if (!existsSync(path)) return
+    const raw = readFileSync(path, 'utf8')
     const parsed = JSON.parse(raw) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
 
@@ -304,20 +310,31 @@ function load(): void {
 }
 
 function save(): void {
+  const path = storePath()
   try {
-    const dir = dirname(STORE_PATH)
+    const dir = dirname(path)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    writeFileSync(STORE_PATH, JSON.stringify(_cache, null, 2), 'utf8')
+    writeFileSync(path, JSON.stringify(_cache, null, 2), 'utf8')
   } catch {
     // Persistence is best-effort; the in-memory value still works this run.
   }
 }
 
-export function getCommandCodeEffort(model: string): CommandCodeEffort {
+export function getCommandCodeEffort(model: string, fallback?: EffortFallback): CommandCodeEffort {
   load()
   const levels = commandCodeEffortLevelsForModel(model)
   const stored = storeKeys(model).map(key => _cache[key]).find(Boolean)
-  return stored && levels.includes(stored) ? stored : 'default'
+  return stored && stored !== 'default' && levels.includes(stored)
+    ? stored
+    : selectInheritedEffort(levels, fallback) ?? 'default'
+}
+
+export function hasExplicitCommandCodeEffort(model: string): boolean {
+  return getCommandCodeEffort(model, null) !== 'default'
+}
+
+export function clearCommandCodeEffort(model: string): void {
+  setCommandCodeEffort(model, 'default')
 }
 
 export function setCommandCodeEffort(
@@ -362,8 +379,9 @@ export function getCommandCodeEffortLabel(effort: CommandCodeEffort): string {
 
 export function getCommandCodeRequestEffort(
   model: string,
+  fallback?: EffortFallback,
 ): CommandCodeWireEffort | null {
-  const effort = getCommandCodeEffort(model)
+  const effort = getCommandCodeEffort(model, fallback)
   return effort === 'default' ? null : effort
 }
 
@@ -478,6 +496,6 @@ export function inferCommandCodeUpstreamProvider(modelId: string): string {
 export function _resetCommandCodeThinkingForTests(
   cache: Record<string, CommandCodeEffort> = {},
 ): void {
-  _loaded = true
+  _loadedPath = storePath()
   _cache = { ...cache }
 }

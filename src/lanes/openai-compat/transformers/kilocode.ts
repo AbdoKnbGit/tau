@@ -12,6 +12,7 @@
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 import { getKiloCodeOrgId } from '../../../services/api/auth/oauth_services.js'
+import { getCompatEffort } from '../../../utils/model/compatEffort.js'
 
 export const kilocodeTransformer: Transformer = {
   id: 'kilocode',
@@ -35,7 +36,10 @@ export const kilocodeTransformer: Transformer = {
     return headers
   },
 
-  transformRequest(body: OpenAIChatRequest, _ctx: TransformContext): OpenAIChatRequest {
+  transformRequest(body: OpenAIChatRequest, ctx: TransformContext): OpenAIChatRequest {
+    const effort = getCompatEffort('kilocode', body.model, ctx.effortValue)
+    if (effort) body.reasoning = { effort }
+    else delete body.reasoning
     return body
   },
 

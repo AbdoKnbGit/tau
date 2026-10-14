@@ -12,6 +12,8 @@ import {
   getDisplayedEffortLevel,
   modelSupportsEffort,
 } from '../utils/effort.js'
+import { getAPIProvider } from '../utils/model/providers.js'
+import { getProviderEffort } from '../utils/model/providerEffort.js'
 
 /**
  * Build the text for the effort-changed notification, e.g. "◐ medium · /effort".
@@ -21,6 +23,8 @@ export function getEffortNotificationText(
   effortValue: EffortValue | undefined,
   model: string,
 ): string | undefined {
+  const native = getProviderEffort(getAPIProvider(), model, effortValue ?? null)
+  if (native) return native.supported ? `${native.label} · /effort` : undefined
   const tierEffort = getAntigravityTierEffort(model)
   if (tierEffort) return `${effortLevelToSymbol(tierEffort)} ${tierEffort} · /effort`
   if (!modelSupportsEffort(model)) return undefined

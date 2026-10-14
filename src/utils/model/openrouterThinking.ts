@@ -34,6 +34,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { getOpenRouterReasoningMeta } from './openrouterReasoningCatalog.js'
+import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 
 /**
  * One stop on a model's ladder. Either a Tau-side stop (`default`, `off`,
@@ -140,11 +141,11 @@ function save(): void {
  * not keep riding on a model that has since dropped it — that is exactly the
  * 400 this module exists to prevent.
  */
-export function getOpenRouterEffort(model: string): OpenRouterEffort {
+export function getOpenRouterEffort(model: string, fallback?: EffortFallback): OpenRouterEffort {
   load()
   const stored = _cache[model.trim().toLowerCase()]
-  if (stored && openRouterEffortLevelsFor(model).includes(stored)) return stored
-  return OPENROUTER_DEFAULT_STOP
+  if (stored && stored !== OPENROUTER_DEFAULT_STOP && openRouterEffortLevelsFor(model).includes(stored)) return stored
+  return selectInheritedEffort(openRouterEffortLevelsFor(model), fallback) ?? OPENROUTER_DEFAULT_STOP
 }
 
 /**
@@ -154,7 +155,11 @@ export function getOpenRouterEffort(model: string): OpenRouterEffort {
  * session's thinking budget instead of being overwritten by it.
  */
 export function hasExplicitOpenRouterEffort(model: string): boolean {
-  return getOpenRouterEffort(model) !== OPENROUTER_DEFAULT_STOP
+  return getOpenRouterEffort(model, null) !== OPENROUTER_DEFAULT_STOP
+}
+
+export function clearOpenRouterEffort(model: string): void {
+  setOpenRouterEffort(model, OPENROUTER_DEFAULT_STOP)
 }
 
 export function setOpenRouterEffort(
@@ -215,14 +220,15 @@ export function getOpenRouterEffortChipLabel(effort: OpenRouterEffort): string {
 export function resolveOpenRouterReasoningField(
   model: string,
   fallback?: OpenRouterThinkingFallback,
+  effortFallback?: EffortFallback,
 ): OpenRouterReasoningField | undefined {
   const meta = getOpenRouterReasoningMeta(model)
   if (!meta) return undefined
 
-  const stop = getOpenRouterEffort(model)
+  const stop = getOpenRouterEffort(model, effortFallback)
 
   if (stop === OPENROUTER_DEFAULT_STOP) {
-    if (!fallback) return undefined
+    if (!fallback || effortFallback !== undefined) return undefined
     if (!fallback.enabled) {
       // A row that cannot stop reasoning is left alone rather than sent a
       // field it rejects; OpenRouter applies its own default_effort.

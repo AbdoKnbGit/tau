@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 import {
   isMimoReasoningModel,
   MIMO_DEFAULT_EFFORT,
@@ -74,9 +75,17 @@ function save(): void {
   }
 }
 
-export function getMimoEffort(model: string): MimoEffort {
+export function getMimoEffort(model: string, fallback?: EffortFallback): MimoEffort {
   load()
-  return _cache[model.trim().toLowerCase()] ?? MIMO_DEFAULT_EFFORT
+  return _cache[model.trim().toLowerCase()]
+    ?? selectInheritedEffort(mimoEffortLevelsFor(model), fallback)
+    ?? MIMO_DEFAULT_EFFORT
+}
+
+export function clearMimoEffort(model: string): void {
+  load()
+  delete _cache[model.trim().toLowerCase()]
+  save()
 }
 
 /**
@@ -118,8 +127,8 @@ export function cycleMimoEffort(
 }
 
 /** The value to put on `reasoning_effort` for this model. */
-export function resolveMimoRequestEffort(model: string): MimoEffort {
-  return getMimoEffort(model)
+export function resolveMimoRequestEffort(model: string, fallback?: EffortFallback): MimoEffort {
+  return getMimoEffort(model, fallback)
 }
 
 /** Label rendered in the picker chip. */

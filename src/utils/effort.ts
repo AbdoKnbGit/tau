@@ -28,6 +28,7 @@ import {
   supportsCommandCodeEffortSelection,
 } from './model/commandCodeThinking.js'
 import { isEnvTruthy } from './envUtils.js'
+import { getProviderEffort } from './model/providerEffort.js'
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
@@ -271,9 +272,10 @@ export function getEffortSuffix(
   effortValue: EffortValue | undefined,
 ): string {
   const provider = getAPIProvider()
-  if (provider === 'commandcode' && supportsCommandCodeEffortSelection(model)) {
-    const effort = getCommandCodeEffort(model)
-    return effort === 'default' ? '' : ` with ${effort} effort`
+  const native = getProviderEffort(provider, model, effortValue ?? null)
+  if (native) {
+    if (!native.supported || native.value === undefined || native.value === 'default') return ''
+    return native.label.startsWith('thinking ') ? ` with ${native.label}` : ` with ${native.label} effort`
   }
   // OpenAI reasoning models use their own effort system
   if (provider === 'openai' && modelSupportsReasoning(model)) {

@@ -15,6 +15,7 @@
 
 import type { ModelInfo } from '../../../services/api/providers/base_provider.js'
 import type { OpenAIChatRequest, OpenAIChatMessage } from './shared_types.js'
+import type { EffortFallback } from '../../../utils/model/effortInheritance.js'
 
 export type ProviderId =
   | 'deepseek'
@@ -51,6 +52,8 @@ export interface TransformContext {
   isReasoning: boolean
   /** Mapped reasoning-effort ("low" | "medium" | "high") or null. */
   reasoningEffort: 'low' | 'medium' | 'high' | null
+  /** Request-scoped settings fallback. A provider/model's manual choice wins. */
+  effortValue?: EffortFallback
   /** Stable claudex session id, used only by providers with cache affinity. */
   sessionId?: string
   /**

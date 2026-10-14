@@ -219,7 +219,7 @@ export const cloudflareTransformer: Transformer = {
       body.user = ctx.sessionId
     }
 
-    const effort = getCloudflareRequestEffort(body.model)
+    const effort = getCloudflareRequestEffort(body.model, ctx.effortValue)
     if (effort) {
       applyCloudflareThinkingEffort(body, effort)
     }

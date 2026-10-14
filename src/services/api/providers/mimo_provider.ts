@@ -53,7 +53,7 @@ export class MimoProvider extends OpenAIProvider {
   protected override finalizeChatCompletionsBody(
     body: Record<string, unknown>,
     model: string,
-    _params: ProviderRequestParams,
+    params: ProviderRequestParams,
     _messages: OpenAIMessage[],
     _tools: OpenAITool[] | undefined,
   ): void {
@@ -65,7 +65,7 @@ export class MimoProvider extends OpenAIProvider {
       delete body.max_tokens
     }
     if (supportsMimoEffortSelection(model)) {
-      body.reasoning_effort = resolveMimoRequestEffort(model)
+      body.reasoning_effort = resolveMimoRequestEffort(model, params.effortValue)
     }
     delete body.store
     delete body.stream_options

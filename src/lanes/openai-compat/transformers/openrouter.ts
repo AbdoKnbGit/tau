@@ -488,10 +488,10 @@ function applyOpenRouterReasoning(
   ctx: TransformContext,
 ): void {
   if (getOpenRouterReasoningMeta(body.model)) {
-    const reasoning = resolveOpenRouterReasoningField(body.model, {
+    const reasoning = resolveOpenRouterReasoningField(body.model, ctx.effortValue === undefined ? {
       enabled: ctx.isReasoning,
       effort: ctx.reasoningEffort,
-    })
+    } : undefined, ctx.effortValue)
     if (reasoning) body.reasoning = reasoning
     // Saying nothing is a deliberate answer here — it leaves OpenRouter's own
     // default_effort in charge — so any value a caller pre-set is cleared
@@ -500,9 +500,9 @@ function applyOpenRouterReasoning(
     return
   }
 
-  if (ctx.isReasoning && ctx.reasoningEffort && openrouterModelSupportsReasoning(body.model)) {
+  if (ctx.effortValue === undefined && ctx.isReasoning && ctx.reasoningEffort && openrouterModelSupportsReasoning(body.model)) {
     body.reasoning = { effort: ctx.reasoningEffort }
-  }
+  } else delete body.reasoning
 }
 
 function openrouterModelSupportsReasoning(model: string): boolean {

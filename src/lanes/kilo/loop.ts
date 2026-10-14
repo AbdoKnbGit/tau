@@ -33,6 +33,7 @@
  * matching the native Kilo CLI's kilo-gateway/src/api/models.ts filter.
  */
 
+import { getCompatEffort } from '../../utils/model/compatEffort.js'
 import type {
   AnthropicStreamEvent,
   ModelInfo,
@@ -304,6 +305,7 @@ export class KiloLane implements Lane {
       temperature: params.temperature,
       stopSequences: params.stop_sequences,
       thinking: params.thinking,
+      effortValue: params.effortValue,
     })
 
     let response: Response
@@ -377,8 +379,9 @@ export class KiloLane implements Lane {
     temperature?: number
     stopSequences?: string[]
     thinking?: LaneProviderCallParams['thinking']
+    effortValue?: LaneProviderCallParams['effortValue']
   }): Record<string, unknown> {
-    const effort = resolveReasoningEffort(opts.thinking)
+    const effort = getCompatEffort('kilocode', opts.model, opts.effortValue)
     // Kilo proxies OpenRouter, which caps max_tokens per-model. 8192 is a
     // safe upper bound for the chat path (matches the prior openai-compat
     // transformer clamp). Kilo-auto routes internally, no per-model cap.
@@ -402,7 +405,7 @@ export class KiloLane implements Lane {
       ...(opts.stopSequences && opts.stopSequences.length > 0 && { stop: opts.stopSequences }),
     }
 
-    if (effort && kiloModelSupportsReasoning(opts.model)) {
+    if (effort) {
       body.reasoning = { effort }
     }
 
@@ -678,36 +681,6 @@ export class KiloLane implements Lane {
       yield { ...chunk, choices }
     }
   }
-}
-
-function resolveReasoningEffort(
-  thinking: LaneProviderCallParams['thinking'] | undefined,
-): 'low' | 'medium' | 'high' | undefined {
-  if (!thinking || thinking.type === 'disabled') return undefined
-  if (thinking.type === 'adaptive') return 'medium'
-  const budget = (thinking as { budget_tokens?: number }).budget_tokens
-  if (budget == null) return 'medium'
-  if (budget < 2_000) return 'low'
-  if (budget < 8_000) return 'medium'
-  return 'high'
-}
-
-function kiloModelSupportsReasoning(model: string): boolean {
-  const normalized = model.toLowerCase()
-  return (
-    normalized.includes('claude-sonnet-4')
-    || normalized.includes('claude-opus-4')
-    || normalized.includes('gemini-2.5')
-    || normalized.includes('gemini-3')
-    || normalized.startsWith('gpt-5')
-    || normalized.includes('/gpt-5')
-    || normalized.includes('/o1')
-    || normalized.includes('/o3')
-    || normalized.includes('/o4')
-    || normalized.includes('deepseek-reasoner')
-    || normalized.includes('deepseek-r1')
-    || normalized.includes('thinking')
-  )
 }
 
 function kiloModelTags(raw: RawKiloModelInfo): string[] | undefined {

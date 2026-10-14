@@ -42,7 +42,7 @@ export const minimaxTransformer: Transformer = {
     delete bag.reasoning_effort
     delete bag.reasoning
     delete bag.thinking
-    Object.assign(body, directThinkingFields('minimax', ctx.model))
+    Object.assign(body, directThinkingFields('minimax', ctx.model, ctx.effortValue))
     // Keep MiniMax's native <think> content intact on every replay. Explicit
     // split output would require retaining its full reasoning_details objects.
     body.messages = body.messages.map(message => {

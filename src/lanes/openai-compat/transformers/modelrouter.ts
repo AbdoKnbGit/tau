@@ -1,3 +1,4 @@
+import { getCompatRequestEffort } from '../../../utils/model/compatEffort.js'
 import type { Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 
@@ -147,11 +148,9 @@ function applyOpenAIReasoningEffort(
   body: OpenAIChatRequest,
   ctx: TransformContext,
 ): void {
-  if (!ctx.isReasoning || !ctx.reasoningEffort) return
-  const m = body.model.toLowerCase()
-  if (m.includes('gpt-5') || m.includes('/o1') || m.includes('/o3') || m.includes('/o4') || /^o[1345]/.test(m)) {
-    body.reasoning_effort = ctx.reasoningEffort
-  }
+  const effort = getCompatRequestEffort('modelrouter', body.model, ctx.effortValue)
+  if (effort) body.reasoning_effort = effort
+  else delete body.reasoning_effort
 }
 
 function normalizeModelRouterModel(model: string): string {

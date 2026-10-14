@@ -514,6 +514,7 @@ export class OpenAICompatLane implements Lane {
         stop_sequences,
         signal,
         thinking,
+        effortValue: params.effortValue,
       }
       if (route === 'messages') {
         return yield* streamOpenCodeAnthropicRoute(provider, cfg, routeParams, cacheSessionId)
@@ -659,6 +660,7 @@ export class OpenAICompatLane implements Lane {
       provider,
       thinking,
       cacheSessionId,
+      params.effortValue,
     )
 
     if (provider === 'openrouter' && openRouterRecovery) {
@@ -1888,6 +1890,7 @@ type OpenCodeRouteParams = Pick<
   LaneProviderCallParams,
   'model' | 'messages' | 'system' | 'tools' | 'max_tokens'
   | 'temperature' | 'stop_sequences' | 'signal' | 'thinking'
+  | 'effortValue'
 >
 
 /** The session's own thinking level, when its thinking is on. */
@@ -1993,12 +1996,13 @@ function applyOpenCodeAnthropicThinking(
   provider: string,
   model: string,
   sessionEffort: 'low' | 'medium' | 'high' | null,
+  effortValue?: LaneProviderCallParams['effortValue'],
 ): void {
   const id = model.trim().toLowerCase()
   let budget: number
   if (id.startsWith('claude-')) {
     delete body.temperature
-    const effort = resolveOpencodeRouteEffort(provider, model, sessionEffort)
+    const effort = resolveOpencodeRouteEffort(provider, model, sessionEffort, effortValue)
     if (!effort) return
     const kind = claudeThinkingKind(id)
     if (kind !== 'budget') {
@@ -2016,7 +2020,7 @@ function applyOpenCodeAnthropicThinking(
     body.thinking = { type: 'adaptive' }
     return
   } else if (usesOpencodeCatalogEfforts(provider, model)) {
-    const effort = resolveOpencodeRouteEffort(provider, model, sessionEffort)
+    const effort = resolveOpencodeRouteEffort(provider, model, sessionEffort, effortValue)
     if (effort) body.output_config = { effort }
     return
   } else {
@@ -2024,7 +2028,7 @@ function applyOpenCodeAnthropicThinking(
     // (supportsOpencodeThinkingSelection is false there) and keeps its
     // server default.
     if (!supportsOpencodeThinkingSelection(provider, model)) return
-    const effort = getOpencodeEffort(model, provider)
+    const effort = getOpencodeEffort(model, provider, effortValue)
     if (effort === 'default') return
     budget = legacyThinkingBudget(effort)
   }
@@ -2117,7 +2121,8 @@ async function* streamOpenCodeAnthropicRoute(
   if (params.tools.length > 0) body.tools = params.tools
   if (params.temperature !== undefined) body.temperature = params.temperature
   if (params.stop_sequences?.length) body.stop_sequences = params.stop_sequences
-  applyOpenCodeAnthropicThinking(body, provider, params.model, sessionEffortOf(params.thinking))
+  applyOpenCodeAnthropicThinking(body, provider, params.model,
+    params.effortValue === undefined ? sessionEffortOf(params.thinking) : null, params.effortValue)
 
   // `/messages` authenticates with x-api-key. Keep the same OpenCode
   // affinity/rate-limit headers as the compat route.
@@ -2382,7 +2387,8 @@ async function* streamOpenCodeResponsesRoute(
     maxTokens: params.max_tokens,
     temperature: params.temperature,
     sessionId,
-    effort: resolveOpencodeRouteEffort(provider, params.model, sessionEffortOf(params.thinking)),
+    effort: resolveOpencodeRouteEffort(provider, params.model,
+      params.effortValue === undefined ? sessionEffortOf(params.thinking) : null, params.effortValue),
     canSeeImages: openCodeRouteCanSeeImages(provider, params.model),
   })
   return yield* runOpenCodeRouteStream(
@@ -2409,7 +2415,8 @@ async function* streamOpenCodeGoogleRoute(
     maxTokens: params.max_tokens,
     temperature: params.temperature,
     stopSequences: params.stop_sequences,
-    effort: resolveOpencodeRouteEffort(provider, params.model, sessionEffortOf(params.thinking)),
+    effort: resolveOpencodeRouteEffort(provider, params.model,
+      params.effortValue === undefined ? sessionEffortOf(params.thinking) : null, params.effortValue),
     canSeeImages: openCodeRouteCanSeeImages(provider, params.model),
   })
   // Google's format takes the key in x-goog-api-key, next to the same
@@ -2994,6 +3001,7 @@ function applyProviderRequestQuirks(
   provider: ProviderType,
   thinking: LaneProviderCallParams['thinking'] | undefined,
   sessionId?: string,
+  effortValue?: LaneProviderCallParams['effortValue'],
 ): OpenAIChatRequest {
   const transformer = getTransformer(provider as ProviderId)
   const isReasoning = !!(thinking && thinking.type !== 'disabled')
@@ -3024,6 +3032,7 @@ function applyProviderRequestQuirks(
     model: body.model,
     isReasoning,
     reasoningEffort: effort,
+    effortValue,
     sessionId,
     provider,
   })

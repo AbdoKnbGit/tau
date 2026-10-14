@@ -26,6 +26,7 @@
  */
 
 import type { Transformer, TransformContext } from './base.js'
+import { getCompatEffort } from '../../../utils/model/compatEffort.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 
 const AGENTROUTER_MODELS: Array<{ id: string; name: string }> = [
@@ -41,14 +42,6 @@ const AGENTROUTER_MODELS: Array<{ id: string; name: string }> = [
 
 function isClaudeModel(model: string): boolean {
   return model.toLowerCase().startsWith('claude-')
-}
-
-function isReasoningCapable(model: string): boolean {
-  const m = model.toLowerCase()
-  if (m.startsWith('claude-opus-4') || m.startsWith('claude-haiku-4')) return true
-  if (m.includes('deepseek-r1')) return true
-  if (m.startsWith('glm-5')) return true
-  return false
 }
 
 export const agentrouterTransformer: Transformer = {
@@ -72,9 +65,9 @@ export const agentrouterTransformer: Transformer = {
     if (ctx.sessionId && isClaudeModel(body.model)) {
       body.prompt_cache_key = ctx.sessionId
     }
-    if (ctx.isReasoning && ctx.reasoningEffort && isReasoningCapable(body.model)) {
-      body.reasoning = { effort: ctx.reasoningEffort }
-    }
+    const effort = getCompatEffort('agentrouter', body.model, ctx.effortValue)
+    if (effort) body.reasoning = { effort }
+    else delete body.reasoning
     return body
   },
 

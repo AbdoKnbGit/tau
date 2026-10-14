@@ -30,7 +30,7 @@ export const glmTransformer: Transformer = {
     body.model = normalizeGlmModelId(body.model)
     delete body.thinking
     delete body.reasoning_effort
-    Object.assign(body, directThinkingFields('glm', ctx.model))
+    Object.assign(body, directThinkingFields('glm', ctx.model, ctx.effortValue))
     if (body.max_tokens) body.max_tokens = Math.min(body.max_tokens, getDirectModelMeta('glm', ctx.model)?.maxOutputTokens ?? 32_768)
     delete body.stream_options
     return body

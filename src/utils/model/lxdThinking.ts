@@ -24,6 +24,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 import {
   getLxdModelMeta,
   LXD_ALL_EFFORTS,
@@ -91,12 +92,20 @@ function save(): void {
   }
 }
 
-export function getLxdEffort(model: string): LxdEffort {
+export function getLxdEffort(model: string, fallback?: EffortFallback): LxdEffort {
   load()
   const stored = _cache[model.trim().toLowerCase()]
   // Ignore a stored value that is not on this model's current ladder.
-  if (stored && lxdEffortLevelsFor(model).includes(stored)) return stored
-  return 'default'
+  if (stored && stored !== 'default' && lxdEffortLevelsFor(model).includes(stored)) return stored
+  return selectInheritedEffort(lxdEffortLevelsFor(model), fallback) ?? 'default'
+}
+
+export function hasExplicitLxdEffort(model: string): boolean {
+  return getLxdEffort(model, null) !== 'default'
+}
+
+export function clearLxdEffort(model: string): void {
+  setLxdEffort(model, 'default')
 }
 
 export function setLxdEffort(model: string, effort: LxdEffort): void {
@@ -133,8 +142,9 @@ export function cycleLxdEffort(
  */
 export function resolveLxdRequestEffort(
   model: string,
+  fallback?: EffortFallback,
 ): Exclude<LxdEffort, 'default'> | null {
-  const effort = getLxdEffort(model)
+  const effort = getLxdEffort(model, fallback)
   return effort === 'default' ? null : effort
 }
 

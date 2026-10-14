@@ -31,6 +31,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 import { getOpencodeModelMeta } from './opencodeModelsDevCatalog.js'
 import {
   isOpenAIReasoningModel,
@@ -296,26 +297,43 @@ function save(): void {
 export function getOpencodeEffort(
   model: string,
   provider = 'opencode',
+  fallback?: EffortFallback,
 ): OpencodeEffort {
   load()
   const key = model.trim().toLowerCase()
   const catalogLevels = catalogEffortLevels(provider, model)
   const levels = catalogLevels ?? opencodeEffortLevelsFor(model, provider)
   const stored = _cache[key]
-  if (stored && levels.includes(stored)) return stored
+  if (stored && stored !== 'default' && levels.includes(stored)) return stored
   if (catalogLevels) {
     // A published ladder starts at Default — the upstream's own setting —
     // and a pick stored against another ladder snaps to the nearest stop.
     return stored && stored !== 'default'
       ? snapToLevels(stored, catalogLevels) ?? 'default'
-      : 'default'
+      : selectInheritedEffort(catalogLevels, fallback) ?? 'default'
   }
+  const inherited = selectInheritedEffort(levels, fallback)
+  if (inherited) return inherited
   // Ignore a stored value that isn't valid for this model's ladder (e.g. a
   // generic 'medium' left over for a GLM-5.2 that now only takes high|max).
   if (FREE_TIER_DEFAULT_MEDIUM(model) && isOpencodeThinkingModel(model)) {
     return 'medium'
   }
   return 'default'
+}
+
+export function hasExplicitOpencodeEffort(model: string, provider = 'opencode'): boolean {
+  load()
+  const stored = _cache[model.trim().toLowerCase()]
+  if (!stored || stored === 'default') return false
+  const levels = catalogEffortLevels(provider, model)
+  return levels
+    ? snapToLevels(stored, levels) !== undefined
+    : opencodeEffortLevelsFor(model, provider).includes(stored)
+}
+
+export function clearOpencodeEffort(model: string, provider = 'opencode'): void {
+  setOpencodeEffort(model, 'default', provider)
 }
 
 export function setOpencodeEffort(
@@ -364,12 +382,15 @@ export function resolveOpencodeCatalogEffort(
   provider: string,
   model: string,
   sessionEffort: 'low' | 'medium' | 'high' | null,
+  effortFallback?: EffortFallback,
 ): OpencodeWireEffort | undefined {
   const levels = catalogEffortLevels(provider, model)
   if (!levels) return undefined
-  const picked = getOpencodeEffort(model, provider)
+  const picked = getOpencodeEffort(model, provider, effortFallback)
   if (picked !== 'default') return picked
-  return sessionEffort ? snapToLevels(sessionEffort, levels) ?? undefined : undefined
+  return effortFallback === undefined && sessionEffort
+    ? snapToLevels(sessionEffort, levels) ?? undefined
+    : undefined
 }
 
 /**
@@ -382,13 +403,15 @@ export function resolveOpencodeRouteEffort(
   provider: string,
   model: string,
   sessionEffort: 'low' | 'medium' | 'high' | null,
+  effortFallback?: EffortFallback,
 ): OpencodeWireEffort | undefined {
   if (!supportsOpencodeThinkingSelection(provider, model)) return undefined
   if (usesOpencodeCatalogEfforts(provider, model)) {
-    return resolveOpencodeCatalogEffort(provider, model, sessionEffort)
+    return resolveOpencodeCatalogEffort(provider, model, sessionEffort, effortFallback)
   }
-  const picked = getOpencodeEffort(model, provider)
-  return picked !== 'default' ? picked : sessionEffort ?? undefined
+  const picked = getOpencodeEffort(model, provider, effortFallback)
+  return picked !== 'default' ? picked
+    : effortFallback === undefined ? sessionEffort ?? undefined : undefined
 }
 
 /**
@@ -399,8 +422,9 @@ export function resolveOpencodeRouteEffort(
  * a row that reasons by default replays its reasoning at Default too, and
  * moving the chip never re-serialises the history already sent (which would
  * be a cache miss on every earlier turn). A row with a published ladder and
- * no such contract never replays. Anything else keeps the old rule: replay
- * while a thinking level is picked.
+ * no such contract never replays. Legacy reasoning-capable rows also keep
+ * their replay shape stable: the current effort must not rewrite history or
+ * borrow another request's global fallback.
  */
 export function opencodeReplaysReasoningContent(
   provider: string,
@@ -409,7 +433,6 @@ export function opencodeReplaysReasoningContent(
   if (getOpencodeModelMeta(provider, model)?.replaysReasoningContent) return true
   if (usesOpencodeCatalogEfforts(provider, model)) return false
   return supportsOpencodeThinkingSelection(provider, model)
-    && getOpencodeEffort(model, provider) !== 'default'
 }
 
 /** Test-only: reset the in-memory store to a known state for the active path. */

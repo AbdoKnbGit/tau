@@ -48,7 +48,7 @@ export const moonshotTransformer: Transformer = {
     const meta = getDirectModelMeta('moonshot', body.model)
     delete body.thinking
     if (meta) {
-      const fields = directThinkingFields('moonshot', body.model)
+      const fields = directThinkingFields('moonshot', body.model, ctx.effortValue)
       Object.assign(body, fields)
       if (body.max_tokens) body.max_tokens = Math.min(body.max_tokens, meta.maxOutputTokens)
       if (fields.thinking?.type === 'disabled') body.messages = body.messages.map(stripMoonshotReasoningContent)

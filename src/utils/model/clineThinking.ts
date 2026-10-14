@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { getClineModelMeta, type ClineModelMeta } from './clineModelsDevCatalog.js'
+import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 
 /**
  * One stop on a Cline model's thinking ladder: an effort value the model
@@ -218,21 +219,31 @@ function snapToLadder(effort: ClineEffort, ladder: ClineThinkingLadder): ClineEf
   return best
 }
 
-export function getClineEffort(model: string): ClineEffort {
+export function getClineEffort(model: string, fallback?: EffortFallback): ClineEffort {
   load()
-  const stored = _cache[normalizeStoreKey(model)] ?? 'none'
+  const stored = parseClineEffortVariant(model).effort ?? _cache[normalizeStoreKey(model)]
   const ladder = getClineThinkingLadder(model)
-  return ladder ? snapToLadder(stored, ladder) : stored
+  if (stored !== undefined) return ladder ? snapToLadder(stored, ladder) : stored
+  return ladder ? selectInheritedEffort(ladder.levels, fallback) ?? 'none' : 'none'
+}
+
+export function hasExplicitClineEffort(model: string): boolean {
+  load()
+  return parseClineEffortVariant(model).effort !== undefined
+    || _cache[normalizeStoreKey(model)] !== undefined
+}
+
+export function clearClineEffort(model: string): void {
+  load()
+  delete _cache[normalizeStoreKey(model)]
+  save()
 }
 
 export function setClineEffort(model: string, effort: ClineEffort): void {
   load()
   const key = normalizeStoreKey(model)
-  if (effort === 'none') {
-    delete _cache[key]
-  } else {
-    _cache[key] = effort
-  }
+  // Off is an explicit choice too; clearing the override is a separate action.
+  _cache[key] = effort
   save()
 }
 
@@ -278,14 +289,12 @@ export interface ClineReasoningFields {
  * where the model can stop thinking; anywhere else `none` sends nothing and
  * the model's own default applies.
  */
-export function resolveClineReasoningFields(model: string): ClineReasoningFields | null {
+export function resolveClineReasoningFields(model: string, fallback?: EffortFallback): ClineReasoningFields | null {
   const variant = parseClineEffortVariant(model)
   const ladder = getClineThinkingLadder(variant.modelId)
   if (!ladder) return null
 
-  load()
-  const picked = variant.effort ?? _cache[normalizeStoreKey(variant.modelId)] ?? 'none'
-  const effort = snapToLadder(picked, ladder)
+  const effort = getClineEffort(model, fallback)
   if (effort === 'none') {
     return ladder.offSupported ? { reasoning: { enabled: false } } : null
   }

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 
 export type CloudflareEffort = 'default' | 'low' | 'medium' | 'high' | 'max'
 export type CloudflareWireEffort = Exclude<CloudflareEffort, 'default'>
@@ -109,11 +110,21 @@ export function supportsCloudflareThinkingSelection(
   return cloudflareEffortLevelsForModel(model, tags).length > 1
 }
 
-export function getCloudflareEffort(model: string): CloudflareEffort {
+export function getCloudflareEffort(model: string, fallback?: EffortFallback): CloudflareEffort {
   load()
   const levels = cloudflareEffortLevelsForModel(model)
   const stored = _cache[storeKey(model)]
-  return stored && levels.includes(stored) ? stored : 'default'
+  return stored && stored !== 'default' && levels.includes(stored)
+    ? stored
+    : selectInheritedEffort(levels, fallback) ?? 'default'
+}
+
+export function hasExplicitCloudflareEffort(model: string): boolean {
+  return getCloudflareEffort(model, null) !== 'default'
+}
+
+export function clearCloudflareEffort(model: string): void {
+  setCloudflareEffort(model, 'default')
 }
 
 export function setCloudflareEffort(model: string, effort: CloudflareEffort): void {
@@ -152,8 +163,9 @@ export function getCloudflareEffortLabel(effort: CloudflareEffort): string {
 
 export function getCloudflareRequestEffort(
   model: string,
+  fallback?: EffortFallback,
 ): CloudflareWireEffort | null {
-  const effort = getCloudflareEffort(model)
+  const effort = getCloudflareEffort(model, fallback)
   return effort === 'default' ? null : effort
 }
 

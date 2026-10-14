@@ -29,6 +29,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 
 export const DEEPSEEK_EFFORT_LEVELS = ['none', 'low', 'high', 'max'] as const
 
@@ -99,9 +100,22 @@ function save(): void {
   }
 }
 
-export function getDeepSeekEffort(model: string): DeepSeekEffort {
+export function getDeepSeekEffort(model: string, fallback?: EffortFallback): DeepSeekEffort {
   load()
-  return _cache[model.trim().toLowerCase()] ?? DEEPSEEK_DEFAULT_EFFORT
+  return _cache[model.trim().toLowerCase()]
+    ?? selectInheritedEffort(deepseekEffortLevelsFor(model), fallback)
+    ?? DEEPSEEK_DEFAULT_EFFORT
+}
+
+export function hasExplicitDeepSeekEffort(model: string): boolean {
+  load()
+  return _cache[model.trim().toLowerCase()] !== undefined
+}
+
+export function clearDeepSeekEffort(model: string): void {
+  load()
+  delete _cache[model.trim().toLowerCase()]
+  save()
 }
 
 export function setDeepSeekEffort(model: string, effort: DeepSeekEffort): void {
@@ -132,8 +146,9 @@ export function cycleDeepSeekEffort(
  */
 export function resolveDeepSeekRequestEffort(
   model: string,
+  fallback?: EffortFallback,
 ): Exclude<DeepSeekEffort, 'none'> | null {
-  const effort = getDeepSeekEffort(model)
+  const effort = getDeepSeekEffort(model, fallback)
   return effort === 'none' ? null : effort
 }
 

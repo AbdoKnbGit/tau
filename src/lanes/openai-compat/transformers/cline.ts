@@ -40,10 +40,10 @@ export const clineTransformer: Transformer = {
     }
   },
 
-  transformRequest(body: OpenAIChatRequest, _ctx: TransformContext): OpenAIChatRequest {
+  transformRequest(body: OpenAIChatRequest, ctx: TransformContext): OpenAIChatRequest {
     // Only a stop on the model's own ladder is sent (clineThinking.ts); a
     // model with nothing to set keeps whatever the request already carries.
-    const fields = resolveClineReasoningFields(body.model)
+    const fields = resolveClineReasoningFields(body.model, ctx.effortValue)
     if (fields) {
       applyClineReasoningFields(body as unknown as Record<string, unknown>, fields)
     }

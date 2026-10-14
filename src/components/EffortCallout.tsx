@@ -6,6 +6,8 @@ import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js';
 import type { EffortLevel } from '../utils/effort.js';
 import { convertEffortValueToLevel, getDefaultEffortForModel, getOpusDefaultEffortConfig, toPersistableEffort } from '../utils/effort.js';
 import { parseUserSpecifiedModel } from '../utils/model/model.js';
+import { getAPIProvider } from '../utils/model/providers.js';
+import { usesProviderEffort } from '../utils/model/providerEffort.js';
 import { updateSettingsForSource } from '../utils/settings/settings.js';
 import type { OptionWithDescription } from './CustomSelect/select.js';
 import { Select } from './CustomSelect/select.js';
@@ -217,6 +219,8 @@ function EffortOptionLabel(t0) {
  * - Everyone else: mark as dismissed so it never shows
  */
 export function shouldShowEffortCallout(model: string): boolean {
+  // Native provider controls do not write the global Anthropic preference.
+  if (usesProviderEffort(getAPIProvider())) return false;
   // Only show for current Opus for now
   const parsed = parseUserSpecifiedModel(model);
   const normalized = parsed.toLowerCase();

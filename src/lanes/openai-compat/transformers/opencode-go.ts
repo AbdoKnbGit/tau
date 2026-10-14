@@ -101,7 +101,7 @@ export const opencodeGoTransformer: Transformer = {
       // Strip the thinking controls, then translate the picker's effort into
       // reasoning_effort ('default' leaves the upstream server default).
       for (const field of GO_UNSUPPORTED_THINKING_FIELDS) delete mutable[field]
-      const effort = getOpencodeEffort(result.model, 'opencodego')
+      const effort = getOpencodeEffort(result.model, 'opencodego', ctx.effortValue)
       if (effort === 'high' || effort === 'max') {
         mutable.reasoning_effort = effort
       }

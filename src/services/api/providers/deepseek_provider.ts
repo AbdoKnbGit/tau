@@ -27,6 +27,9 @@
 
 import { listDirectProviderModels } from '../../../utils/model/directProviderCatalog.js'
 import { OpenAIProvider } from './openai_provider.js'
+import { isDeepSeekV4ThinkingModel, resolveDeepSeekRequestEffort } from '../../../utils/model/deepseekThinking.js'
+import type { OpenAIMessage } from '../adapters/anthropic_to_openai.js'
+import { preserveToolCallReasoning } from './reasoning_history.js'
 import type {
   ModelInfo,
   ProviderConfig,
@@ -37,6 +40,20 @@ import type {
 
 export class DeepSeekProvider extends OpenAIProvider {
   readonly name = 'deepseek'
+
+  protected override finalizeChatCompletionsBody(
+    body: Record<string, unknown>, model: string, params: ProviderRequestParams,
+  ): void {
+    if (!isDeepSeekV4ThinkingModel(model)) return
+    const effort = resolveDeepSeekRequestEffort(model, params.effortValue)
+    body.thinking = { type: effort ? 'enabled' : 'disabled' }
+    if (effort) {
+      body.reasoning_effort = effort
+      // Preserve the base message order and content across effort changes;
+      // only attach the reasoning field required while thinking is enabled.
+      body.messages = preserveToolCallReasoning(body.messages as OpenAIMessage[], params.messages)
+    } else delete body.reasoning_effort
+  }
 
   constructor(config: ProviderConfig) {
     super({

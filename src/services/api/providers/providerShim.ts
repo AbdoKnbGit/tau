@@ -45,7 +45,7 @@ import type {
   AnthropicMessage,
   ProviderStreamResult,
 } from './base_provider.js'
-import { OpenAIProvider } from './openai_provider.js'
+import { CompatChatProvider } from './compat_chat_provider.js'
 import { CommandCodeProvider } from './commandcode_provider.js'
 import { GeminiProvider } from './gemini_provider.js'
 import { OpenRouterProvider } from './openrouter_provider.js'
@@ -376,7 +376,7 @@ function createProvider(provider: APIProvider): BaseProvider {
     case 'opencodego':
     case 'fireworks':
     case 'cloudflare':
-      return new OpenAIProvider({ apiKey, baseUrl })
+      return new CompatChatProvider(provider, { apiKey, baseUrl })
     case 'lxd':
       return new LxdProvider({ apiKey, baseUrl })
     case 'mimo':
@@ -405,7 +405,7 @@ function createProvider(provider: APIProvider): BaseProvider {
     case 'ollama':
       return new OllamaProvider({ apiKey, baseUrl })
     case 'lmstudio':
-      return new OpenAIProvider({ apiKey: apiKey || 'lm-studio', baseUrl })
+      return new CompatChatProvider(provider, { apiKey: apiKey || 'lm-studio', baseUrl })
     // Phase 4 / Phase 5 OAuth-compat providers: they're expected to reach
     // the openai-compat lane above. If we got here, the lane is unhealthy
     // (missing creds or the register step failed) — surface a useful

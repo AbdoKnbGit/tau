@@ -32,62 +32,8 @@ import {
   MAX_FAVORITE_MODELS,
   toggleFavoriteModel,
 } from '../utils/model/favoriteModels.js'
-import {
-  cycleDeepSeekEffort,
-  getDeepSeekEffort,
-  getDeepSeekEffortLabel,
-  supportsDeepSeekEffortSelection,
-} from '../utils/model/deepseekThinking.js'
-import { isDirectProvider, isDirectThinkingProvider, getDirectModelMeta } from '../utils/model/directProviderCatalog.js'
-import { cycleDirectEffort, directEffortLevels, directEffortLabel, getDirectEffort } from '../utils/model/directProviderThinking.js'
-import {
-  cycleClineEffort,
-  getClineEffort,
-  getClineEffortLabel,
-  supportsClineThinkingSelection,
-} from '../utils/model/clineThinking.js'
-import {
-  cycleOpencodeEffort,
-  getOpencodeEffort,
-  getOpencodeEffortLabel,
-  supportsOpencodeThinkingSelection,
-} from '../utils/model/opencodeThinking.js'
-import {
-  cycleCommandCodeEffort,
-  getCommandCodeEffort,
-  getCommandCodeEffortLabel,
-  supportsCommandCodeEffortSelection,
-} from '../utils/model/commandCodeThinking.js'
-import {
-  cycleCloudflareEffort,
-  getCloudflareEffort,
-  getCloudflareEffortLabel,
-  supportsCloudflareThinkingSelection,
-} from '../utils/model/cloudflareThinking.js'
-import {
-  cycleLxdEffort,
-  getLxdEffort,
-  getLxdEffortLabel,
-  supportsLxdEffortSelection,
-} from '../utils/model/lxdThinking.js'
-import {
-  cycleMimoEffort,
-  getMimoEffort,
-  getMimoEffortLabel,
-  supportsMimoEffortSelection,
-} from '../utils/model/mimoThinking.js'
-import {
-  cycleAlibabaEffort,
-  getAlibabaEffort,
-  getAlibabaEffortLabel,
-  supportsAlibabaEffortSelection,
-} from '../utils/model/alibabaThinking.js'
-import {
-  cycleOpenRouterEffort,
-  getOpenRouterEffort,
-  getOpenRouterEffortChipLabel,
-  supportsOpenRouterEffortSelection,
-} from '../utils/model/openrouterThinking.js'
+import { isDirectProvider, isDirectThinkingProvider } from '../utils/model/directProviderCatalog.js'
+import { commitProviderEffortSelection, getNextProviderEffort, getProviderEffortPreview } from '../utils/model/providerEffort.js'
 import { hasStoredKey } from '../services/api/auth/api_key_manager.js'
 
 type Props = {
@@ -95,7 +41,7 @@ type Props = {
   onSelect: (provider: BrowsableModelProvider, modelId: string, effort?: OpenAIReasoningLevel) => void
   onCancel: () => void
   lockedProvider?: BrowsableModelProvider
-  /** Some consumers select only a model, without an effort field to save. */
+  /** Model-only consumers must not change OpenAI or native per-model effort. */
   allowOpenAIEffortSelection?: boolean
 }
 
@@ -280,18 +226,7 @@ export function ProviderModelPicker({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [sections, setSections] = useState<ProviderModelSection[]>([])
   const [openaiEffort, setOpenaiEffort] = useState<OpenAIReasoningLevel>()
-  const [, setDirectThinkingTick] = useState(0)
-  // Bumped to force a re-render after toggling provider-owned per-model effort.
-  // The actual effort state lives in the provider utility modules.
-  const [, setClineEffortTick] = useState(0)
-  const [, setOpencodeEffortTick] = useState(0)
-  const [, setCommandCodeEffortTick] = useState(0)
-  const [, setCloudflareEffortTick] = useState(0)
-  const [, setDeepseekEffortTick] = useState(0)
-  const [, setLxdEffortTick] = useState(0)
-  const [, setMimoEffortTick] = useState(0)
-  const [, setAlibabaEffortTick] = useState(0)
-  const [, setOpenRouterEffortTick] = useState(0)
+  const [providerEffortSelections, setProviderEffortSelections] = useState<Record<string, string>>({})
   const [variantSelections, setVariantSelections] = useState<Record<string, number>>({})
   // Bumped when a favorite is toggled so the ★ column re-renders. The list
   // itself lives in GlobalConfig and is read fresh during render.
@@ -439,6 +374,10 @@ export function ProviderModelPicker({
     if (key.return) {
       const row = flatRows[selectedRowIndex]
       if (row?.kind === 'model') {
+        const modelId = getSelectedModelId(selectedProvider, row.model, variantSelections)
+        if (!isVoiceConversationProvider(selectedProvider)) {
+          commitProviderEffortSelection(selectedProvider, modelId, providerEffortSelections[`${selectedProvider}:${modelId}`], allowOpenAIEffortSelection)
+        }
         onSelect(
           selectedProvider,
           getSelectedModelId(selectedProvider, row.model, variantSelections),
@@ -562,104 +501,11 @@ export function ProviderModelPicker({
         return
       }
 
-      if (
-        row?.kind === 'model'
-        && selectedProvider === 'deepseek'
-        && supportsDeepSeekEffortSelection(row.model.id)
-      ) {
-        cycleDeepSeekEffort(row.model.id, key.leftArrow ? 'left' : 'right')
-        setDeepseekEffortTick(tick => tick + 1)
-        return
-      }
-
-      if (
-        row?.kind === 'model'
-        && isDirectThinkingProvider(selectedProvider)
-        && directEffortLevels(selectedProvider, row.model.id).length > 1
-      ) {
-        cycleDirectEffort(selectedProvider, row.model.id, key.leftArrow ? 'left' : 'right')
-        setDirectThinkingTick(tick => tick + 1)
-        return
-      }
-
-      if (
-        row?.kind === 'model'
-        && selectedProvider === 'cline'
-        && supportsClineThinkingSelection(row.model.id, row.model.tags)
-      ) {
-        cycleClineEffort(row.model.id, key.leftArrow ? 'left' : 'right')
-        setClineEffortTick(tick => tick + 1)
-        return
-      }
-
-      if (
-        row?.kind === 'model'
-        && (selectedProvider === 'opencode' || selectedProvider === 'opencodego')
-        && supportsOpencodeThinkingSelection(selectedProvider, row.model.id)
-      ) {
-        cycleOpencodeEffort(row.model.id, key.leftArrow ? 'left' : 'right', selectedProvider)
-        setOpencodeEffortTick(tick => tick + 1)
-        return
-      }
-
-      if (
-        row?.kind === 'model'
-        && selectedProvider === 'commandcode'
-        && supportsCommandCodeEffortSelection(row.model.id, row.model.tags)
-      ) {
-        cycleCommandCodeEffort(row.model.id, key.leftArrow ? 'left' : 'right')
-        setCommandCodeEffortTick(tick => tick + 1)
-        return
-      }
-
-      if (
-        row?.kind === 'model'
-        && selectedProvider === 'cloudflare'
-        && supportsCloudflareThinkingSelection(row.model.id, row.model.tags)
-      ) {
-        cycleCloudflareEffort(row.model.id, key.leftArrow ? 'left' : 'right')
-        setCloudflareEffortTick(tick => tick + 1)
-        return
-      }
-
-      if (
-        row?.kind === 'model'
-        && selectedProvider === 'lxd'
-        && supportsLxdEffortSelection(row.model.id)
-      ) {
-        cycleLxdEffort(row.model.id, key.leftArrow ? 'left' : 'right')
-        setLxdEffortTick(tick => tick + 1)
-        return
-      }
-
-      if (
-        row?.kind === 'model'
-        && selectedProvider === 'mimo'
-        && supportsMimoEffortSelection(row.model.id)
-      ) {
-        cycleMimoEffort(row.model.id, key.leftArrow ? 'left' : 'right')
-        setMimoEffortTick(tick => tick + 1)
-        return
-      }
-
-      if (
-        row?.kind === 'model'
-        && selectedProvider === 'alibaba'
-        && supportsAlibabaEffortSelection(row.model.id)
-      ) {
-        cycleAlibabaEffort(row.model.id, key.leftArrow ? 'left' : 'right')
-        setAlibabaEffortTick(tick => tick + 1)
-        return
-      }
-
-      if (
-        row?.kind === 'model'
-        && selectedProvider === 'openrouter'
-        && supportsOpenRouterEffortSelection(row.model.id)
-      ) {
-        cycleOpenRouterEffort(row.model.id, key.leftArrow ? 'left' : 'right')
-        setOpenRouterEffortTick(tick => tick + 1)
-        return
+      if (row?.kind === 'model' && allowOpenAIEffortSelection && !isVoiceConversationProvider(selectedProvider)) {
+        const modelId = getSelectedModelId(selectedProvider, row.model, variantSelections)
+        const selectionKey = `${selectedProvider}:${modelId}`
+        const next = getNextProviderEffort(selectedProvider, modelId, key.leftArrow ? 'left' : 'right', appStateEffort ?? null, providerEffortSelections[selectionKey])
+        if (next !== undefined) setProviderEffortSelections(current => ({ ...current, [selectionKey]: next }))
       }
       return
     }
@@ -801,57 +647,10 @@ export function ProviderModelPicker({
                   getSelectedModelId(selectedProvider, model, variantSelections),
                 )
               const isReasoning = allowOpenAIEffortSelection && selectedProvider === 'openai' && modelSupportsReasoning(model.id)
-              // Every V4 row carries the same None/Low/High/Max ladder.
-              const isDeepseekV4 =
-                selectedProvider === 'deepseek' && supportsDeepSeekEffortSelection(model.id)
-              const deepseekEffort = isDeepseekV4 ? getDeepSeekEffort(model.id) : undefined
-              const directMeta = isDirectProvider(selectedProvider) || isDirectThinkingProvider(selectedProvider) ? getDirectModelMeta(selectedProvider, model.id) : undefined
-              const directEffort = isDirectThinkingProvider(selectedProvider) && directEffortLevels(selectedProvider, model.id).length > 1
-                ? getDirectEffort(selectedProvider, model.id) : undefined
-              const isClineThinking = selectedProvider === 'cline' && supportsClineThinkingSelection(model.id, model.tags)
-              const clineEffort = isClineThinking ? getClineEffort(model.id) : undefined
-              const isOpencodeThinking =
-                (selectedProvider === 'opencode' || selectedProvider === 'opencodego')
-                && supportsOpencodeThinkingSelection(selectedProvider, model.id)
-              const opencodeEffort = isOpencodeThinking ? getOpencodeEffort(model.id, selectedProvider) : undefined
-              const isCommandCodeThinking =
-                selectedProvider === 'commandcode'
-                && supportsCommandCodeEffortSelection(model.id, model.tags)
-              const commandCodeEffort = isCommandCodeThinking ? getCommandCodeEffort(model.id) : undefined
-              const isCloudflareThinking =
-                selectedProvider === 'cloudflare'
-                && supportsCloudflareThinkingSelection(model.id, model.tags)
-              const cloudflareEffort = isCloudflareThinking ? getCloudflareEffort(model.id) : undefined
-              // LXD publishes a per-model effort ladder, so the chip only
-              // shows on rows that actually declare one.
-              const isLxdThinking =
-                selectedProvider === 'lxd' && supportsLxdEffortSelection(model.id)
-              const lxdEffort = isLxdThinking ? getLxdEffort(model.id) : undefined
-              // Every MiMo chat row reasons, on a uniform low/medium/high
-              // ladder that defaults to MiMo's own `medium`.
-              const isMimoThinking =
-                selectedProvider === 'mimo' && supportsMimoEffortSelection(model.id)
-              const mimoEffort = isMimoThinking ? getMimoEffort(model.id) : undefined
-              // Model Studio's ladder is per model, straight out of the
-              // catalogue: a toggle row cycles Default/Off/On, an effort row
-              // cycles the values that model itself publishes, and a row that
-              // does not reason shows no chip at all.
-              const isAlibabaThinking =
-                selectedProvider === 'alibaba'
-                && supportsAlibabaEffortSelection(model.id)
-              const alibabaEffort = isAlibabaThinking
-                ? getAlibabaEffort(model.id)
-                : undefined
-              // OpenRouter states its own ladder per model, and they really do
-              // differ (minimal…max on Muse Spark, low/high/max on Grok 4.20,
-              // a bare on/off where a row reasons but publishes no efforts).
-              // Rows OpenRouter does not describe as reasoning show no chip.
-              const isOpenRouterThinking =
-                selectedProvider === 'openrouter'
-                && supportsOpenRouterEffortSelection(model.id)
-              const openRouterEffort = isOpenRouterThinking
-                ? getOpenRouterEffort(model.id)
-                : undefined
+              const selectedModelId = getSelectedModelId(selectedProvider, model, variantSelections)
+              const nativeEffort = !isVoiceConversationProvider(selectedProvider)
+                ? getProviderEffortPreview(selectedProvider, selectedModelId, appStateEffort ?? null, providerEffortSelections[`${selectedProvider}:${selectedModelId}`])
+                : null
               const selectedVariant = getSelectedVariant(
                 selectedProvider,
                 model,
@@ -879,9 +678,6 @@ export function ProviderModelPicker({
                   {(isDirectProvider(selectedProvider) || isDirectThinkingProvider(selectedProvider)) && (
                     <Text dimColor>{' '}[{model.contextWindow?.toLocaleString('en-US') ?? 'unknown'} context]</Text>
                   )}
-                  {isDirectThinkingProvider(selectedProvider) && directMeta?.reasoning && !directEffort && (
-                    <Text dimColor>{' '}[Thinking always on]</Text>
-                  )}
                   {isStarred && (
                     <Text color="yellow" bold={isSelected}>
                       {' '}{FAVORITE_MARKER}
@@ -892,55 +688,13 @@ export function ProviderModelPicker({
                       {' '}◀ {getReasoningLabel(getOpenAIReasoningLevel(model.id, displayedOpenaiEffort))} ▶
                     </Text>
                   )}
-                  {isDeepseekV4 && deepseekEffort && (
+                  {nativeEffort?.supported && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ {getDeepSeekEffortLabel(deepseekEffort)} ▶
+                      {' '}{allowOpenAIEffortSelection ? '◀ ' : '['}{nativeEffort.label}{!nativeEffort.explicit && nativeEffort.value !== undefined && nativeEffort.value !== 'default' ? ' (auto)' : ''}{allowOpenAIEffortSelection ? ' ▶' : ']'}
                     </Text>
                   )}
-                  {directEffort && (
-                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ {directEffortLabel(directEffort)} ▶
-                    </Text>
-                  )}
-                  {isClineThinking && clineEffort && (
-                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ Thinking {getClineEffortLabel(clineEffort, model.id)} ▶
-                    </Text>
-                  )}
-                  {isOpencodeThinking && opencodeEffort && (
-                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ Thinking {getOpencodeEffortLabel(opencodeEffort)} ▶
-                    </Text>
-                  )}
-                  {isCommandCodeThinking && commandCodeEffort && (
-                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ {getCommandCodeEffortLabel(commandCodeEffort)} ▶
-                    </Text>
-                  )}
-                  {isCloudflareThinking && cloudflareEffort && (
-                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ Thinking {getCloudflareEffortLabel(cloudflareEffort)} ▶
-                    </Text>
-                  )}
-                  {isLxdThinking && lxdEffort && (
-                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ {getLxdEffortLabel(lxdEffort)} ▶
-                    </Text>
-                  )}
-                  {isMimoThinking && mimoEffort && (
-                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ {getMimoEffortLabel(mimoEffort)} ▶
-                    </Text>
-                  )}
-                  {isAlibabaThinking && alibabaEffort && (
-                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ {getAlibabaEffortLabel(alibabaEffort)} ▶
-                    </Text>
-                  )}
-                  {isOpenRouterThinking && openRouterEffort && (
-                    <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>
-                      {' '}◀ {getOpenRouterEffortChipLabel(openRouterEffort)} ▶
-                    </Text>
+                  {nativeEffort && !nativeEffort.supported && !showVariant && isSelected && (
+                    <Text dimColor>{' '}[{nativeEffort.label}; no effort control]</Text>
                   )}
                   {showVariant && selectedVariant && (
                     <Text color={isSelected ? 'cyan' : 'blue'} bold={isSelected}>

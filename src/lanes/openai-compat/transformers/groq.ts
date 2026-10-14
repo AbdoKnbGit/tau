@@ -18,6 +18,7 @@
  */
 
 import type { Transformer, TransformContext } from './base.js'
+import { getCompatRequestEffort } from '../../../utils/model/compatEffort.js'
 import type { OpenAIChatRequest, OpenAIChatMessage } from './shared_types.js'
 import {
   isSmallTierGroqModel,
@@ -39,9 +40,9 @@ export const groqTransformer: Transformer = {
     // `reasoning_effort` is only accepted by reasoning-capable Groq
     // models (gpt-oss). Llama-3.x 400s with "reasoning_effort is not
     // supported with this model" when the knob is sent.
-    if (ctx.isReasoning && ctx.reasoningEffort && groqModelSupportsReasoning(body.model)) {
-      body.reasoning_effort = ctx.reasoningEffort
-    }
+    const effort = getCompatRequestEffort('groq', body.model, ctx.effortValue)
+    if (effort) body.reasoning_effort = effort
+    else delete body.reasoning_effort
     // Strip null tool_calls field that Groq's validator rejects.
     body.messages = body.messages.map(m => {
       const tc = (m as { tool_calls?: unknown }).tool_calls
@@ -139,11 +140,3 @@ const GROQ_PRODUCTION_MODELS = new Set<string>([
   'openai/gpt-oss-20b',
   'openai/gpt-oss-120b',
 ])
-
-function groqModelSupportsReasoning(model: string): boolean {
-  const m = model.toLowerCase()
-  // Only gpt-oss (both sizes) accepts reasoning_effort on Groq.
-  // Llama-3.x does not; whisper is not a chat model.
-  if (m.includes('gpt-oss')) return true
-  return false
-}

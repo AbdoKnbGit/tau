@@ -106,9 +106,10 @@ export const alibabaTransformer: Transformer = {
     // every request.
     const thinking = resolveAlibabaThinkingFields(
       ctx.model,
-      hasExplicitAlibabaEffort(ctx.model)
+      hasExplicitAlibabaEffort(ctx.model) || ctx.effortValue !== undefined
         ? undefined
         : { enabled: ctx.isReasoning, effort: ctx.reasoningEffort },
+      ctx.effortValue,
     )
     delete bag.enable_thinking
     delete bag.reasoning_effort

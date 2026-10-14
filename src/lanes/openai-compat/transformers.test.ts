@@ -366,9 +366,9 @@ async function main(): Promise<void> {
       assert(!opencodeReplaysReasoningContent('opencode', 'claude-opus-5-5'),
         'Opus 5.5 has no reasoning_content contract')
     })
-    // Without the catalogue the old rule stands: replay only while picked.
+    // Legacy rows retain the same history regardless of the current effort.
     withTempOpencodeThinkingStore(() => {
-      assert(!opencodeReplaysReasoningContent('opencode', 'glm-5.1'), 'glm-5.1 at Default, no catalogue')
+      assert(opencodeReplaysReasoningContent('opencode', 'glm-5.1'), 'glm-5.1 at Default, no catalogue')
       setOpencodeEffort('glm-5.1', 'high')
       assert(opencodeReplaysReasoningContent('opencode', 'glm-5.1'), 'glm-5.1 picked, no catalogue')
     })
@@ -548,6 +548,9 @@ async function main(): Promise<void> {
   })
 
   test('glm disables thinking when picker toggle is OFF', () => {
+    const previousBaseUrl = process.env.GLM_BASE_URL
+    // glm-5-turbo belongs to the Z.ai catalog, not the BigModel catalog.
+    process.env.GLM_BASE_URL = 'https://api.z.ai/api/paas/v4'
     setGlmThinking(false)
     try {
       for (const model of ['glm-5.1', 'glm-5-turbo', 'glm-5', 'glm-4.7']) {
@@ -558,9 +561,13 @@ async function main(): Promise<void> {
       }
     } finally {
       setGlmThinking(false)
+      if (previousBaseUrl === undefined) delete process.env.GLM_BASE_URL
+      else process.env.GLM_BASE_URL = previousBaseUrl
     }
   })
   test('glm enables thinking when picker toggle is ON', () => {
+    const previousBaseUrl = process.env.GLM_BASE_URL
+    process.env.GLM_BASE_URL = 'https://api.z.ai/api/paas/v4'
     setGlmThinking(true)
     try {
       for (const model of ['glm-5.1', 'glm-5-turbo', 'glm-5', 'glm-4.7']) {
@@ -570,6 +577,8 @@ async function main(): Promise<void> {
       }
     } finally {
       setGlmThinking(false)
+      if (previousBaseUrl === undefined) delete process.env.GLM_BASE_URL
+      else process.env.GLM_BASE_URL = previousBaseUrl
     }
   })
 
@@ -787,7 +796,7 @@ async function main(): Promise<void> {
   })
   test('groq adds reasoning_effort for gpt-oss (reasoning-capable)', () => {
     const body = mkBody('openai/gpt-oss-20b')
-    TRANSFORMERS.groq.transformRequest(body, mkCtx('openai/gpt-oss-20b', true))
+    TRANSFORMERS.groq.transformRequest(body, { ...mkCtx('openai/gpt-oss-20b', true), effortValue: 'medium' })
     assert(body.reasoning_effort === 'medium', `reasoning_effort=${body.reasoning_effort}`)
   })
   test('groq omits reasoning_effort for plain Llama (400s otherwise)', () => {

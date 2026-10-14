@@ -29,7 +29,6 @@ import {
   type MimoCatalogRow,
 } from '../../../utils/model/mimoCatalog.js'
 import {
-  hasExplicitMimoEffort,
   resolveMimoRequestEffort,
   supportsMimoEffortSelection,
 } from '../../../utils/model/mimoThinking.js'
@@ -83,16 +82,10 @@ export const mimoTransformer: Transformer = {
     }
 
     // Uniform low/medium/high ladder on every reasoning row, defaulting to
-    // MiMo's own `medium`. The picker's per-model pick wins; the caller's
-    // thinking budget is the fallback when it maps onto the same ladder.
+    // MiMo's own `medium`. A per-model pick wins over supported configured
+    // effort. Resolve the same value used by the picker and /effort.
     if (supportsMimoEffortSelection(ctx.model)) {
-      // Precedence: an explicit pick from the picker wins, then the caller's
-      // thinking budget, then MiMo's own default. Without the explicit-pick
-      // check the budget silently overwrites the chip on every request.
-      const fallback = ctx.isReasoning ? ctx.reasoningEffort : null
-      body.reasoning_effort = hasExplicitMimoEffort(ctx.model)
-        ? resolveMimoRequestEffort(ctx.model)
-        : fallback ?? resolveMimoRequestEffort(ctx.model)
+      body.reasoning_effort = resolveMimoRequestEffort(ctx.model, ctx.effortValue)
     } else {
       delete bag.reasoning_effort
     }

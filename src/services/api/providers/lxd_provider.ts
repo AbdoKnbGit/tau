@@ -6,7 +6,10 @@
  */
 
 import { OpenAIProvider } from './openai_provider.js'
-import type { ModelInfo, ProviderConfig } from './base_provider.js'
+import type { ModelInfo, ProviderConfig, ProviderRequestParams } from './base_provider.js'
+import { resolveLxdRequestEffort, supportsLxdEffortSelection } from '../../../utils/model/lxdThinking.js'
+import type { OpenAIMessage } from '../adapters/anthropic_to_openai.js'
+import { preserveToolCallReasoning } from './reasoning_history.js'
 import {
   filterLxdModelCatalog,
   lxdStaticCatalog,
@@ -16,6 +19,17 @@ import {
 
 export class LxdProvider extends OpenAIProvider {
   readonly name = 'lxd'
+
+  protected override finalizeChatCompletionsBody(
+    body: Record<string, unknown>, model: string, params: ProviderRequestParams,
+  ): void {
+    const effort = resolveLxdRequestEffort(model, params.effortValue)
+    if (effort) body.reasoning_effort = effort
+    else delete body.reasoning_effort
+    if (supportsLxdEffortSelection(model)) {
+      body.messages = preserveToolCallReasoning(body.messages as OpenAIMessage[], params.messages)
+    }
+  }
 
   constructor(config: ProviderConfig) {
     super({
