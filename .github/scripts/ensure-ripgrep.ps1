@@ -13,19 +13,38 @@ function Test-UsableRipgrep {
 }
 
 if (Test-UsableRipgrep) { exit 0 }
-if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-  throw 'ripgrep is unavailable and Chocolatey is not installed.'
-}
-
 $installStatus = 1
-for ($attempt = 1; $attempt -le 3; $attempt++) {
-  & choco install ripgrep --yes --no-progress
-  $installStatus = $LASTEXITCODE
-  if ($installStatus -eq 0 -and (Test-UsableRipgrep)) { exit 0 }
-  if ($attempt -lt 3) {
-    Write-Warning "ripgrep setup failed (attempt $attempt/3, Chocolatey exit $installStatus); retrying..."
-    Start-Sleep -Seconds (2 * $attempt)
+if (Get-Command choco -ErrorAction SilentlyContinue) {
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    & choco install ripgrep --yes --no-progress
+    $installStatus = $LASTEXITCODE
+    if ($installStatus -eq 0 -and (Test-UsableRipgrep)) { exit 0 }
+    if ($attempt -lt 3) {
+      Write-Warning "ripgrep setup failed (attempt $attempt/3, Chocolatey exit $installStatus); retrying..."
+      Start-Sleep -Seconds (2 * $attempt)
+    }
   }
 }
 
-throw "ripgrep is unavailable after 3 installation attempts (last Chocolatey exit code: $installStatus)."
+# Chocolatey's feed can be unavailable even when it reports exit code zero.
+# Reuse Tau's pinned, SHA-256-verified upstream installer, without npm or other
+# postinstall tasks. Node is already installed by both callers of this helper.
+Write-Warning 'Chocolatey did not provide ripgrep; trying the verified upstream release.'
+$repositoryRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+& node (Join-Path $repositoryRoot 'scripts/postinstall.mjs') --ripgrep-only
+$upstreamStatus = $LASTEXITCODE
+if ($upstreamStatus -eq 0) {
+  $architecture = & node -p process.arch
+  if ($LASTEXITCODE -eq 0 -and $architecture -in @('x64', 'arm64')) {
+    $vendorDirectory = Join-Path $repositoryRoot "dist/vendor/ripgrep/$architecture-win32"
+    $env:PATH = "$vendorDirectory;$env:PATH"
+    if (Test-UsableRipgrep) {
+      # Current PowerShell callers use PATH above; subsequent Actions steps
+      # receive this entry through GITHUB_PATH. Bash callers also export it.
+      if ($env:GITHUB_PATH) { Add-Content -LiteralPath $env:GITHUB_PATH -Value $vendorDirectory -Encoding utf8 }
+      exit 0
+    }
+  }
+}
+
+throw "ripgrep is unavailable after Chocolatey retries and the verified upstream fallback (exit code: $upstreamStatus)."

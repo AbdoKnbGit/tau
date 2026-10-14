@@ -14,23 +14,24 @@ function runScenario(scenario) {
   const temp = mkdtempSync(join(tmpdir(), 'tau-ci-ripgrep-'))
   try {
     const harness = join(temp, 'runner.ps1')
-    // Mock only command availability, Chocolatey, ripgrep and sleeping. Execute
+    // Mock command availability, both installers, ripgrep and sleeping. Execute
     // the real setup script in PowerShell; never install packages on the host.
     writeFileSync(harness, `
 param([string]$Helper, [string]$Scenario)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-$global:fixture = @{ attempts = 0; probes = 0; sleeps = @(); installed = ($Scenario -eq 'installed'); status = 0; error = '' }
+$env:GITHUB_PATH = Join-Path $PSScriptRoot 'github-path'
+$global:fixture = @{ attempts = 0; upstream = 0; probes = 0; sleeps = @(); installed = ($Scenario -eq 'installed'); status = 0; error = ''; exported = '' }
 function global:Get-Command {
   param([string]$Name)
   if ($Name -eq 'rg') { if ($global:fixture.installed) { return $true }; return $null }
-  if ($Name -eq 'choco') { if ($Scenario -ne 'no-choco') { return $true }; return $null }
+  if ($Name -eq 'choco') { if ($Scenario -notin @('no-choco', 'upstream-no-choco')) { return $true }; return $null }
   throw "Unexpected lookup: $Name"
 }
 function global:rg {
   if (-not $global:fixture.installed) { throw 'Attempted to run missing rg' }
   $global:fixture.probes++
-  $global:LASTEXITCODE = if ($Scenario -eq 'broken-rg') { 1 } else { 0 }
+  $global:LASTEXITCODE = if ($Scenario -in @('broken-rg', 'upstream-broken')) { 1 } else { 0 }
   'ripgrep test version'
 }
 function global:choco {
@@ -43,6 +44,22 @@ function global:choco {
   else { & $env:TAU_CI_TEST_NODE -e 'process.exit(1)' }
   $global:LASTEXITCODE = $LASTEXITCODE
 }
+function global:node {
+  if (($args -join ' ') -eq '-p process.arch') {
+    $global:LASTEXITCODE = 0
+    'x64'
+    return
+  }
+  if ($args.Count -ne 2 -or $args[1] -ne '--ripgrep-only' -or $args[0] -notmatch 'scripts[/\\\\]postinstall\\.mjs$') {
+    throw "Unexpected upstream installer arguments: $args"
+  }
+  $global:fixture.upstream++
+  $succeeds = $Scenario -in @('upstream', 'upstream-no-choco', 'upstream-missing', 'upstream-broken')
+  if ($succeeds -and $Scenario -ne 'upstream-missing') { $global:fixture.installed = $true }
+  if ($succeeds) { & $env:TAU_CI_TEST_NODE -e 'process.exit(0)' }
+  else { & $env:TAU_CI_TEST_NODE -e 'process.exit(1)' }
+  $global:LASTEXITCODE = $LASTEXITCODE
+}
 function global:Start-Sleep { param([int]$Seconds); $global:fixture.sleeps += $Seconds }
 try {
   & $Helper
@@ -50,6 +67,9 @@ try {
 } catch {
   $global:fixture.status = 1
   $global:fixture.error = $_.Exception.Message
+}
+if (Test-Path -LiteralPath $env:GITHUB_PATH) {
+  $global:fixture.exported = (Get-Content -LiteralPath $env:GITHUB_PATH -Raw).Trim()
 }
 Write-Output ('RESULT:' + ($global:fixture | ConvertTo-Json -Compress))
 exit $global:fixture.status
@@ -73,24 +93,33 @@ test('both Windows CI paths use the checked retry helper', () => {
   const workflow = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8')
   assert.equal(workflow.split('.github/scripts/ensure-ripgrep.ps1').length - 1, 2)
   assert.ok(!workflow.includes('choco install ripgrep'))
+  assert.ok(workflow.includes('export PATH="$PWD/dist/vendor/ripgrep/$(node -p process.arch)-win32:$PATH"'))
+  assert.ok(workflow.includes('node --test test/provider-effort.test.mjs'))
 })
 
-for (const [scenario, attempts, probes, exit] of [
-  ['installed', 0, 1, 0],
-  ['success', 1, 1, 0],
-  ['transient', 3, 1, 0],
-  ['permanent', 3, 0, 1],
-  ['missing-rg', 3, 0, 1],
-  ['broken-rg', 3, 3, 1],
-  ['no-choco', 0, 0, 1],
+for (const [scenario, attempts, probes, exit, upstream] of [
+  ['installed', 0, 1, 0, 0],
+  ['success', 1, 1, 0, 0],
+  ['transient', 3, 1, 0, 0],
+  ['permanent', 3, 0, 1, 1],
+  ['missing-rg', 3, 0, 1, 1],
+  ['broken-rg', 3, 3, 1, 1],
+  ['no-choco', 0, 0, 1, 1],
+  ['upstream', 3, 1, 0, 1],
+  ['upstream-no-choco', 0, 1, 0, 1],
+  ['upstream-missing', 3, 0, 1, 1],
+  ['upstream-broken', 3, 1, 1, 1],
 ]) {
   test(`Windows ripgrep setup: ${scenario}`, { skip: !hasPowerShell }, () => {
     const result = runScenario(scenario)
     assert.equal(result.exit, exit, result.error)
     assert.equal(result.attempts, attempts)
+    assert.equal(result.upstream, upstream)
     assert.equal(result.probes, probes)
     assert.deepEqual(result.sleeps, attempts === 3 ? [2, 4] : [])
-    if (exit && scenario !== 'no-choco') assert.match(result.error, /after 3 installation attempts/)
-    if (scenario === 'no-choco') assert.match(result.error, /Chocolatey is not installed/)
+    if (exit) assert.match(result.error, /after Chocolatey retries and the verified upstream fallback/)
+    if (scenario === 'upstream' || scenario === 'upstream-no-choco') {
+      assert.equal(resolve(result.exported), join(root, 'dist', 'vendor', 'ripgrep', 'x64-win32'))
+    } else assert.equal(result.exported, '')
   })
 }
