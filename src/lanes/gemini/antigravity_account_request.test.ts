@@ -17,6 +17,7 @@ mock.module('../../services/api/providers/gemini_provider.js', () => ({
 const codeAssist = await import('../../services/api/providers/gemini_code_assist.js')
 const { geminiApi, TAU_QUERY_SOURCE_FIELD, TAU_STABLE_SESSION_ID_FIELD } =
   await import('./api.js')
+const { resolveThinkingConfig } = await import('./thinking.js')
 
 const MODEL = 'gemini-3.7-flash-high'
 const MODELS = [...codeAssist.ANTIGRAVITY_MODEL_IDS]
@@ -69,7 +70,7 @@ async function request(streaming: boolean, source: string, model = MODEL): Promi
     model,
     systemInstruction: { parts: [{ text: isReport ? 'Write a factual final report.' : 'You are a coding agent.' }] },
     contents: [{ role: 'user', parts: [{ text: isReport ? 'The session fixed the cache owner.' : 'Review the next cache change.' }] }],
-    generationConfig: { thinkingConfig: { thinkingLevel: 'high', includeThoughts: false } },
+    generationConfig: { thinkingConfig: resolveThinkingConfig(model, -1) },
     [TAU_STABLE_SESSION_ID_FIELD]: SESSION,
     [TAU_QUERY_SOURCE_FIELD]: source,
   }

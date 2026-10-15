@@ -230,7 +230,7 @@ async function main(): Promise<void> {
     }
   })
 
-  await test('Argon tiers retain their wire ids, thinking levels and stable request prefix', () => {
+  await test('Argon tiers use the upstream thinking format without changing the prompt prefix', () => {
     for (const [level, label] of [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] as const) {
       const id = `gemini-4-argon-${level}`
       const row = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
@@ -250,8 +250,47 @@ async function main(): Promise<void> {
       const wrapped = wrapForCodeAssist(id, 'project', request)
       assert(wrapped.model === id, `${id} wire id changed`)
       assert(wrapped.userAgent === 'antigravity', `${id} wrong envelope`)
-      assert(JSON.stringify(wrapped.request) === before, `${id} request prefix or thinking changed`)
+      const config = (wrapped.request.generationConfig as any).thinkingConfig
+      assert(JSON.stringify(config) === JSON.stringify(level === 'high'
+        ? { thinkingLevel: 'high', includeThoughts: false }
+        : { includeThoughts: false, thinkingBudget: -1 }), `${id} wrong thinking wire format`)
+      assert(wrapped.request.sessionId === request.sessionId, `${id} affinity changed`)
+      assert(JSON.stringify(wrapped.request.systemInstruction) === JSON.stringify(request.systemInstruction), `${id} system prefix changed`)
+      assert(JSON.stringify(wrapped.request.contents) === JSON.stringify(request.contents), `${id} history changed`)
       assert(JSON.stringify(request) === before, `${id} caller input mutated`)
+    }
+  })
+
+  await test('Argon wire tier follows explicit reasoning overrides and normalizes mixed configs', () => {
+    const cases = [
+      ['low', { thinkingLevel: 'high', thinkingBudget: 512 }, 'high'],
+      ['high', { thinkingLevel: 'medium' }, 'medium'],
+      ['medium', { thinkingLevel: 'low' }, 'low'],
+      ['high', { thinkingLevel: 'none' }, 'low'],
+      ['high', { thinkingBudget: 0 }, 'low'],
+      ['high', { thinkingBudget: 1024 }, 'low'],
+      ['low', { thinkingBudget: 8192 }, 'medium'],
+      ['medium', { thinkingBudget: 24576 }, 'high'],
+      ['medium', { thinkingBudget: -1 }, 'medium'],
+    ] as const
+    for (const [selected, thinking, expected] of cases) {
+      const input = { generationConfig: { thinkingConfig: { ...thinking, includeThoughts: true } } }
+      const before = JSON.stringify(input)
+      const wrapped = wrapForCodeAssist(`gemini-4-argon-${selected}`, 'project', input)
+      const config = (wrapped.request.generationConfig as any).thinkingConfig
+      assert(wrapped.model === `gemini-4-argon-${expected}`, `${selected}/${before}: wire tier ${wrapped.model}`)
+      assert(config.includeThoughts === true, 'explicit thoughts lost')
+      assert(expected === 'high'
+        ? config.thinkingLevel === 'high' && !('thinkingBudget' in config)
+        : config.thinkingBudget === -1 && !('thinkingLevel' in config), 'incompatible thinking fields sent')
+      assert(JSON.stringify(input) === before, 'normalization mutated caller config')
+    }
+    for (const tier of ['low', 'medium', 'high']) {
+      const wrapped = wrapForCodeAssist(`gemini-4-argon-${tier}`, 'project', {})
+      const config = (wrapped.request.generationConfig as any).thinkingConfig
+      assert(tier === 'high' ? config.thinkingLevel === 'high' : config.thinkingBudget === -1,
+        `${tier}: missing default wire thinking config`)
+      assert(!('includeThoughts' in config), 'absent thought preference was invented')
     }
   })
 

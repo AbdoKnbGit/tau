@@ -23,6 +23,7 @@ mock.module('./antigravity_cache.js', () => ({
 }))
 const { geminiApi, TAU_STABLE_SESSION_ID_FIELD, TAU_QUERY_SOURCE_FIELD } = await import('./api.js')
 const { resolveThinkingConfig } = await import('./thinking.js')
+const { GeminiLane } = await import('./loop.js')
 const originalFetch = globalThis.fetch
 const previousToken = (geminiApi as any).antigravityOAuthToken
 const previousThinking = process.env.TAU_GEMINI_THINKING
@@ -35,6 +36,7 @@ try {
   delete process.env.TAU_GEMINI_INCLUDE_THOUGHTS
   globalThis.fetch = (async (_url, init) => {
     assert.ok(String(_url).startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE + ':'), 'generation left the Antigravity host')
+    assert.equal(new Headers(init?.headers).get('user-agent'), 'antigravity/hub/2.23.0 darwin/arm64', 'old client identity can hide Argon upstream')
     payloads.push(JSON.parse(String(init?.body)))
     const response = { candidates: [{ content: { role: 'model', parts: [{ text: 'OK' }] } }], usageMetadata: { promptTokenCount: 19_803, cachedContentTokenCount: 16_353, candidatesTokenCount: 1 } }
     return String(_url).includes('streamGenerateContent')
@@ -82,7 +84,11 @@ try {
           assert.deepEqual(envelope.request.systemInstruction, systemInstruction, 'stable system prefix changed')
           assert.deepEqual(envelope.request.tools, tools, 'stable tool prefix changed')
           assert.deepEqual(envelope.request.contents, contents, 'conversation prefix changed')
-          assert.deepEqual(envelope.request.generationConfig, { thinkingConfig: { thinkingLevel: level, includeThoughts: false } })
+          assert.deepEqual(envelope.request.generationConfig, { thinkingConfig:
+            model.startsWith('gemini-4-argon-') && level !== 'high'
+              ? { thinkingBudget: -1, includeThoughts: false }
+              : { thinkingLevel: level, includeThoughts: false },
+          })
           assert.ok(!('cachedContent' in envelope.request), 'explicit cache metadata leaked into implicit-cache transport')
           assert.ok(!JSON.stringify(envelope).includes(context.requestId), 'local diagnostic ID leaked onto the wire')
           assert.ok(!JSON.stringify(envelope).includes('__tau'), 'internal marker leaked onto the wire')
@@ -95,6 +101,32 @@ try {
         }
       }
     }
+  }
+  // Exercise the real lane's thinking conversion before the wrapper. An
+  // override must select the same upstream tier as the emitted config.
+  for (const [model, override, tier] of [
+    ['gemini-4-argon-low', undefined, 'low'],
+    ['gemini-4-argon-medium', undefined, 'medium'],
+    ['gemini-4-argon-high', undefined, 'high'],
+    ['gemini-4-argon-high', 'low', 'low'],
+    ['gemini-4-argon-low', 'high', 'high'],
+    ['gemini-4-argon-high', 'off', 'low'],
+  ] as const) {
+    if (override === undefined) delete process.env.TAU_GEMINI_THINKING
+    else process.env.TAU_GEMINI_THINKING = override
+    const stream = new GeminiLane().streamAsProvider({
+      model, messages: [{ role: 'user', content: 'Reply OK.' }],
+      system: 'Keep this prefix unchanged.', tools: [], max_tokens: 1024,
+      thinking: { type: 'enabled', budget_tokens: 1024 },
+      signal: new AbortController().signal, providerHint: 'antigravity',
+      sessionId: `argon-pipeline-${model}-${override}`, querySource: 'repl_main_thread',
+    })
+    for await (const _event of stream) { /* exercise the real lane and transport */ }
+    const envelope = payloads.at(-1)
+    assert.equal(envelope.model, `gemini-4-argon-${tier}`)
+    assert.deepEqual(envelope.request.generationConfig.thinkingConfig, tier === 'high'
+      ? { thinkingLevel: 'high', includeThoughts: true }
+      : { thinkingBudget: -1, includeThoughts: true })
   }
   console.log('Antigravity cache transport passed: all Argon levels and Flash 3.8 Low; streaming/non-streaming main/agent turns preserve prefix, reasoning and affinity')
 } finally {
