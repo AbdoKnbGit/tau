@@ -3,7 +3,7 @@ import sample from 'lodash-es/sample.js';
 import * as React from 'react';
 import { useRef, useState } from 'react';
 import { getSpinnerVerbs } from '../../constants/spinnerVerbs.js';
-import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js';
+import { getTurnCompletionVerbs } from '../../constants/turnCompletionVerbs.js';
 import { useElapsedTime } from '../../hooks/useElapsedTime.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
@@ -78,7 +78,7 @@ export function TeammateSpinnerLine({
   showPreview
 }: Props): React.ReactNode {
   const [randomVerb] = useState(() => teammate.spinnerVerb ?? sample(getSpinnerVerbs()));
-  const [pastTenseVerb] = useState(() => teammate.pastTenseVerb ?? sample(TURN_COMPLETION_VERBS));
+  const [pastTenseVerb] = useState(() => teammate.pastTenseVerb ?? sample(getTurnCompletionVerbs()));
   const isHighlighted = isSelected || isForegrounded;
   const treeChar = isHighlighted ? isLast ? '╘═' : '╞═' : isLast ? '└─' : '├─';
   const nameColor = toInkColor(teammate.identity.color);

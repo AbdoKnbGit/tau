@@ -1,5 +1,6 @@
 import { c as _c } from "react/compiler-runtime";
 import capitalize from 'lodash-es/capitalize.js';
+import { dirname } from 'path';
 import * as React from 'react';
 import { useMemo } from 'react';
 import { type Command, type CommandBase, type CommandResultDisplay, getCommandName, type PromptCommand } from '../../commands.js';
@@ -40,9 +41,19 @@ function getSourceSubtitle(source: SkillSource, skills: SkillCommand[]): string 
     }).filter((n): n is string => n != null))];
     return servers.length > 0 ? servers.join(', ') : undefined;
   }
-  const skillsPath = getDisplayPath(getSkillsPath(source, 'skills'));
-  const hasCommandsSkills = skills.some(s => s.loadedFrom === 'commands_DEPRECATED');
-  return hasCommandsSkills ? `${skillsPath}, ${getDisplayPath(getSkillsPath(source, 'commands'))}` : skillsPath;
+  // Name the folders these skills were loaded from: one source can span
+  // several (~/.claude/skills and ~/.agents/skills are both user skills).
+  const skillDirs = new Set<string>();
+  for (const skill of skills) {
+    if (skill.loadedFrom === 'skills' && skill.skillRoot) {
+      skillDirs.add(getDisplayPath(dirname(skill.skillRoot)));
+    }
+  }
+  const dirs = skillDirs.size > 0 ? [...skillDirs].sort() : [getDisplayPath(getSkillsPath(source, 'skills'))];
+  if (skills.some(s => s.loadedFrom === 'commands_DEPRECATED')) {
+    dirs.push(getDisplayPath(getSkillsPath(source, 'commands')));
+  }
+  return dirs.join(', ');
 }
 export function SkillsMenu(t0) {
   const $ = _c(35);
@@ -101,7 +112,7 @@ export function SkillsMenu(t0) {
   if (skills.length === 0) {
     let t3;
     if ($[6] === Symbol.for("react.memo_cache_sentinel")) {
-      t3 = <Text dimColor={true}>Create skills in .claude/skills/ or ~/.claude/skills/</Text>;
+      t3 = <Text dimColor={true}>Create skills in .claude/skills/ or ~/.claude/skills/ (.agents/skills/ also works)</Text>;
       $[6] = t3;
     } else {
       t3 = $[6];

@@ -1,4 +1,10 @@
 import { getInitialSettings } from '../utils/settings/settings.js'
+import type { SettingsJson } from '../utils/settings/types.js'
+
+export type SpinnerVerbsSetting = SettingsJson['spinnerVerbs']
+
+// The one verb the spinner shows when spinner verbs are Off in /config.
+export const PLAIN_SPINNER_VERB = 'Working'
 
 export function getSpinnerVerbs(): string[] {
   const settings = getInitialSettings()
@@ -10,6 +16,57 @@ export function getSpinnerVerbs(): string[] {
     return config.verbs.length > 0 ? config.verbs : SPINNER_VERBS
   }
   return [...SPINNER_VERBS, ...config.verbs]
+}
+
+/**
+ * What a spinnerVerbs setting amounts to in /config. Off and Custom are
+ * stored as "replace" with a single verb, a shape every build can read.
+ * Anything else written by hand in settings.json is a list.
+ */
+export type SpinnerVerbsChoice =
+  | { kind: 'on' }
+  | { kind: 'off' }
+  | { kind: 'custom'; verb: string }
+  | { kind: 'list' }
+
+export function getSpinnerVerbsChoice(
+  config: SpinnerVerbsSetting,
+): SpinnerVerbsChoice {
+  // No verbs of your own, in either mode, leaves the built-in list.
+  if (!config || config.verbs.length === 0) return { kind: 'on' }
+  if (config.mode === 'replace' && config.verbs.length === 1) {
+    const verb = config.verbs[0]!
+    return verb === PLAIN_SPINNER_VERB
+      ? { kind: 'off' }
+      : { kind: 'custom', verb }
+  }
+  return { kind: 'list' }
+}
+
+/** The value /config shows for a spinnerVerbs setting. */
+export function describeSpinnerVerbs(config: SpinnerVerbsSetting): string {
+  const choice = getSpinnerVerbsChoice(config)
+  switch (choice.kind) {
+    case 'on':
+      return 'On'
+    case 'off':
+      return 'Off'
+    case 'custom':
+      return `Custom: ${choice.verb}`
+    case 'list':
+      return 'Custom list'
+  }
+}
+
+/**
+ * Tidies a verb typed in /config: one line, with no trailing dots, since the
+ * spinner adds its own "…". Returns '' when nothing usable is left.
+ */
+export function normalizeCustomSpinnerVerb(text: string): string {
+  return text
+    .replace(/\s+/g, ' ')
+    .replace(/[\s.…]+$/, '')
+    .trim()
 }
 
 // Spinner verbs for loading messages

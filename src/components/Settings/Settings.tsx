@@ -78,7 +78,7 @@ export function Settings(t0) {
   }
   let t5;
   if ($[8] !== contentHeight || $[9] !== context || $[10] !== onClose) {
-    t5 = <Tab key="config" title="Config"><Suspense fallback={null}><Config context={context} onClose={onClose} setTabsHidden={setTabsHidden} onIsSearchModeChange={setConfigOwnsEsc} contentHeight={contentHeight} /></Suspense></Tab>;
+    t5 = <Tab key="config" title="Config"><Suspense fallback={null}><Config context={context} onClose={onClose} setTabsHidden={setTabsHidden} onOwnsEscChange={setConfigOwnsEsc} contentHeight={contentHeight} /></Suspense></Tab>;
     $[8] = contentHeight;
     $[9] = context;
     $[10] = onClose;

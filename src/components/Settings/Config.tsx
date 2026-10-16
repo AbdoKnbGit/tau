@@ -30,6 +30,7 @@ import { Dialog } from '../design-system/Dialog.js';
 import { Select } from '../CustomSelect/index.js';
 import { OutputStylePicker } from '../OutputStylePicker.js';
 import { LanguagePicker } from '../LanguagePicker.js';
+import { SpinnerVerbsPicker } from '../SpinnerVerbsPicker.js';
 import { getExternalClaudeMdIncludes, getMemoryFiles, hasExternalClaudeMdIncludes } from 'src/utils/claudemd.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -41,6 +42,7 @@ import { isSupportedTerminal, hasAccessToIDEExtensionDiffFeature } from '../../u
 import { getInitialSettings, getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js';
 import { getUserMsgOptIn, setUserMsgOptIn } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from 'src/constants/outputStyles.js';
+import { describeSpinnerVerbs } from '../../constants/spinnerVerbs.js';
 import { isEnvTruthy, isRunningOnHomespace } from 'src/utils/envUtils.js';
 import type { LocalJSXCommandContext, CommandResultDisplay } from '../../commands.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';
@@ -58,7 +60,7 @@ type Props = {
   }) => void;
   context: LocalJSXCommandContext;
   setTabsHidden: (hidden: boolean) => void;
-  onIsSearchModeChange?: (inSearchMode: boolean) => void;
+  onOwnsEscChange?: (ownsEsc: boolean) => void;
   contentHeight?: number;
 };
 type SettingBase = {
@@ -85,12 +87,12 @@ type Setting = (SettingBase & {
   onChange(value: string): void;
   type: 'managedEnum';
 });
-type SubMenu = 'Theme' | 'Model' | 'TeammateModel' | 'ExternalIncludes' | 'OutputStyle' | 'ChannelDowngrade' | 'Language' | 'EnableAutoUpdates';
+type SubMenu = 'Theme' | 'Model' | 'TeammateModel' | 'ExternalIncludes' | 'OutputStyle' | 'ChannelDowngrade' | 'Language' | 'SpinnerVerbs' | 'EnableAutoUpdates';
 export function Config({
   onClose,
   context,
   setTabsHidden,
-  onIsSearchModeChange,
+  onOwnsEscChange,
   contentHeight
 }: Props): React.ReactNode {
   const {
@@ -192,13 +194,16 @@ export function Config({
     passthroughCtrlKeys: ['c', 'd']
   });
 
-  // Tell the parent when Config's own Esc handler is active so Settings cedes
-  // confirm:no. Only true when search mode owns the keyboard — not when the
-  // tab header is focused (then Settings must handle Esc-to-close).
-  const ownsEsc = isSearchMode && !headerFocused;
+  // Tell the parent Config handles Esc itself so Settings cedes confirm:no:
+  // search mode clears and leaves the search, the list undoes every change
+  // and closes, a submenu handles its own. Settings only takes Esc while the
+  // tab header is focused. Both active at once is a race the first-registered
+  // handler wins, and on the first /config of a session Config registers after
+  // Settings (it suspends on memory files), so Esc closed without undoing.
+  const ownsEsc = !headerFocused;
   React.useEffect(() => {
-    onIsSearchModeChange?.(ownsEsc);
-  }, [ownsEsc, onIsSearchModeChange]);
+    onOwnsEscChange?.(ownsEsc);
+  }, [ownsEsc, onOwnsEscChange]);
   const isConnectedToIde = hasAccessToIDEExtensionDiffFeature(context.options.mcpClients);
   const isFileCheckpointingAvailable = !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING);
   const memoryFiles = React.use(getMemoryFiles(true));
@@ -317,6 +322,12 @@ export function Config({
         enabled: spinnerTipsEnabled
       });
     }
+  }, {
+    id: 'spinnerVerbs',
+    label: 'Spinner verbs',
+    value: describeSpinnerVerbs(settingsData?.spinnerVerbs),
+    type: 'managedEnum' as const,
+    onChange: () => {} // handled by SpinnerVerbsPicker submenu
   }, {
     id: 'inlineImagesEnabled',
     label: 'Display images',
@@ -1271,6 +1282,10 @@ export function Config({
     if (settingsData?.autoUpdatesChannel !== initialSettingsData.current?.autoUpdatesChannel) {
       formattedChanges.push(`Set auto-update channel to ${chalk.bold(settingsData?.autoUpdatesChannel ?? 'latest')}`);
     }
+    const spinnerVerbsLabel = describeSpinnerVerbs(settingsData?.spinnerVerbs);
+    if (spinnerVerbsLabel !== describeSpinnerVerbs(initialSettingsData.current?.spinnerVerbs)) {
+      formattedChanges.push(`Set spinner verbs to ${chalk.bold(spinnerVerbsLabel)}`);
+    }
     if (formattedChanges.length > 0) {
       onClose(formattedChanges.join('\n'));
     } else {
@@ -1278,7 +1293,7 @@ export function Config({
         display: 'system'
       });
     }
-  }, [showSubmenu, changes, globalConfig, mainLoopModel, currentOutputStyle, currentLanguage, settingsData?.autoUpdatesChannel, settingsData?.lspEnabled, isFastModeEnabled() ? (settingsData as Record<string, unknown> | undefined)?.fastMode : undefined, onClose]);
+  }, [showSubmenu, changes, globalConfig, mainLoopModel, currentOutputStyle, currentLanguage, settingsData?.autoUpdatesChannel, settingsData?.lspEnabled, settingsData?.spinnerVerbs, isFastModeEnabled() ? (settingsData as Record<string, unknown> | undefined)?.fastMode : undefined, onClose]);
 
   // Restore all state stores to their mount-time snapshots. Changes are
   // applied to disk/AppState immediately on toggle, so "cancel" means
@@ -1300,6 +1315,8 @@ export function Config({
     updateSettingsForSource('localSettings', {
       spinnerTipsEnabled: il?.spinnerTipsEnabled,
       lspEnabled: il?.lspEnabled,
+      inlineImagesEnabled: il?.inlineImagesEnabled,
+      mermaidDiagrams: il?.mermaidDiagrams,
       prefersReducedMotion: il?.prefersReducedMotion,
       defaultView: il?.defaultView,
       outputStyle: il?.outputStyle
@@ -1313,6 +1330,7 @@ export function Config({
       autoUpdatesChannel: iu?.autoUpdatesChannel,
       minimumVersion: iu?.minimumVersion,
       language: iu?.language,
+      spinnerVerbs: iu?.spinnerVerbs,
       ...(feature('TRANSCRIPT_CLASSIFIER') ? {
         useAutoModeDuringPlan: (iu as {
           useAutoModeDuringPlan?: boolean;
@@ -1406,7 +1424,7 @@ export function Config({
       }
       return;
     }
-    if (setting_0.id === 'theme' || setting_0.id === 'model' || setting_0.id === 'teammateDefaultModel' || setting_0.id === 'showExternalIncludesDialog' || setting_0.id === 'outputStyle' || setting_0.id === 'language') {
+    if (setting_0.id === 'theme' || setting_0.id === 'model' || setting_0.id === 'teammateDefaultModel' || setting_0.id === 'showExternalIncludesDialog' || setting_0.id === 'outputStyle' || setting_0.id === 'language' || setting_0.id === 'spinnerVerbs') {
       // managedEnum items open a submenu — isDirty is set by the submenu's
       // completion callback, not here (submenu may be cancelled).
       switch (setting_0.id) {
@@ -1432,6 +1450,10 @@ export function Config({
           return;
         case 'language':
           setShowSubmenu('Language');
+          setTabsHidden(true);
+          return;
+        case 'spinnerVerbs':
+          setShowSubmenu('SpinnerVerbs');
           setTabsHidden(true);
           return;
       }
@@ -1691,6 +1713,32 @@ export function Config({
             <Byline>
               <KeyboardShortcutHint shortcut="Enter" action="confirm" />
               <ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="Esc" description="cancel" />
+            </Byline>
+          </Text>
+        </> : showSubmenu === 'SpinnerVerbs' ? <>
+          <SpinnerVerbsPicker initial={settingsData?.spinnerVerbs} onComplete={spinnerVerbs => {
+        setShowSubmenu(null);
+        setTabsHidden(false);
+
+        // Save to user settings so the choice applies in every project.
+        // undefined (On) deletes the key and brings back the built-in verbs.
+        const result = updateSettingsForSource('userSettings', {
+          spinnerVerbs
+        });
+        if (result.error) {
+          logError(result.error);
+          return;
+        }
+        isDirty.current = true;
+        setSettingsData(getInitialSettings());
+      }} onCancel={() => {
+        setShowSubmenu(null);
+        setTabsHidden(false);
+      }} />
+          <Text dimColor>
+            <Byline>
+              <KeyboardShortcutHint shortcut="Enter" action="confirm" />
+              <ConfigurableShortcutHint action="select:cancel" context="Select" fallback="Esc" description="cancel" />
             </Byline>
           </Text>
         </> : showSubmenu === 'EnableAutoUpdates' ? <Dialog title="Enable Auto-Updates" onCancel={() => {

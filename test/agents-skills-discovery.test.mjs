@@ -50,6 +50,7 @@ const inits = [
   'src/utils/sandbox/sandbox-adapter.ts',
   'src/tools/SkillTool/prompt.ts',
   'src/commands.ts',
+  'src/components/skills/SkillsMenu.tsx',
 ].map(path => {
   const match = source.match(
     new RegExp(`var (init_\\w+) = __esm\\(\\{\\s*"${path.replaceAll('.', '\\.')}"\\(\\)`),
@@ -64,7 +65,7 @@ export function __agentsSkills() {
     activateConditionalSkillsForPaths, getProjectDirsUpToHome,
     checkPathSafetyForAutoEdit, convertToSandboxRuntimeConfig, setAdditionalDirectoriesForClaudeMd,
     setAllowedSettingSources, setSessionPowerMode, getCommands, getSkillToolCommands,
-    formatCommandsWithinBudget };
+    formatCommandsWithinBudget, getSourceSubtitle };
 }
 `
 writeFileSync(harnessPath, source)
@@ -196,6 +197,34 @@ test('~/.agents/skills loads as a user skill', () => {
   assert.deepEqual(rows(inChild(root, { body: LOAD })), [
     ['delta', 'userSettings', 'skills', 'home/.agents/skills/delta'],
   ])
+})
+
+test('/skills labels each group with the folders its skills came from', () => {
+  // Folders as /skills shows them, with the throwaway root swapped out.
+  const LABELS = `async t => {
+    const skills = await t.getSkillDirCommands(process.cwd());
+    const label = source => {
+      const text = t.getSourceSubtitle(source, skills.filter(s => s.source === source));
+      return text.split(ROOT).join('<root>').split(sep).join('/');
+    };
+    return { user: label('userSettings'), project: label('projectSettings') };
+  }`
+
+  // Only ~/.agents/skills: the label used to name ~/.claude/skills anyway.
+  const agentsOnly = makeRoot({ 'home/.agents/skills/delta/SKILL.md': skill('user agents skill') })
+  assert.equal(inChild(agentsOnly, { body: LABELS }).user, '~/.agents/skills')
+
+  const both = makeRoot({
+    'config/skills/beta/SKILL.md': skill('user claude skill'),
+    'home/.agents/skills/delta/SKILL.md': skill('user agents skill'),
+    'repo/.claude/skills/alpha/SKILL.md': skill('project claude skill'),
+    'repo/.agents/skills/gamma/SKILL.md': skill('project agents skill'),
+    'repo/.claude/commands/legacy.md': 'Legacy command\n',
+  })
+  assert.deepEqual(inChild(both, { body: LABELS }), {
+    user: '<root>/config/skills, ~/.agents/skills',
+    project: '.agents/skills, .claude/skills, .claude/commands',
+  })
 })
 
 test('a name that is already taken keeps its .claude skill', () => {

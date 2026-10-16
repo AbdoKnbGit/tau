@@ -686,7 +686,7 @@ export const SettingsSchema = lazySchema(() =>
         })
         .optional()
         .describe(
-          'Customize spinner verbs. mode: "append" adds verbs to defaults, "replace" uses only your verbs.',
+          'Customize spinner verbs. mode: "append" adds verbs to defaults, "replace" uses only your verbs (the line after each turn then says "Worked"). Also set in /config under Spinner verbs.',
         ),
       spinnerTipsOverride: z
         .object({
