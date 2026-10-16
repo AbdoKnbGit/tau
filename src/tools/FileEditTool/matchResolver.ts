@@ -361,11 +361,42 @@ export function describeClosestMatch(
   fileContent: string,
   searchString: string,
 ): ClosestMatch | null {
-  const searchBody = searchString.endsWith('\n')
-    ? searchString.slice(0, -1)
-    : searchString
-  const searchLines = searchBody.split('\n').map(l => l.trim())
   const fileLines = fileContent.split('\n')
+  const searchLines = oldStringLines(searchString)
+  const best = findBestWindow(fileLines, searchLines)
+  if (!best) {
+    return null
+  }
+
+  const from = Math.max(0, best.start - CLOSEST_CONTEXT_LINES)
+  const to = Math.min(
+    fileLines.length,
+    best.start + searchLines.length + CLOSEST_CONTEXT_LINES,
+  )
+  let lines = fileLines.slice(from, to)
+  if (lines.length > MAX_SNIPPET_LINES) {
+    lines = lines.slice(0, MAX_SNIPPET_LINES)
+  }
+  return { lines, startLine: from + 1, score: best.score }
+}
+
+/** old_string as lines, without the one trailing newline a block ends with. */
+function oldStringLines(oldString: string): string[] {
+  return (oldString.endsWith('\n') ? oldString.slice(0, -1) : oldString).split(
+    '\n',
+  )
+}
+
+/**
+ * The line window most similar to `searchLines`: 0-based start and mean
+ * per-line similarity. Null when nothing clears MIN_CLOSEST_SCORE or the scan
+ * would be too large.
+ */
+function findBestWindow(
+  fileLines: string[],
+  rawSearchLines: string[],
+): { start: number; score: number } | null {
+  const searchLines = rawSearchLines.map(l => l.trim())
   if (
     searchLines.length === 0 ||
     searchLines.length > fileLines.length ||
@@ -396,20 +427,224 @@ export function describeClosestMatch(
       bestStart = s
     }
   }
-  if (bestScore < MIN_CLOSEST_SCORE) {
+  return bestScore < MIN_CLOSEST_SCORE
+    ? null
+    : { start: bestStart, score: bestScore }
+}
+
+export type OldStringMismatch = ClosestMatch & {
+  /** 1-based line where the most similar region starts. */
+  regionStart: number
+  /** Leading old_string lines found unchanged there. */
+  matchedLines: number
+  /** First line where old_string and that region part, when they do. */
+  difference?: {
+    /** 1-based file line. */
+    line: number
+    /** That file line, or undefined when the file ends first. */
+    file: string | undefined
+    oldString: string
+    whitespaceOnly: boolean
+  }
+}
+
+// When old_string parts from the file past the first ~30 shown lines, the
+// snippet starts this many lines above that line instead of at the region.
+const DIFFERENCE_CONTEXT_BEFORE = 5
+const DIFFERENCE_CONTEXT_AFTER = 10
+// Exact lines locate a region only when they carry this much text: a lone
+// `}` or a blank line matches almost anywhere.
+const MIN_ANCHOR_CHARS = 16
+
+/**
+ * Where a failed old_string stops matching the file, with the file lines to
+ * show centered on that line. A long old_string usually fails on one
+ * remembered line far below the region's top, which a snippet of the region's
+ * first lines never reaches. The region is the one sharing the most exact
+ * text with old_string, else the most similar one (near-identical rows such
+ * as `row 4` and `row 64` would fool similarity alone). Null when no region is
+ * similar enough.
+ */
+export function describeOldStringMismatch(
+  fileContent: string,
+  oldString: string,
+): OldStringMismatch | null {
+  const fileLines = fileContent.split('\n')
+  const searchLines = oldStringLines(oldString)
+  const last = searchLines.length - 1
+  // old_string may start and end mid-line, so its first line only has to end
+  // its file line, its last line only has to start one.
+  const lineMatches = (start: number, i: number): boolean => {
+    const fileLine = fileLines[start + i]
+    const line = searchLines[i]!
+    if (fileLine === undefined) return false
+    if (last === 0) return fileLine.includes(line)
+    if (i === 0) return fileLine.endsWith(line)
+    if (i === last) return fileLine.startsWith(line)
+    return fileLine === line
+  }
+  const best =
+    findAnchoredWindow(fileLines, searchLines, lineMatches) ??
+    findBestWindow(fileLines, searchLines)
+  if (!best) {
     return null
   }
 
-  const from = Math.max(0, bestStart - CLOSEST_CONTEXT_LINES)
-  const to = Math.min(
-    fileLines.length,
-    bestStart + windowLines + CLOSEST_CONTEXT_LINES,
-  )
-  let lines = fileLines.slice(from, to)
-  if (lines.length > MAX_SNIPPET_LINES) {
-    lines = lines.slice(0, MAX_SNIPPET_LINES)
+  let matched = 0
+  while (matched <= last && lineMatches(best.start, matched)) {
+    matched++
   }
-  return { lines, startLine: from + 1, score: bestScore }
+
+  const regionFrom = Math.max(0, best.start - CLOSEST_CONTEXT_LINES)
+  const regionTo = Math.min(
+    fileLines.length,
+    best.start + searchLines.length + CLOSEST_CONTEXT_LINES,
+  )
+  const differs = matched <= last
+  const diffIndex = best.start + matched
+  const from =
+    differs &&
+    diffIndex - regionFrom >= MAX_SNIPPET_LINES - DIFFERENCE_CONTEXT_AFTER
+      ? Math.max(0, diffIndex - DIFFERENCE_CONTEXT_BEFORE)
+      : regionFrom
+  const to = Math.min(regionTo, from + MAX_SNIPPET_LINES)
+  const fileLine = fileLines[diffIndex]
+  const oldLine = searchLines[matched]
+  return {
+    lines: fileLines.slice(from, to),
+    startLine: from + 1,
+    score: best.score,
+    regionStart: best.start + 1,
+    matchedLines: matched,
+    ...(differs && {
+      difference: {
+        line: diffIndex + 1,
+        file: fileLine,
+        oldString: oldLine!,
+        whitespaceOnly:
+          fileLine !== undefined &&
+          fileLine.replace(/\s+/g, '') === oldLine!.replace(/\s+/g, ''),
+      },
+    }),
+  }
+}
+
+/**
+ * The window whose lines match old_string's exactly (by lineMatches) over the
+ * most text, or null when no window reaches MIN_ANCHOR_CHARS. Score is the
+ * share of old_string lines matched.
+ */
+function findAnchoredWindow(
+  fileLines: string[],
+  searchLines: string[],
+  lineMatches: (start: number, i: number) => boolean,
+): { start: number; score: number } | null {
+  const k = searchLines.length
+  if (k > fileLines.length || k * fileLines.length > MAX_CLOSEST_COMPARISONS) {
+    return null
+  }
+  const weight = searchLines.map(line => line.trim().length)
+  let best: { start: number; chars: number; exact: number } | null = null
+  for (let s = 0; s + k <= fileLines.length; s++) {
+    let chars = 0
+    let exact = 0
+    for (let i = 0; i < k; i++) {
+      if (lineMatches(s, i)) {
+        chars += weight[i]!
+        exact++
+      }
+    }
+    if (chars >= MIN_ANCHOR_CHARS && (!best || chars > best.chars)) {
+      best = { start: s, chars, exact }
+    }
+  }
+  return best ? { start: best.start, score: best.exact / k } : null
+}
+
+/**
+ * How an edit moved the lines below it: the first old line after the last
+ * change, and how far it and every later line moved. Null when the line
+ * count did not change. Hunk lines carry diff prefixes (' ', '-', '+').
+ */
+export function lineShiftAfterEdit(
+  hunks: ReadonlyArray<{ oldStart: number; lines: readonly string[] }>,
+): { firstOldLine: number; delta: number } | null {
+  let delta = 0
+  let lastChangedOld = 0
+  for (const hunk of hunks) {
+    let oldLine = hunk.oldStart
+    for (const line of hunk.lines) {
+      if (line.startsWith('-')) {
+        delta--
+        lastChangedOld = oldLine
+        oldLine++
+      } else if (line.startsWith('+')) {
+        delta++
+        lastChangedOld = oldLine - 1
+      } else if (line.startsWith(' ')) {
+        oldLine++
+      }
+    }
+  }
+  return delta === 0
+    ? null
+    : { firstOldLine: Math.max(1, lastChangedOld + 1), delta }
+}
+
+const OLD_STRING_ECHO_CHARS = 300
+const OLD_STRING_ECHO_LINE_CHARS = 120
+
+/**
+ * old_string as an Edit error quotes it back: whole when short, else its first
+ * and last lines. The model's own call already holds the full text, so echoing
+ * a long old_string only costs tokens.
+ */
+export function previewOldString(oldString: string): string {
+  if (oldString.length <= OLD_STRING_ECHO_CHARS) {
+    return oldString
+  }
+  const clip = (line: string) =>
+    line.length > OLD_STRING_ECHO_LINE_CHARS
+      ? `${line.slice(0, OLD_STRING_ECHO_LINE_CHARS)}…`
+      : line
+  const lines = oldStringLines(oldString)
+  if (lines.length < 3) {
+    return `${clip(oldString)} (${oldString.length} characters)`
+  }
+  return `${clip(lines[0]!)}\n… ${lines.length - 2} more lines …\n${clip(lines[lines.length - 1]!)}`
+}
+
+/**
+ * 1-based lines where the first `max` non-overlapping occurrences of `needle`
+ * start, counted the way String.split counts matches.
+ */
+export function occurrenceLines(
+  fileContent: string,
+  needle: string,
+  max: number,
+): number[] {
+  const lines: number[] = []
+  if (needle === '') {
+    return lines
+  }
+  let line = 1
+  let counted = 0
+  for (
+    let at = fileContent.indexOf(needle);
+    at !== -1 && lines.length < max;
+    at = fileContent.indexOf(needle, at + needle.length)
+  ) {
+    for (
+      let nl = fileContent.indexOf('\n', counted);
+      nl !== -1 && nl < at;
+      nl = fileContent.indexOf('\n', nl + 1)
+    ) {
+      line++
+    }
+    counted = at
+    lines.push(line)
+  }
+  return lines
 }
 
 function bigrams(s: string): Map<string, number> {

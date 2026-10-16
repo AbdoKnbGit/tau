@@ -6,6 +6,7 @@ import {
   MAX_CELL_TIMEOUT_SEC,
   MAX_RESULT_CHARS,
   MAX_WRITTEN_FILE_LINES,
+  WRITTEN_FILES_ADVICE,
 } from './constants.js'
 
 /**
@@ -147,21 +148,30 @@ export function summarizeBridgeCalls(calls: readonly BridgeCallRecord[]): string
 }
 
 /**
- * Files the cell changed with plain Python rather than through a file tool.
- * The model sees what the cell touched, and that an edit tool will want those
- * files read again first: its read-before-edit check would otherwise fail on
- * the next edit. Paths under `cwd` print relative to it.
+ * Files the cell changed with plain Python rather than through a file tool,
+ * each with what changed by line number when known (`changes`, from
+ * writeSummary.ts). Edit compares the lines the model read with the file, so
+ * earlier reads of unchanged lines stay usable; only a whole-file Write needs
+ * a fresh read. Paths under `cwd` print relative to it.
  */
-export function summarizeWrittenFiles(paths: readonly string[], cwd: string, skipped: readonly string[] = []): string {
+export function summarizeWrittenFiles(
+  paths: readonly string[],
+  cwd: string,
+  skipped: readonly string[] = [],
+  changes: ReadonlyMap<string, string> = new Map(),
+): string {
   if (paths.length === 0) return ''
   const show = (path: string): string => {
     const rel = relative(cwd, path)
     return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : path
   }
-  const lines = paths.slice(0, MAX_WRITTEN_FILE_LINES).map(path => `  ${show(path)}`)
+  const lines = paths.slice(0, MAX_WRITTEN_FILE_LINES).map(path => {
+    const change = changes.get(path)
+    return `  ${show(path)}${change ? ` — ${change}` : ''}`
+  })
   const more = paths.length - MAX_WRITTEN_FILE_LINES
   if (more > 0) lines.push(`  and ${more} more`)
-  let note = `\n[files written by this cell]\n${lines.join('\n')}\nRead them again before editing them with a file tool.`
+  let note = `\n[files written by this cell]\n${lines.join('\n')}\n${WRITTEN_FILES_ADVICE}`
   if (skipped.length > 0) {
     const rest = skipped.length - MAX_WRITTEN_FILE_LINES
     note += `\nNot backed up for /rewind (too large, or too many new files): ${skipped.slice(0, MAX_WRITTEN_FILE_LINES).map(show).join(', ')}${rest > 0 ? `, and ${rest} more` : ''}`

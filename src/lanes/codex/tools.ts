@@ -115,7 +115,7 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
   {
     nativeName: 'read_file',
     implId: 'Read',
-    nativeDescription: 'Read the contents of a file.',
+    nativeDescription: 'Read the contents of a file. Read only the offset/limit range you need; in a large file, find it with search_code first.',
     nativeSchema: {
       type: 'object',
       properties: {
@@ -125,7 +125,7 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
         },
         offset: {
           type: 'number',
-          description: 'Line number to start reading from (0-based).',
+          description: '1-based line number to start reading from.',
         },
         limit: {
           type: 'number',
@@ -135,6 +135,10 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
           type: 'boolean',
           description: 'Include inline source maps verbatim instead of markers; bypass automatic skeletons.',
         },
+        skeleton: {
+          type: 'boolean',
+          description: 'false returns a large file in full instead of its automatic structure view; true asks for the structure view.',
+        },
       },
       required: ['file_path'],
     },
@@ -143,6 +147,7 @@ export const CODEX_TOOL_REGISTRY: LaneToolRegistration[] = [
       if (native.offset != null) out.offset = native.offset
       if (native.limit != null) out.limit = native.limit
       if (native.include_source_maps != null) out.include_source_maps = native.include_source_maps
+      if (native.skeleton != null) out.skeleton = native.skeleton
       return out
     },
     adaptOutput(output) {

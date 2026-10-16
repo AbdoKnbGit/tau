@@ -53,6 +53,9 @@ export const MAX_RESULT_CHARS = 30_000
 export const MAX_BRIDGE_LINES = 12
 /** Files a cell wrote with plain Python, listed by name before a count. */
 export const MAX_WRITTEN_FILE_LINES = 12
+/** Closes that list: what still needs a read after a cell's writes. */
+export const WRITTEN_FILES_ADVICE =
+  'Earlier reads stay valid for unchanged lines, and Edit shows any lines that changed; read a file again before rewriting it whole with Write.'
 
 /**
  * Tools the kernel may NOT call through `tool.<name>(...)`.

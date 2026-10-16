@@ -1,6 +1,18 @@
 import { LRUCache } from 'lru-cache'
 import { normalize } from 'path'
 
+/**
+ * Lines a Read result showed the model: `text` exactly as shown (source-map
+ * markers included), lines `start`..`end` (1-based), in the tool_result of
+ * `toolUseId`. Lets a later Read of the same unchanged lines point back to it.
+ */
+export type SeenRange = {
+  readonly start: number
+  readonly end: number
+  readonly text: string
+  readonly toolUseId: string
+}
+
 export type FileState = {
   content: string
   timestamp: number
@@ -18,6 +30,31 @@ export type FileState = {
   sourceMapsOmitted?: boolean
   /** Last Read's view mode, so a raw request never dedups against a marker. */
   sourceMapsIncluded?: boolean
+  /** Model-visible Read results of this file (see FileReadTool/rangeDedup.ts). */
+  seenRanges?: readonly SeenRange[]
+  /** Lines the last Read answered with a range note; repeating it sends them. */
+  lastRangeStub?: { readonly start: number; readonly end: number }
+  /** Stored by a Read whose result the model did not see (readResultHidden),
+   *  so no dedup note may point back to it. */
+  hiddenRead?: true
+}
+
+/**
+ * Whether the text a read state holds is still the file's text at the same
+ * lines, so a newer mtime alone (antivirus, sync tools, a touch, or a change
+ * elsewhere in the file) does not make that read stale. `current` is the
+ * LF-normalized file; a leading BOM is ignored for Read states, as Read
+ * ignores it. States without a range keep the exact whole-content rule.
+ */
+export function readStillMatchesFile(read: FileState, current: string): boolean {
+  if (read.offset === undefined && read.limit === undefined) {
+    return current === read.content
+  }
+  const text = current.charCodeAt(0) === 0xfeff ? current.slice(1) : current
+  const lines = text.split('\n')
+  const start = Math.max(0, (read.offset ?? 1) - 1)
+  const end = read.limit === undefined ? lines.length : start + read.limit
+  return lines.slice(start, end).join('\n') === read.content
 }
 
 // Default max entries for read file state caches

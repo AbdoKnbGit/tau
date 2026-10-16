@@ -19,6 +19,7 @@ import {
   EVAL_BRIDGE_BLOCKED_TOOLS,
   EVAL_TOOL_NAME,
   MAX_RESULT_CHARS,
+  WRITTEN_FILES_ADVICE,
 } from './constants.js'
 import {
   clampOutput,
@@ -390,8 +391,22 @@ test('files a cell wrote are listed relative to the folder', () => {
   assert(summary.startsWith('\n[files written by this cell]\n'), summary)
   assert(summary.includes(`  README.md\n  ${join('docs', 'faq.md')}\n`), summary)
   assert(summary.includes(`  ${join('/elsewhere', 'notes.md')}`), 'an outside path must stay absolute')
-  assert(summary.endsWith('Read them again before editing them with a file tool.'), summary)
+  assert(summary.endsWith(WRITTEN_FILES_ADVICE), summary)
   assert(summarizeWrittenFiles([], cwd) === '', 'no writes produced a section')
+})
+
+test('each written file carries what changed when it is known', () => {
+  const cwd = join('/work', 'site')
+  const page = join(cwd, 'index.html')
+  const data = join(cwd, 'data.bin')
+  const summary = summarizeWrittenFiles(
+    [page, data],
+    cwd,
+    [],
+    new Map([[page, 'changed lines 120-140; lines below moved down 4 (old line 137 is now 141)']]),
+  )
+  assert(summary.includes('  index.html — changed lines 120-140; lines below moved down 4 (old line 137 is now 141)\n'), summary)
+  assert(summary.includes('  data.bin\n'), 'a file without details is listed plainly')
 })
 
 test('a long list of written files is capped', () => {
@@ -406,7 +421,7 @@ test('files left out of /rewind are named', () => {
   const cwd = join('/work', 'ml')
   const written = [join(cwd, 'train.py'), join(cwd, 'model.pt')]
   const summary = summarizeWrittenFiles(written, cwd, [join(cwd, 'model.pt')])
-  assert(summary.includes('Read them again before editing them with a file tool.\n'), summary)
+  assert(summary.includes(`${WRITTEN_FILES_ADVICE}\n`), summary)
   assert(summary.endsWith('Not backed up for /rewind (too large, or too many new files): model.pt'), summary)
   const many = Array.from({ length: 15 }, (_, i) => join(cwd, 'out', `s${i}.json`))
   assert(summarizeWrittenFiles(many, cwd, many).endsWith(', and 3 more'), 'a long skipped list must be capped')

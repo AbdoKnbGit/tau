@@ -17,7 +17,7 @@ import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentT
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
-  FILE_UNCHANGED_STUB,
+  isFileUnchangedStub,
 } from '../../tools/FileReadTool/prompt.js'
 import { ToolSearchTool } from '../../tools/ToolSearchTool/ToolSearchTool.js'
 import type { AgentId } from '../../types/ids.js'
@@ -1746,7 +1746,7 @@ function collectReadToolFilePaths(messages: Message[]): Set<string> {
       if (
         block.type === 'tool_result' &&
         typeof block.content === 'string' &&
-        block.content.startsWith(FILE_UNCHANGED_STUB)
+        isFileUnchangedStub(block.content)
       ) {
         stubIds.add(block.tool_use_id)
       }

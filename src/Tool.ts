@@ -290,6 +290,11 @@ export type ToolUseContext = {
     toolInputSummary?: string | null,
   ) => (request: PromptRequest) => Promise<PromptResponse>
   toolUseId?: string
+  /** The Read result goes to code (the Eval tool bridge) or to a summary the
+   *  model never sees in full (changed-file notices), not to the model as this
+   *  call's tool_result. Such a Read always returns the file's text and is
+   *  never pointed back to by a later Read's dedup note. */
+  readResultHidden?: boolean
   criticalSystemReminder_EXPERIMENTAL?: string
   /** When true, preserve toolUseResult on messages even for subagents.
    * Used by in-process teammates whose transcripts are viewable by the user. */

@@ -13,7 +13,7 @@ import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
 import type { Input as FileReadInput } from '../tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
-  FILE_UNCHANGED_STUB,
+  isFileUnchangedStub,
 } from '../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import type { Message } from '../types/message.js'
@@ -425,7 +425,7 @@ export function extractReadFilesFromMessages(
             // Dedup stubs contain no file content — the earlier real Read
             // already cached it. Chronological last-wins would otherwise
             // overwrite the real entry with stub text.
-            !content.content.startsWith(FILE_UNCHANGED_STUB)
+            !isFileUnchangedStub(content.content)
           ) {
             // Remove system-reminder blocks from the content
             const processedContent = content.content.replace(

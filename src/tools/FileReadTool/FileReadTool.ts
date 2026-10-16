@@ -100,6 +100,7 @@ import {
   getAutoSkeletonMinBytes,
   isAutoSkeletonEnabled,
   isSkeletonSupportedExt,
+  shouldReadWholeInstead,
 } from './skeleton.js'
 import {
   DESCRIPTION,
@@ -108,8 +109,10 @@ import {
   LINE_FORMAT_INSTRUCTION,
   OFFSET_INSTRUCTION_DEFAULT,
   OFFSET_INSTRUCTION_TARGETED,
+  rangeUnchangedStub,
   renderPromptTemplate,
 } from './prompt.js'
+import { findUnchangedSeenRange, withSeenRange } from './rangeDedup.js'
 import {
   getToolUseSummary,
   renderToolResultMessage,
@@ -388,6 +391,15 @@ const outputSchema = lazySchema(() => {
       type: z.literal('file_unchanged'),
       file: z.object({
         filePath: z.string().describe('The path to the file'),
+        lines: z
+          .object({
+            start: z.number(),
+            end: z.number(),
+            seenStart: z.number(),
+            seenEnd: z.number(),
+          })
+          .optional()
+          .describe('Requested lines, and the earlier read that showed them'),
       }),
     }),
     z.object({
@@ -414,6 +426,14 @@ const outputSchema = lazySchema(() => {
           .describe(
             'True when the skeleton was returned automatically for a large file rather than explicitly requested',
           ),
+        condensedRegions: z
+          .number()
+          .optional()
+          .describe('Runs of plain code also folded so the view fits the read limit'),
+        condensedLines: z
+          .number()
+          .optional()
+          .describe('Lines in those folded runs'),
       }),
     }),
   ])
@@ -437,9 +457,12 @@ export const FileReadTool = buildTool({
     const maxSizeInstruction = limits.includeMaxSizeInPrompt
       ? `. Files larger than ${formatFileSize(limits.maxSizeBytes)} will return an error; use offset and limit for larger files`
       : ''
-    const offsetInstruction = limits.targetedRangeNudge
-      ? OFFSET_INSTRUCTION_TARGETED
-      : OFFSET_INSTRUCTION_DEFAULT
+    // Targeted by default: whole-file reads of large files are the costliest
+    // Read habit. The override can still switch the old wording back on.
+    const offsetInstruction =
+      limits.targetedRangeNudge === false
+        ? OFFSET_INSTRUCTION_DEFAULT
+        : OFFSET_INSTRUCTION_TARGETED
     return renderPromptTemplate(
       pickLineFormatInstruction(),
       maxSizeInstruction,
@@ -692,13 +715,16 @@ export const FileReadTool = buildTool({
       'tengu_read_dedup_killswitch',
       false,
     )
+    // A Read whose result goes to code (the Eval bridge) or into a summary
+    // must return the text itself, never a note pointing elsewhere.
+    const readHidden = context.readResultHidden === true
     // Skeleton reads never dedup: they are cheap to recompute and their
     // output shape differs from the full-content read the dedup stub
     // would point the model back to. (Auto-skeleton reads don't need a
     // guard here: a prior skeleton stores isPartialView: true with
     // offset: undefined, which the conditions below already reject.)
     const existingState =
-      dedupKillswitch || skeleton === true
+      dedupKillswitch || readHidden || skeleton === true
         ? undefined
         : readFileState.get(fullFilePath)
     // Only dedup entries that came from a prior Read (offset is always set
@@ -708,6 +734,11 @@ export const FileReadTool = buildTool({
     if (
       existingState &&
       !existingState.isPartialView &&
+      // The model never saw a hidden read's text, so it cannot refer to it.
+      !existingState.hiddenRead &&
+      // Right after a range note, repeating the Read must send the lines
+      // (rangeDedup.ts), so this stub does not answer it either.
+      !existingState.lastRangeStub &&
       (existingState.sourceMapsIncluded ?? false) === include_source_maps &&
       existingState.offset !== undefined
     ) {
@@ -733,6 +764,15 @@ export const FileReadTool = buildTool({
         }
       }
     }
+
+    // Range dedup only for Reads whose result reaches the model as this
+    // tool_result. Internal reads (changed-file notices, @-mentions, memory)
+    // pass no parent message, and bridged ones are hidden.
+    const rangeDedup =
+      !dedupKillswitch &&
+      !readHidden &&
+      parentMessage !== undefined &&
+      context.toolUseId !== undefined
 
     // Discover skills from this file's path (fire-and-forget, non-blocking)
     // Skip in simple mode - no skills available
@@ -795,6 +835,8 @@ export const FileReadTool = buildTool({
         parentMessage?.message.id,
         skeletonMode,
         include_source_maps,
+        rangeDedup,
+        readHidden,
       )
       return markPagesIgnored(result)
     } catch (error) {
@@ -821,6 +863,8 @@ export const FileReadTool = buildTool({
               parentMessage?.message.id,
               skeletonMode,
               include_source_maps,
+              rangeDedup,
+              readHidden,
             )
             return markPagesIgnored(result)
           } catch (altError) {
@@ -883,19 +927,25 @@ export const FileReadTool = buildTool({
           tool_use_id: toolUseID,
           type: 'tool_result',
           content:
-            FILE_UNCHANGED_STUB +
+            (data.file.lines
+              ? rangeUnchangedStub(data.file.lines)
+              : FILE_UNCHANGED_STUB) +
             (pagesIgnoredResults.has(data) ? PAGES_IGNORED_NUDGE : ''),
         }
       case 'skeleton': {
         // Built from parts: a skeleton may elide bodies, truncate overlong
         // lines, or both, and claiming "0 bodies elided" reads like a failure.
-        const { elidedRegions, elidedLines, totalLines, truncatedLines, truncatedChars, auto } = data.file
+        const { elidedRegions, elidedLines, totalLines, truncatedLines, truncatedChars, auto, condensedRegions } = data.file
         const parts = [
           auto
             ? 'Auto-skeleton view: this file is large, so this Read returned its structure instead of full content.'
             : 'Skeleton view:',
         ]
-        if (elidedRegions > 0) {
+        if (condensedRegions) {
+          parts.push(
+            `${elidedRegions} regions elided (${elidedLines} of ${totalLines} lines), including ${condensedRegions} long ${condensedRegions === 1 ? 'run' : 'runs'} of plain code folded so this view fits the read limit; each ⋮ marker shows the exact Read offset/limit to expand it.`,
+          )
+        } else if (elidedRegions > 0) {
           parts.push(
             `${elidedRegions} function ${elidedRegions === 1 ? 'body' : 'bodies'} elided (${elidedLines} of ${totalLines} lines); each ⋮ marker shows the exact Read offset/limit to expand that body.`,
           )
@@ -1083,6 +1133,9 @@ function createImageResponse(
 /**
  * Inner implementation of call, separated to allow ENOENT handling in the outer call.
  */
+/** Share of the read limit an outline aims for when it has to fold to fit. */
+const SKELETON_FIT_MARGIN = 0.9
+
 async function callInner(
   file_path: string,
   fullFilePath: string,
@@ -1098,6 +1151,8 @@ async function callInner(
   messageId: string | undefined,
   skeletonMode: SkeletonMode = 'off',
   includeSourceMaps = false,
+  rangeDedup = false,
+  readHidden = false,
 ): Promise<{
   data: Output
   newMessages?: ReturnType<typeof createUserMessage>[]
@@ -1128,6 +1183,7 @@ async function callInner(
       timestamp: Math.floor(stats.mtimeMs),
       offset,
       limit,
+      ...(readHidden ? { hiddenRead: true as const } : {}),
     })
     recordFileRead(fullFilePath, context.agentId)
     context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
@@ -1437,23 +1493,46 @@ async function callInner(
       skeletonSizeBytes,
       context.abortController.signal,
     )
-    const skeletonResult = await buildSkeleton(fullRead.content, ext, (c, s) =>
-      addLineNumbers({ content: c, startLine: s }),
+    // An outline over the read limit folds its longest plain-code runs to
+    // fit (cheap mode's lower limit included), so the model still gets an
+    // outline rather than an error. The margin leaves room for the exact
+    // count validateContentTokens takes.
+    const skeletonResult = await buildSkeleton(
+      fullRead.content,
+      ext,
+      (c, s) => addLineNumbers({ content: c, startLine: s }),
+      formatted =>
+        roughTokenCountEstimationForFileType(formatted, ext) <=
+        maxTokens * SKELETON_FIT_MARGIN,
     )
-    if (skeletonResult) {
+    // Auto mode skips a thin outline (one body holds most of the file) when
+    // the whole file is cheap: the model would open that body next anyway.
+    const readWhole =
+      skeletonResult !== null &&
+      skeletonMode === 'auto' &&
+      shouldReadWholeInstead(
+        skeletonResult,
+        roughTokenCountEstimationForFileType(fullRead.content, ext),
+        maxTokens,
+      )
+    if (skeletonResult && !readWhole) {
       // Always skeletonRequested=true here: this content IS a skeleton, so a
       // token overflow must not tell the model to "try skeleton" again.
       await validateContentTokens(skeletonResult.formatted, ext, maxTokens, true)
 
       // Partial view: store RAW disk content for diffing, and flag it so
-      // Edit/Write demand a real full-content Read before mutating.
+      // Edit/Write demand a real full-content Read before mutating. Earlier
+      // Read results stay in the conversation, so their ranges are kept.
+      const previous = readFileState.get(fullFilePath)
       readFileState.set(fullFilePath, {
         content: fullRead.content,
         timestamp: Math.floor(fullRead.mtimeMs),
         offset: undefined,
         limit: undefined,
         isPartialView: true,
-        ...(readFileState.get(fullFilePath)?.sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
+        ...(previous?.sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
+        ...(previous?.seenRanges ? { seenRanges: previous.seenRanges } : {}),
+        ...(readHidden ? { hiddenRead: true as const } : {}),
       })
       recordFileRead(fullFilePath, context.agentId)
       context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
@@ -1492,16 +1571,24 @@ async function callInner(
             // Set only for auto mode so explicit-skeleton results stay
             // byte-identical to their pre-auto-policy rendering.
             ...(skeletonMode === 'auto' ? { auto: true } : {}),
+            ...(skeletonResult.condensedRegions
+              ? {
+                  condensedRegions: skeletonResult.condensedRegions,
+                  condensedLines: skeletonResult.condensedLines,
+                }
+              : {}),
           },
         },
       }
     }
     // Fall through to a normal read below (unsupported language, parse
-    // failure, or nothing long enough to elide).
+    // failure, nothing long enough to elide, or a thin outline skipped).
   }
 
   // --- Text file (single async read via readFileInRange) ---
   const lineOffset = offset === 0 ? 0 : offset - 1
+  // offset 0 and 1 both read from the first line, so both number from 1.
+  const firstLine = lineOffset + 1
   const { content, fullContent, lineCount, totalLines, totalBytes, readBytes, mtimeMs } =
     await readFileInRange(
       resolvedFilePath,
@@ -1519,16 +1606,65 @@ async function callInner(
     : await inlineSourceMapView(content, fullContent, ext, lineOffset)
   context.abortController.signal.throwIfAborted()
 
+  const previous = readFileState.get(fullFilePath)
+  const sourceMapsOmitted = view.omitted || (
+    previous?.sourceMapsOmitted === true &&
+    !(lineOffset === 0 && lineCount === totalLines)
+  )
+
+  // Lines an earlier Read result in this conversation already shows unchanged
+  // are named instead of sent again (rangeDedup.ts). The read state is set
+  // exactly as sending them would set it, so Edit treats both the same.
+  const seen =
+    rangeDedup && skeletonMode === 'off'
+      ? findUnchangedSeenRange(previous, firstLine, view.content, context.messages)
+      : undefined
+  if (seen) {
+    const lines = {
+      start: firstLine,
+      end: firstLine + lineCount - 1,
+      seenStart: seen.start,
+      seenEnd: seen.end,
+    }
+    readFileState.set(fullFilePath, {
+      content,
+      timestamp: Math.floor(mtimeMs),
+      offset,
+      limit,
+      sourceMapsIncluded: includeSourceMaps,
+      ...(sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
+      seenRanges: previous?.seenRanges,
+      lastRangeStub: { start: lines.start, end: lines.end },
+    })
+    recordFileRead(fullFilePath, context.agentId)
+    const analyticsExt = getFileExtensionForAnalytics(fullFilePath)
+    logEvent('tengu_file_read_dedup', {
+      ...(analyticsExt !== undefined && { ext: analyticsExt }),
+      range: true,
+    })
+    return {
+      data: {
+        type: 'file_unchanged' as const,
+        file: { filePath: file_path, lines },
+      },
+    }
+  }
+
   // Pass the requested skeleton flag: when skeleton was asked for (explicit
   // or auto) but produced nothing (no elidable body / unsupported), we fell
   // through to this full read. If it overflows, the error must not loop the
   // model back to skeleton.
   await validateContentTokens(view.content, ext, maxTokens, skeletonMode !== 'off')
 
-  const sourceMapsOmitted = view.omitted || (
-    readFileState.get(fullFilePath)?.sourceMapsOmitted === true &&
-    !(lineOffset === 0 && lineCount === totalLines)
-  )
+  const seenRanges =
+    rangeDedup && context.toolUseId !== undefined
+      ? withSeenRange(previous?.seenRanges, {
+          start: firstLine,
+          end: firstLine + lineCount - 1,
+          text: view.content,
+          toolUseId: context.toolUseId,
+        })
+      : previous?.seenRanges
   readFileState.set(fullFilePath, {
     content,
     timestamp: Math.floor(mtimeMs),
@@ -1536,6 +1672,8 @@ async function callInner(
     limit,
     sourceMapsIncluded: includeSourceMaps,
     ...(sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
+    ...(seenRanges ? { seenRanges } : {}),
+    ...(readHidden ? { hiddenRead: true as const } : {}),
   })
   recordFileRead(fullFilePath, context.agentId)
   context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
@@ -1552,7 +1690,7 @@ async function callInner(
       filePath: file_path,
       content: view.content,
       numLines: lineCount,
-      startLine: offset,
+      startLine: firstLine,
       totalLines,
     },
   }

@@ -7,7 +7,11 @@
 import {
   capEditResultSnippet,
   describeClosestMatch,
+  describeOldStringMismatch,
   isEditLikelyAlreadyApplied,
+  lineShiftAfterEdit,
+  occurrenceLines,
+  previewOldString,
   resolveFlexibleMatch,
   shouldTreatEditAsAlreadyApplied,
 } from './matchResolver.js'
@@ -311,6 +315,107 @@ test('multi-line windows score across all lines', () => {
     c!.lines.join('\n').includes('function handle(req, res) {'),
     'window should cover the function',
   )
+})
+
+console.log('describeOldStringMismatch:')
+
+function numberedFile(count: number): string[] {
+  const lines: string[] = []
+  for (let i = 1; i <= count; i++) lines.push(`  const value${i} = compute(${i}, "row ${i}");`)
+  return lines
+}
+
+test('a long old_string with one remembered line names that line and shows it', () => {
+  const lines = numberedFile(400)
+  const file = lines.join('\n')
+  // Lines 101-160, with line 150 rewritten from memory.
+  const old = lines.slice(100, 160)
+  old[49] = '  const value150 = recompute(150);'
+  const m = describeOldStringMismatch(file, old.join('\n'))
+  assert(m !== null, 'expected a mismatch')
+  assertEq(m!.regionStart, 101, 'region starts where old_string does')
+  assertEq(m!.matchedLines, 49, 'lines before the remembered one match')
+  assertEq(m!.difference?.line, 150, 'first differing file line')
+  assertEq(m!.difference?.file, lines[149], 'the file line at the difference')
+  assertEq(m!.difference?.whitespaceOnly, false, 'a real change, not whitespace')
+  const shownTo = m!.startLine + m!.lines.length - 1
+  assert(m!.startLine <= 150 && shownTo >= 150, `window must show line 150, got ${m!.startLine}-${shownTo}`)
+  assert(m!.lines.length <= 40, 'window stays bounded')
+})
+
+test('a short old_string keeps the whole region in view', () => {
+  const lines = numberedFile(200)
+  const old = lines.slice(49, 55)
+  old[3] = '  const value53 = other();'
+  const m = describeOldStringMismatch(lines.join('\n'), old.join('\n'))
+  assertEq(m!.difference?.line, 53, 'difference line')
+  assertEq(m!.startLine, 47, 'starts three lines above the region, as before')
+})
+
+test('whitespace-only differences are flagged', () => {
+  const lines = numberedFile(120)
+  const old = lines.slice(9, 14)
+  old[2] = old[2]!.replace('  const', '\tconst')
+  const m = describeOldStringMismatch(lines.join('\n'), old.join('\n'))
+  assertEq(m!.difference?.line, 12, 'difference line')
+  assertEq(m!.difference?.whitespaceOnly, true, 'only whitespace differs')
+})
+
+test('partial first and last lines count as matching', () => {
+  const lines = numberedFile(120)
+  const old = [
+    lines[19]!.slice(10),
+    lines[20]!,
+    'BROKEN',
+    lines[22]!.slice(0, 12),
+  ]
+  const m = describeOldStringMismatch(lines.join('\n'), old.join('\n'))
+  assertEq(m!.matchedLines, 2, 'the partial first line and the next match')
+  assertEq(m!.difference?.line, 22, 'difference at the broken line')
+})
+
+test('previewOldString keeps short strings and trims long ones', () => {
+  assertEq(previewOldString('a\nb'), 'a\nb', 'short strings are echoed whole')
+  const long = numberedFile(30).join('\n')
+  const preview = previewOldString(long)
+  assert(preview.startsWith(numberedFile(1)[0]!), 'starts with the first line')
+  assert(preview.includes('28 more lines'), `names the elided lines: ${preview}`)
+  assert(preview.length < 400, 'bounded')
+})
+
+console.log('lineShiftAfterEdit:')
+
+test('a replacement that adds lines moves everything below it', () => {
+  const shift = lineShiftAfterEdit([
+    { oldStart: 7, lines: [' a7', ' a8', ' a9', '-a10', '+b1', '+b2', '+b3', ' a11', ' a12', ' a13'] },
+  ])
+  assertEq(JSON.stringify(shift), JSON.stringify({ firstOldLine: 11, delta: 2 }), 'old line 11 is now 13')
+})
+
+test('deletions, insertions at the top, and several hunks', () => {
+  assertEq(JSON.stringify(lineShiftAfterEdit([{ oldStart: 1, lines: [' a1', '-a2', '-a3', ' a4'] }])), JSON.stringify({ firstOldLine: 4, delta: -2 }), 'deletion')
+  assertEq(JSON.stringify(lineShiftAfterEdit([{ oldStart: 1, lines: ['+x', ' a1', ' a2'] }])), JSON.stringify({ firstOldLine: 1, delta: 1 }), 'insertion at the top')
+  assertEq(
+    JSON.stringify(lineShiftAfterEdit([
+      { oldStart: 3, lines: [' a3', '+n', ' a4'] },
+      { oldStart: 20, lines: [' a20', '+m', '+k', ' a21'] },
+    ])),
+    JSON.stringify({ firstOldLine: 21, delta: 3 }),
+    'cumulative below the last change',
+  )
+})
+
+test('same line count means no shift', () => {
+  assertEq(lineShiftAfterEdit([{ oldStart: 5, lines: [' a5', '-a6', '+b6', ' a7'] }]), null, 'in-place change')
+  assertEq(lineShiftAfterEdit([]), null, 'no hunks')
+})
+
+test('occurrenceLines reports the line of each non-overlapping match', () => {
+  const file = 'x\nfoo\nbar\nfoo\nfoo bar foo\n'
+  assertEq(JSON.stringify(occurrenceLines(file, 'foo', 10)), '[2,4,5,5]', 'all matches')
+  assertEq(JSON.stringify(occurrenceLines(file, 'foo', 2)), '[2,4]', 'bounded')
+  assertEq(JSON.stringify(occurrenceLines(file, 'bar\nfoo', 5)), '[3]', 'multi-line needle')
+  assertEq(file.split('foo').length - 1, occurrenceLines(file, 'foo', 99).length, 'same count as split')
 })
 
 console.log('')

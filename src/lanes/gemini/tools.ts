@@ -111,6 +111,46 @@ function askUserOptions(rawOptions: unknown, type: unknown): AskUserOption[] {
   return deduped.slice(0, 4)
 }
 
+/** A whole line number from a model argument (number or numeric string). */
+function lineArgument(value: unknown): number | undefined {
+  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value
+  return typeof n === 'number' && Number.isFinite(n) ? Math.trunc(n) : undefined
+}
+
+/**
+ * read_file's 1-based, inclusive start_line/end_line as shared Read's
+ * offset/limit. Read's offset is itself the 1-based first line, so it is not
+ * shifted (subtracting 1 returned one line early and dropped end_line). A
+ * start below 1 reads from the top, an end below 1 reads to the end of the
+ * file, and a reversed pair reads the same span.
+ */
+export function readRangeFromLines(
+  startLine: unknown,
+  endLine: unknown,
+): { offset?: number; limit?: number } {
+  let start = lineArgument(startLine)
+  let end = lineArgument(endLine)
+  if (start !== undefined) start = Math.max(1, start)
+  if (end !== undefined && end < 1) end = undefined
+  if (start !== undefined && end !== undefined && end < start) [start, end] = [end, start]
+  return {
+    ...(start !== undefined && { offset: start }),
+    ...(end !== undefined && { limit: end - (start ?? 1) + 1 }),
+  }
+}
+
+/** The inverse, to replay a Read call as read_file arguments. */
+export function linesFromReadRange(
+  offset: unknown,
+  limit: unknown,
+): { start_line?: number; end_line?: number } {
+  const start = typeof offset === 'number' ? Math.max(1, offset) : undefined
+  return {
+    ...(start !== undefined && { start_line: start }),
+    ...(typeof limit === 'number' && { end_line: (start ?? 1) + limit - 1 }),
+  }
+}
+
 function normalizeAskUserInput(native: Record<string, unknown>): { questions: AskUserQuestion[] } {
   const rawQuestions = Array.isArray(native.questions) && native.questions.length > 0
     ? native.questions
@@ -145,7 +185,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'read_file',
     implId: 'Read',
     nativeDescription:
-      "Read a file. Use start_line/end_line for targeted reads. Inline source maps may be replaced by numbered markers; use include_source_maps to inspect them. Large whole-file reads may return a structure skeleton. Supports text, images and PDFs.",
+      "Read a file. Read only the start_line/end_line range you need; in a large file, find it with grep_search first. Inline source maps may be replaced by numbered markers; use include_source_maps to inspect them. Large whole-file reads may return a structure skeleton. Supports text, images and PDFs. Line-number prefixes are not file content. Lines you already have unchanged return a short note: use your earlier result.",
     nativeSchema: {
       type: 'object',
       properties: {
@@ -165,6 +205,10 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
           type: 'boolean',
           description: 'Include inline source maps verbatim and bypass automatic skeletons.',
         },
+        skeleton: {
+          type: 'boolean',
+          description: 'false returns a large file in full instead of its automatic structure view; true asks for the structure view.',
+        },
       },
       required: ['file_path'],
     },
@@ -172,16 +216,9 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
       const result: Record<string, unknown> = {
         file_path: native.file_path,
       }
-      // Gemini uses 1-based start_line/end_line
       if (native.include_source_maps != null) result.include_source_maps = native.include_source_maps
-      // Shared Read uses 0-based offset + limit
-      if (native.start_line != null) {
-        result.offset = (native.start_line as number) - 1
-        if (native.end_line != null) {
-          result.limit = (native.end_line as number) - (native.start_line as number) + 1
-        }
-      }
-      return result
+      if (native.skeleton != null) result.skeleton = native.skeleton
+      return Object.assign(result, readRangeFromLines(native.start_line, native.end_line))
     },
     adaptOutput(output) {
       return typeof output === 'string' ? output : JSON.stringify(output)
@@ -221,7 +258,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'replace',
     implId: 'Edit',
     nativeDescription:
-      "Replaces text within a file. By default, the tool expects to find and replace exactly ONE occurrence of `old_string`. If you want to replace multiple occurrences of the exact same string, set `allow_multiple` to true. This tool requires providing significant context around the change to ensure precise targeting.\nThe user has the ability to modify the `new_string` content. If modified, this will be stated in the response.",
+      "Replaces text within a file. By default, the tool expects to find and replace exactly ONE occurrence of `old_string`. If you want to replace multiple occurrences of the exact same string, set `allow_multiple` to true. Copy `old_string` from your latest read: the lines you change plus 2-3 lines of context. If it fails, the error shows the current lines: fix `old_string` from them instead of re-reading.\nThe user has the ability to modify the `new_string` content. If modified, this will be stated in the response.",
     nativeSchema: {
       type: 'object',
       properties: {

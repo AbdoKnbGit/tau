@@ -167,11 +167,31 @@ const LANGUAGE_SHAPES: Record<string, LanguageShape> = {
     bodies: { compound_statement: ['function_definition', 'method_declaration'] },
     braced: true,
   },
+  // Rule bodies only: @media / @supports blocks stay so their rules show.
+  css: { grammar: 'css', bodies: { block: ['rule_set'] }, braced: true },
 }
+
+/**
+ * Markup files. Their bulk is usually inline code, so each <script> and
+ * <style> block is outlined with its own grammar while every markup line
+ * stays verbatim. Line numbers stay the file's own.
+ */
+const MARKUP_EXTS = new Set(['html', 'htm', 'xhtml', 'vue', 'svelte'])
+
+/**
+ * Markup and stylesheets fold far less than code (short rules, markup-heavy
+ * pages), so their skeleton must leave out at least this share of the file.
+ * A near-complete outline would only cost a second read of the rest.
+ */
+const MIN_LIGHT_SKELETON_SAVING = 0.25
 
 /** Whether skeleton mode supports this file extension (sans dot). */
 export function isSkeletonSupportedExt(ext: string): boolean {
-  const shape = LANGUAGE_SHAPES[ext.toLowerCase()]
+  const lower = ext.toLowerCase()
+  if (MARKUP_EXTS.has(lower)) {
+    return isSupportedLanguage(LANGUAGE_SHAPES.js!.grammar)
+  }
+  const shape = LANGUAGE_SHAPES[lower]
   return shape !== undefined && isSupportedLanguage(shape.grammar)
 }
 
@@ -275,6 +295,38 @@ export type SkeletonResult = {
   truncatedChars: number
   totalLines: number
   language: string
+  /** Regions of plain code folded only to fit the caller's size limit
+   *  (included in elidedRegions/elidedLines). */
+  condensedRegions?: number
+  condensedLines?: number
+  /** Lines in the single largest elided body. */
+  largestElidedLines: number
+}
+
+/** A body holding this share of a file's lines leaves an outline with
+ *  little but its signature. */
+const THIN_OUTLINE_SHARE = 0.5
+/** Read such a file whole when it costs at most this share of the read limit. */
+const THIN_WHOLE_READ_SHARE = 0.5
+
+/**
+ * Auto mode: whether to read the file whole instead of returning `result`.
+ * When one body holds half the file or more (a test file's single main(), a
+ * module wrapped in one function, a component file that is one component),
+ * the outline shows little but that body's signature, so the model's next
+ * Read opens the body anyway: one whole read costs about the same tokens and
+ * one round trip less. A file over half the read limit keeps its outline, so
+ * the model can read just the part of that body it needs.
+ */
+export function shouldReadWholeInstead(
+  result: SkeletonResult,
+  wholeFileTokens: number,
+  maxTokens: number,
+): boolean {
+  return (
+    result.largestElidedLines >= result.totalLines * THIN_OUTLINE_SHARE &&
+    wholeFileTokens <= maxTokens * THIN_WHOLE_READ_SHARE
+  )
 }
 
 type ElideRange = { start: number; end: number } // 0-based inclusive rows
@@ -316,87 +368,305 @@ function collectElidableRanges(
   return ranges
 }
 
+// <script> types that hold JavaScript; any other type (JSON, import maps,
+// templates, shaders) is data and stays verbatim.
+const SCRIPT_TYPES = new Set([
+  'module',
+  'text/javascript',
+  'application/javascript',
+  'text/ecmascript',
+  'application/ecmascript',
+  'text/babel',
+  'text/jsx',
+])
+
+function tagAttribute(attributes: string, name: string): string | undefined {
+  const match = attributes.match(
+    new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i'),
+  )
+  return match ? (match[1] ?? match[2] ?? match[3] ?? '').trim().toLowerCase() : undefined
+}
+
+/** The shape that outlines a <script> or <style> block, if it holds code. */
+function embeddedShape(tag: string, attributes: string): LanguageShape | undefined {
+  const lang = tagAttribute(attributes, 'lang')
+  if (tag === 'style') {
+    return lang === undefined || lang === 'css' ? LANGUAGE_SHAPES.css : undefined
+  }
+  const type = tagAttribute(attributes, 'type')
+  if (type !== undefined && type !== '' && !SCRIPT_TYPES.has(type)) return undefined
+  switch (lang) {
+    case undefined:
+    case 'js':
+    case 'javascript':
+      return LANGUAGE_SHAPES.js
+    case 'jsx':
+      return LANGUAGE_SHAPES.jsx
+    case 'ts':
+    case 'typescript':
+      return LANGUAGE_SHAPES.ts
+    case 'tsx':
+      return LANGUAGE_SHAPES.tsx
+    default:
+      return undefined
+  }
+}
+
+type MarkupFolds = {
+  /** Elidable body rows, as file rows. */
+  ranges: ElideRange[]
+  /** File rows of each parsed <script>/<style> block: only code folds further. */
+  spans: ElideRange[]
+}
+
+function countNewlines(text: string): number {
+  let count = 0
+  for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', at + 1)) count++
+  return count
+}
+
+/**
+ * Elidable rows of a markup file: each <script>/<style> block parsed with
+ * its grammar, rows shifted to the file's. A block's code starts on its open
+ * tag's row, so row r of the block is row (openRow + r) of the file. Tags
+ * inside HTML comments or inside an earlier block are not blocks. Null when
+ * no block could be parsed.
+ */
+async function collectMarkupRanges(content: string): Promise<MarkupFolds | null> {
+  const lower = content.toLowerCase()
+  const comments = [...content.matchAll(/<!--[\s\S]*?-->/g)].map(
+    m => [m.index!, m.index! + m[0].length] as const,
+  )
+  const ranges: ElideRange[] = []
+  const spans: ElideRange[] = []
+  let blockEnd = 0
+  let row = 0
+  let rowAt = 0
+  for (const open of content.matchAll(/<(script|style)\b([^>]*)>/gi)) {
+    const at = open.index!
+    if (at < blockEnd || comments.some(([s, e]) => at >= s && at < e)) continue
+    const attributes = open[2] ?? ''
+    if (attributes.trimEnd().endsWith('/')) continue // <script src="…" />
+    const tag = open[1]!.toLowerCase()
+    const bodyStart = at + open[0].length
+    const close = lower.indexOf(`</${tag}`, bodyStart)
+    if (close === -1) break
+    blockEnd = close
+    const shape = embeddedShape(tag, attributes)
+    const text = content.slice(bodyStart, close)
+    if (!shape || !isSupportedLanguage(shape.grammar) || text.trim() === '') continue
+    for (let nl = content.indexOf('\n', rowAt); nl !== -1 && nl < bodyStart; nl = content.indexOf('\n', nl + 1)) {
+      row++
+    }
+    rowAt = bodyStart
+    const tree = await parse(shape.grammar, text)
+    if (!tree) continue
+    spans.push({ start: row, end: row + countNewlines(text) })
+    try {
+      for (const range of collectElidableRanges(tree.rootNode, shape)) {
+        ranges.push({ start: range.start + row, end: range.end + row })
+      }
+    } finally {
+      tree.delete()
+    }
+  }
+  return spans.length > 0 ? { ranges, spans } : null
+}
+
+/** Every row of a code file is code. */
+const WHOLE_FILE: readonly ElideRange[] = [{ start: 0, end: Number.MAX_SAFE_INTEGER }]
+
 /**
  * Build the skeleton for `content`. Returns null when the language is
  * unsupported, parsing is unavailable/failed, or the file has neither a body
  * worth eliding nor an overlong kept line worth truncating (callers fall back
- * to a normal full read).
+ * to a normal full read). `fits`, when given, is the caller's size limit: an
+ * outline over it also folds its longest runs of kept code (fitSkeleton)
+ * before the caller's own check would refuse it.
  */
 export async function buildSkeleton(
   content: string,
   ext: string,
   formatRun: FormatRun,
+  fits?: (formatted: string) => boolean,
 ): Promise<SkeletonResult | null> {
-  const shape = LANGUAGE_SHAPES[ext.toLowerCase()]
+  const lower = ext.toLowerCase()
+  if (MARKUP_EXTS.has(lower)) {
+    const folds = await collectMarkupRanges(content)
+    return folds
+      ? worthFolding(
+          fitSkeleton(content, folds.ranges, folds.spans, lower, formatRun, fits),
+          content,
+        )
+      : null
+  }
+  const shape = LANGUAGE_SHAPES[lower]
   if (!shape) return null
 
   const tree = await parse(shape.grammar, content)
   if (!tree) return null
 
+  let ranges: ElideRange[]
   try {
-    const ranges = collectElidableRanges(tree.rootNode, shape)
-
-    const lines = content.split(/\r?\n/)
-    const elide = new Array<boolean>(lines.length).fill(false)
-    for (const range of ranges) {
-      for (let row = range.start; row <= Math.min(range.end, lines.length - 1); row++) {
-        elide[row] = true
-      }
-    }
-
-    // A file with no elidable body is still worth skeletonizing when a KEPT
-    // line is long enough to blow the token budget by itself (minified source,
-    // inline sourcemap). Lines inside an elided body are already gone, so they
-    // never justify a skeleton on their own.
-    const hasOverlongKeptLine = lines.some(
-      (line, row) => !elide[row] && isOverlongLine(line),
-    )
-    if (ranges.length === 0 && !hasOverlongKeptLine) return null
-
-    // Emit kept runs through the standard line-number formatter (byte-for-
-    // byte the same prefix style as a normal Read) with markers between.
-    const out: string[] = []
-    let elidedLines = 0
-    let elidedRegions = 0
-    let truncatedLines = 0
-    let truncatedChars = 0
-    let row = 0
-    while (row < lines.length) {
-      if (!elide[row]) {
-        const runStart = row
-        while (row < lines.length && !elide[row]) row++
-        const runLines = lines.slice(runStart, row).map(line => {
-          const { text, elided } = truncateKeptLine(line)
-          if (elided > 0) {
-            truncatedLines++
-            truncatedChars += elided
-          }
-          return text
-        })
-        out.push(formatRun(runLines.join('\n'), runStart + 1))
-      } else {
-        const runStart = row
-        while (row < lines.length && elide[row]) row++
-        const count = row - runStart
-        elidedLines += count
-        elidedRegions++
-        out.push(
-          `     ⋮ [body elided: lines ${runStart + 1}-${row} (${count} lines) — Read with offset=${runStart + 1} & limit=${count} to expand]`,
-        )
-      }
-    }
-
-    return {
-      formatted: out.join('\n'),
-      keptLines: lines.length - elidedLines,
-      elidedLines,
-      elidedRegions,
-      truncatedLines,
-      truncatedChars,
-      totalLines: lines.length,
-      language: shape.grammar,
-    }
+    ranges = collectElidableRanges(tree.rootNode, shape)
   } finally {
     tree.delete()
+  }
+  const result = fitSkeleton(content, ranges, WHOLE_FILE, shape.grammar, formatRun, fits)
+  return shape === LANGUAGE_SHAPES.css ? worthFolding(result, content) : result
+}
+
+function worthFolding(
+  result: SkeletonResult | null,
+  content: string,
+): SkeletonResult | null {
+  return result &&
+    result.formatted.length <= content.length * (1 - MIN_LIGHT_SKELETON_SAVING)
+    ? result
+    : null
+}
+
+// A kept run of code this long may fold to fit a size limit. Its first and
+// last lines stay, so a section comment and the next signature remain.
+const MIN_CONDENSED_RUN = 8
+
+/**
+ * The skeleton, and when it is over `fits`, the same skeleton with its
+ * longest kept runs inside `spans` folded too, longest first, until it fits
+ * or nothing is left to fold. An outline that already fits is unchanged.
+ */
+function fitSkeleton(
+  content: string,
+  ranges: ElideRange[],
+  spans: readonly ElideRange[],
+  language: string,
+  formatRun: FormatRun,
+  fits: ((formatted: string) => boolean) | undefined,
+): SkeletonResult | null {
+  let result = renderSkeleton(content, ranges, language, formatRun)
+  if (!result || !fits || fits(result.formatted)) return result
+
+  const rows = content.split(/\r?\n/).length
+  const elided = new Array<boolean>(rows).fill(false)
+  for (const range of ranges) {
+    for (let row = range.start; row <= Math.min(range.end, rows - 1); row++) {
+      elided[row] = true
+    }
+  }
+  const runs: ElideRange[] = []
+  for (const span of spans) {
+    const last = Math.min(span.end, rows - 1)
+    let row = span.start
+    while (row <= last) {
+      if (elided[row]) {
+        row++
+        continue
+      }
+      const start = row
+      while (row <= last && !elided[row]) row++
+      if (row - start >= MIN_CONDENSED_RUN) runs.push({ start: start + 1, end: row - 2 })
+    }
+  }
+  runs.sort((a, b) => b.end - b.start - (a.end - a.start))
+
+  const condensed: ElideRange[] = []
+  for (const run of runs) {
+    condensed.push(run)
+    const next = renderSkeleton(content, ranges, language, formatRun, condensed)
+    if (!next) break
+    result = next
+    if (fits(next.formatted)) break
+  }
+  return result
+}
+
+function renderSkeleton(
+  content: string,
+  ranges: ElideRange[],
+  language: string,
+  formatRun: FormatRun,
+  condensed: readonly ElideRange[] = [],
+): SkeletonResult | null {
+  const lines = content.split(/\r?\n/)
+  const elide = new Array<boolean>(lines.length).fill(false)
+  for (const range of ranges) {
+    for (let row = range.start; row <= Math.min(range.end, lines.length - 1); row++) {
+      elide[row] = true
+    }
+  }
+  // Rows elided only to fit a size limit: plain code, not a function body.
+  const folded = new Array<boolean>(lines.length).fill(false)
+  for (const range of condensed) {
+    for (let row = range.start; row <= Math.min(range.end, lines.length - 1); row++) {
+      if (!elide[row]) {
+        elide[row] = true
+        folded[row] = true
+      }
+    }
+  }
+
+  // A file with no elidable body is still worth skeletonizing when a KEPT
+  // line is long enough to blow the token budget by itself (minified source,
+  // inline sourcemap). Lines inside an elided body are already gone, so they
+  // never justify a skeleton on their own.
+  const hasOverlongKeptLine = lines.some(
+    (line, row) => !elide[row] && isOverlongLine(line),
+  )
+  if (ranges.length === 0 && !hasOverlongKeptLine) return null
+
+  // Emit kept runs through the standard line-number formatter (byte-for-
+  // byte the same prefix style as a normal Read) with markers between.
+  const out: string[] = []
+  let elidedLines = 0
+  let elidedRegions = 0
+  let condensedLines = 0
+  let condensedRegions = 0
+  let largestElidedLines = 0
+  let truncatedLines = 0
+  let truncatedChars = 0
+  let row = 0
+  while (row < lines.length) {
+    if (!elide[row]) {
+      const runStart = row
+      while (row < lines.length && !elide[row]) row++
+      const runLines = lines.slice(runStart, row).map(line => {
+        const { text, elided } = truncateKeptLine(line)
+        if (elided > 0) {
+          truncatedLines++
+          truncatedChars += elided
+        }
+        return text
+      })
+      out.push(formatRun(runLines.join('\n'), runStart + 1))
+    } else {
+      const runStart = row
+      while (row < lines.length && elide[row]) row++
+      const count = row - runStart
+      elidedLines += count
+      elidedRegions++
+      const code = folded[runStart] === true
+      if (code) {
+        condensedLines += count
+        condensedRegions++
+      } else {
+        largestElidedLines = Math.max(largestElidedLines, count)
+      }
+      out.push(
+        `     ⋮ [${code ? 'code folded' : 'body elided'}: lines ${runStart + 1}-${row} (${count} lines) — Read with offset=${runStart + 1} & limit=${count} to expand]`,
+      )
+    }
+  }
+
+  return {
+    formatted: out.join('\n'),
+    keptLines: lines.length - elidedLines,
+    elidedLines,
+    elidedRegions,
+    truncatedLines,
+    truncatedChars,
+    totalLines: lines.length,
+    language,
+    ...(condensedRegions > 0 && { condensedRegions, condensedLines }),
+    largestElidedLines,
   }
 }

@@ -64,16 +64,26 @@ import {
 import {
   capEditResultSnippet,
   describeClosestMatch,
+  describeOldStringMismatch,
   type FlexibleMatchType,
   isEditLikelyAlreadyApplied,
+  lineShiftAfterEdit,
+  occurrenceLines,
+  type OldStringMismatch,
+  previewOldString,
   resolveFlexibleMatch,
 } from './matchResolver.js'
 import { getEditToolDescription } from './prompt.js'
 import { noteFileRead, recordUnreadEditRefusal } from './readFirstGuard.js'
 import {
+  recordFileRead,
   refuseWithCurrentContent,
   unreadFileRefusal,
 } from '../../utils/readHistory.js'
+import {
+  type FileState,
+  readStillMatchesFile,
+} from '../../utils/fileStateCache.js'
 import {
   type FileEditInput,
   type FileEditOutput,
@@ -358,7 +368,7 @@ export const FileEditTool = buildTool({
         timestamp: getFileModificationTime(fullFilePath),
         offset: undefined,
         limit: undefined,
-        ...(readTimestamp.sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
+        ...carriedReadState(readTimestamp),
       }
       toolUseContext.readFileState.set(fullFilePath, seeded)
       readTimestamp = seeded
@@ -368,19 +378,28 @@ export const FileEditTool = buildTool({
     if (readTimestamp) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
       if (lastWriteTime > readTimestamp.timestamp) {
-        // Timestamp indicates modification, but on Windows timestamps can change
-        // without content changes (cloud sync, antivirus, etc.). For full reads,
-        // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          readTimestamp.offset === undefined &&
-          readTimestamp.limit === undefined
-        if (isFullRead && fileContent === readTimestamp.content) {
-          // Content unchanged, safe to proceed
+        // Timestamp indicates modification, but timestamps change without
+        // content changes (cloud sync, antivirus, a touch), and a change
+        // elsewhere in the file leaves the lines the model read intact. When
+        // the read's own text is still on disk at the same lines, refresh its
+        // timestamp so call()'s write-time check agrees, and proceed: the
+        // old_string match below still has to be exact.
+        if (readStillMatchesFile(readTimestamp, fileContent)) {
+          readTimestamp = { ...readTimestamp, timestamp: lastWriteTime }
+          toolUseContext.readFileState.set(fullFilePath, readTimestamp)
         } else {
           return {
             result: false,
             behavior: 'ask',
             message:
+              staleReadRefusal(
+                fullFilePath,
+                toolUseContext,
+                fileContent,
+                lastWriteTime,
+                old_string,
+                readTimestamp,
+              ) ??
               'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
             errorCode: 7,
           }
@@ -412,10 +431,13 @@ export const FileEditTool = buildTool({
       // Say so explicitly — a bare "not found" sends models into
       // guess-the-old_string retry loops.
       if (isEditLikelyAlreadyApplied(file, new_string)) {
+        const at =
+          occurrenceLines(file, new_string, 1)[0] ??
+          occurrenceLines(file, new_string.trim(), 1)[0]
         return {
           result: false,
           behavior: 'ask',
-          message: `String to replace not found in file, but new_string is already present — this edit has most likely ALREADY been applied (e.g. by your own earlier edit). Do not retry the same edit. If you intended a different change, Read the file and base old_string on its current content.\nString: ${old_string}`,
+          message: `String to replace not found in file, but new_string is already present${at === undefined ? '' : ` at line ${at}`} — this edit has most likely ALREADY been applied (e.g. by your own earlier edit). Do not retry the same edit. If you intended a different change, Read the file and base old_string on its current content.\nString: ${previewOldString(old_string)}`,
           meta: {
             isFilePathAbsolute: String(isAbsolute(file_path)),
           },
@@ -425,26 +447,22 @@ export const FileEditTool = buildTool({
 
       // Anchor the retry: models that edited blind (or against a stale view)
       // keep guessing old_string variants and loop. Show real current content
-      // — the whole file when small, else the closest-matching region — so
-      // the next attempt copies it exactly instead of guessing again.
+      // — the whole file when small, else the region old_string resembles,
+      // centered on the line where it stops matching — and name that line,
+      // so the next attempt copies it exactly instead of guessing again.
+      const mismatch = describeOldStringMismatch(file, old_string)
       let recoveryHint: string
       if (file.length <= 2000) {
-        recoveryHint = `\nCurrent file content:\n${file}`
+        recoveryHint = `\n${differenceSummary(mismatch, old_string)}Current file content:\n${file}`
       } else {
-        const closest = describeClosestMatch(file, old_string)
-        recoveryHint = closest
-          ? `\nThe file's current content differs from your old_string — it has likely changed since you last read it (your own earlier edit, a formatter, or the user). Closest match currently in the file (line number prefixes are NOT part of the content):\n${addLineNumbers(
-              {
-                content: closest.lines.join('\n'),
-                startLine: closest.startLine,
-              },
-            )}\nRetry with old_string copied exactly from these lines, or Read the file first if this is not the region you meant.`
+        recoveryHint = mismatch
+          ? retryHintFromMismatch(mismatch, old_string)
           : '\nRead the file with the Read tool to see its current content, then retry with an exact, character-for-character old_string.'
       }
       return {
         result: false,
         behavior: 'ask',
-        message: `String to replace not found in file.\nString: ${old_string}\n${recoveryHint}`,
+        message: `String to replace not found in file.\nString: ${previewOldString(old_string)}\n${recoveryHint}`,
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },
@@ -456,10 +474,12 @@ export const FileEditTool = buildTool({
 
     // Check if we have multiple matches but replace_all is false
     if (matches > 1 && !replace_all) {
+      const at = occurrenceLines(file, actualOldString, MAX_LISTED_MATCHES)
+      const more = matches - at.length
       return {
         result: false,
         behavior: 'ask',
-        message: `Found ${matches} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${old_string}`,
+        message: `Found ${matches} matches of the string to replace (starting at lines ${at.join(', ')}${more > 0 ? `, and ${more} more` : ''}), but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${previewOldString(old_string)}`,
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
           actualOldString,
@@ -647,7 +667,7 @@ export const FileEditTool = buildTool({
     // file absent) is never mistaken for a no-op and dropped.
     if (fileExists && updatedFile === originalFileContents) {
       readFileState.set(absoluteFilePath, {
-        ...(readFileState.get(absoluteFilePath)?.sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
+        ...carriedReadState(readFileState.get(absoluteFilePath)),
         content: originalFileContents,
         timestamp: getFileModificationTime(absoluteFilePath),
         offset: undefined,
@@ -698,7 +718,7 @@ export const FileEditTool = buildTool({
 
     // 6. Update read timestamp, to invalidate stale writes
     readFileState.set(absoluteFilePath, {
-      ...(readFileState.get(absoluteFilePath)?.sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
+      ...carriedReadState(readFileState.get(absoluteFilePath)),
       content: updatedFile,
       timestamp: getFileModificationTime(absoluteFilePath),
       offset: undefined,
@@ -841,6 +861,16 @@ export const FileEditTool = buildTool({
       .filter(Boolean)
       .join('\n')
     const warningSuffix = warnings ? `\n\n${warnings}` : ''
+    // Line numbers below the edit moved for every earlier read; say how far,
+    // so a later ranged Read aims right without re-reading to find out.
+    const shift = lineShiftAfterEdit(data.structuredPatch ?? [])
+    const oldLineCount = data.originalFile
+      ? data.originalFile.split('\n').length
+      : 0
+    const shiftNote =
+      shift && shift.firstOldLine <= oldLineCount
+        ? ` Lines below the edit moved ${shift.delta > 0 ? 'down' : 'up'} ${Math.abs(shift.delta)}: old line ${shift.firstOldLine} is now line ${shift.firstOldLine + shift.delta}.`
+        : ''
     const snippetSuffix = editedSnippet
       ? `\n\nEdited region after the change (line-number prefixes are not file content — use these current lines, not your earlier read, for any follow-up old_string here):\n${editedSnippet}`
       : ''
@@ -849,19 +879,144 @@ export const FileEditTool = buildTool({
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.${memorySuffix}${snippetSuffix}${warningSuffix}`,
+        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.${shiftNote}${memorySuffix}${snippetSuffix}${warningSuffix}`,
       }
     }
 
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: `The file ${filePath} has been updated successfully${modifiedNote}.${memorySuffix}${snippetSuffix}${warningSuffix}`,
+      content: `The file ${filePath} has been updated successfully${modifiedNote}.${shiftNote}${memorySuffix}${snippetSuffix}${warningSuffix}`,
     }
   },
 } satisfies ToolDef<ReturnType<typeof inputSchema>, FileEditOutput>)
 
 // --
+
+/**
+ * Read-state fields an Edit keeps from the read it was based on. Earlier Read
+ * results stay in the conversation, so their ranges stay reusable wherever
+ * the text is unchanged (FileReadTool/rangeDedup.ts compares it).
+ */
+function carriedReadState(previous: FileState | undefined): {
+  sourceMapsOmitted?: true
+  seenRanges?: FileState['seenRanges']
+} {
+  return {
+    ...(previous?.sourceMapsOmitted ? { sourceMapsOmitted: true as const } : {}),
+    ...(previous?.seenRanges ? { seenRanges: previous.seenRanges } : {}),
+  }
+}
+
+// Bounds for the file lines an Edit error shows.
+const MAX_LISTED_MATCHES = 5
+const STALE_CONTEXT_LINES = 3
+const MAX_SHOWN_LINES = 40
+const MAX_SHOWN_LINE_CHARS = 2000
+
+function clipShownLine(line: string): string {
+  return line.length > MAX_SHOWN_LINE_CHARS
+    ? `${line.slice(0, MAX_SHOWN_LINE_CHARS)}… [${line.length - MAX_SHOWN_LINE_CHARS} more characters]`
+    : line
+}
+
+function numberedLines(lines: string[], startLine: number): string {
+  return addLineNumbers({
+    content: lines.map(clipShownLine).join('\n'),
+    startLine,
+  })
+}
+
+/** Names the first line where old_string parts from the file, or ''. */
+function differenceSummary(
+  mismatch: OldStringMismatch | null,
+  oldString: string,
+): string {
+  const d = mismatch?.difference
+  if (!mismatch || !d) {
+    return ''
+  }
+  const total = oldString.replace(/\n$/, '').split('\n').length
+  const where =
+    mismatch.matchedLines > 0
+      ? `Your old_string (${total} lines) matches the file from line ${mismatch.regionStart} to ${d.line - 1}, then differs at line ${d.line}`
+      : `Your old_string (${total} lines) is closest to the lines from ${mismatch.regionStart}, and differs at line ${d.line}`
+  const show = (line: string | undefined) =>
+    line === undefined
+      ? '(end of file)'
+      : d.whitespaceOnly
+        ? JSON.stringify(line)
+        : line.trim()
+  return `${where}${d.whitespaceOnly ? ' (whitespace only)' : ''}:\n  file:       ${show(d.file)}\n  old_string: ${show(d.oldString)}\n`
+}
+
+/** The not-found hint for a file too large to show whole. */
+function retryHintFromMismatch(
+  mismatch: OldStringMismatch,
+  oldString: string,
+): string {
+  const shown = numberedLines(mismatch.lines, mismatch.startLine)
+  if (!mismatch.difference) {
+    return `\nThe file's current content differs from your old_string — it has likely changed since you last read it (your own earlier edit, a formatter, or the user). Closest match currently in the file (line number prefixes are NOT part of the content):\n${shown}\nRetry with old_string copied exactly from these lines, or Read the file first if this is not the region you meant.`
+  }
+  const last = mismatch.startLine + mismatch.lines.length - 1
+  return `\n${differenceSummary(mismatch, oldString)}Current lines ${mismatch.startLine}-${last} (line number prefixes are NOT part of the content):\n${shown}\nCorrect old_string from these lines and retry: the lines you change plus 2-3 lines of context is enough.`
+}
+
+/**
+ * The refusal for an Edit whose read went stale: the lines the model read
+ * changed on disk. Shows the current lines where the edit lands (the whole
+ * file when small) and records them as the model's read, a partial view that
+ * Edit accepts only through an exact old_string match, so the retry needs no
+ * separate Read. Undefined when nothing useful can be shown.
+ */
+function staleReadRefusal(
+  fullFilePath: string,
+  context: ToolUseContext,
+  current: string,
+  timestamp: number,
+  oldString: string,
+  previous: FileState,
+): string | undefined {
+  const whole = current.length <= 2000
+  let shown: { lines: string[]; startLine: number } | null
+  if (whole) {
+    shown = { lines: current.split('\n'), startLine: 1 }
+  } else {
+    const at = occurrenceLines(current, oldString, 1)[0]
+    if (at === undefined) {
+      shown = describeOldStringMismatch(current, oldString)
+    } else {
+      const fileLines = current.split('\n')
+      const count = oldString.replace(/\n$/, '').split('\n').length
+      const from = Math.max(1, at - STALE_CONTEXT_LINES)
+      const to = Math.min(
+        fileLines.length,
+        at + count - 1 + STALE_CONTEXT_LINES,
+        from + MAX_SHOWN_LINES - 1,
+      )
+      shown = { lines: fileLines.slice(from - 1, to), startLine: from }
+    }
+  }
+  if (!shown) {
+    return undefined
+  }
+  context.readFileState.set(fullFilePath, {
+    content: current,
+    timestamp,
+    offset: undefined,
+    limit: undefined,
+    ...(whole ? {} : { isPartialView: true }),
+    ...carriedReadState(previous),
+  })
+  recordFileRead(fullFilePath, context.agentId)
+  noteFileRead(fullFilePath)
+  const last = shown.startLine + shown.lines.length - 1
+  const scope = whole
+    ? 'Its current content now counts as your read'
+    : `Current lines ${shown.startLine}-${last}, where your edit lands, now count as your read`
+  return `File has been modified since read (by the user, a linter or another tool), so nothing was changed. ${scope} (line-number prefixes are not file content):\n${numberedLines(shown.lines, shown.startLine)}\nBase old_string on these lines and edit again.`
+}
 
 function readFileForEdit(absoluteFilePath: string): {
   content: string

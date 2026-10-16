@@ -2262,7 +2262,12 @@ export async function getChangedFiles(
           return null
         }
 
-        const result = await FileReadTool.call(fileInput, toolUseContext)
+        // Hidden: the model gets only the diff below, so a later Read of the
+        // file must send the text instead of a note saying it is unchanged.
+        const result = await FileReadTool.call(fileInput, {
+          ...toolUseContext,
+          readResultHidden: true,
+        })
         // Extract only the changed section
         if (result.data.type === 'text') {
           const snippet = getSnippetForTwoFileDiff(

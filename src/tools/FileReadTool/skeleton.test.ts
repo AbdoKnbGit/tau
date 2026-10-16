@@ -10,6 +10,7 @@ import {
   getAutoSkeletonMinBytes,
   isAutoSkeletonEnabled,
   isSkeletonSupportedExt,
+  shouldReadWholeInstead,
 } from './skeleton.js'
 
 let passed = 0
@@ -307,6 +308,172 @@ await test('auto-skeleton min-bytes floor: default, valid override, invalid igno
   process.env.TAU_AUTO_SKELETON_MIN_BYTES = 'huge'
   assert(getAutoSkeletonMinBytes() === 16_000, 'non-numeric override ignored')
   resetAutoSkeletonEnv()
+})
+
+const jsFunction = (name: string, bodyLines = 30) => [
+  `    function ${name}() {`,
+  ...Array.from({ length: bodyLines }, (_, i) => `      ${name}Step${i}(scene, ${i});`),
+  '    }',
+]
+
+await test('markup and stylesheet extensions are supported, prose and data are not', () => {
+  for (const ext of ['html', 'HTM', 'xhtml', 'vue', 'svelte', 'css']) {
+    assert(isSkeletonSupportedExt(ext), `${ext} should be supported`)
+  }
+  for (const ext of ['md', 'json', 'yaml', 'txt', 'scss']) {
+    assert(!isSkeletonSupportedExt(ext), `${ext} should not be supported`)
+  }
+})
+
+await test('html: inline script bodies fold; markup and real line numbers stay', async () => {
+  const lines = [
+    '<!DOCTYPE html>', // 1
+    '<html>', // 2
+    '<head>', // 3
+    '  <title>Demo</title>', // 4
+    '</head>', // 5
+    '<body>', // 6
+    '  <div id="app"></div>', // 7
+    '  <script type="module">', // 8
+    ...jsFunction('init'), // 9..40 (body 10-39)
+    ...jsFunction('render'), // 41..72 (body 42-71)
+    '  </script>', // 73
+    '</body>', // 74
+    '</html>', // 75
+  ]
+  const result = await buildSkeleton(lines.join('\n'), 'html', fmt)
+  assert(result !== null, 'expected a skeleton')
+  assert(result!.language === 'html', `language ${result!.language}`)
+  assert(result!.elidedRegions === 2 && result!.elidedLines === 60, `elided ${result!.elidedRegions}/${result!.elidedLines}`)
+  assert(result!.formatted.includes('     4→  <title>Demo</title>'), 'markup kept with its own line number')
+  assert(result!.formatted.includes('     9→    function init() {'), 'signature kept at its real line')
+  assert(result!.formatted.includes('lines 10-39 (30 lines) — Read with offset=10 & limit=30'), 'marker carries the real range')
+  assert(result!.formatted.includes('    73→  </script>'), 'closing tag kept')
+  assert(!result!.formatted.includes('initStep5'), 'body text elided')
+})
+
+await test('html: data scripts and commented-out scripts never fold', async () => {
+  const data = [
+    '<html><body>',
+    '<script type="application/json">',
+    ...jsFunction('notCode').map(line => line.replace('function', '"function')),
+    '</script>',
+    '<!-- <script>',
+    ...jsFunction('commentedOut'),
+    '</script> -->',
+    '</body></html>',
+  ].join('\n')
+  assert((await buildSkeleton(data, 'html', fmt)) === null, 'nothing to fold')
+})
+
+await test('html: a markup-heavy page with little script is read in full', async () => {
+  const markup = Array.from({ length: 200 }, (_, i) => `  <div class="row" id="row-${i}">Row ${i}</div>`)
+  const page = ['<html><body>', ...markup, '<script>', ...jsFunction('tiny', 8), '</script>', '</body></html>'].join('\n')
+  assert((await buildSkeleton(page, 'html', fmt)) === null, 'saving under a quarter must fall back to a full read')
+})
+
+await test('vue: <script setup lang="ts"> folds with the TypeScript grammar', async () => {
+  const sfc = [
+    '<template>',
+    '  <div>{{ msg }}</div>',
+    '</template>',
+    '<script setup lang="ts">',
+    'function compute(a: number): number {',
+    ...Array.from({ length: 30 }, (_, i) => `  const v${i}: number = a * ${i}`),
+    '  return a',
+    '}',
+    '</script>',
+  ].join('\n')
+  const result = await buildSkeleton(sfc, 'vue', fmt)
+  assert(result !== null, 'expected a skeleton')
+  assert(result!.elidedRegions === 1 && result!.elidedLines === 31, `elided ${result!.elidedRegions}/${result!.elidedLines}`)
+  assert(result!.formatted.includes('     2→  <div>{{ msg }}</div>'), 'template kept')
+})
+
+await test('css: long rule bodies fold; selectors and @media stay', async () => {
+  const rule = (selector: string, indent = '') => [
+    `${indent}${selector} {`,
+    ...Array.from({ length: 30 }, (_, i) => `${indent}  --token-${i}: ${i}px;`),
+    `${indent}}`,
+  ]
+  const css = [...rule('.card'), '@media (max-width: 600px) {', ...rule('.card', '  '), '}'].join('\n')
+  const result = await buildSkeleton(css, 'css', fmt)
+  assert(result !== null, 'expected a skeleton')
+  assert(result!.elidedRegions === 2, `regions ${result!.elidedRegions}`)
+  assert(result!.formatted.includes('@media (max-width: 600px) {'), '@media kept')
+  assert(!result!.formatted.includes('--token-7'), 'declarations elided')
+  const small = Array.from({ length: 40 }, (_, i) => `.c${i} { color: red; }`).join('\n')
+  assert((await buildSkeleton(small, 'css', fmt)) === null, 'one-line rules leave nothing worth folding')
+})
+
+await test('an outline over the size limit folds long plain-code runs to fit', async () => {
+  const setup = (name: string) => [
+    `// --- ${name} ---`,
+    ...Array.from({ length: 40 }, (_, i) => `${name}.settings.value${i} = ${i};`),
+    `scene.add(${name});`,
+  ]
+  const src = [
+    ...setup('lights'),
+    'function draw() {',
+    ...Array.from({ length: 30 }, (_, i) => `  step(${i});`),
+    '}',
+    ...setup('camera'),
+  ].join('\n')
+  const unlimited = await buildSkeleton(src, 'js', fmt)
+  assert(unlimited !== null && unlimited.condensedRegions === undefined, 'without a limit only bodies fold')
+  const limit = Math.floor(unlimited!.formatted.length / 2)
+  const fitted = await buildSkeleton(src, 'js', fmt, text => text.length <= limit)
+  assert(fitted !== null, 'expected an outline')
+  assert(fitted!.formatted.length <= limit, `fits: ${fitted!.formatted.length} <= ${limit}`)
+  assert((fitted!.condensedRegions ?? 0) >= 1, 'a plain-code run was folded')
+  // The kept run is lines 1-43 (setup, then draw's signature): its first and
+  // last lines stay, so the comment and the signature remain.
+  assert(fitted!.formatted.includes('code folded: lines 2-42 (41 lines)'), `marker names the folded run:\n${fitted!.formatted}`)
+  assert(fitted!.formatted.includes('     1→// --- lights ---'), 'first line of the run stays')
+  assert(fitted!.formatted.includes('    43→function draw() {'), 'the next signature stays')
+  const same = await buildSkeleton(src, 'js', fmt, () => true)
+  assert(same!.formatted === unlimited!.formatted, 'an outline that fits is unchanged')
+})
+
+await test('an outline whose one body holds most of the file is read whole when cheap', async () => {
+  const testFile = [
+    "import { strict as assert } from 'node:assert'",
+    'function main() {',
+    ...Array.from({ length: 300 }, (_, i) => `  assert.equal(compute(${i}), ${i * 2})`),
+    '}',
+    'main()',
+  ].join('\n')
+  const thin = await buildSkeleton(testFile, 'ts', fmt)
+  assert(thin !== null && thin.largestElidedLines === 300, `largest body ${thin?.largestElidedLines}`)
+  assert(shouldReadWholeInstead(thin!, 4_000, 25_000), 'a cheap thin file is read whole')
+  assert(!shouldReadWholeInstead(thin!, 20_000, 25_000), 'a big thin file keeps its outline')
+  const many = Array.from({ length: 12 }, (_, i) => [
+    `export function part${i}() {`,
+    ...Array.from({ length: 20 }, (_, k) => `  step(${i}, ${k})`),
+    '}',
+  ]).flat().join('\n')
+  const outline = await buildSkeleton(many, 'ts', fmt)
+  assert(outline !== null && !shouldReadWholeInstead(outline!, 2_000, 25_000), 'many functions keep the outline')
+})
+
+await test('html: only script code folds to fit, never markup', async () => {
+  const markup = Array.from({ length: 30 }, (_, i) => `  <p id="p${i}">Paragraph ${i}</p>`)
+  const page = [
+    '<html><body>',
+    ...markup,
+    '<script>',
+    ...Array.from({ length: 60 }, (_, i) => `world.value${i} = ${i};`),
+    'function tick() {',
+    ...Array.from({ length: 300 }, (_, i) => `  tickStep(${i});`),
+    '}',
+    '</script>',
+    '</body></html>',
+  ].join('\n')
+  const full = await buildSkeleton(page, 'html', fmt)
+  assert(full !== null, 'expected an outline')
+  const fitted = await buildSkeleton(page, 'html', fmt, text => text.length <= full!.formatted.length - 500)
+  assert(fitted !== null && (fitted!.condensedRegions ?? 0) === 1, 'the script run folded')
+  for (let i = 0; i < 30; i++) assert(fitted!.formatted.includes(`<p id="p${i}">`), `markup line ${i} kept`)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

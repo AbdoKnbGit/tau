@@ -9,7 +9,8 @@ import { createFileHistoryBatch } from '../../utils/fileHistory.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { pathInAllowedWorkingPath } from '../../utils/permissions/filesystem.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
-import { EVAL_TOOL_NAME } from './constants.js'
+import { EVAL_TOOL_NAME, MAX_WRITTEN_FILE_LINES } from './constants.js'
+import { describeWrittenFile, readTextForSummary } from './writeSummary.js'
 import {
   clampOutput,
   resolveTimeoutMs,
@@ -193,6 +194,8 @@ export const EvalTool = buildTool({
 
     const bridgeCalls: BridgeCallRecord[] = []
     const writtenFiles = new Set<string>()
+    // Each file's text when the cell first touched it, for the change summary.
+    const textBefore = new Map<string, { text: string | null; created: boolean }>()
     // One file-history update for the whole cell, not one per file written.
     const writes = createFileHistoryBatch(toolUseContext.updateFileHistoryState, parentMessage.uuid)
     const budget = new DeadlineBudget()
@@ -212,6 +215,9 @@ export const EvalTool = buildTool({
         if (!isAbsolute(path)) return
         if (!pathInAllowedWorkingPath(path, toolUseContext.getAppState().toolPermissionContext)) return
         writtenFiles.add(path)
+        if (!textBefore.has(path)) {
+          textBefore.set(path, { text: created ? null : await readTextForSummary(path), created })
+        }
         await writes.backup(path, { createdFile: created })
       },
       commitWrites: () => writes.commit(),
@@ -233,6 +239,12 @@ export const EvalTool = buildTool({
       // Before the note: committing sizes the new files and settles which
       // ones stay untracked.
       await writes.commit()
+      const changes = new Map<string, string>()
+      for (const path of [...writtenFiles].slice(0, MAX_WRITTEN_FILE_LINES)) {
+        const before = textBefore.get(path)
+        const change = before ? await describeWrittenFile(path, before.text, before.created) : ''
+        if (change) changes.set(path, change)
+      }
 
       const segments: string[] = []
       if (outcome.stdout) segments.push(outcome.stdout.replace(/\n+$/, ''))
@@ -253,7 +265,7 @@ export const EvalTool = buildTool({
       for (const display of textDisplays) segments.push(display.data)
 
       const joined = segments.join('\n').trim()
-      const withBridge = `${joined}${summarizeBridgeCalls(bridgeCalls)}${summarizeWrittenFiles([...writtenFiles], cwd, [...writes.skipped])}`
+      const withBridge = `${joined}${summarizeBridgeCalls(bridgeCalls)}${summarizeWrittenFiles([...writtenFiles], cwd, [...writes.skipped], changes)}`
       const clamped = clampOutput(
         withBridge.trim() ||
           (outcome.ok

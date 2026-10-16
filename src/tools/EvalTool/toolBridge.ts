@@ -11,6 +11,7 @@ import type { APIProvider } from '../../utils/model/providerRegistry.js'
 import { resolveEffectiveAPIProvider } from '../../services/api/providerRouting.js'
 import { getCodexRegistrationForTool } from '../../lanes/codex/tools.js'
 import type { LaneToolRegistration } from '../../lanes/types.js'
+import { FILE_READ_TOOL_NAME } from '../FileReadTool/constants.js'
 import { EVAL_BRIDGE_BLOCKED_TOOLS } from './constants.js'
 import type { BridgeCallRecord } from './format.js'
 
@@ -242,8 +243,14 @@ async function invoke(
   await entry.commitWrites?.()
   const cellAgentId = entry.toolUseContext.agentId
   const ambient = getAgentContext()
+  // A bridged Read returns its text to the cell, not to the model: it must
+  // never come back as a dedup note, nor be pointed back to by one.
+  const callContext =
+    tool.name === FILE_READ_TOOL_NAME
+      ? { ...entry.toolUseContext, readResultHidden: true }
+      : entry.toolUseContext
   const invoke = () =>
-    tool.call(input, entry.toolUseContext, entry.canUseTool, entry.parentMessage)
+    tool.call(input, callContext, entry.canUseTool, entry.parentMessage)
   const result =
     cellAgentId !== undefined && ambient?.agentId !== cellAgentId
       ? await runWithAgentContext(
