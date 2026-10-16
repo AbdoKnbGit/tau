@@ -219,6 +219,8 @@ export type ExecOptions = {
    * lets the model run a command elsewhere without persisting a `cd`.
    */
   workdir?: string
+  /** Return the final cwd as metadata; does not make a workdir override persistent. */
+  captureFinalCwd?: boolean
   /**
    * Provider, model and effort of the agent whose own tool call runs this
    * command (see shell/agentModelEnv.ts), exported as TAU_PROVIDER,
@@ -251,6 +253,7 @@ export async function exec(
     shouldAutoBackground,
     onStdout,
     workdir,
+    captureFinalCwd,
     agentModelEnv,
   } = options ?? {}
   const commandTimeout = timeout || DEFAULT_TIMEOUT
@@ -277,6 +280,7 @@ export async function exec(
       id,
       sandboxTmpDir: shouldUseSandbox ? sandboxTmpDir : undefined,
       useSandbox: shouldUseSandbox ?? false,
+      captureFinalCwd,
     })
 
   let commandString = builtCommand
@@ -484,19 +488,24 @@ export async function exec(
       if (shouldUseSandbox) {
         SandboxManager.cleanupAfterCommand()
       }
-      // Only foreground tasks update the cwd
-      if (result && !preventCwdChanges && !result.backgroundTaskId) {
+      // Metadata may also be needed when completion wins a backgrounding race.
+      // Only foreground tasks without a workdir override update session state.
+      const updateCwd = !preventCwdChanges && !result.backgroundTaskId
+      if (captureFinalCwd || updateCwd) {
         try {
           let newCwd = readFileSync(nativeCwdFilePath, {
             encoding: 'utf8',
           }).trim()
+          // Preserve shell spelling for the caller's existing workdir resolver
+          // (including shell aliases such as /tmp).
+          if (captureFinalCwd && newCwd) result.finalCwd = newCwd
           if (getPlatform() === 'windows') {
             newCwd = posixPathToWindowsPath(newCwd)
           }
           // cwd is NFC-normalized (setCwdState); newCwd from `pwd -P` may be
           // NFD on macOS APFS. Normalize before comparing so Unicode paths
           // don't false-positive as "changed" on every command.
-          if (newCwd.normalize('NFC') !== cwd) {
+          if (updateCwd && newCwd.normalize('NFC') !== cwd) {
             setCwd(newCwd, cwd)
             invalidateSessionEnvCache()
             clearSystemPromptSectionCacheEntry('env_info_simple')

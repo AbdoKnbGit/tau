@@ -56,6 +56,7 @@ import {
   isSameBashCwd,
   normalizeBashExecutionInput,
   normalizeBashExecutionInputInPlace,
+  normalizeForHostFs,
   resolveEffectiveBashCwd,
 } from './bashWorkdir.js';
 import { maybeAppendCommandHelp } from './commandHelp.js';
@@ -305,10 +306,9 @@ const fullInputSchema = lazySchema(() => z.strictObject({
 // re-parse (strictObject) would throw `unrecognized_keys` and crash the Bash
 // permission dialog. Re-wrap the omitted shape as a plain (stripping) z.object so
 // internal/unknown keys are dropped from the PARSED RESULT instead of rejected.
-// call() still reads `_workdirFromCd` off the original input object (not a parse
-// result), and `_simulatedSedEdit` stays omitted here AND stripped in toolExecution
-// (defense-in-depth) — so neither internal cwd compatibility nor the sed-edit
-// guard breaks.
+// Permission checks preserve the validated cwd fields separately before
+// returning updatedInput; otherwise call() would lose the leading cd.
+// `_simulatedSedEdit` stays omitted here AND stripped in toolExecution.
 const inputSchema = lazySchema(() => {
   const omittedShape = (isBackgroundTasksDisabled ? fullInputSchema().omit({
     run_in_background: true,
@@ -1010,16 +1010,13 @@ export const BashTool = buildTool({
         if (resetCwdIfOutsideProject(appState.toolPermissionContext)) {
           stderrForShellReset = stdErrAppendShellResetMessage('');
         }
-        // A model-written leading `cd X && …` was converted into a one-off
-        // workdir (bashWorkdir.ts), which intentionally skips the shell's own
-        // cwd capture. Mirror real shell semantics by persisting the cd target
-        // as the session cwd — but only inside approved working directories,
-        // the same boundary resetCwdIfOutsideProject enforces for a bare `cd`.
-        // Runs even when the command part failed: in a real shell, `cd X &&
-        // failing-cmd` still leaves you in X.
-        if (input._workdirFromCd && input.workdir && !result.preSpawnError && !shouldMaintainProjectWorkingDir() && !isSameBashCwd(executionDir, getCwd()) && pathInAllowedWorkingPath(executionDir, appState.toolPermissionContext)) {
+        // A normalized leading cd may be followed by another directory change.
+        // Prefer the shell's final cwd; retain the initial-cd fallback when an
+        // explicit exit/exec bypassed capture. Explicit workdirs stay one-off.
+        const finalCwd = result.finalCwd ? normalizeForHostFs(result.finalCwd) : executionDir;
+        if (input._workdirFromCd && input.workdir && !result.preSpawnError && !result.backgroundTaskId && !shouldMaintainProjectWorkingDir() && !isSameBashCwd(finalCwd, getCwd()) && pathInAllowedWorkingPath(finalCwd, appState.toolPermissionContext)) {
           try {
-            setCwd(executionDir);
+            setCwd(finalCwd);
             clearSystemPromptSectionCacheEntry('env_info_simple');
           } catch {
             // Target vanished mid-command — keep the current session cwd
@@ -1161,10 +1158,10 @@ export const BashTool = buildTool({
     if (!stderrForShellReset) {
       if (autoWorkdir) {
         cwdNote = `Auto-located ${autoWorkdirLabel} in ${executionDir} and ran it by absolute path (${cwdBeforeExec} had none; session cwd unchanged).`;
-      } else if (!isSameBashCwd(executionDir, cwdAfter)) {
-        cwdNote = `Ran in ${executionDir} for this command only. The session cwd is still ${cwdAfter}; use an absolute path or this command's native location flag for follow-up commands there.`;
       } else if (!isSameBashCwd(cwdAfter, cwdBeforeExec)) {
         cwdNote = `Shell cwd is now ${cwdAfter}`;
+      } else if (!isSameBashCwd(executionDir, cwdAfter)) {
+        cwdNote = `Ran in ${executionDir} for this command only. The session cwd is still ${cwdAfter}; use an absolute path or this command's native location flag for follow-up commands there.`;
       } else if (isMainThread && !isSameBashCwd(cwdAfter, getOriginalCwd())) {
         cwdNote = `Shell cwd: ${cwdAfter}`;
       }
@@ -1280,6 +1277,7 @@ async function* runShellCommand({
     shouldUseSandbox: shouldUseSandbox(input),
     shouldAutoBackground,
     workdir,
+    captureFinalCwd: input._workdirFromCd === true && !preventCwdChanges,
     agentModelEnv
   });
 

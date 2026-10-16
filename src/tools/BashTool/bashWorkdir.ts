@@ -1,5 +1,5 @@
 import { statSync } from 'fs'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import path from 'path'
 import pathWin32 from 'path/win32'
 import { getCwd } from '../../utils/cwd.js'
@@ -159,6 +159,11 @@ export function normalizeForHostFs(
   platform: Platform = getPlatform(),
 ): string {
   if (platform !== 'windows') return target
+  // Match the /tmp alias used by file tools (expandPath) and bashProvider.
+  // Resolve it before Win32 path handling interprets it as a drive-root path.
+  if (/^\/tmp(?:\/|$)/.test(target)) {
+    return pathWin32.join(tmpdir(), target.slice(5))
+  }
   if (!/^(\/[a-zA-Z]\/|\/cygdrive\/|\/\/)/.test(target)) return target
   try {
     return posixPathToWindowsPath(target)

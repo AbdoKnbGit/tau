@@ -113,6 +113,9 @@ jobs:
       - name: Build with esbuild (default, Node-only)
         run: npm run build
 
+      - name: Test Bash working directory persistence and provider adapters
+        run: node --test test/bash-cwd-persistence.test.mjs
+
       - name: Test source-map reads and cache stability
         run: node --test test/file-read-source-maps.test.mjs test/file-read-range-dedup.test.mjs test/core-tool-contracts.test.mjs test/tool-result-budget.test.mjs
 

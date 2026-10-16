@@ -382,6 +382,24 @@ function main(): void {
 
   console.log('\nrewriteAmbiguousInlineCodeQuoting:')
 
+  test('keeps separate, correctly quoted arguments separate on every platform', () => {
+    for (const command of [
+      'mkdir -p "workflow/child" "workflow/result folder"',
+      'mkdir -p "/c/work/child" "/c/work/result folder"',
+      'mkdir -p "C:/work/child" "C:/work/result folder"',
+      'mkdir -p "/tmp/work/child" "/tmp/work/result folder"',
+      'cp -r "source folder" "destination folder"',
+      'grep -e "needle" "input file"',
+      'runtime --eval "print(1)" "input file"',
+      'runtime --eval="print(1)" "input file"',
+    ]) {
+      assertEqual(rewriteAmbiguousInlineCodeQuoting(command), command, command)
+      for (const platform of ['windows', 'linux', 'macos'] as const) {
+        assertEqual(applyBashDefensiveRewrites(command, platform), command, `${platform}: ${command}`)
+      }
+    }
+  })
+
   test('preserves nested code quotes for generic --eval payloads', () => {
     assertEqual(
       rewriteAmbiguousInlineCodeQuoting(

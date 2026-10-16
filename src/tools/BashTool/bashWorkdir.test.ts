@@ -6,13 +6,14 @@
 
 import { mkdirSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
-import { join, posix as pathPosix, relative } from 'path'
+import { join, posix as pathPosix, relative, win32 as pathWin32 } from 'path'
 import { toJSONSchema, z } from 'zod/v4'
 import { getPlatform } from '../../utils/platform.js'
 import {
   extractLeadingCdCommand,
   isSameBashCwd,
   normalizeBashExecutionInput,
+  normalizeForHostFs,
   resolveBashPathFrom,
 } from './bashWorkdir.js'
 
@@ -214,6 +215,97 @@ async function main(): Promise<void> {
       `got ${result}`,
     )
   })
+
+  await test('maps only the Windows host /tmp alias to the OS temp directory', () => {
+    for (const [target, suffix] of [
+      ['/tmp', ''],
+      ['/tmp/', ''],
+      ['/tmp/dummy-project', 'dummy-project'],
+      ['/tmp/project with spaces/nested', 'project with spaces/nested'],
+    ] as const) {
+      assert(
+        normalizeForHostFs(target, 'windows') === pathWin32.join(tmpdir(), suffix),
+        `wrong host mapping for ${target}`,
+      )
+    }
+    for (const target of ['/tmp-other/repo', '/temporary/repo', 'tmp/repo', '/var/tmp/repo']) {
+      assert(normalizeForHostFs(target, 'windows') === target, `must preserve ${target}`)
+    }
+  })
+
+  await test('preserves native /tmp semantics on Linux, macOS, and WSL', () => {
+    for (const platform of ['linux', 'macos', 'wsl'] as const) {
+      assert(normalizeForHostFs('/tmp/project', platform) === '/tmp/project', platform)
+      const result = normalizeBashExecutionInput(
+        { command: 'cd /tmp/project && pwd' },
+        '/workspace',
+        platform,
+      )
+      assert(result.workdir === '/tmp/project', `wrong ${platform} workdir`)
+      assert(result.command === 'pwd' && result._workdirFromCd === true, platform)
+    }
+  })
+
+  await test('leaves remote /tmp paths and git -C commands untouched', () => {
+    for (const command of [
+      'git -C /tmp/dummy-project status',
+      'docker exec -w /tmp app sh -c "cd /tmp/project && pwd"',
+      'docker compose exec namenode hadoop fs -ls /tmp/',
+      'hadoop fs -ls /tmp/',
+      'hdfs dfs -cat /tmp/result',
+    ]) {
+      const input = { command }
+      assert(normalizeBashExecutionInput(input, 'Q:\\workspace', 'windows') === input, command)
+      const result = normalizeBashExecutionInput(
+        { command: `cd /tmp && ${command}` },
+        'Q:\\workspace',
+        'windows',
+      )
+      assert(result.command === command, `remote arguments changed: ${command}`)
+    }
+  })
+
+  if (getPlatform() === 'windows') {
+    await test('fixes /tmp cd chains without changing cwd flags or command contents', () => {
+      const command = 'git add -A && git commit -m "Initial commit"'
+      const result = normalizeBashExecutionInput(
+        { command: `cd /tmp/dummy-project && ${command}` },
+        tmpdir(),
+      )
+      assert(result.workdir === join(tmpdir(), 'dummy-project'), `got ${result.workdir}`)
+      assert(result.command === command, 'git command must stay unchanged')
+      assert(result._workdirFromCd === true, 'cd persistence flag must survive')
+      assert(normalizeBashExecutionInput(result, tmpdir()) === result, 'must be idempotent')
+
+      const chained = normalizeBashExecutionInput(
+        { command: 'cd /tmp && cd "project with spaces" && pwd' },
+        tmpdir(),
+      )
+      assert(chained.workdir === join(tmpdir(), 'project with spaces'), 'chained cd target')
+      assert(chained.command === 'pwd', 'chained cd remainder')
+
+      const explicit = normalizeBashExecutionInput({ command: 'pwd', workdir: '/tmp' }, tmpdir())
+      assert(explicit.workdir === tmpdir(), 'explicit /tmp workdir')
+      assert(explicit._workdirFromCd === undefined, 'explicit workdir must remain one-off')
+      assert(isSameBashCwd('/tmp', tmpdir()), 'temp alias must match native cwd')
+    })
+
+    await test('uses configured temp roots without assuming a drive or caching the path', () => {
+      const previousTemp = process.env.TEMP
+      try {
+        for (const temp of ['Q:\\custom temp', 'Z:\\', '\\\\server\\share\\temp']) {
+          process.env.TEMP = temp
+          assert(
+            resolveBashPathFrom('R:\\workspace', '/tmp/project', 'windows') === pathWin32.join(temp, 'project'),
+            `must use current temp root ${temp}`,
+          )
+        }
+      } finally {
+        if (previousTemp === undefined) delete process.env.TEMP
+        else process.env.TEMP = previousTemp
+      }
+    })
+  }
 
   await test('collapses a repeated cwd suffix from a leading cd', () => {
     const root = mkdtempSync(join(tmpdir(), 'tau-workdir-overlap-'))

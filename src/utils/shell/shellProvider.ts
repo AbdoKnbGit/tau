@@ -17,6 +17,8 @@ export type ShellProvider = {
       id: number | string
       sandboxTmpDir?: string
       useSandbox: boolean
+      /** Capture the final cwd even when the evaluated command fails. */
+      captureFinalCwd?: boolean
     },
   ): Promise<{ commandString: string; cwdFilePath: string }>
 

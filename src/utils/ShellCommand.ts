@@ -27,6 +27,8 @@ export type ExecResult = {
   outputTaskId?: string
   /** Error message when the command failed before spawning (e.g., deleted cwd). */
   preSpawnError?: string
+  /** Internal: final directory in shell spelling, for a normalized leading cd. */
+  finalCwd?: string
 }
 
 export type ShellCommand = {

@@ -511,6 +511,20 @@ async function runPermissionRequestHooksForHeadlessAgent(
   return null
 }
 
+function parseToolInputForPermissions(tool: Tool, input: Record<string, unknown>) {
+  const parsedInput = tool.inputSchema.parse(input)
+  // Bash validation has already moved a leading cd into internal cwd fields.
+  // Re-parsing with the public schema must not drop the execution directory.
+  // Model-supplied internals are stripped at toolExecution's input boundary.
+  if (tool.name === BASH_TOOL_NAME && typeof input.workdir === 'string') {
+    parsedInput.workdir = input.workdir
+    if (typeof input._workdirFromCd === 'boolean') {
+      parsedInput._workdirFromCd = input._workdirFromCd
+    }
+  }
+  return parsedInput
+}
+
 export const hasPermissionsToUseTool: CanUseToolFn = async (
   tool,
   input,
@@ -644,7 +658,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         tool.name !== REPL_TOOL_NAME
       ) {
         try {
-          const parsedInput = tool.inputSchema.parse(input)
+          const parsedInput = parseToolInputForPermissions(tool, input)
           const acceptEditsResult = await tool.checkPermissions(parsedInput, {
             ...context,
             getAppState: () => {
@@ -1159,7 +1173,7 @@ export async function checkRuleBasedPermissions(
     message: createPermissionRequestMessage(tool.name),
   }
   try {
-    const parsedInput = tool.inputSchema.parse(input)
+    const parsedInput = parseToolInputForPermissions(tool, input)
     toolPermissionResult = await tool.checkPermissions(parsedInput, context)
   } catch (e) {
     if (e instanceof AbortError || e instanceof APIUserAbortError) {
@@ -1259,7 +1273,7 @@ async function hasPermissionsToUseToolInner(
     message: createPermissionRequestMessage(tool.name),
   }
   try {
-    const parsedInput = tool.inputSchema.parse(input)
+    const parsedInput = parseToolInputForPermissions(tool, input)
     toolPermissionResult = await tool.checkPermissions(parsedInput, context)
   } catch (e) {
     // Rethrow abort errors so they propagate properly

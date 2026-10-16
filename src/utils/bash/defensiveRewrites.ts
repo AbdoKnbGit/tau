@@ -637,6 +637,9 @@ export function rewriteAmbiguousInlineCodeQuoting(command: string): string {
       if (equals !== -1) {
         const rawEquals = word.raw.indexOf('=')
         if (rawEquals === -1) continue
+        // A complete quoted argument has no broken inline quotes to repair.
+        // Do not absorb a later argument (e.g. --eval="code" "input file").
+        if (/^"(?:\\.|[^"\\])*"$/.test(word.raw.slice(rawEquals + 1))) continue
         const rawStart = word.start + rawEquals + 1
         const rawTail = text.slice(rawStart)
         const close = rawTail.startsWith('"')
@@ -660,6 +663,11 @@ export function rewriteAmbiguousInlineCodeQuoting(command: string): string {
 
       const argument = words[index + 1]
       if (!argument) continue
+      // Short flags also belong to ordinary commands such as mkdir -p.
+      if (/^"(?:\\.|[^"\\])*"$/.test(argument.raw)) {
+        index++
+        continue
+      }
       const rawTail = text.slice(argument.start)
       const close = rawTail.startsWith('"')
         ? findLastUnescapedDoubleQuote(rawTail)

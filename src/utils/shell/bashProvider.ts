@@ -79,6 +79,7 @@ export async function createBashShellProvider(
         id: number | string
         sandboxTmpDir?: string
         useSandbox: boolean
+        captureFinalCwd?: boolean
       },
     ): Promise<{ commandString: string; cwdFilePath: string }> {
       let snapshotFilePath = await snapshotPromise
@@ -171,9 +172,17 @@ export async function createBashShellProvider(
       // When sourcing a file with aliases, they won't be expanded in the same command line
       // because the shell parses the entire line before execution. Using eval after
       // sourcing causes a second parsing pass where aliases are now available for expansion.
-      commandParts.push(`eval ${quotedCommand}`)
-      // Use `pwd -P` to get the physical path of the current working directory for consistency with `process.cwd()`
-      commandParts.push(`pwd -P >| ${quote([shellCwdFilePath])}`)
+      const captureCwd = `pwd -P >| ${quote([shellCwdFilePath])}`
+      if (opts.captureFinalCwd) {
+        // A normalized leading cd needs the *final* directory, including after
+        // a failing command. Keep eval in an AND/OR list as before (errexit),
+        // and preserve its status without installing or replacing shell traps.
+        commandParts.push(`{ eval ${quotedCommand} && __tau_cwd_status=0 || __tau_cwd_status=$?; ${captureCwd}; exit "$__tau_cwd_status"; }`)
+      } else {
+        commandParts.push(`eval ${quotedCommand}`)
+        // Physical cwd, consistent with process.cwd().
+        commandParts.push(captureCwd)
+      }
       let commandString = commandParts.join(' && ')
 
       // Apply CLAUDE_CODE_SHELL_PREFIX if set
