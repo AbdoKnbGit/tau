@@ -57,7 +57,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { BROWSER_TOOL_NAME } from './constants.js'
 
 const DESCRIPTION =
-  'Drive a real Chrome/Edge browser: read a page the cheap way (HTTP first, browser only when needed), observe numbered elements, click, fill, type, drag, upload, run JS, measure what actually rendered, extract structured data with provenance, watch for console/network errors, record and replay flows, screenshot, let the user point at the element they mean, and manage tabs. Every action reports what it actually changed. One tool, one action per call.'
+  'Drive a real Chrome/Edge browser: read a page the cheap way (HTTP first, browser only when needed), observe numbered elements, click, fill, type, drag, upload, run JS, measure what actually rendered, extract structured data with provenance, watch for console/network errors, record and replay flows, screenshot, let the user point at the element they mean, and manage tabs. Every action reports observed changes. One tool, one action per call.'
 
 const PROMPT = `Operate real Chromium (Chrome/Edge/Brave) through DevTools. Unlike a plain HTTP fetch, this runs JavaScript (React/Vue/SPA pages), clicks and types through real trusted input, and reads the rendered DOM, same-origin iframes included. Inside web pages prefer it to the Computer tool: it is DOM-aware and needs no screenshot per step.
 
@@ -67,9 +67,10 @@ RULES
 - Same URL does not mean same content. Update assumptions after known changes; use returned evidence first. Check against task requirements.
 - NEVER guess coordinates for buttons, links, menus or close controls (the #1 source of wasted steps): coordinates are blind, and a guess clicks the wrong element (a nav link, another product) and destroys progress. x/y are ONLY for canvas/map/video/drawing surfaces without DOM targets, after a screenshot shows the location. ref/text override x/y. coordinate_guessing blocks blind clicks: stop, observe/screenshot, then use ref/text, not another coordinate.
 - Modals, popups, drawers, overlays: dismiss; never hunt the X with coordinates.
-- Every result has "Effect:" (step, URL/document change, DOM movement, elapsed time). "NO OBSERVABLE EFFECT" means URL, document, DOM and scroll are unchanged: the action did nothing; do NOT repeat it with a tweak. "unverified" means the page could not be sampled: unknown, not success.
-- When an action fails or does nothing, SEE the page, never try other numbers: re-observe for fresh refs (most failures are a changed DOM) or screenshot ({ "annotate": true } puts @N badges on what you see), then act by ref/text. After two failures of one tactic or blocker, change approach.
-- When the result attributes no effect to already selected/pressed, disabled, or unchanged select state, accept that explanation rather than retrying. If a target's centre is covered, the tool itself clicks an uncovered point inside it and says so; if that click still does nothing, the overlap is the likely cause.
+- Every result has "Effect:" (step, URL/document change, sampled DOM/scroll, elapsed time for the whole action). "NO OBSERVABLE EFFECT" means no qualifying sampled change, not proof of failed input; do NOT repeat it blindly. "unverified" means the page could not be sampled: unknown, not success.
+- Check the expected result in available evidence. For unexplained failures or unusual duration versus comparable actions, use one cheap, safe check separating likely causes, if within scope. Otherwise report the observation and leave the cause unresolved.
+- When an action fails or has no observed effect, SEE the page, never try other numbers: re-observe for fresh refs (most failures are a changed DOM) or screenshot ({ "annotate": true } puts @N badges on what you see), then act by ref/text. After two failures of one tactic or blocker, change approach.
+- State notes are observations, not causes: pressed toggles may still change. Avoid blind retries on disabled controls or unchanged selects. If a target's centre is covered, the tool itself clicks an uncovered point inside it and says so; this alone does not explain a missing effect.
 - NEVER describe appearance unless this turn's screenshot returned a "vision token" AND you received the image. Source code, OCR, another model's description, "[image not sent ...]", and screenshots saved via path are not seeing. Saved screenshots mint no token: report the path only. For visual facts without an image, use measure.
 
 READ / SEE
@@ -1389,13 +1390,13 @@ async function runAction(
     },
   )
   if (result.ok) recordActionAsStep(input, targetElement, targetSiblings)
-  // "Nothing happened" is more useful with a cause attached.
+  // Target state is context, not proof of why no change was sampled.
   const noEffectNotes: string[] = []
   if (effect.noop && input.ref !== undefined) {
     const explained = await session.explainNoEffect(input.ref)
     if (explained?.known && explained.reasons?.length) {
       noEffectNotes.push(
-        `Nothing changed because ${explained.reasons.join('; ')}${explained.label ? ` (target: "${explained.label}")` : ''}.`,
+        `Target state notes: ${explained.reasons.join('; ')}${explained.label ? ` (target: "${explained.label}")` : ''}.`,
       )
     }
   }

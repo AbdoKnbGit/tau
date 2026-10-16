@@ -858,8 +858,8 @@ class BrowserSessionService {
   }
 
   /**
-   * Why an action left the page unchanged, read from the target's own state.
-   * Turns a bare "nothing happened" into "it was already selected".
+   * Target state that may help interpret an unchanged sample.
+   * This does not establish the cause of a missing effect.
    */
   async explainNoEffect(ref: number): Promise<StateExplanation | null> {
     if (!this.client?.isOpen) return null;
@@ -1369,7 +1369,7 @@ class BrowserSessionService {
     }
     if (prep.offCentre) {
       warnings.push(
-        "The centre of that element is covered by something painted above it, so I clicked an uncovered point inside it instead. If the click does nothing, that overlap is the reason.",
+        "The centre of that element is covered by something painted above it, so I clicked an uncovered point inside it instead.",
       );
     }
     if ((prep.matches ?? 0) > 1) {

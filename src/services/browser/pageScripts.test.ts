@@ -1104,6 +1104,7 @@ async function main(): Promise<void> {
     ): Promise<void>;
     evaluate<T>(expression: string): Promise<T>;
     pageFingerprint(): Promise<{ url: string; elementCount: number } | null>;
+    listTabs: BrowserSessionService["listTabs"];
     realDrag(
       x1: number,
       y1: number,
@@ -1116,6 +1117,55 @@ async function main(): Promise<void> {
   const SessionCtor = getBrowserSession()
     .constructor as unknown as new () => BrowserSessionService;
   const freshSession = () => new SessionCtor() as unknown as SessionHarness;
+
+  console.log("click evidence:");
+
+  await testAsync(
+    "an unchanged off-centre click reports targeting without blaming overlap or retrying",
+    async () => {
+      const session = freshSession();
+      const freshObservation = obs({
+        interactive_elements: [el({ id: 19, tag: "button", text: "Toggle" })],
+      });
+      let preparations = 0;
+      let inputAttempts = 0;
+      let observations = 0;
+      session.callPageTools = async <T>(invocation: string): Promise<T> => {
+        assert(invocation === "prepareRef(19)", `unexpected probe or fallback: ${invocation}`);
+        preparations++;
+        return {
+          success: true,
+          x: 112,
+          y: 130,
+          label: "Toggle",
+          tag: "button",
+          offCentre: true,
+        } as T;
+      };
+      session.realClick = async (x, y, _signal, clickCount) => {
+        inputAttempts++;
+        assert(x === 112 && y === 130 && clickCount === 1, "must dispatch one click at the prepared uncovered point");
+      };
+      session.pageFingerprint = async () => ({
+        url: freshObservation.url,
+        elementCount: 1,
+      });
+      session.listTabs = async () => [];
+      session.waitForSettle = async () => undefined;
+      session.observe = async () => {
+        observations++;
+        return { observation: freshObservation, warnings: [] };
+      };
+
+      const outcome = await session.click({ ref: 19 });
+      assert(outcome.ok, `dispatch should complete: ${outcome.error}`);
+      assert(preparations === 1 && inputAttempts === 1, "unchanged state must not add probes or input retries");
+      assert(observations === 1 && outcome.observation === freshObservation, "must return the fresh observation");
+      const warning = outcome.warnings.join(" ");
+      assert(warning.includes("uncovered point"), `targeting evidence missing: ${warning}`);
+      assert(!/overlap.{0,40}(?:reason|cause)/i.test(warning), `overlap does not establish why the page stayed unchanged: ${warning}`);
+    },
+  );
 
   console.log("stale ref recovery:");
 

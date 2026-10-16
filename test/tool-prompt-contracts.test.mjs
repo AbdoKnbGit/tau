@@ -126,7 +126,7 @@ test('Browser retains evidence, targeting, recovery and intervention rules', asy
     ['fresh references', /latest observation of the current tab/],
     ['coordinate restriction', /ONLY for canvas\/map\/video\/drawing surfaces without DOM targets/],
     ['no repeated blind clicks', /coordinate_guessing blocks blind clicks/],
-    ['tool-proven no-effect cause', /When the result attributes no effect/],
+    ['state notes do not prove a cause', /State notes are observations, not causes/],
     ['recovery changes approach', /two failures of one tactic or blocker, change approach/],
     ['covered-element distinctions', /element_covered:[\s\S]*Fixed\/sticky[\s\S]*z-index[\s\S]*off-screen/],
     ['native picker is invisible', /NEVER open\/wait for the native file picker/],
@@ -142,6 +142,50 @@ test('Browser retains evidence, targeting, recovery and intervention rules', asy
     ['modals use dismiss', /Modals, popups, drawers, overlays: dismiss; never hunt the X/],
     ['ref clicks strongly preferred', /click \{ ref \} \(strongly preferred\)/],
   ]) assert.match(prompt, pattern, rule)
+})
+
+test('Browser separates observations, expectations and diagnosis within its token budget', async () => {
+  const prompt = await audit.BrowserTool.prompt()
+  assert.match(prompt, /NO OBSERVABLE EFFECT[^\n]*no qualifying sampled change/)
+  assert.match(prompt, /elapsed time for the whole action/)
+  assert.match(prompt, /Check the expected result in available evidence/)
+  assert.match(prompt, /unusual duration[^\n]*comparable actions/)
+  assert.match(prompt, /one cheap, safe check[^\n]*within scope/)
+  assert.match(prompt, /cause unresolved/)
+  assert.match(prompt, /pressed toggles may still change/)
+  assert.doesNotMatch(prompt, /the action did nothing|overlap is the likely cause|accept that explanation/)
+  const tokens = Math.round((JSON.stringify(prompt).length - 2) / 4)
+  // Pre-fix Browser prompt: 2,556 using Tau's serialized-character estimator.
+  assert.ok(tokens <= 2_656, `${tokens - 2_556} estimated added tokens exceeds 100`)
+})
+
+test('Browser no-effect state notes do not diagnose a failed toggle or change cached definitions', async t => {
+  const session = audit.getBrowserSession()
+  const sample = {
+    docId: 'd1', url: 'https://fixture.test/', title: 'Fixture', elements: 1,
+    sig: 'same', textLen: 4, scrollY: 0, readyState: 'complete', target: 'pressed',
+  }
+  t.mock.method(session, 'isRunning', () => true)
+  t.mock.method(session, 'claimActiveTab', () => null)
+  t.mock.method(session, 'sampleState', async () => sample)
+  t.mock.method(session, 'recordStep', () => {})
+  const click = t.mock.method(session, 'click', async () => ({ ok: true, warnings: [] }))
+  t.mock.method(session, 'explainNoEffect', async () => ({
+    known: true, label: 'Mute', reasons: ['it was already pressed (aria-pressed="true")'],
+  }))
+  const definition = JSON.stringify(await audit.toolToAPISchema(audit.BrowserTool, options))
+  const { data } = await audit.BrowserTool.call(
+    { action: 'click', ref: 5 }, { abortController: new AbortController() },
+  )
+  assert.equal(data.ok, true, data.message)
+  assert.equal(click.mock.callCount(), 1, 'no diagnostic retry should be introduced')
+  assert.match(data.receipt, /NO OBSERVABLE EFFECT/)
+  const rendered = audit.BrowserTool.mapToolResultToToolResultBlockParam(data, 'click-test').content
+  assert.match(rendered, /Target state notes:.*aria-pressed/)
+  assert.doesNotMatch(rendered, /Nothing changed because|overlap is the reason/)
+  assert.equal(JSON.stringify(await audit.toolToAPISchema(audit.BrowserTool, options)), definition)
+  audit.clearToolSchemaCache()
+  assert.equal(JSON.stringify(await audit.toolToAPISchema(audit.BrowserTool, options)), definition)
 })
 
 test('Browser state guidance reuses evidence within its token budget', async () => {

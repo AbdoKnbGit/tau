@@ -5,8 +5,8 @@
  * that worked. An observed failure mode in a competing agent: three page-script
  * cells in a row returned no output, each one indistinguishable from success,
  * so the model concluded the tool was broken and abandoned it — then described
- * a UI it had never rendered. Every action here comes back with evidence that
- * it moved the world, or an explicit statement that it did not.
+ * a UI it had never rendered. Every action here reports observed changes,
+ * or that none were detected in the sampled state.
  *
  * The probe is one `Runtime.evaluate` with no round-trips of its own: document
  * identity, URL, scroll position, and a bounded signature over the interactive
@@ -253,8 +253,8 @@ export function formatEffect(effect: ActionEffect): string {
   if (effect.noop) {
     parts.push(
       effect.scrolled
-        ? "NO OBSERVABLE EFFECT — url, document and DOM unchanged (the page scrolled only because I moved the target into view)"
-        : "NO OBSERVABLE EFFECT — url, document, DOM and scroll all unchanged",
+        ? "NO OBSERVABLE EFFECT — url, document and sampled DOM unchanged (scroll changed; ignored for this action)"
+        : "NO OBSERVABLE EFFECT — url, document, sampled DOM and scroll unchanged",
     );
     parts.push(`${effect.ms}ms`);
     return parts.join(" · ");

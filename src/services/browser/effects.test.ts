@@ -80,7 +80,7 @@ function fakeDom(options: {
     d: unknown,
     l: unknown,
   ) => PageStateSnapshot | null;
-  return { win, result: run(win, doc, loc) };
+  return { win, result: run(win, doc, loc), sample: () => run(win, doc, loc) };
 }
 
 function main(): void {
@@ -199,14 +199,34 @@ function main(): void {
     assert(formatEffect(effect).includes("scrolled"), "receipt must mention it");
   });
 
-  test("a click is not excused by the scroll the tool itself performed", () => {
-    // Targeting scrolls the element into view, so on any long page a click
-    // moves scrollY. Treating that as evidence would hide every no-op.
+  test("scroll-only clicks report the observation without inventing its cause", () => {
+    // Either targeting or a page handler can scroll; the samples cannot tell.
     const effect = diffEffect("click", snapshot(), snapshot({ scrollY: 900 }), 13, 40);
-    assert(effect.noop, "a click that only moved the viewport did nothing");
+    assert(effect.noop, "scroll alone is excluded from click evidence");
     const text = formatEffect(effect);
     assert(text.includes("NO OBSERVABLE EFFECT"), text);
-    assert(text.includes("scrolled only because I moved the target"), text);
+    assert(text.includes("scroll changed; ignored for this action"), text);
+    assert(!/because|only because|the reason/i.test(text), text);
+  });
+
+  test("slow unchanged actions report samples and elapsed time, not a diagnosis", () => {
+    for (const ms of [0, 800, 20_800, 60_000]) {
+      const effect = diffEffect("click", snapshot(), snapshot(), 6, ms);
+      const text = formatEffect(effect);
+      assert(effect.noop && !effect.unverified, "duration cannot change the observation");
+      assert(text.includes("sampled DOM") && text.includes(`${ms}ms`), text);
+      assert(!/failed|timeout|CDP|overlap|because/i.test(text), text);
+    }
+  });
+
+  test("unobserved application state is not evidence of a DOM change", () => {
+    const nodes = [{ tagName: "BUTTON", id: "canvas-action", textContent: "Draw" }];
+    const first = fakeDom({ nodes });
+    first.win.canvasDraws = 1; // Canvas/network/JS-only effects are outside the probe.
+    const after = first.sample()!;
+    const effect = diffEffect("click", first.result!, after, 7, 800);
+    assert(effect.noop, "the probe should remain limited to its sampled fields");
+    assert(formatEffect(effect).includes("sampled DOM"), "receipt must state its limit");
   });
 
   test("a click that scrolled AND changed the dom is a real effect", () => {

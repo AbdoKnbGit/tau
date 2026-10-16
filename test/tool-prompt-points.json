@@ -239,16 +239,18 @@
   },
   {
    "id": "B32",
-   "point": "then the overlap is the likely cause",
+   "point": "reported overlap alone does not explain a missing effect",
    "all": [
-    "(overlap is the likely|suspect the reported overlap)"
+    "this alone does not explain a missing effect"
    ]
   },
   {
    "id": "B33",
-   "point": "state explains no effect: accept, don't retry",
+   "point": "state notes are observations: avoid blind retries, toggles may change",
    "all": [
-    "(an answer, not a failure to retry|accept that explanation)"
+    "State notes are observations, not causes",
+    "Avoid blind retries",
+    "pressed toggles may still change"
    ]
   },
   {
