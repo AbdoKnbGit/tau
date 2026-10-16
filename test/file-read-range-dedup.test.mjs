@@ -271,6 +271,41 @@ test('Read tells every model to read just the range it needs', async () => {
   assert.ok(!prompt.includes('Omit offset/limit for the whole file'))
 })
 
+test('a long edit whose old_string skipped one empty line still applies, and keeps it', async () => {
+  const body = Array.from({ length: 140 }, (_, i) => `  camera.step${i}(target, ${i});`)
+  const lines = ['function setCameraPreset(mode) {', ...body.slice(0, 70), '', ...body.slice(70), '}', 'setCameraPreset("orbit")']
+  await fixture(async (file, context) => {
+    await modelRead(file, context)
+    const old = ['function setCameraPreset(mode) {', ...body, '}'].join('\n')
+    const input = { file_path: file, old_string: old, new_string: old.replace('camera.step100(target, 100);', 'camera.step100(target, 0);') }
+    assert.equal((await audit.FileEditTool.validateInput(input, context)).result, true)
+    await audit.FileEditTool.call(input, context, undefined, { uuid: 'blank-line-drift' })
+    const after = readFileSync(file, 'utf8').split('\n')
+    assert.equal(after[71], '', 'the empty line the old_string skipped is still there')
+    assert.equal(after[102], '  camera.step100(target, 0);')
+    assert.equal(after.length, lines.length)
+  }, lines)
+})
+
+test('a long old_string that fails names empty lines and suggests splitting', async () => {
+  const body = Array.from({ length: 60 }, (_, i) => `  render.pass${i}(frame, ${i});`)
+  const lines = ['function animate() {', ...body.slice(0, 20), '', ...body.slice(20), '}']
+  await fixture(async (file, context) => {
+    await modelRead(file, context)
+    const remembered = ['function animate() {', ...body, '}']
+    remembered[21] = '  render.pass20(frame, 99);'
+    const rejection = await audit.FileEditTool.validateInput({ file_path: file, old_string: remembered.join('\n'), new_string: 'x' }, context)
+    assert.equal(rejection.result, false)
+    assert.match(rejection.message, /differs at line 22 \(the file has an empty line your old_string lacks\):\n {2}file: {7}\(empty line\)\n/)
+    assert.match(rejection.message, /This old_string is 62 lines, and a long one fails on any drift: edit just the lines you change plus 2-3 lines of context, in several smaller edits\./)
+  }, lines)
+})
+
+test('Edit tells every model to keep old_string small', async () => {
+  const prompt = await audit.FileEditTool.prompt()
+  assert.match(prompt, /Keep `old_string` to the lines you change plus 2-3 lines of context; split a large change into several edits\./)
+})
+
 test('duplicate matches report where they are', async () => {
   await fixture(async (file, context) => {
     await modelRead(file, context)

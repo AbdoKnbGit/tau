@@ -9,9 +9,10 @@
  * in a single retry:
  *
  *  - resolveFlexibleMatch: when old_string doesn't match exactly, find the
- *    region the model meant — the same lines modulo trailing whitespace, or
- *    the same lines uniformly re-indented — and return the file's REAL text
- *    for it (never the model's guess), re-aligning new_string the same way.
+ *    region the model meant — the same lines modulo trailing whitespace, the
+ *    same lines uniformly re-indented, or the same lines with blank lines
+ *    added or missing between them — and return the file's REAL text for it
+ *    (never the model's guess), re-aligning new_string the same way.
  *    Only fires when that region is unique in the file; any ambiguity falls
  *    through to an error instead of a wrong write.
  *
@@ -25,7 +26,7 @@
  * Pure string functions, no I/O — keep it that way so tests stay leaf-level.
  */
 
-export type FlexibleMatchType = 'trailing-whitespace' | 'indent'
+export type FlexibleMatchType = 'trailing-whitespace' | 'indent' | 'blank-lines'
 
 export type FlexibleMatch = {
   /** Exact text as it exists in the file — safe to String.replace with. */
@@ -141,15 +142,17 @@ export function capEditResultSnippet(snippet: string): string {
 
 /**
  * Resolve old_string against the file when the exact (and quote-normalized)
- * match failed. Two whitespace-only relaxations, in order:
+ * match failed. Three whitespace-only relaxations, in order:
  *
  *  1. trailing-whitespace: every line matches after stripping trailing
  *     whitespace. new_string is used as-is.
  *  2. indent: every line matches after a single uniform leading-whitespace
  *     prefix is added to (or removed from) the model's lines. new_string gets
  *     the same shift so relative indentation is preserved.
+ *  3. blank-lines: every non-empty line matches in order, with only empty
+ *     lines added or missing between them (matchIgnoringBlankLines).
  *
- * Both require the match to be UNIQUE in the file and line-aligned; anything
+ * All require the match to be UNIQUE in the file and line-aligned; anything
  * ambiguous or mid-line returns null so the caller errors instead of writing
  * the wrong place. The returned actualOldString is verbatim file content, so
  * the subsequent replace can never introduce hallucinated context.
@@ -248,7 +251,13 @@ export function resolveFlexibleMatch(
     match = { start: s, delta }
   }
   if (!match) {
-    return null
+    return matchIgnoringBlankLines(
+      fileLines,
+      fileTrimEnd,
+      searchTrimEnd,
+      hadTrailingNewline,
+      newString,
+    )
   }
 
   const adapted = shiftIndent(newString, match.delta)
@@ -258,6 +267,139 @@ export function resolveFlexibleMatch(
     return null
   }
   return buildMatch(match.start, 'indent', adapted)
+}
+
+/**
+ * Stage 3, blank-line drift: every non-empty line of old_string appears in
+ * the file in the same order and otherwise unchanged (trailing whitespace
+ * aside), with only empty lines added or missing between them — what a
+ * formatter, or a model re-typing a long block, introduces. old_string must
+ * start and end on non-empty lines, so the region's extent is never a guess,
+ * and exactly one region may match.
+ */
+function matchIgnoringBlankLines(
+  fileLines: string[],
+  fileTrimEnd: string[],
+  searchTrimEnd: string[],
+  hadTrailingNewline: boolean,
+  newString: string,
+): FlexibleMatch | null {
+  const content: number[] = []
+  searchTrimEnd.forEach((line, i) => {
+    if (line.trim() !== '') content.push(i)
+  })
+  if (
+    content.length < 2 ||
+    content[0] !== 0 ||
+    content[content.length - 1] !== searchTrimEnd.length - 1
+  ) {
+    return null
+  }
+
+  // File row of each old_string content line, for the one matching region.
+  let found: number[] | null = null
+  for (let s = 0; s < fileLines.length; s++) {
+    if (fileTrimEnd[s] !== searchTrimEnd[0]) continue
+    const rows = [s]
+    let f = s
+    for (let k = 1; k < content.length; k++) {
+      f++
+      while (f < fileLines.length && fileTrimEnd[f]!.trim() === '') f++
+      if (f >= fileLines.length || fileTrimEnd[f] !== searchTrimEnd[content[k]!]) break
+      rows.push(f)
+    }
+    if (rows.length !== content.length) continue
+    if (found) return null // two regions — ambiguous
+    found = rows
+  }
+  if (!found) return null
+  const start = found[0]!
+  const end = found[found.length - 1]!
+  if (hadTrailingNewline && end + 1 >= fileLines.length) return null
+
+  const actualNewString = keepFileBlankLines(searchTrimEnd, content, fileLines, found, newString)
+  if (actualNewString === null) return null
+  return {
+    actualOldString:
+      fileLines.slice(start, end + 1).join('\n') + (hadTrailingNewline ? '\n' : ''),
+    actualNewString,
+    matchType: 'blank-lines',
+  }
+}
+
+// Bound on aligning old_string with new_string (content lines of each).
+const MAX_ALIGN_CELLS = 1_000_000
+
+/**
+ * new_string with the file's own blank lines put back in every gap that
+ * new_string leaves untouched: both lines around it kept unchanged and
+ * separated only by old_string's blank lines. Gaps the model rewrote follow
+ * new_string. Null when the strings are too large to align.
+ */
+function keepFileBlankLines(
+  searchTrimEnd: string[],
+  content: number[],
+  fileLines: string[],
+  found: number[],
+  newString: string,
+): string | null {
+  const hadTrailingNewline = newString.endsWith('\n')
+  const newLines = (hadTrailingNewline ? newString.slice(0, -1) : newString).split('\n')
+  const newContent: number[] = []
+  newLines.forEach((line, i) => {
+    if (line.trim() !== '') newContent.push(i)
+  })
+  const a = content.map(i => searchTrimEnd[i]!)
+  const b = newContent.map(i => newLines[i]!.trimEnd())
+  if (a.length * b.length > MAX_ALIGN_CELLS) return null
+
+  // Longest common subsequence of content lines: which old lines new_string
+  // kept, and where.
+  const width = b.length + 1
+  const lcs = new Uint32Array((a.length + 1) * width)
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lcs[i * width + j] =
+        a[i] === b[j]
+          ? lcs[(i + 1) * width + j + 1]! + 1
+          : Math.max(lcs[(i + 1) * width + j]!, lcs[i * width + j + 1]!)
+    }
+  }
+  const kept = new Array<number | undefined>(a.length)
+  for (let i = 0, j = 0; i < a.length && j < b.length; ) {
+    if (a[i] === b[j]) {
+      kept[i] = newContent[j]
+      i++
+      j++
+    } else if (lcs[(i + 1) * width + j]! >= lcs[i * width + j + 1]!) {
+      i++
+    } else {
+      j++
+    }
+  }
+
+  const gaps: Array<{ upper: number; lower: number; blank: string[] }> = []
+  for (let k = 0; k + 1 < content.length; k++) {
+    const oldGap = content[k + 1]! - content[k]! - 1
+    const fileGap = found[k + 1]! - found[k]! - 1
+    const upper = kept[k]
+    const lower = kept[k + 1]
+    if (oldGap === fileGap || upper === undefined || lower === undefined) continue
+    if (lower - upper - 1 !== oldGap) continue
+    if (newLines.slice(upper + 1, lower).some(line => line.trim() !== '')) continue
+    gaps.push({ upper, lower, blank: fileLines.slice(found[k]! + 1, found[k + 1]!) })
+  }
+  if (gaps.length === 0) return newString
+
+  const out: string[] = []
+  let i = 0
+  for (const gap of gaps) {
+    while (i <= gap.upper) out.push(newLines[i++]!)
+    out.push(...gap.blank)
+    i = gap.lower
+  }
+  while (i < newLines.length) out.push(newLines[i++]!)
+  return out.join('\n') + (hadTrailingNewline ? '\n' : '')
 }
 
 type IndentDelta = { prefix: string; direction: 'add' | 'remove' }
@@ -530,8 +672,12 @@ export function describeOldStringMismatch(
 }
 
 /**
- * The window whose lines match old_string's exactly (by lineMatches) over the
- * most text, or null when no window reaches MIN_ANCHOR_CHARS. Score is the
+ * The window where old_string sits in the file, by exact lines (lineMatches),
+ * or null when no window reaches MIN_ANCHOR_CHARS. A window whose first lines
+ * match (a leading run of at least MIN_ANCHOR_CHARS) wins, longest run first:
+ * that is where old_string begins, and a line it gained or lost only shifts
+ * what follows, which would otherwise make a shifted window look better.
+ * Without such a run, the window matching the most text wins. Score is the
  * share of old_string lines matched.
  */
 function findAnchoredWindow(
@@ -544,18 +690,30 @@ function findAnchoredWindow(
     return null
   }
   const weight = searchLines.map(line => line.trim().length)
-  let best: { start: number; chars: number; exact: number } | null = null
+  let best: { start: number; lead: number; chars: number; exact: number } | null = null
   for (let s = 0; s + k <= fileLines.length; s++) {
     let chars = 0
     let exact = 0
+    let lead = 0
+    let leading = true
     for (let i = 0; i < k; i++) {
       if (lineMatches(s, i)) {
         chars += weight[i]!
         exact++
+        if (leading) lead += weight[i]!
+      } else {
+        leading = false
       }
     }
-    if (chars >= MIN_ANCHOR_CHARS && (!best || chars > best.chars)) {
-      best = { start: s, chars, exact }
+    if (chars < MIN_ANCHOR_CHARS) continue
+    const anchored = lead >= MIN_ANCHOR_CHARS ? lead : 0
+    const bestAnchored = best && best.lead >= MIN_ANCHOR_CHARS ? best.lead : 0
+    if (
+      !best ||
+      anchored > bestAnchored ||
+      (anchored === bestAnchored && chars > best.chars)
+    ) {
+      best = { start: s, lead, chars, exact }
     }
   }
   return best ? { start: best.start, score: best.exact / k } : null

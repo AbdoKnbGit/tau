@@ -374,6 +374,17 @@ test('partial first and last lines count as matching', () => {
   assertEq(m!.difference?.line, 22, 'difference at the broken line')
 })
 
+test('a line the file gained is reported where old_string starts, not in a shifted window', () => {
+  const lines = numberedFile(120)
+  const file = [...lines.slice(0, 30), '', ...lines.slice(30)]
+  const old = lines.slice(9, 70)
+  old[40] = '  const value50 = changed();'
+  const m = describeOldStringMismatch(file.join('\n'), old.join('\n'))
+  assertEq(m!.regionStart, 10, 'region starts where old_string does')
+  assertEq(m!.difference?.line, 31, 'first difference is the empty line the file gained')
+  assertEq(m!.difference?.file, '', 'the file line there is empty')
+})
+
 test('previewOldString keeps short strings and trims long ones', () => {
   assertEq(previewOldString('a\nb'), 'a\nb', 'short strings are echoed whole')
   const long = numberedFile(30).join('\n')
@@ -381,6 +392,59 @@ test('previewOldString keeps short strings and trims long ones', () => {
   assert(preview.startsWith(numberedFile(1)[0]!), 'starts with the first line')
   assert(preview.includes('28 more lines'), `names the elided lines: ${preview}`)
   assert(preview.length < 400, 'bounded')
+})
+
+console.log('resolveFlexibleMatch, blank-line drift:')
+
+const block = Array.from({ length: 30 }, (_, i) => `  setting${i}(value${i});`)
+
+test('the file has an empty line old_string skipped: resolves, and keeps it', () => {
+  const fileLines = ['function setup() {', ...block.slice(0, 12), '', ...block.slice(12), '}']
+  const file = ['// before', ...fileLines, '// after'].join('\n')
+  const old = ['function setup() {', ...block, '}'].join('\n')
+  const changed = old.replace('  setting20(value20);', '  setting20(other);')
+  const m = resolveFlexibleMatch(file, old, changed)
+  assert(m !== null, 'expected a blank-line match')
+  assertEq(m!.matchType, 'blank-lines', 'match type')
+  assertEq(m!.actualOldString, fileLines.join('\n'), 'old side is the real file text')
+  assertEq(
+    m!.actualNewString,
+    ['function setup() {', ...block.slice(0, 12), '', ...block.slice(12)].join('\n').replace('  setting20(value20);', '  setting20(other);') + '\n}',
+    'the untouched gap keeps the file\'s empty line',
+  )
+})
+
+test('old_string has an empty line the file lacks: resolves without adding it', () => {
+  const file = ['x', 'function setup() {', ...block, '}', 'y'].join('\n')
+  const old = ['function setup() {', ...block.slice(0, 5), '', ...block.slice(5), '}'].join('\n')
+  const m = resolveFlexibleMatch(file, old, old.replace('value3', 'v3'))
+  assert(m !== null, 'expected a blank-line match')
+  assert(!m!.actualNewString.includes('\n\n'), 'no empty line the file never had')
+  assert(m!.actualNewString.includes('setting3(v3);'), 'the change itself is kept')
+})
+
+test('a gap the model rewrote follows new_string', () => {
+  const fileLines = ['function setup() {', ...block.slice(0, 12), '', ...block.slice(12), '}']
+  const old = ['function setup() {', ...block, '}'].join('\n')
+  // The model replaced the two lines around the gap.
+  const changed = old.replace(`${block[11]}\n${block[12]}`, '  merged(11, 12);')
+  const m = resolveFlexibleMatch(fileLines.join('\n'), old, changed)
+  assert(m !== null, 'expected a blank-line match')
+  assertEq(m!.actualNewString, changed, 'new_string used as given')
+})
+
+test('ambiguous, content-changed, edge-blank and deletion cases', () => {
+  const region = (blank: boolean) => ['function setup() {', ...block.slice(0, 3), ...(blank ? [''] : []), ...block.slice(3, 8), '}']
+  const old = ['function setup() {', ...block.slice(0, 8), '}'].join('\n')
+  const twice = [...region(true), '', ...region(true)].join('\n')
+  assertEq(resolveFlexibleMatch(twice, old, 'x'), null, 'two regions are ambiguous')
+  const differs = region(true).join('\n').replace('value5', 'other')
+  assertEq(resolveFlexibleMatch(differs, old, 'x'), null, 'a real content difference is not healed')
+  assertEq(resolveFlexibleMatch(region(true).join('\n'), `\n${old}`, 'x'), null, 'old_string must start on a non-empty line')
+  const deletion = resolveFlexibleMatch(['a', ...region(true), 'b'].join('\n'), old, '')
+  assertEq(deletion?.actualNewString, '', 'deleting the region keeps nothing of it')
+  const withNewline = resolveFlexibleMatch(['a', ...region(true), 'b'].join('\n'), `${old}\n`, 'z\n')
+  assert(withNewline?.actualOldString.endsWith('}\n') === true, 'a trailing newline stays part of the match')
 })
 
 console.log('lineShiftAfterEdit:')

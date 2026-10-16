@@ -258,7 +258,7 @@ export const GEMINI_TOOL_REGISTRY: LaneToolRegistration[] = [
     nativeName: 'replace',
     implId: 'Edit',
     nativeDescription:
-      "Replaces text within a file. By default, the tool expects to find and replace exactly ONE occurrence of `old_string`. If you want to replace multiple occurrences of the exact same string, set `allow_multiple` to true. Copy `old_string` from your latest read: the lines you change plus 2-3 lines of context. If it fails, the error shows the current lines: fix `old_string` from them instead of re-reading.\nThe user has the ability to modify the `new_string` content. If modified, this will be stated in the response.",
+      "Replaces text within a file. By default, the tool expects to find and replace exactly ONE occurrence of `old_string`. If you want to replace multiple occurrences of the exact same string, set `allow_multiple` to true. Copy `old_string` from your latest read: the lines you change plus 2-3 lines of context; split a large change into several edits. If it fails, the error shows the current lines: fix `old_string` from them instead of re-reading.\nThe user has the ability to modify the `new_string` content. If modified, this will be stated in the response.",
     nativeSchema: {
       type: 'object',
       properties: {

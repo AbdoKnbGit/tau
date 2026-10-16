@@ -462,7 +462,7 @@ export const FileEditTool = buildTool({
       return {
         result: false,
         behavior: 'ask',
-        message: `String to replace not found in file.\nString: ${previewOldString(old_string)}\n${recoveryHint}`,
+        message: `String to replace not found in file.\nString: ${previewOldString(old_string)}\n${recoveryHint}${splitAdvice(old_string)}`,
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },
@@ -750,6 +750,7 @@ export const FileEditTool = buildTool({
       logEvent('tengu_edit_flexible_match', {
         trailingWhitespace: flexMatchType === 'trailing-whitespace',
         indent: flexMatchType === 'indent',
+        blankLines: flexMatchType === 'blank-lines',
       })
     }
 
@@ -941,13 +942,33 @@ function differenceSummary(
     mismatch.matchedLines > 0
       ? `Your old_string (${total} lines) matches the file from line ${mismatch.regionStart} to ${d.line - 1}, then differs at line ${d.line}`
       : `Your old_string (${total} lines) is closest to the lines from ${mismatch.regionStart}, and differs at line ${d.line}`
+  const blank = (line: string | undefined) => line !== undefined && line.trim() === ''
   const show = (line: string | undefined) =>
     line === undefined
       ? '(end of file)'
-      : d.whitespaceOnly
-        ? JSON.stringify(line)
-        : line.trim()
-  return `${where}${d.whitespaceOnly ? ' (whitespace only)' : ''}:\n  file:       ${show(d.file)}\n  old_string: ${show(d.oldString)}\n`
+      : blank(line)
+        ? '(empty line)'
+        : d.whitespaceOnly
+          ? JSON.stringify(line)
+          : line.trim()
+  const kind = d.whitespaceOnly
+    ? ' (whitespace only)'
+    : blank(d.file) && !blank(d.oldString)
+      ? ' (the file has an empty line your old_string lacks)'
+      : blank(d.oldString) && !blank(d.file)
+        ? ' (your old_string has an empty line the file lacks)'
+        : ''
+  return `${where}${kind}:\n  file:       ${show(d.file)}\n  old_string: ${show(d.oldString)}\n`
+}
+
+// A failed old_string this long is better split than retried whole.
+const SPLIT_ADVICE_LINES = 40
+
+function splitAdvice(oldString: string): string {
+  const lines = oldString.replace(/\n$/, '').split('\n').length
+  return lines > SPLIT_ADVICE_LINES
+    ? `\nThis old_string is ${lines} lines, and a long one fails on any drift: edit just the lines you change plus 2-3 lines of context, in several smaller edits.`
+    : ''
 }
 
 /** The not-found hint for a file too large to show whole. */
