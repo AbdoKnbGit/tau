@@ -209,19 +209,24 @@ test('a large HTML page reads as a structure view, and its bodies stay one range
 })
 
 test('a low read limit (cheap mode) still gets an outline, folded to fit', async () => {
-  const setup = i => [`    // --- section ${i} ---`, ...Array.from({ length: 60 }, (_, k) => `    world${i}.value${k} = makeValue(${k}, "${'y'.repeat(12)}");`)]
-  const fn = i => [`    function part${i}() {`, ...Array.from({ length: 40 }, (_, k) => `      step(${i}, ${k});`), '    }']
-  const page = ['<html><body>', '<script>', ...Array.from({ length: 6 }, (_, i) => [...setup(i), ...fn(i)]).flat(), '</script>', '</body></html>']
+  // A long run of top-level setup plus a few functions: the outline is over
+  // the limit until that run folds, then far under it, so Read never needs an
+  // exact token count (CI replays recorded API calls and has none for this).
+  const setup = Array.from({ length: 400 }, (_, k) => `    world.value${k} = makeValue(${k}, "${'y'.repeat(12)}");`)
+  const fn = i => [`    function part${i}() {`, ...Array.from({ length: 30 }, (_, k) => `      step(${i}, ${k});`), '    }']
+  const page = ['<html><body>', '<script>', '    // --- setup ---', ...setup, ...[0, 1, 2].flatMap(fn), '</script>', '</body></html>']
   await fixture(async (file, context) => {
     const html = file.replace(/notes\.txt$/, 'app.html')
     writeFileSync(html, page.join('\n'))
+    assert.ok(readFileSync(html).length > 16_000)
     context.fileReadingLimits.maxTokens = 4000
     const { data, text } = await modelRead(html, context)
     assert.equal(data.type, 'skeleton')
-    assert.ok(data.file.condensedRegions > 0)
+    assert.equal(data.file.condensedRegions, 1)
     assert.match(text, /folded so this view fits the read limit/)
     assert.match(text, /code folded: lines \d+-\d+ \(\d+ lines\) — Read with offset=\d+ & limit=\d+ to expand/)
-    assert.ok(text.length / 4 <= 4000)
+    assert.ok(text.includes('function part0() {'), 'signatures stay visible')
+    assert.ok(text.length / 4 <= 1000, 'far under the limit once the run folds')
   })
 })
 
