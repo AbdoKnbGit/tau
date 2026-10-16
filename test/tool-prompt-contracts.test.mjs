@@ -38,7 +38,8 @@ source += `\nexport function __promptContracts() {
     BashTool: pool.find(tool => tool.name === 'Bash'),
     EvalTool: pool.find(tool => tool.name === 'Eval'),
     toolToAPISchema,
-    clearToolSchemaCache: ${sessionCacheClear}, getAllBaseTools, getBuiltInAgents };
+    clearToolSchemaCache: ${sessionCacheClear}, getAllBaseTools, getBuiltInAgents,
+    getBrowserSession };
 }\n`
 writeFileSync(auditPath, source)
 let audit
@@ -141,6 +142,91 @@ test('Browser retains evidence, targeting, recovery and intervention rules', asy
     ['modals use dismiss', /Modals, popups, drawers, overlays: dismiss; never hunt the X/],
     ['ref clicks strongly preferred', /click \{ ref \} \(strongly preferred\)/],
   ]) assert.match(prompt, pattern, rule)
+})
+
+test('Browser state guidance reuses evidence within its token budget', async () => {
+  const prompt = await audit.BrowserTool.prompt()
+  assert.match(prompt, /Same URL does not mean same content/)
+  assert.match(prompt, /Update assumptions after known changes; use returned evidence first/)
+  assert.match(prompt, /Check against task requirements/)
+  const tokens = Math.round((JSON.stringify(prompt).length - 2) / 4)
+  // Original Browser prompt: 2,556 using Tau's serialized-character estimator.
+  assert.ok(tokens <= 2_656, `${tokens - 2_556} estimated added tokens exceeds 100`)
+})
+
+test('Browser state guidance preserves evidence without automatic checks or cache drift', async t => {
+  const url = 'https://fixture.test/article'
+  const before = {
+    docId: 'd1', url, title: 'Article', elements: 1,
+    sig: 'original', textLen: 100, scrollY: 0, readyState: 'complete',
+  }
+  const observation = { url, title: 'Article', interactive_elements: [] }
+  const pickResult = (tag, text) => ({
+    ok: true, warnings: [],
+    picked: { tag, text, textLength: text.length, selector: tag, openTag: `<${tag}>`,
+      box: { x: 0, y: 0, w: 100, h: 20 } },
+    observation: { ...observation, interactive_elements: [{ id: 2057, tag, text, picked: true }] },
+  })
+  const scenarios = [
+    { name: 'same-URL replacement exposes DOM change', input: { action: 'eval', js: 'document.querySelector("main").textContent = "Replaced content"' },
+      returns: { evalJs: { ok: true, value: '"Replaced content"' } },
+      after: { ...before, sig: 'replaced', textLen: 16 }, ok: true,
+      evidence: /url unchanged.*same document.*dom changed/ },
+    { name: 'read-only eval adds no observation', input: { action: 'eval', js: 'document.title' },
+      returns: { evalJs: { ok: true, value: '"Article"' } }, ok: true, evidence: /Result:\s*"Article"/ },
+    { name: 'unverified eval does not trigger retries', input: { action: 'eval', js: 'true' },
+      returns: { evalJs: { ok: true, value: 'true' } }, after: null, ok: true, evidence: /unverified/ },
+    { name: 'failed eval exposes its error', input: { action: 'eval', js: 'throw new Error("fixture failure")' },
+      returns: { evalJs: { ok: false, error: 'fixture failure' } }, ok: false, evidence: /JavaScript failed: fixture failure/ },
+    { name: 'stale read does not silently restart or reload', input: { action: 'read', offset: 200 },
+      returns: { readPage: { success: true, stale: true, url } }, ok: false, evidence: /Reason: stale_read/ },
+    { name: 'shifted read continues without rereading', input: { action: 'read', offset: 200 },
+      returns: { readPage: { success: true, url, content: 'continued text', offset: 220, total: 500, shift: 20 } },
+      ok: true, evidence: /page shifted by 20 characters/ },
+    { name: 'wrong test target remains visible as a paragraph', input: { action: 'pick', text: 'Pick the article title' },
+      returns: { pick: pickResult('p', 'Replaced content.') }, ok: true, evidence: /The user picked @2057: p "Replaced content\."/ },
+    { name: 'valid user choice is not overridden by hint text', input: { action: 'pick', text: 'Point at the item you mean' },
+      returns: { pick: pickResult('button', 'Second choice') }, ok: true, evidence: /The user picked @2057: button "Second choice"/ },
+    { name: 'cancelled pick does not reopen the picker', input: { action: 'pick' },
+      returns: { pick: { ok: false, reason: 'pick_cancelled', error: 'The user closed the picker.', warnings: [] } },
+      ok: false, evidence: /Reason: pick_cancelled/ },
+    { name: 'same-URL navigation reuses its existing observation', input: { action: 'navigate', url },
+      returns: { navigate: undefined, observe: { observation, warnings: [] } },
+      after: { ...before, docId: 'd2' }, ok: true, evidence: /url unchanged.*new document/ },
+    { name: 'successful SPA click needs no extra refresh', input: { action: 'click', text: 'Details' },
+      returns: { click: { ok: true, observation, warnings: [] } },
+      after: { ...before, sig: 'details' }, ok: true, evidence: /url unchanged.*dom changed/ },
+  ]
+  for (const scenario of scenarios) await t.test(scenario.name, async t => {
+    const session = audit.getBrowserSession()
+    t.mock.method(session, 'isRunning', () => true)
+    t.mock.method(session, 'claimActiveTab', () => null)
+    t.mock.method(session, 'recordStep', () => {})
+    t.mock.method(session, 'drainSessionNotes', () => [])
+    t.mock.method(session, 'drainWatchAlerts', () => [])
+    let samples = 0
+    t.mock.method(session, 'sampleState', async () => samples++ === 0
+      ? before : Object.hasOwn(scenario, 'after') ? scenario.after : before)
+    const calls = []
+    for (const method of ['evalJs', 'readPage', 'pick', 'navigate', 'observe', 'reload', 'screenshot', 'click', 'ensureStarted']) {
+      t.mock.method(session, method, async () => {
+        calls.push(method)
+        assert.ok(Object.hasOwn(scenario.returns, method), `unexpected ${method}`)
+        return scenario.returns[method]
+      })
+    }
+    const definition = JSON.stringify(await audit.toolToAPISchema(audit.BrowserTool, options))
+    const { data } = await audit.BrowserTool.call(scenario.input, { abortController: new AbortController() })
+    assert.equal(data.ok, scenario.ok, data.message)
+    const rendered = audit.BrowserTool.mapToolResultToToolResultBlockParam(data, 'state-test').content
+    assert.match(rendered, scenario.evidence)
+    if (scenario.input.action === 'read' && !scenario.ok) assert.equal(data.pageText, undefined)
+    assert.deepEqual(calls, Object.keys(scenario.returns), 'no extra observation, retry or reload')
+    assert.equal(samples, 2, 'only the existing before/after samples')
+    assert.equal(JSON.stringify(await audit.toolToAPISchema(audit.BrowserTool, options)), definition)
+    audit.clearToolSchemaCache()
+    assert.equal(JSON.stringify(await audit.toolToAPISchema(audit.BrowserTool, options)), definition)
+  })
 })
 
 test('Eval keeps the fixes for its observed failures', async () => {

@@ -64,6 +64,7 @@ const PROMPT = `Operate real Chromium (Chrome/Edge/Brave) through DevTools. Unli
 RULES
 - THE ONE RULE: each call is { "action": "name", ...that action's params }. Exactly one action; only its params.
 - Loop: open once; observe before acting on a page you have not seen; act by @ref from the latest observation of the current tab, or by visible text. Most actions return a fresh observation: continue from it instead of guessing, and after DOM changes use its refs. observe finds what to act on; read is how you read.
+- Same URL does not mean same content. Update assumptions after known changes; use returned evidence first. Check against task requirements.
 - NEVER guess coordinates for buttons, links, menus or close controls (the #1 source of wasted steps): coordinates are blind, and a guess clicks the wrong element (a nav link, another product) and destroys progress. x/y are ONLY for canvas/map/video/drawing surfaces without DOM targets, after a screenshot shows the location. ref/text override x/y. coordinate_guessing blocks blind clicks: stop, observe/screenshot, then use ref/text, not another coordinate.
 - Modals, popups, drawers, overlays: dismiss; never hunt the X with coordinates.
 - Every result has "Effect:" (step, URL/document change, DOM movement, elapsed time). "NO OBSERVABLE EFFECT" means URL, document, DOM and scroll are unchanged: the action did nothing; do NOT repeat it with a tweak. "unverified" means the page could not be sampled: unknown, not success.
