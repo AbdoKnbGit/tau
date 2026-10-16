@@ -380,6 +380,31 @@ test('the same rhythm without edits is waiting, and is stopped', async () => {
   assert.ok(requests.length < 21)
 })
 
+// repeatToolGuard appends its own reminder to the 3rd and 5th identical call in a
+// row. The guard must neither mistake that for a new answer nor say it twice.
+const REPEAT_REMINDER = 'times in a row with identical arguments. Analyze the result'
+
+test("Tau's repeat reminder and the guard work together, without repeating each other", async () => {
+  // Waiting on a job: both speak, they say different things, and the stop still comes.
+  const id = newTaskId()
+  writeLog(id, 'Resolving dependencies\n')
+  const waiting = session([fixtureTool({ name: 'Probe', async call() { return { data: '8' } } })], { tasks: { [id]: runningShellTask(id) } })
+  const blocked = await drive({ context: waiting.context, respond: () => [{ type: 'tool_use', id: `toolu_p${Math.random()}`, name: 'Probe', input: { what: 'sockets' } }] })
+  assert.ok(sawText(blocked.requests[3], REPEAT_REMINDER) && sawText(blocked.requests[3], 'same result each time'))
+  assert.equal(blocked.terminal.reason, 'wait_loop_stopped')
+  assert.equal(blocked.requests.length, 7)
+
+  // Nothing to wait for: the existing reminder alone, and no stop.
+  const idle = session([fixtureTool({ name: 'CiStatus', async call() { return { data: '{"status":"in_progress"}' } } })])
+  const { terminal, requests } = await drive({
+    context: idle.context,
+    respond: n => (n > 8 ? [{ type: 'text', text: 'Still in progress.' }] : [{ type: 'tool_use', id: `toolu_c${n}`, name: 'CiStatus', input: { run: 123 } }]),
+  })
+  assert.ok(sawText(requests[3], REPEAT_REMINDER))
+  assert.ok(!requests.some(messages => sawText(messages, 'same result each time')))
+  assert.notEqual(terminal.reason, 'wait_loop_stopped')
+})
+
 test('work that makes progress, with nothing in the background, is never interrupted', async () => {
   let runs = 0
   const testRunner = fixtureTool({ name: 'RunTests', async call() { runs++; return { data: `${Math.max(0, 6 - runs)} failed` } } })

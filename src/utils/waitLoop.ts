@@ -177,6 +177,20 @@ type Observation = {
   subject: WaitLoopSubject
   /** What a repeat must match to count. Absent for a task: every check counts. */
   state?: string
+  /** The result carried a reminder Tau appended to it (repeatToolGuard). */
+  reminded?: boolean
+}
+
+const SYSTEM_REMINDER = /\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*/g
+
+/**
+ * A result without the reminders Tau appends to it. They are Tau's words, not
+ * the tool's: repeatToolGuard adds one on the 3rd and 5th identical call, which
+ * would make an unchanged answer look new.
+ */
+function withoutReminders(text: string): { output: string; reminded: boolean } {
+  const output = text.replace(SYSTEM_REMINDER, '\n').trim()
+  return { output, reminded: output !== text.trim() }
 }
 
 type Track = {
@@ -222,8 +236,10 @@ export class WaitLoopGuard {
     }
     const touched = new Set<string>()
     const repeated: Track[] = []
+    const reminded = new Set<Track>()
     for (const call of round.calls) {
-      for (const { key, state, subject } of observe(call, round.running)) {
+      for (const observation of observe(call, round.running)) {
+        const { key, state, subject } = observation
         if (touched.has(key)) continue
         touched.add(key)
         const track = this.#tracks.get(key)
@@ -248,6 +264,7 @@ export class WaitLoopGuard {
           track.count++
           track.subject = subject
           repeated.push(track)
+          if (observation.reminded) reminded.add(track)
         }
       }
     }
@@ -284,8 +301,17 @@ export class WaitLoopGuard {
         track.count >= this.#nudgeAt &&
         !(this.#armedRound !== null && waitChecks.includes(track)),
     )
-    if (due.length === 0) return { action: 'none' }
-    const track = mostChecked(due)
+    // With nothing to wait for, a call whose own result already carries Tau's
+    // repeat reminder has been told; a second message would only echo it.
+    // While waiting, the nudge still goes: it is what says a notification is coming.
+    for (const track of due) {
+      if (track.subject.kind === 'call' && !waiting && reminded.has(track)) {
+        track.nudged = true
+      }
+    }
+    const open = due.filter(track => !track.nudged)
+    if (open.length === 0) return { action: 'none' }
+    const track = mostChecked(open)
     track.nudged = true
     if (this.#armedRound === null && waitChecks.includes(track)) {
       this.#armedRound = this.#round
@@ -310,15 +336,17 @@ function observe(
       subject: { kind: 'task', task },
     }))
   }
+  const { output, reminded } = withoutReminders(call.resultText)
   return [
     {
       key: `call\0${call.name}\0${toolInputKey(call.input)}`,
-      state: `${call.isError ? 'error' : 'ok'}\0${call.resultText.length}:${djb2Hash(call.resultText)}`,
+      state: `${call.isError ? 'error' : 'ok'}\0${output.length}:${djb2Hash(output)}`,
+      reminded,
       subject: {
         kind: 'call',
         name: call.name,
         inputPreview: inputPreview(call.input),
-        resultPreview: resultPreview(call.resultText),
+        resultPreview: resultPreview(output),
       },
     },
   ]

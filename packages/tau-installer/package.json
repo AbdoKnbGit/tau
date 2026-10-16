@@ -1,6 +1,6 @@
 {
   "name": "@abdoknbgit/tau-installer",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Install Tau globally with its reviewed npm lifecycle scripts allowed for this install only.",
   "type": "module",
   "bin": {
