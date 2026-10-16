@@ -1,9 +1,11 @@
 import { c as _c } from "react/compiler-runtime";
+import { stat } from 'fs/promises';
 import React from 'react';
 import { z } from 'zod/v4';
 import { FallbackToolUseErrorMessage } from '../../components/FallbackToolUseErrorMessage.js';
 import { FallbackToolUseRejectedMessage } from '../../components/FallbackToolUseRejectedMessage.js';
 import { MessageResponse } from '../../components/MessageResponse.js';
+import { TASK_NOTIFICATION_TAG } from '../../constants/xml.js';
 import { Box, Text } from '../../ink.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import type { TaskType } from '../../Task.js';
@@ -14,6 +16,7 @@ import type { LocalShellTaskState } from '../../tasks/LocalShellTask/guards.js';
 import type { RemoteAgentTaskState } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import type { TaskState } from '../../tasks/types.js';
 import { AbortError } from '../../utils/errors.js';
+import { formatDuration, formatFileSize } from '../../utils/format.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { extractTextContent } from '../../utils/messages.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
@@ -21,18 +24,18 @@ import { sleep } from '../../utils/sleep.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { countCharInString } from '../../utils/stringUtils.js';
 import { toAgentId } from '../../types/ids.js';
-import { getTaskOutput, readTaskOutputFile } from '../../utils/task/diskOutput.js';
+import { getTaskOutput, getTaskOutputPath, readTaskOutputFile } from '../../utils/task/diskOutput.js';
 import { updateTaskState } from '../../utils/task/framework.js';
-import { formatTaskOutput } from '../../utils/task/outputFormatting.js';
+import { formatTaskOutput, getMaxTaskOutputLength } from '../../utils/task/outputFormatting.js';
 import { type EndedTask, findEndedTask, noTaskFoundMessage, readRecordedResult } from '../../utils/task/taskOutcomes.js';
 import type { ThemeName } from '../../utils/theme.js';
 import { AgentPromptDisplay, AgentResponseDisplay } from '../AgentTool/UI.js';
 import BashToolResultMessage from '../BashTool/BashToolResultMessage.js';
-import { TASK_OUTPUT_TOOL_NAME } from './constants.js';
+import { TASK_OUTPUT_MAX_TIMEOUT_MS, TASK_OUTPUT_TOOL_NAME } from './constants.js';
 const inputSchema = lazySchema(() => z.strictObject({
   task_id: z.string().describe('Background task ID'),
   block: semanticBoolean(z.boolean().default(true)).describe('Wait for completion; default true'),
-  timeout: z.number().min(0).max(600000).default(30000).describe('Wait timeout in ms; default 30000')
+  timeout: z.number().min(0).max(TASK_OUTPUT_MAX_TIMEOUT_MS).default(30000).describe('Wait timeout in ms; default 30000')
 }));
 type InputSchema = ReturnType<typeof inputSchema>;
 type TaskOutputToolInput = z.infer<InputSchema>;
@@ -53,6 +56,10 @@ type TaskOutput = {
 type TaskOutputToolOutput = {
   retrieval_status: 'success' | 'timeout' | 'not_ready';
   task: TaskOutput | null;
+  // For a task still running: how long it has run and whether its output moved.
+  progress?: string;
+  // For a task still running: what to do instead of checking again.
+  note?: string;
 };
 
 // A task found only by its output file has no recorded type: read it from the id.
@@ -140,19 +147,71 @@ async function getEndedTaskOutputData(ended: EndedTask): Promise<TaskOutput> {
 // Re-export Progress from centralized types to break import cycles
 export type { TaskOutputProgress as Progress } from '../../types/tools.js';
 
+// The file a task writes its output to.
+function outputPathOf(task: TaskState): string {
+  const taskOutputObj = task.type === 'local_bash' ? (task as LocalShellTaskState).shellCommand?.taskOutput : undefined;
+  return taskOutputObj?.path ?? getTaskOutputPath(task.id);
+}
+
+// What each conversation last saw of a running task's output, so a check can
+// say whether anything arrived since the previous one.
+const lastChecks = new Map<string, {
+  size: number;
+  at: number;
+}>();
+const lastCheckKey = (taskId: string, agentId: string | undefined) => `${agentId ?? ''}\0${taskId}`;
+const MAIN_THREAD_RUNNING_NOTE = `Still running. Tau sends you a <${TASK_NOTIFICATION_TAG}> when it finishes, so there is no need to check it again. If this request has other work left, do that; otherwise tell the user it is still running and end your turn.`;
+const SUBAGENT_RUNNING_NOTE = `Still running. Do not poll it with repeated short checks: if you need its result, wait once with block: true and a long timeout (up to ${TASK_OUTPUT_MAX_TIMEOUT_MS} ms); otherwise report that it is still running.`;
+
+// For a task still running: how long it has run, how much output it has,
+// whether any arrived since this conversation's last check, and how long the
+// log has been quiet. A stalled command reads as output that stopped moving.
+async function describeRunningTask(task: TaskState, agentId: string | undefined): Promise<Pick<TaskOutputToolOutput, 'progress' | 'note'>> {
+  const now = Date.now();
+  const key = lastCheckKey(task.id, agentId);
+  const file = await stat(outputPathOf(task)).catch(() => null);
+  const size = file?.size ?? 0;
+  const previous = lastChecks.get(key);
+  lastChecks.set(key, {
+    size,
+    at: now
+  });
+  const ago = (ms: number) => formatDuration(Math.max(0, Math.round(ms)), {
+    hideTrailingZeros: true
+  });
+  const parts = [`Running for ${ago(now - task.startTime)}.`];
+  if (!file || size === 0) {
+    parts.push('No output yet.');
+  } else {
+    parts.push(`${formatFileSize(size)} of output so far.`);
+    if (previous) {
+      const since = `since your last check ${ago(now - previous.at)} ago`;
+      parts.push(size > previous.size ? `${formatFileSize(size - previous.size)} new ${since}.` : `Nothing new ${since}.`);
+    }
+    parts.push(`Last output ${ago(now - file.mtimeMs)} ago.`);
+  }
+  return {
+    progress: parts.join(' '),
+    note: agentId === undefined ? MAIN_THREAD_RUNNING_NOTE : SUBAGENT_RUNNING_NOTE
+  };
+}
+
 // Get output for any task type
 async function getTaskOutputData(task: TaskState): Promise<TaskOutput> {
   let output: string;
-  if (task.type === 'local_bash') {
-    const bashTask = task as LocalShellTaskState;
-    const taskOutputObj = bashTask.shellCommand?.taskOutput;
-    if (taskOutputObj) {
-      const stdout = await taskOutputObj.getStdout();
-      const stderr = taskOutputObj.getStderr();
-      output = [stdout, stderr].filter(Boolean).join('\n');
-    } else {
-      output = await getTaskOutput(task.id);
-    }
+  const taskOutputObj = task.type === 'local_bash' ? (task as LocalShellTaskState).shellCommand?.taskOutput : undefined;
+  if (taskOutputObj?.stdoutToFile === false) {
+    // Pipe mode: the output is held in memory.
+    const stdout = await taskOutputObj.getStdout();
+    const stderr = taskOutputObj.getStderr();
+    output = [stdout, stderr].filter(Boolean).join('\n');
+  } else if (task.type === 'local_bash') {
+    // File mode: read the end of the log, where a running command's newest
+    // output is. TaskOutput.getStdout() reads the start (it builds a finished
+    // foreground command's result), so once a log passed that cap every check
+    // returned the same bytes and no progress could be seen. Twice the
+    // display cap, so formatTaskOutput makes the final cut and names the file.
+    output = await readTaskOutputFile(outputPathOf(task), 2 * getMaxTaskOutputLength());
   } else {
     output = await getTaskOutput(task.id);
   }
@@ -314,6 +373,7 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
           ...t,
           notified: true
         }));
+        lastChecks.delete(lastCheckKey(task_id, toolUseContext.agentId));
         return {
           data: {
             retrieval_status: 'success' as const,
@@ -324,7 +384,8 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
       return {
         data: {
           retrieval_status: 'not_ready' as const,
-          task: await getTaskOutputData(task)
+          task: await getTaskOutputData(task),
+          ...(await describeRunningTask(task, toolUseContext.agentId))
         }
       };
     }
@@ -363,7 +424,8 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
       return {
         data: {
           retrieval_status: 'timeout' as const,
-          task: await getTaskOutputData(completedTask)
+          task: await getTaskOutputData(completedTask),
+          ...(await describeRunningTask(completedTask, toolUseContext.agentId))
         }
       };
     }
@@ -373,6 +435,7 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
       ...t,
       notified: true
     }));
+    lastChecks.delete(lastCheckKey(task_id, toolUseContext.agentId));
     return {
       data: {
         retrieval_status: 'success' as const,
@@ -390,6 +453,9 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
       if (data.task.exitCode !== undefined && data.task.exitCode !== null) {
         parts.push(`<exit_code>${data.task.exitCode}</exit_code>`);
       }
+      if (data.progress) {
+        parts.push(`<progress>${data.progress}</progress>`);
+      }
       if (data.task.output?.trim()) {
         const {
           content
@@ -399,6 +465,10 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
       if (data.task.error) {
         parts.push(`<error>${data.task.error}</error>`);
       }
+    }
+    // Last, so it is what the model reads right before deciding what to do.
+    if (data.note) {
+      parts.push(`<note>${data.note}</note>`);
     }
     return {
       tool_use_id: toolUseID,

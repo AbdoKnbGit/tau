@@ -3,11 +3,15 @@ import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+// Each load needs its own module URL: the import cache would hand back an earlier load.
+let loads = 0
+
 // Exercise the shipped bundle, without launching the CLI or copying production functions.
-export async function loadMcpRuntime({ paths: extraPaths = [], exports: extraExports = [] } = {}) {
+// `transform` rewrites the bundle first, e.g. to pin a remote feature gate.
+export async function loadMcpRuntime({ paths: extraPaths = [], exports: extraExports = [], transform = source => source } = {}) {
   const distPath = resolve(process.env.TAU_MCP_TEST_BUNDLE ?? 'dist/tau.mjs')
-  const auditPath = join(dirname(distPath), `.mcp-boundaries-${process.pid}-${Date.now()}.mjs`)
-  let source = readFileSync(distPath, 'utf8').replace(/\nvoid main\d*\(\);\r?\n/, '\n')
+  const auditPath = join(dirname(distPath), `.mcp-boundaries-${process.pid}-${Date.now()}-${loads++}.mjs`)
+  let source = transform(readFileSync(distPath, 'utf8').replace(/\nvoid main\d*\(\);\r?\n/, '\n'))
   const paths = [
     'src/services/tools/toolExecution.ts', 'src/utils/messages.ts',
     'src/services/mcp/client.ts', 'src/services/mcp/discovery.ts',

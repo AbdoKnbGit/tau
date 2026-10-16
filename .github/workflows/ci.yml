@@ -148,6 +148,9 @@ jobs:
       - name: Test foreground agent cancellation and background handoff
         run: node --test test/foreground-agent-cancellation.test.mjs
 
+      - name: Test waiting on background tasks and the polling guard
+        run: node --test test/background-wait-loop.test.mjs
+
       - name: Test plugin update marketplace refresh with local Git remotes
         run: node --test test/plugin-update-marketplace-refresh.test.mjs
 

@@ -65,6 +65,16 @@ import {
   DEFAULT_SCAN_WINDOW,
   detectToolLoop,
 } from './utils/toolLedger.js'
+import {
+  backgroundTasksFor,
+  buildWaitLoopFinalInstruction,
+  buildWaitLoopNotRunResult,
+  buildWaitLoopNudge,
+  buildWaitLoopStopNotice,
+  toolResultText,
+  type WaitLoopFinding,
+  WaitLoopGuard,
+} from './utils/waitLoop.js'
 import { sanitizeToolNameForAnalytics } from './services/analytics/metadata.js'
 import { generateToolUseSummary } from './services/toolUseSummary/toolUseSummaryGenerator.js'
 import { prependUserContext, appendSystemContext } from './utils/api.js'
@@ -318,6 +328,17 @@ async function* queryLoop(
   // nudge per distinct stuck call — if the model ignores it and keeps going,
   // repeating ourselves burns tokens without adding information.
   const loopBreakersSent = new Set<string>()
+
+  // Checks on running background work, counted across this loop (one user
+  // turn). When the model keeps checking after a nudge, the next response is
+  // its last: no tool runs in it. See utils/waitLoop.ts.
+  const waitLoop = new WaitLoopGuard()
+  let waitLoopStop: WaitLoopFinding | null = null
+  // The main thread is woken by a task's notification after its turn ends; a
+  // subagent's run is simply over.
+  const waitLoopAudience = {
+    canWaitForNotification: params.toolUseContext.agentId === undefined,
+  }
 
   // Mutable cross-iteration state. The loop body destructures this at the top
   // of each iteration so reads stay bare-name (`messages`, `toolUseContext`).
@@ -654,7 +675,9 @@ async function* queryLoop(
     let needsFollowUp = false
 
     queryCheckpoint('query_setup_start')
-    const useStreamingToolExecution = config.gates.streamingToolExecution
+    // After a wait-loop stop no tool may run, so none may start mid-stream.
+    const useStreamingToolExecution =
+      config.gates.streamingToolExecution && waitLoopStop === null
     let streamingToolExecutor = useStreamingToolExecution
       ? new StreamingToolExecutor(
           toolUseContext.options.tools,
@@ -1314,6 +1337,21 @@ async function* queryLoop(
       if (summary) {
         yield summary
       }
+    }
+
+    // The response after a wait-loop stop called tools anyway. None ran (the
+    // model was told they would not); answer each so the transcript stays
+    // valid, tell the user why, and end the turn.
+    if (waitLoopStop && needsFollowUp) {
+      yield* yieldMissingToolResultBlocks(
+        assistantMessages,
+        buildWaitLoopNotRunResult(waitLoopStop, waitLoopAudience),
+      )
+      yield createSystemMessage(
+        buildWaitLoopStopNotice(waitLoopStop, waitLoopAudience),
+        'warning',
+      )
+      return { reason: 'wait_loop_stopped' }
     }
 
     if (!needsFollowUp) {
@@ -2025,6 +2063,7 @@ async function* queryLoop(
     // Detection is read-only over the history, and the nudge is appended after
     // every tool result and attachment — never interleaved with them, which the
     // API rejects, and never a rewrite, so the cached prefix is untouched.
+    let thrashNudged = false
     {
       const detection = detectToolLoop(
         collectToolCalls(
@@ -2053,6 +2092,93 @@ async function* queryLoop(
             isMeta: true,
           }),
         )
+        thrashNudged = true
+      }
+    }
+
+    // Waiting loops: checking on running background work (TaskOutput, its log,
+    // process or socket probes, the same status command) round after round
+    // instead of waiting for its <task-notification>. Every check succeeds, so
+    // the thrash check above never sees it. Nudge once; if the checks go on,
+    // the next response is the last, without tools. Delivered like the thrash
+    // nudge: appended, never yielded.
+    {
+      const resultsByToolUseId = new Map<string, ToolResultBlockParam>()
+      for (const message of toolResults) {
+        if (
+          message.type !== 'user' ||
+          !Array.isArray(message.message.content)
+        ) {
+          continue
+        }
+        for (const block of message.message.content) {
+          if (block.type === 'tool_result') {
+            resultsByToolUseId.set(block.tool_use_id, block)
+          }
+        }
+      }
+      const { running, waitingOn } = backgroundTasksFor(
+        updatedToolUseContext.getAppState().tasks,
+        toolUseContext.agentId,
+      )
+      const verdict = waitLoop.observeRound({
+        calls: toolUseBlocks.flatMap(block => {
+          const result = resultsByToolUseId.get(block.id)
+          if (!result) return []
+          // A file edit by the tool's own declaration: it acts on a path and
+          // this call is not read-only.
+          const tool = findToolByName(toolUseContext.options.tools, block.name)
+          let changesFiles = false
+          try {
+            changesFiles =
+              tool?.getPath !== undefined &&
+              !tool.isReadOnly(block.input as never)
+          } catch {
+            // Unparseable input: not an edit.
+          }
+          return [
+            {
+              name: block.name,
+              input: block.input,
+              resultText: toolResultText(result.content),
+              isError: result.is_error === true,
+              changesFiles,
+            },
+          ]
+        }),
+        running,
+        waitingOn,
+      })
+      // A repeated failing call already got the thrash nudge this round.
+      const covered =
+        thrashNudged &&
+        verdict.action === 'nudge' &&
+        verdict.subject.kind === 'call'
+      if (verdict.action !== 'none' && !covered) {
+        logEvent(
+          verdict.action === 'stop'
+            ? 'tengu_wait_loop_stopped'
+            : 'tengu_wait_loop_nudged',
+          {
+            checkCount: verdict.count,
+            onTask: verdict.subject.kind === 'task',
+            waitingOnCount: verdict.waitingOn.length,
+            queryChainId: queryChainIdForAnalytics,
+            queryDepth: queryTracking.depth,
+          },
+        )
+        toolResults.push(
+          createUserMessage({
+            content:
+              verdict.action === 'stop'
+                ? buildWaitLoopFinalInstruction(verdict, waitLoopAudience)
+                : buildWaitLoopNudge(verdict, waitLoopAudience),
+            isMeta: true,
+          }),
+        )
+        if (verdict.action === 'stop') {
+          waitLoopStop = verdict
+        }
       }
     }
 

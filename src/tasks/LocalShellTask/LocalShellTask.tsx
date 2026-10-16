@@ -21,6 +21,12 @@ import { killTask } from './killShellTasks.js';
 
 /** Prefix that identifies a LocalShellTask summary to the UI collapse transform. */
 export const BACKGROUND_BASH_SUMMARY_PREFIX = 'Background command ';
+
+/**
+ * Closes a backgrounded command's result. Without it the model only learns the
+ * task id and log path, and checks back on its own to find out when it ends.
+ */
+export const BACKGROUND_COMPLETION_NOTE = `You will get a <${TASK_NOTIFICATION_TAG}> when it finishes, so there is no need to poll it.`;
 const STALL_CHECK_INTERVAL_MS = 5_000;
 const STALL_THRESHOLD_MS = 45_000;
 const STALL_TAIL_BYTES = 1024;
