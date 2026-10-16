@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
+import { realpathSync } from 'fs'
 import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
 import { homedir, tmpdir } from 'os'
@@ -689,7 +690,21 @@ export function allWorkingDirectories(
 // permission check. Keyed by path string — getPathsForPermissionCheck is
 // deterministic for existing directories within a session.
 // Exported for test/preload.ts cache clearing (shard-isolation).
-export const getResolvedWorkingDirPaths = memoize(getPathsForPermissionCheck)
+export const getResolvedWorkingDirPaths = memoize((workingDir: string) => {
+  const paths = getPathsForPermissionCheck(workingDir)
+  // Node's JS realpath keeps Windows 8.3 aliases, while Bash pwd -P expands
+  // them. Add the native spelling of an approved root without dropping any
+  // candidate-path checks. Avoid filesystem access for UNC roots as above.
+  if (getPlatform() === 'windows' && !/^(?:\\\\|\/\/)/.test(workingDir)) {
+    try {
+      const nativePath = realpathSync.native(workingDir).normalize('NFC')
+      if (!paths.includes(nativePath)) paths.push(nativePath)
+    } catch {
+      // Missing/inaccessible roots keep their existing permission behavior.
+    }
+  }
+  return paths
+})
 
 export function pathInAllowedWorkingPath(
   path: string,

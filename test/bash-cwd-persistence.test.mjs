@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import test from 'node:test'
@@ -41,7 +42,9 @@ const destination = join(project, 'destination with spaces')
 const outside = join(directory, 'outside')
 for (const path of [source, destination, outside]) mkdirSync(path, { recursive: true })
 writeFileSync(join(destination, 'marker.txt'), 'RESULT_READY')
-const physical = path => realpathSync(path).normalize('NFC')
+const physical = path => (process.platform === 'win32'
+  ? realpathSync.native(path) : realpathSync(path)).normalize('NFC')
+const assertCwd = expected => assert.equal(physical(r.getCwd()), physical(expected))
 const quotePath = path => "'" + path.replaceAll('\\', '/').replaceAll("'", "'\"'\"'") + "'"
 
 function context(overrides = {}) {
@@ -77,11 +80,11 @@ async function pipelineCall(command, ctx = context(), extra = {}) {
   assert.equal(results.length, 1, JSON.stringify(messages))
   return results[0]
 }
-const shellTest = (name, run) => test(name, { skip: !shell && 'No supported Bash/Zsh shell available' }, async () => {
+const shellTest = (name, run) => test(name, { skip: !shell && 'No supported Bash/Zsh shell available' }, async t => {
   r.setCwd(project)
   r.setOriginalCwd(r.getCwd())
   delete process.env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR
-  await run()
+  await run(t)
 })
 
 test.after(async () => {
@@ -95,20 +98,20 @@ test.after(async () => {
 
 shellTest('a converted leading cd persists the final directory when returning to the root', async () => {
   await call('cd src && pwd && cd .. && pwd')
-  assert.equal(r.getCwd(), physical(project))
+  assertCwd(project)
   const next = await call('test -d src && printf root-follow-up')
   assert.match(next.data.stdout, /root-follow-up/)
 })
 
 shellTest('a converted leading cd persists a later destination, including spaces', async () => {
   const result = await call(`cd src && pwd && cd ${quotePath(destination)} && pwd`)
-  assert.equal(r.getCwd(), physical(destination))
+  assertCwd(destination)
   assert.equal(result.data.cwdNote, `Shell cwd is now ${physical(destination)}`)
 })
 
 shellTest('a simple leading cd still persists its target', async () => {
   await call('cd src && pwd')
-  assert.equal(r.getCwd(), physical(source))
+  assertCwd(source)
 })
 
 for (const mode of ['default', 'bypassPermissions']) {
@@ -118,7 +121,7 @@ for (const mode of ['default', 'bypassPermissions']) {
     r.setCwd(source)
     const result = await pipelineCall(`cd ${quotePath(destination)} && pwd`, ctx)
     assert.ok(!result.is_error, JSON.stringify(result))
-    assert.equal(r.getCwd(), physical(destination))
+    assertCwd(destination)
     const followup = await pipelineCall('pwd && cat marker.txt', ctx)
     assert.ok(!followup.is_error, JSON.stringify(followup))
     assert.match(followup.content, /RESULT_READY/)
@@ -141,12 +144,12 @@ for (const [provider, registry, nativeName] of [
     }
     let result = await execute(`cd ${quotePath(destination)} && pwd`)
     assert.ok(!result.is_error, JSON.stringify(result))
-    assert.equal(r.getCwd(), physical(destination))
+    assertCwd(destination)
     ctx.getAppState().toolPermissionContext.mode = 'bypassPermissions'
     result = await execute(`cd ${quotePath(source)} && printf checkpoint && cd "../destination with spaces" && (exit 7)`)
     assert.equal(result.is_error, true)
     assert.match(result.content, /Exit code 7/)
-    assert.equal(r.getCwd(), physical(destination))
+    assertCwd(destination)
     result = await execute('pwd && cat marker.txt')
     assert.ok(!result.is_error, JSON.stringify(result))
     assert.match(result.content, /RESULT_READY/)
@@ -159,7 +162,7 @@ shellTest('the full pipeline persists the final cwd after a failing compound com
   const result = await pipelineCall('cd src && printf checkpoint && cd "../destination with spaces" && (exit 7)', ctx)
   assert.equal(result.is_error, true)
   assert.match(result.content, /Exit code 7/)
-  assert.equal(r.getCwd(), physical(destination))
+  assertCwd(destination)
   const followup = await pipelineCall('pwd && cat marker.txt', ctx)
   assert.ok(!followup.is_error, JSON.stringify(followup))
   assert.match(followup.content, /RESULT_READY/)
@@ -170,7 +173,7 @@ shellTest('the full pipeline accepts a double-quoted shell absolute path', async
     .replace(/^([A-Za-z]):\//, (_, drive) => `/${drive.toLowerCase()}/`)
   const result = await pipelineCall(`cd "${shellPath}" && pwd`)
   assert.ok(!result.is_error, JSON.stringify(result))
-  assert.equal(r.getCwd(), physical(destination))
+  assertCwd(destination)
 })
 
 shellTest('model-supplied cwd and simulated edit internals remain stripped', async () => {
@@ -180,7 +183,7 @@ shellTest('model-supplied cwd and simulated edit internals remain stripped', asy
     _simulatedSedEdit: { filePath: marker, newContent: 'UNEXPECTED' },
   })
   assert.ok(!result.is_error, JSON.stringify(result))
-  assert.equal(r.getCwd(), physical(project))
+  assertCwd(project)
   assert.equal(readFileSync(marker, 'utf8'), 'RESULT_READY')
 })
 
@@ -189,7 +192,7 @@ shellTest('explicit deny rules still block cd-prefixed commands', async () => {
   ctx.getAppState().toolPermissionContext.alwaysDenyRules = { session: ['Bash(pwd)'] }
   const result = await pipelineCall('cd src && pwd', ctx)
   assert.equal(result.is_error, true)
-  assert.equal(r.getCwd(), physical(project))
+  assertCwd(project)
 })
 
 shellTest('the hook permission recheck retains the validated directory', async () => {
@@ -201,7 +204,7 @@ shellTest('the hook permission recheck retains the validated directory', async (
     return r.BashTool.checkPermissions(input, ctx)
   } }
   assert.equal(await r.checkRuleBasedPermissions(observedTool, input, context()), null)
-  assert.equal(checkedInput.workdir, physical(source))
+  assert.equal(physical(checkedInput.workdir), physical(source))
   assert.equal(checkedInput._workdirFromCd, true)
 })
 
@@ -212,11 +215,11 @@ shellTest('the complete smoke workflow creates quoted paths and retains cwd afte
   assert.ok(!result.is_error, JSON.stringify(result))
   result = await pipelineCall('cd "workflow" && pwd', ctx)
   assert.ok(!result.is_error, JSON.stringify(result))
-  assert.equal(r.getCwd(), physical(join(project, 'workflow')))
+  assertCwd(join(project, 'workflow'))
   result = await pipelineCall('cd child && printf checkpoint && cd "../result folder" && (exit 7)', ctx)
   assert.equal(result.is_error, true)
   assert.match(result.content, /Exit code 7/)
-  assert.equal(r.getCwd(), physical(join(project, 'workflow', 'result folder')))
+  assertCwd(join(project, 'workflow', 'result folder'))
   result = await pipelineCall('pwd && cat marker.txt', ctx)
   assert.ok(!result.is_error, JSON.stringify(result))
   assert.match(result.content, /RESULT_READY/)
@@ -231,7 +234,7 @@ shellTest('a bare cd still persists its target through ordinary shell tracking',
     r.setCwd(bareRoot)
     r.setOriginalCwd(r.getCwd())
     await call('cd src')
-    assert.equal(r.getCwd(), physical(join(bareRoot, 'src')))
+    assertCwd(join(bareRoot, 'src'))
   } finally {
     r.setCwd(project)
     r.setOriginalCwd(r.getCwd())
@@ -244,18 +247,18 @@ shellTest('a bare cd still persists its target through ordinary shell tracking',
 shellTest('a failing command preserves its exit status and the last reached directory', async () => {
   await assert.rejects(call(`cd src && pwd && cd ${quotePath(destination)} && (exit 7)`),
     error => error.name === 'ShellError' && error.code === 7)
-  assert.equal(r.getCwd(), physical(destination))
+  assertCwd(destination)
 })
 
 shellTest('failure immediately after a leading cd still preserves that directory', async () => {
   await assert.rejects(call('cd src && false'),
     error => error.name === 'ShellError' && error.code === 1)
-  assert.equal(r.getCwd(), physical(source))
+  assertCwd(source)
 })
 
 shellTest('legacy explicit workdir remains local to the invocation', async () => {
   await call(`pwd && cd ${quotePath(destination)} && pwd`, { workdir: source })
-  assert.equal(r.getCwd(), physical(project))
+  assertCwd(project)
 })
 
 for (const [name, overrides] of [
@@ -264,7 +267,7 @@ for (const [name, overrides] of [
 ]) {
   shellTest(`${name} cannot change the parent session directory`, async () => {
     await call(`cd src && pwd && cd ${quotePath(destination)} && pwd`, {}, context(overrides))
-    assert.equal(r.getCwd(), physical(project))
+    assertCwd(project)
   })
 }
 
@@ -272,7 +275,7 @@ shellTest('maintaining the project working directory still resets a converted cd
   process.env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR = '1'
   try {
     await call(`cd src && pwd && cd ${quotePath(destination)} && pwd`)
-    assert.equal(r.getCwd(), physical(project))
+    assertCwd(project)
   } finally {
     delete process.env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR
   }
@@ -288,8 +291,8 @@ shellTest('background commands leave the session cwd unchanged before and after 
   try {
     const completion = await task.shellCommand.result
     assert.equal(completion.code, 0)
-    assert.equal(cwdWhileRunning, physical(project))
-    assert.equal(r.getCwd(), physical(project))
+    assert.equal(physical(cwdWhileRunning), physical(project))
+    assertCwd(project)
   } finally {
     task.unregisterCleanup?.()
     await task.shellCommand.taskOutput.flush()
@@ -302,17 +305,50 @@ shellTest('background commands leave the session cwd unchanged before and after 
 shellTest('a missing leading cd target does not change the session directory', async () => {
   await assert.rejects(call(`cd ${quotePath(join(project, 'missing-cwd-target'))} && printf never`),
     /does not exist/)
-  assert.equal(r.getCwd(), physical(project))
+  assertCwd(project)
 })
 
 shellTest('a final cwd outside approved roots cannot move the session out of the project', async () => {
   await call(`cd src && pwd && cd ${quotePath(outside)} && pwd`)
-  assert.equal(r.getCwd(), physical(project))
+  assertCwd(project)
 })
 
 shellTest('an additional approved root can be the final directory', async () => {
   const ctx = context()
   ctx.getAppState().toolPermissionContext.additionalWorkingDirectories.set(outside, {})
   await call(`cd src && pwd && cd ${quotePath(outside)} && pwd`, {}, ctx)
-  assert.equal(r.getCwd(), physical(outside))
+  assertCwd(outside)
+})
+
+if (process.platform === 'win32') {
+  for (const additionalRoot of [false, true]) {
+    shellTest(`Windows short directory aliases retain cwd (${additionalRoot ? 'additional root' : 'project root'})`, async t => {
+      const root = additionalRoot ? outside : project
+      const target = additionalRoot ? outside : destination
+      const shortPath = execFileSync(shell, ['-c', 'cygpath -d -- "$1"', 'cwd-test', physical(root)],
+        { encoding: 'utf8', windowsHide: true }).trim()
+      if (shortPath.toLowerCase() === physical(root).toLowerCase()) {
+        t.skip('Filesystem does not provide a distinct short directory alias')
+        return
+      }
+      const ctx = context()
+      if (additionalRoot) {
+        ctx.getAppState().toolPermissionContext.additionalWorkingDirectories.set(shortPath, {})
+      } else {
+        r.setCwd(shortPath)
+        r.setOriginalCwd(shortPath)
+      }
+      await call(`cd ${quotePath(source)} && pwd && cd ${quotePath(physical(target))} && pwd`, {}, ctx)
+      assertCwd(target)
+      const followup = await call('pwd', {}, ctx)
+      assert.match(followup.data.stdout, new RegExp(basename(target)))
+    })
+  }
+}
+
+shellTest('a directory link cannot persist cwd outside approved roots', async () => {
+  const link = join(project, 'outside-link')
+  symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+  await call(`cd src && pwd && cd ${quotePath(link)} && pwd`)
+  assertCwd(project)
 })
