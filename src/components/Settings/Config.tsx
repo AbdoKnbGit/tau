@@ -357,6 +357,32 @@ export function Config({
       });
     }
   }, {
+    id: 'inlineImagesAnimated',
+    label: 'Animate images',
+    value: settingsData?.inlineImagesAnimated ?? true,
+    type: 'boolean' as const,
+    onChange(inlineImagesAnimated: boolean) {
+      updateSettingsForSource('localSettings', {
+        inlineImagesAnimated
+      });
+      setSettingsData(prev_anim => ({
+        ...prev_anim,
+        inlineImagesAnimated
+      }));
+      // Mirrored for the same reason as Display images: a GIF playing on
+      // screen stops on this frame, not at the next settings-file poll.
+      setAppState(prev_anim_state => ({
+        ...prev_anim_state,
+        settings: {
+          ...prev_anim_state.settings,
+          inlineImagesAnimated
+        }
+      }));
+      logEvent('tengu_inline_images_animated_setting_changed', {
+        enabled: inlineImagesAnimated
+      });
+    }
+  }, {
     id: 'mermaidDiagrams',
     label: 'Draw diagrams',
     value: settingsData?.mermaidDiagrams ?? true,
@@ -1316,6 +1342,7 @@ export function Config({
       spinnerTipsEnabled: il?.spinnerTipsEnabled,
       lspEnabled: il?.lspEnabled,
       inlineImagesEnabled: il?.inlineImagesEnabled,
+      inlineImagesAnimated: il?.inlineImagesAnimated,
       mermaidDiagrams: il?.mermaidDiagrams,
       prefersReducedMotion: il?.prefersReducedMotion,
       defaultView: il?.defaultView,

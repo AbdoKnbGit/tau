@@ -8,6 +8,7 @@ import { MessageResponse } from '../../components/MessageResponse.js';
 import { Text } from '../../ink.js';
 import { FILE_NOT_FOUND_CWD_NOTE, getDisplayPath } from '../../utils/file.js';
 import { formatFileSize } from '../../utils/format.js';
+import { expandPath } from '../../utils/path.js';
 import { getPlansDirectory } from '../../utils/plans.js';
 import { getTaskOutputDir } from '../../utils/task/diskOutput.js';
 import type { Input, Output } from './FileReadTool.js';
@@ -82,7 +83,28 @@ export function renderToolUseTag({
   }
   return <Text dimColor> {agentTaskId}</Text>;
 }
-export function renderToolResultMessage(output: Output): React.ReactNode {
+/**
+ * The file behind a GIF or WebP read, for InlineImage to play from when the
+ * read carries only a still of it. Checked by hand: a resumed transcript's
+ * input is parsed with no schema at all.
+ */
+function animatedSourcePath(input: unknown): string | undefined {
+  if (typeof input !== 'object' || input === null) return undefined;
+  const filePath = (input as {
+    file_path?: unknown;
+  }).file_path;
+  if (typeof filePath !== 'string' || !/\.(gif|webp)$/i.test(filePath)) {
+    return undefined;
+  }
+  try {
+    return expandPath(filePath);
+  } catch {
+    return undefined;
+  }
+}
+export function renderToolResultMessage(output: Output, _progressMessagesForMessage?: unknown, options?: {
+  input?: unknown;
+}): React.ReactNode {
   // TODO: Render recursively
   switch (output.type) {
     case 'image':
@@ -92,11 +114,12 @@ export function renderToolResultMessage(output: Output): React.ReactNode {
           base64
         } = output.file;
         const formattedSize = formatFileSize(originalSize);
+        const sourcePath = animatedSourcePath(options?.input);
         // InlineImage renders the summary alone until (and unless) it can
         // decode a preview, so this stays a one-line result on terminals
         // without the color depth for it.
         return <MessageResponse>
-          <InlineImage base64={base64}>
+          <InlineImage base64={base64} sourcePath={sourcePath} sourceSize={sourcePath === undefined ? undefined : originalSize}>
             <Text>Read image ({formattedSize})</Text>
           </InlineImage>
         </MessageResponse>;

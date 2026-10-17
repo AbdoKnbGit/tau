@@ -65,6 +65,18 @@ export type GraphicsPlacement = {
   /** Complete, ready-to-write escape sequence for the image. */
   readonly sequence: string
   /**
+   * The encode this payload belongs to; the sequence itself when unset.
+   *
+   * Every frame of an animation is a different payload of the same encode —
+   * same pixel size, same cells, same cell geometry. Told apart only by
+   * `sequence`, a new frame would read as a re-encode: erased, its cells
+   * repainted twice, and in history a fresh reprint request every frame. The
+   * identity lets a frame be swapped in place instead, and lets an image that
+   * leaves through the top mid-animation keep the frame it was carried there
+   * with. See {@link swapGraphicsFrame}.
+   */
+  readonly identity?: string
+  /**
    * Protocol-native removal, where one exists (Kitty's `a=d`).
    *
    * Preferred over repainting the cells underneath, which only works because
@@ -133,6 +145,8 @@ type DrawnRect = CellRect & {
    * of the session with nothing left that can refer to it.
    */
   sequence: string
+  /** The encode that payload belongs to; see `GraphicsPlacement.identity`. */
+  identity: string
   /** Checksum of the covered cells at draw time; see {@link checksumRect}. */
   checksum: number
   /**
@@ -204,6 +218,10 @@ const placements = new Map<string, GraphicsPlacement>()
 /** Rectangle each placement last painted pixels into. */
 const lastDrawn = new Map<string, DrawnRect>()
 
+function identityOf(placement: GraphicsPlacement): string {
+  return placement.identity ?? placement.sequence
+}
+
 /** Register (or with `null`, remove) a placement. Keyed by a caller-stable id. */
 export function setGraphicsPlacement(
   id: string,
@@ -221,6 +239,148 @@ export function setGraphicsPlacement(
 }
 
 /**
+ * Put another frame of the same encode into a placement, in place.
+ *
+ * Returns false once there is no placement under `id` for that encode — it was
+ * unregistered, or replaced by a re-encode — so a caller still holding frames
+ * stops rather than bringing back an image nothing owns any more.
+ *
+ * Re-registering through {@link setGraphicsPlacement} would also work, and
+ * would be wrong: clearing the reprint bookkeeping on every frame would let an
+ * animation sitting in history ask for the transcript to be written again on
+ * every frame.
+ */
+export function swapGraphicsFrame(
+  id: string,
+  identity: string,
+  frame: { readonly sequence: string; readonly eraseSequence?: string },
+): boolean {
+  const placement = placements.get(id)
+  if (placement === undefined || identityOf(placement) !== identity) {
+    return false
+  }
+  placements.set(id, {
+    ...placement,
+    identity,
+    sequence: frame.sequence,
+    eraseSequence: frame.eraseSequence,
+  })
+  return true
+}
+
+/** The payload last drawn for `id`, if the screen still holds one. */
+export function getDrawnGraphicsSequence(id: string): string | undefined {
+  return lastDrawn.get(id)?.sequence
+}
+
+/**
+ * Listeners told when a pass draws a payload for their placement.
+ *
+ * An animation advances only once the frame it put in has actually gone out.
+ * A frame that cannot be drawn — scrolled into history, withheld during a
+ * resize, the screen handed to an editor — then holds it still at no cost, and
+ * the first pass that can draw it again is the very edge that resumes it. No
+ * pause depends on anything but the one event that ends it.
+ *
+ * Deferred to a microtask: a pass runs while Ink is assembling a frame, and a
+ * listener that touched rendering from there would re-enter it.
+ */
+const drawnListeners = new Map<string, Set<() => void>>()
+const drawnSince = new Set<string>()
+let drawnFlushQueued = false
+
+export function subscribeGraphicsDrawn(
+  id: string,
+  listener: () => void,
+): () => void {
+  let listeners = drawnListeners.get(id)
+  if (listeners === undefined) {
+    listeners = new Set()
+    drawnListeners.set(id, listeners)
+  }
+  listeners.add(listener)
+  return () => {
+    const current = drawnListeners.get(id)
+    if (current === undefined) return
+    current.delete(listener)
+    if (current.size === 0) drawnListeners.delete(id)
+  }
+}
+
+function noteDrawn(id: string): void {
+  if (!drawnListeners.has(id)) return
+  drawnSince.add(id)
+  if (drawnFlushQueued) return
+  drawnFlushQueued = true
+  queueMicrotask(flushDrawn)
+}
+
+function flushDrawn(): void {
+  drawnFlushQueued = false
+  const ids = [...drawnSince]
+  drawnSince.clear()
+  for (const id of ids) {
+    for (const listener of [...(drawnListeners.get(id) ?? [])]) {
+      try {
+        listener()
+      } catch (error) {
+        // One listener failing must not strand the others behind it.
+        logForDebugging(
+          `graphics: drawn listener failed — ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        )
+      }
+    }
+  }
+}
+
+/**
+ * The Ink instance whose frames carry these graphics: the stream they are
+ * written to, and a way to ask it for a frame. Registered by `ink.tsx`.
+ *
+ * The stream is not necessarily `process.stdout`. On Windows, Ink can be wired
+ * to stderr or to the console's own `CONOUT$`, so backpressure is read from the
+ * stream that is actually written.
+ */
+export type GraphicsHost = {
+  readonly output: { readonly writableLength?: number }
+  readonly requestFrame: () => void
+}
+
+let graphicsHost: GraphicsHost | null = null
+
+export function setGraphicsHost(host: GraphicsHost): void {
+  graphicsHost = host
+}
+
+/** Unregister `host`, unless another instance has registered since. */
+export function clearGraphicsHost(host: GraphicsHost): void {
+  if (graphicsHost === host) graphicsHost = null
+}
+
+/**
+ * Bytes handed to the output stream and not yet taken by the terminal.
+ *
+ * Writes to a terminal are asynchronous on Windows. A terminal slower than the
+ * frames sent to it would have them queue in memory, and an animation would
+ * fall further behind with every frame — so the next frame waits for this to
+ * reach zero. A stream that cannot say reports zero, which is the behaviour
+ * without the check.
+ */
+export function getGraphicsOutputBacklog(): number {
+  const pending = graphicsHost?.output.writableLength
+  return typeof pending === 'number' && Number.isFinite(pending) && pending > 0
+    ? pending
+    : 0
+}
+
+/** Ask for a frame, so a swapped payload goes out without a React render. */
+export function requestGraphicsFrame(): void {
+  graphicsHost?.requestFrame()
+}
+
+/**
  * A graphic drawn by the frame writer in the same pass that writes the rows it
  * covers. See {@link planRowGraphics}.
  */
@@ -233,6 +393,8 @@ export type RowGraphic = {
   readonly columns: number
   readonly sequence: string
   readonly eraseSequence?: string
+  /** See `GraphicsPlacement.identity`. */
+  readonly identity: string
 }
 
 /**
@@ -249,15 +411,16 @@ const ROW_GRAPHICS_BUDGET_CHARS = 16 * 1024 * 1024
 let pendingRowGraphics: RowGraphic[] = []
 
 /**
- * What each placement last asked a reprint for, by payload and position.
+ * What each placement last asked a reprint for, by encode and position.
  *
  * A placement asks at most once per state per viewport epoch, which is what
  * makes a reprint loop impossible. A reprint that did not draw it will not draw
  * it the next time either, and once drawn it can only be lost again in the
- * same state to a full reset, which draws it by itself. A new payload, a new
- * position, or a resize is a new question.
+ * same state to a full reset, which draws it by itself. A new encode, a new
+ * position, or a resize is a new question. A new frame of an animation is not:
+ * keyed by payload, an animation in history would ask again with every frame.
  */
-const reprintAsked = new Map<string, { sequence: string; x: number; y: number }>()
+const reprintAsked = new Map<string, { identity: string; x: number; y: number }>()
 /** Placements a reprint is still owed to; see {@link isGraphicsReprintOwed}. */
 const reprintOwed = new Set<string>()
 /** A request arrived since {@link takeGraphicsReprintRequest} last looked. */
@@ -345,6 +508,7 @@ export function planRowGraphics(request: {
       columns: placement.columns,
       sequence: placement.sequence,
       eraseSequence: placement.eraseSequence,
+      identity: identityOf(placement),
     })
   }
   if (candidates.length === 0) return []
@@ -358,7 +522,7 @@ export function planRowGraphics(request: {
     if (planned.length > 0 && spent + graphic.sequence.length > budget) {
       // A reprint would skip it again, so never ask for one on its behalf.
       reprintAsked.set(graphic.id, {
-        sequence: graphic.sequence,
+        identity: graphic.identity,
         x: graphic.x,
         y: graphic.y,
       })
@@ -400,9 +564,11 @@ export function commitRowGraphics(screen: Screen, viewportTop: number): void {
       viewportTop,
       eraseSequence: graphic.eraseSequence,
       sequence: graphic.sequence,
+      identity: graphic.identity,
       checksum: checksumRect(screen, rect),
       redrawGeneration,
     })
+    noteDrawn(graphic.id)
     written.push(`${graphic.id} at ${graphic.x},${graphic.y}`)
   }
   pendingRowGraphics = []
@@ -418,16 +584,17 @@ function askForReprint(
   placement: GraphicsPlacement,
   rect: { x: number; y: number },
 ): boolean {
+  const identity = identityOf(placement)
   const asked = reprintAsked.get(id)
   if (
     asked !== undefined &&
     asked.x === rect.x &&
     asked.y === rect.y &&
-    asked.sequence === placement.sequence
+    asked.identity === identity
   ) {
     return false
   }
-  reprintAsked.set(id, { sequence: placement.sequence, x: rect.x, y: rect.y })
+  reprintAsked.set(id, { identity, x: rect.x, y: rect.y })
   reprintOwed.add(id)
   reprintWanted = true
   return true
@@ -877,6 +1044,7 @@ export function buildGraphicsSequence(options: {
       viewportTop,
       eraseSequence: placement.eraseSequence,
       sequence: placement.sequence,
+      identity: identityOf(placement),
       checksum: 0,
       redrawGeneration,
     }
@@ -919,17 +1087,18 @@ export function buildGraphicsSequence(options: {
       target.x + target.columns > viewportColumns
     ) {
       // Drawing up there is impossible, but erasing is not required either. An
-      // image already drawn, still the same payload in the same transcript
+      // image already drawn, still the same encode in the same transcript
       // cells, that is leaving through the top was carried there by the
       // terminal: the pixels belong to buffer cells, and cells scroll into
       // history with the text. Erasing it here was what turned every image
       // blocky one turn later, for good. Anything that breaks the match — a
       // move, a re-encode, a resize epoch, new cell geometry, text written
-      // under it — still falls through to the erase below.
+      // under it — still falls through to the erase below. A newer frame of
+      // an animation does not: it keeps the frame it was carried up with.
       const leftThroughTop =
         previous !== undefined &&
         previous.redrawGeneration === redrawGeneration &&
-        previous.sequence === placement.sequence &&
+        previous.identity === target.identity &&
         sameLogicalRect(previous, target) &&
         placement.cellWidth === cell.width &&
         placement.cellHeight === cell.height &&
@@ -1005,7 +1174,12 @@ export function buildGraphicsSequence(options: {
     // the old payload is a different image as far as the terminal is concerned,
     // so it has to be taken down rather than silently superseded.
     const reencoded =
-      previous !== undefined && previous.sequence !== placement.sequence
+      previous !== undefined && previous.identity !== target.identity
+    // Another frame of the same encode; see `swapGraphicsFrame`.
+    const nextFrame =
+      previous !== undefined &&
+      !reencoded &&
+      previous.sequence !== placement.sequence
     // An untouched image is still on screen, and re-sending a payload that can
     // run to hundreds of kilobytes would stall the write. `damage` narrows this
     // cheaply — it bounds everything written this frame, so no overlap is a
@@ -1015,7 +1189,33 @@ export function buildGraphicsSequence(options: {
       moved || reencoded ? 0 : overlaps(target, damage)
         ? checksumRect(screen, target)
         : previous!.checksum
-    if (!moved && !reencoded && checksum === previous!.checksum) continue
+    const intact = !moved && !reencoded && checksum === previous!.checksum
+    if (intact && !nextFrame) continue
+
+    if (intact) {
+      // The next frame lands exactly on the last one: same cells, same pixel
+      // size, nothing written into them since. Overdrawing is the whole swap.
+      // A sixel frame is opaque edge to edge — the encoder ignores alpha — so
+      // it replaces every pixel under it. Kitty is told to drop the image
+      // first, under the id both frames share, which also stops a terminal
+      // that is loose about replacing an id from stacking placements. The two
+      // cell repaints a move does would only flash the block render through,
+      // once per frame.
+      if (previous!.eraseSequence) fromFrameCursor(previous!.eraseSequence)
+      fromFrameCursor(
+        cursorMove(0, target.y - cursor.y) +
+          cursorTo(target.x + 1) +
+          placement.sequence,
+      )
+      trace.push(
+        `frame ${id} at ${target.x},${target.y} vt=${viewportTop} ` +
+          `anchor=${cursor.y} ${target.columns}x${target.rows}`,
+      )
+      target.checksum = checksum
+      lastDrawn.set(id, target)
+      noteDrawn(id)
+      continue
+    }
 
     // Erase first: the old pixels sit outside the new rectangle whenever the
     // image moved, and nothing else will clear them.
@@ -1044,6 +1244,7 @@ export function buildGraphicsSequence(options: {
     // now — the state a later frame has to compare against.
     target.checksum = checksumRect(screen, target)
     lastDrawn.set(id, target)
+    noteDrawn(id)
   }
 
   if (trace.length > 0) {

@@ -12,10 +12,15 @@ import { useSettings } from '../hooks/useSettings.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import type { DOMElement } from '../ink/dom.js'
 import {
+  getDrawnGraphicsSequence,
   getGraphicsConstraintGeneration,
+  getGraphicsOutputBacklog,
   getPlacementRowLimit,
+  requestGraphicsFrame,
   setGraphicsPlacement,
   subscribeGraphicsConstraints,
+  subscribeGraphicsDrawn,
+  swapGraphicsFrame,
 } from '../ink/graphicsPlacement.js'
 import { Box, RawAnsi, Text } from '../ink.js'
 import type { GraphicsOverlay } from '../utils/terminalGraphics.js'
@@ -30,6 +35,15 @@ import {
   resolveGraphicsProtocol,
   subscribeGraphicsCapability,
 } from '../utils/terminalGraphics.js'
+import {
+  type AnimationInfo,
+  AnimationFrames,
+  AnimationPlayer,
+  animatedCellLimit,
+  encodeITerm2Animation,
+  findAnimation,
+  planFrames,
+} from '../utils/terminalAnimation.js'
 import {
   type InlineImage as RenderedImage,
   maxRowsForViewport,
@@ -81,6 +95,16 @@ type Props = {
    */
   children: React.ReactNode
   maxRows?: number
+  /**
+   * The file the image was read from, and its size when read, for an animated
+   * GIF or WebP whose `base64` may be a still: a read sends the model only its
+   * image budget, so a larger file reaches the transcript as one frame. Read
+   * again for the screen alone, and only while it is still that size. Two
+   * primitives rather than an object, so a parent that rebuilds its JSX on
+   * every render does not restart the render below on every one.
+   */
+  sourcePath?: string
+  sourceSize?: number
 }
 
 /**
@@ -98,15 +122,31 @@ export function InlineImage({
   base64,
   children,
   maxRows,
+  sourcePath,
+  sourceSize,
 }: Props): React.ReactNode {
   const { columns, rows } = useTerminalSize()
+  const settings = useSettings()
   // `/config` → "Display images". Off means the summary line stands alone: no
   // decode, no encode, no placement — and any graphic already on screen is
   // taken down, because unmounting the box below unregisters the placement and
   // the renderer erases the pixels it recorded for it on the next frame.
-  const imagesEnabled = useSettings().inlineImagesEnabled !== false
+  const imagesEnabled = settings.inlineImagesEnabled !== false
+  // `/config` → "Animate images", which only means anything under Display
+  // images. Reduced motion stills animations here as it does the spinner. Off,
+  // an animated file shows its first frame exactly as any still would: no
+  // frames made, nothing swapped, and the full-size box a still gets.
+  const animationsEnabled =
+    imagesEnabled &&
+    settings.inlineImagesAnimated !== false &&
+    settings.prefersReducedMotion !== true
   const [image, setImage] = useState<RenderedImage | null>(null)
   const [overlay, setOverlay] = useState<GraphicsOverlay | null>(null)
+  // What the overlay is the first frame of, when there is something to play.
+  const [animation, setAnimation] = useState<{
+    data: Buffer
+    info: AnimationInfo
+  } | null>(null)
   // Reconciliation, not an edge. Every reason a graphic is withheld is
   // temporary — a resize is in flight, the first geometry probe has not
   // answered, the measurement moved while this was encoding — but each is
@@ -176,6 +216,7 @@ export function InlineImage({
       // from render keeps the hook order stable.
       setImage(null)
       setOverlay(null)
+      setAnimation(null)
       setWithheld(false)
       return
     }
@@ -188,7 +229,7 @@ export function InlineImage({
     beginImageRender(token)
     void (async () => {
       try {
-        const data = Buffer.from(base64, 'base64')
+        let data: Buffer = Buffer.from(base64, 'base64')
 
         // Graphics first, because when available it owns the box. The two
         // renderers size images by different rules — blocks stretch to the 1:2
@@ -197,24 +238,78 @@ export function InlineImage({
         // covers, and the blocks show through around its edges as a ragged
         // ASCII border. Deriving the box from the graphic and rendering blocks
         // *into* it keeps the fallback while guaranteeing exact coverage.
-        const wantsGraphics = resolveGraphicsProtocol() !== 'none'
+        const protocol = resolveGraphicsProtocol()
+        const wantsGraphics = protocol !== 'none'
         // Asked and answered before spending anything on an encode that
         // `renderGraphicsOverlay` would refuse anyway — and, unlike its own
         // guard, visible here, so the retry below knows the fallback standing
         // in is temporary.
         const unsettled =
           wantsGraphics && hasMeasuredCellSize() && isCellGeometryStale()
-        const overlay =
+
+        // Only pixels animate. The block render is text, and text changing in
+        // rows already in scrollback costs a full terminal reset every frame,
+        // so it stays the first frame; without a protocol nothing is looked
+        // for at all, and the still is all there is.
+        const animated =
+          animationsEnabled && wantsGraphics && !unsettled
+            ? await findAnimation(
+                data,
+                sourcePath !== undefined && sourceSize !== undefined
+                  ? { path: sourcePath, size: sourceSize }
+                  : undefined,
+                protocol,
+              )
+            : null
+        if (!active) return
+        // Drawn from the file every later frame comes from, so the still put
+        // up first is exactly the animation's first frame.
+        if (animated !== null) data = animated.data
+        // A frame is encoded and written many times a second, so its box is
+        // capped where a still's is not. iTerm2 plays the file itself.
+        const frameLimit =
+          animated !== null && protocol !== 'iterm2' && hasMeasuredCellSize()
+            ? animatedCellLimit(
+                animated.info.width,
+                animated.info.height,
+                getCellPixelSize(),
+                protocol,
+              )
+            : null
+
+        let overlay =
           !wantsGraphics || unsettled
             ? null
             : await renderGraphicsOverlay(
                 data,
-                maxColumns,
-                effectiveRowBudget,
+                frameLimit === null
+                  ? maxColumns
+                  : Math.min(maxColumns, frameLimit.columns),
+                frameLimit === null
+                  ? effectiveRowBudget
+                  : Math.min(effectiveRowBudget, frameLimit.rows),
                 undefined,
                 kittyImageId.current!,
               )
         if (!active) return
+        if (
+          overlay !== null &&
+          animated !== null &&
+          overlay.protocol === 'iterm2'
+        ) {
+          const played = encodeITerm2Animation(
+            animated.data,
+            animated.info,
+            overlay.columns,
+            overlay.rows,
+          )
+          if (played !== null) overlay = { ...overlay, sequence: played }
+        }
+        // Kitty and sixel play by having frames swapped in; see below.
+        const playable =
+          overlay !== null &&
+          animated !== null &&
+          (overlay.protocol === 'kitty' || overlay.protocol === 'sixel')
 
         // With a graphic the box is already chosen, and the blocks have to fill
         // it exactly: they are what shows whenever the overlay is withheld, and
@@ -247,6 +342,7 @@ export function InlineImage({
           renderPending.current = false
           setImage(rendered)
           setOverlay(rendered ? overlay : null)
+          setAnimation(rendered && playable ? animated : null)
           setWithheld(rendered !== null && (unsettled || outdated))
         })
       } catch {
@@ -257,6 +353,7 @@ export function InlineImage({
         endImageRender(token)
         setImage(null)
         setOverlay(null)
+        setAnimation(null)
         setWithheld(false)
       }
     })()
@@ -273,6 +370,9 @@ export function InlineImage({
     constraintGeneration,
     attempt,
     imagesEnabled,
+    animationsEnabled,
+    sourcePath,
+    sourceSize,
   ])
 
   // The other half of the reconciliation above. Terminates by construction:
@@ -336,6 +436,9 @@ export function InlineImage({
     setGraphicsPlacement(id, {
       node,
       sequence: overlay.sequence,
+      // The encode every frame of an animation belongs to. For a still it is
+      // the payload itself, which is what an identity left unset means anyway.
+      identity: overlay.sequence,
       eraseSequence: overlay.eraseSequence,
       rows: overlay.rows,
       columns: overlay.columns,
@@ -346,6 +449,63 @@ export function InlineImage({
       setGraphicsPlacement(id, null)
     }
   }, [overlay])
+
+  // Plays an animation into the placement registered above: same box, same
+  // cell geometry, same Kitty id, frame after frame. It lives exactly as long
+  // as the overlay it is the animation of, so a re-encode — a resize, a new
+  // measurement, the setting turned off — always starts over from a still that
+  // matches. Nothing here re-renders React per frame: frames are swapped into
+  // the placement and Ink is asked for a frame directly.
+  //
+  // A layout effect, like the registration, and for the same reason: every
+  // layout cleanup in a commit runs before any layout setup. A passive one left
+  // the old player alive past the new registration, and a re-encode identical
+  // to the last carries the same identity, so its next frame was accepted into
+  // the new placement — whose player then waited for a still no longer there.
+  useLayoutEffect(() => {
+    if (!overlay || !animation || !animationsEnabled) return
+    if (overlay.protocol !== 'kitty' && overlay.protocol !== 'sixel') return
+    const id = placementId.current!
+    const identity = overlay.sequence
+    const plan = planFrames(animation.info)
+    const frames = new AnimationFrames(
+      animation.data,
+      plan,
+      {
+        protocol: overlay.protocol,
+        columns: overlay.columns,
+        rows: overlay.rows,
+        pixelWidth: overlay.pixelWidth,
+        pixelHeight: overlay.pixelHeight,
+        kittyImageId: kittyImageId.current ?? undefined,
+      },
+      overlay.sequence,
+    )
+    const player = new AnimationPlayer({
+      frames,
+      delays: plan.delays,
+      loop: plan.loop,
+      poster: overlay.sequence,
+      swap: sequence =>
+        swapGraphicsFrame(id, identity, {
+          sequence,
+          eraseSequence: overlay.eraseSequence,
+        }),
+      drawn: () => getDrawnGraphicsSequence(id),
+      requestFrame: requestGraphicsFrame,
+      backlog: getGraphicsOutputBacklog,
+      release: () => frames.release(),
+    })
+    // Subscribed before starting, so a draw landing in between is not missed;
+    // `start` also looks for itself, for one that landed before this ran.
+    const unsubscribe = subscribeGraphicsDrawn(id, () => player.drawn())
+    player.start()
+    return () => {
+      unsubscribe()
+      player.stop()
+      frames.release()
+    }
+  }, [overlay, animation, animationsEnabled])
 
   if (!imagesEnabled || !image) return children
 

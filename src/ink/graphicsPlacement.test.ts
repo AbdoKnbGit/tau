@@ -13,14 +13,20 @@
 import type { DOMElement } from './dom.js'
 import {
   buildGraphicsSequence,
+  clearGraphicsHost,
   commitRowGraphics,
   discardRowGraphics,
   forceGraphicsRedraw,
+  getDrawnGraphicsSequence,
+  getGraphicsOutputBacklog,
   getPlacementRowLimit,
   invalidateGraphicsPlacements,
   isGraphicsReprintOwed,
   planRowGraphics,
+  setGraphicsHost,
   setGraphicsPlacement,
+  subscribeGraphicsDrawn,
+  swapGraphicsFrame,
   takeGraphicsReprintRequest,
 } from './graphicsPlacement.js'
 import { nodeCache } from './node-cache.js'
@@ -1157,6 +1163,189 @@ test('an image taller than the window shrinks instead of asking', () => {
     23,
     'so it is told the most rows a window can draw',
   )
+})
+
+// --- Animation frames ---------------------------------------------------------
+
+// Frames of one encode: PAYLOAD is the first, drawn before anything played, and
+// stands as the identity every later frame is swapped in under.
+const FRAME_B = '\x1bPq#0;2;0;100;0#0~~~~\x1b\\'
+const FRAME_C = '\x1bPq#0;2;0;0;100#0~~~~\x1b\\'
+
+async function asyncTest(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn()
+    passed++
+    console.log(`  ok  ${name}`)
+  } catch (e: any) {
+    failed++
+    console.log(`  FAIL ${name}: ${e?.message ?? String(e)}`)
+  }
+}
+
+function placeAnimated(
+  id: string,
+  x: number,
+  y: number,
+  eraseSequence?: string,
+): DOMElement {
+  const node = {} as DOMElement
+  nodeCache.set(node, { x, y, width: 8, height: 4 })
+  setGraphicsPlacement(id, {
+    node,
+    sequence: PAYLOAD,
+    identity: PAYLOAD,
+    eraseSequence,
+    rows: 4,
+    columns: 8,
+    cellWidth: CELL.width,
+    cellHeight: CELL.height,
+  })
+  return node
+}
+
+test('a new frame is drawn over the last, without repainting the cells under it', () => {
+  // Repainting the cells, as a move does, would flash the block render through
+  // once per frame.
+  reset()
+  const { screen, stylePool } = makeScreen()
+  placeAnimated('a', 4, 6)
+  build(screen, stylePool)
+
+  assert(swapGraphicsFrame('a', PAYLOAD, { sequence: FRAME_B }), 'the swap is taken')
+  const swapped = build(screen, stylePool)
+  assert(swapped.includes(FRAME_B), 'the new frame goes out')
+  assert(!swapped.includes('X'), 'and no cell under it is rewritten')
+  assertEqual(getDrawnGraphicsSequence('a'), FRAME_B, 'it is what the screen holds now')
+  assertEqual(build(screen, stylePool), '', 'then it sits still like any image')
+})
+
+test('a Kitty frame drops the image under the id it shares, then draws', () => {
+  reset()
+  const { screen, stylePool } = makeScreen()
+  placeAnimated('a', 4, 6, DELETE)
+  build(screen, stylePool)
+
+  swapGraphicsFrame('a', PAYLOAD, { sequence: FRAME_B, eraseSequence: DELETE })
+  const swapped = build(screen, stylePool)
+  const deleted = swapped.indexOf(DELETE)
+  assert(deleted >= 0, 'the image is deleted by id')
+  assert(swapped.indexOf(FRAME_B) > deleted, 'before the frame replacing it is sent')
+  assertEqual(swapped.split(DELETE).length - 1, 1, 'and only once')
+  assert(!swapped.includes('X'), 'still with no repaint')
+})
+
+test('a frame landing on cells that were written over takes the full redraw', () => {
+  reset()
+  const { screen, stylePool } = makeScreen()
+  placeAnimated('a', 4, 6)
+  build(screen, stylePool)
+
+  setCellAt(screen, 5, 7, {
+    char: 'Z',
+    styleId: stylePool.none,
+    width: CellWidth.Narrow,
+    hyperlink: undefined,
+  })
+  swapGraphicsFrame('a', PAYLOAD, { sequence: FRAME_B })
+  const redrawn = build(screen, stylePool, { x: 4, y: 6, width: 8, height: 4 })
+  assert(redrawn.includes(FRAME_B), 'the frame is drawn')
+  assert(redrawn.includes('X'), 'over cells repainted first, like any disturbed image')
+})
+
+test('a swap is refused for another encode, and once the placement is gone', () => {
+  reset()
+  placeAnimated('a', 4, 6)
+  assert(!swapGraphicsFrame('a', 'another encode', { sequence: FRAME_B }), 'a stale encode')
+  assert(!swapGraphicsFrame('b', PAYLOAD, { sequence: FRAME_B }), 'an id with nothing under it')
+  setGraphicsPlacement('a', null)
+  assert(!swapGraphicsFrame('a', PAYLOAD, { sequence: FRAME_B }), 'an unregistered placement')
+})
+
+test('an animation leaving through the top keeps the frame it was carried up with', () => {
+  // The terminal took that frame into history with the text. A newer frame
+  // cannot be drawn up there, and must not count as a change that erases it.
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  placeAnimated('a', 4, 20, DELETE)
+  assert(windowAt(screen, stylePool, 5).includes(PAYLOAD), 'drawn while in view')
+
+  swapGraphicsFrame('a', PAYLOAD, { sequence: FRAME_B, eraseSequence: DELETE })
+  assertEqual(windowAt(screen, stylePool, 22), '', 'nothing drawn, nothing erased')
+  assertEqual(windowAt(screen, stylePool, 40), '', 'wholly in history: still left alone')
+  assertEqual(getDrawnGraphicsSequence('a'), PAYLOAD, 'the screen still holds the first frame')
+})
+
+test('an animation in history asks for its rows once, not once per frame', () => {
+  reset()
+  const { screen, stylePool } = makeScreenOf(60, 80, 'X')
+  placeAnimated('a', 4, 2)
+  historyAt(screen, stylePool, 10)
+  assert(takeGraphicsReprintRequest(), 'asked once')
+
+  for (const frame of [FRAME_B, FRAME_C, FRAME_B]) {
+    swapGraphicsFrame('a', PAYLOAD, { sequence: frame })
+    historyAt(screen, stylePool, 10)
+  }
+  assert(!takeGraphicsReprintRequest(), 'a new frame of the same encode is not a new question')
+  assert(isGraphicsReprintOwed(), 'and the reprint already asked for is still owed')
+})
+
+test('the writer draws the frame registered now, and that counts as drawn', () => {
+  reset()
+  const { screen } = makeScreenOf(60, 80, 'X')
+  placeAnimated('a', 4, 10)
+  swapGraphicsFrame('a', PAYLOAD, { sequence: FRAME_C })
+  const planned = plan({ startY: 0, endY: 80, afterClear: true })
+  assert(
+    planned.some(graphic => graphic.sequence === FRAME_C),
+    'the current frame goes out with its rows',
+  )
+  invalidateGraphicsPlacements()
+  commitRowGraphics(screen, 0)
+  assertEqual(getDrawnGraphicsSequence('a'), FRAME_C, 'and is recorded as on screen')
+})
+
+await asyncTest('a draw is announced after the pass, and a withheld frame is not', async () => {
+  reset()
+  const { screen, stylePool } = makeScreen()
+  let heard = 0
+  const unsubscribe = subscribeGraphicsDrawn('a', () => heard++)
+  try {
+    const node = placeAnimated('a', 4, 6)
+    build(screen, stylePool)
+    assertEqual(heard, 0, 'not from inside the pass, which would re-enter rendering')
+    await Promise.resolve()
+    assertEqual(heard, 1, 'once the pass is over')
+
+    build(screen, stylePool)
+    await Promise.resolve()
+    assertEqual(heard, 1, 'an image left alone draws nothing, so nothing is announced')
+
+    nodeCache.set(node, { x: 4, y: 6, width: 4, height: 4 })
+    swapGraphicsFrame('a', PAYLOAD, { sequence: FRAME_B })
+    build(screen, stylePool)
+    await Promise.resolve()
+    assertEqual(heard, 1, 'a frame withheld by its box is not announced either')
+  } finally {
+    unsubscribe()
+  }
+})
+
+test('the output backlog is read from the registered host, and only from it', () => {
+  const stream = { writableLength: 0 }
+  const host = { output: stream, requestFrame: () => {} }
+  setGraphicsHost(host)
+  try {
+    assertEqual(getGraphicsOutputBacklog(), 0, 'an idle stream')
+    stream.writableLength = 4096
+    assertEqual(getGraphicsOutputBacklog(), 4096, 'bytes the terminal has not taken')
+    clearGraphicsHost({ output: { writableLength: 1 }, requestFrame: () => {} })
+    assertEqual(getGraphicsOutputBacklog(), 4096, 'another instance cannot unregister this one')
+  } finally {
+    clearGraphicsHost(host)
+  }
+  assertEqual(getGraphicsOutputBacklog(), 0, 'with nothing registered, nothing is pending')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

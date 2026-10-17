@@ -34,7 +34,7 @@ import createRenderer, { type Renderer } from './renderer.js';
 import { CellWidth, CharPool, cellAt, createScreen, HyperlinkPool, isEmptyCellAt, migrateScreenPools, StylePool } from './screen.js';
 import { applySearchHighlight } from './searchHighlight.js';
 import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, hasSelection, moveFocus, type SelectionState, selectLineAt, selectWordAt, shiftAnchor, shiftSelection, shiftSelectionForFollow, startSelection, updateSelection } from './selection.js';
-import { buildGraphicsSequence, commitRowGraphics, discardRowGraphics, forceGraphicsRedraw, forgetGraphicsReprintRequests, hasGraphicsPlacements, invalidateGraphicsPlacements, isGraphicsReprintOwed, planRowGraphics, takeGraphicsReprintRequest } from './graphicsPlacement.js';
+import { buildGraphicsSequence, clearGraphicsHost, commitRowGraphics, discardRowGraphics, forceGraphicsRedraw, forgetGraphicsReprintRequests, type GraphicsHost, hasGraphicsPlacements, invalidateGraphicsPlacements, isGraphicsReprintOwed, planRowGraphics, setGraphicsHost, takeGraphicsReprintRequest } from './graphicsPlacement.js';
 import { getCellPixelSize, graphicsEncodeQuietFor } from '../utils/terminalGraphics.js';
 import { SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
@@ -114,6 +114,8 @@ export default class Ink {
   /** When the pending reprint was first, and most recently, asked for. */
   private graphicsReprintSince = 0;
   private graphicsReprintLastAsk = 0;
+  /** This instance as animated inline images see it; see setGraphicsHost. */
+  private readonly graphicsHost: GraphicsHost;
   private lastYogaCounters: {
     ms: number;
     visited: number;
@@ -231,6 +233,15 @@ export default class Ink {
       leading: true,
       trailing: true
     });
+
+    // Animated inline images swap frames into their placements and ask for a
+    // frame here rather than re-rendering React, and hold the next frame while
+    // this stream still has bytes the terminal has not taken.
+    this.graphicsHost = {
+      output: options.stdout,
+      requestFrame: this.scheduleRender
+    };
+    setGraphicsHost(this.graphicsHost);
 
     // Ignore last render after unmounting a tree to prevent empty output before exit
     this.isUnmounted = false;
@@ -1613,6 +1624,7 @@ export default class Ink {
     }
     this.onRender();
     this.unsubscribeExit();
+    clearGraphicsHost(this.graphicsHost);
     if (typeof this.restoreConsole === 'function') {
       this.restoreConsole();
     }

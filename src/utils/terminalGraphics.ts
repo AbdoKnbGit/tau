@@ -564,13 +564,21 @@ export function encodeKittyGraphics(
   return out
 }
 
-/** iTerm2 inline image (OSC 1337), sized in cells. */
+/**
+ * iTerm2 inline image (OSC 1337), sized in cells.
+ *
+ * `preserveAspectRatio` false stretches the file over the box exactly, for a
+ * file that was not resized to it first — an animated GIF iTerm2 plays itself.
+ * The box already has the image's shape, so the stretch is the same sub-cell
+ * rounding a resize to the box would apply.
+ */
 export function encodeITerm2Graphics(
   base64Image: string,
   columns: number,
   rows: number,
+  preserveAspectRatio = true,
 ): string {
-  return `\x1b]1337;File=inline=1;width=${columns};height=${rows};preserveAspectRatio=1:${base64Image}\x07`
+  return `\x1b]1337;File=inline=1;width=${columns};height=${rows};preserveAspectRatio=${preserveAspectRatio ? 1 : 0}:${base64Image}\x07`
 }
 
 /**
@@ -657,7 +665,7 @@ function pipelineSupports(
  *
  * Sixel has no alpha of its own; the fourth byte is stride, not transparency.
  */
-function widenToRgba(
+export function widenToRgba(
   data: Buffer | Uint8Array,
   width: number,
   height: number,

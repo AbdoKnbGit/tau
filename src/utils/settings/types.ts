@@ -703,6 +703,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Whether to render images inline in the transcript (defaults to true). Set to false to show only the summary line.',
         ),
+      inlineImagesAnimated: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether animated GIF and WebP images play in the transcript (defaults to true). Only applies while inlineImagesEnabled is on; set to false, or turn on prefersReducedMotion, to show the first frame only.',
+        ),
       mermaidDiagrams: z
         .boolean()
         .optional()
