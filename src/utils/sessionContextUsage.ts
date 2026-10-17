@@ -30,7 +30,17 @@ import {
 } from './contextBaseline.js'
 import { getMessagesAfterCompactBoundary } from './messages.js'
 import { getCurrentUsage } from './tokens.js'
-import { getAPIProvider } from './model/providers.js'
+import { getAPIProvider, type APIProvider } from './model/providers.js'
+
+// These providers can publish content before the request's usage is measured.
+// Keep this display policy explicit; other providers retain their existing policy.
+const KEEP_LAST_MEASURED_USAGE_PROVIDERS = new Set<APIProvider>([
+  'openai', 'openrouter', 'opencode', 'opencodego', 'mistral',
+  'commandcode', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'groq', 'nim',
+  'xai', 'meta', 'mimo', 'lxd', 'fireworks', 'cloudflare', 'vercel', 'requesty',
+  'modelrouter', 'agentrouter', 'ollama', 'lmstudio', 'cline', 'clinepass',
+  'copilot', 'cursor', 'iflow', 'kilocode', 'kiro',
+])
 
 export type SessionContextUsage = {
   /** Window the percentages are measured against. */
@@ -61,17 +71,14 @@ export function getSessionContextUsage(
   // before a compact boundary for scrollback, and the last usage among them
   // describes a context the summary has since replaced.
   const liveMessages = getMessagesAfterCompactBoundary(messages)
-  // Mistral and OpenRouter initially publish blocks with zero usage, as do
-  // Codex (openai) and OpenCode. Keep the last measurement until the new
-  // generation's trailing usage frame replaces it. Otherwise every
-  // thinking/tool block temporarily restores the rough baseline, and the
-  // meter swings between it and the real context on every request.
+  // A provisional zero is not a new prompt measurement. For the opted-in
+  // providers, retain the last measured usage until trailing usage arrives.
+  // getCurrentUsage still accepts genuine smaller measurements, including
+  // fully cached prompts, and never reuses usage from before compaction.
   const provider = getAPIProvider()
   const currentUsage = applyInitialContextFloor(
     getCurrentUsage(liveMessages, {
-      skipUnmeasured: provider === 'openrouter' || provider === 'openai'
-        || provider === 'opencode' || provider === 'opencodego'
-        || provider === 'mistral',
+      skipUnmeasured: KEEP_LAST_MEASURED_USAGE_PROVIDERS.has(provider),
     }),
     getContextBaselineTokens(runtimeModel),
     () => roughTokenCountEstimationForMessages(liveMessages),
