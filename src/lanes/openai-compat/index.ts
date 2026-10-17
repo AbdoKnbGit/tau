@@ -15,6 +15,7 @@ export { assembleOpenAICompatPrompt } from './prompt.js'
 import { openaiCompatLane } from './loop.js'
 import { registerLane } from '../dispatcher.js'
 import { alibabaBaseUrl } from '../../utils/model/alibabaCatalog.js'
+import { metaApiKeyFromEnv, metaBaseUrlFromEnv } from '../../services/api/metaAccount.js'
 
 /**
  * Initialize the OpenAI-compat lane with all provider configs.
@@ -43,6 +44,7 @@ export function initOpenAICompatLane(providers?: {
   fireworks?: { apiKey: string; baseUrl?: string }
   cloudflare?: { apiKey: string; baseUrl?: string }
   xai?: { apiKey: string; baseUrl?: string }
+  meta?: { apiKey: string; baseUrl?: string }
   cline?: { apiKey: string; baseUrl?: string }
   iflow?: { apiKey: string; baseUrl?: string }
   kilocode?: { apiKey: string; baseUrl?: string }
@@ -303,6 +305,12 @@ export function initOpenAICompatLane(providers?: {
       'xai', xaiKey,
       p.xai?.baseUrl ?? process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1',
     )
+  }
+
+  // Meta Model API (Muse). Served on the Responses API by meta_responses.ts.
+  const metaKey = p.meta?.apiKey ?? metaApiKeyFromEnv()
+  if (metaKey) {
+    openaiCompatLane.registerProvider('meta', metaKey, p.meta?.baseUrl ?? metaBaseUrlFromEnv())
   }
 
   // Phase 4 OAuth-backed compat providers. Caller (providerShim) passes

@@ -15,6 +15,8 @@ import { clearOpenRouterEffort, getOpenRouterEffort, hasExplicitOpenRouterEffort
 import { clearCompatEffort, compatEffortLevels, getCompatEffort, hasExplicitCompatEffort, setCompatEffort } from './compatEffort.js'
 import { clearXaiEffort, getXaiEffort, hasExplicitXaiEffort, setXaiEffort, xaiEffortLevelsFor } from './xaiThinking.js'
 import { getXaiModelMeta } from './xaiCatalog.js'
+import { clearMetaEffort, getMetaEffort, hasExplicitMetaEffort, metaEffortLevelsFor, setMetaEffort } from './metaThinking.js'
+import { getMetaModelMeta, isMuseModelId } from './metaCatalog.js'
 
 export type ProviderEffortState = {
   supported: boolean
@@ -150,6 +152,16 @@ function getControl(
         () => clearXaiEffort(model), hasExplicitXaiEffort(model), fallback,
         value => value === 'default' && builtIn ? `provider default (${builtIn})` : effortLabel(value))
     }
+    case 'meta': {
+      // The row's own ladder from Meta's catalog. `default` sends no effort,
+      // so Meta applies the model's own level (high on Muse Spark 1.3).
+      const levels = metaEffortLevelsFor(model)
+      if (levels.length === 0) return undefined
+      const builtIn = getMetaModelMeta(model)?.defaultEffort
+      return control(['default', ...levels], () => getMetaEffort(model, fallback) ?? 'default', value => setMetaEffort(model, value),
+        () => clearMetaEffort(model), hasExplicitMetaEffort(model), fallback,
+        value => value === 'default' && builtIn ? `provider default (${builtIn})` : effortLabel(value))
+    }
     default:
       return undefined
   }
@@ -172,6 +184,7 @@ export function getProviderEffort(
     label: fixedLevels.length === 1 ? `${effortLabel(fixedLevels[0]!)} (fixed)`
       : (isDirectThinkingProvider(provider) && getDirectModelMeta(provider, model)?.reasoning)
           || (provider === 'xai' && getXaiModelMeta(model)?.reasoning)
+          || (provider === 'meta' && (getMetaModelMeta(model)?.reasoning ?? isMuseModelId(model)))
         ? 'thinking always on' : 'provider/model default',
     explicit: false,
     source: 'unavailable',

@@ -49,6 +49,7 @@ import {
 } from './opencode_responses.js'
 import { readSseDataPayloads } from './sse_payloads.js'
 import { listXaiModels, streamXaiResponses } from './xai_responses.js'
+import { listMetaModels, streamMetaResponses } from './meta_responses.js'
 import { recordCompatCacheDebug } from './cache_debug.js'
 import { beginMistralCacheDebug } from './mistral_cache_debug.js'
 import {
@@ -160,6 +161,7 @@ type ProviderType =
   | 'kilocode'
   | 'copilot'
   | 'xai'
+  | 'meta'
   | 'generic'
 
 function detectProvider(model: string, baseUrl: string): ProviderType {
@@ -195,6 +197,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('kilocode.ai') || b.includes('kilo.ai')) return 'kilocode'
   if (b.includes('githubcopilot.com')) return 'copilot'
   if (b.includes('api.x.ai')) return 'xai'
+  if (b.includes('api.meta.ai')) return 'meta'
   if (m.startsWith('@cf/')) return 'cloudflare'
   if (m.includes('deepseek')) return 'deepseek'
   if (m.startsWith('glm-')) return 'glm'
@@ -499,6 +502,13 @@ export class OpenAICompatLane implements Lane {
     // xAI prompt cache needs replayed.
     if (provider === 'xai') {
       return yield* streamXaiResponses(cfg, { ...params, model }, cacheSessionId)
+    }
+
+    // Meta (Muse) runs on its Responses API (meta_responses.ts), the one Meta
+    // recommends for agents: its Chat Completions route does not carry
+    // reasoning across turns for external keys.
+    if (provider === 'meta') {
+      return yield* streamMetaResponses(cfg, { ...params, model }, cacheSessionId)
     }
 
     // OpenCode Zen/Go: each row goes to the gateway route the official client
@@ -1406,6 +1416,7 @@ export class OpenAICompatLane implements Lane {
       .filter(([name]) => !providerFilter || name === providerFilter)
     const results = await Promise.allSettled(entries.map(async ([providerName, cfg]) => {
       if (providerName === 'xai') return listXaiModels(cfg)
+      if (providerName === 'meta') return listMetaModels(cfg)
       if (isDirectProvider(providerName)) {
         return listDirectProviderModels(providerName, cfg.baseUrl, { Authorization: `Bearer ${cfg.apiKey}`, Accept: 'application/json' })
       }

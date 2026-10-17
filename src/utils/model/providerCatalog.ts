@@ -309,6 +309,7 @@ export async function loadProviderModels(
     'mimo',
     'alibaba',
     'xai',
+    'meta',
   ].includes(provider)) {
     // Cursor's native picker order is provider-owned and should not be
     // alphabetized away; the ids intentionally mirror Cursor's own model surface.
@@ -316,7 +317,7 @@ export async function loadProviderModels(
     // curated, provider-owned orders (LXD leads with its cheap general-purpose
     // rows and trails with the limited-time event rows; Alibaba leads with the
     // newest described model and trails with ids models.dev has not described).
-    // xAI lists newest first, as its catalog states release dates.
+    // xAI lists newest first, as its catalog states release dates; so does Meta.
     return models
   }
   if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty' || provider === 'opencode' || provider === 'commandcode') {

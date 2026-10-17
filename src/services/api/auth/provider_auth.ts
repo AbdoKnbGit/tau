@@ -354,6 +354,7 @@ function _envVarName(provider: APIProvider): string {
     minimax: 'MINIMAX_API_KEY',
     alibaba: 'DASHSCOPE_API_KEY',
     xai: 'XAI_API_KEY',
+    meta: 'META_API_KEY',
     kilocode: '(OAuth only)',
     cline: '(OAuth only)',
     clinepass: '(OAuth only)',

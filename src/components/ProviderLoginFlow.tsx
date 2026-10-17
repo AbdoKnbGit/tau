@@ -36,6 +36,7 @@ import {
   validateXaiManagementKey,
   xaiKeyBlockReason,
 } from '../services/api/xaiAccount.js'
+import { checkMetaApiKey, META_DASHBOARD_URL, metaBaseUrlFromEnv } from '../services/api/metaAccount.js'
 
 // ─── Provider metadata ───────────────────────────────────────────
 
@@ -129,6 +130,13 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     envVar: 'XAI_API_KEY',
     keyPrefix: 'xai-',
     getKeyUrl: 'https://console.x.ai/team/default/api-keys',
+    supportsOAuth: false,
+  },
+  meta: {
+    envVar: 'META_API_KEY',
+    keyPrefix: 'LLM_',
+    // Model API dashboard → API keys → Create API key.
+    getKeyUrl: META_DASHBOARD_URL,
     supportsOAuth: false,
   },
   fireworks: {
@@ -255,6 +263,17 @@ async function _testApiKey(
         const blocked = xaiKeyBlockReason(result.info)
         return blocked ? { ok: false, error: `xAI accepted the key, but ${blocked}.` } : { ok: true }
       }
+      if ([400, 401, 403].includes(result.status)) {
+        return { ok: false, error: `API key rejected (${result.status}): ${result.message}` }
+      }
+      return { ok: true }
+    }
+
+    if (provider === 'meta') {
+      // Meta's /v1/models is auth-gated: a missing or bad key answers 401
+      // invalid_api_key, and nothing is billed.
+      const result = await checkMetaApiKey(key, metaBaseUrlFromEnv())
+      if (result.ok) return { ok: true }
       if ([400, 401, 403].includes(result.status)) {
         return { ok: false, error: `API key rejected (${result.status}): ${result.message}` }
       }
@@ -450,6 +469,7 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
     provider === 'fireworks' ||
     provider === 'cloudflare' ||
     provider === 'xai' ||
+    provider === 'meta' ||
     provider === 'minimax' ||
     provider === 'ollama'
   ) {

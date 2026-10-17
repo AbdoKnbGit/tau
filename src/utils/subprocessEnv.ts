@@ -44,6 +44,8 @@ const GHA_SUBPROCESS_SCRUB = [
   'MOONSHOTAI_API_KEY',
   'MINIMAX_API_KEY',
   'OLLAMA_API_KEY',
+  'META_API_KEY',
+  'META_MODEL_API_KEY',
 
   // Cloud provider creds — same pattern (lazy SDK reads)
   'AWS_SECRET_ACCESS_KEY',

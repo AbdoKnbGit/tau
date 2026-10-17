@@ -69,6 +69,7 @@ function _resolveAPIProvider(): APIProvider {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_MINIMAX))    return 'minimax'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_ALIBABA) || isEnvTruthy(process.env.CLAUDE_CODE_USE_DASHSCOPE) || isEnvTruthy(process.env.CLAUDE_CODE_USE_MODEL_STUDIO)) return 'alibaba'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_XAI) || isEnvTruthy(process.env.CLAUDE_CODE_USE_GROK)) return 'xai'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_META) || isEnvTruthy(process.env.CLAUDE_CODE_USE_MUSE)) return 'meta'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OLLAMA))    return 'ollama'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_LMSTUDIO))  return 'lmstudio'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_CLINE_PASS) || isEnvTruthy(process.env.CLAUDE_CODE_USE_CLINEPASS)) return 'clinepass'
@@ -176,6 +177,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   // terminal. "Alibaba" is also what models.dev names the provider.
   alibaba: 'Alibaba',
   xai: 'xAI',
+  meta: 'Meta',
   ollama: 'Ollama',
   lmstudio: 'LM Studio',
   cline: 'Cline',
@@ -248,7 +250,7 @@ export function isOpenAICompatibleProvider(p: APIProvider): boolean {
 
 /** All non-Anthropic third-party LLM providers */
 export function isThirdPartyProvider(p: APIProvider): boolean {
-  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'commandcode', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'xai', 'ollama', 'lmstudio',
+  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'commandcode', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'xai', 'meta', 'ollama', 'lmstudio',
           'cline', 'clinepass', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro'].includes(p)
 }
 

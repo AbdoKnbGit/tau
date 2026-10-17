@@ -162,6 +162,8 @@ function _ensureLanesInitialized(): void {
       cloudflareBaseUrl: getProviderBaseUrl('cloudflare'),
       xaiApiKey: getProviderApiKey('xai') ?? undefined,
       xaiBaseUrl: getProviderBaseUrl('xai'),
+      metaApiKey: getProviderApiKey('meta') ?? undefined,
+      metaBaseUrl: getProviderBaseUrl('meta'),
       qwenApiKey: process.env.DASHSCOPE_API_KEY ?? process.env.QWEN_API_KEY,
       iflowApiKey: iflowChatKey,
       kilocodeApiKey: kilocodeToken,
@@ -217,6 +219,8 @@ function _laneNameForProvider(provider: APIProvider): string {
     // xAI rides the compat lane's provider registry; its requests go out on
     // the Responses API (lanes/openai-compat/xai_responses.ts).
     case 'xai':
+    // Meta likewise (lanes/openai-compat/meta_responses.ts).
+    case 'meta':
       return 'openai-compat'
     case 'cline':
     case 'clinepass':
@@ -403,6 +407,13 @@ function createProvider(provider: APIProvider): BaseProvider {
       throw new Error(
         'xAI requires the openai-compat lane to be healthy. '
         + 'Run `/login xai` to authenticate, or check that XAI_API_KEY is set.',
+      )
+    case 'meta':
+      // Meta has no legacy chat path: its Chat Completions route does not
+      // carry reasoning across turns for external keys.
+      throw new Error(
+        'Meta requires the openai-compat lane to be healthy. '
+        + 'Run `/login meta` to authenticate, or check that META_API_KEY is set.',
       )
     case 'nim':
       return new NimProvider({ apiKey, baseUrl })
@@ -869,6 +880,7 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     case 'fireworks':
     case 'cloudflare':
     case 'xai':
+    case 'meta':
     case 'groq':
     case 'ollama':
     case 'lmstudio':

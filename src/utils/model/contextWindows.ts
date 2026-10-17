@@ -20,6 +20,7 @@ import {
 } from './contextWindowStore.js'
 import { getCommandCodeCatalogContextWindow } from './commandCodeCatalog.js'
 import { getXaiContextWindow } from './xaiCatalog.js'
+import { getMetaContextWindow } from './metaCatalog.js'
 
 type ContextWindowMap = Record<string, number>
 
@@ -444,6 +445,13 @@ function lookupHostWindow(
   // listing and a docs snapshot, so a resumed session knows it before /models.
   if (provider === 'xai') {
     const window = getXaiContextWindow(model)
+    if (window !== undefined) return window
+  }
+
+  // Meta's /v1/models states ids only; its catalog (models.dev, then a docs
+  // snapshot) knows each window, so a resumed session knows it before /models.
+  if (provider === 'meta') {
+    const window = getMetaContextWindow(model)
     if (window !== undefined) return window
   }
 

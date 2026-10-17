@@ -92,6 +92,8 @@ const LXD_BASE_URL = process.env.LXD_BASE_URL
 
 const XAI_BASE_URL = process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1'
 
+const META_BASE_URL = process.env.META_BASE_URL?.trim() || 'https://api.meta.ai/v1'
+
 const FIREWORKS_BASE_URL = process.env.FIREWORKS_BASE_URL
   ?? 'https://api.fireworks.ai/inference/v1'
 
@@ -742,6 +744,38 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.XAI_MODEL_OPUS   ?? 'grok-4.7',
         sonnet: process.env.XAI_MODEL_SONNET ?? 'grok-4.7',
         haiku:  process.env.XAI_MODEL_HAIKU  ?? 'grok-4.3',
+      },
+    },
+  },
+
+  // Meta Model API (Muse). Meta's own Claude Code setup maps opus to Muse
+  // Wonder and sonnet, haiku and subagents to Muse Spark 1.3
+  // (dev.meta.ai/docs/coding-agents). A Contributor variant is never a
+  // default: Meta may train on what it is sent. Tier aliases on spawned agents
+  // inherit the session model (agentAliasFallback.ts).
+  meta: {
+    displayName: 'Meta',
+    baseUrl: META_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'META_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.META_MODEL_OPUS_FREE   ?? 'muse-wonder-1.0',
+        sonnet: process.env.META_MODEL_SONNET_FREE ?? 'muse-spark-1.3',
+        haiku:  process.env.META_MODEL_HAIKU_FREE  ?? 'muse-spark-1.3',
+      },
+      pro: {
+        opus:   process.env.META_MODEL_OPUS   ?? 'muse-wonder-1.0',
+        sonnet: process.env.META_MODEL_SONNET ?? 'muse-spark-1.3',
+        haiku:  process.env.META_MODEL_HAIKU  ?? 'muse-spark-1.3',
+      },
+      plus: {
+        opus:   process.env.META_MODEL_OPUS   ?? 'muse-wonder-1.0',
+        sonnet: process.env.META_MODEL_SONNET ?? 'muse-spark-1.3',
+        haiku:  process.env.META_MODEL_HAIKU  ?? 'muse-spark-1.3',
       },
     },
   },

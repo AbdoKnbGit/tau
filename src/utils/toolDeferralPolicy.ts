@@ -65,6 +65,8 @@ export function providerSupportsClientSideToolDiscovery(
  *   - a session-pinned `prompt_cache_key` reusing one backend's KV cache
  *     (fireworks, moonshot, cloudflare, mistral, lxd, xai — whose docs say
  *     any edit or reorder of earlier content breaks the cache)
+ *   - meta, whose automatic prefix cache "computes tool definitions once and
+ *     reuses them across turns" and ends the match at the first changed token
  *
  * Deliberately NOT here:
  *   - openrouter / opencode / opencodego, gemini, modelrouter, vercel,
@@ -85,6 +87,7 @@ const EXACT_PREFIX_CACHE_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'glm',
   'minimax',
   'xai',
+  'meta',
 ])
 
 /**

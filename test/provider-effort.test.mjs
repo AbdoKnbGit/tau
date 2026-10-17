@@ -10,7 +10,7 @@ import { loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
 const tempRoot = realpathSync(tmpdir())
 const fixture = mkdtempSync(join(tempRoot, 'tau-provider-effort-'))
 const storeNames = ['DEEPSEEK', 'DIRECT', 'CLINE', 'COMMANDCODE', 'CLOUDFLARE',
-  'LXD', 'MIMO', 'ALIBABA', 'OPENROUTER', 'OPENCODE', 'COMPAT', 'XAI']
+  'LXD', 'MIMO', 'ALIBABA', 'OPENROUTER', 'OPENCODE', 'COMPAT', 'XAI', 'META']
 process.env.CLAUDE_CONFIG_DIR = fixture
 process.env.DISABLE_TELEMETRY = '1'
 process.env.CLAUDEX_DISABLE_MODEL_PRICING = '1'
@@ -22,6 +22,8 @@ process.env.TAU_OPENCODE_MODELS_DEV_CACHE = join(fixture, 'opencode-catalog.json
 for (const name of storeNames) process.env[`TAU_${name}_THINKING_STORE`] = join(fixture, `${name}.json`)
 // xAI ladders come from its recorded /v1/models listing; keep the snapshot.
 process.env.TAU_XAI_MODEL_CATALOG_STORE = join(fixture, 'xai-models.json')
+// Meta ladders come from a downloaded models.dev block; keep the snapshot.
+process.env.TAU_META_MODEL_CATALOG_STORE = join(fixture, 'meta-models.json')
 for (const name of ['CLAUDE_CODE_EFFORT_LEVEL', 'GLM_BASE_URL', 'MOONSHOT_BASE_URL',
   'MINIMAX_BASE_URL', 'DASHSCOPE_BASE_URL', 'ALIBABA_BASE_URL', 'MODELSTUDIO_BASE_URL']) delete process.env[name]
 assert.match(readFileSync('src/utils/model/commandCodeThinking.ts', 'utf8'), /TAU_COMMANDCODE_THINKING_STORE/,
@@ -35,7 +37,7 @@ const r = await loadMcpRuntime({
     'src/utils/settings/settingsCache.ts', 'src/utils/model/openaiReasoning.ts', 'src/lanes/kilo/loop.ts',
     'src/lanes/cline/loop.ts', 'src/services/api/providers/providerShim.ts',
     'src/commands/effort/effort.tsx', 'src/components/EffortIndicator.ts', 'src/components/EffortCallout.tsx',
-    'src/lanes/openai-compat/xai_responses.ts'],
+    'src/lanes/openai-compat/xai_responses.ts', 'src/lanes/openai-compat/meta_responses.ts'],
   exports: ['API_PROVIDERS', 'getProviderEffort', 'usesProviderEffort', 'executeProviderEffort',
     'getProviderEffortPreview', 'getNextProviderEffort', 'commitProviderEffortSelection',
     'getInheritedEffort', 'selectInheritedEffort', 'setSessionSettingsCache', 'getSessionSettingsCache',
@@ -45,6 +47,7 @@ const r = await loadMcpRuntime({
     'DeepSeekProvider', 'LxdProvider', 'MimoProvider', 'AlibabaProvider', 'OpenRouterProvider',
     'GlmProvider', 'MoonshotProvider', 'MiniMaxProvider', 'showCurrentEffort', 'getEffortSuffix', 'getEffortNotificationText', 'shouldShowEffortCallout',
     'anthropicMessagesToOpenAI', 'buildXaiResponsesRequest', 'resolveXaiRequestEffort',
+    'buildMetaResponsesRequest', 'resolveMetaRequestEffort',
     `withProvider: (provider, fn) => { const previous = getAPIProvider; try { getAPIProvider = () => provider; return fn(); } finally { getAPIProvider = previous; } }`,
     `installCatalogFixtures: () => {
       // Catalog refresh/parsing has its own suites. Fix capability inputs here
@@ -118,6 +121,7 @@ const cases = [
   ['clinepass', 'fixture/reasoning', 'low', 'max'],
   ['kilocode', 'openai/gpt-5.4', 'low', 'high'],
   ['xai', 'grok-4.7', 'low', 'xhigh'],
+  ['meta', 'muse-spark-1.3', 'low', 'max'],
 ]
 const noEffortProviders = ['nim', 'minimax', 'ollama', 'lmstudio', 'copilot', 'cursor', 'iflow', 'kiro']
 
@@ -145,9 +149,18 @@ function xaiBody(model, fallback) {
     maxTokens: 1024, sessionId: 'stable-session', effort: r.resolveXaiRequestEffort(model, fallback),
   }).body
 }
+// Meta likewise goes out on its own Responses route.
+function metaBody(model, fallback) {
+  return r.buildMetaResponsesRequest({
+    model, system: 'Stable instructions', messages: body(model).messages.filter(message => message.role === 'user'),
+    tools: [{ name: 'Read', description: 'Read a fixture', input_schema: { type: 'object', properties: { path: { type: 'string' } } } }],
+    maxTokens: 1024, sessionId: 'stable-session', effort: r.resolveMetaRequestEffort(model, fallback),
+  }).body
+}
 function wireEffort(provider, model, fallback) {
   if (provider === 'commandcode') return r.getCommandCodeRequestEffort(model, fallback)
   if (provider === 'xai') return xaiBody(model, fallback).reasoning?.effort
+  if (provider === 'meta') return metaBody(model, fallback).reasoning?.effort
   const request = transformed(provider, model, fallback)
   return request.reasoning_effort ?? request.reasoning?.effort
 }
@@ -339,6 +352,14 @@ test('effort changes preserve serialized prompt/tool order and provider cache af
       const first = xaiBody(model, configured)
       const second = xaiBody(model, selected)
       for (const key of ['instructions', 'input', 'tools', 'prompt_cache_key']) {
+        assert.equal(JSON.stringify(first[key]), JSON.stringify(second[key]), `${provider}: ${key}`)
+      }
+      continue
+    }
+    if (provider === 'meta') {
+      const first = metaBody(model, configured)
+      const second = metaBody(model, selected)
+      for (const key of ['instructions', 'input', 'tools', 'prompt_cache_key', 'prompt_cache_retention']) {
         assert.equal(JSON.stringify(first[key]), JSON.stringify(second[key]), `${provider}: ${key}`)
       }
       continue

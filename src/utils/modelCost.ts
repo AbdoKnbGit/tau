@@ -35,6 +35,7 @@ import {
 import { getProviderModelSet } from './model/configs.js'
 import { getCommandCodeCatalogCosts } from './model/commandCodeCatalog.js'
 import { getXaiCatalogPrice } from './model/xaiCatalog.js'
+import { getMetaCatalogPrice } from './model/metaCatalog.js'
 
 // @see https://platform.claude.com/docs/en/about-claude/pricing
 export type ModelCosts = {
@@ -401,6 +402,25 @@ function getXaiModelCosts(model: string, usage: Usage): ModelCosts | null {
 }
 
 /**
+ * Meta's published rates (models.dev, checked against dev.meta.ai's pricing
+ * page): one flat rate per model, with no long-context tier, no regional
+ * premium and no cache-write charge, so an uncached prompt token is a plain
+ * input token. Contributor ids are their own rows at their own rates.
+ */
+function getMetaModelCosts(model: string): ModelCosts | null {
+  if (getAPIProvider() !== 'meta') return null
+  const price = getMetaCatalogPrice(model)
+  if (!price) return null
+  return {
+    inputTokens: price.input,
+    outputTokens: price.output,
+    promptCacheReadTokens: price.cachedInput,
+    promptCacheWriteTokens: price.input,
+    webSearchRequests: 0,
+  }
+}
+
+/**
  * Get the cost tier for Opus 4.6 based on fast mode.
  */
 export function getOpus46CostTier(fastMode: boolean): ModelCosts {
@@ -486,6 +506,9 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts | null {
 
   const xaiCosts = getXaiModelCosts(model, usage)
   if (xaiCosts) return xaiCosts
+
+  const metaCosts = getMetaModelCosts(model)
+  if (metaCosts) return metaCosts
 
   const shortName = getCanonicalName(model)
 

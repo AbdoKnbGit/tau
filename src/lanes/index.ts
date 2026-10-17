@@ -129,6 +129,9 @@ export function initLanes(opts?: {
   // xAI (api.x.ai, us.api.x.ai)
   xaiApiKey?: string
   xaiBaseUrl?: string
+  // Meta Model API (api.meta.ai)
+  metaApiKey?: string
+  metaBaseUrl?: string
   // Qwen (DashScope)
   qwenApiKey?: string
   // OAuth-backed providers on the shared compat transport. iFlow uses a
@@ -245,6 +248,7 @@ export function initLanes(opts?: {
     fireworks: opts?.fireworksApiKey ? { apiKey: opts.fireworksApiKey, baseUrl: opts.fireworksBaseUrl } : undefined,
     cloudflare: opts?.cloudflareApiKey ? { apiKey: opts.cloudflareApiKey, baseUrl: opts.cloudflareBaseUrl } : undefined,
     xai: opts?.xaiApiKey ? { apiKey: opts.xaiApiKey, baseUrl: opts.xaiBaseUrl } : undefined,
+    meta: opts?.metaApiKey ? { apiKey: opts.metaApiKey, baseUrl: opts.metaBaseUrl } : undefined,
     iflow: opts?.iflowApiKey ? { apiKey: opts.iflowApiKey } : undefined,
     kilocode: opts?.kilocodeApiKey ? { apiKey: opts.kilocodeApiKey } : undefined,
     copilot: opts?.copilotApiKey ? { apiKey: opts.copilotApiKey } : undefined,

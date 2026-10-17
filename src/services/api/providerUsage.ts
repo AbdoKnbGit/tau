@@ -74,6 +74,9 @@ import {
   xaiKeyBlockReason,
 } from './xaiAccount.js'
 import { getXaiSessionSpend } from '../../lanes/openai-compat/xai_responses.js'
+import { checkMetaApiKey, META_BILLING_URL, META_USAGE_URL } from './metaAccount.js'
+import { getMetaSessionSpend } from '../../lanes/openai-compat/meta_responses.js'
+import { getProviderRateLimits } from './providerRateLimits.js'
 
 const TIMEOUT_MS = 8_000
 const CLINE_OAUTH_STORAGE = 'cline_oauth'
@@ -92,6 +95,7 @@ const DOCS = {
   mimo: 'https://xiaomimimo.com',
   alibaba: 'https://www.alibabacloud.com/help/en/model-studio/billing-for-model-studio',
   xai: 'https://docs.x.ai/developers/rest-api-reference/management/billing',
+  meta: 'https://dev.meta.ai/docs/pricing-rate-limits',
   moonshot: 'https://platform.kimi.ai/docs/api/balance',
   minimax: 'https://platform.minimax.io/docs/token-plan/faq',
   cursor: 'https://docs.cursor.com/en/account/teams/admin-api',
@@ -217,6 +221,7 @@ const REPORTERS_BY_PROVIDER: Record<ProviderWithUsageReporter, Reporter> = {
   mimo: reportMimo,
   alibaba: reportAlibaba,
   xai: reportXai,
+  meta: reportMeta,
   moonshot: reportMoonshot,
   minimax: reportMiniMax,
   ollama: reportOllama,
@@ -296,6 +301,7 @@ function nameToProvider(name: string): ProviderUsageId {
     case 'mimo': return 'mimo'
     case 'alibaba': return 'alibaba'
     case 'xai': return 'xai'
+    case 'meta': return 'meta'
     case 'glm': return 'glm'
     case 'moonshot': return 'moonshot'
     case 'minimax': return 'minimax'
@@ -1725,6 +1731,85 @@ async function reportXai(): Promise<ProviderUsageReport> {
     ...(details.length > 0 && { detail: details.join('\n') }),
     ...(metrics.length > 0 && { metrics }),
     docsUrl: DOCS.xai,
+    links,
+  }
+}
+
+/**
+ * Meta Model API. Meta documents no endpoint for a balance or for spend: the
+ * dashboard's Usage and Billing pages are the only place either is shown.
+ * What an API key can prove is that it authenticates (`GET /v1/models`
+ * answers 401 otherwise). Every response states its tokens, so this
+ * session's spend is priced here from Meta's published rates, and the team's
+ * rate-limit headroom comes from the last Meta response's `x-ratelimit-*`
+ * headers.
+ */
+async function reportMeta(): Promise<ProviderUsageReport> {
+  const apiKey = getProviderApiKey('meta')
+  const links: UsageLink[] = [
+    { label: 'Meta usage', url: META_USAGE_URL },
+    { label: 'Meta billing', url: META_BILLING_URL },
+  ]
+  if (!apiKey) {
+    return {
+      ...baseReport('meta', 'not_configured', 'none', 'Meta API key', 'No Meta API key is configured. Run /login meta.'),
+      docsUrl: DOCS.meta,
+      links,
+    }
+  }
+
+  const check = await checkMetaApiKey(apiKey, getProviderBaseUrl('meta'))
+  if (!check.ok) {
+    const summary = check.status === 401 || check.status === 403
+      ? `Meta rejected the API key (${check.status}): ${check.message}`
+      : check.status === 0
+        ? `Could not reach Meta: ${check.message}`
+        : `Meta's key check failed (${check.status}): ${check.message}`
+    return {
+      ...baseReport('meta', 'error', 'api_key', 'Meta API key', summary),
+      docsUrl: DOCS.meta,
+      links,
+    }
+  }
+
+  const details: string[] = []
+  const session = getMetaSessionSpend()
+  if (session.requests > 0) {
+    const unpriced = session.unpricedRequests > 0
+      ? ` (${session.unpricedRequests} on a model with no published price)`
+      : ''
+    details.push(
+      `This session: ${formatUsdPrecise(session.usd)} over ${session.requests} request${session.requests === 1 ? '' : 's'}, priced from Meta's published rates${unpriced}.`,
+    )
+  }
+  details.push('Meta publishes no balance or spend API; the Usage and Billing pages show both.')
+
+  const metrics: UsageMetric[] = []
+  const limits = getProviderRateLimits()
+  if (limits?.provider === 'meta') {
+    const windows = [['Rate limit: requests', limits.requests], ['Rate limit: tokens', limits.tokens]] as const
+    for (const [label, window] of windows) {
+      if (!window || window.limit === undefined || window.remaining === undefined || window.limit <= 0) continue
+      metrics.push({
+        label,
+        usedPercent: clampPercent((window.limit - window.remaining) / window.limit * 100),
+        summary: `${window.remaining.toLocaleString('en-US')} of ${window.limit.toLocaleString('en-US')} left`,
+      })
+    }
+  }
+
+  const models = check.modelIds.length
+  return {
+    ...baseReport(
+      'meta',
+      metrics.length > 0 ? 'ok' : 'connected',
+      'api_key',
+      'Meta API key',
+      `API key active${models > 0 ? `, ${models} model${models === 1 ? '' : 's'} available` : ''}.`,
+    ),
+    detail: details.join('\n'),
+    ...(metrics.length > 0 && { metrics }),
+    docsUrl: DOCS.meta,
     links,
   }
 }
