@@ -35,9 +35,7 @@ const as = (provider, fn) => r.runWithForcedProvider({ provider }, fn)
 const LOADING = 'First call ToolSearch'
 const EAGER = 'Every available callable tool has its full schema in this request.'
 // Requests keep ToolSearch: client-side discovery lanes and Anthropic tool search.
-const LAZY = [['copilot', 'gpt-4.1'], ['vercel', 'openai/gpt-5.4'],
-  ['requesty', 'openai/gpt-5.4'], ['ollama', 'qwen3:8b'], ['lmstudio', 'qwen3-8b'],
-  ['groq', 'moonshotai/kimi-k2-instruct'], ['gemini', 'gemini-2.5-pro'], ['firstParty', 'claude-sonnet-4-6']]
+const LAZY = [['ollama', 'qwen3:8b'], ['lmstudio', 'qwen3-8b'], ['firstParty', 'claude-sonnet-4-6']]
 // Requests get every schema eagerly and no ToolSearch.
 const EAGER_PROVIDERS = [['openrouter', 'deepseek/deepseek-v4-flash'], ['opencode', 'kimi-k2.6'],
   ['opencodego', 'kimi-k2.6'], ['deepseek', 'deepseek-v4-flash'], ['mimo', 'mimo-v2.6-flash'],
@@ -45,7 +43,9 @@ const EAGER_PROVIDERS = [['openrouter', 'deepseek/deepseek-v4-flash'], ['opencod
   ['cloudflare', '@cf/qwen/qwen3-30b'], ['mistral', 'mistral-large-4'], ['lxd', 'gpt-5.4'], ['nim', 'qwen/qwen3-coder'],
   ['groq', 'llama-3.1-8b-instant'], ['antigravity', 'gemini-3.8-flash-medium'], ['openai', 'gpt-6-luna'],
   ['kiro', 'claude-sonnet-4.5'], ['kilocode', 'anthropic/claude-sonnet-4.5'], ['cline', 'anthropic/claude-sonnet-4.5'],
-  ['agentrouter', 'gpt-5.4'], ['firstParty', 'claude-haiku-4-5'], ['glm', 'glm-4.7'], ['minimax', 'MiniMax-M2.7']]
+  ['agentrouter', 'gpt-5.4'], ['firstParty', 'claude-haiku-4-5'], ['glm', 'glm-4.7'], ['minimax', 'MiniMax-M2.7'],
+  ['copilot', 'gpt-4.1'], ['vercel', 'openai/gpt-5.4'], ['requesty', 'openai/gpt-5.4'], ['groq', 'moonshotai/kimi-k2-instruct'],
+  ['gemini', 'gemini-2.5-pro'], ['modelrouter', 'gpt-4.1-mini'], ['iflow', 'qwen3-coder-plus']]
 
 test('ToolSearch is offered only where a discovery transport runs for the provider and model', t => {
   t.after(() => r.setSessionPowerMode('normal'))
@@ -116,9 +116,9 @@ test('openai-compat rules follow the tools each request carries', async () => {
     assert.doesNotMatch(system, /ToolSearch/, provider)
   }
   // A lane that defers keeps the loading rules, byte for byte.
-  const copilot = await as('copilot', () => compatSystem('copilot', 'gpt-4.1', [tool('Read'), tool('ToolSearch'), tool('WebFetch', true)]))
-  assert.ok(copilot.includes(r.OPENAI_COMPAT_TOOL_USAGE_RULES), 'copilot: loading rules missing')
-  assert.match(copilot, new RegExp(LOADING))
+  const ollama = await as('ollama', () => compatSystem('ollama', 'qwen3:8b', [tool('Read'), tool('ToolSearch'), tool('WebFetch', true)]))
+  assert.ok(ollama.includes(r.OPENAI_COMPAT_TOOL_USAGE_RULES), 'ollama: loading rules missing')
+  assert.match(ollama, new RegExp(LOADING))
 })
 
 test('Kilo and Cline rules follow the tools each request carries', () => {

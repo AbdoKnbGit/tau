@@ -126,7 +126,7 @@ test('every provider is eager in cheap and lazy only in normal/full modes', () =
       `${provider}/cheap deferred a schema`,
     )
   }
-  for (const provider of ['gemini', 'opencode', 'deepseek'] as const) {
+  for (const provider of ['ollama', 'lmstudio'] as const) {
     assert(providerSupportsClientSideToolDiscovery(provider), provider)
     assert(providerSupportsSafeToolDiscovery(provider), provider)
     assert(

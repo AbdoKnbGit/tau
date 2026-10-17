@@ -16,19 +16,17 @@ import { isNimFastToolFilterActive } from '../lanes/openai-compat/nim_tool_polic
  * OpenRouter and OpenCode deliberately stay eager: exposing names without
  * contracts lets routed models guess arguments, and loading contracts later
  * changes the cached prefix. They send the full permitted toolset initially.
+ * Gemini, Model Router, Vercel, Requesty, Groq, NIM, Copilot and iFlow stay
+ * eager for the same two reasons. Ollama and LM Studio keep on-demand tools:
+ * they run locally, where every schema up front can overflow a small context
+ * window.
  */
 const CLIENT_SIDE_TOOL_DISCOVERY_PROVIDERS: ReadonlySet<APIProvider> = new Set([
-  'gemini',
-  'modelrouter',
-  'vercel',
-  'requesty',
   'lxd',
   'mimo',
   'fireworks',
   'cloudflare',
-  'groq',
   'mistral',
-  'nim',
   'deepseek',
   'glm',
   'moonshot',
@@ -36,8 +34,6 @@ const CLIENT_SIDE_TOOL_DISCOVERY_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'alibaba',
   'ollama',
   'lmstudio',
-  'copilot',
-  'iflow',
 ])
 
 export function providerSupportsClientSideToolDiscovery(
@@ -70,15 +66,11 @@ export function providerSupportsClientSideToolDiscovery(
  *     (fireworks, moonshot, cloudflare, mistral, lxd)
  *
  * Deliberately NOT here:
- *   - openrouter / opencode / opencodego — always eager, independently of this set.
- *   - vercel / requesty / copilot / iflow — these pass
- *     `cache_control` through and place breakpoints themselves, so the lane
- *     re-warms on its own terms.
- *   - groq, nim — no prefix-cache pin at all, so deferral costs them nothing.
+ *   - openrouter / opencode / opencodego, gemini, modelrouter, vercel,
+ *     requesty, groq, nim, copilot, iflow — always eager, independently of
+ *     this set: none of them is a client-side discovery provider.
  *   - ollama / lmstudio — local, where the scarce resource is context window
  *     rather than a billed cache; schema savings are worth the re-prefill.
- *   - gemini — already excluded via isAntigravityModelId, whose comment
- *     describes this same failure mode.
  */
 const EXACT_PREFIX_CACHE_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'deepseek',
@@ -118,8 +110,7 @@ export function providerModelSupportsClientSideToolDiscovery(
   if (providerUsesExactPrefixCache(provider)) return false
   // NIM prunes to a fixed fast subset before the lazy selector. Keeping
   // ToolSearch active there would advertise/select schemas the transformer
-  // can never send. Full-tools / no-optimize mode bypasses the prune and may
-  // use the normal append-only client discovery path.
+  // can never send.
   if (provider === 'nim' && isNimFastToolFilterActive()) return false
   if (!model) return true
 

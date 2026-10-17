@@ -311,7 +311,7 @@ test('provider matrix enables only implemented discovery transports', () => {
   for (const provider of ['firstParty', 'bedrock', 'vertex', 'foundry'] as const) {
     assert(providerSupportsSafeToolDiscovery(provider), provider)
   }
-  for (const provider of ['gemini', 'deepseek'] as const) {
+  for (const provider of ['ollama', 'deepseek'] as const) {
     assert(providerSupportsClientSideToolDiscovery(provider), provider)
     assert(providerSupportsSafeToolDiscovery(provider), provider)
   }
@@ -361,7 +361,7 @@ test('Groq small-tier eager calls are not guarded while native lanes stay lazy',
   }
 
   assert(
-    providerModelSupportsClientSideToolDiscovery('vercel', 'openai/gpt-5.4'),
+    providerModelSupportsClientSideToolDiscovery('ollama', 'qwen3:8b'),
     'supported native lane was disabled',
   )
   const nativeDecision = decideLazyToolCall({
@@ -489,8 +489,12 @@ test('NIM fast mode disables discovery and rejects schemas pruned post-filter', 
       'NIM full-tools kept the post-filter guard active',
     )
     assert(
-      providerModelSupportsClientSideToolDiscovery('nim', 'moonshotai/kimi-k2-instruct'),
-      'NIM full-tools did not restore append-only discovery',
+      !providerModelSupportsClientSideToolDiscovery('nim', 'moonshotai/kimi-k2-instruct'),
+      'NIM full-tools loaded tools on demand instead of sending every schema',
+    )
+    assert(
+      shouldDisableToolDeferralForProvider('nim', 'normal'),
+      'NIM full-tools schemas were still classified deferred',
     )
   } finally {
     for (const name of envNames) {
@@ -507,7 +511,7 @@ test('cheap mode is eager and normal keeps discovery on eligible transports', ()
     'cheap client-native discovery must be eager/cache-stable',
   )
   for (const mode of ['normal', 'full'] as const) {
-    assert(!shouldDisableToolDeferralForProvider('vercel', mode), `vercel/${mode}`)
+    assert(!shouldDisableToolDeferralForProvider('ollama', mode), `ollama/${mode}`)
   }
   for (const mode of ['cheap', 'normal', 'full'] as const) {
     assert(shouldDisableToolDeferralForProvider('cursor', mode), `cursor/${mode}`)

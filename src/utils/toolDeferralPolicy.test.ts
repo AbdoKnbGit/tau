@@ -41,10 +41,13 @@ const EXCLUDED: APIProvider[] = [
   'glm', 'minimax',
 ] as APIProvider[]
 
-// Explicit cache_control breakpoints, or no prefix-cache pin at all.
-const STILL_LAZY: APIProvider[] = [
-  'vercel', 'requesty', 'copilot', 'iflow',
-  'ollama', 'lmstudio',
+// Local servers, where the context window is scarcer than a billed cache.
+const STILL_LAZY: APIProvider[] = ['ollama', 'lmstudio'] as APIProvider[]
+
+// Remote providers outside the exact-prefix set. They get every schema from
+// the first request, so no ToolSearch load rewrites their tool block.
+const EAGER_REMOTE: APIProvider[] = [
+  'gemini', 'modelrouter', 'vercel', 'requesty', 'groq', 'nim', 'copilot', 'iflow',
 ] as APIProvider[]
 
 test('the excluded set is exactly the exact-prefix-cache providers', () => {
@@ -98,6 +101,16 @@ test('providers that keep lazy tools still resolve discovery', () => {
       true,
       `${p} lost client-side discovery it should still have`,
     )
+  }
+})
+
+test('remote providers outside the exact-prefix set send every schema up front', () => {
+  for (const p of EAGER_REMOTE) {
+    assert.equal(providerUsesExactPrefixCache(p), false, `${p} must NOT be excluded`)
+    assert.equal(providerSupportsClientSideToolDiscovery(p), false, `${p} still loads tools on demand`)
+    for (const mode of ['cheap', 'normal', 'full'] as const) {
+      assert.equal(shouldDisableToolDeferralForProvider(p, mode), true, `${p}/${mode} still defers tools`)
+    }
   }
 })
 
