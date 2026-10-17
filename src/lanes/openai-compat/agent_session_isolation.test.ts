@@ -108,6 +108,81 @@ for (const { provider, model, defers } of PROVIDERS) {
   })
 }
 
+// Copilot keeps the environment in the system message; its session owns the
+// gateway/cache affinity and sticky ToolSearch loads, not a frozen env block.
+for (const model of ['gpt-4.1', 'claude-sonnet-4.6']) {
+  test(`copilot ${model}: agents isolate cache keys, headers and loaded tools without changing main requests`, async () => {
+    const lane = new OpenAICompatLane()
+    lane.registerProvider('copilot', 'fixture', 'https://fixture.invalid/v1')
+    const requests: { raw: string, body: OpenAIChatRequest, headers: Headers }[] = []
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const raw = String(init?.body)
+      const headers = new Headers(init?.headers)
+      // Only this header is random per request; compare every stable header.
+      headers.delete('x-request-id')
+      requests.push({ raw, body: JSON.parse(raw), headers })
+      return new Response('data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    }) as typeof fetch
+    const rootSessionId = `copilot-${model}-isolation-root`
+    const send = async (agentId: string | undefined, querySource: string, messages: ProviderMessage[]) => {
+      const sessionId = resolveProviderRequestSessionId({
+        provider: 'copilot', rootSessionId, ...(agentId && { agentId: agentId as AgentId }), querySource: querySource as QuerySource,
+      })
+      for await (const _ of lane.streamAsProvider({ model, providerHint: 'copilot', sessionId, querySource,
+        system: system(MAIN_DIR), messages, tools: [tool('Read'), tool('ToolSearch'), tool('WebFetch', true)],
+        max_tokens: 100, signal: new AbortController().signal })) { /* drain */ }
+      const request = requests.at(-1)!
+      expect(request.body.prompt_cache_key).toBe(sessionId)
+      for (const name of ['session_id', 'x-client-request-id', 'x-session-affinity']) {
+        expect(request.headers.get(name)).toBe(sessionId!)
+      }
+      return request
+    }
+
+    const mainMessages = [ask('Main task.')]
+    const agentMessages = [ask('Agent task.')]
+    const main = await send(undefined, 'repl_main_thread', mainMessages)
+    expect(main.body.prompt_cache_key).toBe(rootSessionId)
+    expect(toolNames(main.body)).not.toContain('WebFetch')
+
+    // Same folder and task text: only conversation identity separates agents.
+    const agent = await send('copilot-a', 'agent:builtin:general-purpose', agentMessages)
+    expect(agent.body.prompt_cache_key).toMatch(/^tau-agent-/)
+    expect(agent.body.prompt_cache_key).not.toBe(rootSessionId)
+    const loaded = await send('copilot-a', 'agent:custom', [...agentMessages, ...loadWebFetch])
+    expect(loaded.body.prompt_cache_key).toBe(agent.body.prompt_cache_key)
+    expect(toolNames(loaded.body)).toContain('WebFetch')
+
+    const sibling = await send('copilot-b', 'agent:builtin:general-purpose', agentMessages)
+    expect(sibling.body.prompt_cache_key).not.toBe(rootSessionId)
+    expect(sibling.body.prompt_cache_key).not.toBe(agent.body.prompt_cache_key)
+    expect(toolNames(sibling.body)).toEqual(toolNames(main.body))
+
+    const releaseAgent = registerForkedAgent('copilot-summary' as AgentId, 'copilot-a' as AgentId)
+    const releaseMain = registerForkedAgent('copilot-main-helper' as AgentId, undefined)
+    try {
+      // Even without the ToolSearch history, helpers and resumes retain their
+      // conversation's loaded tools, and main helpers cannot inherit them.
+      const summary = await send('copilot-summary', 'agent_summary', agentMessages)
+      expect(summary.body.prompt_cache_key).toBe(agent.body.prompt_cache_key)
+      expect(toolNames(summary.body)).toEqual(toolNames(loaded.body))
+      const mainHelper = await send('copilot-main-helper', 'prompt_suggestion', mainMessages)
+      expect(mainHelper.raw).toBe(main.raw)
+      expect([...mainHelper.headers]).toEqual([...main.headers])
+    } finally {
+      releaseMain()
+      releaseAgent()
+    }
+    const resumed = await send('copilot-a', 'agent:custom', agentMessages)
+    expect(resumed.body.prompt_cache_key).toBe(agent.body.prompt_cache_key)
+    expect(toolNames(resumed.body)).toEqual(toolNames(loaded.body))
+
+    const next = await send(undefined, 'repl_main_thread', mainMessages)
+    expect(next.raw).toBe(main.raw)
+    expect([...next.headers]).toEqual([...main.headers])
+  })
+}
+
 test('reads the working directory an environment block states, and nothing else', () => {
   expect(statedWorkingDirectory('# Environment\n - Primary working directory: C:\\Users\\a b\\repo\n - Platform: win32')).toBe('C:\\Users\\a b\\repo')
   expect(statedWorkingDirectory('Notes.\nWorking directory: /tmp/repo/.claude/worktrees/agent-a\r\nPlatform: linux')).toBe('/tmp/repo/.claude/worktrees/agent-a')

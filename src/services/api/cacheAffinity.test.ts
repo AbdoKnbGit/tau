@@ -320,8 +320,8 @@ async function main(): Promise<void> {
     }
   })
 
-  await test('gives DeepSeek, GLM, Moonshot and MiniMax agents identities of their own, like Mistral', () => {
-    for (const provider of ['deepseek', 'glm', 'moonshot', 'minimax'] as const) {
+  await test('gives DeepSeek, GLM, Moonshot, MiniMax and Copilot agents identities of their own, like Mistral', () => {
+    for (const provider of ['deepseek', 'glm', 'moonshot', 'minimax', 'copilot'] as const) {
       const resolve = (agentId: string | undefined, querySource: string) => resolveProviderRequestSessionId({
         provider,
         rootSessionId: 'direct-root',
@@ -356,7 +356,7 @@ async function main(): Promise<void> {
       }
     }
     // Every other root-keyed provider keeps its agents on the root session.
-    for (const provider of ['copilot', 'agentrouter', 'opencode', 'opencodego', 'lxd', 'fireworks', 'cloudflare', 'cline', 'clinepass'] as const) {
+    for (const provider of ['agentrouter', 'opencode', 'opencodego', 'lxd', 'fireworks', 'cloudflare', 'cline', 'clinepass'] as const) {
       const sessionId = resolveProviderRequestSessionId({
         provider,
         rootSessionId: 'direct-root',

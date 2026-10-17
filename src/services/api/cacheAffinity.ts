@@ -51,8 +51,10 @@ export function providerUsesStableRequestSession(provider: string): boolean {
  * ordinary agent needs a session of its own (resolveProviderRequestSessionId).
  * Mistral freezes system/tools by it. DeepSeek, GLM, Moonshot and MiniMax
  * freeze the environment block (working directory, git status, memory) by it.
+ * Copilot uses it for cache/gateway affinity and sticky ToolSearch loads.
  */
 const PER_AGENT_SESSION_PROVIDERS = new Set<string>([
+  'copilot',
   'mistral',
   'deepseek',
   'glm',
