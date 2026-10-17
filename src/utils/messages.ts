@@ -2017,8 +2017,10 @@ export function normalizeMessagesForAPI(
   options: { provider?: APIProvider; model?: string } = {},
 ): (UserMessage | AssistantMessage)[] {
   const preserveOpenRouterReasoning = getAPIProvider() === 'openrouter'
-  const preserveCodexReasoning =
-    (options.provider ?? resolveEffectiveAPIProvider(getAPIProvider(), options.model)) === 'openai'
+  // The Codex lane and xAI's Responses route both replay encrypted reasoning
+  // from this state, each only to the model that produced it.
+  const reasoningProvider = options.provider ?? resolveEffectiveAPIProvider(getAPIProvider(), options.model)
+  const preserveCodexReasoning = reasoningProvider === 'openai' || reasoningProvider === 'xai'
   // Compare the same model identity sent to the provider, without UI context tags.
   const codexModel = options.model ? normalizeModelStringForAPI(options.model) : undefined
   const invalidCodexReasoningMessages = new Set<Message>()

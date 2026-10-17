@@ -170,6 +170,10 @@ function providerIsConfigured(p: APIProvider): boolean {
   if (p === 'antigravity') {
     return hasStoredKey('gemini_oauth_antigravity')
   }
+  // A stored management key alone is still something to sign out from.
+  if (p === 'xai') {
+    return hasStoredKey('xai_management')
+  }
   return false
 }
 

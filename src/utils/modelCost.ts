@@ -34,6 +34,7 @@ import {
 } from './modelPricingCatalog.js'
 import { getProviderModelSet } from './model/configs.js'
 import { getCommandCodeCatalogCosts } from './model/commandCodeCatalog.js'
+import { getXaiCatalogPrice } from './model/xaiCatalog.js'
 
 // @see https://platform.claude.com/docs/en/about-claude/pricing
 export type ModelCosts = {
@@ -377,6 +378,29 @@ function getCommandCodeModelCosts(model: string): ModelCosts | null {
 }
 
 /**
+ * xAI's published rates, live from /v1/models when recorded. A request whose
+ * prompt reaches the long-context threshold (200k) is billed at the higher
+ * rate for every token, and the US regional endpoint at 1.1x. xAI has no
+ * cache-write charge: an uncached prompt token is a plain input token.
+ */
+function getXaiModelCosts(model: string, usage: Usage): ModelCosts | null {
+  if (getAPIProvider() !== 'xai') return null
+  const promptTokens =
+    (usage.input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0)
+  const price = getXaiCatalogPrice(model, promptTokens, process.env.XAI_BASE_URL)
+  if (!price) return null
+  return {
+    inputTokens: price.input,
+    outputTokens: price.output,
+    promptCacheReadTokens: price.cachedInput,
+    promptCacheWriteTokens: price.input,
+    webSearchRequests: 0,
+  }
+}
+
+/**
  * Get the cost tier for Opus 4.6 based on fast mode.
  */
 export function getOpus46CostTier(fastMode: boolean): ModelCosts {
@@ -459,6 +483,9 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts | null {
 
   const commandCodeCosts = getCommandCodeModelCosts(model)
   if (commandCodeCosts) return commandCodeCosts
+
+  const xaiCosts = getXaiModelCosts(model, usage)
+  if (xaiCosts) return xaiCosts
 
   const shortName = getCanonicalName(model)
 

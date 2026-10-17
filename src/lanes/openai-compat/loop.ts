@@ -48,6 +48,7 @@ import {
   OpenCodeResponsesStream,
 } from './opencode_responses.js'
 import { readSseDataPayloads } from './sse_payloads.js'
+import { listXaiModels, streamXaiResponses } from './xai_responses.js'
 import { recordCompatCacheDebug } from './cache_debug.js'
 import { beginMistralCacheDebug } from './mistral_cache_debug.js'
 import {
@@ -158,6 +159,7 @@ type ProviderType =
   | 'iflow'
   | 'kilocode'
   | 'copilot'
+  | 'xai'
   | 'generic'
 
 function detectProvider(model: string, baseUrl: string): ProviderType {
@@ -192,6 +194,7 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
   if (b.includes('iflow.cn') || b.includes('apis.iflow')) return 'iflow'
   if (b.includes('kilocode.ai') || b.includes('kilo.ai')) return 'kilocode'
   if (b.includes('githubcopilot.com')) return 'copilot'
+  if (b.includes('api.x.ai')) return 'xai'
   if (m.startsWith('@cf/')) return 'cloudflare'
   if (m.includes('deepseek')) return 'deepseek'
   if (m.startsWith('glm-')) return 'glm'
@@ -490,6 +493,13 @@ export class OpenAICompatLane implements Lane {
     const cacheSessionId = providerUsesStableRequestSession(provider)
       ? sessionId
       : undefined
+
+    // xAI runs on its Responses API (xai_responses.ts): its Chat Completions
+    // route is deprecated and cannot carry the encrypted reasoning that the
+    // xAI prompt cache needs replayed.
+    if (provider === 'xai') {
+      return yield* streamXaiResponses(cfg, { ...params, model }, cacheSessionId)
+    }
 
     // OpenCode Zen/Go: each row goes to the gateway route the official client
     // uses for it (opencode_anthropic_route.ts). The gateway forwards bodies
@@ -1395,6 +1405,7 @@ export class OpenAICompatLane implements Lane {
     const entries = Array.from(this.configs.entries())
       .filter(([name]) => !providerFilter || name === providerFilter)
     const results = await Promise.allSettled(entries.map(async ([providerName, cfg]) => {
+      if (providerName === 'xai') return listXaiModels(cfg)
       if (isDirectProvider(providerName)) {
         return listDirectProviderModels(providerName, cfg.baseUrl, { Authorization: `Bearer ${cfg.apiKey}`, Accept: 'application/json' })
       }

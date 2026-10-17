@@ -63,7 +63,8 @@ export function providerSupportsClientSideToolDiscovery(
  *     block of glm and minimax for that cache (direct_history.ts); a load
  *     rewrote the tool block in front of it anyway.
  *   - a session-pinned `prompt_cache_key` reusing one backend's KV cache
- *     (fireworks, moonshot, cloudflare, mistral, lxd)
+ *     (fireworks, moonshot, cloudflare, mistral, lxd, xai — whose docs say
+ *     any edit or reorder of earlier content breaks the cache)
  *
  * Deliberately NOT here:
  *   - openrouter / opencode / opencodego, gemini, modelrouter, vercel,
@@ -83,6 +84,7 @@ const EXACT_PREFIX_CACHE_PROVIDERS: ReadonlySet<APIProvider> = new Set([
   'lxd',
   'glm',
   'minimax',
+  'xai',
 ])
 
 /**

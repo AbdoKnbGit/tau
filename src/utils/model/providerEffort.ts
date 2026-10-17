@@ -13,6 +13,8 @@ import { clearMimoEffort, getMimoEffort, hasExplicitMimoEffort, mimoEffortLevels
 import { alibabaEffortLevelsFor, clearAlibabaEffort, getAlibabaEffort, hasExplicitAlibabaEffort, setAlibabaEffort, supportsAlibabaEffortSelection } from './alibabaThinking.js'
 import { clearOpenRouterEffort, getOpenRouterEffort, hasExplicitOpenRouterEffort, openRouterEffortLevelsFor, setOpenRouterEffort, supportsOpenRouterEffortSelection } from './openrouterThinking.js'
 import { clearCompatEffort, compatEffortLevels, getCompatEffort, hasExplicitCompatEffort, setCompatEffort } from './compatEffort.js'
+import { clearXaiEffort, getXaiEffort, hasExplicitXaiEffort, setXaiEffort, xaiEffortLevelsFor } from './xaiThinking.js'
+import { getXaiModelMeta } from './xaiCatalog.js'
 
 export type ProviderEffortState = {
   supported: boolean
@@ -138,6 +140,16 @@ function getControl(
       if (!supportsOpenRouterEffortSelection(model)) return undefined
       return control(openRouterEffortLevelsFor(model), () => getOpenRouterEffort(model, fallback), value => setOpenRouterEffort(model, value),
         () => clearOpenRouterEffort(model), hasExplicitOpenRouterEffort(model), fallback)
+    case 'xai': {
+      // The row's own ladder from xAI's catalog. `default` sends no effort, so
+      // xAI applies the model's default (high on Grok 4.5 and later).
+      const levels = xaiEffortLevelsFor(model)
+      if (levels.length === 0) return undefined
+      const builtIn = getXaiModelMeta(model)?.defaultEffort
+      return control(['default', ...levels], () => getXaiEffort(model, fallback) ?? 'default', value => setXaiEffort(model, value),
+        () => clearXaiEffort(model), hasExplicitXaiEffort(model), fallback,
+        value => value === 'default' && builtIn ? `provider default (${builtIn})` : effortLabel(value))
+    }
     default:
       return undefined
   }
@@ -158,7 +170,8 @@ export function getProviderEffort(
     supported: false,
     levels: [],
     label: fixedLevels.length === 1 ? `${effortLabel(fixedLevels[0]!)} (fixed)`
-      : isDirectThinkingProvider(provider) && getDirectModelMeta(provider, model)?.reasoning
+      : (isDirectThinkingProvider(provider) && getDirectModelMeta(provider, model)?.reasoning)
+          || (provider === 'xai' && getXaiModelMeta(model)?.reasoning)
         ? 'thinking always on' : 'provider/model default',
     explicit: false,
     source: 'unavailable',

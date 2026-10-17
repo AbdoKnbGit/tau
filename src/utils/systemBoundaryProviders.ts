@@ -11,6 +11,7 @@
  *   - gemini / antigravity → GeminiLane `splitSystemAtBoundary`
  *   - openrouter           → `splitSystemPromptForCache`
  *   - deepseek             → `splitSystemPromptForCache`
+ *   - xai                  → `splitXaiSystem` (openai-compat/xai_responses.ts)
  * (The legacy gemini/openrouter providers strip it too, so this holds whether
  * CLAUDEX_NATIVE_LANES is on or off.)
  *
@@ -25,6 +26,7 @@ export const SYSTEM_BOUNDARY_SPLITTING_PROVIDERS: ReadonlySet<string> = new Set(
   'antigravity',
   'openrouter',
   'deepseek',
+  'xai',
 ])
 
 export function providerSplitsSystemBoundary(provider: string): boolean {

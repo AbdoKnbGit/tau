@@ -90,6 +90,8 @@ const LXD_BASE_URL = process.env.LXD_BASE_URL
   ?? process.env.LXDS_BASE_URL
   ?? 'https://api.lxds.org/v1'
 
+const XAI_BASE_URL = process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1'
+
 const FIREWORKS_BASE_URL = process.env.FIREWORKS_BASE_URL
   ?? 'https://api.fireworks.ai/inference/v1'
 
@@ -709,6 +711,37 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.ALIBABA_MODEL_OPUS   ?? 'qwen3.8-max',
         sonnet: process.env.ALIBABA_MODEL_SONNET ?? 'qwen3.8-flash',
         haiku:  process.env.ALIBABA_MODEL_HAIKU  ?? 'qwen-flash',
+      },
+    },
+  },
+
+  // xAI. Grok 4.7 is xAI's own pick for code; Grok 4.3 is the cheapest row
+  // that still takes an effort ladder. The picker's live catalog is what a
+  // person browses; these only resolve defaults. Tier aliases on spawned
+  // agents inherit the session model (agentAliasFallback.ts).
+  xai: {
+    displayName: 'xAI',
+    baseUrl: XAI_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'XAI_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.XAI_MODEL_OPUS_FREE   ?? 'grok-4.7',
+        sonnet: process.env.XAI_MODEL_SONNET_FREE ?? 'grok-4.7',
+        haiku:  process.env.XAI_MODEL_HAIKU_FREE  ?? 'grok-4.3',
+      },
+      pro: {
+        opus:   process.env.XAI_MODEL_OPUS   ?? 'grok-4.7',
+        sonnet: process.env.XAI_MODEL_SONNET ?? 'grok-4.7',
+        haiku:  process.env.XAI_MODEL_HAIKU  ?? 'grok-4.3',
+      },
+      plus: {
+        opus:   process.env.XAI_MODEL_OPUS   ?? 'grok-4.7',
+        sonnet: process.env.XAI_MODEL_SONNET ?? 'grok-4.7',
+        haiku:  process.env.XAI_MODEL_HAIKU  ?? 'grok-4.3',
       },
     },
   },

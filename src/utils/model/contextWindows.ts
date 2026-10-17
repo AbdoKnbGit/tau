@@ -19,6 +19,7 @@ import {
   persistProviderContextWindows,
 } from './contextWindowStore.js'
 import { getCommandCodeCatalogContextWindow } from './commandCodeCatalog.js'
+import { getXaiContextWindow } from './xaiCatalog.js'
 
 type ContextWindowMap = Record<string, number>
 
@@ -436,6 +437,13 @@ function lookupHostWindow(
 
   if (provider === 'mistral') {
     const window = getMistralModelMeta(model)?.contextWindow
+    if (window !== undefined) return window
+  }
+
+  // xAI states each row's window on /v1/models; the catalog keeps that
+  // listing and a docs snapshot, so a resumed session knows it before /models.
+  if (provider === 'xai') {
+    const window = getXaiContextWindow(model)
     if (window !== undefined) return window
   }
 

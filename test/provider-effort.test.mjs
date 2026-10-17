@@ -10,7 +10,7 @@ import { loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
 const tempRoot = realpathSync(tmpdir())
 const fixture = mkdtempSync(join(tempRoot, 'tau-provider-effort-'))
 const storeNames = ['DEEPSEEK', 'DIRECT', 'CLINE', 'COMMANDCODE', 'CLOUDFLARE',
-  'LXD', 'MIMO', 'ALIBABA', 'OPENROUTER', 'OPENCODE', 'COMPAT']
+  'LXD', 'MIMO', 'ALIBABA', 'OPENROUTER', 'OPENCODE', 'COMPAT', 'XAI']
 process.env.CLAUDE_CONFIG_DIR = fixture
 process.env.DISABLE_TELEMETRY = '1'
 process.env.CLAUDEX_DISABLE_MODEL_PRICING = '1'
@@ -20,6 +20,8 @@ process.env.TAU_DIRECT_MODEL_CATALOG_STORE = join(fixture, 'direct-catalog.json'
 process.env.TAU_CLINE_MODELS_DEV_CACHE = join(fixture, 'cline-catalog.json')
 process.env.TAU_OPENCODE_MODELS_DEV_CACHE = join(fixture, 'opencode-catalog.json')
 for (const name of storeNames) process.env[`TAU_${name}_THINKING_STORE`] = join(fixture, `${name}.json`)
+// xAI ladders come from its recorded /v1/models listing; keep the snapshot.
+process.env.TAU_XAI_MODEL_CATALOG_STORE = join(fixture, 'xai-models.json')
 for (const name of ['CLAUDE_CODE_EFFORT_LEVEL', 'GLM_BASE_URL', 'MOONSHOT_BASE_URL',
   'MINIMAX_BASE_URL', 'DASHSCOPE_BASE_URL', 'ALIBABA_BASE_URL', 'MODELSTUDIO_BASE_URL']) delete process.env[name]
 assert.match(readFileSync('src/utils/model/commandCodeThinking.ts', 'utf8'), /TAU_COMMANDCODE_THINKING_STORE/,
@@ -32,7 +34,8 @@ const r = await loadMcpRuntime({
   paths: ['src/utils/model/providerEffort.ts', 'src/lanes/openai-compat/transformers/index.ts',
     'src/utils/settings/settingsCache.ts', 'src/utils/model/openaiReasoning.ts', 'src/lanes/kilo/loop.ts',
     'src/lanes/cline/loop.ts', 'src/services/api/providers/providerShim.ts',
-    'src/commands/effort/effort.tsx', 'src/components/EffortIndicator.ts', 'src/components/EffortCallout.tsx'],
+    'src/commands/effort/effort.tsx', 'src/components/EffortIndicator.ts', 'src/components/EffortCallout.tsx',
+    'src/lanes/openai-compat/xai_responses.ts'],
   exports: ['API_PROVIDERS', 'getProviderEffort', 'usesProviderEffort', 'executeProviderEffort',
     'getProviderEffortPreview', 'getNextProviderEffort', 'commitProviderEffortSelection',
     'getInheritedEffort', 'selectInheritedEffort', 'setSessionSettingsCache', 'getSessionSettingsCache',
@@ -41,7 +44,7 @@ const r = await loadMcpRuntime({
     'KiloLane', 'ClineLane', 'CompatChatProvider', 'CommandCodeProvider', 'GroqProvider',
     'DeepSeekProvider', 'LxdProvider', 'MimoProvider', 'AlibabaProvider', 'OpenRouterProvider',
     'GlmProvider', 'MoonshotProvider', 'MiniMaxProvider', 'showCurrentEffort', 'getEffortSuffix', 'getEffortNotificationText', 'shouldShowEffortCallout',
-    'anthropicMessagesToOpenAI',
+    'anthropicMessagesToOpenAI', 'buildXaiResponsesRequest', 'resolveXaiRequestEffort',
     `withProvider: (provider, fn) => { const previous = getAPIProvider; try { getAPIProvider = () => provider; return fn(); } finally { getAPIProvider = previous; } }`,
     `installCatalogFixtures: () => {
       // Catalog refresh/parsing has its own suites. Fix capability inputs here
@@ -114,6 +117,7 @@ const cases = [
   ['cline', 'fixture/reasoning', 'low', 'high'],
   ['clinepass', 'fixture/reasoning', 'low', 'max'],
   ['kilocode', 'openai/gpt-5.4', 'low', 'high'],
+  ['xai', 'grok-4.7', 'low', 'xhigh'],
 ]
 const noEffortProviders = ['nim', 'minimax', 'ollama', 'lmstudio', 'copilot', 'cursor', 'iflow', 'kiro']
 
@@ -133,8 +137,17 @@ function transformed(provider, model, effortValue, overrides = {}) {
     sessionId: 'stable-session', ...overrides,
   })
 }
+// xAI goes out on its Responses route, not a chat transformer.
+function xaiBody(model, fallback) {
+  return r.buildXaiResponsesRequest({
+    model, system: 'Stable instructions', messages: body(model).messages.filter(message => message.role === 'user'),
+    tools: [{ name: 'Read', description: 'Read a fixture', input_schema: { type: 'object', properties: { path: { type: 'string' } } } }],
+    maxTokens: 1024, sessionId: 'stable-session', effort: r.resolveXaiRequestEffort(model, fallback),
+  }).body
+}
 function wireEffort(provider, model, fallback) {
   if (provider === 'commandcode') return r.getCommandCodeRequestEffort(model, fallback)
+  if (provider === 'xai') return xaiBody(model, fallback).reasoning?.effort
   const request = transformed(provider, model, fallback)
   return request.reasoning_effort ?? request.reasoning?.effort
 }
@@ -322,6 +335,14 @@ test('provider selections cannot overwrite the prior OpenAI xhigh preference', (
 test('effort changes preserve serialized prompt/tool order and provider cache affinity fields', () => {
   for (const [provider, model, configured, selected] of cases.filter(row => row[0] !== 'commandcode')) {
     r.executeProviderEffort(provider, model, 'auto', null)
+    if (provider === 'xai') {
+      const first = xaiBody(model, configured)
+      const second = xaiBody(model, selected)
+      for (const key of ['instructions', 'input', 'tools', 'prompt_cache_key']) {
+        assert.equal(JSON.stringify(first[key]), JSON.stringify(second[key]), `${provider}: ${key}`)
+      }
+      continue
+    }
     const first = transformed(provider, model, configured)
     const second = transformed(provider, model, selected)
     assert.equal(JSON.stringify(first.messages), JSON.stringify(second.messages), `${provider}: prompt prefix`)

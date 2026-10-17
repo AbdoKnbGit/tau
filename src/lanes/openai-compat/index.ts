@@ -42,6 +42,7 @@ export function initOpenAICompatLane(providers?: {
   mimo?: { apiKey: string; baseUrl?: string }
   fireworks?: { apiKey: string; baseUrl?: string }
   cloudflare?: { apiKey: string; baseUrl?: string }
+  xai?: { apiKey: string; baseUrl?: string }
   cline?: { apiKey: string; baseUrl?: string }
   iflow?: { apiKey: string; baseUrl?: string }
   kilocode?: { apiKey: string; baseUrl?: string }
@@ -291,6 +292,16 @@ export function initOpenAICompatLane(providers?: {
       'cloudflare',
       cloudflareKey,
       cloudflareBaseUrl,
+    )
+  }
+
+  // xAI (Grok). Served on the Responses API by xai_responses.ts; the
+  // regional host https://us.api.x.ai/v1 speaks the same protocol.
+  const xaiKey = p.xai?.apiKey ?? process.env.XAI_API_KEY
+  if (xaiKey) {
+    openaiCompatLane.registerProvider(
+      'xai', xaiKey,
+      p.xai?.baseUrl ?? process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1',
     )
   }
 
