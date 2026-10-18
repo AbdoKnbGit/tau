@@ -33,6 +33,7 @@ import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
+import { getMessageDisplayText, messageForDisplay } from './utils/hooks/messageDisplay.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
@@ -795,7 +796,7 @@ export class QueryEngine {
             lastStopReason = message.message.stop_reason
           }
           this.mutableMessages.push(message)
-          yield* normalizeMessage(message)
+          yield* normalizeMessage(verbose ? message : messageForDisplay(message))
           break
         case 'progress':
           this.mutableMessages.push(message)
@@ -1156,7 +1157,7 @@ export class QueryEngine {
         lastContent?.type === 'text' &&
         !SYNTHETIC_MESSAGES.has(lastContent.text)
       ) {
-        textResult = lastContent.text
+        textResult = verbose ? lastContent.text : getMessageDisplayText(lastContent)
       }
       isApiError = Boolean(result.isApiErrorMessage)
     }

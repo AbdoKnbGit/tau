@@ -155,8 +155,10 @@ export function execFileNoThrowWithCwd(
     }
 
     let posixForceTimer: ReturnType<typeof setTimeout> | undefined
+    let treeTimedOut = false
     const treeTimeout = useTreeTimeout
       ? setTimeout(() => {
+          treeTimedOut = true
           const pid = subprocess.pid
           if (!pid) {
             forceKillSubprocess()
@@ -207,20 +209,22 @@ export function execFileNoThrowWithCwd(
 
     subprocess
       .then(result => {
-        if (result.failed) {
+        if (result.failed || treeTimedOut) {
           if (finalPreserveOutput) {
-            const errorCode = result.exitCode ?? 1
+            const errorCode = result.exitCode || 1
             void resolve({
               stdout: result.stdout || '',
               stderr: result.stderr || '',
               code: errorCode,
-              error: getErrorMessage(
-                result as unknown as ExecaResultWithError,
-                errorCode,
-              ),
+              error: treeTimedOut
+                ? `Command timed out after ${finalTimeout} milliseconds`
+                : getErrorMessage(
+                    result as unknown as ExecaResultWithError,
+                    errorCode,
+                  ),
             })
           } else {
-            void resolve({ stdout: '', stderr: '', code: result.exitCode ?? 1 })
+            void resolve({ stdout: '', stderr: '', code: result.exitCode || 1 })
           }
         } else {
           void resolve({

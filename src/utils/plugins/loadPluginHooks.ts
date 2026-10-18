@@ -1,5 +1,5 @@
 import memoize from 'lodash-es/memoize.js'
-import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
+import { HOOK_EVENTS, type HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 import {
   clearRegisteredPluginHooks,
   getRegisteredHooks,
@@ -22,41 +22,20 @@ let hotReloadSubscribed = false
 // Snapshot of enabledPlugins for change detection in hot reload
 let lastPluginSettingsSnapshot: string | undefined
 
+function emptyPluginMatchers(): Record<HookEvent, PluginHookMatcher[]> {
+  return Object.fromEntries(HOOK_EVENTS.map(event => [event, []])) as Record<
+    HookEvent,
+    PluginHookMatcher[]
+  >
+}
+
 /**
  * Convert plugin hooks configuration to native matchers with plugin context
  */
 function convertPluginHooksToMatchers(
   plugin: LoadedPlugin,
 ): Record<HookEvent, PluginHookMatcher[]> {
-  const pluginMatchers: Record<HookEvent, PluginHookMatcher[]> = {
-    PreToolUse: [],
-    PostToolUse: [],
-    PostToolUseFailure: [],
-    PermissionDenied: [],
-    Notification: [],
-    UserPromptSubmit: [],
-    SessionStart: [],
-    SessionEnd: [],
-    Stop: [],
-    StopFailure: [],
-    SubagentStart: [],
-    SubagentStop: [],
-    PreCompact: [],
-    PostCompact: [],
-    PermissionRequest: [],
-    Setup: [],
-    TeammateIdle: [],
-    TaskCreated: [],
-    TaskCompleted: [],
-    Elicitation: [],
-    ElicitationResult: [],
-    ConfigChange: [],
-    WorktreeCreate: [],
-    WorktreeRemove: [],
-    InstructionsLoaded: [],
-    CwdChanged: [],
-    FileChanged: [],
-  }
+  const pluginMatchers = emptyPluginMatchers()
 
   if (!plugin.hooksConfig) {
     return pluginMatchers
@@ -90,35 +69,7 @@ function convertPluginHooksToMatchers(
  */
 export const loadPluginHooks = memoize(async (): Promise<void> => {
   const { enabled } = await loadAllPluginsCacheOnly()
-  const allPluginHooks: Record<HookEvent, PluginHookMatcher[]> = {
-    PreToolUse: [],
-    PostToolUse: [],
-    PostToolUseFailure: [],
-    PermissionDenied: [],
-    Notification: [],
-    UserPromptSubmit: [],
-    SessionStart: [],
-    SessionEnd: [],
-    Stop: [],
-    StopFailure: [],
-    SubagentStart: [],
-    SubagentStop: [],
-    PreCompact: [],
-    PostCompact: [],
-    PermissionRequest: [],
-    Setup: [],
-    TeammateIdle: [],
-    TaskCreated: [],
-    TaskCompleted: [],
-    Elicitation: [],
-    ElicitationResult: [],
-    ConfigChange: [],
-    WorktreeCreate: [],
-    WorktreeRemove: [],
-    InstructionsLoaded: [],
-    CwdChanged: [],
-    FileChanged: [],
-  }
+  const allPluginHooks = emptyPluginMatchers()
 
   // Process each enabled plugin
   for (const plugin of enabled) {

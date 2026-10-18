@@ -1,5 +1,5 @@
 import memoize from 'lodash-es/memoize.js'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { getInlinePlugins, getSessionId } from '../../bootstrap/state.js'
 import type { Command } from '../../types/command.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
@@ -723,7 +723,12 @@ async function loadSkillsFromDirectory(
         directSkillPath,
       )
 
-      const skillName = `${pluginName}:${basename(skillsPath)}`
+      // A root skill's cache directory is usually a version/hash. Keep its
+      // command name stable across installation locations and updates.
+      const skillDirectoryName = resolve(skillsPath) === resolve(pluginPath)
+        ? pluginName
+        : basename(skillsPath)
+      const skillName = `${pluginName}:${skillDirectoryName}`
 
       const file: PluginMarkdownFile = {
         filePath: directSkillPath,

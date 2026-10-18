@@ -388,6 +388,12 @@ export const HOOK_EVENTS = [
   'InstructionsLoaded',
   'CwdChanged',
   'FileChanged',
+  'UserPromptExpansion',
+  'MessageDisplay',
+  'PostToolBatch',
+  'DirectoryAdded',
+  'PreModelSwitch',
+  'PostModelSwitch',
 ] as const
 
 export const HookEventSchema = lazySchema(() => z.enum(HOOK_EVENTS))
@@ -395,9 +401,27 @@ export const HookEventSchema = lazySchema(() => z.enum(HOOK_EVENTS))
 export const BaseHookInputSchema = lazySchema(() =>
   z.object({
     session_id: z.string(),
+    prompt_id: z
+      .string()
+      .optional()
+      .describe(
+        'UUID of the user prompt being processed, matching the OpenTelemetry prompt.id attribute. Absent until the first user input.',
+      ),
     transcript_path: z.string(),
     cwd: z.string(),
+    scratchpad_dir: z
+      .string()
+      .optional()
+      .describe(
+        "Path to the session's scratchpad directory. Absent when the session has none.",
+      ),
     permission_mode: z.string().optional(),
+    effort: z
+      .object({ level: z.string() })
+      .optional()
+      .describe(
+        'Effort level in effect, for events that fire within a tool-use context when the model supports effort.',
+      ),
     agent_id: z
       .string()
       .optional()
@@ -494,6 +518,7 @@ export const UserPromptSubmitHookInputSchema = lazySchema(() =>
     z.object({
       hook_event_name: z.literal('UserPromptSubmit'),
       prompt: z.string(),
+      session_title: z.string().optional(),
     }),
   ),
 )
@@ -505,6 +530,7 @@ export const SessionStartHookInputSchema = lazySchema(() =>
       source: z.enum(['startup', 'resume', 'clear', 'compact']),
       agent_type: z.string().optional(),
       model: z.string().optional(),
+      session_title: z.string().optional(),
     }),
   ),
 )
@@ -752,6 +778,93 @@ export const FileChangedHookInputSchema = lazySchema(() =>
   ),
 )
 
+export const UserPromptExpansionHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema().and(
+    z.object({
+      hook_event_name: z.literal('UserPromptExpansion'),
+      expansion_type: z.enum(['slash_command', 'mcp_prompt']),
+      command_name: z.string(),
+      command_args: z.string(),
+      command_source: z.string(),
+      prompt: z.string(),
+    }),
+  ),
+)
+
+export const MessageDisplayHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema().and(
+    z.object({
+      hook_event_name: z.literal('MessageDisplay'),
+      turn_id: z.string(),
+      message_id: z.string(),
+      index: z.number(),
+      final: z.boolean(),
+      delta: z.string(),
+    }),
+  ),
+)
+
+export const PostToolBatchHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema().and(
+    z.object({
+      hook_event_name: z.literal('PostToolBatch'),
+      tool_calls: z.array(
+        z.object({
+          tool_name: z.string(),
+          tool_input: z.unknown(),
+          tool_use_id: z.string(),
+          tool_response: z.unknown(),
+        }),
+      ),
+    }),
+  ),
+)
+
+export const DirectoryAddedHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema().and(
+    z.object({
+      hook_event_name: z.literal('DirectoryAdded'),
+      directory: z.string(),
+      source: z.enum(['slash_command', 'register_repo_root']),
+    }),
+  ),
+)
+
+const ModelSwitchHookFieldsSchema = lazySchema(() =>
+  z.object({
+    from_model: z.string(),
+    to_model: z.string(),
+    requested_model: z.string().nullable(),
+    context_tokens: z.number(),
+    prompt_cache_warm: z.boolean().optional(),
+    cache_ttl: z.enum(['5m', '1h']).optional(),
+    estimated_cache_write_usd: z.number().optional(),
+    pricing: z.enum(['configured', 'catalog', 'default']).optional(),
+  }),
+)
+
+export const PreModelSwitchHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(ModelSwitchHookFieldsSchema())
+    .and(
+      z.object({
+        hook_event_name: z.literal('PreModelSwitch'),
+        source: z.enum(['command', 'picker', 'sdk']),
+      }),
+    ),
+)
+
+export const PostModelSwitchHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(ModelSwitchHookFieldsSchema())
+    .and(
+      z.object({
+        hook_event_name: z.literal('PostModelSwitch'),
+        source: z.enum(['command', 'picker', 'sdk', 'auto', 'resume']),
+      }),
+    ),
+)
+
 export const EXIT_REASONS = [
   'clear',
   'resume',
@@ -801,6 +914,12 @@ export const HookInputSchema = lazySchema(() =>
     WorktreeRemoveHookInputSchema(),
     CwdChangedHookInputSchema(),
     FileChangedHookInputSchema(),
+    UserPromptExpansionHookInputSchema(),
+    MessageDisplayHookInputSchema(),
+    PostToolBatchHookInputSchema(),
+    DirectoryAddedHookInputSchema(),
+    PreModelSwitchHookInputSchema(),
+    PostModelSwitchHookInputSchema(),
   ]),
 )
 
@@ -814,7 +933,7 @@ export const AsyncHookJSONOutputSchema = lazySchema(() =>
 export const PreToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PreToolUse'),
-    permissionDecision: PermissionBehaviorSchema().optional(),
+    permissionDecision: z.enum(['allow', 'deny', 'ask', 'defer']).optional(),
     permissionDecisionReason: z.string().optional(),
     updatedInput: z.record(z.string(), z.unknown()).optional(),
     additionalContext: z.string().optional(),
@@ -825,6 +944,8 @@ export const UserPromptSubmitHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('UserPromptSubmit'),
     additionalContext: z.string().optional(),
+    sessionTitle: z.string().optional(),
+    suppressOriginalPrompt: z.boolean().optional(),
   }),
 )
 
@@ -834,6 +955,44 @@ export const SessionStartHookSpecificOutputSchema = lazySchema(() =>
     additionalContext: z.string().optional(),
     initialUserMessage: z.string().optional(),
     watchPaths: z.array(z.string()).optional(),
+    sessionTitle: z.string().optional(),
+    reloadSkills: z.boolean().optional(),
+  }),
+)
+
+export const UserPromptExpansionHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('UserPromptExpansion'),
+    additionalContext: z.string().optional(),
+  }),
+)
+
+export const MessageDisplayHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('MessageDisplay'),
+    displayContent: z.string().optional(),
+  }),
+)
+
+export const PostToolBatchHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('PostToolBatch'),
+    additionalContext: z.string().optional(),
+  }),
+)
+
+export const PreModelSwitchHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('PreModelSwitch'),
+    permissionDecision: PermissionBehaviorSchema().optional(),
+    permissionDecisionReason: z.string().optional(),
+  }),
+)
+
+export const PostModelSwitchHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('PostModelSwitch'),
+    additionalContext: z.string().optional(),
   }),
 )
 
@@ -855,7 +1014,9 @@ export const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PostToolUse'),
     additionalContext: z.string().optional(),
+    updatedToolOutput: z.unknown().optional(),
     updatedMCPToolOutput: z.unknown().optional(),
+    classifierContext: z.string().optional(),
   }),
 )
 
@@ -920,10 +1081,16 @@ export const SyncHookJSONOutputSchema = lazySchema(() =>
     decision: z.enum(['approve', 'block']).optional(),
     systemMessage: z.string().optional(),
     reason: z.string().optional(),
+    terminalSequence: z.string().optional(),
     hookSpecificOutput: z
       .union([
         PreToolUseHookSpecificOutputSchema(),
         UserPromptSubmitHookSpecificOutputSchema(),
+        UserPromptExpansionHookSpecificOutputSchema(),
+        MessageDisplayHookSpecificOutputSchema(),
+        PostToolBatchHookSpecificOutputSchema(),
+        PreModelSwitchHookSpecificOutputSchema(),
+        PostModelSwitchHookSpecificOutputSchema(),
         SessionStartHookSpecificOutputSchema(),
         SetupHookSpecificOutputSchema(),
         SubagentStartHookSpecificOutputSchema(),

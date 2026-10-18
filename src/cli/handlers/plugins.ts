@@ -49,6 +49,7 @@ import {
   scopeToSettingSource,
 } from '../../utils/plugins/pluginIdentifier.js'
 import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js'
+import { addInstallMarketplace, resolveInstallMarketplace } from '../../utils/plugins/installMarketplace.js'
 import type { PluginSource } from '../../utils/plugins/schemas.js'
 import {
   type ValidationResult,
@@ -667,7 +668,7 @@ export async function marketplaceUpdateHandler(
 // plugin install (lines 5690–5721)
 export async function pluginInstallHandler(
   plugin: string,
-  options: { scope?: string; cowork?: boolean },
+  options: { scope?: string; cowork?: boolean; marketplace?: string },
 ): Promise<void> {
   if (options.cowork) setUseCoworkPlugins(true)
   const scope = options.scope || 'user'
@@ -682,6 +683,26 @@ export async function pluginInstallHandler(
     cliError(
       `Invalid scope: ${scope}. Must be one of: ${VALID_INSTALLABLE_SCOPES.join(', ')}.`,
     )
+  }
+  if (options.marketplace !== undefined) {
+    const target = options.marketplace.trim()
+    const parsed = parsePluginIdentifier(plugin)
+    if (!target) cliError('--marketplace requires a marketplace name or source')
+    if (parsed.marketplace && parsed.marketplace !== target) {
+      cliError('The plugin marketplace and --marketplace must agree')
+    }
+    try {
+      const resolved = await resolveInstallMarketplace(target)
+      const marketplaceName = resolved.source
+        ? await addInstallMarketplace(resolved.source, message => {
+            // biome-ignore lint/suspicious/noConsole: CLI progress
+            console.log(message)
+          })
+        : resolved.name
+      plugin = `${parsed.name}@${marketplaceName}`
+    } catch (error) {
+      handleMarketplaceError(error, 'resolve install marketplace')
+    }
   }
   // _PROTO_* routes to PII-tagged plugin_name/marketplace_name BQ columns.
   // Unredacted plugin arg was previously logged to general-access

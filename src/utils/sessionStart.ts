@@ -9,6 +9,7 @@ import { shouldAllowManagedHooksOnly } from './hooks/hooksConfigSnapshot.js'
 import { executeSessionStartHooks, executeSetupHooks } from './hooks.js'
 import { logError } from './log.js'
 import { loadPluginHooks } from './plugins/loadPluginHooks.js'
+import { applyHookSessionTitle } from './hooks/lifecycleHooks.js'
 
 type SessionStartHooksOptions = {
   sessionId?: string
@@ -50,6 +51,7 @@ export async function processSessionStartHooks(
   const hookMessages: HookResultMessage[] = []
   const additionalContexts: string[] = []
   const allWatchPaths: string[] = []
+  let reloadSkills = false
 
   // Skip loading plugin hooks if restricted to managed hooks only
   // Plugin hooks are untrusted external code that should be blocked by policy
@@ -138,6 +140,10 @@ export async function processSessionStartHooks(
     undefined,
     forceSyncExecution,
   )) {
+    if (hookResult.sessionTitle && (source === 'startup' || source === 'resume')) {
+      await applyHookSessionTitle(hookResult.sessionTitle, undefined, sessionId)
+    }
+    reloadSkills ||= hookResult.reloadSkills === true
     if (hookResult.message) {
       hookMessages.push(hookResult.message)
     }
@@ -157,6 +163,15 @@ export async function processSessionStartHooks(
 
   if (allWatchPaths.length > 0) {
     updateWatchPaths(allWatchPaths)
+  }
+
+  if (reloadSkills) {
+    const [{ clearCommandsCache }, { skillChangeDetector }] = await Promise.all([
+      import('../commands.js'),
+      import('./skills/skillChangeDetector.js'),
+    ])
+    clearCommandsCache()
+    skillChangeDetector.notifyManualReload()
   }
 
   // If hooks provided additional context, add it as a message

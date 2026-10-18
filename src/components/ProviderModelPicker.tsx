@@ -38,7 +38,8 @@ import { hasStoredKey } from '../services/api/auth/api_key_manager.js'
 
 type Props = {
   initialProvider: BrowsableModelProvider
-  onSelect: (provider: BrowsableModelProvider, modelId: string, effort?: OpenAIReasoningLevel) => void
+  onSelect: (provider: BrowsableModelProvider, modelId: string, effort?: OpenAIReasoningLevel, commitSelection?: () => void) => void
+  deferSelectionEffects?: boolean
   onCancel: () => void
   lockedProvider?: BrowsableModelProvider
   /** Model-only consumers must not change OpenAI or native per-model effort. */
@@ -212,6 +213,7 @@ export function ProviderModelPicker({
   onCancel,
   lockedProvider,
   allowOpenAIEffortSelection = true,
+  deferSelectionEffects = false,
 }: Props) {
   const [step, setStep] = useState<Step>(lockedProvider ? 'models' : 'provider')
   const [selectedProviderIndex, setSelectedProviderIndex] = useState(() =>
@@ -375,13 +377,15 @@ export function ProviderModelPicker({
       const row = flatRows[selectedRowIndex]
       if (row?.kind === 'model') {
         const modelId = getSelectedModelId(selectedProvider, row.model, variantSelections)
-        if (!isVoiceConversationProvider(selectedProvider)) {
+        const commitSelection = () => { if (!isVoiceConversationProvider(selectedProvider)) {
           commitProviderEffortSelection(selectedProvider, modelId, providerEffortSelections[`${selectedProvider}:${modelId}`], allowOpenAIEffortSelection)
-        }
+        } }
+        if (!deferSelectionEffects) commitSelection()
         onSelect(
           selectedProvider,
           getSelectedModelId(selectedProvider, row.model, variantSelections),
           selectedProvider === 'openai' ? openaiEffort : undefined,
+          deferSelectionEffects ? commitSelection : undefined,
         )
       }
       return

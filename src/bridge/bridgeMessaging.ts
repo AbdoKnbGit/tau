@@ -221,7 +221,7 @@ export type ServerControlRequestHandlers = {
    */
   outboundOnly?: boolean
   onInterrupt?: () => void
-  onSetModel?: (model: string | undefined) => void
+  onSetModel?: (model: string | undefined) => void | { ok: true } | { ok: false; error: string } | Promise<void | { ok: true } | { ok: false; error: string }>
   onSetMaxThinkingTokens?: (maxTokens: number | null) => void
   onSetPermissionMode?: (
     mode: PermissionMode,
@@ -303,8 +303,32 @@ export function handleServerControlRequest(
       }
       break
 
-    case 'set_model':
-      onSetModel?.(request.request.model)
+    case 'set_model': {
+      // Model hooks can be asynchronous. Acknowledge only after the guarded
+      // mutation finishes, and send policy refusals back to the SDK client.
+      const sendModelResult = (verdict: void | { ok: true } | { ok: false; error: string }) => {
+        const response: SDKControlResponse = {
+          type: 'control_response',
+          response: verdict && !verdict.ok
+            ? { subtype: 'error', request_id: request.request_id, error: verdict.error }
+            : { subtype: 'success', request_id: request.request_id },
+        }
+        void transport.write({ ...response, session_id: sessionId })
+      }
+      try {
+        const verdict = onSetModel?.(request.request.model)
+        if (verdict && 'then' in verdict) {
+          void verdict.then(sendModelResult, error => sendModelResult({ ok: false, error: errorMessage(error) }))
+          return
+        }
+        if (verdict && !verdict.ok) {
+          sendModelResult(verdict)
+          return
+        }
+      } catch (error) {
+        sendModelResult({ ok: false, error: errorMessage(error) })
+        return
+      }
       response = {
         type: 'control_response',
         response: {
@@ -313,6 +337,7 @@ export function handleServerControlRequest(
         },
       }
       break
+    }
 
     case 'set_max_thinking_tokens':
       onSetMaxThinkingTokens?.(request.request.max_thinking_tokens)

@@ -1,5 +1,6 @@
 import { homedir } from 'os'
 import { resolve } from 'path'
+import { fileURLToPath } from 'url'
 import { getErrnoCode } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
 import type { MarketplaceSource } from './schemas.js'
@@ -23,7 +24,16 @@ import type { MarketplaceSource } from './schemas.js'
 export async function parseMarketplaceInput(
   input: string,
 ): Promise<MarketplaceSource | { error: string } | null> {
-  const trimmed = input.trim()
+  let trimmed = input.trim()
+  // Accept the same source notation displayed by marketplace confirmations.
+  if (trimmed.startsWith('github:')) trimmed = trimmed.slice('github:'.length)
+  if (trimmed.startsWith('file://')) {
+    try {
+      trimmed = fileURLToPath(trimmed)
+    } catch {
+      return { error: `Invalid local marketplace URL: ${trimmed}` }
+    }
+  }
   const fs = getFsImplementation()
 
   // Handle git SSH URLs with any valid username (not just 'git')
@@ -72,16 +82,19 @@ export async function parseMarketplaceInput(
     }
 
     if (url.hostname === 'github.com' || url.hostname === 'www.github.com') {
-      const match = url.pathname.match(/^\/([^/]+\/[^/]+?)(\/|\.git|$)/)
+      const match = url.pathname.match(/^\/([^/]+\/[^/]+?)(?:\.git)?\/?$/)
       if (match?.[1]) {
-        // User explicitly provided HTTPS URL - keep it as HTTPS via 'git' type
-        // Add .git suffix if not present for proper git clone
-        const gitUrl = urlWithoutFragment.endsWith('.git')
-          ? urlWithoutFragment
-          : `${urlWithoutFragment}.git`
+        // Normalize the repository path, preserving explicit transport and
+        // credentials. Appending .git to the whole URL corrupts trailing slashes.
+        url.pathname = `/${match[1]}.git`
+        url.search = ''
+        const gitUrl = url.toString()
         return ref
           ? { source: 'git', url: gitUrl, ref }
           : { source: 'git', url: gitUrl }
+      }
+      if (/^\/[^/]+\/[^/]+\/(tree|blob)\//.test(url.pathname)) {
+        return { error: 'Use the GitHub repository URL with #branch or #tag, or a raw marketplace.json URL, instead of a GitHub tree/blob page.' }
       }
     }
     return { source: 'url', url: urlWithoutFragment }
@@ -149,9 +162,10 @@ export async function parseMarketplaceInput(
     }
     // Extract ref if present (either #ref or @ref)
     const fragmentMatch = trimmed.match(/^([^#@]+)(?:[#@](.+))?$/)
-    const repo = fragmentMatch?.[1] || trimmed
+    const repo = (fragmentMatch?.[1] || trimmed).replace(/\/$/, '').replace(/\.git$/, '')
     const ref = fragmentMatch?.[2]
-    // Assume it's a GitHub repo
+    if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repo)) return null
+    // A repository path must have exactly owner/repo; extra segments are not refs.
     return ref ? { source: 'github', repo, ref } : { source: 'github', repo }
   }
 

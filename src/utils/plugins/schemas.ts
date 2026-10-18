@@ -484,12 +484,12 @@ const PluginManifestAgentsSchema = lazySchema(() =>
 const PluginManifestSkillsSchema = lazySchema(() =>
   z.object({
     skills: z.union([
-      RelativePath().describe(
+      RelativePath().or(z.literal('.')).describe(
         'Path to additional skill directory (in addition to those in the skills/ directory, if it exists), relative to the plugin root',
       ),
       z
         .array(
-          RelativePath().describe(
+          RelativePath().or(z.literal('.')).describe(
             'Path to additional skill directory (in addition to those in the skills/ directory, if it exists), relative to the plugin root',
           ),
         )
@@ -1113,6 +1113,11 @@ export const PluginSourceSchema = lazySchema(() =>
       // See note on MarketplaceSourceSchema source:'git' re: .endsWith('.git')
       // — dropped to support Azure DevOps / CodeCommit URLs (gh-31256).
       url: z.string().describe('Full git repository URL (https:// or git@)'),
+      path: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Plugin subdirectory within the repository'),
       ref: z
         .string()
         .optional()

@@ -2189,6 +2189,7 @@ async function checkPermissionsAndCallTool(
 
     // Run PostToolUse hooks
     let toolOutput = result.data
+    let toolOutputReplaced = false
     const hookResults = []
     const toolContextModifier = result.contextModifier
     const mcpMeta = result.mcpMeta
@@ -2197,8 +2198,7 @@ async function checkPermissionsAndCallTool(
       toolUseResult: unknown,
       preMappedBlock?: ToolResultBlockParam,
     ) {
-      // Use the pre-mapped block when available (non-MCP tools where hooks
-      // don't modify the output), otherwise map from scratch.
+      // Reuse the original mapping unless a hook supplied a replacement.
       const mappedResultBlock = preMappedBlock
         ? await processPreMappedToolResultBlock(
             preMappedBlock,
@@ -2269,11 +2269,6 @@ async function checkPermissionsAndCallTool(
       })
     }
 
-    // TOOD(hackyon): refactor so we don't have different experiences for MCP tools
-    if (!isMcpTool(tool)) {
-      await addToolResult(toolOutput, mappedToolResultBlock)
-    }
-
     const postToolHookInfos: StopHookInfo[] = []
     const postToolHookStart = Date.now()
     for await (const hookResult of runPostToolUseHooks(
@@ -2287,28 +2282,16 @@ async function checkPermissionsAndCallTool(
       mcpServerType,
       mcpServerBaseUrl,
     )) {
-      if ('updatedMCPToolOutput' in hookResult) {
+      if ('updatedToolOutput' in hookResult) {
+        toolOutput = hookResult.updatedToolOutput
+        toolOutputReplaced = true
+      } else if ('updatedMCPToolOutput' in hookResult) {
         if (isMcpTool(tool)) {
           toolOutput = hookResult.updatedMCPToolOutput
-        }
-      } else if (isMcpTool(tool)) {
-        hookResults.push(hookResult)
-        if (hookResult.message.type === 'attachment') {
-          const att = hookResult.message.attachment
-          if (
-            'command' in att &&
-            att.command !== undefined &&
-            'durationMs' in att &&
-            att.durationMs !== undefined
-          ) {
-            postToolHookInfos.push({
-              command: att.command,
-              durationMs: att.durationMs,
-            })
-          }
+          toolOutputReplaced = true
         }
       } else {
-        resultingMessages.push(hookResult)
+        hookResults.push(hookResult)
         if (hookResult.message.type === 'attachment') {
           const att = hookResult.message.attachment
           if (
@@ -2333,9 +2316,12 @@ async function checkPermissionsAndCallTool(
       )
     }
 
-    if (isMcpTool(tool)) {
-      await addToolResult(toolOutput)
-    }
+    // Finish hooks before mapping any tool result so built-in tools can be
+    // rewritten too. Emit the result before hook context for every tool kind.
+    await addToolResult(
+      toolOutput,
+      toolOutputReplaced ? undefined : mappedToolResultBlock,
+    )
 
     // Show PostToolUse hook timing inline below tool result when > 500ms.
     // Use wall-clock time (not sum of individual durations) since hooks run in parallel.

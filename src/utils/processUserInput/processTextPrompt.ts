@@ -31,11 +31,13 @@ export function processTextPrompt(
   uuid?: string,
   permissionMode?: PermissionMode,
   isMeta?: boolean,
+  // Set when the prompt's hooks already ran under an id reserved for it.
+  reservedPromptId?: string,
 ): {
   messages: (UserMessage | AttachmentMessage | SystemMessage)[]
   shouldQuery: boolean
 } {
-  const promptId = randomUUID()
+  const promptId = reservedPromptId ?? randomUUID()
   setPromptId(promptId)
 
   // Pinned constraint: appended as a SEPARATE isMeta user message so the

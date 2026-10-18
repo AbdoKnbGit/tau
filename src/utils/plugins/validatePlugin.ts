@@ -6,6 +6,7 @@ import { errorMessage, getErrnoCode, isENOENT } from '../errors.js'
 import { FRONTMATTER_REGEX } from '../frontmatterParser.js'
 import { jsonParse } from '../slowOperations.js'
 import { parseYaml } from '../yaml.js'
+import { preparePluginHookFile, preparePluginManifestHooks } from './hookCompatibility.js'
 import {
   PluginHooksSchema,
   PluginManifestSchema,
@@ -218,14 +219,14 @@ export async function validatePluginManifest(
   // error: the plugin loads fine at runtime (the base schema strips unknown
   // keys). We strip them here so the .strict() call below doesn't double-
   // report them as unrecognized-key errors on top of the targeted warnings.
-  let toValidate = parsed
+  let toValidate = preparePluginManifestHooks(parsed, issue => warnings.push(issue))
   if (typeof parsed === 'object' && parsed !== null) {
     const obj = parsed as Record<string, unknown>
     const strayKeys = Object.keys(obj).filter(k =>
       MARKETPLACE_ONLY_MANIFEST_FIELDS.has(k),
     )
     if (strayKeys.length > 0) {
-      const stripped = { ...obj }
+      const stripped = { ...(toValidate as Record<string, unknown>) }
       for (const key of strayKeys) {
         delete stripped[key]
         warnings.push({
@@ -690,12 +691,15 @@ async function validateHooksJson(filePath: string): Promise<ValidationResult> {
     }
   }
 
-  const result = PluginHooksSchema().safeParse(parsed)
+  const warnings: ValidationWarning[] = []
+  const result = PluginHooksSchema().safeParse(
+    preparePluginHookFile(parsed, issue => warnings.push(issue)),
+  )
   if (!result.success) {
     return {
       success: false,
       errors: formatZodErrors(result.error),
-      warnings: [],
+      warnings,
       filePath,
       fileType: 'hooks',
     }
@@ -704,7 +708,7 @@ async function validateHooksJson(filePath: string): Promise<ValidationResult> {
   return {
     success: true,
     errors: [],
-    warnings: [],
+    warnings,
     filePath,
     fileType: 'hooks',
   }

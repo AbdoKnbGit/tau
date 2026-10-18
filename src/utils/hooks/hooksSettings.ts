@@ -27,41 +27,48 @@ export interface IndividualHookConfig {
   pluginName?: string
 }
 
+// Fields that change how a hook is shown or timed, not what it runs.
+const PRESENTATION_FIELDS: ReadonlySet<string> = new Set([
+  'timeout',
+  'statusMessage',
+  'once',
+])
+
 /**
- * Check if two hooks are equal (comparing only command/prompt content, not timeout)
+ * A key shared by hooks that run the same thing, so a hook defined in several
+ * settings files runs once. Everything but presentation fields is identity:
+ * `if`, `args`, `shell` (undefined counts as the default), `onFailure`, an
+ * mcp_tool's `input`. Key order in the config does not matter.
+ */
+export function hookIdentityKey(hook: HookCommand): string {
+  const identity: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(hook)) {
+    if (!PRESENTATION_FIELDS.has(key) && value !== undefined) {
+      identity[key] = value
+    }
+  }
+  if (hook.type === 'command') {
+    identity.shell = hook.shell ?? DEFAULT_HOOK_SHELL
+  }
+  return JSON.stringify(identity, (_key, value: unknown) =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+      : value,
+  )
+}
+
+/**
+ * Check if two hooks are equal (comparing what they run, not timeout)
  */
 export function isHookEqual(
   a: HookCommand | { type: 'function'; timeout?: number },
   b: HookCommand | { type: 'function'; timeout?: number },
 ): boolean {
-  if (a.type !== b.type) return false
-
-  // Use switch for exhaustive type checking
-  // Note: We only compare command/prompt content, not timeout
-  // `if` is part of identity: same command with different `if` conditions
-  // are distinct hooks (e.g., setup.sh if=Bash(git *) vs if=Bash(npm *)).
-  const sameIf = (x: { if?: string }, y: { if?: string }) =>
-    (x.if ?? '') === (y.if ?? '')
-  switch (a.type) {
-    case 'command':
-      // shell is part of identity: same command string with different
-      // shells are distinct hooks. Default 'bash' so undefined === 'bash'.
-      return (
-        b.type === 'command' &&
-        a.command === b.command &&
-        (a.shell ?? DEFAULT_HOOK_SHELL) === (b.shell ?? DEFAULT_HOOK_SHELL) &&
-        sameIf(a, b)
-      )
-    case 'prompt':
-      return b.type === 'prompt' && a.prompt === b.prompt && sameIf(a, b)
-    case 'agent':
-      return b.type === 'agent' && a.prompt === b.prompt && sameIf(a, b)
-    case 'http':
-      return b.type === 'http' && a.url === b.url && sameIf(a, b)
-    case 'function':
-      // Function hooks can't be compared (no stable identifier)
-      return false
-  }
+  // Function hooks can't be compared (no stable identifier)
+  if (a.type === 'function' || b.type === 'function') return false
+  return hookIdentityKey(a) === hookIdentityKey(b)
 }
 
 /** Get the display text for a hook */
@@ -72,16 +79,24 @@ export function getHookDisplayText(
   if ('statusMessage' in hook && hook.statusMessage) {
     return hook.statusMessage
   }
+  return getHookCommandText(hook)
+}
 
+/** What a hook runs, as error messages name it (ignores statusMessage). */
+export function getHookCommandText(
+  hook: HookCommand | { type: 'callback' | 'function' },
+): string {
   switch (hook.type) {
     case 'command':
-      return hook.command
+      return [hook.command, ...(hook.args ?? [])].join(' ')
     case 'prompt':
       return hook.prompt
     case 'agent':
       return hook.prompt
     case 'http':
       return hook.url
+    case 'mcp_tool':
+      return `${hook.tool} (MCP ${hook.server})`
     case 'callback':
       return 'callback'
     case 'function':

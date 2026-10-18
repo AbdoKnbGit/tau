@@ -36,6 +36,7 @@ import {
 import { getClineEffortLabel, setClineEffort } from '../../utils/model/clineThinking.js'
 import { isClinePassProvider } from '../../utils/model/clinePassCatalog.js'
 import type { OpenAIReasoningLevel } from '../../utils/model/openaiReasoning.js'
+import { checkModelSwitchHooks, dispatchPostModelSwitchHooks, resolveHookModel } from '../../utils/hooks/lifecycleHooks.js'
 
 function renderSearchBadges(tags?: readonly string[]): string {
   if (!tags || tags.length === 0) {
@@ -57,17 +58,19 @@ function ModelsPickerWrapper({
   onDone,
   lockedProvider,
   setMessages,
+  context,
 }: {
   onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void
   lockedProvider?: BrowsableModelProvider
   setMessages: LocalJSXCommandContext['setMessages']
+  context: LocalJSXCommandContext
 }) {
   const setAppState = useSetAppState()
   const currentProvider = getAPIProvider()
   const currentModel = useAppState((s: AppState) => s.mainLoopModel)
   const initialProvider = lockedProvider ?? getDefaultBrowsableProvider(currentProvider)
 
-  function handleSelect(provider: BrowsableModelProvider, modelId: string, openaiEffort?: OpenAIReasoningLevel) {
+  async function handleSelect(provider: BrowsableModelProvider, modelId: string, openaiEffort?: OpenAIReasoningLevel, commitSelection?: () => void) {
     if (isVoiceConversationProvider(provider)) {
       const result = setSelectedLiveVoice(modelId)
       if (result.error) {
@@ -85,6 +88,22 @@ function ModelsPickerWrapper({
 
     const selection = resolveProviderModelSelection(provider, modelId)
     if (provider === 'openai' && openaiEffort !== undefined) selection.effort = openaiEffort
+
+    const switchRequest = {
+      fromModel: resolveHookModel(currentModel),
+      toModel: selection.modelId,
+      requestedModel: modelId,
+      source: 'picker' as const,
+      context,
+      allowConfirmation: true,
+    }
+    const decision = await checkModelSwitchHooks(switchRequest)
+    if (decision.messages.length) setMessages(previous => [...previous, ...decision.messages])
+    if (!decision.allowed) {
+      onDone(decision.reason || 'Model switch blocked by hook', { display: 'system' })
+      return
+    }
+    commitSelection?.()
 
     if (isClinePassProvider(provider) && selection.clineEffort) {
       setClineEffort(selection.modelId, selection.clineEffort)
@@ -109,6 +128,7 @@ function ModelsPickerWrapper({
           ? { effortValue: selection.effort }
           : {}),
     }))
+    dispatchPostModelSwitchHooks(switchRequest)
 
     // Thinking-block signatures are only cryptographically verified by
     // Anthropic (firstParty) — their API rejects mismatched ones with 400.
@@ -152,6 +172,7 @@ function ModelsPickerWrapper({
       lockedProvider={lockedProvider}
       onSelect={handleSelect}
       onCancel={handleCancel}
+      deferSelectionEffects
     />
   )
 }
@@ -251,5 +272,5 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     return
   }
 
-  return <ModelsPickerWrapper onDone={onDone} setMessages={context.setMessages} />
+  return <ModelsPickerWrapper onDone={onDone} setMessages={context.setMessages} context={context} />
 }

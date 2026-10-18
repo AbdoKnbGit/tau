@@ -34,6 +34,7 @@ import type { McpServerType, MessageUpdateLazy } from './toolExecution.js'
 
 export type PostToolUseHooksResult<Output> =
   | MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
+  | { updatedToolOutput: Output }
   | { updatedMCPToolOutput: Output }
 
 export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
@@ -142,11 +143,28 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
           }
         }
 
-        // If hooks provided updatedMCPToolOutput, yield it if this is an MCP tool
-        if (result.updatedMCPToolOutput && isMcpTool(tool)) {
+        // The legacy field remains MCP-only. Presence matters: null, false,
+        // zero and an empty string are valid replacements for MCP results.
+        if (result.updatedMCPToolOutput !== undefined && isMcpTool(tool)) {
           toolOutput = result.updatedMCPToolOutput as Output
           yield {
             updatedMCPToolOutput: toolOutput,
+          }
+        }
+        if (result.updatedToolOutput !== undefined) {
+          // Built-in renderers and result mappers expect their declared output
+          // shape. Ignore malformed replacements without losing a successful
+          // tool result. MCP results deliberately pass through unvalidated.
+          const replacement = isMcpTool(tool)
+            ? { success: true, data: result.updatedToolOutput }
+            : tool.outputSchema?.safeParse(result.updatedToolOutput)
+          if (replacement?.success) {
+            toolOutput = replacement.data as Output
+            yield { updatedToolOutput: toolOutput }
+          } else {
+            logForDebugging(
+              `Ignoring invalid PostToolUse output replacement for ${tool.name}`,
+            )
           }
         }
       } catch (error) {

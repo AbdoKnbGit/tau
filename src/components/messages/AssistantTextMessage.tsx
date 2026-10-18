@@ -1,6 +1,7 @@
 import { c as _c } from "react/compiler-runtime";
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React, { useContext } from 'react';
+import { getMessageDisplayText } from '../../utils/hooks/messageDisplay.js';
 import { ERROR_MESSAGE_USER_ABORT } from 'src/services/compact/compact.js';
 import { isRateLimitErrorMessage } from 'src/services/rateLimitMessages.js';
 import { BLACK_CIRCLE } from '../../constants/figures.js';
@@ -53,9 +54,7 @@ export function AssistantTextMessage(t0) {
     verbose,
     onOpenRateLimitOptions
   } = t0;
-  const {
-    text
-  } = t1;
+  const text = verbose ? t1.text : getMessageDisplayText(t1);
   const isSelected = useContext(MessageActionsSelectedContext);
   if (isEmptyMessageText(text)) {
     return null;

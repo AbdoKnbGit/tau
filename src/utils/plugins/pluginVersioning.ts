@@ -60,7 +60,11 @@ export async function calculatePluginVersion(
   // 3. Use pre-resolved git SHA if caller captured it before discarding the clone
   if (gitCommitSha) {
     const shortSha = gitCommitSha.substring(0, 12)
-    if (typeof source === 'object' && source.source === 'git-subdir') {
+    if (
+      typeof source === 'object' &&
+      (source.source === 'git-subdir' || source.source === 'url') &&
+      source.path
+    ) {
       // Encode the subdir path in the version so cache keys differ when
       // marketplace.json's `path` changes but the monorepo SHA doesn't.
       // Without this, two plugins at different subdirs of the same commit

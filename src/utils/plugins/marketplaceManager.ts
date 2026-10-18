@@ -750,7 +750,7 @@ function enhanceGitPullErrorMessages(result: {
  *
  * @returns true if SSH auth succeeds and github.com is already trusted
  */
-async function isGitHubSshLikelyConfigured(): Promise<boolean> {
+export async function isGitHubSshLikelyConfigured(): Promise<boolean> {
   try {
     // Quick SSH connection test with 2 second timeout
     // This fails fast if SSH isn't configured
@@ -1962,6 +1962,10 @@ export async function addMarketplaceSource(
     lastUpdated: new Date().toISOString(),
   }
   await saveKnownMarketplacesConfig(config)
+
+  // A previously browsed catalog may have the same name but a different source.
+  // Its in-memory manifest must not survive a successful add/replacement.
+  getMarketplace.cache?.delete?.(marketplace.name)
 
   logForDebugging(`Added marketplace source: ${marketplace.name}`)
 

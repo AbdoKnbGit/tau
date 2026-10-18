@@ -154,6 +154,7 @@ import {
 import { createAbortController } from 'src/utils/abortController.js'
 import { createCombinedAbortSignal } from 'src/utils/combinedAbortSignal.js'
 import { generateSessionTitle } from 'src/utils/sessionTitle.js'
+import { checkModelSwitchHooks, dispatchPostModelSwitchHooks, resolveHookModel } from '../utils/hooks/lifecycleHooks.js'
 import { buildSideQuestionFallbackParams } from 'src/utils/queryContext.js'
 import { runSideQuestion } from 'src/utils/sideQuestion.js'
 import {
@@ -2930,10 +2931,24 @@ function runHeadlessStreaming(
             requestedModel === 'default'
               ? getDefaultMainLoopModel()
               : requestedModel
+          const switchRequest = {
+            fromModel: getMainLoopModel(),
+            toModel: resolveHookModel(model),
+            requestedModel: requestedModel === 'default' ? null : requestedModel,
+            source: 'sdk' as const,
+            context: { getAppState, messages: mutableMessages },
+          }
+          const decision = await checkModelSwitchHooks(switchRequest)
+          mutableMessages.push(...decision.messages)
+          if (!decision.allowed) {
+            sendControlResponseError(message, decision.reason || 'Model switch blocked by hook')
+            continue
+          }
           activeUserSpecifiedModel = model
           setMainLoopModelOverride(model)
           notifySessionMetadataChanged({ model })
           injectModelSwitchBreadcrumbs(requestedModel, model)
+          dispatchPostModelSwitchHooks(switchRequest)
 
           sendControlResponseSuccess(message)
         } else if (message.request.subtype === 'set_max_thinking_tokens') {
@@ -3698,6 +3713,21 @@ function runHeadlessStreaming(
           // Merge the provided settings into the in-memory flag settings
           const existing = getFlagSettingsInline() ?? {}
           const incoming = message.request.settings
+          const switchRequest = 'model' in incoming ? {
+            fromModel: prevModel,
+            toModel: resolveHookModel(incoming.model == null ? null : String(incoming.model)),
+            requestedModel: incoming.model == null ? null : String(incoming.model),
+            source: 'sdk' as const,
+            context: { getAppState, messages: mutableMessages },
+          } : undefined
+          if (switchRequest) {
+            const decision = await checkModelSwitchHooks(switchRequest)
+            mutableMessages.push(...decision.messages)
+            if (!decision.allowed) {
+              sendControlResponseError(message, decision.reason || 'Model switch blocked by hook')
+              continue
+            }
+          }
           // Shallow-merge top-level keys; getSettingsForSource handles
           // the deep merge with file-based flag settings via mergeWith.
           // JSON serialization drops `undefined`, so callers use `null`
@@ -3744,6 +3774,7 @@ function runHeadlessStreaming(
             const modelArg = incoming.model ? String(incoming.model) : 'default'
             notifySessionMetadataChanged({ model: newModel })
             injectModelSwitchBreadcrumbs(modelArg, newModel)
+            if (switchRequest) dispatchPostModelSwitchHooks({ ...switchRequest, toModel: newModel })
           }
 
           sendControlResponseSuccess(message)

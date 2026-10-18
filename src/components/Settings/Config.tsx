@@ -54,6 +54,8 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeEnabled, getFastModeModel, isFastModeSupportedByModel } from '../../utils/fastMode.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { syncLspServerManagerWithSettings } from '../../services/lsp/manager.js';
+import { commitModelSwitch, restoreModelSnapshot } from '../../utils/hooks/commitModelSwitch.js';
+import { type EffortLevel, toPersistableEffort } from '../../utils/effort.js';
 type Props = {
   onClose: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -143,6 +145,9 @@ export function Config({
   const [changes, setChanges] = useState<{
     [key: string]: unknown;
   }>({});
+  const [modelSwitchError, setModelSwitchError] = useState<string | undefined>();
+  const pendingModelSelection = React.useRef(0);
+  React.useEffect(() => () => { pendingModelSelection.current++; }, []);
   const initialThinkingEnabled = React.useRef(thinkingEnabled);
   // Per-source settings snapshots for revert-on-escape. getInitialSettings()
   // returns merged-across-sources which can't tell us what to delete vs
@@ -160,6 +165,7 @@ export function Config({
     return {
       mainLoopModel: s_4.mainLoopModel,
       mainLoopModelForSession: s_4.mainLoopModelForSession,
+      effortValue: s_4.effortValue,
       verbose: s_4.verbose,
       thinkingEnabled: s_4.thinkingEnabled,
       fastMode: s_4.fastMode,
@@ -209,17 +215,35 @@ export function Config({
   const memoryFiles = React.use(getMemoryFiles(true));
   const shouldShowExternalIncludesToggle = hasExternalClaudeMdIncludes(memoryFiles);
   const autoUpdaterDisabledReason = getAutoUpdaterDisabledReason();
-  function onChangeMainModelConfig(value: string | null): void {
-    const previousModel = mainLoopModel;
+  async function onChangeMainModelConfig(value: string | null, effort?: EffortLevel, commitSelection?: () => void): Promise<void> {
+    const selection = ++pendingModelSelection.current;
+    setModelSwitchError(undefined);
+    const previousModel = store.getState().mainLoopModel;
+    const decision = await commitModelSwitch({
+      model: value, source: 'picker', context,
+      isActive: () => pendingModelSelection.current === selection,
+      onMessages: messages => context.setMessages(previous => [...previous, ...messages]),
+      commit: () => {
+        isDirty.current = true;
+        commitSelection?.();
+        const persistableEffort = effort === undefined ? undefined : toPersistableEffort(effort);
+        if (!commitSelection && persistableEffort !== undefined) updateSettingsForSource('userSettings', { effortLevel: persistableEffort });
+        setAppState(prev => ({
+          ...prev,
+          mainLoopModel: value,
+          mainLoopModelForSession: null,
+          ...(effort !== undefined ? { effortValue: effort } : {}),
+        }));
+      },
+    });
+    if (!decision.allowed) {
+      setModelSwitchError(decision.reason);
+      return;
+    }
     logEvent('tengu_config_model_changed', {
       from_model: previousModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       to_model: value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
     });
-    setAppState(prev => ({
-      ...prev,
-      mainLoopModel: value,
-      mainLoopModelForSession: null
-    }));
     setChanges(prev_0 => {
       const valStr = modelDisplayString(value) + (isBilledAsExtraUsage(value, false, isOpus1mMergeEnabled()) ? ' · Billed as extra usage' : '');
       if ('model' in prev_0) {
@@ -469,33 +493,32 @@ export function Config({
     label: `Fast mode (${FAST_MODE_MODEL_DISPLAY} only)`,
     value: !!isFastMode,
     type: 'boolean' as const,
-    onChange(enabled_0: boolean) {
-      clearFastModeCooldown();
-      updateSettingsForSource('userSettings', {
-        fastMode: enabled_0 ? true : undefined
-      });
+    async onChange(enabled_0: boolean) {
       if (enabled_0) {
-        setAppState(prev_7 => ({
-          ...prev_7,
-          mainLoopModel: getFastModeModel(),
-          mainLoopModelForSession: null,
-          fastMode: true
-        }));
-        setChanges(prev_8 => ({
-          ...prev_8,
-          model: getFastModeModel(),
-          'Fast mode': 'ON'
-        }));
-      } else {
-        setAppState(prev_9 => ({
-          ...prev_9,
-          fastMode: false
-        }));
-        setChanges(prev_10 => ({
-          ...prev_10,
-          'Fast mode': 'OFF'
-        }));
+        const selection = ++pendingModelSelection.current;
+        const decision = await commitModelSwitch({
+          model: getFastModeModel(), source: 'picker', context,
+          isActive: () => pendingModelSelection.current === selection,
+          onMessages: messages => context.setMessages(previous => [...previous, ...messages]),
+          commit: () => {
+            clearFastModeCooldown();
+            updateSettingsForSource('userSettings', { fastMode: true });
+            setAppState(prev => ({ ...prev, mainLoopModel: getFastModeModel(), mainLoopModelForSession: null, fastMode: true }));
+          },
+        });
+        if (!decision.allowed) {
+          setModelSwitchError(decision.reason);
+          return;
+        }
+        setModelSwitchError(undefined);
+        setChanges(prev => ({ ...prev, model: getFastModeModel(), 'Fast mode': 'ON' }));
+        return;
       }
+      pendingModelSelection.current++;
+      clearFastModeCooldown();
+      updateSettingsForSource('userSettings', { fastMode: undefined });
+      setAppState(prev => ({ ...prev, fastMode: false }));
+      setChanges(prev => ({ ...prev, 'Fast mode': 'OFF' }));
     }
   }] : []), ...(getFeatureValue_CACHED_MAY_BE_STALE('tengu_chomp_inflection', false) ? [{
     id: 'promptSuggestionEnabled',
@@ -1324,7 +1347,25 @@ export function Config({
   // Restore all state stores to their mount-time snapshots. Changes are
   // applied to disk/AppState immediately on toggle, so "cancel" means
   // actively writing the old values back.
-  const revertChanges = useCallback(() => {
+  const revertChanges = useCallback(async () => {
+    const selection = pendingModelSelection.current;
+    const ia = initialAppState;
+    const decision = await restoreModelSnapshot({
+      snapshot: {
+        mainLoopModel: ia.mainLoopModel,
+        mainLoopModelForSession: ia.mainLoopModelForSession,
+        fastMode: ia.fastMode,
+        effortValue: ia.effortValue,
+      },
+      context,
+      isActive: () => pendingModelSelection.current === selection,
+      onMessages: messages => context.setMessages(previous => [...previous, ...messages]),
+      commitSettings: () => updateSettingsForSource('userSettings', {
+        fastMode: initialUserSettings?.fastMode,
+        effortLevel: initialUserSettings?.effortLevel,
+      }),
+    });
+    if (pendingModelSelection.current !== selection) return 'Config cancellation superseded';
     // Theme: restores ThemeProvider React state. Must run before the global
     // config overwrite since setTheme internally calls saveGlobalConfig with
     // a partial update — we want the full snapshot to be the last write.
@@ -1352,7 +1393,6 @@ export function Config({
     const iu = initialUserSettings;
     updateSettingsForSource('userSettings', {
       alwaysThinkingEnabled: iu?.alwaysThinkingEnabled,
-      fastMode: iu?.fastMode,
       promptSuggestionEnabled: iu?.promptSuggestionEnabled,
       autoUpdatesChannel: iu?.autoUpdatesChannel,
       minimumVersion: iu?.minimumVersion,
@@ -1378,19 +1418,20 @@ export function Config({
       }
     });
     // AppState: batch-restore all possibly-touched fields.
-    const ia = initialAppState;
     setAppState(prev_23 => ({
       ...prev_23,
-      mainLoopModel: ia.mainLoopModel,
-      mainLoopModelForSession: ia.mainLoopModelForSession,
       verbose: ia.verbose,
       thinkingEnabled: ia.thinkingEnabled,
-      fastMode: ia.fastMode,
       promptSuggestionEnabled: ia.promptSuggestionEnabled,
       isBriefOnly: ia.isBriefOnly,
       replBridgeEnabled: ia.replBridgeEnabled,
       replBridgeOutboundOnly: ia.replBridgeOutboundOnly,
-      settings: ia.settings,
+      settings: decision.allowed ? ia.settings : {
+        ...ia.settings,
+        model: prev_23.settings.model,
+        fastMode: prev_23.settings.fastMode,
+        effortLevel: prev_23.settings.effortLevel,
+      },
       // Reconcile auto-mode state after useAutoModeDuringPlan revert above —
       // the onChange handler may have activated/deactivated auto mid-plan.
       toolPermissionContext: transitionPlanAutoMode(prev_23.toolPermissionContext)
@@ -1401,17 +1442,18 @@ export function Config({
     if (getUserMsgOptIn() !== initialUserMsgOptIn) {
       setUserMsgOptIn(initialUserMsgOptIn);
     }
-  }, [themeSetting, setTheme, initialLocalSettings, initialUserSettings, initialAppState, initialUserMsgOptIn, setAppState]);
+    return decision.allowed ? undefined : decision.reason;
+  }, [themeSetting, setTheme, initialLocalSettings, initialUserSettings, initialAppState, initialUserMsgOptIn, setAppState, context]);
 
   // Escape: revert all changes (if any) and close.
-  const handleEscape = useCallback(() => {
+  const handleEscape = useCallback(async () => {
+    const selection = ++pendingModelSelection.current;
     if (showSubmenu !== null) {
       return;
     }
-    if (isDirty.current) {
-      revertChanges();
-    }
-    onClose('Config dialog dismissed', {
+    const blocked = isDirty.current ? await revertChanges() : undefined;
+    if (pendingModelSelection.current !== selection) return;
+    onClose(blocked ? `Config dialog dismissed. Model rollback blocked: ${blocked}` : 'Config dialog dismissed', {
       display: 'system'
     });
   }, [showSubmenu, revertChanges, onClose]);
@@ -1609,6 +1651,7 @@ export function Config({
     }
   }, [showSubmenu, headerFocused, isSearchMode, searchQuery, setSearchQuery, toggleSetting]);
   return <Box flexDirection="column" width="100%" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
+      {modelSwitchError && <Text color="error">{modelSwitchError}</Text>}
       {showSubmenu === 'Theme' ? <>
           <ThemePicker onThemeSelect={setting_1 => {
         isDirty.current = true;
@@ -1629,9 +1672,8 @@ export function Config({
             </Text>
           </Box>
         </> : showSubmenu === 'Model' ? <>
-          <ModelPicker initial={mainLoopModel} onSelect={(model_0, _effort) => {
-        isDirty.current = true;
-        onChangeMainModelConfig(model_0);
+          <ModelPicker initial={mainLoopModel} deferSelectionEffects onSelect={(model_0, effort, commitSelection) => {
+        void onChangeMainModelConfig(model_0, effort, commitSelection);
         setShowSubmenu(null);
         setTabsHidden(false);
       }} onCancel={() => {

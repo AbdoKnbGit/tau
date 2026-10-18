@@ -40,8 +40,9 @@ import {
 import { getAPIProvider, isThirdPartyProvider } from '../../utils/model/providers.js'
 import { validateModel } from '../../utils/model/validateModel.js'
 import { isSurfEnabled } from '../../utils/surf/state.js'
+import { checkModelSwitchHooks, dispatchPostModelSwitchHooks, resolveHookModel } from '../../utils/hooks/lifecycleHooks.js'
 
-function commitModelSelection(args: {
+async function commitModelSelection(args: {
   model: string | null
   effort: EffortLevel | undefined
   isFastMode: boolean
@@ -53,7 +54,10 @@ function commitModelSelection(args: {
     options?: { display?: CommandResultDisplay },
   ) => void
   providerLabel?: string
-}): void {
+  context: LocalJSXCommandContext
+  source: 'command' | 'picker'
+  commitSelection?: () => void
+}): Promise<void> {
   const {
     model,
     effort,
@@ -63,7 +67,25 @@ function commitModelSelection(args: {
     previousModel,
     onDone,
     providerLabel,
+    context,
+    source,
   } = args
+
+  const switchRequest = {
+    fromModel: resolveHookModel(previousModel),
+    toModel: resolveHookModel(model),
+    requestedModel: model,
+    source,
+    context,
+    allowConfirmation: true,
+  }
+  const decision = await checkModelSwitchHooks(switchRequest)
+  if (decision.messages.length) setMessages?.(previous => [...previous, ...decision.messages])
+  if (!decision.allowed) {
+    onDone(decision.reason || 'Model switch blocked by hook', { display: 'system' })
+    return
+  }
+  args.commitSelection?.()
 
   setAppState(prev => ({
     ...prev,
@@ -71,6 +93,7 @@ function commitModelSelection(args: {
     mainLoopModelForSession: null,
     ...(effort !== undefined ? { effortValue: effort } : {}),
   }))
+  dispatchPostModelSwitchHooks(switchRequest)
 
   // Thinking-block signatures are only cryptographically verified by
   // Anthropic. Strip ONLY when the active provider is firstParty and the
@@ -121,12 +144,14 @@ function commitModelSelection(args: {
 function ModelPickerWrapper({
   onDone,
   setMessages,
+  context,
 }: {
   onDone: (
     result?: string,
     options?: { display?: CommandResultDisplay },
   ) => void
   setMessages: LocalJSXCommandContext['setMessages']
+  context: LocalJSXCommandContext
 }): React.ReactNode {
   const mainLoopModel = useAppState(s => s.mainLoopModel)
   const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession)
@@ -149,10 +174,11 @@ function ModelPickerWrapper({
     })
   }
 
-  function handleSelect(
+  async function handleSelect(
     model: string | null,
     effort: EffortLevel | undefined,
-  ): void {
+    commitSelection?: () => void,
+  ): Promise<void> {
     logEvent('tengu_model_command_menu', {
       action: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       from_model:
@@ -161,7 +187,7 @@ function ModelPickerWrapper({
         model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
 
-    commitModelSelection({
+    await commitModelSelection({
       model,
       effort,
       isFastMode,
@@ -169,14 +195,18 @@ function ModelPickerWrapper({
       setMessages,
       previousModel: mainLoopModel,
       onDone,
+      context,
+      source: 'picker',
+      commitSelection,
     })
   }
 
-  function handleProviderSelect(
+  async function handleProviderSelect(
     provider: BrowsableModelProvider,
     modelId: string,
     effort?: EffortLevel,
-  ): void {
+    commitSelection?: () => void,
+  ): Promise<void> {
     logEvent('tengu_model_command_menu', {
       action: modelId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       from_model:
@@ -185,7 +215,7 @@ function ModelPickerWrapper({
         modelId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
 
-    commitModelSelection({
+    await commitModelSelection({
       model: modelId,
       effort,
       isFastMode,
@@ -194,6 +224,9 @@ function ModelPickerWrapper({
       previousModel: mainLoopModel,
       onDone,
       providerLabel: getProviderBrowseLabel(provider),
+      context,
+      source: 'picker',
+      commitSelection,
     })
   }
 
@@ -210,6 +243,7 @@ function ModelPickerWrapper({
         lockedProvider={lockedProvider}
         onSelect={handleProviderSelect}
         onCancel={handleCancel}
+        deferSelectionEffects
       />
     )
   }
@@ -221,6 +255,7 @@ function ModelPickerWrapper({
       onSelect={handleSelect}
       onCancel={handleCancel}
       isStandaloneCommand
+      deferSelectionEffects
       showFastModeNotice={showFastModeNotice}
     />
   )
@@ -230,6 +265,7 @@ function SetModelAndClose({
   args,
   onDone,
   setMessages,
+  context,
 }: {
   args: string
   onDone: (
@@ -237,6 +273,7 @@ function SetModelAndClose({
     options?: { display?: CommandResultDisplay },
   ) => void
   setMessages: LocalJSXCommandContext['setMessages']
+  context: LocalJSXCommandContext
 }): React.ReactNode {
   const isFastMode = useAppState(s => s.fastMode)
   const setAppState = useSetAppState()
@@ -275,19 +312,19 @@ function SetModelAndClose({
       }
 
       if (!model) {
-        setModel(null)
+        await setModel(null)
         return
       }
 
       if (isKnownAlias(model)) {
-        setModel(model)
+        await setModel(model)
         return
       }
 
       try {
         const { valid, error } = await validateModel(model)
         if (valid) {
-          setModel(model)
+          await setModel(model)
         } else {
           onDone(error || `Model '${model}' not found`, {
             display: 'system',
@@ -300,8 +337,8 @@ function SetModelAndClose({
       }
     }
 
-    function setModel(modelValue: string | null): void {
-      commitModelSelection({
+    async function setModel(modelValue: string | null): Promise<void> {
+      await commitModelSelection({
         model: modelValue,
         effort: undefined,
         isFastMode,
@@ -309,11 +346,13 @@ function SetModelAndClose({
         setMessages,
         previousModel,
         onDone,
+        context,
+        source: 'command',
       })
     }
 
     void handleModelChange()
-  }, [isFastMode, model, onDone, setAppState, setMessages, previousModel])
+  }, [isFastMode, model, onDone, setAppState, setMessages, previousModel, context])
 
   return null
 }
@@ -405,11 +444,12 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
         args={args}
         onDone={onDone}
         setMessages={context.setMessages}
+        context={context}
       />
     )
   }
 
-  return <ModelPickerWrapper onDone={onDone} setMessages={context.setMessages} />
+  return <ModelPickerWrapper onDone={onDone} setMessages={context.setMessages} context={context} />
 }
 
 function renderModelLabel(model: string | null): string {

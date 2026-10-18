@@ -20,6 +20,7 @@ import {
 import { updateSettingsForSource } from '../utils/settings/settings.js'
 import { recordTaskOutcomes } from '../utils/task/taskOutcomes.js'
 import type { AppState } from './AppStateStore.js'
+import { observeModelSwitch } from '../utils/hooks/lifecycleHooks.js'
 
 // Inverse of the push below — restore on worker restart.
 export function externalMetadataToAppState(
@@ -48,6 +49,7 @@ export function onChangeAppState({
   newState: AppState
   oldState: AppState
 }) {
+  observeModelSwitch(oldState, newState)
   // toolPermissionContext.mode — single choke point for CCR/SDK mode sync.
   //
   // Prior to this block, mode changes were relayed to CCR by only 2 of 8+

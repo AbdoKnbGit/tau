@@ -63,7 +63,14 @@ import {
   replaceUltraplanKeyword,
 } from '../ultraplan/keyword.js'
 import { processTextPrompt } from './processTextPrompt.js'
-export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
+import { applyHookSessionTitle, formatBlockedPrompt, takePendingLifecycleHookMessages, rememberLifecycleHookMessages, restorePendingLifecycleHookMessages } from '../hooks/lifecycleHooks.js'
+import { setPromptId } from '../../bootstrap/state.js'
+export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext & {
+  /** Context from submission hooks, also delivered to a directly forked skill. */
+  userPromptHookMessages?: AttachmentMessage[]
+  /** The id already reserved for this prompt, set before its hooks ran. */
+  promptId?: string
+}
 
 export type ProcessUserInputBaseResult = {
   messages: (
@@ -153,124 +160,224 @@ export async function processUserInput({
   queryCheckpoint('query_process_user_input_base_start')
 
   const appState = context.getAppState()
+  rememberLifecycleHookMessages(context.messages)
 
-  const result = await processUserInputBase(
-    input,
-    mode,
-    setToolJSX,
-    context,
-    pastedContents,
-    ideSelection,
-    messages,
-    uuid,
-    isAlreadyProcessing,
-    querySource,
-    canUseTool,
-    appState.toolPermissionContext.mode,
-    skipSlashCommands,
-    bridgeOrigin,
-    isMeta,
-    skipAttachments,
-    preExpansionInput,
-  )
-  queryCheckpoint('query_process_user_input_base_end')
+  const processBase = (
+    submission: Pick<
+      ProcessUserInputContext,
+      'userPromptHookMessages' | 'promptId'
+    > = {},
+  ) =>
+    processUserInputBase(
+      input,
+      mode,
+      setToolJSX,
+      { ...context, ...submission },
+      pastedContents,
+      ideSelection,
+      messages,
+      uuid,
+      isAlreadyProcessing,
+      querySource,
+      canUseTool,
+      appState.toolPermissionContext.mode,
+      skipSlashCommands,
+      bridgeOrigin,
+      isMeta,
+      skipAttachments,
+      preExpansionInput,
+    )
+  const inputMessage = getContentText(input) || ''
 
-  if (!result.shouldQuery) {
+  // UserPromptSubmit hooks run once for every submission that reaches the
+  // model, on the text as typed. `kept` is what a hook's continue:false
+  // leaves in the conversation.
+  const runSubmitHooks = async (
+    kept: ProcessUserInputBaseResult,
+  ): Promise<
+    | { stopped: ProcessUserInputBaseResult }
+    | { hookMessages: ProcessUserInputBaseResult['messages'] }
+  > => {
+    const hookMessages: ProcessUserInputBaseResult['messages'] = []
+    queryCheckpoint('query_hooks_start')
+    for await (const hookResult of executeUserPromptSubmitHooks(
+      inputMessage,
+      appState.toolPermissionContext.mode,
+      context,
+      context.requestPrompt,
+    )) {
+      if (hookResult.sessionTitle) {
+        await applyHookSessionTitle(hookResult.sessionTitle, context)
+      }
+      // We only care about the result
+      if (hookResult.message?.type === 'progress') {
+        continue
+      }
+
+      // Return only a system-level error message, erasing the original user input
+      if (hookResult.blockingError) {
+        const blockingMessage = getUserPromptSubmitHookBlockingMessage(
+          hookResult.blockingError,
+        )
+        return {
+          stopped: {
+            messages: [
+              // TODO: Make this an attachment message
+              createSystemMessage(
+                formatBlockedPrompt(
+                  blockingMessage,
+                  inputMessage,
+                  hookResult.suppressOriginalPrompt,
+                ),
+                'warning',
+              ),
+            ],
+            shouldQuery: false,
+            allowedTools: kept.allowedTools,
+          },
+        }
+      }
+
+      // If preventContinuation is set, stop processing but keep the original
+      // prompt in context.
+      if (hookResult.preventContinuation) {
+        const message = hookResult.stopReason
+          ? `Operation stopped by hook: ${hookResult.stopReason}`
+          : 'Operation stopped by hook'
+        return {
+          stopped: {
+            ...kept,
+            messages: [
+              ...kept.messages,
+              ...hookMessages,
+              createUserMessage({
+                content: message,
+              }),
+            ],
+            shouldQuery: false,
+          },
+        }
+      }
+
+      // Collect additional contexts
+      if (
+        hookResult.additionalContexts &&
+        hookResult.additionalContexts.length > 0
+      ) {
+        hookMessages.push(
+          createAttachmentMessage({
+            type: 'hook_additional_context',
+            content: hookResult.additionalContexts.map(applyTruncation),
+            hookName: 'UserPromptSubmit',
+            toolUseID: `hook-${randomUUID()}`,
+            hookEvent: 'UserPromptSubmit',
+          }),
+        )
+      }
+
+      // TODO: Clean this up
+      if (hookResult.message) {
+        switch (hookResult.message.attachment.type) {
+          case 'hook_success':
+            if (!hookResult.message.attachment.content) {
+              // Skip if there is no content
+              break
+            }
+            hookMessages.push({
+              ...hookResult.message,
+              attachment: {
+                ...hookResult.message.attachment,
+                content: applyTruncation(
+                  hookResult.message.attachment.content,
+                ),
+              },
+            })
+            break
+          default:
+            hookMessages.push(hookResult.message)
+            break
+        }
+      }
+    }
+    queryCheckpoint('query_hooks_end')
+    return { hookMessages }
+  }
+
+  // Plain text and commands that expand into a prompt are known to submit
+  // before expansion, so their hooks run first and a block also stops skill
+  // interpolation and forked agents. Everything else (other modes, other
+  // commands, unknown /input that may be a path) is checked once processing
+  // shows it queries.
+  const parsedCommand =
+    mode === 'prompt' && inputString?.startsWith('/')
+      ? parseSlashCommand(inputString)
+      : undefined
+  const command = parsedCommand
+    ? findCommand(parsedCommand.commandName, context.options.commands)
+    : undefined
+  const sentAsText =
+    !!skipSlashCommands &&
+    !(bridgeOrigin && command && isBridgeSafeCommand(command))
+  const submitsBeforeExpansion =
+    mode === 'prompt' &&
+    (!parsedCommand ||
+      // A known command a bridge cannot run is refused, not submitted.
+      (sentAsText ? !(bridgeOrigin && command) : command?.type === 'prompt'))
+
+  if (!submitsBeforeExpansion) {
+    const result = await processBase()
+    queryCheckpoint('query_process_user_input_base_end')
+    if (!result.shouldQuery) {
+      return result
+    }
+    const hooks = await runSubmitHooks(result)
+    if ('stopped' in hooks) {
+      return hooks.stopped
+    }
+    result.messages.push(
+      ...hooks.hookMessages,
+      ...(await takePendingLifecycleHookMessages()),
+    )
     return result
   }
 
-  // Execute UserPromptSubmit hooks and handle blocking
-  queryCheckpoint('query_hooks_start')
-  const inputMessage = getContentText(input) || ''
-
-  for await (const hookResult of executeUserPromptSubmitHooks(
-    inputMessage,
-    appState.toolPermissionContext.mode,
-    context,
-    context.requestPrompt,
-  )) {
-    // We only care about the result
-    if (hookResult.message?.type === 'progress') {
-      continue
-    }
-
-    // Return only a system-level error message, erasing the original user input
-    if (hookResult.blockingError) {
-      const blockingMessage = getUserPromptSubmitHookBlockingMessage(
-        hookResult.blockingError,
-      )
-      return {
-        messages: [
-          // TODO: Make this an attachment message
-          createSystemMessage(
-            `${blockingMessage}\n\nOriginal prompt: ${input}`,
-            'warning',
-          ),
-        ],
-        shouldQuery: false,
-        allowedTools: result.allowedTools,
-      }
-    }
-
-    // If preventContinuation is set, stop processing but keep the original
-    // prompt in context.
-    if (hookResult.preventContinuation) {
-      const message = hookResult.stopReason
-        ? `Operation stopped by hook: ${hookResult.stopReason}`
-        : 'Operation stopped by hook'
-      result.messages.push(
-        createUserMessage({
-          content: message,
-        }),
-      )
-      result.shouldQuery = false
-      return result
-    }
-
-    // Collect additional contexts
-    if (
-      hookResult.additionalContexts &&
-      hookResult.additionalContexts.length > 0
-    ) {
-      result.messages.push(
-        createAttachmentMessage({
-          type: 'hook_additional_context',
-          content: hookResult.additionalContexts.map(applyTruncation),
-          hookName: 'UserPromptSubmit',
-          toolUseID: `hook-${randomUUID()}`,
-          hookEvent: 'UserPromptSubmit',
-        }),
-      )
-    }
-
-    // TODO: Clean this up
-    if (hookResult.message) {
-      switch (hookResult.message.attachment.type) {
-        case 'hook_success':
-          if (!hookResult.message.attachment.content) {
-            // Skip if there is no content
-            break
-          }
-          result.messages.push({
-            ...hookResult.message,
-            attachment: {
-              ...hookResult.message.attachment,
-              content: applyTruncation(hookResult.message.attachment.content),
-            },
-          })
-          break
-        default:
-          result.messages.push(hookResult.message)
-          break
-      }
-    }
+  // The prompt's id exists before its hooks run, so they and their telemetry
+  // carry it; processing reuses it instead of starting another.
+  const promptId = randomUUID()
+  setPromptId(promptId)
+  const hooks = await runSubmitHooks({
+    messages: [
+      createUserMessage({
+        content: input,
+        uuid,
+        permissionMode: appState.toolPermissionContext.mode,
+        isMeta: isMeta || undefined,
+      }),
+    ],
+    shouldQuery: true,
+  })
+  if ('stopped' in hooks) {
+    return hooks.stopped
   }
-  queryCheckpoint('query_hooks_end')
+  const pendingMessages = await takePendingLifecycleHookMessages()
+  const expandedResult = await processBase({
+    userPromptHookMessages: [...hooks.hookMessages, ...pendingMessages].filter(
+      (message): message is AttachmentMessage => message.type === 'attachment',
+    ),
+    promptId,
+  })
+  queryCheckpoint('query_process_user_input_base_end')
+  if (!expandedResult.shouldQuery) {
+    // Background hook context is for the next prompt that reaches the model.
+    restorePendingLifecycleHookMessages(pendingMessages)
+    return expandedResult
+  }
+  expandedResult.messages.push(...hooks.hookMessages, ...pendingMessages)
 
   // Happy path: onQuery will clear userInputOnProcessing via startTransition
   // so it resolves in the same frame as deferredMessages (no flicker gap).
   // Error paths are handled by handlePromptSubmit's finally block.
-  return result
+  return expandedResult
 }
 
 const MAX_HOOK_OUTPUT_LENGTH = 10000
@@ -603,6 +710,7 @@ async function processUserInputBase(
       uuid,
       permissionMode,
       isMeta,
+      context.promptId,
     ),
     imageMetadataTexts,
   )

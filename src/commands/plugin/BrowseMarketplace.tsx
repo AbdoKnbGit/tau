@@ -1,6 +1,6 @@
 import figures from 'figures';
 import * as React from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js';
 import { Byline } from '../../components/design-system/Byline.js';
 import { Box, Text } from '../../ink.js';
@@ -18,6 +18,8 @@ import { getMarketplace, loadKnownMarketplacesConfig } from '../../utils/plugins
 import { OFFICIAL_MARKETPLACE_NAME } from '../../utils/plugins/officialMarketplace.js';
 import { installPluginFromMarketplace } from '../../utils/plugins/pluginInstallationHelpers.js';
 import { isPluginBlockedByPolicy } from '../../utils/plugins/pluginPolicy.js';
+import { addInstallMarketplace, resolveInstallMarketplace } from '../../utils/plugins/installMarketplace.js';
+import type { MarketplaceSource } from '../../utils/plugins/schemas.js';
 import { plural } from '../../utils/stringUtils.js';
 import { truncateToWidth } from '../../utils/truncate.js';
 import { findPluginOptionsTarget, PluginOptionsFlow } from './PluginOptionsFlow.js';
@@ -85,6 +87,39 @@ export function BrowseMarketplace({
 
   // Warning state for non-critical errors (e.g., some marketplaces failed to load)
   const [warning, setWarning] = useState<string | null>(null);
+  const [pendingSource, setPendingSource] = useState<MarketplaceSource | null>(null);
+  const [addingMarketplace, setAddingMarketplace] = useState(false);
+  const [marketplaceProgress, setMarketplaceProgress] = useState('');
+  const addInProgress = useRef(false);
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
+
+  const confirmMarketplace = async () => {
+    if (!pendingSource || addInProgress.current) return;
+    addInProgress.current = true;
+    setAddingMarketplace(true);
+    setError(null);
+    try {
+      const name = await addInstallMarketplace(pendingSource, message => {
+        if (active.current) setMarketplaceProgress(message);
+      });
+      if (!active.current) return;
+      setPendingSource(null);
+      setParentViewState({ type: 'browse-marketplace', targetMarketplace: name, targetPlugin });
+    } catch (err) {
+      if (active.current) setError(errorMessage(err));
+    } finally {
+      addInProgress.current = false;
+      if (active.current) setAddingMarketplace(false);
+    }
+  };
+  useKeybinding('select:accept', () => { void confirmMarketplace(); }, {
+    context: 'Select',
+    isActive: !!pendingSource && !addingMarketplace
+  });
 
   // Handle escape to go back - viewState-dependent navigation
   const handleBack = React.useCallback(() => {
@@ -124,8 +159,24 @@ export function BrowseMarketplace({
   // Load marketplaces and count installed plugins
   useEffect(() => {
     async function loadMarketplaceData() {
+      setLoading(true);
+      setError(null);
       try {
-        const config = await loadKnownMarketplacesConfig();
+        // Resolve a supplied source to its manifest name before looking up the
+        // plugin. A repository slug is not necessarily the marketplace name.
+        let marketplaceName = targetMarketplace;
+        if (targetMarketplace) {
+          const resolved = await resolveInstallMarketplace(targetMarketplace);
+          if (resolved.source) {
+            setPendingSource(resolved.source);
+            return;
+          }
+          marketplaceName = resolved.name;
+        }
+        const allConfig = await loadKnownMarketplacesConfig();
+        const config = marketplaceName
+          ? { [marketplaceName]: allConfig[marketplaceName]! }
+          : allConfig;
 
         // Load marketplaces with graceful degradation
         const {
@@ -180,11 +231,10 @@ export function BrowseMarketplace({
 
         // Handle targetMarketplace and targetPlugin after marketplaces are loaded
         if (targetPlugin) {
-          // Search for the plugin across all marketplaces
+          // Search only the successfully loaded, policy-allowed marketplaces.
           let foundPlugin: InstallablePlugin | null = null;
           let foundMarketplace: string | null = null;
-          for (const [name_0] of Object.entries(config)) {
-            const marketplace_0 = await getMarketplace(name_0);
+          for (const { name: name_0, data: marketplace_0 } of marketplaces_0) {
             if (marketplace_0) {
               const plugin_0 = marketplace_0.plugins.find(p => p.name === targetPlugin);
               if (plugin_0) {
@@ -211,6 +261,10 @@ export function BrowseMarketplace({
             // (installPluginOp → addInstalledPlugin) already supports multiple
             // scope entries per plugin.
             const pluginId_0 = foundPlugin.pluginId;
+            if (isPluginBlockedByPolicy(pluginId_0)) {
+              setError(`Plugin '${pluginId_0}' is blocked by your organization's policy`);
+              return;
+            }
             const globallyInstalled = isPluginGloballyInstalled(pluginId_0);
             if (globallyInstalled) {
               setError(`Plugin '${pluginId_0}' is already installed globally. Use '/plugin' to manage existing plugins.`);
@@ -221,13 +275,13 @@ export function BrowseMarketplace({
               setViewState('plugin-details');
             }
           } else {
-            setError(`Plugin "${targetPlugin}" not found in any marketplace`);
+            setError(`Plugin "${targetPlugin}" not found in ${marketplaceName ? `marketplace "${marketplaceName}"` : 'any configured marketplace'}`);
           }
         } else if (targetMarketplace) {
           // Navigate directly to the specified marketplace
-          const marketplaceExists = marketplaceInfos.some(m_0 => m_0.name === targetMarketplace);
+          const marketplaceExists = marketplaceInfos.some(m_0 => m_0.name === marketplaceName);
           if (marketplaceExists) {
-            setSelectedMarketplace(targetMarketplace);
+            setSelectedMarketplace(marketplaceName!);
             setViewState('plugin-list');
           } else {
             setError(`Marketplace "${targetMarketplace}" not found`);
@@ -403,10 +457,10 @@ export function BrowseMarketplace({
 
   // Handle error state
   useEffect(() => {
-    if (error) {
+    if (error && !pendingSource) {
       setResult(error);
     }
-  }, [error, setResult]);
+  }, [error, setResult, pendingSource]);
 
   // Marketplace-list navigation
   useKeybindings({
@@ -429,7 +483,7 @@ export function BrowseMarketplace({
     }
   }, {
     context: 'Select',
-    isActive: viewState === 'marketplace-list'
+    isActive: viewState === 'marketplace-list' && !pendingSource && !loading
   });
 
   // Plugin-list navigation
@@ -563,6 +617,19 @@ export function BrowseMarketplace({
           break;
       }
     }} />;
+  }
+
+  if (pendingSource) {
+    return <Box flexDirection="column">
+      <Text bold>Add marketplace?</Text>
+      <Text>{targetPlugin ? `To install ${targetPlugin}, add the marketplace that lists it:` : 'Add this marketplace to browse its plugins:'}</Text>
+      <Text>  {getMarketplaceSourceDisplay(pendingSource)}</Text>
+      <Text dimColor>Only add marketplaces you trust. You'll review the plugin and choose where to install it next.</Text>
+      {addingMarketplace && <Text>{marketplaceProgress || 'Adding marketplace…'}</Text>}
+      {error && <Text color="error">{error}</Text>}
+      {!addingMarketplace && <ConfigurableShortcutHint action="select:accept" context="Select" fallback="Enter" description="add marketplace" />}
+      <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />
+    </Box>;
   }
 
   // Loading state

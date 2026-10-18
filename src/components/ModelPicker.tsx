@@ -26,7 +26,9 @@ import { effortLevelToSymbol } from './EffortIndicator.js';
 export type Props = {
   initial: string | null;
   sessionModel?: ModelSetting;
-  onSelect: (model: string | null, effort: EffortLevel | undefined) => void;
+  onSelect: (model: string | null, effort: EffortLevel | undefined, commitSelection?: () => void) => void;
+  /** Let the caller run model hooks before persisting effort or a favorite's provider. */
+  deferSelectionEffects?: boolean;
   onCancel?: () => void;
   isStandaloneCommand?: boolean;
   showFastModeNotice?: boolean;
@@ -42,7 +44,7 @@ export type Props = {
 };
 const NO_PREFERENCE = '__NO_PREFERENCE__';
 export function ModelPicker(t0) {
-  const $ = _c(82);
+  const $ = _c(83);
   const {
     initial,
     sessionModel,
@@ -51,7 +53,8 @@ export function ModelPicker(t0) {
     isStandaloneCommand,
     showFastModeNotice,
     headerText,
-    skipSettingsWrite
+    skipSettingsWrite,
+    deferSelectionEffects
   } = t0;
   const setAppState = useSetAppState();
   const exitState = useExitOnCtrlCDWithKeybindings();
@@ -236,11 +239,15 @@ export function ModelPicker(t0) {
   }
   useKeybindings(t12, t13);
   let t14;
-  if ($[35] !== effort || $[36] !== hasToggledEffort || $[37] !== onSelect || $[38] !== setAppState || $[39] !== skipSettingsWrite) {
+  if ($[35] !== effort || $[36] !== hasToggledEffort || $[37] !== onSelect || $[38] !== setAppState || $[39] !== skipSettingsWrite || $[82] !== deferSelectionEffects) {
     t14 = function handleSelect(value_0) {
       logEvent("tengu_model_command_menu_effort", {
         effort: effort as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
+      const selectedModel = resolveOptionModel(value_0);
+      const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel) ? effort : undefined;
+      const favorite = parseFavoriteOptionValue(value_0);
+      const commitSelection = () => {
       if (!skipSettingsWrite) {
         const effortLevel = resolvePickerEffortPersistence(effort, getDefaultEffortLevelForOption(value_0), getSettingsForSource("userSettings")?.effortLevel, hasToggledEffort);
         const persistable = toPersistableEffort(effortLevel);
@@ -254,11 +261,8 @@ export function ModelPicker(t0) {
           effortValue: effortLevel
         }));
       }
-      const selectedModel = resolveOptionModel(value_0);
-      const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel) ? effort : undefined;
       // A favorite carries its own provider, so switch lanes before handing
       // the plain model id to the caller's AppState write.
-      const favorite = parseFavoriteOptionValue(value_0);
       if (favorite) {
         const favoriteModel = applyFavoriteModel(favorite);
         // Concrete GPT ids are resolved from the bootstrap override rather
@@ -266,14 +270,18 @@ export function ModelPicker(t0) {
         if (isConcreteOpenAIGptModelForProvider(favoriteModel, favorite.provider)) {
           setMainLoopModelOverride(favoriteModel);
         }
-        onSelect(favoriteModel, selectedEffort);
+      }
+      };
+      if (!deferSelectionEffects) commitSelection();
+      if (favorite) {
+        onSelect(favorite.model, selectedEffort, deferSelectionEffects ? commitSelection : undefined);
         return;
       }
       if (value_0 === NO_PREFERENCE) {
-        onSelect(null, selectedEffort);
+        onSelect(null, selectedEffort, deferSelectionEffects ? commitSelection : undefined);
         return;
       }
-      onSelect(value_0, selectedEffort);
+      onSelect(value_0, selectedEffort, deferSelectionEffects ? commitSelection : undefined);
     };
     $[35] = effort;
     $[36] = hasToggledEffort;
@@ -281,6 +289,7 @@ export function ModelPicker(t0) {
     $[38] = setAppState;
     $[39] = skipSettingsWrite;
     $[40] = t14;
+    $[82] = deferSelectionEffects;
   } else {
     t14 = $[40];
   }

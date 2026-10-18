@@ -29,6 +29,7 @@ import { getFsImplementation } from '../fsOperations.js';
 import { isFullscreenEnvEnabled } from '../fullscreen.js';
 import { toArray } from '../generators.js';
 import { registerSkillHooks } from '../hooks/registerSkillHooks.js';
+import { executeUserPromptExpansionHooks } from '../hooks/lifecycleHooks.js';
 import { logError } from '../log.js';
 import { enqueuePendingNotification } from '../messageQueueManager.js';
 import { createCommandInputMessage, createSyntheticUserCaveatMessage, createSystemMessage, createUserInterruptionMessage, createUserMessage, formatCommandInputTags, isCompactBoundaryMessage, isSystemLocalCommandMessage, normalizeMessages, prepareUserContent } from '../messages.js';
@@ -60,7 +61,7 @@ const MCP_SETTLE_TIMEOUT_MS = 10_000;
 /**
  * Executes a slash command with context: fork in a sub-agent.
  */
-async function executeForkedSlashCommand(command: CommandBase & PromptCommand, args: string, context: ProcessUserInputContext, precedingInputBlocks: ContentBlockParam[], setToolJSX: SetToolJSXFn, canUseTool: CanUseToolFn): Promise<SlashCommandResult> {
+async function executeForkedSlashCommand(command: CommandBase & PromptCommand, args: string, context: ProcessUserInputContext, precedingInputBlocks: ContentBlockParam[], setToolJSX: SetToolJSXFn, canUseTool: CanUseToolFn, expansionMessages: AttachmentMessage[] = []): Promise<SlashCommandResult> {
   const agentId = createAgentId();
   const pluginMarketplace = command.pluginInfo ? parsePluginIdentifier(command.pluginInfo.repository).marketplace : undefined;
   logEvent('tengu_slash_command_forked', {
@@ -80,6 +81,7 @@ async function executeForkedSlashCommand(command: CommandBase & PromptCommand, a
     baseAgent,
     promptMessages
   } = await prepareForkedCommandContext(command, args, context);
+  promptMessages.push(...(context.userPromptHookMessages ?? []), ...expansionMessages);
 
   // Merge skill's effort into the agent definition so runAgent applies it
   const agentDefinition = command.effort !== undefined ? {
@@ -394,7 +396,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
     resultText,
     nextInput,
     submitNextInput
-  } = await getMessagesForSlashCommand(commandName, parsedArgs, setToolJSX, context, precedingInputBlocks, imageContentBlocks, isAlreadyProcessing, canUseTool, uuid);
+  } = await getMessagesForSlashCommand(commandName, parsedArgs, setToolJSX, context, precedingInputBlocks, imageContentBlocks, isAlreadyProcessing, canUseTool, uuid, inputString);
 
   // Local slash commands that skip messages
   if (newMessages.length === 0) {
@@ -524,7 +526,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
     submitNextInput
   };
 }
-async function getMessagesForSlashCommand(commandName: string, args: string, setToolJSX: SetToolJSXFn, context: ProcessUserInputContext, precedingInputBlocks: ContentBlockParam[], imageContentBlocks: ContentBlockParam[], _isAlreadyProcessing?: boolean, canUseTool?: CanUseToolFn, uuid?: string): Promise<SlashCommandResult> {
+async function getMessagesForSlashCommand(commandName: string, args: string, setToolJSX: SetToolJSXFn, context: ProcessUserInputContext, precedingInputBlocks: ContentBlockParam[], imageContentBlocks: ContentBlockParam[], _isAlreadyProcessing?: boolean, canUseTool?: CanUseToolFn, uuid?: string, originalPrompt?: string): Promise<SlashCommandResult> {
   const command = getCommand(commandName, context.options.commands);
 
   // Track skill usage for ranking (only for prompt commands that are user-invocable)
@@ -726,11 +728,37 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
       case 'prompt':
         {
           try {
+            // Direct skill and MCP prompt invocations bypass the Skill tool.
+            // Run this before resolving the prompt, which may execute shell
+            // interpolation or launch a forked agent.
+            const hookMessages: AttachmentMessage[] = [];
+            for await (const result of executeUserPromptExpansionHooks({
+              expansion_type: command.loadedFrom === 'mcp' ? 'mcp_prompt' : 'slash_command',
+              command_name: commandName,
+              command_args: args,
+              command_source: command.source ?? command.loadedFrom ?? 'builtin',
+              prompt: originalPrompt ?? `/${commandName}${args ? ` ${args}` : ''}`,
+            }, context)) {
+              if (result.blockingError || result.preventContinuation) {
+                return {
+                  messages: [createSystemMessage(result.blockingError?.blockingError ?? result.stopReason ?? 'Command expansion stopped by hook', 'warning')],
+                  shouldQuery: false,
+                  command,
+                };
+              }
+              if (result.message && result.message.type !== 'progress') hookMessages.push(result.message);
+              if (result.additionalContexts?.length) hookMessages.push(createAttachmentMessage({
+                type: 'hook_additional_context', content: result.additionalContexts,
+                hookName: 'UserPromptExpansion', hookEvent: 'UserPromptExpansion', toolUseID: randomUUID(),
+              }));
+            }
             // Check if command should run as forked sub-agent
             if (command.context === 'fork') {
-              return await executeForkedSlashCommand(command, args, context, precedingInputBlocks, setToolJSX, canUseTool ?? hasPermissionsToUseTool);
+              return await executeForkedSlashCommand(command, args, context, precedingInputBlocks, setToolJSX, canUseTool ?? hasPermissionsToUseTool, hookMessages);
             }
-            return await getMessagesForPromptSlashCommand(command, args, context, precedingInputBlocks, imageContentBlocks, uuid);
+            const result = await getMessagesForPromptSlashCommand(command, args, context, precedingInputBlocks, imageContentBlocks, uuid);
+            result.messages.push(...hookMessages);
+            return result;
           } catch (e) {
             // Handle abort errors specially to show proper "Interrupted" message
             if (e instanceof AbortError) {

@@ -4,6 +4,7 @@ import type {
   ToolUseBlock,
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
+import { withMessageDisplay } from './utils/hooks/messageDisplay.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import {
   calculateTokenWarningState,
@@ -141,6 +142,7 @@ import { createDumpPromptsFetch } from './services/api/dumpPrompts.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
 import { queryCheckpoint } from './utils/queryProfiler.js'
 import { runTools } from './services/tools/toolOrchestration.js'
+import { runPostToolBatchHooks } from './services/tools/postToolBatch.js'
 import {
   applyToolResultBudget,
   provisionCheapContentReplacementStateForQuery,
@@ -287,7 +289,7 @@ export async function* query(
   Terminal
 > {
   const consumedCommandUuids: string[] = []
-  const terminal = yield* queryLoop(params, consumedCommandUuids)
+  const terminal = yield* withMessageDisplay(queryLoop(params, consumedCommandUuids), params.toolUseContext)
   // Only reached if queryLoop returned normally. Skipped on throw (error
   // propagates through yield*) and on .return() (Return completion closes
   // both generators). This gives the same asymmetric started-without-completed
@@ -1795,6 +1797,30 @@ async function* queryLoop(
       }
     }
     queryCheckpoint('query_tool_execution_end')
+
+    // All providers share this boundary, including tools that finished while
+    // the assistant was still streaming. Give batch hooks the serialized
+    // results and deliver their context before the next model request.
+    for await (const message of runPostToolBatchHooks(
+      toolUseBlocks,
+      toolResults,
+      {
+        ...updatedToolUseContext,
+        messages: [...messagesForQuery, ...assistantMessages, ...toolResults],
+      },
+    )) {
+      yield message
+      if (
+        message.type === 'attachment' &&
+        message.attachment.type === 'hook_stopped_continuation'
+      ) {
+        shouldPreventContinuation = true
+      }
+      toolResults.push(
+        ...normalizeMessagesForAPI([message], updatedToolUseContext.options.tools)
+          .filter(_ => _.type === 'user'),
+      )
+    }
 
     // Generate tool use summary after tool batch completes — passed to next recursive call
     let nextPendingToolUseSummary:

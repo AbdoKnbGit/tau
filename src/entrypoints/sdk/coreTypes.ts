@@ -50,6 +50,12 @@ export const HOOK_EVENTS = [
   'InstructionsLoaded',
   'CwdChanged',
   'FileChanged',
+  'UserPromptExpansion',
+  'MessageDisplay',
+  'PostToolBatch',
+  'DirectoryAdded',
+  'PreModelSwitch',
+  'PostModelSwitch',
 ] as const
 
 export const EXIT_REASONS = [

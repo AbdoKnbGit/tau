@@ -24,6 +24,7 @@ import { buildSystemInitMessage } from '../utils/messages/systemInit.js';
 import { createBridgeStatusMessage, createSystemMessage } from '../utils/messages.js';
 import { getAutoModeUnavailableNotification, getAutoModeUnavailableReason, isAutoModeGateEnabled, isBypassPermissionsModeDisabled, transitionPermissionMode } from '../utils/permissions/permissionSetup.js';
 import { getLeaderToolUseConfirmQueue } from '../utils/swarm/leaderPermissionBridge.js';
+import { checkModelSwitchHooks, dispatchPostModelSwitchHooks, resolveHookModel } from '../utils/hooks/lifecycleHooks.js';
 
 /** How long after a failure before replBridgeEnabled is auto-cleared (stops retries). */
 export const BRIDGE_FAILURE_DISMISS_MS = 10_000;
@@ -392,8 +393,18 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
             onInterrupt() {
               abortControllerRef.current?.abort();
             },
-            onSetModel(model) {
+            async onSetModel(model) {
               const resolved = model === 'default' ? null : model ?? null;
+              const switchRequest = {
+                fromModel: mainLoopModelRef.current,
+                toModel: resolveHookModel(resolved),
+                requestedModel: resolved,
+                source: 'sdk' as const,
+                context: { getAppState: store.getState, messages: messagesRef.current },
+              };
+              const decision = await checkModelSwitchHooks(switchRequest);
+              if (decision.messages.length) setMessages(previous => [...previous, ...decision.messages]);
+              if (!decision.allowed) return { ok: false as const, error: decision.reason || 'Model switch blocked by hook' };
               setMainLoopModelOverride(resolved);
               setAppState(prev_10 => {
                 if (prev_10.mainLoopModelForSession === resolved) return prev_10;
@@ -402,6 +413,8 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
                   mainLoopModelForSession: resolved
                 };
               });
+              dispatchPostModelSwitchHooks(switchRequest);
+              return { ok: true as const };
             },
             onSetMaxThinkingTokens(maxTokens) {
               const enabled = maxTokens !== null;

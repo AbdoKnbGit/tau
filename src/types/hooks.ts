@@ -67,17 +67,48 @@ export const syncHookResponseSchema = lazySchema(() =>
       .string()
       .describe('Warning message shown to the user')
       .optional(),
+    terminalSequence: z
+      .string()
+      .describe(
+        'Allowlisted terminal escape sequence (OSC 0/1/2/9/99/777 or BEL) for Tau to emit',
+      )
+      .optional(),
     hookSpecificOutput: z
       .union([
         z.object({
           hookEventName: z.literal('PreToolUse'),
-          permissionDecision: permissionBehaviorSchema().optional(),
+          permissionDecision: z
+            .enum(['allow', 'deny', 'ask', 'defer'])
+            .optional(),
           permissionDecisionReason: z.string().optional(),
           updatedInput: z.record(z.string(), z.unknown()).optional(),
           additionalContext: z.string().optional(),
         }),
         z.object({
           hookEventName: z.literal('UserPromptSubmit'),
+          additionalContext: z.string().optional(),
+          sessionTitle: z.string().optional(),
+          suppressOriginalPrompt: z.boolean().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('UserPromptExpansion'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('MessageDisplay'),
+          displayContent: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('PostToolBatch'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('PreModelSwitch'),
+          permissionDecision: permissionBehaviorSchema().optional(),
+          permissionDecisionReason: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('PostModelSwitch'),
           additionalContext: z.string().optional(),
         }),
         z.object({
@@ -88,6 +119,8 @@ export const syncHookResponseSchema = lazySchema(() =>
             .array(z.string())
             .describe('Absolute paths to watch for FileChanged hooks')
             .optional(),
+          sessionTitle: z.string().optional(),
+          reloadSkills: z.boolean().optional(),
         }),
         z.object({
           hookEventName: z.literal('Setup'),
@@ -100,10 +133,15 @@ export const syncHookResponseSchema = lazySchema(() =>
         z.object({
           hookEventName: z.literal('PostToolUse'),
           additionalContext: z.string().optional(),
+          updatedToolOutput: z
+            .unknown()
+            .describe("Replaces the tool's output; must match its output shape")
+            .optional(),
           updatedMCPToolOutput: z
             .unknown()
             .describe('Updates the output for MCP tools')
             .optional(),
+          classifierContext: z.string().optional(),
         }),
         z.object({
           hookEventName: z.literal('PostToolUseFailure'),

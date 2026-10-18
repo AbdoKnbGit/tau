@@ -10,6 +10,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { type AppState, useAppState, useAppStateStore, useSetAppState } from 'src/state/AppState.js';
 import type { FooterItem } from 'src/state/AppStateStore.js';
 import { getCwd } from 'src/utils/cwd.js';
+import { commitModelSwitch } from '../../utils/hooks/commitModelSwitch.js';
 import { isQueuedCommandEditable, popAllEditable } from 'src/utils/messageQueueManager.js';
 import stripAnsi from 'strip-ansi';
 import { companionReservedColumns } from '../../buddy/CompanionSprite.js';
@@ -410,6 +411,8 @@ function PromptInput({
   const [isPasting, setIsPasting] = useState(false);
   const [isExternalEditorActive, setIsExternalEditorActive] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const pendingModelSelection = useRef(0);
+  useEffect(() => () => { pendingModelSelection.current++; }, []);
   const [showQuickOpen, setShowQuickOpen] = useState(false);
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
   const [showHistoryPicker, setShowHistoryPicker] = useState(false);
@@ -2050,20 +2053,32 @@ function PromptInput({
   // Memoized callbacks for model picker to prevent re-renders when unrelated
   // state (like notifications) changes. This prevents the inline model picker
   // from visually "jumping" when notifications arrive.
-  const handleModelSelect = useCallback((model: string | null, _effort: EffortLevel | undefined) => {
+  const handleModelSelect = useCallback(async (model: string | null, _effort: EffortLevel | undefined, commitSelection?: () => void) => {
+    const selection = ++pendingModelSelection.current;
+    const context = getToolUseContext(messages, [], new AbortController(), mainLoopModel);
     let wasFastModeDisabled = false;
-    setAppState(prev => {
-      wasFastModeDisabled = isFastModeEnabled() && !isFastModeSupportedByModel(model) && !!prev.fastMode;
-      return {
-        ...prev,
-        mainLoopModel: model,
-        mainLoopModelForSession: null,
-        // Turn off fast mode if switching to a model that doesn't support it
-        ...(wasFastModeDisabled && {
-          fastMode: false
-        })
-      };
+    const decision = await commitModelSwitch({
+      model, source: 'picker', context,
+      isActive: () => pendingModelSelection.current === selection,
+      onMessages: results => context.setMessages(previous => [...previous, ...results]),
+      commit: () => {
+        commitSelection?.();
+        setAppState(prev => {
+          wasFastModeDisabled = isFastModeEnabled() && !isFastModeSupportedByModel(model) && !!prev.fastMode;
+          return {
+            ...prev,
+            mainLoopModel: model,
+            mainLoopModelForSession: null,
+            // Turn off fast mode if switching to a model that doesn't support it
+            ...(wasFastModeDisabled && { fastMode: false })
+          };
+        });
+      },
     });
+    if (!decision.allowed) {
+      addNotification({ key: 'model-switch-blocked', jsx: <Text color="error">{decision.reason}</Text>, priority: 'immediate', timeoutMs: 5000 });
+      return;
+    }
     setShowModelPicker(false);
     const effectiveFastMode = (isFastMode ?? false) && !wasFastModeDisabled;
     let message = `Model set to ${modelDisplayStringForProvider(model)}`;
@@ -2082,8 +2097,9 @@ function PromptInput({
     logEvent('tengu_model_picker_hotkey', {
       model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
     });
-  }, [setAppState, addNotification, isFastMode]);
+  }, [setAppState, addNotification, isFastMode, getToolUseContext, messages, mainLoopModel]);
   const handleModelCancel = useCallback(() => {
+    pendingModelSelection.current++;
     setShowModelPicker(false);
   }, []);
 
@@ -2092,7 +2108,7 @@ function PromptInput({
   const modelPickerElement = useMemo(() => {
     if (!showModelPicker) return null;
     return <Box flexDirection="column" marginTop={1}>
-        <ModelPicker initial={mainLoopModel_} sessionModel={mainLoopModelForSession} onSelect={handleModelSelect} onCancel={handleModelCancel} isStandaloneCommand showFastModeNotice={isFastModeEnabled() && isFastMode && isFastModeSupportedByModel(mainLoopModel_) && isFastModeAvailable()} />
+        <ModelPicker initial={mainLoopModel_} sessionModel={mainLoopModelForSession} deferSelectionEffects onSelect={handleModelSelect} onCancel={handleModelCancel} isStandaloneCommand showFastModeNotice={isFastModeEnabled() && isFastMode && isFastModeSupportedByModel(mainLoopModel_) && isFastModeAvailable()} />
       </Box>;
   }, [showModelPicker, mainLoopModel_, mainLoopModelForSession, handleModelSelect, handleModelCancel]);
   const handleFastModeSelect = useCallback((result?: string) => {
@@ -2111,9 +2127,9 @@ function PromptInput({
   const fastModePickerElement = useMemo(() => {
     if (!showFastModePicker) return null;
     return <Box flexDirection="column" marginTop={1}>
-        <FastModePicker onDone={handleFastModeSelect} unavailableReason={getFastModeUnavailableReason()} />
+        <FastModePicker onDone={handleFastModeSelect} unavailableReason={getFastModeUnavailableReason()} context={getToolUseContext(messages, [], new AbortController(), mainLoopModel)} />
       </Box>;
-  }, [showFastModePicker, handleFastModeSelect]);
+  }, [showFastModePicker, handleFastModeSelect, getToolUseContext, messages, mainLoopModel]);
 
   // Memoized callbacks for thinking toggle
   const handleThinkingSelect = useCallback((enabled: boolean) => {

@@ -76,7 +76,7 @@ export type InitBridgeOptions = {
   onInboundMessage?: (msg: SDKMessage) => void | Promise<void>
   onPermissionResponse?: (response: SDKControlResponse) => void
   onInterrupt?: () => void
-  onSetModel?: (model: string | undefined) => void
+  onSetModel?: import('./bridgeMessaging.js').ServerControlRequestHandlers['onSetModel']
   onSetMaxThinkingTokens?: (maxTokens: number | null) => void
   onSetPermissionMode?: (
     mode: PermissionMode,

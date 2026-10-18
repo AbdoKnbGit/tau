@@ -205,7 +205,9 @@ export function DiscoverPlugins({
         if (targetPlugin) {
           const foundPlugin = allPlugins.find(p_0 => p_0.entry.name === targetPlugin);
           if (foundPlugin) {
-            if (foundPlugin.isInstalled) {
+            if (isPluginBlockedByPolicy(foundPlugin.pluginId)) {
+              setError(`Plugin '${foundPlugin.pluginId}' is blocked by your organization's policy`);
+            } else if (foundPlugin.isInstalled) {
               setError(`Plugin '${foundPlugin.pluginId}' is already installed. Use '/plugin' to manage existing plugins.`);
             } else {
               setSelectedPlugin(foundPlugin);

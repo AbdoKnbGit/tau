@@ -176,7 +176,7 @@ export type BridgeCoreParams = {
   onInboundMessage?: (msg: SDKMessage) => void
   onPermissionResponse?: (response: SDKControlResponse) => void
   onInterrupt?: () => void
-  onSetModel?: (model: string | undefined) => void
+  onSetModel?: import('./bridgeMessaging.js').ServerControlRequestHandlers['onSetModel']
   onSetMaxThinkingTokens?: (maxTokens: number | null) => void
   /**
    * Returns a policy verdict so this module can emit an error control_response

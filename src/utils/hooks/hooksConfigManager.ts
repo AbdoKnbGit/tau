@@ -1,5 +1,5 @@
 import memoize from 'lodash-es/memoize.js'
-import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
+import { HOOK_EVENTS, type HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 import { getRegisteredHooks } from '../../bootstrap/state.js'
 import type { AppState } from '../../state/AppState.js'
 import {
@@ -82,6 +82,40 @@ export const getHookEventMetadata = memoize(
         summary: 'When the user submits a prompt',
         description:
           'Input to command is JSON with original user prompt text.\nExit code 0 - stdout shown to Claude\nExit code 2 - block processing, erase original prompt, and show stderr to user only\nOther exit codes - show stderr to user only',
+      },
+      UserPromptExpansion: {
+        summary: 'Before an expanded command or skill prompt is submitted',
+        description:
+          'Input includes expansion_type, command_name, command_args, command_source, and prompt. Exit code 2 blocks the expanded prompt. Additional context is included with the prompt.',
+        matcherMetadata: { fieldToMatch: 'command_name', values: [] },
+      },
+      MessageDisplay: {
+        summary: 'Before assistant text is displayed',
+        description:
+          'Input includes message_id, delta, and final. Return hookSpecificOutput.displayContent to replace displayed text without changing the conversation sent to the model.',
+      },
+      PostToolBatch: {
+        summary: 'After a batch of tool calls completes',
+        description:
+          'Input includes the tool batch results. Additional context is delivered before the next model response. Exit code 2 sends feedback to the model.',
+      },
+      DirectoryAdded: {
+        summary: 'After a working directory is added',
+        description:
+          'Input includes directory and source. Additional context is delivered with the next prompt. This event observes the completed directory addition.',
+        matcherMetadata: { fieldToMatch: 'source', values: ['slash_command', 'cli', 'sdk', 'settings'] },
+      },
+      PreModelSwitch: {
+        summary: 'Before a requested model change',
+        description:
+          'Input includes from_model, to_model, requested_model, source, and context/cache estimates. Return permissionDecision allow, deny, or ask. Confirmation is available through /model; other routes refuse ask decisions.',
+        matcherMetadata: { fieldToMatch: 'to_model (canonical model name)', values: [] },
+      },
+      PostModelSwitch: {
+        summary: 'After the active model changes',
+        description:
+          'Input includes from_model, to_model, requested_model, and source. Additional context is delivered with the next prompt. This event observes the completed model change.',
+        matcherMetadata: { fieldToMatch: 'to_model (canonical model name)', values: [] },
       },
       SessionStart: {
         summary: 'When a new session is started',
@@ -271,35 +305,10 @@ export function groupHooksByEventAndMatcher(
   appState: AppState,
   toolNames: string[],
 ): Record<HookEvent, Record<string, IndividualHookConfig[]>> {
-  const grouped: Record<HookEvent, Record<string, IndividualHookConfig[]>> = {
-    PreToolUse: {},
-    PostToolUse: {},
-    PostToolUseFailure: {},
-    PermissionDenied: {},
-    Notification: {},
-    UserPromptSubmit: {},
-    SessionStart: {},
-    SessionEnd: {},
-    Stop: {},
-    StopFailure: {},
-    SubagentStart: {},
-    SubagentStop: {},
-    PreCompact: {},
-    PostCompact: {},
-    PermissionRequest: {},
-    Setup: {},
-    TeammateIdle: {},
-    TaskCreated: {},
-    TaskCompleted: {},
-    Elicitation: {},
-    ElicitationResult: {},
-    ConfigChange: {},
-    WorktreeCreate: {},
-    WorktreeRemove: {},
-    InstructionsLoaded: {},
-    CwdChanged: {},
-    FileChanged: {},
-  }
+  const grouped = Object.fromEntries(HOOK_EVENTS.map(event => [event, {}])) as Record<
+    HookEvent,
+    Record<string, IndividualHookConfig[]>
+  >
 
   const metadata = getHookEventMetadata(toolNames)
 

@@ -1504,6 +1504,12 @@ export function REPL({
   // throttle batches rapid updates). Cleared on message arrival (messages.ts)
   // so displayedMessages switches from deferredMessages to messages atomically.
   const [streamingText, setStreamingText] = useState<string | null>(null);
+  const [streamingDisplayText, setStreamingDisplayText] = useState<string | null>(null);
+  const [streamingDisplayFiltered, setStreamingDisplayFiltered] = useState(false);
+  const onStreamingDisplayText = useCallback((f: (current: string | null) => string | null, filtered = false) => {
+    setStreamingDisplayText(f);
+    setStreamingDisplayFiltered(filtered);
+  }, []);
   const heyAgentTurnsRef = useRef(createLiveAgentTurnTracker({
     progress: sendLiveVoiceAgentProgress,
     finish: finishLiveVoiceAgentTurn
@@ -1532,11 +1538,12 @@ export function REPL({
   // char-by-char. lastIndexOf returns -1 when no newline, giving '' → null.
   // Guard on showStreamingText so toggling reducedMotion mid-stream
   // immediately hides the streaming preview.
+  const textForScreen = verbose ? streamingText : streamingDisplayText;
   const visibleStreamingText =
-    streamingText && showStreamingText
-      ? showStreamingTextChunks
-        ? streamingText
-        : streamingText.substring(0, streamingText.lastIndexOf('\n') + 1) ||
+    textForScreen && showStreamingText
+      ? showStreamingTextChunks || (!verbose && streamingDisplayFiltered)
+        ? textForScreen
+        : textForScreen.substring(0, textForScreen.lastIndexOf('\n') + 1) ||
           null
       : null;
   const [lastQueryCompletionTime, setLastQueryCompletionTime] = useState(0);
@@ -2796,8 +2803,8 @@ export function REPL({
         responseLengthBaseline: baseline,
         endResponseLength: baseline
       });
-    }, onStreamingText);
-  }, [setMessages, setResponseLength, setStreamMode, setStreamingToolUses, setStreamingThinking, onStreamingText]);
+    }, onStreamingText, onStreamingDisplayText);
+  }, [setMessages, setResponseLength, setStreamMode, setStreamingToolUses, setStreamingThinking, onStreamingText, onStreamingDisplayText]);
   const onQueryImpl = useCallback(async (messagesIncludingNewMessages: MessageType[], newMessages: MessageType[], abortController: AbortController, shouldQuery: boolean, additionalAllowedTools: string[], mainLoopModelParam: string, effort?: EffortValue) => {
     // Prepare IDE integration for new prompt. Read mcpClients fresh from
     // store — useManageMCPConnections may have populated it since the

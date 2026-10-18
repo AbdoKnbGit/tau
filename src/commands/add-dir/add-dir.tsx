@@ -12,6 +12,7 @@ import { applyPermissionUpdate, persistPermissionUpdate } from '../../utils/perm
 import type { PermissionUpdateDestination } from '../../utils/permissions/PermissionUpdateSchema.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { addDirHelpMessage, validateDirectoryForWorkspace } from './validation.js';
+import { dispatchDirectoryAddedHooks } from '../../utils/hooks/lifecycleHooks.js';
 function AddDirError(t0) {
   const $ = _c(10);
   const {
@@ -92,6 +93,7 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
       setAdditionalDirectoriesForClaudeMd([...currentDirs, path]);
     }
     SandboxManager.refreshConfig();
+    dispatchDirectoryAddedHooks(path, context);
     let message: string;
     if (remember) {
       try {

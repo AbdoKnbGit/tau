@@ -374,14 +374,17 @@ test('native non-streaming and OAuth requests receive configured effort', async 
 test('model command commits picker effort to request state and preserves it on a plain model switch', async () => {
   configure('low')
   let state = r.getDefaultAppState()
+  // Selection runs model-switch hooks first, so it is asynchronous and needs
+  // the command context those hooks read.
   const select = effort => r.commitModelSelection({
     model: 'gpt-6-luna', effort, isFastMode: false,
     setAppState: update => { state = update(state) },
     previousModel: 'gpt-6-luna', onDone: () => {},
+    context: { getAppState: () => state, messages: [] }, source: 'command',
   })
-  select('xhigh')
+  await select('xhigh')
   assert.equal(state.effortValue, 'xhigh')
-  select(undefined)
+  await select(undefined)
   assert.equal(state.effortValue, 'xhigh')
   assert.equal((await sendNative({ effortValue: state.effortValue })).body.reasoning.effort, 'xhigh')
   assert.equal(r.getInitialEffortSetting(), 'low', 'model picker does not persist a session override')

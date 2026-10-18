@@ -88,6 +88,7 @@ import { verifyAndDemote } from './dependencyResolver.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { checkGitAvailable } from './gitAvailability.js'
 import { getInMemoryInstalledPlugins } from './installedPluginsManager.js'
+import { preparePluginHookFile, preparePluginManifestHooks, type PluginHookIssue } from './hookCompatibility.js'
 import { getManagedPluginNames } from './managedPlugins.js'
 import {
   formatSourceForDisplay,
@@ -99,6 +100,7 @@ import {
 import {
   getMarketplaceCacheOnly,
   getPluginByIdCacheOnly,
+  isGitHubSshLikelyConfigured,
   loadKnownMarketplacesConfigSafe,
 } from './marketplaceManager.js'
 import { getPluginSeedDirs, getPluginsDirectory } from './pluginDirectories.js'
@@ -670,24 +672,28 @@ async function installFromGitHub(
       `Invalid GitHub repository format: ${repo}. Expected format: owner/repo`,
     )
   }
-  // Use HTTPS for CCR (no SSH keys), SSH for normal CLI
-  const gitUrl = isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
-    ? `https://github.com/${repo}.git`
-    : `git@github.com:${repo}.git`
+  const gitUrl = await preferredGitHubPluginUrl(repo)
   return installFromGit(gitUrl, targetPath, ref, sha)
+}
+
+async function preferredGitHubPluginUrl(repo: string): Promise<string> {
+  // Match marketplace acquisition: public GitHub plugins must work on machines
+  // without SSH keys or a trusted GitHub host key. Explicit SSH URLs stay SSH.
+  const useSsh =
+    !isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
+    (await isGitHubSshLikelyConfigured())
+  return useSsh ? `git@github.com:${repo}.git` : `https://github.com/${repo}.git`
 }
 
 /**
  * Resolve a git-subdir `url` field to a clonable git URL.
- * Accepts GitHub owner/repo shorthand (converted to ssh or https depending on
- * CLAUDE_CODE_REMOTE) or any URL that passes validateGitUrl (https, http,
+ * Accepts GitHub owner/repo shorthand (using HTTPS unless SSH is configured)
+ * or any URL that passes validateGitUrl (https, http,
  * file, git@ ssh).
  */
-function resolveGitSubdirUrl(url: string): string {
+async function resolveGitSubdirUrl(url: string): Promise<string> {
   if (/^[a-zA-Z0-9-_.]+\/[a-zA-Z0-9-_.]+$/.test(url)) {
-    return isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
-      ? `https://github.com/${url}.git`
-      : `git@github.com:${url}.git`
+    return preferredGitHubPluginUrl(url)
   }
   return validateGitUrl(url)
 }
@@ -729,7 +735,7 @@ export async function installFromGitSubdir(
     )
   }
 
-  const gitUrl = resolveGitSubdirUrl(url)
+  const gitUrl = await resolveGitSubdirUrl(url)
   // Clone into a sibling temp dir (same filesystem → rename works, no EXDEV).
   const cloneDir = `${targetPath}.clone`
 
@@ -745,14 +751,13 @@ export async function installFromGitSubdir(
   }
   cloneArgs.push(gitUrl, cloneDir)
 
-  const cloneResult = await execFileNoThrow(gitExe(), cloneArgs)
-  if (cloneResult.code !== 0) {
-    throw new Error(
-      `Failed to clone repository for git-subdir source: ${cloneResult.stderr}`,
-    )
-  }
-
   try {
+    const cloneResult = await execFileNoThrow(gitExe(), cloneArgs)
+    if (cloneResult.code !== 0) {
+      throw new Error(
+        `Failed to clone repository for git-subdir source: ${cloneResult.stderr}`,
+      )
+    }
     const sparseResult = await execFileNoThrowWithCwd(
       gitExe(),
       ['sparse-checkout', 'set', '--cone', '--', subdirPath],
@@ -945,7 +950,17 @@ export async function cachePlugin(
           await installFromGitHub(source.repo, tempPath, source.ref, source.sha)
           break
         case 'url':
-          await installFromGit(source.url, tempPath, source.ref, source.sha)
+          if (source.path) {
+            gitCommitSha = await installFromGitSubdir(
+              source.url,
+              tempPath,
+              source.path,
+              source.ref,
+              source.sha,
+            )
+          } else {
+            await installFromGit(source.url, tempPath, source.ref, source.sha)
+          }
           break
         case 'git-subdir':
           gitCommitSha = await installFromGitSubdir(
@@ -984,7 +999,11 @@ export async function cachePlugin(
     try {
       const content = await readFile(manifestPath, { encoding: 'utf-8' })
       const parsed = jsonParse(content)
-      const result = PluginManifestSchema().safeParse(parsed)
+      const result = PluginManifestSchema().safeParse(
+        preparePluginManifestHooks(parsed, issue =>
+          logForDebugging(`${manifestPath}: ${issue.path}: ${issue.message}`, { level: 'warn' }),
+        ),
+      )
 
       if (result.success) {
         manifest = result.data
@@ -1030,7 +1049,11 @@ export async function cachePlugin(
         encoding: 'utf-8',
       })
       const parsed = jsonParse(content)
-      const result = PluginManifestSchema().safeParse(parsed)
+      const result = PluginManifestSchema().safeParse(
+        preparePluginManifestHooks(parsed, issue =>
+          logForDebugging(`${legacyManifestPath}: ${issue.path}: ${issue.message}`, { level: 'warn' }),
+        ),
+      )
 
       if (result.success) {
         manifest = result.data
@@ -1148,6 +1171,8 @@ export async function loadPluginManifest(
   manifestPath: string,
   pluginName: string,
   source: string,
+  onUnsupportedHook: (issue: PluginHookIssue) => void = issue =>
+    logForDebugging(`${manifestPath}: ${issue.path}: ${issue.message}`, { level: 'warn' }),
 ): Promise<PluginManifest> {
   // Check if manifest file exists
   // If not, create a minimal manifest to allow plugin to function
@@ -1165,7 +1190,9 @@ export async function loadPluginManifest(
     const parsedJson = jsonParse(content)
 
     // Validate against the PluginManifest schema
-    const result = PluginManifestSchema().safeParse(parsedJson)
+    const result = PluginManifestSchema().safeParse(
+      preparePluginManifestHooks(parsedJson, onUnsupportedHook),
+    )
 
     if (result.success) {
       // Valid manifest - return the validated data
@@ -1224,6 +1251,8 @@ export async function loadPluginManifest(
 async function loadPluginHooks(
   hooksConfigPath: string,
   pluginName: string,
+  onUnsupported: (reason: string) => void = reason =>
+    logForDebugging(reason, { level: 'warn' }),
 ): Promise<HooksSettings> {
   if (!(await pathExists(hooksConfigPath))) {
     throw new Error(
@@ -1233,10 +1262,12 @@ async function loadPluginHooks(
 
   const content = await readFile(hooksConfigPath, { encoding: 'utf-8' })
   const rawHooksConfig = jsonParse(content)
-
-  // The hooks.json file has a wrapper structure with description and hooks
-  // Use PluginHooksSchema to validate and extract the hooks property
-  const validatedPluginHooks = PluginHooksSchema().parse(rawHooksConfig)
+  // Filter only unsupported, well-formed extensions. Malformed supported hooks
+  // must still fail validation, rather than appearing to have loaded successfully.
+  const compatibleConfig = preparePluginHookFile(rawHooksConfig, issue =>
+    onUnsupported(`Plugin "${pluginName}": ${issue.message} (${hooksConfigPath}: ${issue.path})`),
+  )
+  const validatedPluginHooks = PluginHooksSchema().parse(compatibleConfig)
 
   return validatedPluginHooks.hooks as HooksSettings
 }
@@ -1357,7 +1388,15 @@ export async function createPluginFromPath(
   // Step 1: Load or create the plugin manifest
   // This provides metadata about the plugin (name, version, etc.)
   const manifestPath = join(pluginPath, '.claude-plugin', 'plugin.json')
-  const manifest = await loadPluginManifest(manifestPath, fallbackName, source)
+  const manifest = await loadPluginManifest(manifestPath, fallbackName, source, issue => {
+    errors.push({
+      type: 'hook-load-failed',
+      source,
+      plugin: fallbackName,
+      hookPath: manifestPath,
+      reason: `${issue.message} (${issue.path})`,
+    })
+  })
 
   // Step 2: Create the base plugin object
   // Start with required fields from manifest and parameters
@@ -1377,12 +1416,10 @@ export async function createPluginFromPath(
     skillsDirExists,
     outputStylesDirExists,
   ] = await Promise.all([
-    !manifest.commands ? pathExists(join(pluginPath, 'commands')) : false,
-    !manifest.agents ? pathExists(join(pluginPath, 'agents')) : false,
-    !manifest.skills ? pathExists(join(pluginPath, 'skills')) : false,
-    !manifest.outputStyles
-      ? pathExists(join(pluginPath, 'output-styles'))
-      : false,
+    pathExists(join(pluginPath, 'commands')),
+    pathExists(join(pluginPath, 'agents')),
+    pathExists(join(pluginPath, 'skills')),
+    pathExists(join(pluginPath, 'output-styles')),
   ])
 
   const commandsPath = join(pluginPath, 'commands')
@@ -1613,12 +1650,26 @@ export async function createPluginFromPath(
   // Step 5: Load hooks configuration
   let mergedHooks: HooksSettings | undefined
   const loadedHookPaths = new Set<string>() // Track loaded hook files
+  const reportUnsupportedHook = (hookPath: string) => (reason: string) => {
+    logForDebugging(reason, { level: 'warn' })
+    errors.push({
+      type: 'hook-load-failed',
+      source,
+      plugin: manifest.name,
+      hookPath,
+      reason,
+    })
+  }
 
   // Load from standard hooks/hooks.json if it exists
   const standardHooksPath = join(pluginPath, 'hooks', 'hooks.json')
   if (await pathExists(standardHooksPath)) {
     try {
-      mergedHooks = await loadPluginHooks(standardHooksPath, manifest.name)
+      mergedHooks = await loadPluginHooks(
+        standardHooksPath,
+        manifest.name,
+        reportUnsupportedHook(standardHooksPath),
+      )
       // Track the normalized path to prevent duplicate loading
       try {
         loadedHookPaths.add(await realpath(standardHooksPath))
@@ -1710,6 +1761,7 @@ export async function createPluginFromPath(
           const additionalHooks = await loadPluginHooks(
             hookFilePath,
             manifest.name,
+            reportUnsupportedHook(hookFilePath),
           )
           try {
             mergedHooks = mergeHooksSettings(mergedHooks, additionalHooks)
