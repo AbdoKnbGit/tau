@@ -31,7 +31,7 @@ import { env } from './utils/env.js'
 import { envDynamic } from './utils/envDynamic.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
 import { errorMessage } from './utils/errors.js'
-import { findCanonicalGitRoot, findGitRoot, getIsGit } from './utils/git.js'
+import { findCanonicalGitRoot, getIsGit } from './utils/git.js'
 import { initializeFileChangedWatcher } from './utils/hooks/fileChangedWatcher.js'
 import {
   captureHooksConfigSnapshot,
@@ -210,12 +210,8 @@ export async function setup(
         process.exit(1)
       }
 
-      // If we're inside a worktree, switch to the main repo for worktree creation
-      if (mainRepoRoot !== (findGitRoot(getCwd()) ?? getCwd())) {
-        logForDiagnosticsNoPII('info', 'worktree_resolved_to_main_repo')
-        process.chdir(mainRepoRoot)
-        setCwd(mainRepoRoot)
-      }
+      // Keep the caller's cwd until creation succeeds. The creation helper
+      // uses the canonical root only for the destination, not to resolve HEAD.
 
       tmuxSessionName = tmuxEnabled
         ? generateTmuxSessionName(mainRepoRoot, worktreeBranchName(slug))

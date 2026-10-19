@@ -6,7 +6,6 @@ import type { Tool } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { clearMemoryFileCaches } from '../../utils/claudemd.js'
 import { getCwd } from '../../utils/cwd.js'
-import { findCanonicalGitRoot } from '../../utils/git.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getPlanSlug, getPlansDirectory } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
@@ -43,6 +42,9 @@ const outputSchema = lazySchema(() =>
   z.object({
     worktreePath: z.string(),
     worktreeBranch: z.string().optional(),
+    baseCommit: z.string().optional(),
+    baseRef: z.string().optional(),
+    resumed: z.boolean().optional(),
     message: z.string(),
   }),
 )
@@ -80,13 +82,6 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
       throw new Error('Already in a worktree session')
     }
 
-    // Resolve to main repo root so worktree creation works from within a worktree
-    const mainRepoRoot = findCanonicalGitRoot(getCwd())
-    if (mainRepoRoot && mainRepoRoot !== getCwd()) {
-      process.chdir(mainRepoRoot)
-      setCwd(mainRepoRoot)
-    }
-
     const slug = input.name ?? getPlanSlug()
 
     const worktreeSession = await createWorktreeForSession(getSessionId(), slug)
@@ -108,12 +103,18 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
     const branchInfo = worktreeSession.worktreeBranch
       ? ` on branch ${worktreeSession.worktreeBranch}`
       : ''
+    const baseInfo = worktreeSession.originalHeadCommit
+      ? ` Starting commit: ${worktreeSession.originalHeadCommit}${worktreeSession.baseBranch ? ` (${worktreeSession.baseBranch})` : ''}.`
+      : ''
 
     return {
       data: {
         worktreePath: worktreeSession.worktreePath,
         worktreeBranch: worktreeSession.worktreeBranch,
-        message: `Created worktree at ${worktreeSession.worktreePath}${branchInfo}. The session is now working in the worktree. Use ExitWorktree to leave mid-session, or exit the session to be prompted.`,
+        baseCommit: worktreeSession.originalHeadCommit,
+        baseRef: worktreeSession.baseBranch,
+        resumed: worktreeSession.resumed,
+        message: `${worktreeSession.resumed ? 'Resumed' : 'Created'} worktree at ${worktreeSession.worktreePath}${branchInfo}.${baseInfo} The session is now working in the worktree. Use ExitWorktree to leave mid-session, or exit the session to be prompted.`,
       },
     }
   },

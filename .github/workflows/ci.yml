@@ -116,6 +116,9 @@ jobs:
       - name: Test Bash working directory persistence and provider adapters
         run: node --test test/bash-cwd-persistence.test.mjs
 
+      - name: Test worktree bases, Git isolation, and config cancellation
+        run: node --test test/worktree-base.test.mjs test/config-escape.test.mjs
+
       - name: Test source-map reads and cache stability
         run: node --test test/file-read-source-maps.test.mjs test/file-read-range-dedup.test.mjs test/core-tool-contracts.test.mjs test/tool-result-budget.test.mjs
 

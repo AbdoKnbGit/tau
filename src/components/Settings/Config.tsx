@@ -297,6 +297,23 @@ export function Config({
   const settingsItems: Setting[] = [
   // Global settings
   {
+    id: 'worktreeBase',
+    label: 'Worktree base (new worktrees)',
+    value: settingsData?.worktree?.base === 'remote-default' ? 'Remote default branch' : 'Current commit',
+    options: ['Current commit', 'Remote default branch'],
+    type: 'enum' as const,
+    onChange(value: string) {
+      const base = value === 'Remote default branch' ? 'remote-default' : 'head';
+      // Write only the selected leaf. Do not copy merged project/policy
+      // settings into this source or overwrite sparse/symlink preferences.
+      const result = updateSettingsForSource('localSettings', { worktree: { base } });
+      if (result.error) {
+        logError(result.error);
+        return;
+      }
+      setSettingsData(getInitialSettings());
+    }
+  }, {
     id: 'autoCompactEnabled',
     label: 'Auto-compact',
     value: globalConfig.autoCompactEnabled,
@@ -1380,6 +1397,7 @@ export function Config({
     // deletes the key (updateSettingsForSource customizer at settings.ts:368).
     const il = initialLocalSettings;
     updateSettingsForSource('localSettings', {
+      worktree: il?.worktree === undefined ? undefined : { base: il.worktree.base },
       spinnerTipsEnabled: il?.spinnerTipsEnabled,
       lspEnabled: il?.lspEnabled,
       inlineImagesEnabled: il?.inlineImagesEnabled,

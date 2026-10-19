@@ -437,6 +437,15 @@ export const SettingsSchema = lazySchema(() =>
         .describe('Custom commands to run before/after tool executions'),
       worktree: z
         .object({
+          base: z
+            .enum(['head', 'remote-default'])
+            .optional()
+            .describe('Base for new worktrees: caller HEAD (default), or the freshly fetched remote default branch. Existing worktrees are resumed unchanged.'),
+          remote: z
+            .string()
+            .min(1)
+            .optional()
+            .describe('Git remote used for remote-default and pull request worktrees. Defaults to origin.'),
           symlinkDirectories: z
             .array(z.string())
             .optional()

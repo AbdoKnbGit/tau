@@ -219,6 +219,11 @@ Skills in a sub-folder load when you open a file there. If two skills share a na
 
 Tau gets better the more you use it. After a substantial task, or on demand via `/learned`, it proposes one critical, general, reusable lesson (a framework gotcha, a whole class of bug to avoid, a hard-won constraint, or your own preference) for you to Approve / Edit / Skip. Approved lessons are saved to memory and carried from this session into future ones and other projects, so the work keeps compounding instead of starting cold. Review, edit, delete, or toggle everything it learns with `/learned`.
 
+### Configurable worktree base
+
+New worktrees start from your current commit by default, including unpushed commits.
+Use `/config` to choose the remote's freshly fetched default branch instead. [Configuration and examples](docs/worktree-base.md).
+
 ---
 
 ## License

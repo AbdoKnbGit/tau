@@ -28,13 +28,10 @@ import {
   getCommonDir,
   readWorktreeHeadSha,
   resolveGitDir,
-  resolveRef,
 } from './git/gitFilesystem.js'
 import {
   findCanonicalGitRoot,
-  findGitRoot,
   getBranch,
-  getDefaultBranch,
   gitExe,
 } from './git.js'
 import {
@@ -47,9 +44,11 @@ import { getPlatform } from './platform.js'
 import {
   getInitialSettings,
   getRelativeSettingsFilePathForSource,
+  getSettingsFilePathForSource,
 } from './settings/settings.js'
 import { sleep } from './sleep.js'
 import { isInITerm2 } from './swarm/backends/detection.js'
+import { resolveWorktreeBase, WorktreeBaseError } from './worktreeBase.js'
 
 const VALID_WORKTREE_SLUG_SEGMENT = /^[a-zA-Z0-9._-]+$/
 const MAX_WORKTREE_SLUG_LENGTH = 64
@@ -150,6 +149,9 @@ export type WorktreeSession = {
   worktreeBranch?: string
   originalBranch?: string
   originalHeadCommit?: string
+  /** Creation diagnostics; an existing worktree resumes without selecting a base. */
+  baseBranch?: string
+  resumed?: boolean
   sessionId: string
   tmuxSessionName?: string
   hookBased?: boolean
@@ -198,14 +200,7 @@ type WorktreeCreateResult =
       existed: false
     }
 
-// Env vars to prevent git/SSH from prompting for credentials (which hangs the CLI).
-// GIT_TERMINAL_PROMPT=0 prevents git from opening /dev/tty for credential prompts.
-// GIT_ASKPASS='' disables askpass GUI programs.
-// stdin: 'ignore' closes stdin so interactive prompts can't block.
-const GIT_NO_PROMPT_ENV = {
-  GIT_TERMINAL_PROMPT: '0',
-  GIT_ASKPASS: '',
-}
+class WorktreeCreationError extends Error {}
 
 function worktreesDir(repoRoot: string): string {
   return join(repoRoot, '.claude', 'worktrees')
@@ -384,7 +379,7 @@ async function createSnapshotAgentWorktree(
 async function getOrCreateWorktree(
   repoRoot: string,
   slug: string,
-  options?: { prNumber?: number },
+  options: { prNumber?: number; sourceCwd: string },
 ): Promise<WorktreeCreateResult> {
   const worktreePath = worktreePathFor(repoRoot, slug)
   const worktreeBranch = worktreeBranchName(slug)
@@ -393,7 +388,29 @@ async function getOrCreateWorktree(
   // Read the .git pointer file directly (no subprocess, no upward walk) — a
   // subprocess `rev-parse HEAD` burns ~15ms on spawn overhead even for a 2ms
   // task, and the await yield lets background spawnSyncs pile on (seen at 55ms).
-  const existingHead = await readWorktreeHeadSha(worktreePath)
+  let existingHead = await readWorktreeHeadSha(worktreePath)
+  if (!existingHead) {
+    // Reftable repositories and refs outside the filesystem reader's
+    // allowlist need Git itself. Check the exact marker first: rev-parse in
+    // a missing/non-worktree directory could otherwise discover the parent.
+    let hasWorktreeMarker = false
+    try {
+      hasWorktreeMarker = (await lstat(join(worktreePath, '.git'))).isFile()
+    } catch (error) {
+      if (getErrnoCode(error) !== 'ENOENT') throw error
+    }
+    if (hasWorktreeMarker) {
+      const result = await execFileNoThrowWithCwd(
+        gitExe(),
+        ['rev-parse', '--verify', 'HEAD^{commit}'],
+        { cwd: worktreePath },
+      )
+      if (result.code !== 0) {
+        throw new WorktreeCreationError(`Cannot resume worktree at ${worktreePath}: ${result.stderr.trim()}`)
+      }
+      existingHead = result.stdout.trim()
+    }
+  }
   if (existingHead) {
     return {
       worktreePath,
@@ -403,83 +420,29 @@ async function getOrCreateWorktree(
     }
   }
 
-  // New worktree: fetch base branch then add
+  // Destination and source are independent: siblings live under the main
+  // repository, but HEAD belongs to the caller (possibly another worktree).
+  const settings = getInitialSettings().worktree
+  const { baseBranch, baseSha } = await resolveWorktreeBase(options.sourceCwd, {
+    base: settings?.base,
+    remote: settings?.remote,
+    prNumber: options.prNumber,
+  })
   await mkdir(worktreesDir(repoRoot), { recursive: true })
 
-  const fetchEnv = { ...process.env, ...GIT_NO_PROMPT_ENV }
-
-  let baseBranch: string
-  let baseSha: string | null = null
-  if (options?.prNumber) {
-    const { code: prFetchCode, stderr: prFetchStderr } =
-      await execFileNoThrowWithCwd(
-        gitExe(),
-        ['fetch', 'origin', `pull/${options.prNumber}/head`],
-        { cwd: repoRoot, stdin: 'ignore', env: fetchEnv },
-      )
-    if (prFetchCode !== 0) {
-      throw new Error(
-        `Failed to fetch PR #${options.prNumber}: ${prFetchStderr.trim() || 'PR may not exist or the repository may not have a remote named "origin"'}`,
-      )
-    }
-    baseBranch = 'FETCH_HEAD'
-  } else {
-    // If origin/<branch> already exists locally, skip fetch. In large repos
-    // (210k files, 16M objects) fetch burns ~6-8s on a local commit-graph
-    // scan before even hitting the network. A slightly stale base is fine —
-    // the user can pull in the worktree if they want latest.
-    // resolveRef reads the loose/packed ref directly; when it succeeds we
-    // already have the SHA, so the later rev-parse is skipped entirely.
-    const [defaultBranch, gitDir] = await Promise.all([
-      getDefaultBranch(),
-      resolveGitDir(repoRoot),
-    ])
-    const originRef = `origin/${defaultBranch}`
-    const originSha = gitDir
-      ? await resolveRef(gitDir, `refs/remotes/origin/${defaultBranch}`)
-      : null
-    if (originSha) {
-      baseBranch = originRef
-      baseSha = originSha
-    } else {
-      const { code: fetchCode } = await execFileNoThrowWithCwd(
-        gitExe(),
-        ['fetch', 'origin', defaultBranch],
-        { cwd: repoRoot, stdin: 'ignore', env: fetchEnv },
-      )
-      baseBranch = fetchCode === 0 ? originRef : 'HEAD'
-    }
-  }
-
-  // For the fetch/PR-fetch paths we still need the SHA — the fs-only resolveRef
-  // above only covers the "origin/<branch> already exists locally" case.
-  if (!baseSha) {
-    const { stdout, code: shaCode } = await execFileNoThrowWithCwd(
-      gitExe(),
-      ['rev-parse', baseBranch],
-      { cwd: repoRoot },
-    )
-    if (shaCode !== 0) {
-      throw new Error(
-        `Failed to resolve base branch "${baseBranch}": git rev-parse failed`,
-      )
-    }
-    baseSha = stdout.trim()
-  }
-
-  const sparsePaths = getInitialSettings().worktree?.sparsePaths
+  const sparsePaths = settings?.sparsePaths
   const addArgs = ['worktree', 'add']
   if (sparsePaths?.length) {
     addArgs.push('--no-checkout')
   }
-  // -B (not -b): reset any orphan branch left behind by a removed worktree dir.
-  // Saves a `git branch -D` subprocess (~15ms spawn overhead) on every create.
-  addArgs.push('-B', worktreeBranch, worktreePath, baseBranch)
+  // Pin the resolved commit even if HEAD/remote refs move during creation.
+  // -b refuses to discard commits on an existing branch with the same name.
+  addArgs.push('-b', worktreeBranch, worktreePath, baseSha)
 
   const { code: createCode, stderr: createStderr } =
     await execFileNoThrowWithCwd(gitExe(), addArgs, { cwd: repoRoot })
   if (createCode !== 0) {
-    throw new Error(`Failed to create worktree: ${createStderr}`)
+    throw new WorktreeCreationError(`Failed to create worktree: ${createStderr}`)
   }
 
   if (sparsePaths?.length) {
@@ -493,7 +456,7 @@ async function getOrCreateWorktree(
         ['worktree', 'remove', '--force', worktreePath],
         { cwd: repoRoot },
       )
-      throw new Error(msg)
+      throw new WorktreeCreationError(msg)
     }
     const { code: sparseCode, stderr: sparseErr } =
       await execFileNoThrowWithCwd(
@@ -664,7 +627,11 @@ async function performPostCreationSetup(
   // This propagates local settings (which may contain secrets) to the worktree
   const localSettingsRelativePath =
     getRelativeSettingsFilePathForSource('localSettings')
-  const sourceSettingsLocal = join(repoRoot, localSettingsRelativePath)
+  // Copy the settings source the caller actually loaded, which may belong to
+  // a linked worktree or subdirectory rather than the canonical checkout.
+  const sourceSettingsLocal =
+    getSettingsFilePathForSource('localSettings') ??
+    join(repoRoot, localSettingsRelativePath)
   try {
     const destSettingsLocal = join(worktreePath, localSettingsRelativePath)
     await mkdirRecursive(dirname(destSettingsLocal))
@@ -877,7 +844,7 @@ export async function createWorktreeForSession(
     }
   } else {
     // Fall back to git worktree
-    const gitRoot = findGitRoot(getCwd())
+    const gitRoot = findCanonicalGitRoot(originalCwd)
     if (!gitRoot) {
       throw new Error(
         'Cannot create a worktree: not in a git repository and no WorktreeCreate hooks are configured. ' +
@@ -888,15 +855,18 @@ export async function createWorktreeForSession(
     const originalBranch = await getBranch()
 
     const createStart = Date.now()
-    const { worktreePath, worktreeBranch, headCommit, existed } =
-      await getOrCreateWorktree(gitRoot, slug, options)
+    const result = await getOrCreateWorktree(gitRoot, slug, {
+      ...options,
+      sourceCwd: originalCwd,
+    })
+    const { worktreePath, worktreeBranch, headCommit, existed } = result
 
     let creationDurationMs: number | undefined
     if (existed) {
       logForDebugging(`Resuming existing worktree at: ${worktreePath}`)
     } else {
       logForDebugging(
-        `Created worktree at: ${worktreePath} on branch: ${worktreeBranch}`,
+        `Created worktree at: ${worktreePath} on branch: ${worktreeBranch} from ${result.baseBranch} (${headCommit})`,
       )
       await performPostCreationSetup(gitRoot, worktreePath)
       creationDurationMs = Date.now() - createStart
@@ -909,6 +879,8 @@ export async function createWorktreeForSession(
       worktreeBranch,
       originalBranch,
       originalHeadCommit: headCommit,
+      baseBranch: result.existed ? undefined : result.baseBranch,
+      resumed: existed,
       sessionId,
       tmuxSessionName,
       creationDurationMs,
@@ -1086,7 +1058,7 @@ export async function createAgentWorktree(slug: string): Promise<{
   if (gitRoot) {
     try {
       const { worktreePath, worktreeBranch, headCommit, existed } =
-        await getOrCreateWorktree(gitRoot, slug)
+        await getOrCreateWorktree(gitRoot, slug, { sourceCwd: cwd })
 
       if (!existed) {
         logForDebugging(
@@ -1104,6 +1076,11 @@ export async function createAgentWorktree(slug: string): Promise<{
 
       return { worktreePath, worktreeBranch, headCommit, gitRoot }
     } catch (error) {
+      // A failed explicit base or creation must not silently substitute a
+      // snapshot of a different commit (or include uncommitted changes).
+      if (error instanceof WorktreeBaseError || error instanceof WorktreeCreationError) {
+        throw error
+      }
       logForDebugging(
         `Git agent worktree failed, falling back to snapshot copy: ${errorMessage(error)}`,
         { level: 'warn' },
@@ -1488,12 +1465,12 @@ export async function execIntoTmuxWorktree(args: string[]): Promise<{
       const result = await getOrCreateWorktree(
         repoRoot,
         worktreeName,
-        prNumber !== null ? { prNumber } : undefined,
+        { sourceCwd: getCwd(), ...(prNumber !== null ? { prNumber } : {}) },
       )
       if (!result.existed) {
         // biome-ignore lint/suspicious/noConsole: intentional console output
         console.log(
-          `Created worktree: ${worktreeDir} (based on ${result.baseBranch})`,
+          `Created worktree: ${worktreeDir} (based on ${result.baseBranch} at ${result.headCommit})`,
         )
         await performPostCreationSetup(repoRoot, worktreeDir)
       }

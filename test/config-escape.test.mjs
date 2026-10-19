@@ -39,7 +39,7 @@ after(async () => {
 
 const runtime = await loadBuiltRuntime({
   paths: ['src/components/Settings/Settings.tsx'],
-  exports: ['Settings'],
+  exports: ['Settings', 'updateSettingsForSource', 'getInitialSettings'],
 })
 
 const localFile = join(projectDir, '.claude', 'settings.local.json')
@@ -48,9 +48,16 @@ const localSettings = () => existsSync(localFile) ? JSON.parse(readFileSync(loca
 /** Opens the panel the way /config does; `closes` records its onClose calls. */
 async function openConfig() {
   const closes = []
-  const panel = await mount(runtime, React.createElement(runtime.Settings, {
+  let panel
+  const context = {
+    messages: [], options: { mcpClients: [] },
+    getAppState: () => panel.store.getState(),
+    setAppState: update => panel.store.setState(update),
+    setMessages: () => {},
+  }
+  panel = await mount(runtime, React.createElement(runtime.Settings, {
     onClose: (result, options) => closes.push([result, options]),
-    context: { messages: [], options: { mcpClients: [] } },
+    context,
     defaultTab: 'Config',
   }), { columns: 100, rows: 40 })
   // The Config tab suspends on memory files before it first draws.
@@ -62,7 +69,7 @@ async function openConfig() {
 async function flipThenEsc(panel, query, row, key) {
   await panel.type(query)
   await panel.press(KEYS.down)
-  assert.match(panel.frame(), new RegExp(`❯ ${row}\\s+true`))
+  assert.match(panel.frame(), new RegExp(`[❯>] ${row}\\s+true`))
   await panel.press(KEYS.space)
   assert.equal(localSettings()[key], false, 'Space saves the change at once')
   await panel.press(KEYS.esc)
@@ -87,6 +94,55 @@ test('Esc undoes Draw diagrams', async () => {
     assert.deepEqual(panel.closes, [['Config dialog dismissed', { display: 'system' }]])
     assert.equal(localSettings().mermaidDiagrams, undefined, 'Esc puts it back')
   } finally { panel.close() }
+})
+
+test('Worktree base takes effect immediately, and Esc restores the default', async () => {
+  const panel = await openConfig()
+  try {
+    await panel.type('worktree')
+    await panel.press(KEYS.down)
+    assert.match(panel.frame(), /Worktree base.*Current commit/)
+    await panel.press(KEYS.space)
+    assert.equal(localSettings().worktree.base, 'remote-default')
+    assert.equal(runtime.getInitialSettings().worktree.base, 'remote-default')
+    await panel.press(KEYS.esc)
+    assert.equal(localSettings().worktree, undefined)
+    assert.equal(runtime.getInitialSettings().worktree, undefined)
+  } finally { panel.close() }
+})
+
+test('Worktree base saves on Enter and cancellation preserves sibling settings', async () => {
+  const initial = { sparsePaths: ['src'], symlinkDirectories: ['node_modules'], remote: 'upstream' }
+  assert.equal(runtime.updateSettingsForSource('localSettings', { worktree: initial }).error, null)
+  let panel = await openConfig()
+  try {
+    await panel.type('worktree')
+    await panel.press(KEYS.down)
+    await panel.press(KEYS.space)
+    assert.deepEqual(localSettings().worktree, { ...initial, base: 'remote-default' })
+    await panel.press(KEYS.esc)
+    assert.deepEqual(localSettings().worktree, initial, 'Esc deletes only the new base leaf')
+  } finally { panel.close() }
+  panel = await openConfig()
+  try {
+    await panel.type('worktree')
+    await panel.press(KEYS.down)
+    await panel.press(KEYS.space)
+    await panel.press(KEYS.enter)
+  } finally { panel.close() }
+  assert.deepEqual(localSettings().worktree, { ...initial, base: 'remote-default' })
+  panel = await openConfig()
+  try {
+    await panel.type('worktree')
+    await panel.press(KEYS.down)
+    await panel.press(KEYS.space)
+    assert.deepEqual(localSettings().worktree, { ...initial, base: 'head' })
+    await panel.press(KEYS.esc)
+    assert.deepEqual(localSettings().worktree, { ...initial, base: 'remote-default' })
+  } finally {
+    panel.close()
+    runtime.updateSettingsForSource('localSettings', { worktree: undefined })
+  }
 })
 
 test('every setting /config saves to a settings file is one Esc restores', () => {
