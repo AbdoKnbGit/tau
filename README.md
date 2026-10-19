@@ -12,7 +12,7 @@
 
 ## What is Tau?
 
-Tau is an adaptive coding harness that is simple to use. It costs less to run, gives you higher quality output, and lets you follow what the agent is doing with better monitoring and visuals. You don't have to go hunting for tools and plugins, because Tau brings the ecosystem to you: prebuilt integrations that cover most of your use cases, ready from the first run. Getting started is plug and play. Install it, type `/login`, pick a provider, and start working. Tau has native adapters for 28 providers, so it talks to each provider API directly with no proxy in between. The full list is in [PROVIDERS.md](PROVIDERS.md).
+Tau is an adaptive coding harness that is simple to use. It costs less to run, gives you higher quality output, and lets you follow what the agent is doing with better monitoring and visuals. You don't have to go hunting for tools and plugins, because Tau brings the ecosystem to you: prebuilt integrations that cover most of your use cases, ready from the first run. Getting started is plug and play. Install it, type `/login`, pick a provider, and start working. Tau has native adapters for 30 providers, so it talks to each provider API directly with no proxy in between. The full list is in [PROVIDERS.md](PROVIDERS.md).
 
 ---
 
@@ -49,7 +49,7 @@ tau update
 See what changed in each version in **[CHANGELOG.md](CHANGELOG.md)**.
 
 <p align="center">
-  <img src="tau_docs.PNG" alt="Tau start screen" width="720">
+  <img src="docs/Capture.PNG" alt="Tau start screen" width="720">
 </p>
 
 ## Commands
@@ -66,7 +66,7 @@ See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 
 ## Supported Providers
 
-28 providers with native adapters. See the full list and per-provider notes in **[PROVIDERS.md](PROVIDERS.md)**.
+30 providers with native adapters. See the full list and per-provider notes in **[PROVIDERS.md](PROVIDERS.md)**.
 
 ---
 
@@ -74,14 +74,14 @@ See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 
 ### Multi-provider, natively
 
-28 providers with native adapters. Not a routing layer, not a translation proxy. Each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
+30 providers with native adapters. Not a routing layer, not a translation proxy. Each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
 
 ### The full agent loop
 
 Everything a full agent loop needs is built in: tools, skills, subagents, MCP servers, LSP and hooks. It all works the same way with every provider.
 
 <p align="center">
-  <img src="docs/AgentLoop.PNG" alt="Tau listing its tools, grouped by purpose">
+  <img src="docs/AgentLoop.PNG" alt="Tau showing its agent loop, tools and integrations">
 </p>
 
 ### Optimized tools
@@ -137,6 +137,10 @@ CSV files are only one example. The same goes for counting and ranking things ac
   <img src="docs/kernel.PNG" alt="Tau running one Python cell that charts the most modified files in git history" width="640">
 </p>
 
+<p align="center">
+  <img src="docs/kernel.gif" alt="Tau counting lines of code with its persistent Python kernel" width="640">
+</p>
+
 ### Diagrams in the terminal
 
 Tau would rather show you than bury you in text. For everyday tasks it reaches for a diagram first, like a flow, an architecture or a sequence of calls, drawn right in your terminal next to a short explanation. It works with any provider, and the diagrams stay in your session like the rest of the output. If you prefer plain text, turn them off in `/config`, then **Draw diagrams**.
@@ -180,7 +184,7 @@ Here a named agent looks for bugs, gets a follow-up task after it has finished, 
 Tau thinks about your money and your preferences before anything else. A normal workflow doesn't need skills, agents or MCP servers, so you can leave them off and stay in cheap mode. When you need them, one command turns them on: `/mode normal`. You don't need an MCP server for things like diagrams or browser automation either, because those tools are built into Tau. Switch each of them on or off with `/tools`, so you pay less, or nothing, for what you don't use.
 
 <p align="center">
-  <img src="docs/Capture.PNG" alt="Tau start screen in cheap mode" width="720">
+  <img src="docs/cheap.PNG" alt="Tau start screen in cheap mode" width="720">
 </p>
 
 ### GitHub automation and repo management

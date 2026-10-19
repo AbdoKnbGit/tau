@@ -1,6 +1,6 @@
 # Supported Providers
 
-Tau ships **28 native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
+Tau ships **30 selectable native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
 
 | Provider | Notes |
 |---|---|
@@ -17,6 +17,8 @@ Tau ships **28 native provider adapters**. Each speaks the provider's API direct
 | Moonshot AI | Direct Kimi models through Moonshot's OpenAI-compatible API, including Kimi K2.6 for coding work |
 | MiniMax AI | Direct MiniMax M2 models through MiniMax's OpenAI-compatible API, with saved API-key login, live model browsing, and Token Plan usage checks |
 | Alibaba | Alibaba Cloud Model Studio: Qwen plus the DeepSeek / GLM / Kimi rows it hosts, on the pay-as-you-go DashScope API. Per-model thinking ladders and context windows come from the live catalogue, not a table in Tau |
+| xAI | Grok direct from xAI on its Responses API, Grok 4.7 included. Encrypted reasoning is replayed between turns and every request carries the session's cache key, so the prompt cache keeps hitting. Effort ladders, context windows and prices come from xAI's live model list |
+| Meta | Muse models on Meta's Responses API, with saved API-key login, model browsing, per-model reasoning effort, prompt caching and usage checks |
 | NVIDIA NIM | Gets slow under server load, especially for newest models like Kimi K2 |
 | DeepSeek | Solid. V4 only — flash, pro and flash-vision-exp, all 1M context. Thinking effort is a per-model chip in `/models` |
 | GLM / BigModel | Works with your BigModel plan or the small amount of free credit they give you |
@@ -167,6 +169,66 @@ Both MiMo rows reason on a low / medium / high ladder (MiMo's own default is
 medium); cycle it with `←` / `→` in `/models`. An explicit pick outranks the
 session's thinking budget, and the choice persists in
 `~/.claude/mimo-thinking.json`.
+
+## xAI thinking effort
+
+Each Grok row cycles its own ladder in `/models` with `←` / `→`. The ladder
+comes from xAI's model list, not a fixed low/medium/high set:
+
+| Model | Ladder | xAI's default |
+|---|---|---|
+| grok-4.7, grok-4.6 | low / medium / high / xhigh | high |
+| grok-4.5 | low / medium / high | high |
+| grok-4.3 | none / low / medium / high | not published |
+| grok-build-0.1, grok-4.20-0309-reasoning | always reasons, no chip | — |
+| grok-4.20-0309-non-reasoning | does not reason, no chip | — |
+
+`Default` means no per-model pick. If the session's `/effort` is a level on
+that row's ladder, it drives the row. Otherwise no `reasoning.effort` is sent
+and xAI applies its own default. Tau never sends a level a model hasn't
+declared, so grok-4.5 has no `xhigh` (xAI treats it as `high` there). An
+explicit pick outranks the session setting. Picks are per model and persist
+in `~/.claude/xai-thinking.json`.
+
+## xAI login, regions and usage
+
+```bash
+# global endpoint (default, no env var needed)
+https://api.x.ai/v1
+
+# US regional endpoint, billed at 1.1x
+export XAI_BASE_URL=https://us.api.x.ai/v1
+```
+
+`/login xai` saves the API key and checks it against xAI's `/v1/api-key`
+endpoint, so a rejected, disabled or blocked key fails at login rather than on
+your first message. A second, optional step takes a management key (console.x.ai
+→ Settings → Management Keys). xAI only exposes billing through that key; press
+Esc to skip. `/logout xai` removes both keys. The environment variables
+`XAI_API_KEY` and `XAI_MANAGEMENT_API_KEY` work too.
+
+`/usage` shows the key's state and this session's spend as billed by xAI
+(every response carries its own cost). With a management key it also shows
+prepaid credits, the postpaid invoice against your spending limit, and
+month-to-date spend per model.
+
+`/cost` prices each request from the same live model list `/models` reads. If a
+request's prompt reaches 200k tokens, every token in it is billed at the
+long-context rate, and the US endpoint adds its 1.1x multiplier.
+
+xAI's prompt cache only hits on an identical prefix, so Tau keeps the prefix
+stable:
+
+- every request carries the session id as `prompt_cache_key` and
+  `x-grok-conv-id`
+- the instructions and tool list stay byte-identical between turns
+- every tool, MCP tools included, is sent up front; tools from a server that
+  connects later are appended, never reordered in
+- requests go out with `store: false`, and earlier turns' encrypted reasoning
+  is replayed in place
+
+If xAI rejects an MCP tool's schema, Tau drops that one tool and retries
+instead of failing every turn.
 
 ## Switching providers mid-session
 

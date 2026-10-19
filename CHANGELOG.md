@@ -3,6 +3,31 @@
 All notable changes to **Tau**, from the first release to the latest.
 Each version lists what was fixed or added, newest first.
 
+## v0.92.43 (2026-10-19)
+
+- Refresh the README screenshots, add the Python kernel demo, and document all 30 selectable providers, including xAI and Meta
+- Resolve linked worktrees correctly through Windows short paths and cover path aliases and forged repository links in cross-platform tests (86a0d9d)
+- Start new worktrees from the caller's current commit by default, including unpushed commits; add a remote-default option in /config that fetches a fresh base and preserves existing worktrees (c1a9624)
+- Keep valid hooks alongside newer extensions, pass session and Stop context to hooks, and preserve rejected settings across reloads and overlapping edits (dcbb16b)
+- Improve Claude Code hook and plugin compatibility, including prompt submission, expansion, model switches, tool batches and queued context (cceb8ed)
+- Play animated GIF and WebP images inline on supported terminals, with an Animate images setting and respect for Reduce motion (d293205)
+- Keep context usage from fluctuating when provider reports and local estimates arrive at different times (1507ea9)
+- Add Meta Muse models with native Responses API support, prompt caching, reasoning-effort choices, model pricing and usage checks (488db35)
+- Add xAI Grok models with native Responses API support, prompt caching, reasoning-effort choices and optional account billing checks (1540fa6)
+- Give Copilot subagents separate, stable sessions while preserving the main conversation's connection affinity (3edaf66)
+- Send the remaining remote providers every tool up front to avoid rewriting cached tool lists; keep on-demand tools for Ollama and LM Studio (cf8cda4)
+- Update the installer to 0.1.4 and keep repeated-result detection reliable when tool output includes system reminders (2692ed8)
+- Add configurable spinner verbs, show the actual skill folders in /skills, and make Esc undo image and diagram settings on the first /config visit (81947f8)
+- Report browser action evidence more clearly so attempted clicks and observed page changes are not confused with completed tasks (83e3317)
+- Stop agents repeatedly polling background tasks, show the latest task output, and rely on completion notifications while useful work continues (71fecb5)
+- Keep edits small, tolerate blank-line drift, and report the first mismatch clearly when an edit cannot be applied (4a1bead)
+- Recognize Windows short path aliases when checking approved working directories without allowing links to escape them (e7667d8)
+- Preserve Bash working-directory changes through permission checks and command failures, including quoted paths and host temporary directories (d7dfca0)
+- Keep the cheap-mode read regression test offline in CI (d075b2b)
+- Avoid repeating unchanged file ranges, add smaller web-file outlines, improve edit errors and stale-read checks, and align read ranges across providers (1fa9380)
+- Make browser actions use fresh page evidence after navigation or other page changes (2ec5052)
+- Fix Antigravity Argon requests and account project caching (40759b6)
+
 ## v0.92.42 (2026-10-14)
 
 - Add Gemini 4 Argon on Antigravity, keep older models available to saved sessions, and use Gemini 3.8 Flash Low for automatic Gemini subagents (1761101b)
