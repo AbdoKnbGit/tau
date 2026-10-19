@@ -4,6 +4,7 @@
  * in Tau's lifecycle.
  */
 import { basename } from 'path'
+import { feature } from 'bun:bundle'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { pathExists } from './file.js'
 import { wrapSpawn } from './ShellCommand.js'
@@ -46,8 +47,9 @@ import {
 import {
   getTranscriptPathForSession,
   getAgentTranscriptPath,
+  getCurrentSessionTitle,
 } from './sessionStorage.js'
-import type { AgentId } from '../types/ids.js'
+import { asSessionId, type AgentId } from '../types/ids.js'
 import {
   getSettings_DEPRECATED,
   getSettingsForSource,
@@ -185,6 +187,7 @@ import { isEnvTruthy } from './envUtils.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
+let classifierContextWarningSessionId: string | undefined
 
 /**
  * SessionEnd hooks run during shutdown/clear and need a much tighter bound
@@ -730,6 +733,8 @@ function processHookJSONOutput({
       case 'UserPromptExpansion':
       case 'PostToolBatch':
       case 'PostModelSwitch':
+      case 'Stop':
+      case 'SubagentStop':
         result.additionalContext = json.hookSpecificOutput.additionalContext
         break
       case 'MessageDisplay':
@@ -770,7 +775,13 @@ function processHookJSONOutput({
         break
       case 'PostToolUse':
         result.additionalContext = json.hookSpecificOutput.additionalContext
-        if (json.hookSpecificOutput.classifierContext !== undefined) {
+        if (
+          json.hookSpecificOutput.classifierContext !== undefined &&
+          classifierContextWarningSessionId !== getSessionId()
+        ) {
+          // Unsupported data must not affect permission decisions. Explain it
+          // once per session, rather than repeating it on every tool result.
+          classifierContextWarningSessionId = getSessionId()
           const warning = 'Tau ignored classifierContext: hook-provided classifier context is not implemented.'
           logForDebugging(warning, { level: 'warn' })
           result.systemMessage = result.systemMessage ? `${result.systemMessage}\n${warning}` : warning
@@ -1834,9 +1845,8 @@ export async function getMatchingHooks(
         matchQuery = getCanonicalName(
           hookInput.to_model.replace(/\[1m\]$/i, ''),
         )
-        // Gateway/provider IDs without a known canonical Claude model must
-        // still reach policy hooks; the hook can inspect to_model itself.
-        if (!/^claude-(?:(?:opus|sonnet|haiku)-\d|3-(?:\d-)?(?:opus|sonnet|haiku))/.test(matchQuery)) matchQuery = undefined
+        // Unknown/provider model IDs retain their name, so their matchers
+        // filter normally. Hooks without a matcher still run for every model.
         break
       default:
         break
@@ -2131,8 +2141,12 @@ export async function* executeHooks({
   const hookEvent = hookInput.hook_event_name
   const hookName = matchQuery ? `${hookEvent}:${matchQuery}` : hookEvent
 
-  // Bind the prompt callback to this hook's name and tool input summary so the UI can display context
-  const boundRequestPrompt = requestPrompt?.(hookName, toolInputSummary)
+  // Model-switch confirmation uses requestPrompt in the host. The separate
+  // subprocess prompt protocol keeps stdin open and must remain opt-in: normal
+  // Claude hooks read their JSON until EOF before producing any output.
+  const boundRequestPrompt = feature('HOOK_PROMPTS')
+    ? requestPrompt?.(hookName, toolInputSummary)
+    : undefined
 
   // SECURITY: ALL hooks require workspace trust in interactive mode
   // This centralized check prevents RCE vulnerabilities for all current and future hooks
@@ -3248,6 +3262,7 @@ export type HookOutsideReplResult = {
   succeeded: boolean
   output: string
   blocked: boolean
+  blockingReason?: string
   watchPaths?: string[]
   systemMessage?: string
 }
@@ -3424,6 +3439,8 @@ export async function executeHooksOutsideREPL({
             succeeded: true,
             output,
             blocked,
+            blockingReason: blocked ? json.reason || json.stopReason || json.systemMessage : undefined,
+            systemMessage: json.systemMessage,
           }
         } catch (error) {
           cleanup?.()
@@ -3555,6 +3572,9 @@ export async function executeHooksOutsideREPL({
             succeeded: true,
             output,
             blocked: !!jsonBlocked,
+            blockingReason: jsonBlocked && httpJson && isSyncHookJSONOutput(httpJson)
+              ? httpJson.reason || httpJson.stopReason || httpJson.systemMessage || 'Blocked by hook'
+              : undefined,
             systemMessage: httpJson && isSyncHookJSONOutput(httpJson) ? httpJson.systemMessage : undefined,
           }
         } catch (error) {
@@ -3687,6 +3707,11 @@ export async function executeHooksOutsideREPL({
           succeeded,
           output,
           blocked,
+          blockingReason: blocked
+            ? result.status === 2
+              ? result.stderr || syncJson?.reason || syncJson?.stopReason || 'Blocked by hook'
+              : syncJson?.reason || syncJson?.stopReason || syncJson?.systemMessage || 'Blocked by hook'
+            : undefined,
           watchPaths,
           systemMessage: syncJson?.systemMessage,
         }
@@ -3711,7 +3736,10 @@ export async function executeHooksOutsideREPL({
   )
 
   // Wait for all hooks to complete and collect results
-  return await Promise.all(hookPromises)
+  const results: HookOutsideReplResult[] = await Promise.all(hookPromises)
+  return results.map(result => result.blocked && !result.blockingReason
+    ? { ...result, blockingReason: result.output || 'Blocked by hook' }
+    : result)
 }
 
 /**
@@ -4196,6 +4224,7 @@ export async function* executeUserPromptSubmitHooks(
     ...createBaseHookInput(permissionMode),
     hook_event_name: 'UserPromptSubmit',
     prompt,
+    session_title: getCurrentSessionTitle(getSessionId()),
   }
 
   yield* executeHooks({
@@ -4231,6 +4260,7 @@ export async function* executeSessionStartHooks(
     ...createBaseHookInput(undefined, sessionId),
     hook_event_name: 'SessionStart',
     source,
+    session_title: getCurrentSessionTitle(asSessionId(sessionId ?? getSessionId())),
     agent_type: agentType,
     model,
   }

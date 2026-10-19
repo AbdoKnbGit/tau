@@ -34,8 +34,19 @@ export function useSettingsErrors() {
       if (getIsRemoteMode()) {
         return;
       }
-      if (errors_0.length > 0) {
-        removeNotification(SETTINGS_ERRORS_NOTIFICATION_KEY);
+      const warnings = errors_0.filter(error => error.severity === 'warning');
+      const errors = errors_0.filter(error => error.severity !== 'warning');
+      if (warnings.length > 0 || errors.length > 0) {
+        addNotification({
+          key: SETTINGS_ERRORS_NOTIFICATION_KEY,
+          text: [
+            ...(errors.length > 0 ? [`Found ${errors.length} settings ${errors.length === 1 ? 'issue' : 'issues'} · /doctor for details`] : []),
+            ...warnings.map(warning => `${warning.path}: ${warning.message}`)
+          ].join('\n'),
+          color: 'warning',
+          priority: 'high',
+          timeoutMs: 60000
+        });
       } else {
         removeNotification(SETTINGS_ERRORS_NOTIFICATION_KEY);
       }

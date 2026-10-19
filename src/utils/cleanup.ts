@@ -577,7 +577,10 @@ export async function cleanupOldMessageFilesInBackground(): Promise<void> {
   // skip cleanup entirely rather than falling back to the default (30 days).
   // This prevents accidentally deleting files when the user intended a different retention period.
   const { errors } = getSettingsWithAllErrors()
-  if (errors.length > 0 && rawSettingsContainsKey('cleanupPeriodDays')) {
+  if (
+    errors.some(error => error.severity !== 'warning') &&
+    rawSettingsContainsKey('cleanupPeriodDays')
+  ) {
     logForDebugging(
       'Skipping cleanup: settings have validation errors but cleanupPeriodDays was explicitly set. Fix settings errors to enable cleanup.',
     )

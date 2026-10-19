@@ -60,6 +60,7 @@ import {
 type StopHookResult = {
   blockingErrors: Message[]
   preventContinuation: boolean
+  additionalContextMessages?: Message[]
 }
 
 export async function* handleStopHooks(
@@ -174,6 +175,7 @@ export async function* handleStopHooks(
 
   try {
     const blockingErrors = []
+    const additionalContextMessages: Message[] = []
     const appState = toolUseContext.getAppState()
     const permissionMode = appState.toolPermissionContext.mode
 
@@ -265,6 +267,18 @@ export async function* handleStopHooks(
         // Add to hookErrors so it appears in the summary
         hookErrors.push(result.blockingError.blockingError)
       }
+      if (result.additionalContexts?.length) {
+        const hookEvent = toolUseContext.agentId ? 'SubagentStop' : 'Stop'
+        const message = createAttachmentMessage({
+          type: 'hook_additional_context',
+          content: result.additionalContexts,
+          hookName: hookEvent,
+          toolUseID: stopHookToolUseID,
+          hookEvent,
+        })
+        additionalContextMessages.push(message)
+        yield message
+      }
       // Check if hook wants to prevent continuation
       if (result.preventContinuation) {
         preventedContinuation = true
@@ -328,7 +342,7 @@ export async function* handleStopHooks(
 
     // Collect blocking errors from stop hooks
     if (blockingErrors.length > 0) {
-      return { blockingErrors, preventContinuation: false }
+      return { blockingErrors, preventContinuation: false, additionalContextMessages }
     }
 
     // After Stop hooks pass, run TeammateIdle and TaskCompleted hooks if this is a teammate
@@ -448,11 +462,12 @@ export async function* handleStopHooks(
         return {
           blockingErrors: teammateBlockingErrors,
           preventContinuation: false,
+          additionalContextMessages,
         }
       }
     }
 
-    return { blockingErrors: [], preventContinuation: false }
+    return { blockingErrors: [], preventContinuation: false, additionalContextMessages }
   } catch (error) {
     const durationMs = Date.now() - hookStartTime
     logEvent('tengu_stop_hook_error', {

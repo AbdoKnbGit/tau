@@ -25,6 +25,7 @@ import { IdleReturnDialog } from '../components/IdleReturnDialog.js';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState, useCallback, useDeferredValue, useLayoutEffect, type RefObject } from 'react';
 import { useNotifications } from '../context/notifications.js';
+import { settingsChangeDetector } from '../utils/settings/changeDetector.js';
 import { sendNotification } from '../services/notifier.js';
 import { startPreventSleep, stopPreventSleep } from '../services/preventSleep.js';
 import { useTerminalNotification } from '../ink/useTerminalNotification.js';
@@ -763,6 +764,14 @@ export function REPL({
     addNotification,
     removeNotification
   } = useNotifications();
+  useEffect(() => settingsChangeDetector.subscribeBlocked(change => {
+    addNotification({
+      key: `config-change-blocked:${change.source}`,
+      text: change.message,
+      color: 'warning',
+      priority: 'immediate',
+    });
+  }), [addNotification]);
   // Antigravity has no cheap mode: leave it on launch and after any provider
   // switch. Declared before the initial-message effect so turn 1 sees it.
   useProviderPowerModeGuard();
@@ -2519,6 +2528,11 @@ export function REPL({
   }, [setToolPermissionContext]);
   const canUseTool = useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext);
   const requestPrompt = useCallback((title: string, toolInputSummary?: string | null) => (request: PromptRequest): Promise<PromptResponse> => new Promise<PromptResponse>((resolve, reject) => {
+    // A model picker awaits this answer. Release its dialog and key handlers
+    // before showing the hook prompt, otherwise it hides the confirmation.
+    if (title === 'PreModelSwitch') {
+      setToolJSX({ jsx: null, shouldHidePromptInput: true, shouldContinueAnimation: true, clearLocalJSX: true });
+    }
     setPromptQueue(prev => [...prev, {
       request,
       title,
@@ -2526,7 +2540,7 @@ export function REPL({
       resolve,
       reject
     }]);
-  }), []);
+  }), [setToolJSX]);
   const getToolUseContext = useCallback((messages: MessageType[], newMessages: MessageType[], abortController: AbortController, mainLoopModelParam: string): ProcessUserInputContext => {
     // Read mutable values fresh from the store rather than closure-capturing
     // useAppState() snapshots. Same values today (closure is refreshed by the
@@ -2661,7 +2675,7 @@ export function REPL({
       },
       resume,
       setConversationId,
-      requestPrompt: feature('HOOK_PROMPTS') ? requestPrompt : undefined,
+      requestPrompt,
       contentReplacementState: contentReplacementStateRef.current,
       setContentReplacementState: state => {
         contentReplacementStateRef.current = state;

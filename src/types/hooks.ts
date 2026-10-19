@@ -131,6 +131,14 @@ export const syncHookResponseSchema = lazySchema(() =>
           additionalContext: z.string().optional(),
         }),
         z.object({
+          hookEventName: z.literal('Stop'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('SubagentStop'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
           hookEventName: z.literal('PostToolUse'),
           additionalContext: z.string().optional(),
           updatedToolOutput: z

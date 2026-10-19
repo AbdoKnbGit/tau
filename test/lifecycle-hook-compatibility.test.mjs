@@ -220,6 +220,16 @@ test('ask confirms only when the caller explicitly supports interactive confirma
   })
 })
 
+test('cancelling a model confirmation rejects the switch without throwing', async () => {
+  const context = contextFor()
+  context.requestPrompt = () => async () => { throw new Error('Prompt cancelled by user') }
+  await using({ executeHooks: () => iterable([{ permissionBehavior: 'ask' }]) }, async () => {
+    const result = await r.checkModelSwitchHooks({ ...request(context), allowConfirmation: true })
+    assert.equal(result.allowed, false)
+    assert.equal(result.reason, 'Model switch cancelled')
+  })
+})
+
 test('model switch input counts all usage buckets and includes estimates; no-op switches skip hooks', async () => {
   const context = contextFor()
   context.messages = [{ type: 'assistant', timestamp: new Date().toISOString(), message: {

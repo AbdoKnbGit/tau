@@ -3,6 +3,7 @@ import memoize from 'lodash-es/memoize.js'
 import { basename } from 'path'
 import type { SettingSource } from 'src/utils/settings/constants.js'
 import { z } from 'zod/v4'
+import { stripUnsupportedHooks } from '../../schemas/hooks.js'
 import { isAutoMemoryEnabled } from '../../memdir/paths.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -481,24 +482,45 @@ function getParseError(frontmatter: Record<string, unknown>): string {
  * Parse hooks from frontmatter using the HooksSchema
  * @param frontmatter The frontmatter object containing potential hooks
  * @param agentType The agent type for logging purposes
- * @returns Parsed hooks settings or undefined if invalid/missing
+ * @returns Parsed hooks settings or undefined if missing; malformed known hooks
+ * reject the agent instead of dropping its policy while running the body.
  */
 function parseHooksFromFrontmatter(
   frontmatter: Record<string, unknown>,
   agentType: string,
 ): HooksSettings | undefined {
-  if (!frontmatter.hooks) {
+  if (frontmatter.hooks === undefined) {
     return undefined
   }
 
-  const result = HooksSchema().safeParse(frontmatter.hooks)
+  const hooks = stripUnsupportedHooks(frontmatter.hooks, (path, message) => {
+    logForDebugging(`Agent '${agentType}' hooks.${path}: ${message}`)
+  })
+  const result = HooksSchema().safeParse(hooks)
   if (!result.success) {
-    logForDebugging(
+    throw new Error(
       `Invalid hooks in agent '${agentType}': ${result.error.message}`,
     )
-    return undefined
   }
   return result.data
+}
+
+function prepareAgentHooks(name: string, definition: unknown): unknown {
+  if (
+    !definition ||
+    typeof definition !== 'object' ||
+    Array.isArray(definition)
+  ) {
+    return definition
+  }
+  const raw = definition as Record<string, unknown>
+  if (!('hooks' in raw)) return definition
+  return {
+    ...raw,
+    hooks: stripUnsupportedHooks(raw.hooks, (path, message) => {
+      logForDebugging(`Agent '${name}' hooks.${path}: ${message}`)
+    }),
+  }
 }
 
 /**
@@ -510,7 +532,7 @@ export function parseAgentFromJson(
   source: SettingSource = 'flagSettings',
 ): CustomAgentDefinition | null {
   try {
-    const parsed = AgentJsonSchema().parse(definition)
+    const parsed = AgentJsonSchema().parse(prepareAgentHooks(name, definition))
 
     let tools = parseAgentToolsFromFrontmatter(parsed.tools)
 
@@ -586,7 +608,16 @@ export function parseAgentsFromJson(
   source: SettingSource = 'flagSettings',
 ): AgentDefinition[] {
   try {
-    const parsed = AgentsJsonSchema().parse(agentsJson)
+    const compatible =
+      agentsJson && typeof agentsJson === 'object' && !Array.isArray(agentsJson)
+        ? Object.fromEntries(
+            Object.entries(agentsJson).map(([name, definition]) => [
+              name,
+              prepareAgentHooks(name, definition),
+            ]),
+          )
+        : agentsJson
+    const parsed = AgentsJsonSchema().parse(compatible)
     return Object.entries(parsed)
       .map(([name, def]) => parseAgentFromJson(name, def, source))
       .filter((agent): agent is CustomAgentDefinition => agent !== null)

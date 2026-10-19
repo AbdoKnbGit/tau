@@ -1,5 +1,6 @@
 import type { ConfigScope } from 'src/services/mcp/types.js'
 import type { ZodError, ZodIssue } from 'zod/v4'
+import { stripUnsupportedHooks } from '../../schemas/hooks.js'
 import { jsonParse } from '../slowOperations.js'
 import { plural } from '../stringUtils.js'
 import { validatePermissionRule } from './permissionValidation.js'
@@ -46,6 +47,8 @@ function isTooSmallIssue(issue: ZodIssue): issue is ZodIssue & {
 export type FieldPath = string
 
 export type ValidationError = {
+  /** Nonblocking diagnostics keep the usable parts of the configuration. */
+  severity?: 'error' | 'warning'
   /** Relative file path */
   file?: string
   /** Field path in dot notation */
@@ -74,6 +77,28 @@ export type ValidationError = {
 export type SettingsWithErrors = {
   settings: SettingsJson
   errors: ValidationError[]
+}
+
+/** Ignore future hook extensions without weakening validation of known hooks. */
+export function prepareSettingsHooks(
+  data: unknown,
+  filePath: string,
+): { data: unknown; warnings: ValidationError[] } {
+  const warnings: ValidationError[] = []
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { data, warnings }
+  }
+  const settings = data as Record<string, unknown>
+  if (!('hooks' in settings)) return { data, warnings }
+  const hooks = stripUnsupportedHooks(settings.hooks, (path, message) => {
+    warnings.push({
+      file: filePath,
+      path: `hooks.${path}`,
+      message,
+      severity: 'warning',
+    })
+  })
+  return { data: { ...settings, hooks }, warnings }
 }
 
 /**
@@ -190,7 +215,9 @@ export function validateSettingsFileContent(content: string):
     const jsonData = jsonParse(content)
 
     // Validate against SettingsSchema in strict mode
-    const result = SettingsSchema().strict().safeParse(jsonData)
+    const result = SettingsSchema()
+      .strict()
+      .safeParse(prepareSettingsHooks(jsonData, 'settings').data)
 
     if (result.success) {
       return { isValid: true }

@@ -14,6 +14,7 @@ import {
   getAdditionalDirectoriesForClaudeMd,
   getSessionId,
 } from '../bootstrap/state.js'
+import { stripUnsupportedHooks } from '../schemas/hooks.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -135,22 +136,25 @@ type SkillWithPath = {
 
 /**
  * Parse and validate hooks from frontmatter.
- * Returns undefined if hooks are not defined or invalid.
+ * Returns undefined if hooks are not defined. Invalid known hooks reject the
+ * skill, so its body never runs after silently losing a policy hook.
  */
 function parseHooksFromFrontmatter(
   frontmatter: FrontmatterData,
   skillName: string,
 ): HooksSettings | undefined {
-  if (!frontmatter.hooks) {
+  if (frontmatter.hooks === undefined) {
     return undefined
   }
 
-  const result = HooksSchema().safeParse(frontmatter.hooks)
+  const hooks = stripUnsupportedHooks(frontmatter.hooks, (path, message) => {
+    logForDebugging(`Skill '${skillName}' hooks.${path}: ${message}`)
+  })
+  const result = HooksSchema().safeParse(hooks)
   if (!result.success) {
-    logForDebugging(
+    throw new Error(
       `Invalid hooks in skill '${skillName}': ${result.error.message}`,
     )
-    return undefined
   }
 
   return result.data

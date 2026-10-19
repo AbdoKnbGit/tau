@@ -2423,7 +2423,7 @@ async function run(): Promise<CommanderCommand> {
       const {
         errors
       } = getSettingsWithErrors();
-      const nonMcpErrors = errors.filter(e => !e.mcpErrorMetadata);
+      const nonMcpErrors = errors.filter(e => !e.mcpErrorMetadata && e.severity !== 'warning');
       if (nonMcpErrors.length > 0) {
         await launchInvalidSettingsDialog(root, {
           settingsErrors: nonMcpErrors,

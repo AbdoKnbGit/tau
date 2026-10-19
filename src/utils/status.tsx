@@ -183,10 +183,14 @@ export async function buildInstallationHealthDiagnostics(): Promise<Diagnostic[]
   const {
     errors: validationErrors
   } = getSettingsWithAllErrors();
-  if (validationErrors.length > 0) {
-    const invalidFiles = Array.from(new Set(validationErrors.map(error => error.file)));
+  const fatalErrors = validationErrors.filter(error => error.severity !== 'warning');
+  if (fatalErrors.length > 0) {
+    const invalidFiles = Array.from(new Set(fatalErrors.map(error => error.file)));
     const fileList = invalidFiles.join(', ');
     items.push(`Found invalid settings files: ${fileList}. They will be ignored.`);
+  }
+  for (const warning of validationErrors.filter(error => error.severity === 'warning')) {
+    items.push(`Settings warning (${warning.path}): ${warning.message}`);
   }
 
   // Add warnings from doctor diagnostic (includes leftover installations, config mismatches, etc.)

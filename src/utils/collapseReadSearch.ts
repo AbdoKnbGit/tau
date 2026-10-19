@@ -763,6 +763,25 @@ export function collapseReadSearchGroups(
   messages: RenderableMessage[],
   tools: Tools,
 ): RenderableMessage[] {
+  messages = messages.flatMap(message =>
+    message.type === 'grouped_tool_use' && message.results.some(result =>
+      result.message.content.some(block => block.type === 'tool_result' && block.is_error),
+    )
+      ? [...message.messages, ...new Set(message.results)]
+      : [message],
+  )
+  // Keep failed operations and their result messages in the ordinary renderer,
+  // where the error is visible. A completed count such as "Read 1 file" must
+  // never replace a denied read or a tool failure, including mixed tool groups.
+  const failedToolUseIds = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'user' || !Array.isArray(message.message.content)) continue
+    for (const block of message.message.content) {
+      if (block.type === 'tool_result' && block.is_error) {
+        failedToolUseIds.add(block.tool_use_id)
+      }
+    }
+  }
   const result: RenderableMessage[] = []
   let currentGroup = createEmptyGroup()
   let deferredSkippable: RenderableMessage[] = []
@@ -780,7 +799,8 @@ export function collapseReadSearchGroups(
   }
 
   for (const msg of messages) {
-    if (isCollapsibleToolUse(msg, tools)) {
+    if (isCollapsibleToolUse(msg, tools) &&
+      !getToolUseIdsFromMessage(msg).some(id => failedToolUseIds.has(id))) {
       // This is a collapsible tool use - type predicate narrows to CollapsibleMessage
       const toolInfo = getCollapsibleToolInfo(msg, tools)!
 

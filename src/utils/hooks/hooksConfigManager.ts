@@ -129,7 +129,7 @@ export const getHookEventMetadata = memoize(
       Stop: {
         summary: 'Right before Claude concludes its response',
         description:
-          'Exit code 0 - stdout/stderr not shown\nExit code 2 - show stderr to model and continue conversation\nOther exit codes - show stderr to user only',
+          'Return hookSpecificOutput.additionalContext to retain context for the next model turn. Context alone does not prevent stopping.\nExit code 0 - stdout/stderr not shown\nExit code 2 - show stderr to model and continue conversation\nOther exit codes - show stderr to user only',
       },
       StopFailure: {
         summary: 'When the turn ends due to an API error',

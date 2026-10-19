@@ -174,8 +174,8 @@ export async function checkModelSwitchHooks(request: ModelSwitchRequest): Promis
         { key: 'cancel', label: 'Keep current model' },
         { key: 'allow', label: 'Switch model' },
       ],
-    })
-    if (response.selected !== 'allow') return { allowed: false, reason: 'Model switch cancelled', messages }
+    }).catch(() => undefined)
+    if (response?.selected !== 'allow') return { allowed: false, reason: 'Model switch cancelled', messages }
   }
   return { allowed: true, messages }
 }

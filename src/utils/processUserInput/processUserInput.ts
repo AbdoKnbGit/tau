@@ -87,6 +87,9 @@ export type ProcessUserInputBaseResult = {
   // Output text for non-interactive mode (e.g., forked commands)
   // When set, this is used as the result in -p mode instead of empty string
   resultText?: string
+  // A hook refused the submission before a model turn. Headless callers must
+  // surface the reason as an error result, without echoing the blocked prompt.
+  resultError?: string
   // When set, prefills or submits the next input after command completes
   // Used by /discover to chain into the selected feature's command
   nextInput?: string
@@ -233,6 +236,7 @@ export async function processUserInput({
               ),
             ],
             shouldQuery: false,
+            resultError: blockingMessage,
             allowedTools: kept.allowedTools,
           },
         }
@@ -255,6 +259,7 @@ export async function processUserInput({
               }),
             ],
             shouldQuery: false,
+            resultError: message,
           },
         }
       }

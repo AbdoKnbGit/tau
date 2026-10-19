@@ -26,13 +26,17 @@ const r = await loadMcpRuntime({
   paths: [
     'src/utils/hooks.ts', 'src/utils/hooks/hookPolicy.ts',
     'src/utils/hooks/execMcpToolHook.ts', 'src/utils/hooks/execHttpHook.ts',
+    'src/query/stopHooks.ts', 'src/utils/sessionStorage.ts',
   ],
   exports: [
     'executeHooks', 'executeHooksOutsideREPL', 'execCommandHook',
     'execMcpToolHook', 'substituteHookInputPaths',
     'literalHookMatcherParts', 'defaultHookTimeoutMs', 'hookFailureBlockReason',
     'isAllowedTerminalSequence', 'getMatchingHooks', 'getSessionId', 'setIsInteractive',
+    'emitHookTerminalSequence', 'inkInstances: instances_default',
     'parseHookOutput', 'registerHookCallbacks', 'clearRegisteredHooks',
+    'executeSessionStartHooks', 'executeUserPromptSubmitHooks', 'handleStopHooks',
+    'cacheSessionTitle', 'clearSessionMetadata', 'restoreSessionMetadata', 'switchSession',
   ],
 })
 r.setIsInteractive(false)
@@ -68,6 +72,39 @@ async function run(hook, { event = 'PreToolUse', outside = false, signal, client
   }))
 }
 const blocked = results => results.some(result => result.blocked || result.blockingError)
+
+test('interactive host confirmation does not keep ordinary command-hook stdin open', async () => {
+  const script = `let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreModelSwitch',permissionDecision:'ask',permissionDecisionReason:'EOF received'}})));`
+  const context = contextFor(command(script), 'PreModelSwitch')
+  const results = await collect(r.executeHooks({
+    hookInput: input('PreModelSwitch'), toolUseID: 'stdin-fixture', toolUseContext: context,
+    timeoutMs: 2000,
+    requestPrompt: () => async () => { throw new Error('Host confirmation runs after hook completion') },
+  }))
+  assert.ok(results.some(result => result.permissionBehavior === 'ask' && result.hookPermissionDecisionReason === 'EOF received'))
+  assert.equal(blocked(results), false)
+})
+
+test('terminal sequences use the mounted console fallback and stay out of headless output', () => {
+  const writes = []
+  const consoleStream = { isTTY: true, write: value => writes.push(value) }
+  const sequence = '\x1b]0;fixture title\x07'
+  r.inkInstances.set(consoleStream, {})
+  try {
+    r.setIsInteractive(true)
+    r.emitHookTerminalSequence(sequence)
+    assert.deepEqual(writes, [sequence])
+    r.setIsInteractive(false)
+    r.emitHookTerminalSequence(sequence)
+    assert.equal(writes.length, 1)
+    r.setIsInteractive(true)
+    r.emitHookTerminalSequence('\x1b]52;c;clipboard\x07')
+    assert.equal(writes.length, 1)
+  } finally {
+    r.inkInstances.delete(consoleStream)
+    r.setIsInteractive(false)
+  }
+})
 
 test('exec-form command preserves argv boundaries, stdin and native plugin path substitution', async () => {
   const arguments_ = ['a b', '"quoted"', '; echo unsafe', '$(echo unsafe)', '', 'line\nbreak', 'λ', '${CLAUDE_PLUGIN_ROOT}/child path']
@@ -319,4 +356,132 @@ test('command stdin and CLAUDE_EFFORT agree with the current model effort', asyn
   context.getAppState().effortValue = 'medium'
   const output = await collect(r.executeHooks({ hookInput: input('PreToolUse'), toolUseID: 'fixture-effort', toolUseContext: context }))
   assert.ok(output.some(result => result.additionalContexts?.includes('medium|medium')))
+})
+
+test('model-switch matchers filter provider IDs while unfiltered hooks still run', async () => {
+  for (const event of ['PreModelSwitch', 'PostModelSwitch']) {
+    const makeHook = name => ({ type: 'callback', name, callback: async () => ({}) })
+    const hooks = [
+      { matcher: '^claude-', hooks: [{ hook: makeHook('claude') }] },
+      { matcher: '^gemini-', hooks: [{ hook: makeHook('gemini') }] },
+      { matcher: 'deepseek-chat', hooks: [{ hook: makeHook('deepseek') }] },
+      { matcher: '', hooks: [{ hook: makeHook('all') }] },
+    ]
+    const context = contextFor(makeHook('unused'), event)
+    context.getAppState().sessionHooks.get(r.getSessionId()).hooks[event] = hooks
+    for (const [model, expected] of [
+      ['gemini-3-pro', ['gemini', 'all']],
+      ['deepseek-chat', ['deepseek', 'all']],
+      ['gpt-6-luna', ['all']],
+      ['us.anthropic.claude-sonnet-4-6-v1:0[1m]', ['claude', 'all']],
+    ]) {
+      const matched = await r.getMatchingHooks(context.getAppState(), r.getSessionId(), event, { ...input(event), to_model: model })
+      assert.deepEqual(matched.map(result => result.hook.name), expected, `${event}: ${model}`)
+    }
+  }
+})
+
+test('session and prompt inputs contain the current resumed or renamed title', async () => {
+  const seen = []
+  const hook = { type: 'callback', callback: async value => { seen.push(value); return {} } }
+  r.registerHookCallbacks({ SessionStart: [{ matcher: '', hooks: [hook] }] })
+  const context = contextFor(hook, 'UserPromptSubmit')
+  try {
+    r.clearSessionMetadata()
+    await collect(r.executeSessionStartHooks('startup', undefined, undefined, undefined, undefined, 1000))
+    assert.equal(seen.at(-1).session_title, undefined)
+    r.restoreSessionMetadata({ customTitle: 'Resumed lab title' })
+    await collect(r.executeSessionStartHooks('resume', undefined, undefined, undefined, undefined, 1000))
+    assert.equal(seen.at(-1).session_title, 'Resumed lab title')
+    r.cacheSessionTitle('Renamed lab title')
+    await collect(r.executeUserPromptSubmitHooks('hello', 'default', context))
+    assert.equal(seen.at(-1).session_title, 'Renamed lab title')
+    await collect(r.executeSessionStartHooks('startup', 'unrelated-session', undefined, undefined, undefined, 1000))
+    assert.equal(seen.at(-1).session_title, undefined, 'never borrow another session title')
+  } finally {
+    r.clearRegisteredHooks()
+    r.clearSessionMetadata()
+  }
+})
+
+test('Stop and SubagentStop JSON context survives validation and execution', async () => {
+  for (const event of ['Stop', 'SubagentStop']) {
+    const json = { hookSpecificOutput: { hookEventName: event, additionalContext: `${event} context` } }
+    assert.equal(r.parseHookOutput(JSON.stringify(json)).validationError, undefined)
+    const output = await run(command(`console.log(${JSON.stringify(JSON.stringify(json))})`), { event })
+    assert.ok(output.some(result => result.additionalContexts?.includes(`${event} context`)))
+    assert.equal(blocked(output), false, 'context alone never forces another model turn')
+  }
+})
+
+test('Stop context reaches the transcript and a blocked-stop continuation', async () => {
+  // --bare suppresses unrelated background bookkeeping; SIMPLE remains off
+  // so the real hook engine still runs against this local fixture.
+  process.argv.push('--bare')
+  try {
+    for (const shouldBlock of [false, true]) {
+      const output = { ...(shouldBlock ? { decision: 'block', reason: 'finish the fixture' } : {}),
+        hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'carry this context' } }
+      const context = contextFor(command(`console.log(${JSON.stringify(JSON.stringify(output))})`), 'Stop')
+      const generator = r.handleStopHooks([], [], [], {}, {}, context, 'fixture')
+      const messages = []
+      let completion
+      while (true) {
+        const next = await generator.next()
+        if (next.done) { completion = next.value; break }
+        messages.push(next.value)
+      }
+      const contexts = messages.filter(message => message.attachment?.type === 'hook_additional_context')
+      assert.equal(contexts.length, 1)
+      assert.deepEqual(contexts[0].attachment.content, ['carry this context'])
+      assert.deepEqual(completion.additionalContextMessages, contexts)
+      assert.equal(completion.blockingErrors.length, shouldBlock ? 1 : 0)
+      assert.equal(completion.preventContinuation, false)
+    }
+  } finally { process.argv.pop() }
+})
+
+test('unsupported classifier context warns once per session without altering results', async () => {
+  const sessionId = r.getSessionId()
+  const hook = { type: 'callback', callback: async () => ({ systemMessage: 'ordinary notice',
+    hookSpecificOutput: { hookEventName: 'PostToolUse', classifierContext: 'untrusted hint', additionalContext: 'normal context' } }) }
+  try {
+    for (const expectedWarning of [true, false]) {
+      const output = await run(hook, { event: 'PostToolUse' })
+      const notices = output.filter(result => result.message?.attachment?.type === 'hook_system_message')
+      assert.equal(JSON.stringify(notices).includes('Tau ignored classifierContext'), expectedWarning)
+      assert.ok(JSON.stringify(notices).includes('ordinary notice'))
+      assert.ok(output.some(result => result.additionalContexts?.includes('normal context')))
+      assert.equal(blocked(output), false)
+    }
+    r.switchSession('classifier-warning-new-session')
+    const nextSession = await run(hook, { event: 'PostToolUse' })
+    assert.ok(JSON.stringify(nextSession).includes('Tau ignored classifierContext'))
+  } finally { r.switchSession(sessionId) }
+})
+
+test('outside-REPL policy results preserve JSON block reasons and exit-two stderr', async () => {
+  const json = { decision: 'block', reason: 'settings are locked' }
+  const script = `console.log(${JSON.stringify(JSON.stringify(json))});process.exitCode=1`
+  const [commandResult] = await run(command(script), { event: 'ConfigChange', outside: true })
+  assert.equal(commandResult.blockingReason, 'settings are locked')
+  assert.equal(commandResult.output, '')
+  const [callbackResult] = await run({ type: 'callback', callback: async () => json }, { event: 'ConfigChange', outside: true })
+  assert.equal(callbackResult.blockingReason, 'settings are locked')
+  const [exitTwo] = await run(command(`${script};process.stderr.write('exit-two reason');process.exitCode=2`), { event: 'ConfigChange', outside: true })
+  assert.equal(exitTwo.blockingReason, 'exit-two reason')
+  const [failed] = await run(command('process.stderr.write("policy crash");process.exitCode=1', { onFailure: 'block' }), { event: 'ConfigChange', outside: true })
+  assert.equal(failed.blockingReason, 'policy crash')
+  const server = createServer((_request, response) => response.end(JSON.stringify(json)))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const [httpResult] = await run({ type: 'http', url: `http://127.0.0.1:${server.address().port}` }, { event: 'ConfigChange', outside: true })
+    assert.equal(httpResult.blockingReason, 'settings are locked')
+    const clients = [{ name: 'policy', type: 'connected', client: { callTool: async () => ({ content: [{ type: 'text', text: JSON.stringify(json) }] }) } }]
+    const [mcpResult] = await run({ type: 'mcp_tool', server: 'policy', tool: 'check' }, { event: 'ConfigChange', outside: true, clients })
+    assert.equal(mcpResult.blockingReason, 'settings are locked')
+  } finally {
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+  }
 })

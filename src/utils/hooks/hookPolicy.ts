@@ -201,6 +201,11 @@ export function isAllowedTerminalSequence(value: string): boolean {
  */
 export function emitHookTerminalSequence(value: unknown): void {
   if (typeof value !== 'string' || !isAllowedTerminalSequence(value)) return
-  if (getIsNonInteractiveSession() || !instances.has(process.stdout)) return
-  process.stdout.write(wrapForMultiplexer(value))
+  if (getIsNonInteractiveSession()) return
+  // Windows may mount Ink on a reopened console stream or stderr when stdout
+  // is a pipe. Send the sequence to the mounted terminal, not that pipe.
+  const output = instances.has(process.stdout)
+    ? process.stdout
+    : [...instances.keys()].find(stream => stream.isTTY)
+  output?.write(wrapForMultiplexer(value))
 }

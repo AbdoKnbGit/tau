@@ -38,16 +38,19 @@ import {
   getCachedParsedFile,
   getCachedSettingsForSource,
   getPluginSettingsBase,
+  getRetainedSettingsFile,
   getSessionSettingsCache,
   resetSettingsCache,
   setCachedParsedFile,
   setCachedSettingsForSource,
   setSessionSettingsCache,
+  updateRetainedSettingsFile,
 } from './settingsCache.js'
 import { type SettingsJson, SettingsSchema } from './types.js'
 import {
   filterInvalidPermissionRules,
   formatZodError,
+  prepareSettingsHooks,
   type SettingsWithErrors,
   type ValidationError,
 } from './validation.js'
@@ -216,14 +219,16 @@ function parseSettingsFileUncached(path: string): {
     // rule doesn't cause the entire settings file to be rejected.
     const ruleWarnings = filterInvalidPermissionRules(data, path)
 
-    const result = SettingsSchema().safeParse(data)
+    const compatible = prepareSettingsHooks(data, path)
+    const warnings = [...ruleWarnings, ...compatible.warnings]
+    const result = SettingsSchema().safeParse(compatible.data)
 
     if (!result.success) {
       const errors = formatZodError(result.error, path)
-      return { settings: null, errors: [...ruleWarnings, ...errors] }
+      return { settings: null, errors: [...warnings, ...errors] }
     }
 
-    return { settings: result.data, errors: ruleWarnings }
+    return { settings: result.data, errors: warnings }
   } catch (error) {
     handleFileSystemError(error, path)
     return { settings: null, errors: [] }
@@ -353,7 +358,9 @@ function getSettingsForSourceUncached(
   if (source === 'flagSettings') {
     const inlineSettings = getFlagSettingsInline()
     if (inlineSettings) {
-      const parsed = SettingsSchema().safeParse(inlineSettings)
+      const parsed = SettingsSchema().safeParse(
+        prepareSettingsHooks(inlineSettings, 'inline settings').data,
+      )
       if (parsed.success) {
         return mergeWith(
           fileSettings || {},
@@ -437,7 +444,30 @@ export function updateSettingsForSource(
     // cache — mergeWith below mutates its target (including nested refs),
     // and mutating the cached object would leak unpersisted state if the
     // write fails before resetSettingsCache().
-    let existingSettings = getSettingsForSourceUncached(source)
+    const retained = getRetainedSettingsFile(filePath)
+    // A refused external edit remains on disk. Internal writes update those
+    // disk bytes while applying only their explicit patch to the live snapshot.
+    let existingSettings = retained ? null : getSettingsForSourceUncached(source)
+
+    // Runtime parsing omits unknown hook extensions. Preserve their raw data
+    // when saving an unrelated setting so sharing settings with a newer host
+    // does not silently erase that host's hooks.
+    if (existingSettings) {
+      try {
+        const rawData = safeParseJSON(readFileSync(filePath))
+        if (rawData && typeof rawData === 'object' && !Array.isArray(rawData)) {
+          const rawSettings = rawData as Record<string, unknown>
+          if (prepareSettingsHooks(rawSettings, filePath).warnings.length > 0) {
+            existingSettings = {
+              ...existingSettings,
+              hooks: rawSettings.hooks,
+            } as SettingsJson
+          }
+        }
+      } catch (e) {
+        if (!isENOENT(e)) throw e
+      }
+    }
 
     // If validation failed, check if file exists with a JSON syntax error
     if (!existingSettings) {
@@ -470,8 +500,8 @@ export function updateSettingsForSource(
       }
     }
 
-    const updatedSettings = mergeWith(
-      existingSettings || {},
+    const mergeUpdate = (target: SettingsJson): SettingsJson => mergeWith(
+      target,
       settings,
       (
         _objValue: unknown,
@@ -493,6 +523,7 @@ export function updateSettingsForSource(
         return undefined
       },
     )
+    const updatedSettings = mergeUpdate(existingSettings || {})
 
     // Mark this as an internal write before writing the file
     markInternalWrite(filePath)
@@ -501,6 +532,22 @@ export function updateSettingsForSource(
       filePath,
       jsonStringify(updatedSettings, null, 2) + '\n',
     )
+
+    if (retained) {
+      const liveSettings = mergeUpdate(clone(retained.settings || {}))
+      const compatible = prepareSettingsHooks(liveSettings, filePath)
+      const parsed = SettingsSchema().safeParse(compatible.data)
+      updateRetainedSettingsFile(filePath, {
+        settings: parsed.success ? parsed.data : null,
+        errors: parsed.success
+          ? compatible.warnings
+          : [...compatible.warnings, ...formatZodError(parsed.error, filePath)],
+      })
+    } else {
+      // Keep the accepted snapshot current even if no reader observes this
+      // internal write before the next external ConfigChange event.
+      setCachedParsedFile(filePath, parseSettingsFileUncached(filePath))
+    }
 
     // Invalidate the session cache since settings have been updated
     resetSettingsCache()
@@ -681,7 +728,12 @@ function loadSettingsFromDisk(): SettingsWithErrors {
         // 1. Remote (highest priority)
         const remoteSettings = getRemoteManagedSettingsSyncFromCache()
         if (remoteSettings && Object.keys(remoteSettings).length > 0) {
-          const result = SettingsSchema().safeParse(remoteSettings)
+          const compatible = prepareSettingsHooks(
+            remoteSettings,
+            'remote managed settings',
+          )
+          policyErrors.push(...compatible.warnings)
+          const result = SettingsSchema().safeParse(compatible.data)
           if (result.success) {
             policySettings = result.data
           } else {
@@ -771,7 +823,12 @@ function loadSettingsFromDisk(): SettingsWithErrors {
       if (source === 'flagSettings') {
         const inlineSettings = getFlagSettingsInline()
         if (inlineSettings) {
-          const parsed = SettingsSchema().safeParse(inlineSettings)
+          const compatible = prepareSettingsHooks(
+            inlineSettings,
+            'inline settings',
+          )
+          allErrors.push(...compatible.warnings)
+          const parsed = SettingsSchema().safeParse(compatible.data)
           if (parsed.success) {
             mergedSettings = mergeWith(
               mergedSettings,

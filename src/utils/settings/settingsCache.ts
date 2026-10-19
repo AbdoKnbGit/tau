@@ -1,3 +1,4 @@
+import { normalize } from 'path'
 import type { SettingSource } from './constants.js'
 import type { SettingsJson } from './types.js'
 import type { SettingsWithErrors, ValidationError } from './validation.js'
@@ -43,13 +44,49 @@ type ParsedSettings = {
   errors: ValidationError[]
 }
 const parseFileCache = new Map<string, ParsedSettings>()
+// Accepted snapshots outlive ordinary cache invalidation. ConfigChange may
+// refuse disk bytes while another source, plugin reload, or /add-dir resets
+// the caches; that must not accidentally activate the refused settings.
+const acceptedFiles = new Map<string, ParsedSettings>()
+const retainedFiles = new Map<string, ParsedSettings>()
 
 export function getCachedParsedFile(path: string): ParsedSettings | undefined {
-  return parseFileCache.get(path)
+  const key = normalize(path)
+  return retainedFiles.get(key) ?? parseFileCache.get(key)
 }
 
 export function setCachedParsedFile(path: string, value: ParsedSettings): void {
-  parseFileCache.set(path, value)
+  const key = normalize(path)
+  parseFileCache.set(key, value)
+  acceptedFiles.set(key, value)
+}
+
+export function retainSettingsFile(path: string): void {
+  const key = normalize(path)
+  if (!retainedFiles.has(key)) {
+    retainedFiles.set(key, acceptedFiles.get(key) ?? { settings: null, errors: [] })
+  }
+}
+
+export function releaseSettingsFile(path: string): void {
+  const key = normalize(path)
+  retainedFiles.delete(key)
+  parseFileCache.delete(key)
+}
+
+export function getRetainedSettingsFile(path: string): ParsedSettings | undefined {
+  return retainedFiles.get(normalize(path))
+}
+
+export function updateRetainedSettingsFile(path: string, value: ParsedSettings): void {
+  const key = normalize(path)
+  retainedFiles.set(key, value)
+  acceptedFiles.set(key, value)
+}
+
+export function clearRetainedSettingsFiles(): void {
+  retainedFiles.clear()
+  acceptedFiles.clear()
 }
 
 export function resetSettingsCache(): void {

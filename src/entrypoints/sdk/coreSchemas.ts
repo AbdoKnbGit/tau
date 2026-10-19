@@ -1010,6 +1010,20 @@ export const SubagentStartHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
+export const StopHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('Stop'),
+    additionalContext: z.string().optional(),
+  }),
+)
+
+export const SubagentStopHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('SubagentStop'),
+    additionalContext: z.string().optional(),
+  }),
+)
+
 export const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PostToolUse'),
@@ -1094,6 +1108,8 @@ export const SyncHookJSONOutputSchema = lazySchema(() =>
         SessionStartHookSpecificOutputSchema(),
         SetupHookSpecificOutputSchema(),
         SubagentStartHookSpecificOutputSchema(),
+        StopHookSpecificOutputSchema(),
+        SubagentStopHookSpecificOutputSchema(),
         PostToolUseHookSpecificOutputSchema(),
         PostToolUseFailureHookSpecificOutputSchema(),
         PermissionDeniedHookSpecificOutputSchema(),

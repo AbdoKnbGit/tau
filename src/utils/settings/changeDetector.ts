@@ -1,12 +1,15 @@
 import chokidar, { type FSWatcher } from 'chokidar'
+import { createHash } from 'crypto'
+import { readFileSync } from 'fs'
 import { stat } from 'fs/promises'
 import * as platformPath from 'path'
 import { getIsRemoteMode } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from '../debug.js'
-import { errorMessage } from '../errors.js'
+import { errorMessage, isENOENT } from '../errors.js'
 import {
   type ConfigChangeSource,
+  type HookOutsideReplResult,
   executeConfigChangeHooks,
   hasBlockingResult,
 } from '../hooks.js'
@@ -21,8 +24,14 @@ import {
   refreshMdmSettings,
   setMdmSettingsCache,
 } from './mdm/settings.js'
-import { getSettingsFilePathForSource } from './settings.js'
-import { resetSettingsCache } from './settingsCache.js'
+import { getSettingsFilePathForSource, parseSettingsFile } from './settings.js'
+import {
+  clearRetainedSettingsFiles,
+  getRetainedSettingsFile,
+  releaseSettingsFile,
+  resetSettingsCache,
+  retainSettingsFile,
+} from './settingsCache.js'
 
 /**
  * Time in milliseconds to wait for file writes to stabilize before processing.
@@ -68,7 +77,17 @@ let lastMdmSnapshot: string | null = null
 let initialized = false
 let disposed = false
 const pendingDeletions = new Map<string, ReturnType<typeof setTimeout>>()
+type SettingsDecision = { version: string | undefined }
+const pendingDecisions = new Map<string, SettingsDecision>()
 const settingsChanged = createSignal<[source: SettingSource]>()
+
+export type BlockedSettingsChange = {
+  source: SettingSource
+  path: string
+  operation: 'change' | 'delete'
+  message: string
+}
+const settingsChangeBlocked = createSignal<[change: BlockedSettingsChange]>()
 
 // Test overrides for timing constants
 let testOverrides: {
@@ -159,9 +178,13 @@ export function dispose(): Promise<void> {
   }
   for (const timer of pendingDeletions.values()) clearTimeout(timer)
   pendingDeletions.clear()
+  pendingDecisions.clear()
   lastMdmSnapshot = null
   clearInternalWrites()
   settingsChanged.clear()
+  settingsChangeBlocked.clear()
+  clearRetainedSettingsFiles()
+  resetSettingsCache()
   const w = watcher
   watcher = null
   return w ? w.close() : Promise.resolve()
@@ -171,6 +194,31 @@ export function dispose(): Promise<void> {
  * Subscribe to settings changes
  */
 export const subscribe = settingsChanged.subscribe
+export const subscribeBlocked = settingsChangeBlocked.subscribe
+
+function reportBlockedSettingsChange(
+  source: SettingSource,
+  path: string,
+  operation: 'change' | 'delete',
+  results: HookOutsideReplResult[],
+): void {
+  const reasons = [
+    ...new Set(
+      results
+        .filter(result => result.blocked)
+        .map(
+          result =>
+            result.blockingReason || result.systemMessage || result.output,
+        )
+        .filter(Boolean),
+    ),
+  ]
+  const message =
+    `ConfigChange blocked settings ${operation === 'delete' ? 'deletion' : 'change'}: ` +
+    (reasons.length > 0 ? `${reasons.join('\n')} (${path})` : path)
+  logForDebugging(message)
+  settingsChangeBlocked.emit({ source, path, operation, message })
+}
 
 /**
  * Collect settings file paths and their deduplicated parent directories to watch.
@@ -266,6 +314,8 @@ function settingSourceToConfigChangeSource(
 }
 
 function handleChange(path: string): void {
+  if (disposed) return
+  path = platformPath.normalize(path)
   const source = getSourceForPath(path)
   if (!source) return
 
@@ -282,23 +332,77 @@ function handleChange(path: string): void {
 
   // Check if this was an internal write
   if (consumeInternalWrite(path, INTERNAL_WRITE_WINDOW_MS)) {
+    pendingDecisions.delete(path)
     return
   }
 
   logForDebugging(`Detected change to ${path}`)
 
-  // Fire ConfigChange hook first — if blocked (exit code 2 or decision: 'block'),
-  // skip applying the change to the session
-  void executeConfigChangeHooks(
-    settingSourceToConfigChangeSource(source),
-    path,
-  ).then(results => {
+  const decision = beginSettingsDecision(path)
+  void decideSettingsChange(source, path, 'change', decision)
+}
+
+function settingsFileVersion(path: string): string | undefined {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex')
+  } catch (error) {
+    if (isENOENT(error)) return 'missing'
+    logForDebugging(`Cannot identify settings change for ${path}: ${errorMessage(error)}`)
+    return undefined
+  }
+}
+
+function beginSettingsDecision(path: string): SettingsDecision {
+  // Hold the last accepted bytes before any asynchronous work. Unrelated
+  // cache invalidations must not apply an edit still awaiting its hook.
+  retainSettingsFile(path)
+  const decision = { version: settingsFileVersion(path) }
+  pendingDecisions.set(path, decision)
+  return decision
+}
+
+async function decideSettingsChange(
+  source: SettingSource,
+  path: string,
+  operation: 'change' | 'delete',
+  decision: SettingsDecision,
+): Promise<void> {
+  const snapshot = getRetainedSettingsFile(path)
+  try {
+    const results = await executeConfigChangeHooks(
+      settingSourceToConfigChangeSource(source),
+      path,
+    )
+    // A newer file event, internal settings patch, or disposed watcher owns
+    // the current state. Its decision must never be overwritten by this one.
+    if (
+      disposed || pendingDecisions.get(path) !== decision ||
+      getRetainedSettingsFile(path) !== snapshot
+    ) return
+    pendingDecisions.delete(path)
+    // A second write may still be inside chokidar's debounce window. The
+    // decision for earlier bytes cannot approve those new bytes just because
+    // their watcher event has not arrived yet.
+    if (
+      decision.version === undefined ||
+      settingsFileVersion(path) !== decision.version
+    ) return
     if (hasBlockingResult(results)) {
-      logForDebugging(`ConfigChange hook blocked change to ${path}`)
+      reportBlockedSettingsChange(source, path, operation, results)
       return
     }
+    releaseSettingsFile(path)
+    // Record the accepted state even when nobody has subscribed to changes.
+    // A later rejected edit must retain this version, not an older read.
+    parseSettingsFile(path)
     fanOut(source)
-  })
+  } catch (error) {
+    if (disposed || pendingDecisions.get(path) !== decision) return
+    pendingDecisions.delete(path)
+    // Unexpected execution errors leave the accepted settings active. Normal
+    // per-hook failure policy is already resolved by executeConfigChangeHooks.
+    logForDebugging(`ConfigChange hook failed for ${path}: ${errorMessage(error)}`)
+  }
 }
 
 /**
@@ -306,6 +410,8 @@ function handleChange(path: string): void {
  * pending deletion grace timer and treats the event as a change.
  */
 function handleAdd(path: string): void {
+  if (disposed) return
+  path = platformPath.normalize(path)
   const source = getSourceForPath(path)
   if (!source) return
 
@@ -328,6 +434,8 @@ function handleAdd(path: string): void {
  * the deletion is cancelled and treated as a normal change instead.
  */
 function handleDelete(path: string): void {
+  if (disposed) return
+  path = platformPath.normalize(path)
   const source = getSourceForPath(path)
   if (!source) return
 
@@ -336,21 +444,16 @@ function handleDelete(path: string): void {
   // If there's already a pending deletion for this path, let it run
   if (pendingDeletions.has(path)) return
 
+  // Retain during the grace window too: the file is already absent on disk.
+  const decision = beginSettingsDecision(path)
+
   const timer = setTimeout(
     (p, src) => {
       pendingDeletions.delete(p)
 
-      // Fire ConfigChange hook first — if blocked, skip applying the deletion
-      void executeConfigChangeHooks(
-        settingSourceToConfigChangeSource(src),
-        p,
-      ).then(results => {
-        if (hasBlockingResult(results)) {
-          logForDebugging(`ConfigChange hook blocked deletion of ${p}`)
-          return
-        }
-        fanOut(src)
-      })
+      if (!disposed && pendingDecisions.get(p) === decision) {
+        void decideSettingsChange(src, p, 'delete', decision)
+      }
     },
     testOverrides?.deletionGrace ?? DELETION_GRACE_MS,
     path,
@@ -470,6 +573,9 @@ export function resetForTesting(overrides?: {
   }
   for (const timer of pendingDeletions.values()) clearTimeout(timer)
   pendingDeletions.clear()
+  pendingDecisions.clear()
+  clearRetainedSettingsFiles()
+  resetSettingsCache()
   lastMdmSnapshot = null
   initialized = false
   disposed = false
@@ -483,6 +589,7 @@ export const settingsChangeDetector = {
   initialize,
   dispose,
   subscribe,
+  subscribeBlocked,
   notifyChange,
   resetForTesting,
 }

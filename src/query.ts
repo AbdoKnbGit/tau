@@ -1628,6 +1628,7 @@ async function* queryLoop(
           messages: [
             ...messagesForQuery,
             ...assistantMessages,
+            ...(stopHookResult.additionalContextMessages ?? []),
             ...stopHookResult.blockingErrors,
           ],
           toolUseContext,
@@ -1670,6 +1671,7 @@ async function* queryLoop(
                 content: decision.nudgeMessage,
                 isMeta: true,
               }),
+              ...(stopHookResult.additionalContextMessages ?? []),
             ],
             toolUseContext,
             autoCompactTracking: tracking,
@@ -1729,6 +1731,7 @@ async function* queryLoop(
                 content: goalDecision.continuationText,
                 isMeta: true,
               }),
+              ...(stopHookResult.additionalContextMessages ?? []),
             ],
             toolUseContext,
             autoCompactTracking: tracking,

@@ -348,7 +348,7 @@ export function Doctor(t0) {
   }
   let t22;
   if ($[38] !== errorsExcludingMcp) {
-    t22 = errorsExcludingMcp.length > 0 && <Box flexDirection="column" marginTop={1} marginBottom={1}><Text bold={true}>Invalid Settings</Text><ValidationErrorsList errors={errorsExcludingMcp} /></Box>;
+    t22 = errorsExcludingMcp.length > 0 && <Box flexDirection="column" marginTop={1} marginBottom={1}><Text bold={true}>{errorsExcludingMcp.every(error => error.severity === 'warning') ? 'Settings warnings' : 'Invalid Settings'}</Text><ValidationErrorsList errors={errorsExcludingMcp} /></Box>;
     $[38] = errorsExcludingMcp;
     $[39] = t22;
   } else {

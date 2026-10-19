@@ -233,7 +233,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
       errors: allErrors
     } = getSettingsWithAllErrors();
     trace(`settingsErrors = ${allErrors.length}`);
-    if (allErrors.length === 0) {
+    if (allErrors.every(error => error.severity === 'warning')) {
       trace('before handleMcpjsonServerApprovals');
       await handleMcpjsonServerApprovals(root);
       trace('after handleMcpjsonServerApprovals');

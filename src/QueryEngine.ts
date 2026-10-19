@@ -441,6 +441,7 @@ export class QueryEngine {
       allowedTools,
       model: modelFromUserInput,
       resultText,
+      resultError,
     } = await processUserInput({
       input: prompt,
       mode: 'prompt',
@@ -647,12 +648,20 @@ export class QueryEngine {
 
       yield {
         type: 'result',
-        subtype: 'success',
-        is_error: false,
+        ...(resultError !== undefined
+          ? {
+              subtype: 'error_during_execution' as const,
+              is_error: true,
+              errors: [resultError],
+            }
+          : {
+              subtype: 'success' as const,
+              is_error: false,
+              result: resultText ?? '',
+            }),
         duration_ms: Date.now() - startTime,
         duration_api_ms: getTotalAPIDuration(),
-        num_turns: messages.length - 1,
-        result: resultText ?? '',
+        num_turns: resultError !== undefined ? 0 : messages.length - 1,
         stop_reason: null,
         session_id: getSessionId(),
         total_cost_usd: getTotalCost(),

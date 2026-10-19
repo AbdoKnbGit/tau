@@ -394,6 +394,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
     effort,
     command: returnedCommand,
     resultText,
+    resultError,
     nextInput,
     submitNextInput
   } = await getMessagesForSlashCommand(commandName, parsedArgs, setToolJSX, context, precedingInputBlocks, imageContentBlocks, isAlreadyProcessing, canUseTool, uuid, inputString);
@@ -522,6 +523,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
     model,
     effort,
     resultText,
+    resultError,
     nextInput,
     submitNextInput
   };
@@ -740,9 +742,11 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
               prompt: originalPrompt ?? `/${commandName}${args ? ` ${args}` : ''}`,
             }, context)) {
               if (result.blockingError || result.preventContinuation) {
+                const reason = result.blockingError?.blockingError ?? result.stopReason ?? 'Command expansion stopped by hook';
                 return {
-                  messages: [createSystemMessage(result.blockingError?.blockingError ?? result.stopReason ?? 'Command expansion stopped by hook', 'warning')],
+                  messages: [createSystemMessage(reason, 'warning')],
                   shouldQuery: false,
+                  resultError: `UserPromptExpansion operation blocked by hook:\n${reason}`,
                   command,
                 };
               }
