@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { after, test } from 'node:test'
@@ -21,6 +21,7 @@ const r = await loadBuiltRuntime({
   exports: [
     'getOrCreateWorktree', 'createWorktreeForSession', 'createAgentWorktree',
     'resolveWorktreeBase', 'restoreWorktreeSession', 'EnterWorktreeTool',
+    'findCanonicalGitRoot',
     'setCwd', 'getCwd', 'setOriginalCwd', 'setProjectRoot', 'runWithCwdOverride',
     'updateSettingsForSource', 'getInitialSettings', 'resetSettingsCache',
     'resetGitFileWatcher: () => gitWatcher.reset()',
@@ -86,6 +87,11 @@ function create(path, name, extra = {}) {
   return r.getOrCreateWorktree(path, name, { sourceCwd: path, ...extra })
 }
 function head(path) { return git(path, 'rev-parse', 'HEAD') }
+function assertSamePath(actual, expected, message) {
+  // Git and Tau may resolve symlinks or Windows 8.3 names differently.
+  // Compare real directories, while still rejecting a different checkout.
+  assert.equal(realpathSync.native(actual), realpathSync.native(expected), message)
+}
 function remoteFixture() {
   const publisher = repo()
   const remote = join(scratch, `remote ${serial++}.git`)
@@ -128,11 +134,11 @@ test('session and EnterWorktree preserve the caller HEAD from a linked worktree 
   context(path, { base: 'remote-default' })
   context(subdir, { base: 'head', remote: 'upstream' })
   const session = await r.createWorktreeForSession('test-session', 'from-linked')
-  assert.equal(session.originalCwd, subdir)
+  assertSamePath(session.originalCwd, subdir)
   assert.equal(session.originalHeadCommit, expected)
   assert.equal(head(session.worktreePath), expected)
-  assert.equal(resolve(session.worktreePath), join(path, '.claude', 'worktrees', 'from-linked'))
-  assert.equal(r.getCwd(), subdir, 'creation does not change ambient cwd')
+  assertSamePath(session.worktreePath, join(path, '.claude', 'worktrees', 'from-linked'))
+  assertSamePath(r.getCwd(), subdir, 'creation does not change ambient cwd')
   assert.deepEqual(JSON.parse(readFileSync(join(session.worktreePath, '.claude', 'settings.local.json'), 'utf8')).worktree,
     { base: 'head', remote: 'upstream' }, 'inherit the caller settings, not the canonical checkout settings')
   context(subdir)
@@ -161,7 +167,51 @@ test('concurrent subagents use their own async cwd, without sharing HEAD or cwd'
     assert.equal(head(result.worktreePath), expected[i])
     assert.equal(result.snapshotBased, undefined)
   })
-  assert.equal(r.getCwd(), path)
+  assertSamePath(r.getCwd(), path)
+})
+
+test('linked worktrees keep their canonical repository through a directory alias', () => {
+  const path = repo()
+  const linked = join(scratch, `linked alias target ${serial++}`)
+  git(path, 'worktree', 'add', '-b', 'alias-feature', linked)
+  const alias = join(scratch, `directory alias ${serial++}`)
+  symlinkSync(linked, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  assertSamePath(r.findCanonicalGitRoot(alias), path)
+})
+
+test('Windows short paths still resolve linked worktrees to the main repository', {
+  skip: process.platform !== 'win32',
+}, t => {
+  const path = repo()
+  const linked = join(scratch, `linked short path ${serial++}`)
+  git(path, 'worktree', 'add', '-b', 'short-path-feature', linked)
+  const shortPath = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '$fso = New-Object -ComObject Scripting.FileSystemObject; $fso.GetFolder($env:TAU_TEST_PATH).ShortPath'],
+  { encoding: 'utf8', env: { ...process.env, TAU_TEST_PATH: linked } }).trim()
+  if (shortPath === realpathSync.native(linked)) {
+    t.skip('8.3 names are disabled on this volume')
+    return
+  }
+  assertSamePath(r.findCanonicalGitRoot(shortPath), path)
+})
+
+test('canonical repository validation rejects a borrowed worktree entry and a forged common directory', () => {
+  const trusted = repo()
+  const linked = join(scratch, `trusted linked ${serial++}`)
+  git(trusted, 'worktree', 'add', '-b', 'trusted-feature', linked)
+
+  const borrowed = join(scratch, `borrowed ${serial++}`)
+  mkdirSync(borrowed)
+  writeFileSync(join(borrowed, '.git'), readFileSync(join(linked, '.git')))
+  assertSamePath(r.findCanonicalGitRoot(borrowed), borrowed, 'the reciprocal link must match')
+
+  const forged = join(scratch, `forged ${serial++}`)
+  const entry = join(forged, 'fake-entry')
+  mkdirSync(entry, { recursive: true })
+  writeFileSync(join(forged, '.git'), `gitdir: ${entry}\n`)
+  writeFileSync(join(entry, 'commondir'), `${join(trusted, '.git')}\n`)
+  writeFileSync(join(entry, 'gitdir'), `${join(forged, '.git')}\n`)
+  assertSamePath(r.findCanonicalGitRoot(forged), forged, 'the entry must live inside the common directory')
 })
 
 test('HEAD is read fresh after commits, supports packed refs and detached HEAD, without a remote', async () => {
@@ -331,6 +381,6 @@ test('a failed EnterWorktree leaves the caller directory and session untouched',
   const processCwd = process.cwd()
   await assert.rejects(r.EnterWorktreeTool.call({ name: 'failed-tool' }), /Cannot fetch/)
   assert.equal(process.cwd(), processCwd)
-  assert.equal(r.getCwd(), subdir)
+  assertSamePath(r.getCwd(), subdir)
   assert.equal(existsSync(join(path, '.claude', 'worktrees', 'failed-tool')), false)
 })

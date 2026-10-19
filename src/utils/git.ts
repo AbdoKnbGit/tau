@@ -162,10 +162,12 @@ const resolveCanonicalRoot = memoizeWithLRU(
       // /tmp → /private/tmp) aren't rejected. Realpath the directory then join
       // '.git' — realpathing the .git file itself would follow a symlinked .git
       // and let an attacker borrow a victim's back-link.
-      const backlink = realpathSync(
+      // Use native realpath on both sides: the JS implementation preserves
+      // Windows 8.3 aliases, while Git writes the expanded path in its backlink.
+      const backlink = realpathSync.native(
         readFileSync(join(worktreeGitDir, 'gitdir'), 'utf-8').trim(),
       )
-      if (backlink !== join(realpathSync(gitRoot), '.git')) {
+      if (backlink !== join(realpathSync.native(gitRoot), '.git')) {
         return gitRoot
       }
       // Bare-repo worktrees: the common dir isn't inside a working directory.
