@@ -1,5 +1,5 @@
 import chalk from 'chalk'
-import { marked, type Token, type Tokens } from 'marked'
+import { type Token, type Tokens } from 'marked'
 import stripAnsi from 'strip-ansi'
 import { color } from '../components/design-system/color.js'
 import { highlightCode } from '../components/StructuredDiff/colorDiff.js'
@@ -10,37 +10,20 @@ import type { CliHighlight } from './cliHighlight.js'
 import { createHyperlink } from './hyperlink.js'
 import { stripPromptXMLTags } from './messages.js'
 import type { ThemeName } from './theme.js'
+import { lexTerminalMarkdown, type TerminalMathToken } from './terminalMarkdown.js'
+import { renderTerminalMath } from './terminalMath.js'
 
 // Use \n unconditionally — os.EOL is \r\n on Windows, and the extra \r
 // breaks the character-to-segment mapping in applyStylesToWrappedText,
 // causing styled text to shift right.
 const EOL = '\n'
 
-let markedConfigured = false
-
-export function configureMarked(): void {
-  if (markedConfigured) return
-  markedConfigured = true
-
-  // Disable strikethrough parsing - the model often uses ~ for "approximate"
-  // (e.g., ~100) and rarely intends actual strikethrough formatting
-  marked.use({
-    tokenizer: {
-      del() {
-        return undefined
-      },
-    },
-  })
-}
-
 export function applyMarkdown(
   content: string,
   theme: ThemeName,
   highlight: CliHighlight | null = null,
 ): string {
-  configureMarked()
-  return marked
-    .lexer(stripPromptXMLTags(content))
+  return lexTerminalMarkdown(stripPromptXMLTags(content))
     .map(_ => formatToken(_, theme, 0, null, null, highlight))
     .join('')
     .trim()
@@ -55,6 +38,18 @@ export function formatToken(
   highlight: CliHighlight | null = null,
 ): string {
   switch (token.type) {
+    case 'terminalMath':
+    case 'terminalMathBlock': {
+      const math = token as TerminalMathToken
+      const rendered = math.complete ? renderTerminalMath(math.text) : null
+      // Fallback preserves delimiters and unknown commands. Make controls
+      // visible instead of allowing formula input to emit terminal escapes.
+      const visible = (rendered ?? math.raw).replace(
+        /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,
+        c => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`,
+      )
+      return token.type === 'terminalMathBlock' ? visible.trimEnd() + EOL : visible
+    }
     case 'blockquote': {
       const inner = (token.tokens ?? [])
         .map(_ => formatToken(_, theme, 0, null, null, highlight))

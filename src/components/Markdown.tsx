@@ -1,12 +1,13 @@
 import { c as _c } from "react/compiler-runtime";
-import { marked, type Token, type Tokens } from 'marked';
+import { type Token, type Tokens } from 'marked';
 import React, { Suspense, use, useContext, useMemo, useRef } from 'react';
 import { useSettings } from '../hooks/useSettings.js';
 import { Ansi, Box, useTheme } from '../ink.js';
 import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
 import { type CliHighlight, getCliHighlightPromise } from '../utils/cliHighlight.js';
 import { hashContent } from '../utils/hash.js';
-import { configureMarked, formatToken } from '../utils/markdown.js';
+import { formatToken } from '../utils/markdown.js';
+import { hasTerminalMarkdownSyntax, lexTerminalMarkdown, stableMarkdownPrefix } from '../utils/terminalMarkdown.js';
 import { isMermaidFence, normalizeMermaidFences } from '../utils/mermaidDiagram.js';
 import { stripPromptXMLTags } from '../utils/messages.js';
 import { MarkdownTable } from './MarkdownTable.js';
@@ -38,12 +39,11 @@ const tokenCache = new Map<string, Token[]>();
 // plain sentences. Checked via indexOf (not regex) for speed.
 // Single regex: matches any MD marker or ordered-list start (N. at line start).
 // One pass instead of 10× includes scans.
-const MD_SYNTAX_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
 const ANSI_RE = /\x1B\[[0-?]*[ -/]*[@-~]/;
 function hasMarkdownSyntax(s: string): boolean {
   // Only skip lexing when the entire message is plain text. A fence or other
   // syntax can follow a long introduction, including when history is remounted.
-  return MD_SYNTAX_RE.test(s);
+  return hasTerminalMarkdownSyntax(s);
 }
 function cachedLexer(content: string): Token[] {
   // Fast path: plain text with no markdown syntax → single paragraph token.
@@ -71,7 +71,7 @@ function cachedLexer(content: string): Token[] {
     tokenCache.set(key, hit);
     return hit;
   }
-  const tokens = marked.lexer(content);
+  const tokens = lexTerminalMarkdown(content);
   if (tokenCache.size >= TOKEN_CACHE_MAX) {
     // LRU-ish: drop oldest. Map preserves insertion order.
     const first = tokenCache.keys().next().value;
@@ -145,7 +145,6 @@ function MarkdownBody(t0) {
   const mermaidAllowed = useContext(MermaidDiagramsContext);
   // On unless switched off in /config (mermaidDiagrams: false).
   const drawMermaid = mermaid === true && mermaidSetting !== false && mermaidAllowed;
-  configureMarked();
   let elements;
   if ($[0] !== children || $[1] !== dimColor || $[2] !== highlight || $[3] !== theme || $[4] !== drawMermaid || $[8] !== mermaidSource) {
     const strippedContent = stripPromptXMLTags(children);
@@ -232,7 +231,6 @@ export function StreamingMarkdown({
   // break the algorithm (stale boundary). Opt out.
   'use no memo';
 
-  configureMarked();
   const mermaidSetting = useAppStateMaybeOutsideOfProvider(selectMermaidDiagrams);
   const mermaidAllowed = useContext(MermaidDiagramsContext);
   const drawMermaid = mermaid === true && mermaidSetting !== false && mermaidAllowed;
@@ -245,30 +243,11 @@ export function StreamingMarkdown({
   // end; a repair only touches lines of the block still growing, so the
   // stable prefix stays a prefix.
   const plain = stripPromptXMLTags(children);
-  const stripped = drawMermaid ? normalizeMermaidFences(plain) : plain;
+  const stripped = (drawMermaid ? normalizeMermaidFences(plain) : plain).replace(/\r\n?/g, '\n');
   const stablePrefixRef = useRef('');
 
-  // Reset if text was replaced (defensive; normally unmount handles this)
-  if (!stripped.startsWith(stablePrefixRef.current)) {
-    stablePrefixRef.current = '';
-  }
-
-  // Lex only from current boundary — O(unstable length), not O(full text)
-  const boundary = stablePrefixRef.current.length;
-  const tokens = marked.lexer(stripped.substring(boundary));
-
-  // Last non-space token is the growing block; everything before is final
-  let lastContentIdx = tokens.length - 1;
-  while (lastContentIdx >= 0 && tokens[lastContentIdx]!.type === 'space') {
-    lastContentIdx--;
-  }
-  let advance = 0;
-  for (let i = 0; i < lastContentIdx; i++) {
-    advance += tokens[i]!.raw.length;
-  }
-  if (advance > 0) {
-    stablePrefixRef.current = stripped.substring(0, boundary + advance);
-  }
+  // Math blocks reserve their growing source just like open code fences.
+  stablePrefixRef.current = stableMarkdownPrefix(stripped, stablePrefixRef.current);
   const stablePrefix = stablePrefixRef.current;
   const unstableSuffix = stripped.substring(stablePrefix.length);
 

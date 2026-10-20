@@ -145,6 +145,9 @@ jobs:
       - name: Test Mermaid rendering and rewind
         run: node --test test/mermaid-rendering.test.mjs
 
+      - name: Test terminal math, streaming, and Markdown compatibility
+        run: node --test test/terminal-math.test.mjs test/latex-rendering.test.mjs test/markdown-list-items.test.mjs
+
       - name: Test file history for code writes and the rewind list
         run: node --test test/file-history-eval.test.mjs
 
