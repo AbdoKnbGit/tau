@@ -285,12 +285,11 @@ test('an already-aborted MCP hook never calls a server', async () => {
   assert.equal(output.aborted, true)
 })
 
-test('headless deferred calls are denied with an actionable compatibility diagnostic', async () => {
+test('headless defer is passed to the tool runner without pretending to deny permission', async () => {
   const hook = command('console.log(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"defer"}}))')
   const output = await run(hook)
-  assert.equal(blocked(output), true)
-  assert.ok(output.some(result => result.permissionBehavior === 'deny'))
-  assert.match(JSON.stringify(output), /Tau does not support the deferred-call resume protocol/)
+  assert.equal(blocked(output), false)
+  assert.ok(output.some(result => result.deferTool === true))
 })
 
 test('hook output parsing follows the documented plain-text and JSON rules', () => {
@@ -358,7 +357,7 @@ test('command stdin and CLAUDE_EFFORT agree with the current model effort', asyn
   assert.ok(output.some(result => result.additionalContexts?.includes('medium|medium')))
 })
 
-test('model-switch matchers filter provider IDs while unfiltered hooks still run', async () => {
+test('model-switch matchers filter canonical Claude IDs and run all hooks for unknown IDs', async () => {
   for (const event of ['PreModelSwitch', 'PostModelSwitch']) {
     const makeHook = name => ({ type: 'callback', name, callback: async () => ({}) })
     const hooks = [
@@ -370,9 +369,9 @@ test('model-switch matchers filter provider IDs while unfiltered hooks still run
     const context = contextFor(makeHook('unused'), event)
     context.getAppState().sessionHooks.get(r.getSessionId()).hooks[event] = hooks
     for (const [model, expected] of [
-      ['gemini-3-pro', ['gemini', 'all']],
-      ['deepseek-chat', ['deepseek', 'all']],
-      ['gpt-6-luna', ['all']],
+      ['gemini-3-pro', ['claude', 'gemini', 'deepseek', 'all']],
+      ['deepseek-chat', ['claude', 'gemini', 'deepseek', 'all']],
+      ['gpt-6-luna', ['claude', 'gemini', 'deepseek', 'all']],
       ['us.anthropic.claude-sonnet-4-6-v1:0[1m]', ['claude', 'all']],
     ]) {
       const matched = await r.getMatchingHooks(context.getAppState(), r.getSessionId(), event, { ...input(event), to_model: model })
@@ -410,7 +409,7 @@ test('Stop and SubagentStop JSON context survives validation and execution', asy
     assert.equal(r.parseHookOutput(JSON.stringify(json)).validationError, undefined)
     const output = await run(command(`console.log(${JSON.stringify(JSON.stringify(json))})`), { event })
     assert.ok(output.some(result => result.additionalContexts?.includes(`${event} context`)))
-    assert.equal(blocked(output), false, 'context alone never forces another model turn')
+    assert.equal(blocked(output), false, 'feedback continues without being reported as a blocking error')
   }
 })
 
@@ -441,22 +440,24 @@ test('Stop context reaches the transcript and a blocked-stop continuation', asyn
   } finally { process.argv.pop() }
 })
 
-test('unsupported classifier context warns once per session without altering results', async () => {
+test('classifier context stays paired with its hook provenance without warnings or main-model context', async () => {
   const sessionId = r.getSessionId()
   const hook = { type: 'callback', callback: async () => ({ systemMessage: 'ordinary notice',
     hookSpecificOutput: { hookEventName: 'PostToolUse', classifierContext: 'untrusted hint', additionalContext: 'normal context' } }) }
   try {
-    for (const expectedWarning of [true, false]) {
+    for (let i = 0; i < 2; i++) {
       const output = await run(hook, { event: 'PostToolUse' })
       const notices = output.filter(result => result.message?.attachment?.type === 'hook_system_message')
-      assert.equal(JSON.stringify(notices).includes('Tau ignored classifierContext'), expectedWarning)
+      assert.equal(JSON.stringify(notices).includes('Tau ignored classifierContext'), false)
+      assert.deepEqual(output.find(result => result.classifierContext)?.classifierContext,
+        { text: 'untrusted hint', trusted: true })
       assert.ok(JSON.stringify(notices).includes('ordinary notice'))
       assert.ok(output.some(result => result.additionalContexts?.includes('normal context')))
       assert.equal(blocked(output), false)
     }
     r.switchSession('classifier-warning-new-session')
     const nextSession = await run(hook, { event: 'PostToolUse' })
-    assert.ok(JSON.stringify(nextSession).includes('Tau ignored classifierContext'))
+    assert.equal(JSON.stringify(nextSession).includes('Tau ignored classifierContext'), false)
   } finally { r.switchSession(sessionId) }
 })
 

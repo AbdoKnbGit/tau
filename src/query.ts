@@ -136,7 +136,9 @@ import { ESCALATED_MAX_TOKENS } from './utils/context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './services/analytics/growthbook.js'
 import { SLEEP_TOOL_NAME } from './tools/SleepTool/prompt.js'
 import { executePostSamplingHooks } from './utils/hooks/postSamplingHooks.js'
-import { executeStopFailureHooks } from './utils/hooks.js'
+import { executeStopFailureHooks, hasHookForEvent } from './utils/hooks.js'
+import { getSessionId as getHookSessionId } from './bootstrap/state.js'
+import { pendingDeferredHookTool, takeDeferredHookTool, deferredHookMarker } from './utils/hooks/deferredTool.js'
 import type { QuerySource } from './constants/querySource.js'
 import { createDumpPromptsFetch } from './services/api/dumpPrompts.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
@@ -152,6 +154,7 @@ import {
   createContentReplacementRecorder,
 } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
+import { StopHookContinuationGuard } from './utils/hooks/stopHookState.js'
 import { buildQueryConfig } from './query/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
 import type { Terminal, Continue } from './query/transitions.js'
@@ -330,6 +333,7 @@ async function* queryLoop(
   // nudge per distinct stuck call — if the model ignores it and keeps going,
   // repeating ourselves burns tokens without adding information.
   const loopBreakersSent = new Set<string>()
+  const stopHookContinuations = new StopHookContinuationGuard()
 
   // Checks on running background work, counted across this loop (one user
   // turn). When the model keeps checking after a nudge, the next response is
@@ -373,6 +377,45 @@ async function* queryLoop(
   // Snapshot immutable env/statsig/session state once at entry. See QueryConfig
   // for what's included and why feature() gates are intentionally excluded.
   const config = buildQueryConfig()
+
+  // Resume a deferred call before sampling, compaction or cache preparation.
+  // Reuse only its transcript input: hooks and permissions run against the
+  // current context, tools, settings and permission host.
+  const deferred = pendingDeferredHookTool(state.messages)
+  if (deferred && state.toolUseContext.options.isNonInteractiveSession) {
+    const resumedResults: (UserMessage | AttachmentMessage)[] = []
+    let resumedStopped = false
+    if (!findToolByName(state.toolUseContext.options.tools, deferred.call.name)) {
+      yield deferredHookMarker(deferred.call, deferred.assistant, true)
+      return { reason: 'completed' }
+    }
+    for await (const update of runTools([deferred.call], [deferred.assistant], canUseTool, state.toolUseContext)) {
+      if (update.message) {
+        state.messages = [...state.messages, update.message]
+        if (update.message.type === 'attachment' &&
+          update.message.attachment.type === 'hook_stopped_continuation') resumedStopped = true
+        resumedResults.push(...normalizeMessagesForAPI([update.message], state.toolUseContext.options.tools)
+          .filter(message => message.type === 'user'))
+        yield update.message
+      }
+      if (update.newContext) state.toolUseContext = update.newContext
+    }
+    const repeated = takeDeferredHookTool(state.toolUseContext)
+    if (repeated) {
+      yield deferredHookMarker(repeated, deferred.assistant)
+      return { reason: 'completed' }
+    }
+    if (state.toolUseContext.abortController.signal.aborted) return { reason: 'aborted_tools' }
+    for await (const message of runPostToolBatchHooks([deferred.call], resumedResults, {
+      ...state.toolUseContext, messages: state.messages,
+    })) {
+      state.messages = [...state.messages, message]
+      yield message
+      if (message.type === 'attachment' &&
+        message.attachment.type === 'hook_stopped_continuation') resumedStopped = true
+    }
+    if (resumedStopped) return { reason: 'hook_stopped' }
+  }
 
   // Fired once per user turn — the prompt is invariant across loop iterations,
   // so per-iteration firing would ask sideQuery the same question N times.
@@ -679,7 +722,9 @@ async function* queryLoop(
     queryCheckpoint('query_setup_start')
     // After a wait-loop stop no tool may run, so none may start mid-stream.
     const useStreamingToolExecution =
-      config.gates.streamingToolExecution && waitLoopStop === null
+      config.gates.streamingToolExecution && waitLoopStop === null &&
+      !(toolUseContext.options.isNonInteractiveSession && !toolUseContext.agentId &&
+        hasHookForEvent('PreToolUse', toolUseContext.getAppState(), getHookSessionId()))
     let streamingToolExecutor = useStreamingToolExecution
       ? new StreamingToolExecutor(
           toolUseContext.options.tools,
@@ -1623,7 +1668,15 @@ async function* queryLoop(
         return { reason: 'stop_hook_prevented' }
       }
 
-      if (stopHookResult.blockingErrors.length > 0) {
+      if (
+        stopHookResult.blockingErrors.length > 0 ||
+        (stopHookResult.additionalContextMessages?.length ?? 0) > 0
+      ) {
+        // End the turn at the hook cap rather than falling through to another
+        // continuation source that could keep invoking the same Stop hook.
+        if (!stopHookContinuations.allowContinuation()) {
+          return { reason: 'completed' }
+        }
         const next: State = {
           messages: [
             ...messagesForQuery,
@@ -1751,6 +1804,7 @@ async function* queryLoop(
     }
 
     let shouldPreventContinuation = false
+    stopHookContinuations.resetAfterToolCall()
     let updatedToolUseContext = toolUseContext
 
     queryCheckpoint('query_tool_execution_start')
@@ -1800,6 +1854,16 @@ async function* queryLoop(
       }
     }
     queryCheckpoint('query_tool_execution_end')
+
+    const deferredCall = takeDeferredHookTool(toolUseContext)
+    if (deferredCall) {
+      const assistant = assistantMessages.find(message =>
+        message.message.content.some(block => block.type === 'tool_use' && block.id === deferredCall.id))
+      if (assistant) {
+        yield deferredHookMarker(deferredCall, assistant)
+        return { reason: 'completed' }
+      }
+    }
 
     // All providers share this boundary, including tools that finished while
     // the assistant was still streaming. Give batch hooks the serialized

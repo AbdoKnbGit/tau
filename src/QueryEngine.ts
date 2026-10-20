@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { pendingDeferredHookTool, isDeferredHookMarker } from './utils/hooks/deferredTool.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
 import last from 'lodash-es/last.js'
@@ -727,6 +728,7 @@ export class QueryEngine {
       if (
         message.type === 'assistant' ||
         message.type === 'user' ||
+        isDeferredHookMarker(message) ||
         (message.type === 'system' && message.subtype === 'compact_boundary')
       ) {
         // Before writing a compact boundary, flush any in-memory-only
@@ -1116,6 +1118,33 @@ export class QueryEngine {
       ) {
         await flushSessionStorage()
       }
+    }
+
+    const deferredCall = pendingDeferredHookTool(messages)
+    if (deferredCall) {
+      // A caller may terminate the subprocess as soon as this result arrives.
+      // The pending call and marker must already be durable at that point.
+      if (persistSession) await flushSessionStorage()
+      yield {
+        type: 'result',
+        subtype: 'success',
+        is_error: deferredCall.unavailable,
+        duration_ms: Date.now() - startTime,
+        duration_api_ms: getTotalAPIDuration(),
+        num_turns: turnCount,
+        result: '',
+        stop_reason: deferredCall.unavailable ? 'tool_deferred_unavailable' : 'tool_deferred',
+        deferred_tool_use: {
+          id: deferredCall.call.id, name: deferredCall.call.name, input: deferredCall.call.input,
+        },
+        session_id: getSessionId(),
+        total_cost_usd: getTotalCost(),
+        usage: this.totalUsage,
+        modelUsage: getModelUsage(),
+        permission_denials: this.permissionDenials,
+        uuid: randomUUID(),
+      }
+      return
     }
 
     if (!isResultSuccessful(result, lastStopReason)) {

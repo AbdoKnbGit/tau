@@ -31,6 +31,7 @@ import {
   getSessionId,
   getProjectRoot,
   getIsNonInteractiveSession,
+  isSessionPersistenceDisabled,
   getRegisteredHooks,
   getStatsStore,
   addToTurnHookDuration,
@@ -127,6 +128,9 @@ import {
   hookIdentityKey,
 } from './hooks/hooksSettings.js'
 import { execMcpToolHook } from './hooks/execMcpToolHook.js'
+import { stopHookWorkState } from './hooks/stopHookState.js'
+import { toolHookServer, stopFailureHookError } from './hooks/toolHookMetadata.js'
+import type { HookClassifierNote } from './hooks/classifierContext.js'
 import {
   defaultHookTimeoutMs,
   emitHookTerminalSequence,
@@ -138,7 +142,7 @@ import {
   TOOL_HOOK_EVENTS,
 } from './hooks/hookPolicy.js'
 import { getScratchpadDir, isScratchpadEnabled } from './permissions/filesystem.js'
-import { getCanonicalName } from './model/model.js'
+import { getCanonicalName, parseUserSpecifiedModel } from './model/model.js'
 import { resolveAppliedEffort } from './effort.js'
 import { getProviderEffort } from './model/providerEffort.js'
 import { getAPIProvider } from './model/providers.js'
@@ -187,22 +191,28 @@ import { isEnvTruthy } from './envUtils.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
-let classifierContextWarningSessionId: string | undefined
 
 /**
  * SessionEnd hooks run during shutdown/clear and need a much tighter bound
- * than TOOL_HOOK_EXECUTION_TIMEOUT_MS. This value is used by callers as both
- * the per-hook default timeout AND the overall AbortSignal cap (hooks run in
- * parallel, so one value suffices). Overridable via env var for users whose
- * teardown scripts need more time.
+ * than TOOL_HOOK_EXECUTION_TIMEOUT_MS. The default for an individual hook is
+ * distinct from the overall budget, which settings hooks can raise.
  */
 const SESSION_END_HOOK_TIMEOUT_MS_DEFAULT = 1500
-export function getSessionEndHookTimeoutMs(): number {
-  const raw = process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS
-  const parsed = raw ? parseInt(raw, 10) : NaN
+export function getSessionEndHookDefaultTimeoutMs(): number {
+  const parsed = Number(process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS)
   return Number.isFinite(parsed) && parsed > 0
     ? parsed
     : SESSION_END_HOOK_TIMEOUT_MS_DEFAULT
+}
+
+/** Only settings hooks may raise the total budget; plugin timeouts cannot. */
+export function getSessionEndHookTimeoutMs(): number {
+  const raw = Number(process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS)
+  if (Number.isFinite(raw) && raw > 0) return getSessionEndHookDefaultTimeoutMs()
+  const timeouts = (getHooksConfigFromSnapshot()?.SessionEnd ?? [])
+    .flatMap(matcher => matcher.hooks)
+    .map(hook => hook.timeout ? hook.timeout * 1000 : 0)
+  return Math.max(SESSION_END_HOOK_TIMEOUT_MS_DEFAULT, Math.min(60_000, Math.max(0, ...timeouts)))
 }
 
 function executeInBackground({
@@ -364,6 +374,8 @@ export interface HookBlockingError {
 export type ElicitationResponse = ElicitResult
 
 export interface HookResult {
+  deferTool?: boolean
+  classifierContext?: string
   message?: HookResultMessage
   systemMessage?: string
   blockingError?: HookBlockingError
@@ -390,6 +402,8 @@ export interface HookResult {
 }
 
 export type AggregatedHookResult = {
+  deferTool?: boolean
+  classifierContext?: HookClassifierNote
   message?: HookResultMessage
   blockingError?: HookBlockingError
   preventContinuation?: boolean
@@ -592,6 +606,10 @@ function processHookJSONOutput({
   // A side effect on every event, including those that discard the output.
   emitHookTerminalSequence(syncJson.terminalSequence)
 
+  // Lifecycle cleanup is observational. JSON cannot inject context or
+  // prevent startup/shutdown, even when it names another hook event.
+  if (hookEvent === 'Setup' || hookEvent === 'SessionEnd') return {}
+
   // Display transforms are presentation-only. They cannot stop the agent,
   // inject context, or display system messages through the generic fields.
   if (hookEvent === 'MessageDisplay') {
@@ -600,21 +618,20 @@ function processHookJSONOutput({
       : {}
   }
 
-  // This host has no deferred-call resume protocol. Interactive sessions
-  // ignore defer as documented; headless sessions must not execute a tool
-  // that the host explicitly requested be held for later input.
+  // Deferral is interpreted by the tool runner after all hook decisions.
   if (
     json.hookSpecificOutput?.hookEventName === 'PreToolUse' &&
     json.hookSpecificOutput.permissionDecision === 'defer'
   ) {
-    const message = `Hook ${hookName} requested a deferred tool call, but Tau does not support the deferred-call resume protocol.`
-    logForDebugging(
-      message,
-      { level: 'warn' },
-    )
-    return getIsNonInteractiveSession()
-      ? { permissionBehavior: 'deny', hookPermissionDecisionReason: message, blockingError: { blockingError: message, command } }
-      : {}
+    if (getIsNonInteractiveSession()) {
+      if (isSessionPersistenceDisabled()) {
+        const message = 'Cannot defer this tool while session persistence is disabled. Enable session persistence to resume deferred calls.'
+        return { permissionBehavior: 'deny', hookPermissionDecisionReason: message, blockingError: { blockingError: message, command } }
+      }
+      return { deferTool: true }
+    }
+    logForDebugging(`Ignoring PreToolUse defer from ${hookName} in an interactive session.`, { level: 'warn' })
+    return {}
   }
 
   // Handle common elements
@@ -775,17 +792,7 @@ function processHookJSONOutput({
         break
       case 'PostToolUse':
         result.additionalContext = json.hookSpecificOutput.additionalContext
-        if (
-          json.hookSpecificOutput.classifierContext !== undefined &&
-          classifierContextWarningSessionId !== getSessionId()
-        ) {
-          // Unsupported data must not affect permission decisions. Explain it
-          // once per session, rather than repeating it on every tool result.
-          classifierContextWarningSessionId = getSessionId()
-          const warning = 'Tau ignored classifierContext: hook-provided classifier context is not implemented.'
-          logForDebugging(warning, { level: 'warn' })
-          result.systemMessage = result.systemMessage ? `${result.systemMessage}\n${warning}` : warning
-        }
+        result.classifierContext = json.hookSpecificOutput.classifierContext
         // updatedToolOutput replaces any tool's output; the older
         // updatedMCPToolOutput applies to MCP tools only.
         if (json.hookSpecificOutput.updatedToolOutput !== undefined) {
@@ -1843,10 +1850,13 @@ export async function getMatchingHooks(
         // Every spelling of a model (alias, dated id, provider id) matches
         // the one canonical name it resolves to, ignoring a [1m] suffix.
         matchQuery = getCanonicalName(
-          hookInput.to_model.replace(/\[1m\]$/i, ''),
+          parseUserSpecifiedModel(hookInput.to_model).replace(/\[1m\]$/i, ''),
         )
-        // Unknown/provider model IDs retain their name, so their matchers
-        // filter normally. Hooks without a matcher still run for every model.
+        // Unknown canonical IDs run every matcher. Blocking hooks must inspect
+        // to_model themselves, including when Tau targets another provider.
+        if (!/^claude-(?:(?:opus|sonnet|haiku)-\d|[23](?:-\d)?-(?:opus|sonnet|haiku))/.test(matchQuery)) {
+          matchQuery = undefined
+        }
         break
       default:
         break
@@ -1967,9 +1977,12 @@ export async function getMatchingHooks(
     const filteredHooks =
       hookEvent === 'SessionStart' || hookEvent === 'Setup'
         ? ifFilteredHooks.filter(h => {
-            if (h.hook.type === 'http') {
+            if (
+              (hookEvent === 'Setup' && h.hook.type !== 'command') ||
+              (hookEvent === 'SessionStart' && !['command', 'mcp_tool', 'callback'].includes(h.hook.type))
+            ) {
               logForDebugging(
-                `Skipping HTTP hook ${(h.hook as { url: string }).url} — HTTP hooks are not supported for ${hookEvent}`,
+                `Skipping ${h.hook.type} hook — this handler type is not supported for ${hookEvent}`,
               )
               return false
             }
@@ -2699,7 +2712,7 @@ export async function* executeHooks({
       // read but cannot override the block, and the reason is the JSON's own
       // blocking reason or else stderr.
       const exitTwoBlock = (blockingError?: HookBlockingError) => ({
-        blockingError: blockingError ?? {
+        blockingError: hookEvent === 'Setup' || hookEvent === 'SessionEnd' ? undefined : blockingError ?? {
           blockingError: `[${commandText}]: ${result.stderr || 'No stderr output'}`,
           command: commandText,
         },
@@ -3075,20 +3088,19 @@ export async function* executeHooks({
       }
     }
 
-    // Yield updatedMCPToolOutput if provided (from PostToolUse hooks)
-    if (result.updatedMCPToolOutput !== undefined) {
-      logForDebugging(
-        `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) replaced MCP tool output`,
-      )
+    if (result.deferTool) yield { deferTool: true }
+    // Keep annotations with their rewrite until the tool validates it. Splitting
+    // these into separate yields would let a rejected rewrite keep its note.
+    if (result.updatedMCPToolOutput !== undefined || result.updatedToolOutput !== undefined ||
+      result.classifierContext !== undefined) {
       yield {
         updatedMCPToolOutput: result.updatedMCPToolOutput,
+        updatedToolOutput: result.updatedToolOutput,
+        classifierContext: result.classifierContext === undefined ? undefined : {
+          text: result.classifierContext,
+          trusted: result.hook.type === 'callback',
+        },
       }
-    }
-    if (result.updatedToolOutput !== undefined) {
-      logForDebugging(
-        `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) returned updatedToolOutput`,
-      )
-      yield { updatedToolOutput: result.updatedToolOutput }
     }
     if (result.displayContent !== undefined) {
       yield { displayContent: result.displayContent }
@@ -3423,6 +3435,7 @@ export async function executeHooksOutsideREPL({
 
           emitHookTerminalSequence(json.terminalSequence)
 
+          if (hookEvent === 'SessionEnd') return { command: 'callback', succeeded: true, output: '', blocked: false }
           const output =
             hookEvent === 'WorktreeCreate' &&
             isSyncHookJSONOutput(json) &&
@@ -3547,6 +3560,7 @@ export async function executeHooksOutsideREPL({
               { level: 'verbose' },
             )
           }
+          if (hookEvent === 'SessionEnd') return { command: hook.url, succeeded: true, output: '', blocked: false }
           const jsonBlocked =
             httpJson &&
             !isAsyncHookJSONOutput(httpJson) &&
@@ -3661,6 +3675,14 @@ export async function executeHooksOutsideREPL({
             `Parsed JSON output from hook: ${jsonStringify(syncJson)}`,
             { level: 'verbose' },
           )
+        }
+
+        if (hookEvent === 'Setup' || hookEvent === 'SessionEnd') {
+          return {
+            command: commandText, succeeded: result.status === 0,
+            output: result.status === 0 ? '' : result.stderr,
+            blocked: false,
+          }
         }
 
         // Exit code 2 blocks whatever stdout holds; its JSON is still read but
@@ -3780,6 +3802,7 @@ export async function* executePreToolHooks<ToolInput>(
   const hookInput: PreToolUseHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
     hook_event_name: 'PreToolUse',
+    mcp_server: toolHookServer(toolName, toolUseContext),
     tool_name: toolName,
     tool_input: toolInput,
     tool_use_id: toolUseID,
@@ -3818,10 +3841,13 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  durationMs?: number,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: PostToolUseHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
     hook_event_name: 'PostToolUse',
+    mcp_server: toolHookServer(toolName, toolUseContext),
+    duration_ms: durationMs,
     tool_name: toolName,
     tool_input: toolInput,
     tool_response: toolResponse,
@@ -3881,6 +3907,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  durationMs?: number,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3891,6 +3918,8 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
   const hookInput: PostToolUseFailureHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
     hook_event_name: 'PostToolUseFailure',
+    mcp_server: toolHookServer(toolName, toolUseContext),
+    duration_ms: durationMs,
     tool_name: toolName,
     tool_input: toolInput,
     tool_use_id: toolUseID,
@@ -3927,6 +3956,7 @@ export async function* executePermissionDeniedHooks<ToolInput>(
   const hookInput: PermissionDeniedHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
     hook_event_name: 'PermissionDenied',
+    mcp_server: toolHookServer(toolName, toolUseContext),
     tool_name: toolName,
     tool_input: toolInput,
     tool_use_id: toolUseID,
@@ -3991,7 +4021,7 @@ export async function executeStopFailureHooks(
   // Some createAssistantAPIErrorMessage call sites omit `error` (e.g.
   // image-size at errors.ts:431). Default to 'unknown' so matcher filtering
   // at getMatchingHooks:1525 always applies.
-  const error = lastMessage.error ?? 'unknown'
+  const error = stopFailureHookError(lastMessage.error, lastMessage.errorDetails ?? lastAssistantText) as StopFailureHookInput['error']
   const hookInput: StopFailureHookInput = {
     ...createBaseHookInput(undefined, undefined, toolUseContext),
     hook_event_name: 'StopFailure',
@@ -4064,6 +4094,7 @@ export async function* executeStopHooks(
         hook_event_name: 'Stop',
         stop_hook_active: stopHookActive,
         last_assistant_message: lastAssistantText,
+        ...stopHookWorkState(appState),
       }
 
   // Trust check is now centralized in executeHooks()
@@ -4248,19 +4279,22 @@ export async function* executeUserPromptSubmitHooks(
  * @returns Async generator that yields progress messages and hook results
  */
 export async function* executeSessionStartHooks(
-  source: 'startup' | 'resume' | 'clear' | 'compact',
+  source: 'startup' | 'resume' | 'clear' | 'compact' | 'fork',
   sessionId?: string,
   agentType?: string,
   model?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   forceSyncExecution?: boolean,
+  resumeMetadata: Pick<SessionStartHookInput, 'seconds_since_last_response' | 'context_tokens' |
+    'prompt_cache_likely_expired' | 'estimated_cache_write_usd' | 'session_title'> = {},
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: SessionStartHookInput = {
     ...createBaseHookInput(undefined, sessionId),
     hook_event_name: 'SessionStart',
+    ...resumeMetadata,
     source,
-    session_title: getCurrentSessionTitle(asSessionId(sessionId ?? getSessionId())),
+    session_title: resumeMetadata.session_title ?? getCurrentSessionTitle(asSessionId(sessionId ?? getSessionId())),
     agent_type: agentType,
     model,
   }
@@ -4491,7 +4525,7 @@ export async function executeSessionEndHooks(
     getAppState,
     setAppState,
     signal,
-    timeoutMs = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+    timeoutMs = getSessionEndHookTimeoutMs(),
   } = options || {}
 
   const hookInput: SessionEndHookInput = {
@@ -4500,13 +4534,17 @@ export async function executeSessionEndHooks(
     reason,
   }
 
-  const results = await executeHooksOutsideREPL({
-    getAppState,
-    hookInput,
-    matchQuery: reason,
-    signal,
-    timeoutMs,
-  })
+  const { signal: endSignal, cleanup } = createCombinedAbortSignal(signal, { timeoutMs })
+  let results: HookOutsideReplResult[]
+  try {
+    results = await executeHooksOutsideREPL({
+      getAppState,
+      hookInput,
+      matchQuery: reason,
+      signal: endSignal,
+      timeoutMs: getSessionEndHookDefaultTimeoutMs(),
+    })
+  } finally { cleanup() }
 
   // During shutdown, Ink is unmounted so we can write directly to stderr
   for (const result of results) {
@@ -4558,6 +4596,7 @@ export async function* executePermissionRequestHooks<ToolInput>(
   const hookInput: PermissionRequestHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
     hook_event_name: 'PermissionRequest',
+    mcp_server: toolHookServer(toolName, toolUseContext),
     tool_name: toolName,
     tool_input: toolInput,
     permission_suggestions: permissionSuggestions,

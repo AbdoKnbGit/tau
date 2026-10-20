@@ -15,6 +15,33 @@ import { COST_TIER_3_15, MODEL_COSTS } from '../modelCost.js'
 import { lookupCatalogPrice } from '../modelPricingCatalog.js'
 import { getTranscriptPath, saveCustomTitle, saveAgentName } from '../sessionStorage.js'
 import { defaultHookTimeoutMs } from './hookPolicy.js'
+import { tokenCountWithEstimation } from '../tokens.js'
+import { isCompactBoundaryMessage, SYNTHETIC_MODEL } from '../messages.js'
+
+/** Observational hook metadata only; never alters cache controls or context. */
+export function sessionStartResumeMetadata(messages: readonly Message[], model?: string, now = Date.now()) {
+  const lastIndex = messages.findLastIndex(message =>
+    message.type === 'assistant' && message.message.model !== SYNTHETIC_MODEL && !message.isApiErrorMessage)
+  const last = messages[lastIndex]
+  if (!last || last.type !== 'assistant') return {}
+  const responseTime = Date.parse(last.timestamp)
+  if (!Number.isFinite(responseTime)) return {}
+  const contextTokens = tokenCountWithEstimation(messages)
+  const ttl = getCacheControl({ querySource: 'repl_main_thread' }).ttl ?? '5m'
+  const effectiveModel = model ?? last.message.model
+  const costs = MODEL_COSTS[getCanonicalName(effectiveModel)] ??
+    lookupCatalogPrice(getAPIProvider(), effectiveModel, contextTokens)
+  // A provider with no cache-write price must not inherit a Claude price.
+  const rate = costs ? (ttl === '1h' ? costs.inputTokens * 2 : costs.promptCacheWriteTokens) : 0
+  const seconds = Math.max(0, (now - responseTime) / 1000)
+  return {
+    seconds_since_last_response: seconds,
+    context_tokens: contextTokens,
+    prompt_cache_likely_expired: seconds >= (ttl === '1h' ? 3600 : 300) ||
+      messages.slice(lastIndex + 1).some(isCompactBoundaryMessage),
+    estimated_cache_write_usd: contextTokens * rate / 1_000_000,
+  }
+}
 
 export async function applyHookSessionTitle(
   title: string,

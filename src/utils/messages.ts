@@ -1,4 +1,5 @@
 import { decodeToolArguments, toolDecodeFields } from '../services/mcp/decodeStatus.js'
+import { hookClassifierMetadata } from './hooks/classifierContext.js'
 import { getStreamDisplayText, hasMessageDisplayText } from './hooks/messageDisplay.js'
 import { isPlainStdoutContextEvent } from './hooks/hookPolicy.js'
 import { getAPIProvider, type APIProvider } from './model/providers.js'
@@ -828,6 +829,7 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
               origin: message.origin,
             }),
             uuid: isNewChain ? deriveUUID(message.uuid, index) : message.uuid,
+            ...(_.type === 'tool_result' ? hookClassifierMetadata([message], _.tool_use_id) : {}),
           } as NormalizedMessage
         })
       }
@@ -2519,6 +2521,7 @@ export function mergeUserMessages(a: UserMessage, b: UserMessage): UserMessage {
     if (isSnipRuntimeEnabled()) {
       return {
         ...a,
+        ...hookClassifierMetadata([a, b]),
         isMeta: a.isMeta && b.isMeta ? (true as const) : undefined,
         uuid: a.isMeta ? b.uuid : a.uuid,
         message: {
@@ -2532,6 +2535,7 @@ export function mergeUserMessages(a: UserMessage, b: UserMessage): UserMessage {
   }
   return {
     ...a,
+    ...hookClassifierMetadata([a, b]),
     // Preserve the non-meta message's uuid so [id:] tags (derived from uuid)
     // stay stable across API calls (meta messages like system context get fresh uuids each call)
     uuid: a.isMeta ? b.uuid : a.uuid,

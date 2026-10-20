@@ -31,11 +31,13 @@ import { checkRuleBasedPermissions } from '../../utils/permissions/permissions.j
 import { formatError } from '../../utils/toolErrors.js'
 import { isMcpTool } from '../mcp/utils.js'
 import type { McpServerType, MessageUpdateLazy } from './toolExecution.js'
+import { createHookClassifierAnnotation, type HookClassifierAnnotation, type HookClassifierNote } from '../../utils/hooks/classifierContext.js'
 
 export type PostToolUseHooksResult<Output> =
   | MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
   | { updatedToolOutput: Output }
   | { updatedMCPToolOutput: Output }
+  | { classifierContext: HookClassifierAnnotation }
 
 export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   toolUseContext: ToolUseContext,
@@ -47,6 +49,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   requestId: string | undefined,
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
+  durationMs?: number,
 ): AsyncGenerator<PostToolUseHooksResult<Output>> {
   const postToolStartTime = Date.now()
   try {
@@ -54,6 +57,8 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
     const permissionMode = appState.toolPermissionContext.mode
 
     let toolOutput = toolResponse
+    const independentNotes: HookClassifierNote[] = []
+    let rewriteNote: HookClassifierNote | undefined
     for await (const result of executePostToolHooks(
       tool.name,
       toolUseID,
@@ -62,6 +67,8 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
       toolUseContext,
       permissionMode,
       toolUseContext.abortController.signal,
+      undefined,
+      durationMs,
     )) {
       try {
         // Check if we were aborted during hook execution
@@ -143,10 +150,14 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
           }
         }
 
+        const hasRewrite = result.updatedToolOutput !== undefined || result.updatedMCPToolOutput !== undefined
+        let rewriteAccepted = false
+        if (!hasRewrite && result.classifierContext) independentNotes.push(result.classifierContext)
         // The legacy field remains MCP-only. Presence matters: null, false,
         // zero and an empty string are valid replacements for MCP results.
         if (result.updatedMCPToolOutput !== undefined && isMcpTool(tool)) {
           toolOutput = result.updatedMCPToolOutput as Output
+          rewriteAccepted = true
           yield {
             updatedMCPToolOutput: toolOutput,
           }
@@ -160,6 +171,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
             : tool.outputSchema?.safeParse(result.updatedToolOutput)
           if (replacement?.success) {
             toolOutput = replacement.data as Output
+            rewriteAccepted = true
             yield { updatedToolOutput: toolOutput }
           } else {
             logForDebugging(
@@ -167,6 +179,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
             )
           }
         }
+        if (rewriteAccepted) rewriteNote = result.classifierContext
       } catch (error) {
         const postToolDurationMs = Date.now() - postToolStartTime
         logEvent('tengu_post_tool_hook_error', {
@@ -203,6 +216,12 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
         }
       }
     }
+    // Read-only lookups are omitted from the classifier transcript.
+    if ((independentNotes.length > 0 || rewriteNote) && tool.toAutoClassifierInput(toolInput as Input) !== '') {
+      const annotation = createHookClassifierAnnotation(toolUseID, tool.name, toolInput,
+        [...independentNotes, ...(rewriteNote ? [rewriteNote] : [])])
+      if (annotation) yield { classifierContext: annotation }
+    }
   } catch (error) {
     logError(error)
   }
@@ -219,6 +238,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
   requestId: string | undefined,
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
+  durationMs?: number,
 ): AsyncGenerator<
   MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
 > {
@@ -236,6 +256,8 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
       isInterrupt,
       permissionMode,
       toolUseContext.abortController.signal,
+      undefined,
+      durationMs,
     )) {
       try {
         // Check if we were aborted during hook execution
@@ -468,6 +490,7 @@ export async function* runPreToolUseHooks(
     }
   | { type: 'hookPermissionResult'; hookPermissionResult: PermissionResult }
   | { type: 'hookUpdatedInput'; updatedInput: Record<string, unknown> }
+  | { type: 'deferTool' }
   | { type: 'preventContinuation'; shouldPreventContinuation: boolean }
   | { type: 'stopReason'; stopReason: string }
   | {
@@ -493,6 +516,7 @@ export async function* runPreToolUseHooks(
       tool.getToolUseSummary?.(processedInput),
     )) {
       try {
+        if (result.deferTool) yield { type: 'deferTool' }
         if (result.message) {
           yield { type: 'message', message: { message: result.message } }
         }

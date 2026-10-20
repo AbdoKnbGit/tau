@@ -4,6 +4,7 @@ import { findToolByName, type ToolUseContext } from '../../Tool.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
+import { beginDeferredHookBatch } from '../../utils/hooks/deferredTool.js'
 
 function getMaxToolUseConcurrency(): number {
   return (
@@ -22,6 +23,7 @@ export async function* runTools(
   canUseTool: CanUseToolFn,
   toolUseContext: ToolUseContext,
 ): AsyncGenerator<MessageUpdate, void> {
+  beginDeferredHookBatch(toolUseMessages, toolUseContext)
   let currentContext = toolUseContext
   for (const { isConcurrencySafe, blocks } of partitionToolCalls(
     toolUseMessages,

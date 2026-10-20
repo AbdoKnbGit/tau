@@ -95,6 +95,7 @@ export function hookFailureBlockReason(
   event: string,
   timedOut: boolean,
 ): string | undefined {
+  if (event === 'Setup' || event === 'SessionEnd') return undefined
   // Unlike ordinary failures, a model-switch timeout always keeps the
   // current model, even when the hook explicitly sets onFailure to ignore.
   if (event === 'PreModelSwitch' && timedOut) return 'timed out; keeping the current model'

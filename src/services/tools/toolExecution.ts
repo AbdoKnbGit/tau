@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { deferHookToolCall } from '../../utils/hooks/deferredTool.js'
 import { randomUUID } from 'node:crypto'
 import type {
   ContentBlockParam,
@@ -1485,6 +1486,7 @@ async function checkPermissionsAndCallTool(
   }
 
   let shouldPreventContinuation = false
+  let shouldDeferTool = false
   let stopReason: string | undefined
   let hookPermissionResult: PermissionResult | undefined
   const preToolHookInfos: StopHookInfo[] = []
@@ -1500,6 +1502,9 @@ async function checkPermissionsAndCallTool(
     mcpServerBaseUrl,
   )) {
     switch (result.type) {
+      case 'deferTool':
+        shouldDeferTool = true
+        break
       case 'message':
         if (result.message.message.type === 'progress') {
           onToolProgress(result.message.message)
@@ -1553,6 +1558,10 @@ async function checkPermissionsAndCallTool(
     }
   }
   const preToolHookDurationMs = Date.now() - preToolHookStart
+  if (shouldDeferTool && hookPermissionResult?.behavior !== 'deny' &&
+    !shouldPreventContinuation && deferHookToolCall(toolUseID, toolUseContext)) {
+    return resultingMessages
+  }
   getStatsStore()?.observe('pre_tool_hook_duration_ms', preToolHookDurationMs)
   if (preToolHookDurationMs >= SLOW_PHASE_LOG_THRESHOLD_MS) {
     logForDebugging(
@@ -2190,6 +2199,7 @@ async function checkPermissionsAndCallTool(
     // Run PostToolUse hooks
     let toolOutput = result.data
     let toolOutputReplaced = false
+    let hookClassifierContext: import('../../utils/hooks/classifierContext.js').HookClassifierAnnotation | undefined
     const hookResults = []
     const toolContextModifier = result.contextModifier
     const mcpMeta = result.mcpMeta
@@ -2250,7 +2260,7 @@ async function checkPermissionsAndCallTool(
       }
 
       resultingMessages.push({
-        message: createUserMessage({
+        message: Object.assign(createUserMessage({
           content: contentBlocks,
           imagePasteIds: allowImageIds,
           toolUseResult:
@@ -2259,7 +2269,7 @@ async function checkPermissionsAndCallTool(
               : toolUseResult,
           mcpMeta: toolUseContext.agentId ? undefined : mcpMeta,
           sourceToolAssistantUUID: assistantMessage.uuid,
-        }),
+        }), hookClassifierContext ? { hookClassifierContext } : {}),
         contextModifier: toolContextModifier
           ? {
               toolUseID: toolUseID,
@@ -2281,8 +2291,11 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      durationMs,
     )) {
-      if ('updatedToolOutput' in hookResult) {
+      if ('classifierContext' in hookResult) {
+        hookClassifierContext = hookResult.classifierContext
+      } else if ('updatedToolOutput' in hookResult) {
         toolOutput = hookResult.updatedToolOutput
         toolOutputReplaced = true
       } else if ('updatedMCPToolOutput' in hookResult) {
@@ -2547,6 +2560,7 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      durationMs,
     )) {
       hookMessages.push(hookResult)
     }

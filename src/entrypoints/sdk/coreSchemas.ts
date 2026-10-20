@@ -447,6 +447,7 @@ export const PreToolUseHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PreToolUse'),
+      mcp_server: z.object({ name: z.string(), source: z.string() }).optional(),
       tool_name: z.string(),
       tool_input: z.unknown(),
       tool_use_id: z.string(),
@@ -458,6 +459,7 @@ export const PermissionRequestHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PermissionRequest'),
+      mcp_server: z.object({ name: z.string(), source: z.string() }).optional(),
       tool_name: z.string(),
       tool_input: z.unknown(),
       permission_suggestions: z.array(PermissionUpdateSchema()).optional(),
@@ -469,6 +471,8 @@ export const PostToolUseHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PostToolUse'),
+      mcp_server: z.object({ name: z.string(), source: z.string() }).optional(),
+      duration_ms: z.number().nonnegative().optional(),
       tool_name: z.string(),
       tool_input: z.unknown(),
       tool_response: z.unknown(),
@@ -481,6 +485,8 @@ export const PostToolUseFailureHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PostToolUseFailure'),
+      mcp_server: z.object({ name: z.string(), source: z.string() }).optional(),
+      duration_ms: z.number().nonnegative().optional(),
       tool_name: z.string(),
       tool_input: z.unknown(),
       tool_use_id: z.string(),
@@ -494,6 +500,7 @@ export const PermissionDeniedHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PermissionDenied'),
+      mcp_server: z.object({ name: z.string(), source: z.string() }).optional(),
       tool_name: z.string(),
       tool_input: z.unknown(),
       tool_use_id: z.string(),
@@ -527,7 +534,11 @@ export const SessionStartHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('SessionStart'),
-      source: z.enum(['startup', 'resume', 'clear', 'compact']),
+      source: z.enum(['startup', 'resume', 'clear', 'compact', 'fork']),
+      seconds_since_last_response: z.number().nonnegative().optional(),
+      context_tokens: z.number().nonnegative().optional(),
+      prompt_cache_likely_expired: z.boolean().optional(),
+      estimated_cache_write_usd: z.number().nonnegative().optional(),
       agent_type: z.string().optional(),
       model: z.string().optional(),
       session_title: z.string().optional(),
@@ -548,6 +559,14 @@ export const StopHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('Stop'),
+      background_tasks: z.array(z.object({
+        id: z.string(), type: z.string(), status: z.string(), description: z.string(),
+        command: z.string().optional(), agent_type: z.string().optional(),
+        server: z.string().optional(), tool: z.string().optional(), name: z.string().optional(),
+      })).optional(),
+      session_crons: z.array(z.object({
+        id: z.string(), schedule: z.string(), recurring: z.boolean(), prompt: z.string(),
+      })).optional(),
       stop_hook_active: z.boolean(),
       last_assistant_message: z
         .string()
@@ -564,7 +583,10 @@ export const StopFailureHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('StopFailure'),
-      error: SDKAssistantMessageErrorSchema(),
+      error: SDKAssistantMessageErrorSchema().or(z.enum([
+        'overloaded', 'oauth_org_not_allowed', 'account_on_hold',
+        'model_not_found', 'cloud_credential_error',
+      ])),
       error_details: z.string().optional(),
       last_assistant_message: z.string().optional(),
     }),
@@ -1608,6 +1630,9 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     num_turns: z.number(),
     result: z.string(),
     stop_reason: z.string().nullable(),
+    deferred_tool_use: z.object({
+      id: z.string(), name: z.string(), input: z.unknown(),
+    }).optional(),
     total_cost_usd: z.number(),
     usage: NonNullableUsagePlaceholder(),
     modelUsage: z.record(z.string(), ModelUsageSchema()),

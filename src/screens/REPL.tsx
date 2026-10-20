@@ -1863,10 +1863,12 @@ export function REPL({
       });
 
       // Process session start hooks for resume
-      const hookMessages = await processSessionStartHooks('resume', {
+      const hookMessages = await processSessionStartHooks(entrypoint === 'fork' ? 'fork' : 'resume', {
         sessionId,
         agentType: mainThreadAgentDefinition?.agentType,
-        model: mainLoopModel
+        model: mainLoopModel,
+        messages,
+        sessionTitle: log.customTitle
       });
 
       // Append hook messages to the conversation

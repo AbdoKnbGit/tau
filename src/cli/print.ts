@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
+import { pendingDeferredHookTool } from '../utils/hooks/deferredTool.js'
 import { readFile, stat } from 'fs/promises'
 import { dirname } from 'path'
 import {
@@ -895,7 +896,10 @@ export async function runHeadless(
     getAppState,
     setAppState,
     agents,
-    options,
+    {
+      ...options,
+      resumeDeferredWithoutPrompt: typeof inputPrompt === 'string' && inputPrompt.trim() === '' && !hookInitialUserMessage,
+    },
     turnInterruptionState,
   )) {
     if (transformToStreamlined) {
@@ -1032,6 +1036,7 @@ function runHeadlessStreaming(
     setSDKStatus?: (status: SDKStatus) => void
     promptSuggestions?: boolean | undefined
     workload?: string | undefined
+    resumeDeferredWithoutPrompt?: boolean
   },
   turnInterruptionState?: TurnInterruptionState,
 ): AsyncIterable<StdoutMessage> {
@@ -1207,6 +1212,15 @@ function runHeadlessStreaming(
   // left off without requiring the SDK to re-send the prompt.
   const resumeInterruptedTurnEnv =
     process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
+  if (options.resumeDeferredWithoutPrompt &&
+    pendingDeferredHookTool(mutableMessages)) {
+    enqueue({
+      mode: 'prompt',
+      value: 'Continue the deferred tool call.',
+      isMeta: true,
+      uuid: randomUUID(),
+    })
+  }
   if (
     turnInterruptionState &&
     turnInterruptionState.kind !== 'none' &&
@@ -4150,6 +4164,7 @@ function runHeadlessStreaming(
       }
       void run()
     }
+    if (options.resumeDeferredWithoutPrompt && !running && hasCommandsInQueue()) await run()
     inputClosed = true
     cronScheduler?.stop()
     if (!running) {
@@ -4942,6 +4957,7 @@ async function loadInitialMessages(
       const result = await loadConversationForResume(
         undefined /* sessionId */,
         undefined /* file path */,
+        options.forkSession ? 'fork' : 'resume',
       )
       if (result) {
         // Match coordinator mode to the resumed session's mode
@@ -5107,6 +5123,7 @@ async function loadInitialMessages(
       const result = await loadConversationForResume(
         parsedSessionId.sessionId,
         parsedSessionId.jsonlFile || undefined,
+        options.forkSession ? 'fork' : 'resume',
       )
 
       // hydrateFromCCRv2InternalEvents writes an empty transcript file for

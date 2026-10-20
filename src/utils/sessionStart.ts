@@ -9,13 +9,16 @@ import { shouldAllowManagedHooksOnly } from './hooks/hooksConfigSnapshot.js'
 import { executeSessionStartHooks, executeSetupHooks } from './hooks.js'
 import { logError } from './log.js'
 import { loadPluginHooks } from './plugins/loadPluginHooks.js'
-import { applyHookSessionTitle } from './hooks/lifecycleHooks.js'
+import { applyHookSessionTitle, sessionStartResumeMetadata } from './hooks/lifecycleHooks.js'
+import type { Message } from '../types/message.js'
 
 type SessionStartHooksOptions = {
   sessionId?: string
   agentType?: string
   model?: string
   forceSyncExecution?: boolean
+  messages?: readonly Message[]
+  sessionTitle?: string
 }
 
 // Set by processSessionStartHooks when a hook emits initialUserMessage;
@@ -34,12 +37,14 @@ export function takeInitialUserMessage(): string | undefined {
 
 // Note to CLAUDE: do not add ANY "warmup" logic. It is **CRITICAL** that you do not add extra work on startup.
 export async function processSessionStartHooks(
-  source: 'startup' | 'resume' | 'clear' | 'compact',
+  source: 'startup' | 'resume' | 'clear' | 'compact' | 'fork',
   {
     sessionId,
     agentType,
     model,
     forceSyncExecution,
+    messages = [],
+    sessionTitle,
   }: SessionStartHooksOptions = {},
 ): Promise<HookResultMessage[]> {
   // --bare skips all hooks. executeHooks already early-returns under --bare
@@ -139,8 +144,12 @@ export async function processSessionStartHooks(
     undefined,
     undefined,
     forceSyncExecution,
+    {
+      ...(source === 'resume' || source === 'fork' ? sessionStartResumeMetadata(messages, model) : {}),
+      ...(sessionTitle !== undefined ? { session_title: sessionTitle } : {}),
+    },
   )) {
-    if (hookResult.sessionTitle && (source === 'startup' || source === 'resume')) {
+    if (hookResult.sessionTitle && (source === 'startup' || source === 'resume' || source === 'fork')) {
       await applyHookSessionTitle(hookResult.sessionTitle, undefined, sessionId)
     }
     reloadSkills ||= hookResult.reloadSkills === true

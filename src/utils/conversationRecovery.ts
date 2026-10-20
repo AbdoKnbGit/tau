@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { pendingDeferredHookTool } from './hooks/deferredTool.js'
 import type { UUID } from 'crypto'
 import { relative } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
@@ -219,9 +220,15 @@ export function deserializeMessagesWithInterruptDetection(
     }
 
     // Filter out unresolved tool uses and any synthetic messages that follow them
+    const deferredCall = pendingDeferredHookTool(migratedMessages)
+    // Keep only the deliberately deferred call unresolved. Other interrupted
+    // calls still go through the normal repair/filtering path.
+    const deferredPlaceholder = deferredCall ? createUserMessage({
+      content: [{ type: 'tool_result', tool_use_id: deferredCall.call.id, content: '' }],
+    }) : undefined
     const filteredToolUses = filterUnresolvedToolUses(
-      migratedMessages,
-    ) as NormalizedMessage[]
+      deferredPlaceholder ? [...migratedMessages, deferredPlaceholder] : migratedMessages,
+    ).filter(message => message.uuid !== deferredPlaceholder?.uuid) as NormalizedMessage[]
 
     // Filter out orphaned thinking-only assistant messages that can cause API errors
     // during resume. These occur when streaming yields separate messages per content
@@ -236,7 +243,7 @@ export function deserializeMessagesWithInterruptDetection(
       filteredThinking,
     ) as NormalizedMessage[]
 
-    const internalState = detectTurnInterruption(filteredMessages)
+    const internalState = deferredCall ? { kind: 'none' as const } : detectTurnInterruption(filteredMessages)
 
     // Transform mid-turn interruptions into interrupted_prompt by appending
     // a synthetic continuation message. This unifies both interruption kinds
@@ -499,6 +506,7 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
 export async function loadConversationForResume(
   source: string | LogOption | undefined,
   sourceJsonlFile: string | undefined,
+  hookSource: 'resume' | 'fork' = 'resume',
 ): Promise<{
   messages: Message[]
   turnInterruptionState: TurnInterruptionState
@@ -607,7 +615,11 @@ export async function loadConversationForResume(
     messages = deserialized.messages
 
     // Process session start hooks for resume
-    const hookMessages = await processSessionStartHooks('resume', { sessionId })
+    const hookMessages = await processSessionStartHooks(hookSource, {
+      sessionId: hookSource === 'fork' ? undefined : sessionId,
+      messages,
+      sessionTitle: log?.customTitle,
+    })
 
     // Append hook messages to the conversation
     messages.push(...hookMessages)
