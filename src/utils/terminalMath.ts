@@ -51,7 +51,9 @@ const environments = new Map<string, [string, string]>([
 ])
 
 function group(text: string): string {
-  return /^(?:[\p{L}\p{N}]+|[^\s]{1})$/u.test(text) ? text : `(${text})`
+  // Products such as "bc" need parentheses in a compact denominator or
+  // scripted base; only a number or one symbol is unambiguous without them.
+  return /^(?:[+-]?\d+(?:\.\d+)?|[^\s])$/u.test(text) ? text : `(${text})`
 }
 
 function script(text: string, up: boolean): string {
@@ -247,6 +249,7 @@ class MathParser {
     }
     const rows: string[] = []
     let cells: string[] = []
+    const separator = delimiters[0] ? ', ' : ' '
     let count = 0
     const end = `\\end{${name}}`
     while (this.pos < this.source.length) {
@@ -256,13 +259,13 @@ class MathParser {
         this.source.startsWith('\\\\', this.pos) || this.source.startsWith('\\end', this.pos)).trim())
       if (this.source.startsWith(end, this.pos)) {
         this.pos += end.length
-        if (cells.some(Boolean)) rows.push(cells.join(', '))
+        if (cells.some(Boolean)) rows.push(cells.join(separator))
         return delimiters[0] + rows.join('; ') + delimiters[1]
       }
       if (this.source[this.pos] === '&') { this.pos++; continue }
       if (!this.source.startsWith('\\\\', this.pos)) throw new MathSyntaxError()
       this.pos += 2
-      rows.push(cells.join(', '))
+      rows.push(cells.join(separator))
       cells = []
       // Optional row spacing is presentation-only; accept a small dimension.
       if (this.source[this.pos] === '[') {

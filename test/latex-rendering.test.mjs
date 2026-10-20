@@ -133,6 +133,10 @@ test('shared ANSI renderer preserves code and parses math in every Markdown cont
     '\\frac{a+b}{c}',
     '$$',
     '',
+    '$\\frac{a}{bc}$',
+    '',
+    '$$\\begin{aligned}a &= b \\\\ c &= d\\end{aligned}$$',
+    '',
     '```latex',
     '\\frac{x}{y} and $x^2$',
     '```',
@@ -141,7 +145,7 @@ test('shared ANSI renderer preserves code and parses math in every Markdown cont
   ].join('\n')
   const result = stripVTControlCharacters(runtime.applyMarkdown(input, 'dark'))
   for (const part of ['Energy E = mc²', '- x₁ and value y²', 'Root: √x',
-    'α', '(a+b)⁄c', '\\frac{x}{y} and $x^2$', 'Price $5 and $10',
+    'α', '(a+b)⁄c', 'a⁄(bc)', 'a = b; c = d', '\\frac{x}{y} and $x^2$', 'Price $5 and $10',
     '$\\unknown{x}$', 'normal bold']) assert.ok(result.includes(part), `${part}\n${result}`)
   assert.equal(marked.parse('$x^2$', { async: false }), '<p>$x^2$</p>\n')
   assert.equal(input.includes('$E = mc^2$'), true, 'stored/copy source is untouched')
