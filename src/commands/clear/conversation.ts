@@ -15,6 +15,7 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import type { AppState } from '../../state/AppState.js'
+import { getAgentNamesForNewSession } from '../../state/agentNameRegistry.js'
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js'
 import {
   isLocalAgentTask,
@@ -170,6 +171,10 @@ export async function clearConversation({
       return {
         ...prev,
         tasks: nextTasks,
+        agentNameRegistry: getAgentNamesForNewSession(
+          prev.agentNameRegistry,
+          nextTasks,
+        ),
         attribution: createEmptyAttributionState(),
         // Clear standalone agent context (name/color set by /rename, /color)
         // so the new session doesn't display the old session's identity badge

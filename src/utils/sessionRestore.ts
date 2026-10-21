@@ -12,6 +12,7 @@ import {
 import { clearSystemPromptSections } from '../constants/systemPromptSections.js'
 import { restoreCostStateForSession } from '../cost-tracker.js'
 import type { AppState } from '../state/AppState.js'
+import { getAgentNamesForNewSession } from '../state/agentNameRegistry.js'
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
 import {
   type AgentDefinition,
@@ -100,6 +101,16 @@ export function restoreSessionStateFromLog(
   result: ResumeResult,
   setAppState: (f: (prev: AppState) => AppState) => void,
 ): void {
+  // The store survives in-process session switches. Drop names belonging to
+  // the previous conversation while keeping ongoing background work reachable.
+  setAppState(prev => ({
+    ...prev,
+    agentNameRegistry: getAgentNamesForNewSession(
+      prev.agentNameRegistry,
+      prev.tasks,
+    ),
+  }))
+
   // Restore file history state
   if (result.fileHistorySnapshots && result.fileHistorySnapshots.length > 0) {
     fileHistoryRestoreStateFromLog(result.fileHistorySnapshots, newState => {

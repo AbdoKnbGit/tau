@@ -161,6 +161,7 @@ export type AppState = DeepImmutable<{
   tasks: { [taskId: string]: TaskState }
   // Name → AgentId registry populated by Agent tool when `name` is provided.
   // Latest-wins on collision. Used by SendMessage to route by name.
+  // Session-scoped, except for live background agents carried across a switch.
   agentNameRegistry: Map<string, AgentId>
   // Task ID that has been foregrounded - its messages are shown in main view
   foregroundedTaskId?: string
