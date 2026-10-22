@@ -191,7 +191,7 @@ export async function getImagePathFromClipboard(): Promise<string | null> {
  * here but not in MIME_BY_EXT (e.g. bmp) uploads as octet-stream and has no
  * /preview variant → broken thumbnail.
  */
-export const IMAGE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp)$/i
+export const IMAGE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp|bmp)$/i
 
 /**
  * Remove outer single or double quotes from a string
