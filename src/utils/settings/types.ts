@@ -1044,6 +1044,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Whether the user has accepted the bypass permissions mode dialog',
         ),
+      askQuestionsInBypassMode: z
+        .boolean()
+        .optional()
+        .describe(
+          'Show AskUserQuestion dialogs even when dangerously skipping permissions. Default: false (preserves existing behavior, including self-learning and plan-mode exceptions).',
+        ),
       ...(feature('TRANSCRIPT_CLASSIFIER')
         ? {
             skipAutoPermissionPrompt: z

@@ -25,6 +25,7 @@ import {
   getSettingSourceDisplayNameLowercase,
   SETTING_SOURCES,
 } from '../settings/constants.js'
+import { getInitialSettings } from '../settings/settings.js'
 import { plural } from '../stringUtils.js'
 import {
   permissionModeTitle,
@@ -1289,14 +1290,14 @@ async function hasPermissionsToUseToolInner(
   }
 
   // 1e. Tool requires user interaction unless dangerous bypass is active.
-  // Exception: with self-learning on, AskUserQuestion must STILL prompt even
-  // under dangerously-skip-permissions. Its entire purpose is to capture the
-  // user's answer; auto-allowing it (step 2a) runs the tool with an empty
-  // answer, which silently breaks the /learned "learn" approval flow. Scope is
-  // deliberately narrow — only this one tool, only while self-learning is
-  // enabled — so dangerously-skip-permissions is otherwise unchanged.
+  // AskUserQuestion can opt out of bypass independently of command approvals.
+  // Read current settings at execution time: toggling /config must take effect
+  // immediately without changing model prompts or tool schemas. Self-learning
+  // keeps its existing exception so /learned can still collect approval.
   const askUserQuestionDespiteBypass =
-    tool.name === ASK_USER_QUESTION_TOOL_NAME && isSelfLearningEnabled()
+    tool.name === ASK_USER_QUESTION_TOOL_NAME &&
+    (getInitialSettings().askQuestionsInBypassMode === true ||
+      isSelfLearningEnabled())
   // Plan review is explicit user interaction and should not be auto-approved.
   const exitPlanModeDespiteBypass = tool.name === EXIT_PLAN_MODE_V2_TOOL_NAME
   if (

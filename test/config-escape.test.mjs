@@ -44,6 +44,8 @@ const runtime = await loadBuiltRuntime({
 
 const localFile = join(projectDir, '.claude', 'settings.local.json')
 const localSettings = () => existsSync(localFile) ? JSON.parse(readFileSync(localFile, 'utf8')) : {}
+const userFile = join(configDir, 'settings.json')
+const userSettings = () => existsSync(userFile) ? JSON.parse(readFileSync(userFile, 'utf8')) : {}
 
 /** Opens the panel the way /config does; `closes` records its onClose calls. */
 async function openConfig() {
@@ -142,6 +144,57 @@ test('Worktree base saves on Enter and cancellation preserves sibling settings',
   } finally {
     panel.close()
     runtime.updateSettingsForSource('localSettings', { worktree: undefined })
+  }
+})
+
+test('bypass questions default off, apply immediately, and Escape restores an absent setting', async () => {
+  const panel = await openConfig()
+  try {
+    await panel.type('askQuestionsInBypassMode')
+    await panel.press(KEYS.down)
+    assert.match(panel.frame(), /Ask questions in bypass mode\s+false/)
+    await panel.press(KEYS.space)
+    assert.equal(userSettings().askQuestionsInBypassMode, true)
+    assert.equal(runtime.getInitialSettings().askQuestionsInBypassMode, true)
+    await panel.press(KEYS.esc)
+    assert.equal(userSettings().askQuestionsInBypassMode, undefined)
+    assert.equal(runtime.getInitialSettings().askQuestionsInBypassMode, undefined)
+    assert.deepEqual(panel.closes, [['Config dialog dismissed', { display: 'system' }]])
+  } finally { panel.close() }
+})
+
+test('bypass questions save on Enter, reopen, and Escape restores an explicit value', async () => {
+  let panel = await openConfig()
+  try {
+    await panel.type('askQuestionsInBypassMode')
+    await panel.press(KEYS.down)
+    await panel.press(KEYS.space)
+    await panel.press(KEYS.enter)
+    assert.match(panel.closes[0][0], /Ask questions in bypass mode/)
+    assert.equal(userSettings().askQuestionsInBypassMode, true)
+  } finally { panel.close() }
+  panel = await openConfig()
+  try {
+    await panel.type('askQuestionsInBypassMode')
+    await panel.press(KEYS.down)
+    assert.match(panel.frame(), /Ask questions in bypass mode\s+true/)
+    await panel.press(KEYS.space)
+    assert.equal(runtime.getInitialSettings().askQuestionsInBypassMode, false)
+    await panel.press(KEYS.esc)
+    assert.equal(userSettings().askQuestionsInBypassMode, true)
+    assert.equal(runtime.getInitialSettings().askQuestionsInBypassMode, true)
+  } finally { panel.close() }
+  panel = await openConfig()
+  try {
+    await panel.type('askQuestionsInBypassMode')
+    await panel.press(KEYS.down)
+    await panel.press(KEYS.space)
+    await panel.press(KEYS.enter)
+    assert.equal(userSettings().askQuestionsInBypassMode, false)
+    assert.equal(runtime.getInitialSettings().askQuestionsInBypassMode, false)
+  } finally {
+    panel.close()
+    runtime.updateSettingsForSource('userSettings', { askQuestionsInBypassMode: undefined })
   }
 })
 

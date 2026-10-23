@@ -719,6 +719,26 @@ export function Config({
         value: mode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
     }
+  }, {
+    id: 'askQuestionsInBypassMode',
+    label: 'Ask questions in bypass mode',
+    value: settingsData?.askQuestionsInBypassMode === true,
+    type: 'boolean' as const,
+    onChange(askQuestionsInBypassMode: boolean) {
+      const result = updateSettingsForSource('userSettings', {
+        askQuestionsInBypassMode
+      });
+      if (result.error) {
+        logError(result.error);
+        return;
+      }
+      const settings = getInitialSettings();
+      setSettingsData(settings);
+      setChanges(prev => ({
+        ...prev,
+        'Ask questions in bypass mode': settings.askQuestionsInBypassMode === true
+      }));
+    }
   }, ...(feature('TRANSCRIPT_CLASSIFIER') && showAutoInDefaultModePicker ? [{
     id: 'useAutoModeDuringPlan',
     label: 'Use auto mode during plan',
@@ -1411,6 +1431,7 @@ export function Config({
     const iu = initialUserSettings;
     updateSettingsForSource('userSettings', {
       alwaysThinkingEnabled: iu?.alwaysThinkingEnabled,
+      askQuestionsInBypassMode: iu?.askQuestionsInBypassMode,
       promptSuggestionEnabled: iu?.promptSuggestionEnabled,
       autoUpdatesChannel: iu?.autoUpdatesChannel,
       minimumVersion: iu?.minimumVersion,

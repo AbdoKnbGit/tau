@@ -1,0 +1,290 @@
+import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { after, beforeEach, test } from 'node:test'
+import React from 'react'
+import { KEYS, loadBuiltRuntime, mount } from './helpers/ink-built-runtime.mjs'
+
+// Run against the shipped bundle (npm run build first), with isolated settings.
+const repoDir = process.cwd()
+const scratch = mkdtempSync(join(tmpdir(), 'tau-bypass-questions-'))
+const projectDir = join(scratch, 'project')
+mkdirSync(join(projectDir, '.git'), { recursive: true })
+process.env.CLAUDE_CONFIG_DIR = join(scratch, 'config')
+process.env.CLAUDE_CODE_TMPDIR = join(scratch, 'tmp')
+process.env.CLAUDEX_DISABLE_MODEL_PRICING = '1'
+process.env.DISABLE_TELEMETRY = '1'
+process.chdir(projectDir)
+
+after(async () => {
+  process.chdir(repoDir)
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(scratch, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (attempt >= 100 || !['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) throw error
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+  }
+})
+
+const r = await loadBuiltRuntime({
+  paths: [
+    'src/hooks/useCanUseTool.tsx',
+    'src/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx',
+    'src/services/tools/toolExecution.ts',
+    'src/utils/permissions/permissions.ts',
+    'src/utils/settings/types.ts',
+    'src/utils/api.ts',
+    'src/constants/prompts.ts',
+    'src/utils/model/providerRegistry.ts',
+    'src/utils/forcedProvider.ts',
+    'src/lanes/gemini/tools.ts',
+    'src/lanes/cursor/tools.ts',
+    'src/lanes/kilo/tool_args.ts',
+  ],
+  exports: [
+    'AskUserQuestionTool', 'AskUserQuestionPermissionRequest', 'useCanUseTool',
+    'hasPermissionsToUseTool', 'runToolUse', 'resolveHookPermissionDecision',
+    'getEmptyToolPermissionContext', 'setSessionBypassPermissionsMode',
+    'SettingsSchema', 'updateSettingsForSource', 'getInitialSettings',
+    'toolToAPISchema', 'getSystemPrompt', 'API_PROVIDERS', 'runWithForcedProvider',
+    'GEMINI_TOOL_REGISTRY', 'resolveCursorToolCall', 'normalizeKiloToolCallArguments',
+  ],
+})
+const tool = r.AskUserQuestionTool
+const input = { questions: [{
+  question: 'Should the app support guest checkout?', header: 'Checkout',
+  options: [
+    { label: 'Yes', description: 'Let guests buy without an account.' },
+    { label: 'No', description: 'Require an account before checkout.' },
+  ],
+}] }
+const assistant = { type: 'assistant', uuid: 'fixture-assistant',
+  message: { id: 'fixture-message', content: [] } }
+
+function settings(value, extra = {}, source = 'userSettings') {
+  assert.equal(r.updateSettingsForSource(source, {
+    askQuestionsInBypassMode: value, ...extra,
+  }).error, null)
+}
+
+function context(overrides = {}) {
+  const state = r.getDefaultAppState()
+  state.toolPermissionContext = {
+    ...r.getEmptyToolPermissionContext(), mode: 'bypassPermissions', ...overrides,
+  }
+  return {
+    abortController: new AbortController(), messages: [],
+    options: { tools: [tool], mcpClients: [], isNonInteractiveSession: false,
+      agentDefinitions: { activeAgents: [] }, mainLoopModel: 'fixture-model' },
+    getAppState: () => state,
+    setAppState: update => Object.assign(state, update(state)),
+  }
+}
+
+const permission = (ctx = context(), candidate = tool, args = input) =>
+  r.hasPermissionsToUseTool(candidate, args, ctx, assistant, 'question-1')
+
+beforeEach(() => {
+  r.setSessionBypassPermissionsMode(false)
+  settings(undefined, { selfLearningEnabled: false, autoMemoryEnabled: true })
+})
+
+test('setting is an optional boolean, with no schema-injected default', () => {
+  const schema = r.SettingsSchema()
+  assert.equal(schema.parse({}).askQuestionsInBypassMode, undefined)
+  for (const value of [true, false]) {
+    assert.equal(schema.parse({ askQuestionsInBypassMode: value }).askQuestionsInBypassMode, value)
+  }
+  for (const value of ['true', 1, null]) {
+    assert.equal(schema.safeParse({ askQuestionsInBypassMode: value }).success, false)
+  }
+})
+
+test('unset and false retain empty-answer bypass; true takes effect without restarting', async () => {
+  const ctx = context()
+  for (const value of [undefined, false, true, false, true]) {
+    settings(value)
+    const result = await permission(ctx)
+    assert.equal(result.behavior, value === true ? 'ask' : 'allow')
+    if (result.behavior === 'allow') {
+      const output = await tool.call(result.updatedInput, ctx)
+      assert.deepEqual(output.data.answers, {}, 'legacy bypass behavior must stay unchanged')
+    }
+  }
+})
+
+test('CLI/session bypass and explicit bypass mode both honor the setting', async () => {
+  settings(true)
+  assert.equal((await permission()).behavior, 'ask')
+  r.setSessionBypassPermissionsMode(true)
+  assert.equal((await permission(context({ mode: 'default' }))).behavior, 'ask')
+  settings(false)
+  assert.equal((await permission(context({ mode: 'default' }))).behavior, 'allow')
+})
+
+test('effective settings respect source precedence and revert immediately after deletion', async () => {
+  settings(true)
+  try {
+    settings(false, {}, 'projectSettings')
+    assert.equal((await permission()).behavior, 'allow')
+    settings(true, {}, 'localSettings')
+    assert.equal((await permission()).behavior, 'ask')
+    settings(undefined, {}, 'localSettings')
+    assert.equal((await permission()).behavior, 'allow')
+    settings(undefined, {}, 'projectSettings')
+    assert.equal((await permission()).behavior, 'ask')
+  } finally {
+    settings(undefined, {}, 'localSettings')
+    settings(undefined, {}, 'projectSettings')
+  }
+})
+
+test('normal questions, self-learning, and plan approval keep their existing behavior', async () => {
+  for (const value of [undefined, false, true]) {
+    settings(value)
+    assert.equal((await permission(context({ mode: 'default' }))).behavior, 'ask')
+    r.setSessionBypassPermissionsMode(true)
+    assert.equal((await permission(context({ mode: 'plan' }))).behavior, 'ask')
+    const exitPlan = { ...tool, name: 'ExitPlanMode' }
+    assert.equal((await permission(context(), exitPlan)).behavior, 'ask')
+    r.setSessionBypassPermissionsMode(false)
+  }
+  settings(false, { selfLearningEnabled: true })
+  assert.equal((await permission()).behavior, 'ask')
+  settings(false, { autoMemoryEnabled: false })
+  assert.equal((await permission()).behavior, 'allow')
+  settings(true)
+  assert.equal((await permission()).behavior, 'ask', 'new setting must not depend on auto-memory')
+})
+
+test('only questions opt out; ordinary tool approvals still bypass', async () => {
+  settings(true)
+  for (const name of ['Read', 'Write', 'Edit', 'Bash', 'PowerShell', 'OtherInteractiveTool']) {
+    // Use the same ask decision to isolate permission routing, without running commands.
+    const candidate = { ...tool, name, requiresUserInteraction: () => name === 'OtherInteractiveTool' }
+    assert.equal((await permission(context(), candidate)).behavior, 'allow', name)
+  }
+})
+
+test('deny rules still win, and allow rules cannot discard required answers', async () => {
+  settings(true)
+  assert.equal((await permission(context({ alwaysDenyRules: { userSettings: ['AskUserQuestion'] } }))).behavior, 'deny')
+  assert.equal((await permission(context({ alwaysAllowRules: { userSettings: ['AskUserQuestion'] } }))).behavior, 'ask')
+  const denied = { ...tool, checkPermissions: async () => ({ behavior: 'deny', message: 'Denied' }) }
+  assert.equal((await permission(context(), denied)).behavior, 'deny')
+})
+
+test('headless/background sessions return a denial when no interaction is available', async () => {
+  settings(true)
+  const result = await permission(context({ shouldAvoidPermissionPrompts: true }))
+  assert.equal(result.behavior, 'deny')
+  assert.equal(result.decisionReason.type, 'asyncAgent')
+})
+
+test('hooks retain their answer-supplying path, but bare approval still requires interaction', async () => {
+  settings(true)
+  const ctx = context()
+  const decide = hook => r.resolveHookPermissionDecision(hook, tool, input, ctx,
+    r.hasPermissionsToUseTool, assistant, 'question-1')
+  assert.equal((await decide({ behavior: 'allow' })).decision.behavior, 'ask')
+  const answered = { ...input, answers: { [input.questions[0].question]: 'No' } }
+  const result = await decide({ behavior: 'allow', updatedInput: answered })
+  assert.equal(result.decision.behavior, 'allow')
+  assert.deepEqual(result.input.answers, answered.answers)
+})
+
+test('every registered provider honors the shared permission decision', async t => {
+  for (const provider of r.API_PROVIDERS) {
+    await t.test(provider, () => r.runWithForcedProvider({ provider }, async () => {
+      settings(true)
+      assert.equal((await permission()).behavior, 'ask')
+      settings(false)
+      assert.equal((await permission()).behavior, 'allow')
+    }))
+  }
+})
+
+test('Gemini, Cursor, and Kilo native question formats reach the same override', async () => {
+  settings(true)
+  const gemini = r.GEMINI_TOOL_REGISTRY.find(entry => entry.nativeName === 'ask_user')
+  const cursor = r.resolveCursorToolCall('ask_question', { prompt: 'Pick an approach?', options: ['Simple', 'Advanced'] })
+  assert.equal(gemini.implId, tool.name)
+  assert.equal(cursor.implId, tool.name)
+  const inputs = [
+    gemini.adaptInput({ question: 'Pick an approach?' }), cursor.input,
+    r.normalizeKiloToolCallArguments(tool.name, { questions: JSON.stringify(input.questions) }),
+  ]
+  for (const args of inputs) {
+    assert.equal(tool.inputSchema.safeParse(args).success, true)
+    assert.equal((await permission(context(), tool, args)).behavior, 'ask')
+  }
+})
+
+test('toggling preserves model-visible system prompt and tool schema bytes', async () => {
+  const tools = [tool]
+  const options = { tools, agents: [], model: 'fixture-model',
+    getToolPermissionContext: async () => context().getAppState().toolPermissionContext }
+  for (const provider of r.API_PROVIDERS) {
+    await r.runWithForcedProvider({ provider }, async () => {
+      settings(false)
+      const before = JSON.stringify({
+        system: await r.getSystemPrompt(tools, options.model),
+        schema: await r.toolToAPISchema(tool, options),
+        prompt: await tool.prompt(), enabled: tool.isEnabled(),
+      })
+      settings(true)
+      assert.equal(JSON.stringify({
+        system: await r.getSystemPrompt(tools, options.model),
+        schema: await r.toolToAPISchema(tool, options),
+        prompt: await tool.prompt(), enabled: tool.isEnabled(),
+      }), before, provider)
+    })
+  }
+})
+
+test('real executor pauses at the question dialog and returns the selected answer', async () => {
+  settings(true, { syntaxHighlightingDisabled: true })
+  const ctx = context()
+  let canUseTool
+  let pendingQuestion
+  function Harness() {
+    const [queue, setQueue] = React.useState([])
+    pendingQuestion = queue[0]
+    canUseTool = r.useCanUseTool(setQueue, next => { ctx.getAppState().toolPermissionContext = next })
+    return queue[0] ? React.createElement(r.AskUserQuestionPermissionRequest, {
+      toolUseConfirm: queue[0], toolUseContext: ctx,
+      onDone: () => setQueue([]), onReject: () => {},
+    }) : null
+  }
+  const panel = await mount(r, React.createElement(Harness), { columns: 100, rows: 40 })
+  let completed = false
+  const block = { type: 'tool_use', name: tool.name, id: 'question-1', input }
+  const execution = (async () => {
+    const updates = []
+    for await (const update of r.runToolUse(block,
+      { ...assistant, message: { ...assistant.message, content: [block] } }, canUseTool, ctx)) updates.push(update)
+    completed = true
+    return updates
+  })()
+  try {
+    await panel.waitFor(/Should the app support guest checkout/)
+    assert.equal(completed, false, 'execution must wait for an actual answer')
+    await pendingQuestion.recheckPermission()
+    assert.equal(completed, false, 'a bypass-mode recheck must not auto-approve the question')
+    await panel.press(KEYS.down)
+    await panel.press(KEYS.enter)
+    const updates = await execution
+    const results = updates.flatMap(update => update.message?.type === 'user'
+      ? update.message.message.content : []).filter(block => block.type === 'tool_result')
+    assert.equal(results.length, 1)
+    assert.notEqual(results[0].is_error, true)
+    assert.match(results[0].content, /"Should the app support guest checkout\?"="No"/)
+  } finally {
+    ctx.abortController.abort()
+    panel.close()
+  }
+})
