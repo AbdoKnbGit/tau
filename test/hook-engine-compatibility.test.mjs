@@ -253,12 +253,17 @@ test('terminal sequences allow notifications only and reject unsafe sequences in
 })
 
 test('PreModelSwitch bounds callbacks that ignore their signal and keeps the current model', async () => {
-  for (const outside of [false, true]) {
-    const startedAt = Date.now()
-    const output = await run({ type: 'callback', timeout: 0.05, callback: () => new Promise(() => {}) }, { event: 'PreModelSwitch', outside })
-    assert.equal(blocked(output), true)
-    assert.ok(Date.now() - startedAt < 1500, 'a callback that ignores AbortSignal must still be bounded')
-  }
+  // The hook timeout is unref'd, and a real host's REPL or SDK transport keeps
+  // the process alive. Node 20 and 22 end a test with nothing else pending.
+  const host = setInterval(() => {}, 1000)
+  try {
+    for (const outside of [false, true]) {
+      const startedAt = Date.now()
+      const output = await run({ type: 'callback', timeout: 0.05, callback: () => new Promise(() => {}) }, { event: 'PreModelSwitch', outside })
+      assert.equal(blocked(output), true)
+      assert.ok(Date.now() - startedAt < 1500, 'a callback that ignores AbortSignal must still be bounded')
+    }
+  } finally { clearInterval(host) }
 })
 
 test('callback errors are isolated and do not prevent other hooks from delivering context', async () => {
