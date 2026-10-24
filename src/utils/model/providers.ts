@@ -1,7 +1,7 @@
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
-import { getForcedProvider } from '../forcedProvider.js'
+import { getScopedProvider } from '../forcedProvider.js'
 import { createSignal } from '../signal.js'
 import {
   API_PROVIDERS,
@@ -97,8 +97,10 @@ export function getAPIProvider(): APIProvider {
   // Agent tool's `provider` param or from an agent definition's `provider:`
   // frontmatter. It takes precedence over the session snapshot AND the test
   // bypass so an agent spawned with provider='kiro' routes through Kiro
-  // regardless of what the user has globally selected via /provider.
-  const forced = getForcedProvider()
+  // regardless of what the user has globally selected via /provider. Every
+  // other agent is held on the provider it started on (a spawn scope), so a
+  // later /provider switch cannot reroute its requests.
+  const forced = getScopedProvider()
   if (forced !== undefined) return forced
 
   if (process.env.NODE_ENV === 'test') return _resolveAPIProvider()

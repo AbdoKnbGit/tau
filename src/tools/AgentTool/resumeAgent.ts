@@ -18,8 +18,10 @@ import {
   filterWhitespaceOnlyAssistantMessages,
 } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
 import {
+  getAgentResumeRoute,
   getAgentTranscript,
   getMistralAgentResumeRoute,
   readAgentMetadata,
@@ -33,8 +35,9 @@ import { runAsyncAgentLifecycle } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
-import { isBuiltInAgent } from './loadAgentsDir.js'
+import { getAgentModelScope, isBuiltInAgent } from './loadAgentsDir.js'
 import {
+  isExplicitProviderOverride,
   runWithAgentProvider,
   runWithForcedProvider,
 } from '../../utils/forcedProvider.js'
@@ -95,9 +98,6 @@ export async function resumeAgentBackground({
   // could silently change the model, the context limit, and its prompt cache.
   // Old metadata and other providers keep their existing resolution behavior.
   const mistralRoute = getMistralAgentResumeRoute(meta)
-  const spawnModel = mistralRoute?.model ?? meta?.model
-  const withResumeProvider = <T>(fn: () => T): T =>
-    mistralRoute ? runWithForcedProvider(mistralRoute, fn) : fn()
   const resumedReplacementState = reconstructForSubagentResume(
     toolUseContext.contentReplacementState,
     resumedMessages,
@@ -136,6 +136,23 @@ export async function resumeAgentBackground({
   } else {
     selectedAgent = GENERAL_PURPOSE_AGENT
   }
+
+  // Any other agent resumes on the provider and model it ran on, held there
+  // like a running agent. Not when its file now pins a provider or an
+  // explicit caller provider is in force: those decide, as before.
+  const savedRoute =
+    !mistralRoute &&
+    selectedAgent.provider === undefined &&
+    !isExplicitProviderOverride()
+      ? getAgentResumeRoute(meta)
+      : undefined
+  const spawnModel = mistralRoute?.model ?? savedRoute?.model ?? meta?.model
+  const withResumeProvider = <T>(fn: () => T): T =>
+    mistralRoute
+      ? runWithForcedProvider(mistralRoute, fn)
+      : savedRoute
+        ? runWithForcedProvider({ provider: savedRoute.provider, source: 'spawn' }, fn)
+        : fn()
 
   const uiDescription = meta?.description ?? '(resumed)'
 
@@ -188,18 +205,22 @@ export async function resumeAgentBackground({
         spawnModel,
         permissionMode,
         selectedAgent.provider,
+        getAgentModelScope(selectedAgent),
       ),
     ),
   )
 
   // Resuming re-renders the agent's tool use, so the tag needs the resolved
   // model here too. Without this a resumed pinned agent shows no model at all,
-  // or a stale one left by whichever agent last spawned under this type.
+  // or a stale one left by whichever agent last spawned under this type. A
+  // saved route on another provider than the session's names that provider.
+  const tagProvider = mistralRoute?.provider ?? selectedAgent.provider ??
+    (savedRoute && savedRoute.provider !== getAPIProvider()
+      ? savedRoute.provider
+      : undefined)
   setAgentResolvedModel(selectedAgent.agentType, {
     model: resolvedAgentModel,
-    ...((mistralRoute?.provider ?? selectedAgent.provider)
-      ? { provider: mistralRoute?.provider ?? selectedAgent.provider }
-      : {}),
+    ...(tagProvider ? { provider: tagProvider } : {}),
   })
 
   const workerPermissionContext = {

@@ -376,6 +376,22 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Override the default model used by Tau'),
+      // Loose on purpose: a settings file that fails the schema is ignored
+      // whole, and a typo here must not cost every other setting. The rules
+      // in utils/model/subagentModel.ts treat anything unknown as auto.
+      subagentModel: z
+        .object({
+          mode: z.string().optional(),
+          models: z.record(z.string(), z.unknown()).optional(),
+        })
+        .optional()
+        .describe(
+          'Model for sub-agents that name none of their own: every built-in agent, and agent files without a model or provider. ' +
+            '"auto" (default): each provider picks, as before. ' +
+            '"custom": models[<provider>] is the model id on that provider; a provider without an entry acts as auto. ' +
+            '"inherit": always the main model. ' +
+            'CLAUDE_CODE_SUBAGENT_MODEL, when set, overrides this. Also set in /config under Sub-agent model.',
+        ),
       // Enterprise allowlist of models
       availableModels: z
         .array(z.string())

@@ -46,6 +46,7 @@ import {
 } from '../../utils/model/providers.js'
 import { isModelAlias } from '../../utils/model/aliases.js'
 import { resolvesAgentAliasIndependently } from '../../utils/model/agentAliasFallback.js'
+import type { AgentModelScope } from '../../utils/model/subagentModel.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { HooksSchema, type HooksSettings } from '../../utils/settings/types.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -227,6 +228,11 @@ export function isBuiltInAgent(
   agent: AgentDefinition,
 ): agent is BuiltInAgentDefinition {
   return agent.source === 'built-in'
+}
+
+/** What getAgentModel() needs to know about an agent to pick its rules. */
+export function getAgentModelScope(agent: AgentDefinition): AgentModelScope {
+  return { builtIn: isBuiltInAgent(agent), agentType: agent.agentType }
 }
 
 export function isCustomAgent(

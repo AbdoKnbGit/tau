@@ -25,7 +25,7 @@ export const OPENAI_CODEX_MODELS: readonly ModelInfo[] = [
  * runs, so a resumed subagent keeps the model, and with it the prompt cache,
  * it started on.
  */
-export const OPENAI_AGENT_MODEL = 'gpt-5.6-luna'
+export const OPENAI_AGENT_MODEL = 'gpt-6-luna'
 
 export function isConcreteOpenAIGptModelForProvider(
   value: unknown,

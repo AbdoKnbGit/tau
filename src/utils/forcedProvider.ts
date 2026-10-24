@@ -27,8 +27,14 @@ import type { APIProvider } from './model/providers.js'
 
 export interface ForcedProviderContext {
   provider: APIProvider
-  /** Agent-scoped overrides may be replaced by a more specific nested agent. */
-  source?: 'agent'
+  /**
+   * How the provider was pinned. Without a source it is an explicit caller
+   * choice (/team-mode, the Agent tool's `provider`). Agent-scoped overrides
+   * may be replaced by a more specific nested agent. A spawn scope only keeps
+   * a running sub-agent on the provider it started on: it is nobody's choice,
+   * so getForcedProvider() and the policies that ask it ignore it.
+   */
+  source?: 'agent' | 'spawn'
 }
 
 const _forcedProvider = new AsyncLocalStorage<ForcedProviderContext>()
@@ -46,9 +52,16 @@ export function runWithForcedProvider<T>(
 
 /**
  * Read the currently forced provider, if any. Returns undefined when the
- * call is happening outside a runWithForcedProvider() scope.
+ * call is happening outside a runWithForcedProvider() scope, and inside a
+ * spawn scope, which pins nothing anyone chose.
  */
 export function getForcedProvider(): APIProvider | undefined {
+  const current = _forcedProvider.getStore()
+  return current?.source === 'spawn' ? undefined : current?.provider
+}
+
+/** The provider this async context runs on, a spawn scope included. */
+export function getScopedProvider(): APIProvider | undefined {
   return _forcedProvider.getStore()?.provider
 }
 
@@ -57,19 +70,25 @@ export function getForcedProviderContext(): ForcedProviderContext | undefined {
   return _forcedProvider.getStore()
 }
 
+/** Whether `context` is an explicit caller choice (/team-mode, the Agent tool's `provider`). */
+export function isExplicitProviderOverride(
+  context: ForcedProviderContext | undefined = _forcedProvider.getStore(),
+): boolean {
+  return context !== undefined && context.source === undefined
+}
+
 /**
  * Whether an agent definition's own provider may take effect at this point.
  *
  * An explicit caller override (e.g. a /team-mode spawn that names the
- * provider) wins over the agent file. An inherited agent-scoped override may
- * be replaced by a more specific nested agent.
+ * provider) wins over the agent file. An inherited agent-scoped or spawn
+ * scope may be replaced by a more specific nested agent.
  */
 export function canApplyAgentProvider(
   provider: APIProvider | undefined,
 ): provider is APIProvider {
   if (provider === undefined) return false
-  const current = _forcedProvider.getStore()
-  return current === undefined || current.source === 'agent'
+  return !isExplicitProviderOverride()
 }
 
 /**

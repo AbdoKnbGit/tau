@@ -69,6 +69,7 @@ import { updateSessionName } from './concurrentSessions.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { isModelAlias } from './model/aliases.js'
+import { API_PROVIDERS, type APIProvider } from './model/providerRegistry.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { isFsInaccessible } from './errors.js'
@@ -282,6 +283,10 @@ export type AgentMetadata = {
    * parent switches provider/model or the agent definition changes. Optional
    * so other providers and older transcripts retain their existing behavior. */
   mistralRoute?: { provider: 'mistral'; model: string }
+  /** Provider and model any other agent ran on, unless its file or an
+   * explicit caller pinned a provider. Resume continues on this pair. Older
+   * metadata lacks it and resolves the model again, as before. */
+  route?: { provider: APIProvider; model: string }
 }
 
 /** Metadata comes from JSON on disk, so never trust a saved route by type alone. */
@@ -306,6 +311,37 @@ export function getMistralAgentResumeRoute(
     return undefined
   }
   return { provider: 'mistral', model: concreteModel }
+}
+
+/** The saved route of a non-Mistral agent, when it names a known provider and a concrete model. */
+export function getAgentResumeRoute(
+  metadata: unknown,
+): AgentMetadata['route'] {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return undefined
+  }
+  const route = (metadata as Record<string, unknown>).route
+  if (!route || typeof route !== 'object' || Array.isArray(route)) {
+    return undefined
+  }
+  const { provider, model } = route as Record<string, unknown>
+  if (
+    typeof provider !== 'string' ||
+    !(API_PROVIDERS as readonly string[]).includes(provider) ||
+    provider === 'mistral' ||
+    typeof model !== 'string'
+  ) {
+    return undefined
+  }
+  const concreteModel = model.trim()
+  if (
+    !concreteModel ||
+    concreteModel.toLowerCase() === 'inherit' ||
+    isModelAlias(concreteModel.toLowerCase())
+  ) {
+    return undefined
+  }
+  return { provider: provider as APIProvider, model: concreteModel }
 }
 
 /**

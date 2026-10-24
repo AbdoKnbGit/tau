@@ -245,10 +245,10 @@ function hasOpencodeAccountKey(): boolean {
 // Model selection rationale per provider (latest confirmed model IDs):
 //
 // OpenAI (September 2026, Codex catalog in openaiGptModels.ts):
-//   free  → gpt-5.6-luna (cost-efficient, usable from ChatGPT accounts)
+//   free  → gpt-6-luna (cost-efficient, usable from ChatGPT accounts)
 //   pro   → gpt-6-sol (coding and agentic workflows, the recommended row)
 //   plus  → gpt-6-sol
-//   Haiku → gpt-5.6-luna (the model tier aliases resolve to on this provider)
+//   Haiku → gpt-6-luna (the model tier aliases resolve to on this provider)
 //
 // Gemini (April 2026):
 //   free  → gemini-3-flash-preview (free in AI Studio, fast, tools)

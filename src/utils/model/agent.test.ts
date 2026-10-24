@@ -201,8 +201,8 @@ function main(): void {
     }
   })
 
-  test('direct OpenAI aliases all use GPT-5.6 Luna, whatever GPT parent runs', () => {
-    assert(OPENAI_AGENT_MODEL === 'gpt-5.6-luna', `agent model=${OPENAI_AGENT_MODEL}`)
+  test('direct OpenAI aliases all use GPT-6 Luna, whatever GPT parent runs', () => {
+    assert(OPENAI_AGENT_MODEL === 'gpt-6-luna', `agent model=${OPENAI_AGENT_MODEL}`)
     for (const parent of ['gpt-5.2-codex', 'gpt-5.6-sol', 'gpt-6-sol', 'gpt-6-astra', 'gpt-6-luna']) {
       for (const alias of ROUTED_ALIASES) {
         const resolved = resolveAgentAliasPolicy(alias, parent, 'openai')

@@ -166,7 +166,7 @@ test('non-Mistral omitted models and existing tier policies remain unchanged', (
   const cases = [
     ['moonshot', 'kimi-k2.6', 'kimi-k2.6'],
     ['ollama', 'qwen3:30b', 'qwen3:30b'],
-    ['openai', 'gpt-6', 'gpt-5.6-luna'],
+    ['openai', 'gpt-6', 'gpt-6-luna'],
     ['openrouter', 'openai/gpt-6', 'nvidia/nemotron-3-ultra-550b-a55b:free'],
   ]
   for (const [provider, parent, tierModel] of cases) {

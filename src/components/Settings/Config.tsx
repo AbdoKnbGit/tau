@@ -31,6 +31,9 @@ import { Select } from '../CustomSelect/index.js';
 import { OutputStylePicker } from '../OutputStylePicker.js';
 import { LanguagePicker } from '../LanguagePicker.js';
 import { SpinnerVerbsPicker } from '../SpinnerVerbsPicker.js';
+import { SubagentModelPicker } from '../SubagentModelPicker.js';
+import { getAPIProvider, PROVIDER_DISPLAY_NAMES } from '../../utils/model/providers.js';
+import { describeSubagentModelSetting } from '../../utils/model/subagentModel.js';
 import { getExternalClaudeMdIncludes, getMemoryFiles, hasExternalClaudeMdIncludes } from 'src/utils/claudemd.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -89,7 +92,13 @@ type Setting = (SettingBase & {
   onChange(value: string): void;
   type: 'managedEnum';
 });
-type SubMenu = 'Theme' | 'Model' | 'TeammateModel' | 'ExternalIncludes' | 'OutputStyle' | 'ChannelDowngrade' | 'Language' | 'SpinnerVerbs' | 'EnableAutoUpdates';
+type SubMenu = 'Theme' | 'Model' | 'SubagentModel' | 'TeammateModel' | 'ExternalIncludes' | 'OutputStyle' | 'ChannelDowngrade' | 'Language' | 'SpinnerVerbs' | 'EnableAutoUpdates';
+
+/** The value /config shows for the Sub-agent model setting, on the current provider. */
+function describeSubagentModel(setting: Parameters<typeof describeSubagentModelSetting>[0]): string {
+  const provider = getAPIProvider();
+  return describeSubagentModelSetting(setting, provider, PROVIDER_DISPLAY_NAMES[provider]);
+}
 export function Config({
   onClose,
   context,
@@ -292,6 +301,14 @@ export function Config({
       };
     });
   }
+
+  const subagentModelSetting: Setting = {
+    id: 'subagentModel',
+    label: 'Sub-agent model',
+    value: describeSubagentModel(settingsData?.subagentModel),
+    type: 'managedEnum',
+    onChange: () => {} // handled by SubagentModelPicker submenu
+  };
 
   // TODO: Add MCP servers
   const settingsItems: Setting[] = [
@@ -1011,7 +1028,7 @@ export function Config({
     value: mainLoopModel === null ? 'Default (recommended)' : mainLoopModel,
     type: 'managedEnum' as const,
     onChange: onChangeMainModelConfig
-  }, ...(isConnectedToIde ? [{
+  }, subagentModelSetting, ...(isConnectedToIde ? [{
     id: 'diffTool',
     label: 'Diff tool',
     value: globalConfig.diffTool ?? 'auto',
@@ -1372,6 +1389,10 @@ export function Config({
     if (spinnerVerbsLabel !== describeSpinnerVerbs(initialSettingsData.current?.spinnerVerbs)) {
       formattedChanges.push(`Set spinner verbs to ${chalk.bold(spinnerVerbsLabel)}`);
     }
+    const subagentModelLabel = describeSubagentModel(settingsData?.subagentModel);
+    if (subagentModelLabel !== describeSubagentModel(initialSettingsData.current?.subagentModel)) {
+      formattedChanges.push(`Set sub-agent model to ${chalk.bold(subagentModelLabel)}`);
+    }
     if (formattedChanges.length > 0) {
       onClose(formattedChanges.join('\n'));
     } else {
@@ -1379,7 +1400,7 @@ export function Config({
         display: 'system'
       });
     }
-  }, [showSubmenu, changes, globalConfig, mainLoopModel, currentOutputStyle, currentLanguage, settingsData?.autoUpdatesChannel, settingsData?.lspEnabled, settingsData?.spinnerVerbs, isFastModeEnabled() ? (settingsData as Record<string, unknown> | undefined)?.fastMode : undefined, onClose]);
+  }, [showSubmenu, changes, globalConfig, mainLoopModel, currentOutputStyle, currentLanguage, settingsData?.autoUpdatesChannel, settingsData?.lspEnabled, settingsData?.spinnerVerbs, settingsData?.subagentModel, isFastModeEnabled() ? (settingsData as Record<string, unknown> | undefined)?.fastMode : undefined, onClose]);
 
   // Restore all state stores to their mount-time snapshots. Changes are
   // applied to disk/AppState immediately on toggle, so "cancel" means
@@ -1454,8 +1475,16 @@ export function Config({
       permissions: iu?.permissions === undefined ? undefined : {
         ...iu.permissions,
         defaultMode: iu.permissions.defaultMode
-      }
+      },
+      // A merge cannot drop a custom model added since mount: clear the key
+      // here and write the snapshot back below.
+      subagentModel: undefined
     });
+    if (iu?.subagentModel !== undefined) {
+      updateSettingsForSource('userSettings', {
+        subagentModel: iu.subagentModel
+      });
+    }
     // AppState: batch-restore all possibly-touched fields.
     setAppState(prev_23 => ({
       ...prev_23,
@@ -1532,7 +1561,7 @@ export function Config({
       }
       return;
     }
-    if (setting_0.id === 'theme' || setting_0.id === 'model' || setting_0.id === 'teammateDefaultModel' || setting_0.id === 'showExternalIncludesDialog' || setting_0.id === 'outputStyle' || setting_0.id === 'language' || setting_0.id === 'spinnerVerbs') {
+    if (setting_0.id === 'theme' || setting_0.id === 'model' || setting_0.id === 'subagentModel' || setting_0.id === 'teammateDefaultModel' || setting_0.id === 'showExternalIncludesDialog' || setting_0.id === 'outputStyle' || setting_0.id === 'language' || setting_0.id === 'spinnerVerbs') {
       // managedEnum items open a submenu — isDirty is set by the submenu's
       // completion callback, not here (submenu may be cancelled).
       switch (setting_0.id) {
@@ -1542,6 +1571,10 @@ export function Config({
           return;
         case 'model':
           setShowSubmenu('Model');
+          setTabsHidden(true);
+          return;
+        case 'subagentModel':
+          setShowSubmenu('SubagentModel');
           setTabsHidden(true);
           return;
         case 'teammateDefaultModel':
@@ -1723,6 +1756,36 @@ export function Config({
             <Byline>
               <KeyboardShortcutHint shortcut="Enter" action="confirm" />
               <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />
+            </Byline>
+          </Text>
+        </> : showSubmenu === 'SubagentModel' ? <>
+          <SubagentModelPicker
+      // The user file's own value: the merged one would copy a project's
+      // models into user settings.
+      initial={getSettingsForSource('userSettings')?.subagentModel} provider={getAPIProvider()} onComplete={subagentModel => {
+        setShowSubmenu(null);
+        setTabsHidden(false);
+
+        // User settings, so the choice applies in every project. The picker
+        // only adds or replaces a provider's model, so merging the whole value
+        // into the file is exact; undefined deletes the key.
+        const result = updateSettingsForSource('userSettings', {
+          subagentModel
+        });
+        if (result.error) {
+          logError(result.error);
+          return;
+        }
+        isDirty.current = true;
+        setSettingsData(getInitialSettings());
+      }} onCancel={() => {
+        setShowSubmenu(null);
+        setTabsHidden(false);
+      }} />
+          <Text dimColor>
+            <Byline>
+              <KeyboardShortcutHint shortcut="Enter" action="confirm" />
+              <ConfigurableShortcutHint action="select:cancel" context="Select" fallback="Esc" description="cancel" />
             </Byline>
           </Text>
         </> : showSubmenu === 'TeammateModel' ? <>

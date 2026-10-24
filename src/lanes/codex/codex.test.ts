@@ -111,8 +111,8 @@ async function main(): Promise<void> {
     assert(!codexLane.supportsModel('qwen3-coder-plus'), 'Qwen must go to Qwen lane')
   })
 
-  await test('smallFastModel returns gpt-5.6-luna (ChatGPT accounts refuse gpt-5.4-mini)', () => {
-    assert(codexLane.smallFastModel?.() === 'gpt-5.6-luna', `got ${codexLane.smallFastModel?.()}`)
+  await test('smallFastModel returns gpt-6-luna (ChatGPT accounts refuse gpt-5.4-mini)', () => {
+    assert(codexLane.smallFastModel?.() === 'gpt-6-luna', `got ${codexLane.smallFastModel?.()}`)
   })
   await test('explicit xhigh reasoning reaches Responses request config', () => {
     setOpenAIReasoningLevel('xhigh')

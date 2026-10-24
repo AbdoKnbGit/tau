@@ -53,7 +53,7 @@ import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js';
 import { getOneShotAgentTypes } from './builtInAgents.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
 import type { AgentDefinition } from './loadAgentsDir.js';
-import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
+import { filterAgentsByMcpRequirements, getAgentModelScope, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
 import { getPrompt } from './prompt.js';
 import { runAgent } from './runAgent.js';
 import { runWithAgentProvider, runWithForcedProvider } from '../../utils/forcedProvider.js';
@@ -383,7 +383,7 @@ export const AgentTool = buildTool({
     // active provider's alias policy, and outside this scope that is the
     // session provider — which would hand a pinned agent a model its provider
     // does not serve (and put that wrong name in its env-details prompt).
-    const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () => getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode, selectedAgent.provider));
+    const resolvedAgentModel = runWithAgentProvider(selectedAgent.provider, () => getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, isForkPath ? undefined : model, permissionMode, selectedAgent.provider, getAgentModelScope(selectedAgent)));
     // Record what this agent actually resolved to so the tool tag can show the
     // real model rather than the alias the caller passed. A pinned agent keeps
     // its own model, so the request and the result can differ.

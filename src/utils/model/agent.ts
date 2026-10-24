@@ -10,6 +10,7 @@ import { resolveAntigravityOpus46AgentModel } from './antigravityAgentModel.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
 import {
   getCanonicalName,
+  getMainLoopModel,
   getRuntimeMainLoopModel,
   parseUserSpecifiedModel,
 } from './model.js'
@@ -18,7 +19,22 @@ import {
   type APIProvider,
   PROVIDER_DISPLAY_NAMES,
 } from './providers.js'
-import { getForcedProvider } from '../forcedProvider.js'
+import {
+  type AgentModelScope,
+  describeSubagentModelSetting,
+  getCustomSubagentModel,
+  getSubagentModelEnvOverride,
+  getSubagentModelMode,
+  isInheritModelSpec,
+  isSubagentSettingScoped,
+  isTierModelSpec,
+  type SubagentModelSetting,
+} from './subagentModel.js'
+import {
+  getForcedProvider,
+  isExplicitProviderOverride,
+} from '../forcedProvider.js'
+import { getInitialSettings } from '../settings/settings.js'
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
@@ -36,36 +52,121 @@ export function getDefaultSubagentModel(provider = getAPIProvider()): string {
   return provider === 'mistral' ? MISTRAL_AGENT_MODEL : 'inherit'
 }
 
+function readSubagentModelSetting(): SubagentModelSetting {
+  return getInitialSettings().subagentModel
+}
+
 /**
  * Get the effective model string for an agent.
+ *
+ * The Sub-agent model setting (subagentModel.ts) decides for built-in agents
+ * and agent files that name neither a model nor a provider; in its default
+ * Auto mode they resolve exactly as before it existed. An agent file that
+ * names its model keeps it: a tier the caller guesses never replaces it, and
+ * `inherit` means the main model. CLAUDE_CODE_SUBAGENT_MODEL, a provider
+ * pinned by the agent file, and an explicit caller provider (/team-mode, the
+ * Agent tool's `provider`) keep every agent on resolveLegacyAgentModel().
+ *
+ * `scope` says whether the agent is built in; without it the agent is
+ * treated as an agent file.
+ */
+export function getAgentModel(
+  definitionModel: string | undefined,
+  parentModel: string,
+  callerModel?: string,
+  permissionMode?: PermissionMode,
+  agentProvider?: APIProvider,
+  scope?: AgentModelScope,
+): string {
+  // A blank model is no model: never an empty id on the wire.
+  const agentModel = definitionModel?.trim() ? definitionModel : undefined
+  const toolSpecifiedModel = callerModel?.trim() ? callerModel : undefined
+  const legacy = (
+    definition: string | undefined,
+    caller: string | undefined,
+  ): string =>
+    resolveLegacyAgentModel(
+      definition,
+      parentModel,
+      caller,
+      permissionMode,
+      agentProvider,
+    )
+
+  if (
+    getSubagentModelEnvOverride() !== undefined ||
+    agentProvider !== undefined ||
+    isExplicitProviderOverride()
+  ) {
+    return legacy(agentModel, toolSpecifiedModel)
+  }
+
+  const sessionModel = (): string =>
+    getRuntimeMainLoopModel({
+      permissionMode: permissionMode ?? 'default',
+      mainLoopModel: parentModel,
+      exceeds200kTokens: false,
+    })
+  // A concrete id from the caller (Mistral's model_id, a resumed agent's
+  // saved model) is a choice; a tier it passes is only a guess at one.
+  const callerChoice =
+    toolSpecifiedModel !== undefined && !isTierModelSpec(toolSpecifiedModel)
+      ? toolSpecifiedModel
+      : undefined
+  const resolveCallerChoice = (choice: string): string =>
+    isInheritModelSpec(choice) ? sessionModel() : legacy(agentModel, choice)
+
+  if (!isSubagentSettingScoped(agentModel, scope)) {
+    if (callerChoice !== undefined) return resolveCallerChoice(callerChoice)
+    // Only the fork gets here without a model: it keeps its parent's.
+    if (agentModel === undefined || isInheritModelSpec(agentModel)) {
+      return sessionModel()
+    }
+    return legacy(agentModel, undefined)
+  }
+
+  const setting = readSubagentModelSetting()
+  const mode = getSubagentModelMode(setting)
+  if (mode === 'auto') return legacy(agentModel, toolSpecifiedModel)
+  if (callerChoice !== undefined) return resolveCallerChoice(callerChoice)
+  if (mode === 'inherit') return sessionModel()
+  const customModel = getCustomSubagentModel(setting, getAPIProvider())
+  return customModel === undefined
+    ? legacy(agentModel, toolSpecifiedModel)
+    : legacy(undefined, customModel)
+}
+
+/**
+ * How agents resolved before the Sub-agent model setting, and how they still
+ * resolve in its Auto mode.
  *
  * For Bedrock, if the parent model uses a cross-region inference prefix (e.g., "eu.", "us."),
  * that prefix is inherited by subagents using alias models (e.g., "sonnet", "haiku", "opus").
  * This ensures subagents use the same region as the parent, which is necessary when
  * IAM permissions are scoped to specific cross-region inference profiles.
  */
-export function getAgentModel(
+function resolveLegacyAgentModel(
   agentModel: string | undefined,
   parentModel: string,
   toolSpecifiedModel?: string,
   permissionMode?: PermissionMode,
   agentProvider?: APIProvider,
 ): string {
+  const envModel = getSubagentModelEnvOverride()
+  const runtimeParentModel = (): string =>
+    getRuntimeMainLoopModel({
+      permissionMode: permissionMode ?? 'default',
+      mainLoopModel: parentModel,
+      exceeds200kTokens: false,
+    })
+
   if (getAPIProvider() === 'mistral') {
     const spec = resolveMistralAgentModelSpec({
       agentModel,
       toolModel: toolSpecifiedModel,
-      defaultModel: getForcedProvider() === undefined
-        ? process.env.CLAUDE_CODE_SUBAGENT_MODEL
-        : undefined,
+      defaultModel: getForcedProvider() === undefined ? envModel : undefined,
     })
-    return spec === 'inherit'
-      ? getRuntimeMainLoopModel({
-          permissionMode: permissionMode ?? 'default',
-          mainLoopModel: parentModel,
-          exceeds200kTokens: false,
-        })
-      : spec
+    return spec === 'inherit' ? runtimeParentModel() : spec
   }
 
   // Extract Bedrock region prefix from parent model to inherit for subagents.
@@ -98,7 +199,13 @@ export function getAgentModel(
   // means nothing on that lane, so the agent's concrete model stands instead
   // of being resolved into the session's model or the provider's fixed agent
   // model. See pinnedAgentModelOutranksAlias().
-  if (
+  //
+  // `inherit` from the caller is the parent's model, sent as is (it is not a
+  // model id). That model belongs to the parent's lane, so a pinned agent
+  // keeps its own model instead.
+  if (toolSpecifiedModel && isInheritModelSpec(toolSpecifiedModel)) {
+    if (agentProvider === undefined) return runtimeParentModel()
+  } else if (
     toolSpecifiedModel &&
     !pinnedAgentModelOutranksAlias(toolSpecifiedModel, agentModel, agentProvider)
   ) {
@@ -120,14 +227,15 @@ export function getAgentModel(
   // provider for this spawn — the env var would silently replace the role's
   // model with whatever default this var holds, exactly the cross-binding
   // contamination we shipped v0.9.3-v0.9.4 to prevent.
-  if (process.env.CLAUDE_CODE_SUBAGENT_MODEL && getForcedProvider() === undefined) {
+  if (envModel && getForcedProvider() === undefined) {
+    if (isInheritModelSpec(envModel)) return runtimeParentModel()
     const policyModel = resolveAgentAliasPolicy(
-      process.env.CLAUDE_CODE_SUBAGENT_MODEL,
+      envModel,
       parentModel,
       getAPIProvider(),
     )
     if (policyModel) return policyModel
-    return parseUserSpecifiedModel(process.env.CLAUDE_CODE_SUBAGENT_MODEL)
+    return parseUserSpecifiedModel(envModel)
   }
 
   const agentModelWithExp = agentModel ?? getDefaultSubagentModel()
@@ -138,11 +246,7 @@ export function getAgentModel(
     if (antigravityModel && antigravityModel !== parentModel) return antigravityModel
     // Apply runtime model resolution for inherit to get the effective model
     // This ensures agents using 'inherit' get opusplan→Opus resolution in plan mode
-    return getRuntimeMainLoopModel({
-      permissionMode: permissionMode ?? 'default',
-      mainLoopModel: parentModel,
-      exceeds200kTokens: false,
-    })
+    return runtimeParentModel()
   }
 
   const policyModel = resolveAgentAliasPolicy(
@@ -186,18 +290,52 @@ function aliasMatchesParentTier(alias: string, parentModel: string): boolean {
   }
 }
 
+/**
+ * What /agents shows for an agent's model: the rule that decides it, then the
+ * model it runs on now (for the current provider and main model). `agent`
+ * says whether it is built in; without it the agent is treated as a file.
+ */
 export function getAgentModelDisplay(
   model: string | undefined,
   provider?: APIProvider,
+  agent?: { source?: string; agentType?: string },
 ): string {
   if (provider) {
     return `${PROVIDER_DISPLAY_NAMES[provider]} / ${model ?? 'inherit from parent'}`
   }
-  if (!model) return getDefaultSubagentModel() === MISTRAL_AGENT_MODEL
-    ? 'Mistral Large 3 (default)'
-    : 'Inherit from parent (default)'
-  if (model === 'inherit') return 'Inherit from parent'
-  return capitalize(model)
+  const scope: AgentModelScope = {
+    builtIn: agent?.source === 'built-in',
+    agentType: agent?.agentType,
+  }
+  const rule = describeAgentModelRule(model, scope)
+  let runsOn: string | undefined
+  try {
+    runsOn = getAgentModel(model, getMainLoopModel(), undefined, undefined, undefined, scope)
+  } catch {
+    // A label must never break /agents.
+  }
+  return runsOn && runsOn !== rule ? `${rule} → ${runsOn}` : rule
+}
+
+function describeAgentModelRule(
+  model: string | undefined,
+  scope: AgentModelScope,
+): string {
+  if (getSubagentModelEnvOverride() !== undefined) {
+    return 'CLAUDE_CODE_SUBAGENT_MODEL'
+  }
+  if (isSubagentSettingScoped(model, scope)) {
+    const provider = getAPIProvider()
+    return `Sub-agent model: ${describeSubagentModelSetting(
+      readSubagentModelSetting(),
+      provider,
+      PROVIDER_DISPLAY_NAMES[provider],
+    )}`
+  }
+  if (model === undefined || isInheritModelSpec(model)) {
+    return 'Inherit from parent'
+  }
+  return isTierModelSpec(model) ? capitalize(model.trim()) : model.trim()
 }
 
 /**

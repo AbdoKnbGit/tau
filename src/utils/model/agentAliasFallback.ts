@@ -7,7 +7,7 @@
  * generic cross-provider fallback:
  *
  *  - direct OpenAI/Codex sessions on GPT-5 or later (GPT-5.6, GPT-6, ...)
- *    use GPT-5.6 Luna for every tier;
+ *    use GPT-6 Luna for every tier;
  *  - Antigravity uses its provider-specific Gemini Flash-low model;
  *  - OpenRouter uses the requested free Nemotron agent model;
  *  - Mistral uses Mistral Large 3 for every tier;
