@@ -83,13 +83,24 @@ const SECTION_ACCENT: Record<NonNullable<ProviderModelSection['accent']>, string
   toolless: 'yellow',
 }
 
+// With CI set and no key variable, the key lookup throws (it serves `-p` in
+// CI). A label only reports what is set up, so that is "no key" here, not a
+// crash of the whole provider list.
+function hasAnthropicKeyForLabel(): boolean {
+  try {
+    return hasAnthropicApiKeyAuth()
+  } catch {
+    return false
+  }
+}
+
 export function getProviderStatusLabel(provider: BrowsableModelProvider): string {
   if (isVoiceConversationProvider(provider)) {
     return hasStoredKey('openai_oauth') ? 'OpenAI connected' : 'OpenAI OAuth required'
   }
 
   if (provider === 'firstParty') {
-    return getClaudeAIOAuthTokens()?.accessToken || hasAnthropicApiKeyAuth()
+    return getClaudeAIOAuthTokens()?.accessToken || hasAnthropicKeyForLabel()
       ? 'configured'
       : 'optional login'
   }
