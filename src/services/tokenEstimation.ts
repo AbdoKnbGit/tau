@@ -17,7 +17,7 @@ import {
 } from '../utils/model/bedrock.js'
 import {
   getDefaultSonnetModel,
-  getMainLoopModel,
+  getScopedMainLoopModel,
   getSmallFastModel,
   normalizeModelStringForAPI,
 } from '../utils/model/model.js'
@@ -143,7 +143,7 @@ export async function countMessagesTokensWithAPI(
 ): Promise<number | null> {
   return withTokenCountVCR(messages, tools, async () => {
     try {
-      const model = getMainLoopModel()
+      const model = getScopedMainLoopModel()
       const betas = getModelBetas(model)
       const containsThinking = hasThinkingBlocks(messages)
 

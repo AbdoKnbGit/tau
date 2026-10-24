@@ -304,6 +304,7 @@ import {
   setAllowedChannels,
   type ChannelEntry,
 } from 'src/bootstrap/state.js'
+import { runOutsideProviderScope } from 'src/utils/forcedProvider.js'
 import { runWithWorkload, WORKLOAD_CRON } from 'src/utils/workloadContext.js'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
@@ -2141,9 +2142,11 @@ function runHeadlessStreaming(
           // inherit workload across their detached awaits. In-process cron
           // stamps cmd.workload; the SDK --workload flag is options.workload.
           // const-capture: TS loses `while ((command = dequeue()))` narrowing
-          // inside the closure.
+          // inside the closure. The turn runs on the session's provider even
+          // when a sub-agent's provider scope reached this drain (a resumed
+          // agent queues its notification from inside its route's scope).
           const cmd = command
-          await runWithWorkload(cmd.workload ?? options.workload, async () => {
+          await runOutsideProviderScope(() => runWithWorkload(cmd.workload ?? options.workload, async () => {
             for await (const message of ask({
               commands: uniqBy(
                 [...currentCommands, ...appState.mcp.commands],
@@ -2256,7 +2259,7 @@ function runHeadlessStreaming(
                 output.enqueue(message)
               }
             }
-          }) // end runWithWorkload
+          })) // end runWithWorkload
 
           for (const uuid of batchUuids) {
             notifyCommandLifecycle(uuid, 'completed')

@@ -140,6 +140,29 @@ test('a saved route needs a known provider other than Mistral and a concrete mod
     runtime.getAgentResumeRoute({ route: { provider: 'antigravity', model: ` ${GEMINI_MEDIUM} ` } }),
     { provider: 'antigravity', model: GEMINI_MEDIUM },
   )
+  assert.deepEqual(
+    runtime.getAgentResumeRoute({ route: { provider: 'openai', model: LUNA, effort: ' LOW ' } }),
+    { provider: 'openai', model: LUNA, effort: 'low' },
+  )
+  assert.deepEqual(
+    runtime.getAgentResumeRoute({ route: { provider: 'openai', model: LUNA, effort: 'turbo' } }),
+    { provider: 'openai', model: LUNA },
+    'an effort that is not one is dropped, not the route',
+  )
+})
+
+test('an agent resumes with the effort of its own it ran with', async () => {
+  const f = fixture()
+  await f.resume({ agentType: f.agent.agentType, route: { provider: 'antigravity', model: GEMINI_MEDIUM, effort: 'high' } })
+  assert.equal(f.request().model, GEMINI_MEDIUM)
+  assert.equal(f.request().resumeEffort, 'high')
+  assert.equal(f.iteratorProvider(), 'antigravity')
+})
+
+test('a route without an effort resumes on the session effort, as before', async () => {
+  const f = fixture()
+  await f.resume({ agentType: f.agent.agentType, route: { provider: 'antigravity', model: GEMINI_MEDIUM } })
+  assert.equal('resumeEffort' in f.request(), false)
 })
 
 test('an agent resumes on its saved route after the session changes provider and model', async () => {

@@ -65,7 +65,11 @@ import {
   createUserMessage,
   getMessagesAfterCompactBoundary,
 } from '../../utils/messages.js'
-import { getAgentModel } from '../../utils/model/agent.js'
+import {
+  getAgentModel,
+  getSubagentSettingTarget,
+} from '../../utils/model/agent.js'
+import type { SubagentModelTarget } from '../../utils/model/subagentModel.js'
 import {
   clearAgentTranscriptSubdir,
   recordSidechainTranscript,
@@ -107,7 +111,6 @@ import {
 import { getGlobalConfig } from '../../utils/config.js'
 import {
   getAPIProvider,
-  setActiveProvider,
   type APIProvider,
 } from '../../utils/model/providers.js'
 import { parseEffortValue, type EffortValue } from '../../utils/effortValue.js'
@@ -117,29 +120,42 @@ import { isSurfEnabled, recordSurfTurnStart } from '../../utils/surf/state.js'
  * Resolve the model a subagent should run under when /surf is on and the
  * user has configured a dedicated `subagent` phase target. Returns null
  * when surf is off, no subagent target is set, or the caller passed an
- * explicit model — explicit caller intent always wins.
+ * explicit model or provider — explicit caller intent always wins.
  *
- * Side-effect: when surf IS routing this subagent, also swaps the active
- * provider. Effort is returned for this agent's request-scoped state, so it
- * cannot change the parent's or another agent's reasoning preference. Also
- * bumps the subagent turn counter for /surf status accounting.
+ * The agent's own provider scope moves to the target provider; the session
+ * stays on its own, so the parent's next request still pairs its provider
+ * with its model. Effort is returned for this agent's request-scoped state,
+ * so it cannot change the parent's or another agent's reasoning preference.
+ * Side-effect: bumps the subagent turn counter for /surf status accounting.
  */
 function resolveSurfSubagentModel(args: {
   hasToolSpecifiedModel: boolean
   agentPinsModel: boolean
-  scopedProvider?: boolean
 }): { provider: APIProvider; model: string; effort: EffortValue | undefined } | null {
-  if (!isSurfEnabled()) return null
+  if (!isSurfEnabled() || isExplicitProviderOverride()) return null
   if (args.hasToolSpecifiedModel || args.agentPinsModel) return null
 
   const target = getGlobalConfig().surfPhaseTargets?.subagent
   if (!target || !target.provider || !target.model) return null
 
-  if (!args.scopedProvider && getAPIProvider() !== (target.provider as APIProvider)) {
-    setActiveProvider(target.provider as APIProvider)
-  }
   recordSurfTurnStart('subagent')
   return { provider: target.provider as APIProvider, model: target.model, effort: parseEffortValue(target.effort) }
+}
+
+/** Whether resolveSurfSubagentModel() routes this spawn, without its side effects. */
+function surfRoutesSubagent(
+  model: string | undefined,
+  agentDefinition: AgentDefinition,
+): boolean {
+  if (!isSurfEnabled() || isExplicitProviderOverride() || model !== undefined) return false
+  if (
+    agentDefinition.model !== undefined &&
+    (agentDefinition.model !== 'inherit' || getAPIProvider() === 'mistral')
+  ) {
+    return false
+  }
+  const target = getGlobalConfig().surfPhaseTargets?.subagent
+  return Boolean(target?.provider && target.model)
 }
 
 type MistralAgentRouting = {
@@ -335,6 +351,7 @@ async function* runAgentWithoutProviderOverride({
   description,
   transcriptSubdir,
   onQueryProgress,
+  resumeEffort,
 }: {
   agentDefinition: AgentDefinition
   forkedSkill?: Command & { type: 'prompt' }
@@ -406,7 +423,9 @@ async function* runAgentWithoutProviderOverride({
    * during long single-block streams (e.g. thinking) where no assistant
    * message is yielded for >60s. */
   onQueryProgress?: () => void
-}, mistralRouting?: MistralAgentRouting, spawnScope?: ForcedProviderContext): AsyncGenerator<Message, void> {
+  /** The agent-scoped effort a resumed agent ran with (its saved route). */
+  resumeEffort?: EffortValue
+}, mistralRouting?: MistralAgentRouting, settingTarget?: SubagentModelTarget, agentScope?: ForcedProviderContext): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
   const appState = toolUseContext.getAppState()
@@ -430,10 +449,10 @@ async function* runAgentWithoutProviderOverride({
       agentDefinition.model !== undefined &&
       (agentDefinition.model !== 'inherit' || getAPIProvider() === 'mistral'),
   })
-  // Surf has just moved the session to its sub-agent provider; this agent
-  // stays on that one from here on.
-  if (spawnScope && surfSubagentModel) {
-    spawnScope.provider = surfSubagentModel.provider
+  // Surf runs this agent on its sub-agent provider: the agent's own scope
+  // moves there, while the session and any enclosing scope stay put.
+  if (agentScope && surfSubagentModel) {
+    agentScope.provider = surfSubagentModel.provider
   }
 
   const resolvedAgentModel = mistralRouting?.model ?? (surfSubagentModel
@@ -448,6 +467,9 @@ async function* runAgentWithoutProviderOverride({
         agentDefinition.provider,
         getAgentModelScope(agentDefinition),
       ))
+  // Small-model side queries and token counts made in this agent's scope
+  // pair with this model, not the session's.
+  if (agentScope) agentScope.model = resolvedAgentModel
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
 
@@ -585,11 +607,12 @@ async function* runAgentWithoutProviderOverride({
       }
     }
 
-    // Override effort level if agent defines one
+    // Override effort level if agent defines one. A Sub-agent model pick's
+    // effort, and the one a resumed agent ran with, apply to this agent alone.
     const effortValue =
       agentDefinition.effort !== undefined
         ? agentDefinition.effort
-        : surfSubagentModel?.effort ?? state.effortValue
+        : surfSubagentModel?.effort ?? settingTarget?.effort ?? resumeEffort ?? state.effortValue
 
     if (
       toolPermissionContext === state.toolPermissionContext &&
@@ -878,10 +901,17 @@ async function* runAgentWithoutProviderOverride({
   // later /provider, /model or Sub-agent model change cannot move it to
   // another model (and a cold prompt cache) mid-task. Agents pinned by their
   // file or by an explicit caller provider resolve as before.
+  const routeEffort = agentDefinition.effort === undefined
+    ? settingTarget?.effort ?? resumeEffort
+    : undefined
   const savedRoute = getAPIProvider() !== 'mistral' &&
     agentDefinition.provider === undefined &&
     !isExplicitProviderOverride()
-    ? { provider: getAPIProvider(), model: resolvedAgentModel }
+    ? {
+        provider: getAPIProvider(),
+        model: resolvedAgentModel,
+        ...(routeEffort !== undefined && { effort: routeEffort }),
+      }
     : undefined
   const metadataWrite = writeAgentMetadata(agentId, {
     agentType: agentDefinition.agentType,
@@ -890,7 +920,11 @@ async function* runAgentWithoutProviderOverride({
     spawnedAsync: spawnShapeAsync,
     ...(model && { model }),
     ...(getAPIProvider() === 'mistral' && {
-      mistralRoute: { provider: 'mistral' as const, model: resolvedAgentModel },
+      mistralRoute: {
+        provider: 'mistral' as const,
+        model: resolvedAgentModel,
+        ...(routeEffort !== undefined && { effort: routeEffort }),
+      },
     }),
     ...(savedRoute && { route: savedRoute }),
   }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
@@ -1087,6 +1121,21 @@ export async function* runAgent(options: RunAgentOptions) {
   let context: ForcedProviderContext | undefined = canApplyAgentProvider(provider)
     ? { provider, source: 'agent' }
     : undefined
+  // The Sub-agent model setting's Custom or Global pick for this spawn: its
+  // model, the provider it runs on and an effort for this agent alone. /surf,
+  // when it routes the spawn, decides instead. A Global pick on another
+  // provider pins the agent there, the way an agent file's provider does.
+  const settingTarget = context || surfRoutesSubagent(options.model, options.agentDefinition)
+    ? undefined
+    : getSubagentSettingTarget(
+        options.agentDefinition.model,
+        options.model,
+        provider,
+        getAgentModelScope(options.agentDefinition),
+      )
+  if (settingTarget && settingTarget.provider !== getAPIProvider()) {
+    context = { provider: settingTarget.provider, source: 'agent' }
+  }
   const effectiveProvider = context?.provider ?? getAPIProvider()
   let mistralRouting: MistralAgentRouting | undefined
   if (effectiveProvider === 'mistral') {
@@ -1095,14 +1144,10 @@ export async function* runAgent(options: RunAgentOptions) {
     // sees its explicit environment default. Pin the resulting route across
     // awaits/yields: changing the parent's provider cannot reroute a worker.
     const prepare = (): MistralAgentRouting => {
-      const forced = getForcedProviderContext()
-      const surf = isExplicitProviderOverride(forced)
-        ? null
-        : resolveSurfSubagentModel({
-            hasToolSpecifiedModel: options.model !== undefined,
-            agentPinsModel: options.agentDefinition.model !== undefined,
-            scopedProvider: true,
-          })
+      const surf = resolveSurfSubagentModel({
+        hasToolSpecifiedModel: options.model !== undefined,
+        agentPinsModel: options.agentDefinition.model !== undefined,
+      })
       return {
         surf,
         model: surf?.model ?? getAgentModel(
@@ -1117,25 +1162,23 @@ export async function* runAgent(options: RunAgentOptions) {
     }
     mistralRouting = context ? runWithForcedProvider(context, prepare) : prepare()
     context = isExplicitProviderOverride(parentProviderContext)
-      ? parentProviderContext
+      ? { ...parentProviderContext! }
       : { provider: mistralRouting.surf?.provider ?? 'mistral', source: 'agent' }
   }
-  let spawnScope: ForcedProviderContext | undefined
   if (!context) {
+    const enclosing = getForcedProviderContext()
     // An enclosing scope (a pinned or explicit parent, or the parent's own
-    // spawn scope) already holds this agent on its provider.
-    if (getForcedProviderContext() !== undefined) {
-      yield* runAgentWithoutProviderOverride(options)
-      return
-    }
-    // Hold the agent on the provider it starts on. A /provider or /model
-    // switch in the parent, or a /surf phase change, would otherwise send its
+    // spawn scope) already holds this agent on its provider. The agent runs in
+    // a copy: it carries the agent's own model, and /surf can move it alone.
+    // Otherwise hold the agent on the provider it starts on. A /provider or
+    // /model switch in the parent, or a /surf phase change, would send its
     // next request, with this provider's model id, to another provider.
-    spawnScope = { provider: getAPIProvider(), source: 'spawn' }
-    context = spawnScope
+    context = enclosing !== undefined
+      ? { ...enclosing }
+      : { provider: getAPIProvider(), source: 'spawn' }
   }
 
-  const iterator = runAgentWithoutProviderOverride(options, mistralRouting, spawnScope)
+  const iterator = runAgentWithoutProviderOverride(options, mistralRouting, settingTarget, context)
 
   try {
     while (true) {

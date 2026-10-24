@@ -7,6 +7,7 @@ import {
   PROVIDER_DISPLAY_NAMES,
   SELECTABLE_PROVIDERS,
 } from '../../utils/model/providers.js'
+import { resolveProviderModelSelection } from '../../utils/model/providerCatalog.js'
 import { Select, type OptionWithDescription } from '../CustomSelect/select.js'
 import { ProviderModelPicker } from '../ProviderModelPicker.js'
 
@@ -104,7 +105,15 @@ export function ModelSelector({
         lockedProvider={selectedProvider}
         allowOpenAIEffortSelection={false}
         onSelect={(provider, model) =>
-          onComplete(model, provider as APIProvider)
+          // Anthropic lists one row per effort, encoded in the id, which no
+          // request accepts: keep the model's own id. (Cline Pass ids carry
+          // their thinking level, and its lane reads it.)
+          onComplete(
+            provider === 'firstParty'
+              ? resolveProviderModelSelection(provider, model).modelId
+              : model,
+            provider as APIProvider,
+          )
         }
         onCancel={cancel}
       />

@@ -182,6 +182,28 @@ test('saved Mistral route validates JSON shape and requires a concrete model', (
   )
 })
 
+test('a saved Mistral route keeps the effort the worker ran with', async () => {
+  const f = fixture()
+  assert.deepEqual(
+    f.runtime.getMistralAgentResumeRoute({
+      mistralRoute: { provider: 'mistral', model: 'mistral-large-2512', effort: ' HIGH ' },
+    }),
+    { provider: 'mistral', model: 'mistral-large-2512', effort: 'high' },
+  )
+  assert.deepEqual(
+    f.runtime.getMistralAgentResumeRoute({
+      mistralRoute: { provider: 'mistral', model: 'mistral-large-2512', effort: 'turbo' },
+    }),
+    { provider: 'mistral', model: 'mistral-large-2512' },
+  )
+  await f.resume({
+    agentType: f.agent.agentType,
+    mistralRoute: { provider: 'mistral', model: 'mistral-large-2512', effort: 'high' },
+  })
+  assert.equal(f.request().model, 'mistral-large-2512')
+  assert.equal(f.request().resumeEffort, 'high')
+})
+
 test('Mistral worker resumes its saved route after the parent changes provider and model', async () => {
   const f = fixture()
   f.runtime.setActiveProvider('openrouter')

@@ -35,9 +35,18 @@ export interface ForcedProviderContext {
    * so getForcedProvider() and the policies that ask it ignore it.
    */
   source?: 'agent' | 'spawn'
+  /**
+   * The model the agent in this scope runs, once runAgent has resolved it.
+   * Helpers that pick a model themselves (small-model side queries, token
+   * counts) pair with it when this provider is not the session's, since the
+   * session's model is not one this provider serves.
+   */
+  model?: string
 }
 
-const _forcedProvider = new AsyncLocalStorage<ForcedProviderContext>()
+const _forcedProvider = new AsyncLocalStorage<
+  ForcedProviderContext | undefined
+>()
 
 /**
  * Run `fn` with `provider` pinned as the active APIProvider for every
@@ -48,6 +57,19 @@ export function runWithForcedProvider<T>(
   fn: () => T,
 ): T {
   return _forcedProvider.run(ctx, fn)
+}
+
+/**
+ * Run `fn` on the session's provider, outside every provider scope.
+ *
+ * Main-thread turns start here. A scope can reach the main thread through
+ * work a sub-agent schedules: a React re-render it triggers runs the effect
+ * that starts the next queued turn, and a resumed agent's lifecycle queues its
+ * completion notification from inside its route's scope. That turn would
+ * otherwise send the session's model to the sub-agent's provider.
+ */
+export function runOutsideProviderScope<T>(fn: () => T): T {
+  return _forcedProvider.run(undefined, fn)
 }
 
 /**

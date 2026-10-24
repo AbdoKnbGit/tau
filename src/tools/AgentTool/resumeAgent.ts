@@ -265,6 +265,9 @@ export async function resumeAgentBackground({
     worktreePath: resumedWorktreePath,
     description: meta?.description,
     contentReplacementState: resumedReplacementState,
+    ...((mistralRoute ?? savedRoute)?.effort !== undefined && {
+      resumeEffort: (mistralRoute ?? savedRoute)!.effort,
+    }),
   }
 
   // Skip name-registry write — original entry persists from the initial spawn

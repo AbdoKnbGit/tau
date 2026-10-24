@@ -383,14 +383,16 @@ export const SettingsSchema = lazySchema(() =>
         .object({
           mode: z.string().optional(),
           models: z.record(z.string(), z.unknown()).optional(),
+          global: z.unknown().optional(),
         })
         .optional()
         .describe(
           'Model for sub-agents that name none of their own: every built-in agent, and agent files without a model or provider. ' +
             '"auto" (default): each provider picks, as before. ' +
-            '"custom": models[<provider>] is the model id on that provider; a provider without an entry acts as auto. ' +
+            '"custom": models[<provider>] is the model id on that provider, or { "model", "effort" }; a provider without an entry acts as auto. ' +
             '"inherit": always the main model. ' +
-            'CLAUDE_CODE_SUBAGENT_MODEL, when set, overrides this. Also set in /config under Sub-agent model.',
+            '"global": global is { "provider", "model", "effort" }, used whatever the main provider. ' +
+            'An effort applies to the sub-agent alone. CLAUDE_CODE_SUBAGENT_MODEL, when set, overrides this. Also set in /config under Sub-agent model.',
         ),
       // Enterprise allowlist of models
       availableModels: z

@@ -23,12 +23,15 @@ import {
   type AgentModelScope,
   describeSubagentModelSetting,
   getCustomSubagentModel,
+  getCustomSubagentTarget,
+  getGlobalSubagentTarget,
   getSubagentModelEnvOverride,
   getSubagentModelMode,
   isInheritModelSpec,
   isSubagentSettingScoped,
   isTierModelSpec,
   type SubagentModelSetting,
+  type SubagentModelTarget,
 } from './subagentModel.js'
 import {
   getForcedProvider,
@@ -130,10 +133,53 @@ export function getAgentModel(
   if (mode === 'auto') return legacy(agentModel, toolSpecifiedModel)
   if (callerChoice !== undefined) return resolveCallerChoice(callerChoice)
   if (mode === 'inherit') return sessionModel()
+  if (mode === 'global') {
+    // The id belongs to the global pick's provider, which runAgent pins the
+    // agent to, so it is sent as is rather than read by this provider's rules.
+    return (
+      getGlobalSubagentTarget(setting)?.model ??
+      legacy(agentModel, toolSpecifiedModel)
+    )
+  }
   const customModel = getCustomSubagentModel(setting, getAPIProvider())
   return customModel === undefined
     ? legacy(agentModel, toolSpecifiedModel)
     : legacy(undefined, customModel)
+}
+
+/**
+ * The pick the Sub-agent model setting makes for this spawn in its Custom and
+ * Global modes: the model, the provider it runs on and an effort for the
+ * agent alone. Undefined whenever the setting does not decide, by the same
+ * rules as getAgentModel(): another mode, CLAUDE_CODE_SUBAGENT_MODEL, an
+ * agent pinned by its file or by an explicit caller provider, an agent file
+ * with its own model, a concrete model from the caller, or no usable pick.
+ */
+export function getSubagentSettingTarget(
+  definitionModel: string | undefined,
+  callerModel: string | undefined,
+  agentProvider: APIProvider | undefined,
+  scope: AgentModelScope | undefined,
+): SubagentModelTarget | undefined {
+  const agentModel = definitionModel?.trim() ? definitionModel : undefined
+  if (
+    getSubagentModelEnvOverride() !== undefined ||
+    agentProvider !== undefined ||
+    isExplicitProviderOverride() ||
+    !isSubagentSettingScoped(agentModel, scope) ||
+    (callerModel?.trim() && !isTierModelSpec(callerModel))
+  ) {
+    return undefined
+  }
+  const setting = readSubagentModelSetting()
+  switch (getSubagentModelMode(setting)) {
+    case 'custom':
+      return getCustomSubagentTarget(setting, getAPIProvider())
+    case 'global':
+      return getGlobalSubagentTarget(setting)
+    default:
+      return undefined
+  }
 }
 
 /**
@@ -329,7 +375,7 @@ function describeAgentModelRule(
     return `Sub-agent model: ${describeSubagentModelSetting(
       readSubagentModelSetting(),
       provider,
-      PROVIDER_DISPLAY_NAMES[provider],
+      name => PROVIDER_DISPLAY_NAMES[name],
     )}`
   }
   if (model === undefined || isInheritModelSpec(model)) {

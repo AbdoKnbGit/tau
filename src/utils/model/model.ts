@@ -23,8 +23,8 @@ import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { claude5SupportApplies, getAPIProvider, isThirdPartyProvider } from './providers.js'
-import { getForcedProvider } from '../forcedProvider.js'
+import { claude5SupportApplies, getAPIProvider, getSessionAPIProvider, isThirdPartyProvider } from './providers.js'
+import { getForcedProvider, getForcedProviderContext } from '../forcedProvider.js'
 import { getProviderModelSet, isAgentRouterModelId } from './configs.js'
 import { resolveAgentAliasPolicy } from './agentAliasFallback.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
@@ -48,7 +48,7 @@ export function getSmallFastModel(): ModelName {
     // away-summary, ...) follows the same provider-safe cheap-model policy as
     // spawned agent aliases. This prevents generic tier defaults from putting
     // an unsupported or cross-route model on the wire.
-    const main = getMainLoopModel()
+    const main = getScopedMainLoopModel()
     return resolveAgentAliasPolicy('haiku', main, provider) ?? main
   }
   return getDefaultHaikuModel()
@@ -117,6 +117,19 @@ export function getMainLoopModel(): ModelName {
     return resolved
   }
   return getDefaultMainLoopModel()
+}
+
+/**
+ * The main model for a request made in the current provider scope. Inside a
+ * sub-agent held on a provider other than the session's, the session's model
+ * is not one that provider serves; the agent's own model is.
+ */
+export function getScopedMainLoopModel(): ModelName {
+  const scope = getForcedProviderContext()
+  if (scope?.model !== undefined && scope.provider !== getSessionAPIProvider()) {
+    return scope.model
+  }
+  return getMainLoopModel()
 }
 
 export function getBestModel(): ModelName {

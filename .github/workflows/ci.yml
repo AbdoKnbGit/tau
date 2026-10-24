@@ -158,7 +158,7 @@ jobs:
         run: node --test test/background-wait-loop.test.mjs
 
       - name: Test the Sub-agent model setting, spawn provider scope and resume routes
-        run: node --test test/subagent-model-setting.test.mjs test/subagent-model-resume.test.mjs test/subagent-model-config.test.mjs test/mistral-agent-routing.test.mjs test/mistral-subagent-resume.test.mjs
+        run: node --test test/subagent-model-setting.test.mjs test/subagent-model-resume.test.mjs test/subagent-model-config.test.mjs test/mistral-agent-routing.test.mjs test/mistral-subagent-resume.test.mjs test/model-browser-variant-ids.test.mjs
 
       - name: Test plugin update marketplace refresh with local Git remotes
         run: node --test test/plugin-update-marketplace-refresh.test.mjs

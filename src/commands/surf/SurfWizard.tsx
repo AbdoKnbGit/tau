@@ -23,7 +23,10 @@ import { Box, Text, useInput } from '../../ink.js'
 import { ProviderModelPicker } from '../../components/ProviderModelPicker.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import { saveGlobalConfig } from '../../utils/config.js'
-import type { BrowsableModelProvider } from '../../utils/model/providerCatalog.js'
+import {
+  type BrowsableModelProvider,
+  resolveProviderModelSelection,
+} from '../../utils/model/providerCatalog.js'
 import {
   PROVIDER_DISPLAY_NAMES,
   type APIProvider,
@@ -198,15 +201,22 @@ export function SurfWizard({ onDone, initialProvider }: Props) {
     modelId: string,
     openaiEffort?: OpenAIReasoningLevel,
   ) {
-    const pick: Pick = { provider, model: modelId }
-    const options = effortOptionsFor(provider, modelId)
+    // Anthropic lists one row per effort, encoded in the id, which no request
+    // accepts: keep the model's own id, and open the effort step on that
+    // row's effort. (Cline Pass ids carry their thinking level, and its lane
+    // reads it.)
+    const selection = provider === 'firstParty'
+      ? resolveProviderModelSelection(provider, modelId)
+      : { modelId, effort: undefined }
+    const pick: Pick = { provider, model: selection.modelId }
+    const options = effortOptionsFor(provider, selection.modelId)
     if (!options) {
       // No effort knob for this model — record the pick as-is and move on.
       advance({ ...picks, [currentPhase!]: pick })
       return
     }
     // Move to effort picker; default to 'medium' (or index 1).
-    const defaultIdx = Math.max(0, options.indexOf(openaiEffort ?? 'medium'))
+    const defaultIdx = Math.max(0, options.indexOf(selection.effort ?? openaiEffort ?? 'medium'))
     setPendingPick(pick)
     setEffortIndex(defaultIdx)
     setStep('effort')

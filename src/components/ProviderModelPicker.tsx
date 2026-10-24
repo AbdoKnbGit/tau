@@ -38,7 +38,9 @@ import { hasStoredKey } from '../services/api/auth/api_key_manager.js'
 
 type Props = {
   initialProvider: BrowsableModelProvider
-  onSelect: (provider: BrowsableModelProvider, modelId: string, effort?: OpenAIReasoningLevel, commitSelection?: () => void) => void
+  /** `providerEffort` is the native effort chip as the row shows it when it
+   * was moved ('auto' or a level), for consumers that apply it themselves. */
+  onSelect: (provider: BrowsableModelProvider, modelId: string, effort?: OpenAIReasoningLevel, commitSelection?: () => void, providerEffort?: string) => void
   deferSelectionEffects?: boolean
   onCancel: () => void
   lockedProvider?: BrowsableModelProvider
@@ -81,7 +83,7 @@ const SECTION_ACCENT: Record<NonNullable<ProviderModelSection['accent']>, string
   toolless: 'yellow',
 }
 
-function getProviderStatusLabel(provider: BrowsableModelProvider): string {
+export function getProviderStatusLabel(provider: BrowsableModelProvider): string {
   if (isVoiceConversationProvider(provider)) {
     return hasStoredKey('openai_oauth') ? 'OpenAI connected' : 'OpenAI OAuth required'
   }
@@ -386,6 +388,7 @@ export function ProviderModelPicker({
           getSelectedModelId(selectedProvider, row.model, variantSelections),
           selectedProvider === 'openai' ? openaiEffort : undefined,
           deferSelectionEffects ? commitSelection : undefined,
+          providerEffortSelections[`${selectedProvider}:${modelId}`],
         )
       }
       return

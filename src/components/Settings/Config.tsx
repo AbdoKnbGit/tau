@@ -97,7 +97,7 @@ type SubMenu = 'Theme' | 'Model' | 'SubagentModel' | 'TeammateModel' | 'External
 /** The value /config shows for the Sub-agent model setting, on the current provider. */
 function describeSubagentModel(setting: Parameters<typeof describeSubagentModelSetting>[0]): string {
   const provider = getAPIProvider();
-  return describeSubagentModelSetting(setting, provider, PROVIDER_DISPLAY_NAMES[provider]);
+  return describeSubagentModelSetting(setting, provider, name => PROVIDER_DISPLAY_NAMES[name]);
 }
 export function Config({
   onClose,
@@ -1767,8 +1767,8 @@ export function Config({
         setTabsHidden(false);
 
         // User settings, so the choice applies in every project. The picker
-        // only adds or replaces a provider's model, so merging the whole value
-        // into the file is exact; undefined deletes the key.
+        // only adds or replaces a pick, writing each of its keys, so merging
+        // the whole value into the file is exact; undefined deletes a key.
         const result = updateSettingsForSource('userSettings', {
           subagentModel
         });

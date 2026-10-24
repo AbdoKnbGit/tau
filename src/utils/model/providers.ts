@@ -102,7 +102,11 @@ export function getAPIProvider(): APIProvider {
   // later /provider switch cannot reroute its requests.
   const forced = getScopedProvider()
   if (forced !== undefined) return forced
+  return getSessionAPIProvider()
+}
 
+/** The session's provider, ignoring the provider scope a sub-agent runs in. */
+export function getSessionAPIProvider(): APIProvider {
   if (process.env.NODE_ENV === 'test') return _resolveAPIProvider()
   if (_sessionActiveProvider !== null) return _sessionActiveProvider
   _sessionActiveProvider = _resolveAPIProvider()

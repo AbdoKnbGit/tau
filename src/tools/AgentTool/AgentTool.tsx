@@ -26,7 +26,7 @@ import { AbortError, errorMessage, toError } from '../../utils/errors.js';
 import type { CacheSafeParams } from '../../utils/forkedAgent.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { createUserMessage, extractTextContent, isSyntheticMessage, normalizeMessages } from '../../utils/messages.js';
-import { getAgentModel } from '../../utils/model/agent.js';
+import { getAgentModel, getSubagentSettingTarget } from '../../utils/model/agent.js';
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
 import { filterDeniedAgents, getDenyRuleForAgent } from '../../utils/permissions/permissions.js';
@@ -387,9 +387,12 @@ export const AgentTool = buildTool({
     // Record what this agent actually resolved to so the tool tag can show the
     // real model rather than the alias the caller passed. A pinned agent keeps
     // its own model, so the request and the result can differ.
+    // A Global Sub-agent model pick runs on its own provider: name it.
+    const settingTarget = runWithAgentProvider(selectedAgent.provider, () => getSubagentSettingTarget(selectedAgent.model, isForkPath ? undefined : model, selectedAgent.provider, getAgentModelScope(selectedAgent)));
+    const tagProvider = selectedAgent.provider ?? (settingTarget && settingTarget.provider !== effectiveProvider ? settingTarget.provider : effectiveProvider === 'mistral' ? effectiveProvider : undefined);
     setAgentResolvedModel(selectedAgent.agentType, {
       model: resolvedAgentModel,
-      ...(effectiveProvider === 'mistral' ? { provider: effectiveProvider } : selectedAgent.provider ? { provider: selectedAgent.provider } : {})
+      ...(tagProvider ? { provider: tagProvider } : {})
     });
     logEvent('tengu_agent_tool_selected', {
       agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

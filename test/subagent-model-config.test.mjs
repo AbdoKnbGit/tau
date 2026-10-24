@@ -128,11 +128,94 @@ test('Custom picks a model of the current provider and keeps other providers\' p
     const saved = userSetting()
     assert.equal(saved.mode, 'custom')
     assert.equal(saved.models.openai, 'gpt-6-sol', 'another provider\'s pick stays')
-    assert.equal(typeof saved.models.firstParty, 'string')
-    assert.ok(saved.models.firstParty.length > 0)
-    assert.match(panel.frame(), new RegExp(`Custom: ${saved.models.firstParty.replace(/[.[\]]/g, '\\$&')}`))
+    // Anthropic lists one row per effort: the id saved is the model's own,
+    // and the row's effort is kept apart.
+    const { model, effort } = saved.models.firstParty
+    assert.match(model, /^claude-[\w.-]+$/)
+    assert.equal(typeof effort, 'string')
+    assert.match(panel.frame(), new RegExp(`Custom: ${model.replace(/[.]/g, '\\.')} · ${effort}`))
     await panel.press(KEYS.esc)
     assert.deepEqual(userSetting(), initial, 'Esc removes the pick made in this session')
+  } finally {
+    panel.close()
+    setUserSetting(undefined)
+  }
+})
+
+const RIGHT = '\x1b[C'
+
+test('Global picks a provider, a model and its effort for sub-agents, and leaves the session alone', async () => {
+  setUserSetting(undefined)
+  const userFile = join(configDir, 'settings.json')
+  const panel = await openConfig()
+  try {
+    const before = panel.store.getState()
+    await openRow(panel, 'Auto')
+    for (let i = 0; i < 3; i++) await panel.press(KEYS.down)
+    await panel.press(KEYS.enter)
+    // The provider list first, opened on the current provider.
+    await panel.waitFor(/Pick a provider first/)
+    await panel.press(KEYS.enter)
+    await panel.waitFor(/> claude-\S+ - Claude/)
+    const opened = panel.frame().match(/> (claude-\S+) - .*?◀ (\w+) effort ▶/)
+    assert.ok(opened, 'the first row has an effort chip')
+    await panel.press(RIGHT)
+    const moved = panel.frame().match(/> (claude-\S+) - .*?◀ (\w+) effort ▶/)
+    assert.notEqual(moved[2], opened[2], 'the chip moved')
+    await panel.press(KEYS.enter)
+    await panel.waitFor(/Sub-agent model\s+Global: Anthropic \//)
+    assert.deepEqual(userSetting(), {
+      mode: 'global',
+      global: { provider: 'firstParty', model: moved[1], effort: moved[2] },
+    })
+    assert.match(panel.frame(), new RegExp(`Global: Anthropic / ${moved[1].replace(/[.]/g, '\\.')} · ${moved[2]}`))
+    const after = panel.store.getState()
+    assert.equal(after.mainLoopModel, before.mainLoopModel, 'the session model is untouched')
+    assert.equal(after.effortValue, before.effortValue, 'the session effort is untouched')
+    assert.equal(JSON.parse(readFileSync(userFile, 'utf8')).effortLevel, undefined, 'no effort saved for the session')
+    await panel.press(KEYS.esc)
+    assert.equal(userSetting(), undefined, 'Esc puts it back')
+  } finally { panel.close() }
+})
+
+test('a new Global pick without an effort drops the last one\'s effort', async () => {
+  setUserSetting({ mode: 'global', global: { provider: 'firstParty', model: 'claude-opus-5-5', effort: 'high' } })
+  const panel = await openConfig()
+  try {
+    await openRow(panel, 'Global: Anthropic / claude-opus-5-5 · high')
+    await panel.press(KEYS.enter)
+    await panel.waitFor(/Pick a provider first/)
+    await panel.press(KEYS.enter)
+    await panel.waitFor(/> claude-\S+ - Claude/)
+    await panel.type('haiku')
+    await panel.waitFor(/> claude-haiku-4-5 - /)
+    await panel.press(KEYS.enter)
+    await panel.waitFor(/Sub-agent model\s+Global: Anthropic \/ claude-haiku-4-5/)
+    assert.deepEqual(userSetting(), { mode: 'global', global: { provider: 'firstParty', model: 'claude-haiku-4-5' } })
+    await panel.press(KEYS.enter)
+  } finally {
+    panel.close()
+    setUserSetting(undefined)
+  }
+})
+
+test('switching modes keeps the Global pick, and Global keeps the custom ones', async () => {
+  const initial = {
+    mode: 'global',
+    models: { openai: 'gpt-6-sol' },
+    global: { provider: 'openai', model: 'gpt-6-luna', effort: 'low' },
+  }
+  setUserSetting(initial)
+  const panel = await openConfig()
+  try {
+    await openRow(panel, 'Global: OpenAI / gpt-6-luna · low')
+    // Global is focused; Same as main model is two up.
+    await panel.press(KEYS.up)
+    await panel.press(KEYS.up)
+    await panel.press(KEYS.enter)
+    await panel.waitFor(/Sub-agent model\s+Same as main model/)
+    assert.deepEqual(userSetting(), { ...initial, mode: 'inherit' })
+    await panel.press(KEYS.enter)
   } finally {
     panel.close()
     setUserSetting(undefined)

@@ -6,6 +6,8 @@ import {
   describeSubagentModelSetting,
   getCustomSubagentModel,
   getCustomSubagentModelProviders,
+  getCustomSubagentTarget,
+  getGlobalSubagentTarget,
   getSubagentModelEnvOverride,
   getSubagentModelMode,
   isConcreteModelSpec,
@@ -13,6 +15,7 @@ import {
   isSubagentSettingScoped,
   isTierModelSpec,
   type SubagentModelSetting,
+  toSubagentModelEntry,
 } from './subagentModel.js'
 
 let passed = 0
@@ -125,24 +128,55 @@ function main(): void {
   })
 
   test('/config labels say what is in force on the current provider', () => {
-    const name = 'Antigravity'
-    assert(describeSubagentModelSetting(undefined, 'antigravity', name, undefined) === 'Auto', 'unset')
-    assert(describeSubagentModelSetting({ mode: 'inherit' }, 'antigravity', name, undefined) === 'Same as main model', 'inherit')
+    const name = (provider: string) => ({ antigravity: 'Antigravity', openai: 'OpenAI' })[provider] ?? provider
+    const describe = (setting: SubagentModelSetting, env?: string) =>
+      describeSubagentModelSetting(setting, 'antigravity', name, env)
+    assert(describe(undefined) === 'Auto', 'unset')
+    assert(describe({ mode: 'inherit' }) === 'Same as main model', 'inherit')
+    assert(describe({ mode: 'custom', models: { antigravity: 'gemini-3.8-flash-medium' } }) === 'Custom: gemini-3.8-flash-medium', 'custom with a pick')
     assert(
-      describeSubagentModelSetting({ mode: 'custom', models: { antigravity: 'gemini-3.8-flash-medium' } }, 'antigravity', name, undefined)
-        === 'Custom: gemini-3.8-flash-medium',
-      'custom with a pick',
+      describe({ mode: 'custom', models: { antigravity: { model: 'claude-sonnet-4-6', effort: 'high' } } }) === 'Custom: claude-sonnet-4-6 · high',
+      'custom with an effort',
     )
+    assert(describe({ mode: 'custom', models: { openai: 'gpt-6-sol' } }) === 'Custom: none for Antigravity, using Auto', 'custom without a pick here')
     assert(
-      describeSubagentModelSetting({ mode: 'custom', models: { openai: 'gpt-6-sol' } }, 'antigravity', name, undefined)
-        === 'Custom: none for Antigravity, using Auto',
-      'custom without a pick here',
+      describe({ mode: 'global', global: { provider: 'openai', model: 'gpt-6-luna', effort: 'low' } }) === 'Global: OpenAI / gpt-6-luna · low',
+      'global with an effort',
     )
-    assert(
-      describeSubagentModelSetting({ mode: 'inherit' }, 'antigravity', name, 'gpt-6-sol')
-        === 'CLAUDE_CODE_SUBAGENT_MODEL (gpt-6-sol)',
-      'env override',
-    )
+    assert(describe({ mode: 'global', global: { provider: 'openai', model: 'gpt-6-luna' } }) === 'Global: OpenAI / gpt-6-luna', 'global')
+    assert(describe({ mode: 'global' }) === 'Global: none set, using Auto', 'global without a pick')
+    assert(describe({ mode: 'inherit' }, 'gpt-6-sol') === 'CLAUDE_CODE_SUBAGENT_MODEL (gpt-6-sol)', 'env override')
+  })
+
+  test('the global pick names a known provider and a model that can be sent; a bad effort is dropped', () => {
+    assert(getSubagentModelMode({ mode: ' Global ' }) === 'global', 'mode')
+    const target = getGlobalSubagentTarget({ global: { provider: ' openai ', model: ' gpt-6-luna ', effort: ' HIGH ' } })
+    assert(target?.provider === 'openai' && target.model === 'gpt-6-luna' && target.effort === 'high', JSON.stringify(target))
+    const noEffort = getGlobalSubagentTarget({ global: { provider: 'openai', model: 'gpt-6-luna', effort: 'turbo' } })
+    assert(noEffort !== undefined && noEffort.effort === undefined, JSON.stringify(noEffort))
+    for (const global of [
+      undefined, null, 'openai', [], {}, { provider: 'openai' }, { model: 'gpt-6-luna' },
+      { provider: 'made-up', model: 'gpt-6-luna' }, { provider: 'OpenAI', model: 'gpt-6-luna' },
+      { provider: 'openai', model: 'haiku' }, { provider: 'openai', model: 'inherit' }, { provider: 'openai', model: '  ' },
+      { provider: 'openai', model: 42 },
+    ]) {
+      assert(getGlobalSubagentTarget({ mode: 'global', global }) === undefined, `${JSON.stringify(global)} was accepted`)
+    }
+  })
+
+  test('a custom pick is an id or { model, effort }, and saves as the shorter one', () => {
+    const setting: SubagentModelSetting = {
+      models: { antigravity: 'gemini-3.8-flash-medium', firstParty: { model: 'claude-opus-5-5', effort: 'max' }, openai: { model: 'haiku' } },
+    }
+    const plain = getCustomSubagentTarget(setting, 'antigravity')
+    assert(plain?.model === 'gemini-3.8-flash-medium' && plain.effort === undefined, JSON.stringify(plain))
+    const withEffort = getCustomSubagentTarget(setting, 'firstParty')
+    assert(withEffort?.model === 'claude-opus-5-5' && withEffort.effort === 'max', JSON.stringify(withEffort))
+    assert(getCustomSubagentModel(setting, 'firstParty') === 'claude-opus-5-5', 'model of an object pick')
+    assert(getCustomSubagentTarget(setting, 'openai') === undefined, 'a tier inside an object is not a model')
+    assert(toSubagentModelEntry({ model: 'gpt-6-luna' }) === 'gpt-6-luna', 'plain entry')
+    const entry = toSubagentModelEntry({ model: 'gpt-6-luna', effort: 'low' })
+    assert(typeof entry === 'object' && entry.model === 'gpt-6-luna' && entry.effort === 'low', JSON.stringify(entry))
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

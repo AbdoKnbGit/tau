@@ -41,6 +41,7 @@ import {
   extractRecentToolNames,
 } from './surf/extract.js'
 import { isEffortLevel, type EffortLevel } from './effort.js'
+import { runOutsideProviderScope } from './forcedProvider.js'
 import { runWithWorkload } from './workloadContext.js'
 
 function exit(): void {
@@ -497,7 +498,9 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     // context — isolated from the parent's continuation. A process-global
     // mutable slot would be clobbered at the detached closure's first
     // await by this function's synchronous return path. See state.ts.
-    await runWithWorkload(turnWorkload, async () => {
+    // The turn also leaves any sub-agent's provider scope that reached it
+    // (see runOutsideProviderScope): it runs on the session's provider.
+    await runOutsideProviderScope(() => runWithWorkload(turnWorkload, async () => {
       for (let i = 0; i < commands.length; i++) {
         const cmd = commands[i]!
         const isFirst = i === 0
@@ -678,7 +681,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           params.onInputChange(nextInput)
         }
       }
-    }) // end runWithWorkload — ALS context naturally scoped, no finally needed
+    })) // end runWithWorkload — ALS context naturally scoped, no finally needed
   } finally {
     // Safety net: release the guard reservation if processUserInput threw
     // or onQuery was skipped. No-op if onQuery already ran (guard is idle
