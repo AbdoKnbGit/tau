@@ -104,7 +104,7 @@ test('setting is an optional boolean, with no schema-injected default', () => {
   }
 })
 
-test('unset and false retain empty-answer bypass; true takes effect without restarting', async () => {
+test('unset and false auto-select answers; true takes effect without restarting', async () => {
   const ctx = context()
   for (const value of [undefined, false, true, false, true]) {
     settings(value)
@@ -112,7 +112,8 @@ test('unset and false retain empty-answer bypass; true takes effect without rest
     assert.equal(result.behavior, value === true ? 'ask' : 'allow')
     if (result.behavior === 'allow') {
       const output = await tool.call(result.updatedInput, ctx)
-      assert.deepEqual(output.data.answers, {}, 'legacy bypass behavior must stay unchanged')
+      assert.deepEqual(output.data.answers, { [input.questions[0].question]: 'Yes' })
+      assert.deepEqual(output.data.autoAnsweredQuestions, [input.questions[0].question])
     }
   }
 })
@@ -197,14 +198,47 @@ test('hooks retain their answer-supplying path, but bare approval still requires
   assert.deepEqual(result.input.answers, answered.answers)
 })
 
-test('every registered provider honors the shared permission decision', async t => {
+test('every registered provider honors the shared decision and auto-answers when the tool is available', async t => {
   for (const provider of r.API_PROVIDERS) {
     await t.test(provider, () => r.runWithForcedProvider({ provider }, async () => {
-      settings(true)
-      assert.equal((await permission()).behavior, 'ask')
-      settings(false)
-      assert.equal((await permission()).behavior, 'allow')
+      // NIM's default fast-tool subset excludes AskUserQuestion entirely.
+      const previousFullTools = process.env.NIM_FULL_TOOLS
+      if (provider === 'nim') process.env.NIM_FULL_TOOLS = '1'
+      try {
+        settings(true)
+        assert.equal((await permission()).behavior, 'ask')
+        settings(false)
+        assert.equal((await permission()).behavior, 'allow')
+        const { results } = await executeQuestion(input)
+        assert.equal(results.length, 1)
+        assert.notEqual(results[0].is_error, true)
+        assert.match(results[0].content, /"Should the app support guest checkout\?"="Yes" \(automatically selected\)/)
+        assert.doesNotMatch(results[0].content, /User has answered/)
+      } finally {
+        if (previousFullTools === undefined) delete process.env.NIM_FULL_TOOLS
+        else process.env.NIM_FULL_TOOLS = previousFullTools
+      }
     }))
+  }
+})
+
+test('automatic answers do not bypass NIM fast-tool restrictions', async () => {
+  const flags = ['NIM_FULL_TOOLS', 'CLAUDEX_NIM_FULL_TOOLS', 'NIM_NO_OPTIMIZE', 'CLAUDEX_NIM_NO_OPTIMIZE']
+  const previous = flags.map(flag => process.env[flag])
+  for (const flag of flags) delete process.env[flag]
+  try {
+    await r.runWithForcedProvider({ provider: 'nim' }, async () => {
+      const { results } = await executeQuestion(input)
+      assert.equal(results.length, 1)
+      assert.equal(results[0].is_error, true)
+      assert.match(results[0].content, /NIM fast-tool/)
+      assert.doesNotMatch(results[0].content, /automatically selected/)
+    })
+  } finally {
+    flags.forEach((flag, index) => {
+      if (previous[index] === undefined) delete process.env[flag]
+      else process.env[flag] = previous[index]
+    })
   }
 })
 
@@ -221,6 +255,12 @@ test('Gemini, Cursor, and Kilo native question formats reach the same override',
   for (const args of inputs) {
     assert.equal(tool.inputSchema.safeParse(args).success, true)
     assert.equal((await permission(context(), tool, args)).behavior, 'ask')
+    settings(false)
+    const { results } = await executeQuestion(args)
+    assert.equal(results.length, 1)
+    assert.notEqual(results[0].is_error, true)
+    assert.match(results[0].content, /automatically selected/)
+    settings(true)
   }
 })
 
@@ -236,6 +276,7 @@ test('toggling preserves model-visible system prompt and tool schema bytes', asy
         schema: await r.toolToAPISchema(tool, options),
         prompt: await tool.prompt(), enabled: tool.isEnabled(),
       })
+      await executeQuestion(input)
       settings(true)
       assert.equal(JSON.stringify({
         system: await r.getSystemPrompt(tools, options.model),
@@ -244,6 +285,143 @@ test('toggling preserves model-visible system prompt and tool schema bytes', asy
       }), before, provider)
     })
   }
+})
+
+async function executeQuestion(args, ctx = context()) {
+  const block = { type: 'tool_use', name: tool.name, id: 'question-1', input: args }
+  const updates = []
+  for await (const update of r.runToolUse(block,
+    { ...assistant, message: { ...assistant.message, content: [block] } },
+    r.hasPermissionsToUseTool, ctx)) updates.push(update)
+  const messages = updates.map(update => update.message).filter(message => message?.type === 'user')
+  return { messages, results: messages.flatMap(message => message.message.content)
+    .filter(block => block.type === 'tool_result') }
+}
+
+function question(questionText, labels, multiSelect = false) {
+  return { question: questionText, header: 'Choice', multiSelect,
+    options: labels.map(label => ({ label, description: `Choose ${label}.` })) }
+}
+
+test('selection uses the marked recommendation, with deterministic first-option fallback', async () => {
+  const questions = [
+    question('Recommendation is second?', ['First', 'Second (Recommended)']),
+    question('No recommendation?', ['Default', 'Alternative']),
+    question('Case and spacing?', ['First', 'Second ( recommended ) ']),
+    question('Misleading label?', ['First', 'Second (Not recommended)']),
+  ]
+  const output = await tool.call({ questions }, context())
+  assert.deepEqual(output.data.answers, {
+    'Recommendation is second?': 'Second (Recommended)',
+    'No recommendation?': 'Default',
+    'Case and spacing?': 'Second ( recommended ) ',
+    'Misleading label?': 'First',
+  })
+  assert.deepEqual(output.data.autoAnsweredQuestions, questions.map(q => q.question))
+  assert.deepEqual(tool.outputSchema.parse(output.data), output.data)
+})
+
+test('multi-select chooses all recommendations; single-select and unmarked questions choose one', async () => {
+  const labels = ['First', 'Second (Recommended)', 'Third (Recommended)']
+  const questions = [
+    question('Multiple?', labels, true), question('Single?', labels),
+    question('Unmarked multi?', ['Default', 'Alternative'], true),
+  ]
+  const { data } = await tool.call({ questions }, context())
+  assert.deepEqual(data.answers, {
+    'Multiple?': 'Second (Recommended), Third (Recommended)',
+    'Single?': 'Second (Recommended)', 'Unmarked multi?': 'Default',
+  })
+})
+
+test('supplied answers and annotations survive; only missing answers are filled without mutating input', async () => {
+  const questions = [
+    question('Answered?', ['Default', 'Alternative']),
+    question('Explicitly empty?', ['Default', 'Alternative']),
+    question('Needs answer?', ['Default', 'Alternative (Recommended)']),
+  ]
+  questions[2].options[1].preview = 'Selected preview'
+  const supplied = {
+    questions,
+    answers: { 'Answered?': 'My own answer', 'Explicitly empty?': '' },
+    annotations: { 'Answered?': { notes: 'User note', preview: 'Existing preview' } },
+  }
+  const before = JSON.stringify(supplied)
+  Object.freeze(supplied.answers)
+  Object.freeze(supplied.annotations)
+  const { data } = await tool.call(supplied, context())
+  assert.deepEqual(data.answers, { ...supplied.answers, 'Needs answer?': 'Alternative (Recommended)' })
+  assert.deepEqual(data.autoAnsweredQuestions, ['Needs answer?'])
+  assert.deepEqual(data.annotations, { ...supplied.annotations, 'Needs answer?': { preview: 'Selected preview' } })
+  assert.equal(JSON.stringify(supplied), before)
+  const result = tool.mapToolResultToToolResultBlockParam(data, 'question-1')
+  assert.match(result.content, /"Answered\?"="My own answer" \(provided answer\)/)
+  assert.match(result.content, /"Needs answer\?"="Alternative \(Recommended\)" \(automatically selected\)/)
+  assert.match(result.content, /selected preview:\nSelected preview/)
+  assert.match(result.content, /user notes: User note/)
+  assert.doesNotMatch(result.content, /User has answered/)
+})
+
+test('fully supplied answers keep the existing result and transcript wording', async () => {
+  const supplied = { ...input, answers: { [input.questions[0].question]: 'No' } }
+  const { data } = await tool.call(supplied, context())
+  assert.deepEqual(data, supplied)
+  const result = tool.mapToolResultToToolResultBlockParam(data, 'question-1')
+  assert.match(result.content, /^User has answered your questions:/)
+  const panel = await mount(r, tool.renderToolResultMessage(data))
+  try {
+    assert.match(panel.frame(), /User answered Tau's questions:/)
+    assert.doesNotMatch(panel.frame(), /automatically selected/)
+  } finally { panel.close() }
+})
+
+test('automatic-answer provenance survives serialization and is visible in the transcript', async () => {
+  const { messages } = await executeQuestion(input)
+  const data = JSON.parse(JSON.stringify(messages[0].toolUseResult))
+  assert.deepEqual(data.autoAnsweredQuestions, [input.questions[0].question])
+  const result = tool.mapToolResultToToolResultBlockParam(data, 'question-1')
+  assert.match(result.content, /Treat automatic selections as assumptions/)
+  const panel = await mount(r, tool.renderToolResultMessage(data), { columns: 120 })
+  try {
+    assert.match(panel.frame(), /Question answers \(bypass mode\):/)
+    assert.match(panel.frame(), /Yes \(automatically selected\)/)
+    assert.doesNotMatch(panel.frame(), /User answered/)
+  } finally { panel.close() }
+})
+
+test('the execution fallback respects normal mode, plan mode, the question toggle, and self-learning', async () => {
+  const unanswered = async ctx => {
+    const { data } = await tool.call(input, ctx)
+    assert.deepEqual(data.answers, {})
+    assert.equal(data.autoAnsweredQuestions, undefined)
+  }
+  await unanswered(context({ mode: 'default' }))
+  r.setSessionBypassPermissionsMode(true)
+  await unanswered(context({ mode: 'plan' }))
+  const { data } = await tool.call(input, context({ mode: 'default' }))
+  assert.deepEqual(data.answers, { [input.questions[0].question]: 'Yes' })
+  settings(true)
+  await unanswered(context())
+  settings(false, { selfLearningEnabled: true })
+  await unanswered(context())
+})
+
+test('headless DSP can auto-answer; explicit question denial still prevents execution', async () => {
+  const { results } = await executeQuestion(input, context({ shouldAvoidPermissionPrompts: true }))
+  assert.match(results[0].content, /automatically selected/)
+  const denied = await executeQuestion(input, context({ alwaysDenyRules: { userSettings: [tool.name] } }))
+  assert.equal(denied.results[0].is_error, true)
+  assert.doesNotMatch(denied.results[0].content, /automatically selected/)
+})
+
+test('question text that matches object properties still receives an own answer', async () => {
+  const questions = ['toString', '__proto__'].map(text => question(text, ['First', 'Second']))
+  const { data } = await tool.call({ questions }, context())
+  for (const q of questions) {
+    assert.equal(Object.hasOwn(data.answers, q.question), true)
+    assert.equal(data.answers[q.question], 'First')
+  }
+  assert.deepEqual(data.autoAnsweredQuestions, ['toString', '__proto__'])
 })
 
 test('real executor pauses at the question dialog and returns the selected answer', async () => {

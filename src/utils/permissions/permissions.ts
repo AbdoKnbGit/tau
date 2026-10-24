@@ -146,6 +146,18 @@ function shouldBypassPermissionPrompts(
   )
 }
 
+// Shared by the permission gate and AskUserQuestion's execution fallback so
+// plan mode, the question toggle, and self-learning always agree.
+export function shouldAutoAnswerUserQuestions(
+  toolPermissionContext: ToolPermissionContext,
+): boolean {
+  return (
+    shouldBypassPermissionPrompts(toolPermissionContext) &&
+    getInitialSettings().askQuestionsInBypassMode !== true &&
+    !isSelfLearningEnabled()
+  )
+}
+
 function getBypassDecisionMode(
   toolPermissionContext: ToolPermissionContext,
 ): PermissionMode {
@@ -1296,8 +1308,7 @@ async function hasPermissionsToUseToolInner(
   // keeps its existing exception so /learned can still collect approval.
   const askUserQuestionDespiteBypass =
     tool.name === ASK_USER_QUESTION_TOOL_NAME &&
-    (getInitialSettings().askQuestionsInBypassMode === true ||
-      isSelfLearningEnabled())
+    !shouldAutoAnswerUserQuestions(context.getAppState().toolPermissionContext)
   // Plan review is explicit user interaction and should not be auto-approved.
   const exitPlanModeDespiteBypass = tool.name === EXIT_PLAN_MODE_V2_TOOL_NAME
   if (

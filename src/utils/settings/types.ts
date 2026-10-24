@@ -1048,7 +1048,7 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe(
-          'Show AskUserQuestion dialogs even when dangerously skipping permissions. Default: false (preserves existing behavior, including self-learning and plan-mode exceptions).',
+          'Show AskUserQuestion dialogs even when dangerously skipping permissions. Default: false (automatically select recommended options, or the first option if none is marked). Self-learning and plan-mode exceptions still apply.',
         ),
       ...(feature('TRANSCRIPT_CLASSIFIER')
         ? {

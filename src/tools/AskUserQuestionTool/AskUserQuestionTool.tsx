@@ -1,4 +1,3 @@
-import { c as _c } from "react/compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { getAllowedChannels, getQuestionPreviewFormat } from 'src/bootstrap/state.js';
@@ -10,6 +9,7 @@ import { Box, Text } from '../../ink.js';
 import type { Tool } from '../../Tool.js';
 import { buildTool, type ToolDef } from '../../Tool.js';
 import { lazySchema } from '../../utils/lazySchema.js';
+import { shouldAutoAnswerUserQuestions } from '../../utils/permissions/permissions.js';
 import { ASK_USER_QUESTION_TOOL_CHIP_WIDTH, ASK_USER_QUESTION_TOOL_NAME, ASK_USER_QUESTION_TOOL_PROMPT, DESCRIPTION, PREVIEW_FEATURE_PROMPT } from './prompt.js';
 const questionOptionSchema = lazySchema(() => z.object({
   label: z.string().describe('Distinct 1-5 word option label'),
@@ -69,7 +69,8 @@ type InputSchema = ReturnType<typeof inputSchema>;
 const outputSchema = lazySchema(() => z.object({
   questions: z.array(questionSchema()).describe('Questions asked'),
   answers: z.record(z.string(), z.string()).describe('Answers keyed by question; multi-select values are comma-separated'),
-  annotations: annotationsSchema()
+  annotations: annotationsSchema(),
+  autoAnsweredQuestions: z.array(z.string()).optional().describe('Questions automatically answered in bypass mode, not by the user')
 }));
 type OutputSchema = ReturnType<typeof outputSchema>;
 
@@ -80,31 +81,21 @@ export const _sdkOutputSchema = outputSchema;
 export type Question = z.infer<ReturnType<typeof questionSchema>>;
 export type QuestionOption = z.infer<ReturnType<typeof questionOptionSchema>>;
 export type Output = z.infer<OutputSchema>;
-function AskUserQuestionResultMessage(t0) {
-  const $ = _c(3);
-  const {
-    answers
-  } = t0;
-  let t1;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = <Box flexDirection="row"><Text color={getModeColor("default")}>{BLACK_CIRCLE} </Text><Text>User answered Claude's questions:</Text></Box>;
-    $[0] = t1;
-  } else {
-    t1 = $[0];
-  }
-  let t2;
-  if ($[1] !== answers) {
-    t2 = <Box flexDirection="column" marginTop={1}>{t1}<MessageResponse><Box flexDirection="column">{Object.entries(answers).map(_temp)}</Box></MessageResponse></Box>;
-    $[1] = answers;
-    $[2] = t2;
-  } else {
-    t2 = $[2];
-  }
-  return t2;
-}
-function _temp(t0) {
-  const [questionText, answer] = t0;
-  return <Text key={questionText} color="inactive">· {questionText} → {answer}</Text>;
+function AskUserQuestionResultMessage({
+  answers,
+  autoAnsweredQuestions
+}: Pick<Output, 'answers' | 'autoAnsweredQuestions'>) {
+  return <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="row">
+      <Text color={getModeColor('default')}>{BLACK_CIRCLE} </Text>
+      <Text>{autoAnsweredQuestions?.length ? 'Question answers (bypass mode):' : "User answered Tau's questions:"}</Text>
+    </Box>
+    <MessageResponse><Box flexDirection="column">
+      {Object.entries(answers).map(([questionText, answer]) =>
+        <Text key={questionText} color="inactive">· {questionText} → {answer}{autoAnsweredQuestions?.includes(questionText) ? ' (automatically selected)' : ''}</Text>
+      )}
+    </Box></MessageResponse>
+  </Box>;
 }
 export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
   name: ASK_USER_QUESTION_TOOL_NAME,
@@ -193,9 +184,10 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
     return null;
   },
   renderToolResultMessage({
-    answers
+    answers,
+    autoAnsweredQuestions
   }, _toolUseID) {
-    return <AskUserQuestionResultMessage answers={answers} />;
+    return <AskUserQuestionResultMessage answers={answers} autoAnsweredQuestions={autoAnsweredQuestions} />;
   },
   renderToolUseRejectedMessage() {
     return <Box flexDirection="row" marginTop={1}>
@@ -210,11 +202,31 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
     questions,
     answers = {},
     annotations
-  }, _context) {
+  }, context) {
+    const autoAnsweredQuestions: string[] = [];
+    if (shouldAutoAnswerUserQuestions(context.getAppState().toolPermissionContext)) {
+      for (const question of questions) {
+        // Preserve supplied answers, including an explicitly empty response.
+        if (Object.hasOwn(answers, question.question)) continue;
+        const recommended = question.options.filter(option => /\(\s*recommended\s*\)\s*$/i.test(option.label));
+        const selected = recommended.length > 0
+          ? (question.multiSelect ? recommended : recommended.slice(0, 1))
+          : question.options.slice(0, 1);
+        answers = { ...answers, [question.question]: selected.map(option => option.label).join(', ') };
+        autoAnsweredQuestions.push(question.question);
+        // Match the dialog's preview handling without fabricating user notes.
+        if (!question.multiSelect && selected[0]?.preview) {
+          annotations = { ...annotations, [question.question]: {
+            ...annotations?.[question.question], preview: selected[0].preview
+          } };
+        }
+      }
+    }
     return {
       data: {
         questions,
         answers,
+        ...(autoAnsweredQuestions.length > 0 && { autoAnsweredQuestions }),
         ...(annotations && {
           annotations
         })
@@ -223,11 +235,16 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
   },
   mapToolResultToToolResultBlockParam({
     answers,
-    annotations
+    annotations,
+    autoAnsweredQuestions
   }, toolUseID) {
+    const hasAutomaticAnswers = Boolean(autoAnsweredQuestions?.length);
     const answersText = Object.entries(answers).map(([questionText, answer]) => {
       const annotation = annotations?.[questionText];
       const parts = [`"${questionText}"="${answer}"`];
+      if (hasAutomaticAnswers) {
+        parts.push(autoAnsweredQuestions?.includes(questionText) ? '(automatically selected)' : '(provided answer)');
+      }
       if (annotation?.preview) {
         parts.push(`selected preview:\n${annotation.preview}`);
       }
@@ -238,7 +255,9 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
     }).join(', ');
     return {
       type: 'tool_result',
-      content: `User has answered your questions: ${answersText}. You can now continue with the user's answers in mind.`,
+      content: hasAutomaticAnswers
+        ? `Bypass mode automatically selected marked recommendations, or the first option when none was marked: ${answersText}. Treat automatic selections as assumptions, not user-provided answers.`
+        : `User has answered your questions: ${answersText}. You can now continue with the user's answers in mind.`,
       tool_use_id: toolUseID
     };
   }
