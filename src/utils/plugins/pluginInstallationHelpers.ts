@@ -510,6 +510,7 @@ export async function installResolvedPlugin({
             const cached = await cachePlugin(source, {
               manifest: info.entry,
               temporary: true,
+              marketplaceRoot: typeof source === 'string' ? info.marketplaceInstallLocation : undefined,
             })
             temporaryPaths.add(cached.path)
             candidate = { key, cached, selected }

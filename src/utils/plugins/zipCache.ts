@@ -32,16 +32,20 @@
 import { randomBytes } from 'crypto'
 import {
   chmod,
+  copyFile,
   lstat,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'fs/promises'
 import { tmpdir } from 'os'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, relative, resolve } from 'path'
+import { copyDir, isWithinDirectory } from './pluginFiles.js'
 import { logForDebugging } from '../debug.js'
 import { parseZipModes, unzipFile } from '../dxt/zip.js'
 import { isEnvTruthy } from '../envUtils.js'
@@ -206,7 +210,7 @@ type ZipEntry = [Uint8Array, { os: number; attrs: number }]
 
 /**
  * Create a ZIP archive from a directory.
- * Resolves symlinks to actual file contents (replaces symlinks with real data).
+ * Preserves internal symlinks and omits links outside the cache directory.
  * Stores Unix mode bits in external_attr so extractZipToDirectory can restore
  * +x — otherwise the round-trip (git clone → zip → extract) loses exec bits.
  *
@@ -289,21 +293,22 @@ async function collectFilesForZip(
       continue
     }
 
-    // Skip symlinked directories (follow symlinked files)
     if (fileStat.isSymbolicLink()) {
       try {
-        const targetStat = await stat(fullPath)
-        if (targetStat.isDirectory()) {
-          continue
-        }
-        // Symlinked file — read its contents below
-        fileStat = targetStat
+        const root = await realpath(baseDir)
+        const target = await realpath(fullPath)
+        if (!isWithinDirectory(root, target)) continue
+        const cachedTarget = join(baseDir, relative(root, target))
+        const link = relative(dirname(fullPath), cachedTarget).replaceAll('\\', '/') || '.'
+        files[relPath] = [new TextEncoder().encode(link), { os: 3, attrs: 0o120777 << 16 }]
       } catch {
-        continue // broken symlink
+        // Broken links have no content to cache.
       }
+      continue
     }
 
     if (fileStat.isDirectory()) {
+      files[`${relPath}/`] = [new Uint8Array(), { os: 3, attrs: (fileStat.mode & 0xffff) << 16 }]
       await collectFilesForZip(baseDir, relPath, files, visited)
     } else if (fileStat.isFile()) {
       try {
@@ -340,7 +345,12 @@ export async function extractZipToDirectory(
 
   await getFsImplementation().mkdir(targetDir)
 
+  const links: Array<[string, Uint8Array]> = []
   for (const [relPath, data] of Object.entries(files)) {
+    if ((modes[relPath]! & 0o170000) === 0o120000) {
+      links.push([relPath, data])
+      continue
+    }
     // Skip directory entries (trailing slash)
     if (relPath.endsWith('/')) {
       await getFsImplementation().mkdir(join(targetDir, relPath))
@@ -355,6 +365,27 @@ export async function extractZipToDirectory(
       // Swallow EPERM/ENOTSUP (NFS root_squash, some FUSE mounts) — losing +x
       // is the pre-PR behavior and better than aborting mid-extraction.
       await chmod(fullPath, mode & 0o777).catch(() => {})
+    }
+  }
+
+  // Materialize regular files first; never write archive data through a link.
+  const root = await realpath(targetDir)
+  for (const [relPath, data] of links) {
+    const path = join(targetDir, relPath)
+    const link = new TextDecoder().decode(data)
+    const target = resolve(dirname(path), link)
+    if (!isWithinDirectory(resolve(targetDir), target)) throw new Error('Plugin ZIP link escapes cache')
+    await getFsImplementation().mkdir(dirname(path))
+    if (!isWithinDirectory(root, await realpath(dirname(path)))) throw new Error('Plugin ZIP link parent escapes cache')
+    const resolved = await realpath(target)
+    if (!isWithinDirectory(root, resolved)) throw new Error('Plugin ZIP link target escapes cache')
+    const info = await stat(resolved)
+    try {
+      await symlink(relative(dirname(path), target) || '.', path, info.isDirectory() ? 'dir' : 'file')
+    } catch (error) {
+      if (!['EPERM', 'ENOTSUP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+      if (info.isDirectory()) await copyDir(resolved, path)
+      else await copyFile(resolved, path)
     }
   }
 

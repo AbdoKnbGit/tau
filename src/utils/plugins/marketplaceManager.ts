@@ -19,6 +19,7 @@
  */
 
 import axios from 'axios'
+import { downloadMarketplaceJson } from './marketplaceDownload.js'
 import { writeFile } from 'fs/promises'
 import isEqual from 'lodash-es/isEqual.js'
 import memoize from 'lodash-es/memoize.js'
@@ -1324,10 +1325,7 @@ async function cacheMarketplaceFromUrl(
   let response
   const fetchStarted = performance.now()
   try {
-    response = await axios.get(url, {
-      timeout: 10000,
-      headers,
-    })
+    response = await downloadMarketplaceJson(url, headers)
   } catch (error) {
     logPluginFetch(
       'marketplace_url',

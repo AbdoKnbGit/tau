@@ -33,19 +33,16 @@
  */
 
 import {
-  copyFile,
   readdir,
   readFile,
-  readlink,
   realpath,
   rename,
   rm,
   rmdir,
   stat,
-  symlink,
 } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
-import { basename, dirname, join, relative, resolve, sep } from 'path'
+import { basename, dirname, join, resolve, sep } from 'path'
 import { getInlinePlugins, getOriginalCwd } from '../../bootstrap/state.js'
 import {
   BUILTIN_MARKETPLACE_NAME,
@@ -73,7 +70,7 @@ import { getFsImplementation } from '../fsOperations.js'
 import { gitExe } from '../git.js'
 import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
-import { getSettings_DEPRECATED } from '../settings/settings.js'
+import { getSettings_DEPRECATED, getSettingsForSource } from '../settings/settings.js'
 import {
   clearPluginSettingsBase,
   getPluginSettingsBase,
@@ -89,6 +86,9 @@ import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { checkGitAvailable } from './gitAvailability.js'
 import { getInMemoryInstalledPlugins } from './installedPluginsManager.js'
 import { preparePluginHookFile, preparePluginManifestHooks, type PluginHookIssue } from './hookCompatibility.js'
+import { copyDir } from './pluginFiles.js'
+export { copyDir } from './pluginFiles.js'
+import { assignPluginHookOwners } from './hookOwnership.js'
 import { getManagedPluginNames } from './managedPlugins.js'
 import {
   formatSourceForDisplay,
@@ -289,67 +289,6 @@ export async function resolvePluginPath(
 }
 
 /**
- * Recursively copy a directory.
- * Exported for testing purposes.
- */
-export async function copyDir(src: string, dest: string): Promise<void> {
-  await getFsImplementation().mkdir(dest)
-
-  const entries = await readdir(src, { withFileTypes: true })
-
-  for (const entry of entries) {
-    const srcPath = join(src, entry.name)
-    const destPath = join(dest, entry.name)
-
-    if (entry.isDirectory()) {
-      await copyDir(srcPath, destPath)
-    } else if (entry.isFile()) {
-      await copyFile(srcPath, destPath)
-    } else if (entry.isSymbolicLink()) {
-      const linkTarget = await readlink(srcPath)
-
-      // Resolve the symlink to get the actual target path
-      // This prevents circular symlinks when src and dest overlap (e.g., via symlink chains)
-      let resolvedTarget: string
-      try {
-        resolvedTarget = await realpath(srcPath)
-      } catch {
-        // Broken symlink - copy the raw link target as-is
-        await symlink(linkTarget, destPath)
-        continue
-      }
-
-      // Resolve the source directory to handle symlinked source dirs
-      let resolvedSrc: string
-      try {
-        resolvedSrc = await realpath(src)
-      } catch {
-        resolvedSrc = src
-      }
-
-      // Check if target is within the source tree (using proper path prefix matching)
-      const srcPrefix = resolvedSrc.endsWith(sep)
-        ? resolvedSrc
-        : resolvedSrc + sep
-      if (
-        resolvedTarget.startsWith(srcPrefix) ||
-        resolvedTarget === resolvedSrc
-      ) {
-        // Target is within source tree - create relative symlink that preserves
-        // the same structure in the destination
-        const targetRelativeToSrc = relative(resolvedSrc, resolvedTarget)
-        const destTargetPath = join(dest, targetRelativeToSrc)
-        const relativeLinkPath = relative(dirname(destPath), destTargetPath)
-        await symlink(relativeLinkPath, destPath)
-      } else {
-        // Target is outside source tree - use absolute resolved path
-        await symlink(resolvedTarget, destPath)
-      }
-    }
-  }
-}
-
-/**
  * Copy plugin files to versioned cache directory.
  *
  * For local plugins: Uses entry.source from marketplace.json as the single source of truth.
@@ -421,7 +360,7 @@ export async function copyPluginToVersionedCache(
       `Copying source directory ${entry.source} for plugin ${pluginId}`,
     )
     try {
-      await copyDir(sourceDir, cachePath)
+      await copyDir(sourceDir, cachePath, marketplaceDir)
     } catch (e: unknown) {
       // Only remap ENOENT from the top-level sourceDir itself — nested ENOENTs
       // from recursive copyDir (broken symlinks, raced deletes) should preserve
@@ -833,7 +772,7 @@ export async function installFromGitSubdir(
     // message that references the source path, not internal temp dirs.
     const resolvedSubdir = validatePathWithinBase(cloneDir, subdirPath)
     try {
-      await rename(resolvedSubdir, targetPath)
+      await copyDir(resolvedSubdir, targetPath)
     } catch (e: unknown) {
       if (isENOENT(e)) {
         throw new Error(
@@ -861,12 +800,13 @@ export async function installFromGitSubdir(
 async function installFromLocal(
   sourcePath: string,
   targetPath: string,
+  marketplaceRoot?: string,
 ): Promise<void> {
   if (!(await pathExists(sourcePath))) {
     throw new Error(`Source path does not exist: ${sourcePath}`)
   }
 
-  await copyDir(sourcePath, targetPath)
+  await copyDir(sourcePath, targetPath, marketplaceRoot)
 
   const gitPath = join(targetPath, '.git')
   await rm(gitPath, { recursive: true, force: true })
@@ -918,6 +858,7 @@ export async function cachePlugin(
   options?: {
     manifest?: PluginManifest
     temporary?: boolean
+    marketplaceRoot?: string
   },
 ): Promise<{ path: string; manifest: PluginManifest; gitCommitSha?: string }> {
   const cachePath = getPluginCachePath()
@@ -938,7 +879,7 @@ export async function cachePlugin(
     shouldCleanup = true
 
     if (typeof source === 'string') {
-      await installFromLocal(source, tempPath)
+      await installFromLocal(source, tempPath, options?.marketplaceRoot)
     } else {
       switch (source.source) {
         case 'npm':
@@ -976,6 +917,18 @@ export async function cachePlugin(
           throw new Error('Python package plugins are not yet supported')
         default:
           throw new Error(`Unsupported plugin source type`)
+      }
+      if (source.source === 'github' || (source.source === 'url' && !source.path)) {
+        // Direct Git installs otherwise rename the clone straight into cache,
+        // bypassing the same link boundaries used by local and ZIP installs.
+        const normalizedPath = `${tempPath}-normalized`
+        try {
+          await copyDir(tempPath, normalizedPath)
+          await rm(tempPath, { recursive: true, force: true })
+          await rename(normalizedPath, tempPath)
+        } finally {
+          await rm(normalizedPath, { recursive: true, force: true })
+        }
       }
     }
   } catch (error) {
@@ -1965,7 +1918,7 @@ async function loadPluginsFromMarketplaces({
       if (!isValidFormat || value === undefined) return false
       // Skip built-in plugins — handled separately by getBuiltinPlugins()
       const { marketplace } = parsePluginIdentifier(key)
-      return marketplace !== BUILTIN_MARKETPLACE_NAME
+      return ![BUILTIN_MARKETPLACE_NAME, 'inline', 'skills-dir', 'synced'].includes(marketplace ?? '')
     },
   )
 
@@ -2992,7 +2945,7 @@ async function finishLoadingPluginFromPath(
  * Load session-only plugins from --plugin-dir CLI flag.
  *
  * These plugins are loaded directly without going through the marketplace system.
- * They appear with source='plugin-name@inline' and are always enabled for the current session.
+ * They use the manifest's default and the session's merged enablement settings.
  *
  * @param sessionPluginPaths - Array of plugin directory paths from CLI
  * @returns LoadedPlugin objects and any errors encountered
@@ -3007,7 +2960,26 @@ async function loadSessionOnlyPlugins(
   const plugins: LoadedPlugin[] = []
   const errors: PluginError[] = []
 
-  for (const [index, pluginPath] of sessionPluginPaths.entries()) {
+  const paths: string[] = []
+  for (const input of sessionPluginPaths) {
+    const root = resolve(input)
+    // A parent folder can group plugins without becoming a plugin itself.
+    const components = ['.claude-plugin/plugin.json', 'plugin.json', 'commands', 'skills', 'agents', 'hooks', '.mcp.json']
+    if (!(await Promise.all(components.map(p => pathExists(join(root, p))))).some(Boolean)) {
+      try {
+        const children = (await readdir(root, { withFileTypes: true })).filter(e => e.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))
+        const candidates = await Promise.all(children.map(async e =>
+          await pathExists(join(root, e.name, '.claude-plugin', 'plugin.json')) ? join(root, e.name) : null))
+        if (candidates.some(Boolean)) {
+          paths.push(...candidates.filter((p): p is string => p !== null))
+          continue
+        }
+      } catch { /* Report inaccessible or missing paths below. */ }
+    }
+    paths.push(root)
+  }
+  const settings = getSettings_DEPRECATED().enabledPlugins ?? {}
+  for (const [index, pluginPath] of [...new Set(paths)].entries()) {
     try {
       const resolvedPath = resolve(pluginPath)
 
@@ -3029,13 +3001,16 @@ async function loadSessionOnlyPlugins(
       const { plugin, errors: pluginErrors } = await createPluginFromPath(
         resolvedPath,
         `${dirName}@inline`, // temporary, will be updated after we know the real name
-        true, // always enabled
+        true,
         dirName,
       )
 
       // Update source to use the actual plugin name from manifest
       plugin.source = `${plugin.name}@inline`
       plugin.repository = `${plugin.name}@inline`
+      const preference = settings[plugin.source]
+      plugin.enabled = typeof preference === 'boolean' ? preference :
+        preference !== undefined || (plugin.manifest.defaultEnabled ?? true)
 
       plugins.push(plugin)
       errors.push(...pluginErrors)
@@ -3085,7 +3060,10 @@ export function mergePluginSources(sources: {
   managedNames?: Set<string> | null
 }): { plugins: LoadedPlugin[]; errors: PluginError[] } {
   const errors: PluginError[] = []
-  const managed = sources.managedNames
+  const managed = new Set(sources.managedNames ?? [])
+  for (const plugin of sources.marketplace) {
+    if (managed.has(parsePluginIdentifier(plugin.source).name)) managed.add(plugin.name)
+  }
 
   // Managed settings win over --plugin-dir. Drop session plugins whose
   // name appears in policySettings.enabledPlugins (whether force-enabled
@@ -3093,12 +3071,7 @@ export function mergePluginSources(sources: {
   // bypass). Surface an error so the user knows why their dev copy was
   // ignored.
   //
-  // NOTE: managedNames contains the pluginId prefix (entry.name), which is
-  // expected to equal manifest.name by convention (schema description at
-  // schemas.ts PluginMarketplaceEntry.name). If a marketplace publishes a
-  // plugin where entry.name ≠ manifest.name, this guard will silently miss —
-  // but that's a marketplace misconfiguration that breaks other things too
-  // (e.g., ManagePlugins constructs pluginIds from manifest.name).
+  // Include both the installation ID and the loaded manifest namespace.
   const sessionPlugins = sources.session.filter(p => {
     if (managed?.has(p.name)) {
       logForDebugging(
@@ -3116,7 +3089,7 @@ export function mergePluginSources(sources: {
     return true
   })
 
-  const sessionNames = new Set(sessionPlugins.map(p => p.name))
+  const sessionNames = new Set(sessionPlugins.filter(p => p.enabled).map(p => p.name))
   const marketplacePlugins = sources.marketplace.filter(p => {
     if (sessionNames.has(p.name)) {
       logForDebugging(
@@ -3266,6 +3239,7 @@ async function assemblePluginLoadResult(
     if (demoted.has(p.source)) p.enabled = false
   }
   allErrors.push(...depErrors)
+  allErrors.push(...assignPluginHookOwners(allPlugins, getSettingsForSource('policySettings')?.enabledPlugins))
 
   const enabledPlugins = allPlugins.filter(p => p.enabled)
   logForDebugging(

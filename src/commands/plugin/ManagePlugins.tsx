@@ -233,7 +233,7 @@ function PluginComponentsDisplay({
         }
         const marketplaceData = await getMarketplace(marketplace);
         // Find the plugin entry in the array
-        const pluginEntry = marketplaceData.plugins.find(p => p.name === plugin.name);
+        const pluginEntry = marketplaceData.plugins.find(p => p.name === parsePluginIdentifier(plugin.source).name);
         if (pluginEntry) {
           // Combine commands from both sources
           const commandPathList = [];
@@ -327,7 +327,7 @@ function PluginComponentsDisplay({
       }
     }
     void loadComponents();
-  }, [plugin.name, plugin.commandsPath, plugin.commandsPaths, plugin.agentsPath, plugin.agentsPaths, plugin.skillsPath, plugin.skillsPaths, plugin.hooksConfig, plugin.mcpServers, marketplace]);
+  }, [plugin.name, plugin.commandsPath, plugin.commandsPaths, plugin.agentsPath, plugin.agentsPaths, plugin.skillsPath, plugin.skillsPaths, plugin.hooksConfig, plugin.mcpServers, plugin.source, marketplace]);
   if (loading) {
     return null; // Don't show loading state for cleaner UI
   }
@@ -390,8 +390,7 @@ async function checkIfLocalPlugin(pluginName: string, marketplaceName: string): 
  */
 export function filterManagedDisabledPlugins(plugins: LoadedPlugin[]): LoadedPlugin[] {
   return plugins.filter(plugin => {
-    const marketplace = plugin.source.split('@')[1] || 'local';
-    return !isPluginBlockedByPolicy(`${plugin.name}@${marketplace}`);
+    return !isPluginBlockedByPolicy(plugin.source);
   });
 }
 export function ManagePlugins({
@@ -557,9 +556,9 @@ export function ManagePlugins({
     };
     const pluginsWithChildren: PluginWithChildren[] = [];
     for (const state of pluginStates) {
-      const pluginId = `${state.plugin.name}@${state.marketplace}`;
-      const isEnabled = mergedSettings?.enabledPlugins?.[pluginId] !== false;
-      const errors = pluginErrors.filter(e => 'plugin' in e && e.plugin === state.plugin.name || e.source === pluginId || e.source.startsWith(`${state.plugin.name}@`));
+      const pluginId = state.plugin.source;
+      const isEnabled = (mergedSettings?.enabledPlugins?.[pluginId] ?? state.plugin.manifest.defaultEnabled) !== false;
+      const errors = pluginErrors.filter(e => e.source === pluginId);
 
       // Built-in plugins use 'builtin' scope; others look up from V2 data.
       const originalScope = state.plugin.isBuiltin ? 'builtin' : state.scope || 'user';
@@ -842,7 +841,7 @@ export function ManagePlugins({
           const marketplace_1 = jsonParse(content);
           const entry_0 = marketplace_1.plugins?.find((p: {
             name: string;
-          }) => p.name === selectedPlugin!.plugin.name);
+          }) => p.name === parsePluginIdentifier(selectedPlugin!.plugin.source).name);
           if (entry_0?.mcpServers) {
             const spec = entry_0.mcpServers;
             hasMcpb = typeof spec === 'string' && isMcpbSource(spec) || Array.isArray(spec) && spec.some((s_3: unknown) => typeof s_3 === 'string' && isMcpbSource(s_3));
@@ -883,8 +882,8 @@ export function ManagePlugins({
         const marketplaceInfos: MarketplaceInfo[] = [];
         for (const [name, plugins] of Object.entries(pluginsByMarketplace)) {
           const enabledCount = count(plugins, p => {
-            const pluginId = `${p.name}@${name}`;
-            return mergedSettings?.enabledPlugins?.[pluginId] !== false;
+            const pluginId = p.source;
+            return (mergedSettings?.enabledPlugins?.[pluginId] ?? p.manifest.defaultEnabled) !== false;
           });
           const disabledCount = plugins.length - enabledCount;
           marketplaceInfos.push({
@@ -907,7 +906,7 @@ export function ManagePlugins({
         const allStates: PluginState[] = [];
         for (const marketplace of marketplaceInfos) {
           for (const plugin of marketplace.installedPlugins) {
-            const pluginId = `${plugin.name}@${marketplace.name}`;
+            const pluginId = plugin.source;
             // Built-in plugins don't have V2 install entries — skip the lookup.
             const scope = plugin.isBuiltin ? 'builtin' : getPluginInstallationFromV2(pluginId).scope;
             allStates.push({
@@ -945,10 +944,10 @@ export function ManagePlugins({
 
       // First check successfully loaded plugins
       for (const marketplace_2 of marketplacesToSearch) {
-        const plugin = marketplace_2.installedPlugins.find(p_0 => p_0.name === targetName);
+        const plugin = marketplace_2.installedPlugins.find(p_0 => parsePluginIdentifier(p_0.source).name === targetName);
         if (plugin) {
           // Get scope from V2 data for proper operation handling
-          const pluginId_2 = `${plugin.name}@${marketplace_2.name}`;
+          const pluginId_2 = plugin.source;
           const {
             scope: scope_4
           } = getPluginInstallationFromV2(pluginId_2);
@@ -1014,7 +1013,7 @@ export function ManagePlugins({
     setIsProcessing(true);
     setProcessError(null);
     try {
-      const pluginId_3 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
+      const pluginId_3 = selectedPlugin.plugin.source;
       let reverseDependents: string[] | undefined;
 
       // enable/disable omit scope — pluginScope is the install scope from
@@ -1109,7 +1108,7 @@ export function ManagePlugins({
       // 'enable'`: install enables on install, so the menu shows "Disable"
       // first. PluginOptionsFlow itself checks getUnconfiguredOptions — if
       // nothing needs filling, it calls onDone('skipped') immediately.
-      const pluginIdNow = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
+      const pluginIdNow = selectedPlugin.plugin.source;
       const settingsAfter = getSettings_DEPRECATED();
       const enabledAfter = settingsAfter?.enabledPlugins?.[pluginIdNow] !== false;
       if (enabledAfter) {
@@ -1161,10 +1160,10 @@ export function ManagePlugins({
     const item_7 = filteredItems[selectedIndex];
     if (item_7?.type === 'flagged-plugin') return;
     if (item_7?.type === 'plugin') {
-      const pluginId_4 = `${item_7.plugin.name}@${item_7.marketplace}`;
+      const pluginId_4 = item_7.plugin.source;
       const mergedSettings_0 = getSettings_DEPRECATED();
       const currentPending = pendingToggles.get(pluginId_4);
-      const isEnabled_0 = mergedSettings_0?.enabledPlugins?.[pluginId_4] !== false;
+      const isEnabled_0 = (mergedSettings_0?.enabledPlugins?.[pluginId_4] ?? item_7.plugin.manifest.defaultEnabled) !== false;
       const pluginScope_0 = item_7.scope;
       const isBuiltin_0 = pluginScope_0 === 'builtin';
       if (isBuiltin_0 || isInstallableScope(pluginScope_0)) {
@@ -1212,7 +1211,7 @@ export function ManagePlugins({
     if (selectedIndex >= filteredItems.length) return;
     const item_8 = filteredItems[selectedIndex];
     if (item_8?.type === 'plugin') {
-      const state_0 = pluginStates.find(s_4 => s_4.plugin.name === item_8.plugin.name && s_4.marketplace === item_8.marketplace);
+      const state_0 = pluginStates.find(s_4 => s_4.plugin.source === item_8.plugin.source && s_4.marketplace === item_8.marketplace);
       if (state_0) {
         setSelectedPlugin(state_0);
         setViewState('plugin-details');
@@ -1297,8 +1296,8 @@ export function ManagePlugins({
   const detailsMenuItems = React.useMemo(() => {
     if (viewState !== 'plugin-details' || !selectedPlugin) return [];
     const mergedSettings_1 = getSettings_DEPRECATED();
-    const pluginId_5 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
-    const isEnabled_1 = mergedSettings_1?.enabledPlugins?.[pluginId_5] !== false;
+    const pluginId_5 = selectedPlugin.plugin.source;
+    const isEnabled_1 = (mergedSettings_1?.enabledPlugins?.[pluginId_5] ?? selectedPlugin.plugin.manifest.defaultEnabled) !== false;
     const isBuiltin_1 = selectedPlugin.marketplace === 'builtin';
     const menuItems: Array<{
       label: string;
@@ -1315,13 +1314,13 @@ export function ManagePlugins({
         label: selectedPlugin.pendingUpdate ? 'Unmark for update' : 'Mark for update',
         action: async () => {
           try {
-            const localError = await checkIfLocalPlugin(selectedPlugin.plugin.name, selectedPlugin.marketplace);
+            const localError = await checkIfLocalPlugin(parsePluginIdentifier(selectedPlugin.plugin.source).name, selectedPlugin.marketplace);
             if (localError) {
               setProcessError(localError);
               return;
             }
             const newStates = [...pluginStates];
-            const index = newStates.findIndex(s_5 => s_5.plugin.name === selectedPlugin.plugin.name && s_5.marketplace === selectedPlugin.marketplace);
+            const index = newStates.findIndex(s_5 => s_5.plugin.source === selectedPlugin.plugin.source && s_5.marketplace === selectedPlugin.marketplace);
             if (index !== -1) {
               newStates[index]!.pendingUpdate = !selectedPlugin.pendingUpdate;
               setPluginStates(newStates);
@@ -1358,7 +1357,7 @@ export function ManagePlugins({
                 setIsLoadingConfig(false);
                 return;
               }
-              const pluginId_6 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
+              const pluginId_6 = selectedPlugin.plugin.source;
               const result_1 = await loadMcpbFile(mcpbPath, selectedPlugin.plugin.path, pluginId_6, undefined, undefined, true);
               if ('status' in result_1 && result_1.status === 'needs-config') {
                 setConfigNeeded(result_1);
@@ -1505,7 +1504,7 @@ export function ManagePlugins({
       if (!selectedPlugin) return;
       setIsProcessing(true);
       setProcessError(null);
-      const pluginId_8 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
+      const pluginId_8 = selectedPlugin.plugin.source;
       // Write `false` directly — disablePluginOp's cross-scope guard would
       // reject this (plugin isn't in localSettings yet; the override IS the
       // point).
@@ -1548,7 +1547,7 @@ export function ManagePlugins({
   // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw y/n/esc; Enter must not trigger destructive delete
   useInput((input, key) => {
     if (!selectedPlugin) return;
-    const pluginId_9 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
+    const pluginId_9 = selectedPlugin.plugin.source;
     const pluginScope_2 = selectedPlugin.scope;
     // Dialog is only reachable from the uninstall case (which guards on
     // isBuiltin), but TS can't track that across viewState transitions.
@@ -1629,7 +1628,7 @@ export function ManagePlugins({
       </Box>;
   }
   if (typeof viewState === 'object' && viewState.type === 'plugin-options' && selectedPlugin) {
-    const pluginId_10 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
+    const pluginId_10 = selectedPlugin.plugin.source;
     function finish(msg: string): void {
       setResult(msg);
       // Plugin is enabled regardless of whether config was saved or
@@ -1659,7 +1658,7 @@ export function ManagePlugins({
 
   // Configure options (from the Manage menu)
   if (typeof viewState === 'object' && viewState.type === 'configuring-options' && selectedPlugin) {
-    const pluginId_11 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
+    const pluginId_11 = selectedPlugin.plugin.source;
     return <PluginOptionsDialog title={`Configure ${selectedPlugin.plugin.name}`} subtitle="Plugin options" configSchema={viewState.schema} initialValues={loadPluginOptions(pluginId_11)} onSave={values => {
       try {
         savePluginOptions(pluginId_11, values, viewState.schema);
@@ -1674,7 +1673,7 @@ export function ManagePlugins({
 
   // Configuration view
   if (viewState === 'configuring' && configNeeded && selectedPlugin) {
-    const pluginId_12 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
+    const pluginId_12 = selectedPlugin.plugin.source;
     async function handleSave(config: UserConfigValues) {
       if (!configNeeded || !selectedPlugin) return;
       try {
@@ -1794,7 +1793,7 @@ export function ManagePlugins({
         <Box marginTop={1} flexDirection="column">
           <Text>Delete it along with the plugin?</Text>
           <Text dimColor>
-            {pluginDataDirPath(`${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`)}
+            {pluginDataDirPath(selectedPlugin.plugin.source)}
           </Text>
         </Box>
         {processError && <Box marginTop={1}>
@@ -1812,11 +1811,11 @@ export function ManagePlugins({
   // Plugin details view
   if (viewState === 'plugin-details' && selectedPlugin) {
     const mergedSettings_2 = getSettings_DEPRECATED(); // Use merged settings to respect all layers
-    const pluginId_13 = `${selectedPlugin.plugin.name}@${selectedPlugin.marketplace}`;
-    const isEnabled_2 = mergedSettings_2?.enabledPlugins?.[pluginId_13] !== false;
+    const pluginId_13 = selectedPlugin.plugin.source;
+    const isEnabled_2 = (mergedSettings_2?.enabledPlugins?.[pluginId_13] ?? selectedPlugin.plugin.manifest.defaultEnabled) !== false;
 
     // Compute plugin errors section
-    const filteredPluginErrors = pluginErrors.filter(e_1 => 'plugin' in e_1 && e_1.plugin === selectedPlugin.plugin.name || e_1.source === pluginId_13 || e_1.source.startsWith(`${selectedPlugin.plugin.name}@`));
+    const filteredPluginErrors = pluginErrors.filter(e_1 => e_1.source === pluginId_13);
     const pluginErrorsSection = filteredPluginErrors.length === 0 ? null : <Box flexDirection="column" marginBottom={1}>
           <Text bold color="error">
             {filteredPluginErrors.length}{' '}

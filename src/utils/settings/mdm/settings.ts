@@ -1,3 +1,4 @@
+import { normalizeMarketplaceAliases } from '../marketplaceAliases.js'
 /**
  * MDM (Mobile Device Management) profile enforcement for Tau managed settings.
  *
@@ -190,7 +191,7 @@ export function parseCommandOutputAsSettings(
   }
 
   const ruleWarnings = filterInvalidPermissionRules(data, sourcePath)
-  const parseResult = SettingsSchema().safeParse(data)
+  const parseResult = SettingsSchema().safeParse(normalizeMarketplaceAliases(data))
   if (!parseResult.success) {
     const errors = formatZodError(parseResult.error, sourcePath)
     return { settings: {}, errors: [...ruleWarnings, ...errors] }

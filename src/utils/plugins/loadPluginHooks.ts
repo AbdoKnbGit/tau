@@ -73,7 +73,7 @@ export const loadPluginHooks = memoize(async (): Promise<void> => {
 
   // Process each enabled plugin
   for (const plugin of enabled) {
-    if (!plugin.hooksConfig) {
+    if (!plugin.hooksConfig || plugin.hooksSuppressedBy) {
       continue
     }
 
@@ -132,7 +132,7 @@ export async function pruneRemovedPluginHooks(): Promise<void> {
   // memoize in test/preload.ts beforeEach (which clears registeredHooks).
   if (!getRegisteredHooks()) return
   const { enabled } = await loadAllPluginsCacheOnly()
-  const enabledRoots = new Set(enabled.map(p => p.path))
+  const enabledIds = new Set(enabled.filter((p: LoadedPlugin) => !p.hooksSuppressedBy).map((p: LoadedPlugin) => p.source))
 
   // Re-read after the await: a concurrent loadPluginHooks() (hot-reload)
   // could have swapped STATE.registeredHooks during the gap. Holding the
@@ -140,7 +140,7 @@ export async function pruneRemovedPluginHooks(): Promise<void> {
   const current = getRegisteredHooks()
   if (!current) return
 
-  // Collect plugin hooks whose pluginRoot is still enabled, then swap via
+  // Collect plugin hooks whose installation still owns its hooks, then swap via
   // the existing clear+register pair (same atomic-pair pattern as
   // loadPluginHooks above). Callback hooks are preserved by
   // clearRegisteredPluginHooks; we only need to re-register survivors.
@@ -148,7 +148,7 @@ export async function pruneRemovedPluginHooks(): Promise<void> {
   for (const [event, matchers] of Object.entries(current)) {
     const kept = matchers.filter(
       (m): m is PluginHookMatcher =>
-        'pluginRoot' in m && enabledRoots.has(m.pluginRoot),
+        'pluginRoot' in m && enabledIds.has(m.pluginId),
     )
     if (kept.length > 0) survivors[event as HookEvent] = kept
   }

@@ -8,6 +8,7 @@ import { generateSettingsJSONSchema } from './schemaOutput.js'
 import type { SettingsJson } from './types.js'
 import { SettingsSchema } from './types.js'
 import { getValidationTip } from './validationTips.js'
+import { normalizeMarketplaceAliases } from './marketplaceAliases.js'
 
 /**
  * Helper type guards for specific Zod v4 issue types
@@ -79,11 +80,12 @@ export type SettingsWithErrors = {
   errors: ValidationError[]
 }
 
-/** Ignore future hook extensions without weakening validation of known hooks. */
+/** Normalize per-source aliases and tolerate unsupported hook extensions. */
 export function prepareSettingsHooks(
   data: unknown,
   filePath: string,
 ): { data: unknown; warnings: ValidationError[] } {
+  data = normalizeMarketplaceAliases(data)
   const warnings: ValidationError[] = []
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     return { data, warnings }

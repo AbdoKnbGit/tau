@@ -1,3 +1,4 @@
+import { normalizeMarketplaceAliases } from '../../utils/settings/marketplaceAliases.js'
 /**
  * Remote Managed Settings Service
  *
@@ -319,7 +320,7 @@ async function fetchRemoteManagedSettings(
     }
 
     // Full validation of settings structure
-    const settingsValidation = SettingsSchema().safeParse(parsed.data.settings)
+    const settingsValidation = SettingsSchema().safeParse(normalizeMarketplaceAliases(parsed.data.settings))
     if (!settingsValidation.success) {
       logForDebugging(
         `Remote settings: Settings validation failed - ${settingsValidation.error.message}`,

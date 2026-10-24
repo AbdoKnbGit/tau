@@ -26,14 +26,32 @@ export const ALLOWED_OFFICIAL_MARKETPLACE_NAMES = new Set([
   'agent-skills',
   'life-sciences',
   'knowledge-work-plugins',
+  'anthropic-agent-skills',
+  'claude-for-legal',
+  'claude-for-financial-services',
+  'financial-services-plugins',
+  'first-party-plugins',
+  'claude-tag-plugins',
 ])
+
+export const COMMUNITY_MARKETPLACE_NAMES = new Set([
+  'claude-community',
+  'claude-plugins-community',
+  'healthcare',
+])
+
+export function isReservedMarketplaceName(name: string): boolean {
+  const normalized = name.toLowerCase()
+  return ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(normalized) ||
+    COMMUNITY_MARKETPLACE_NAMES.has(normalized)
+}
 
 /**
  * Official marketplaces that should NOT auto-update by default.
  * These are still reserved/allowed names, but opt out of the auto-update
  * default that other official marketplaces receive.
  */
-const NO_AUTO_UPDATE_OFFICIAL_MARKETPLACES = new Set(['knowledge-work-plugins'])
+const NO_AUTO_UPDATE_OFFICIAL_MARKETPLACES = new Set(['knowledge-work-plugins', 'first-party-plugins'])
 
 /**
  * Check if auto-update is enabled for a marketplace.
@@ -87,7 +105,7 @@ const NON_ASCII_PATTERN = /[^\u0020-\u007E]/
  */
 export function isBlockedOfficialName(name: string): boolean {
   // If it's in the allowed list, it's not blocked
-  if (ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(name.toLowerCase())) {
+  if (isReservedMarketplaceName(name)) {
     return false
   }
 
@@ -124,7 +142,7 @@ export function validateOfficialNameSource(
   const normalizedName = name.toLowerCase()
 
   // Only validate reserved names
-  if (!ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(normalizedName)) {
+  if (!isReservedMarketplaceName(normalizedName)) {
     return null // Not a reserved name, no source validation needed
   }
 
@@ -132,7 +150,7 @@ export function validateOfficialNameSource(
   if (source.source === 'github') {
     // Verify the repo is from the official org
     const repo = source.repo || ''
-    if (!repo.toLowerCase().startsWith(`${OFFICIAL_GITHUB_ORG}/`)) {
+    if (!new RegExp(`^${OFFICIAL_GITHUB_ORG}/[a-z0-9_.-]+$`, 'i').test(repo) || repo.endsWith('/..')) {
       return `The name '${name}' is reserved for official Anthropic marketplaces. Only repositories from 'github.com/${OFFICIAL_GITHUB_ORG}/' can use this name.`
     }
     return null // Valid: reserved name from official GitHub source
@@ -140,13 +158,18 @@ export function validateOfficialNameSource(
 
   // Check for git URL source type
   if (source.source === 'git' && source.url) {
-    const url = source.url.toLowerCase()
-    // Check for HTTPS URL format: https://github.com/anthropics/...
-    // or SSH format: git@github.com:anthropics/...
-    const isHttpsAnthropics = url.includes('github.com/anthropics/')
-    const isSshAnthropics = url.includes('git@github.com:anthropics/')
+    const raw = source.url
+    const ssh = /^git@github\.com:([^?#]+)$/i.exec(raw)
+    let official = false
+    try {
+      const url = new URL(ssh ? `ssh://git@github.com/${ssh[1]}` : raw)
+      official = ['https:', 'ssh:'].includes(url.protocol) &&
+        url.hostname.toLowerCase() === 'github.com' &&
+        !url.port && !url.search && !url.hash &&
+        new RegExp(`^/${OFFICIAL_GITHUB_ORG}/[a-z0-9_.-]+/?$`, 'i').test(url.pathname)
+    } catch { /* Invalid URLs cannot claim a reserved marketplace name. */ }
 
-    if (isHttpsAnthropics || isSshAnthropics) {
+    if (official) {
       return null // Valid: reserved name from official git URL
     }
 
@@ -243,6 +266,9 @@ const MarketplaceNameSchema = lazySchema(() =>
     })
     .refine(name => name.toLowerCase() !== 'builtin', {
       message: 'Marketplace name "builtin" is reserved for built-in plugins',
+    })
+    .refine(name => !['skills-dir', 'synced'].includes(name.toLowerCase()), {
+      message: 'Marketplace name is reserved for a plugin loading source',
     }),
 )
 
@@ -888,6 +914,7 @@ const PluginManifestSettingsSchema = lazySchema(() =>
  */
 export const PluginManifestSchema = lazySchema(() =>
   z.object({
+    defaultEnabled: z.boolean().optional(),
     ...PluginManifestMetadataSchema().shape,
     ...PluginManifestHooksSchema().partial().shape,
     ...PluginManifestCommandsSchema().partial().shape,
@@ -1019,7 +1046,7 @@ export const MarketplaceSourceSchema = lazySchema(() =>
         source: z.literal('settings'),
         name: MarketplaceNameSchema()
           .refine(
-            name => !ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(name.toLowerCase()),
+            name => !isReservedMarketplaceName(name),
             {
               message:
                 'Reserved official marketplace names cannot be used with settings sources. ' +
@@ -1272,7 +1299,7 @@ export const PluginMarketplaceEntrySchema = lazySchema(() =>
           message:
             'Plugin name cannot contain spaces. Use kebab-case (e.g., "my-plugin")',
         })
-        .describe('Unique identifier matching the plugin name'),
+        .describe('Installation identifier; may differ from the manifest namespace'),
       source: PluginSourceSchema().describe('Where to fetch the plugin from'),
       category: z
         .string()

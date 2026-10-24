@@ -67,6 +67,7 @@ export type LoadedPlugin = {
   outputStylesPath?: string
   outputStylesPaths?: string[] // Additional output style paths from manifest
   hooksConfig?: HooksSettings
+  hooksSuppressedBy?: string
   mcpServers?: Record<string, McpServerConfig>
   lspServers?: Record<string, LspServerConfig>
   settings?: Record<string, unknown>

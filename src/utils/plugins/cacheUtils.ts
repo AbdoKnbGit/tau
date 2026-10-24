@@ -21,7 +21,7 @@ import { clearPluginOptionsCache } from './pluginOptionsStorage.js'
 import { isPluginZipCacheEnabled } from './zipCache.js'
 
 const ORPHANED_AT_FILENAME = '.orphaned_at'
-const CLEANUP_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+const CLEANUP_AGE_MS = 14 * 24 * 60 * 60 * 1000
 
 export function clearAllPluginCaches(): void {
   clearPluginCache()
@@ -64,12 +64,12 @@ export async function markPluginVersionOrphaned(
 }
 
 /**
- * Clean up orphaned plugin versions that have been orphaned for more than 7 days.
+ * Clean up orphaned plugin versions that have been orphaned for more than 14 days.
  *
  * Pass 1: Remove .orphaned_at from installed versions (clears stale markers)
  * Pass 2: For each cached version not in installed_plugins.json:
  *   - If no .orphaned_at exists: create it (handles old CC versions, manual edits)
- *   - If .orphaned_at exists and > 7 days old: delete the version
+ *   - If .orphaned_at exists and > 14 days old: delete the version
  */
 export async function cleanupOrphanedPluginVersionsInBackground(): Promise<void> {
   // Zip cache mode stores plugins as .zip files, not directories. readSubdirs
@@ -80,7 +80,7 @@ export async function cleanupOrphanedPluginVersionsInBackground(): Promise<void>
   }
   try {
     const installedVersions = getInstalledVersionPaths()
-    if (!installedVersions) return
+    if (!installedVersions?.size) return
 
     const cachePath = getPluginCachePath()
 

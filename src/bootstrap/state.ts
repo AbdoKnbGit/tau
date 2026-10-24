@@ -5,6 +5,7 @@ import type { LoggerProvider } from '@opentelemetry/sdk-logs'
 import type { MeterProvider } from '@opentelemetry/sdk-metrics'
 import type { BasicTracerProvider } from '@opentelemetry/sdk-trace-base'
 import { realpathSync } from 'fs'
+import { getEnvironmentPluginPaths } from 'src/utils/plugins/sessionPaths.js'
 import sumBy from 'lodash-es/sumBy.js'
 import { cwd } from 'process'
 import type { HookEvent, ModelUsage } from 'src/entrypoints/agentSdkTypes.js'
@@ -1328,7 +1329,7 @@ export function setInlinePlugins(plugins: Array<string>): void {
 }
 
 export function getInlinePlugins(): Array<string> {
-  return STATE.inlinePlugins
+  return [...new Set([...STATE.inlinePlugins, ...getEnvironmentPluginPaths()])]
 }
 
 export function setChromeFlagOverride(value: boolean | undefined): void {

@@ -499,6 +499,14 @@ export function isSourceAllowedByPolicy(source: MarketplaceSource): boolean {
     if (allowed.source === 'pathPattern') {
       return doesSourceMatchPathPattern(source, allowed)
     }
+    if (allowed.source === 'github' && allowed.repo.includes('*')) {
+      const owner = /^([^/*]+)\/\*$/.exec(allowed.repo)?.[1]
+      return !!owner && source.source === 'github' &&
+        source.repo.split('/').length === 2 &&
+        source.repo.split('/')[0]!.toLowerCase() === owner.toLowerCase() &&
+        (allowed.ref || undefined) === (source.ref || undefined) &&
+        (allowed.path || undefined) === (source.path || undefined)
+    }
     // Handle regular source entries - exact match
     return areSourcesEqual(source, allowed)
   })

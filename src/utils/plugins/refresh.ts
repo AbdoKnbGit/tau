@@ -165,7 +165,7 @@ export async function refreshActivePlugins(
   }
 
   const hook_count = enabled.reduce((sum, p) => {
-    if (!p.hooksConfig) return sum
+    if (!p.hooksConfig || p.hooksSuppressedBy) return sum
     return (
       sum +
       Object.values(p.hooksConfig).reduce(
