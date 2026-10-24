@@ -1,29 +1,20 @@
 import memoize from 'lodash-es/memoize.js'
-import { basename, dirname, join, resolve } from 'path'
+import { basename, dirname, join, resolve, relative, sep } from 'path'
+import {
+  clearConditionalPluginSkills,
+  parseSkillFrontmatterFields,
+  parseSkillPaths,
+  registerConditionalSkills,
+} from '../../skills/loadSkillsDir.js'
 import { getInlinePlugins, getSessionId } from '../../bootstrap/state.js'
 import type { Command } from '../../types/command.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
-import {
-  parseArgumentNames,
-  substituteArguments,
-} from '../argumentSubstitution.js'
+import { substituteArguments } from '../argumentSubstitution.js'
 import { logForDebugging } from '../debug.js'
-import { EFFORT_LEVELS, parseEffortValue } from '../effort.js'
 import { isBareMode } from '../envUtils.js'
 import { isENOENT } from '../errors.js'
-import {
-  coerceDescriptionToString,
-  type FrontmatterData,
-  parseBooleanFrontmatter,
-  parseFrontmatter,
-  parseShellFrontmatter,
-} from '../frontmatterParser.js'
+import { type FrontmatterData, parseFrontmatter } from '../frontmatterParser.js'
 import { getFsImplementation, isDuplicatePath } from '../fsOperations.js'
-import {
-  extractDescriptionFromMarkdown,
-  parseSlashCommandToolsFromFrontmatter,
-} from '../markdownConfigLoader.js'
-import { resolveSkillFrontmatterModel } from '../model/skillModel.js'
 import { executeShellCommandsInPrompt } from '../promptShellExecution.js'
 import { loadAllPluginsCacheOnly } from './pluginLoader.js'
 import {
@@ -71,10 +62,8 @@ function getCommandNameFromFile(
     const commandBaseName = basename(skillDirectory)
 
     // Build namespace from parent of skill directory
-    const relativePath = parentOfSkillDir.startsWith(baseDir)
-      ? parentOfSkillDir.slice(baseDir.length).replace(/^\//, '')
-      : ''
-    const namespace = relativePath ? relativePath.split('/').join(':') : ''
+    const relativePath = relative(baseDir, parentOfSkillDir)
+    const namespace = relativePath ? relativePath.split(sep).join(':') : ''
 
     return namespace
       ? `${pluginName}:${namespace}:${commandBaseName}`
@@ -85,10 +74,8 @@ function getCommandNameFromFile(
     const commandBaseName = basename(filePath).replace(/\.md$/, '')
 
     // Build namespace from file directory
-    const relativePath = fileDirectory.startsWith(baseDir)
-      ? fileDirectory.slice(baseDir.length).replace(/^\//, '')
-      : ''
-    const namespace = relativePath ? relativePath.split('/').join(':') : ''
+    const relativePath = relative(baseDir, fileDirectory)
+    const namespace = relativePath ? relativePath.split(sep).join(':') : ''
 
     return namespace
       ? `${pluginName}:${namespace}:${commandBaseName}`
@@ -227,16 +214,21 @@ function createPluginCommand(
   try {
     const { frontmatter, content } = file
 
-    const validatedDescription = coerceDescriptionToString(
-      frontmatter.description,
-      commandName,
-    )
-    const description =
-      validatedDescription ??
-      extractDescriptionFromMarkdown(
-        content,
-        isSkill ? 'Plugin skill' : 'Plugin command',
-      )
+    // A skill's explicit name replaces only its last namespace segment.
+    // Keep the plugin prefix so it cannot shadow a built-in or another plugin.
+    if (isSkill && typeof frontmatter.name === 'string' && frontmatter.name) {
+      const name = frontmatter.name
+      if (!/[\p{C}<>]|[^\S ]| {2}|^ | $/u.test(name)) {
+        const pluginPrefix = `${pluginManifest.name}:`
+        commandName = name.startsWith(pluginPrefix)
+          ? name
+          : commandName.slice(0, commandName.lastIndexOf(':') + 1) + name
+      } else {
+        logForDebugging(
+          `Ignoring invalid name in plugin skill ${file.filePath}`,
+        )
+      }
+    }
 
     // Substitute ${CLAUDE_PLUGIN_ROOT} in allowed-tools before parsing
     const rawAllowedTools = frontmatter['allowed-tools']
@@ -256,52 +248,35 @@ function createPluginCommand(
                 : tool,
             )
           : rawAllowedTools
-    const allowedTools = parseSlashCommandToolsFromFrontmatter(
-      substitutedAllowedTools,
+    const {
+      description,
+      hasUserSpecifiedDescription,
+      allowedTools,
+      argumentHint,
+      argumentNames,
+      whenToUse,
+      version,
+      displayName,
+      model,
+      effort,
+      disableModelInvocation,
+      userInvocable,
+      shell,
+      hooks,
+      executionContext,
+      agent,
+    } = parseSkillFrontmatterFields(
+      { ...frontmatter, 'allowed-tools': substitutedAllowedTools },
+      content,
+      commandName,
+      isSkill ? 'Plugin skill' : 'Plugin command',
     )
-
-    const argumentHint = frontmatter['argument-hint'] as string | undefined
-    const argumentNames = parseArgumentNames(
-      frontmatter.arguments as string | string[] | undefined,
-    )
-    const whenToUse = frontmatter.when_to_use as string | undefined
-    const version = frontmatter.version as string | undefined
-    const displayName = frontmatter.name as string | undefined
-
-    // Handle model configuration, resolving aliases like 'haiku', 'sonnet', 'opus'
-    const model =
-      frontmatter.model === 'inherit'
-        ? undefined
-        : frontmatter.model
-          ? resolveSkillFrontmatterModel(frontmatter.model as string)
-          : undefined
-
-    const effortRaw = frontmatter['effort']
-    const effort =
-      effortRaw !== undefined ? parseEffortValue(effortRaw) : undefined
-    if (effortRaw !== undefined && effort === undefined) {
-      logForDebugging(
-        `Plugin command ${commandName} has invalid effort '${effortRaw}'. Valid options: ${EFFORT_LEVELS.join(', ')} or an integer`,
-      )
-    }
-
-    const disableModelInvocation = parseBooleanFrontmatter(
-      frontmatter['disable-model-invocation'],
-    )
-
-    const userInvocableValue = frontmatter['user-invocable']
-    const userInvocable =
-      userInvocableValue === undefined
-        ? true
-        : parseBooleanFrontmatter(userInvocableValue)
-
-    const shell = parseShellFrontmatter(frontmatter.shell, commandName)
 
     return {
       type: 'prompt',
       name: commandName,
       description,
-      hasUserSpecifiedDescription: validatedDescription !== null,
+      hasUserSpecifiedDescription,
       allowedTools,
       argumentHint,
       argNames: argumentNames.length > 0 ? argumentNames : undefined,
@@ -311,17 +286,23 @@ function createPluginCommand(
       effort,
       disableModelInvocation,
       userInvocable,
+      context: executionContext,
+      agent,
+      hooks,
+      skillRoot: dirname(file.filePath),
+      paths: isSkill ? parseSkillPaths(frontmatter) : undefined,
       contentLength: content.length,
       source: 'plugin' as const,
       loadedFrom: isSkill || config.isSkillMode ? 'plugin' : undefined,
       pluginInfo: {
         pluginManifest,
         repository: sourceName,
+        root: pluginPath,
       },
       isHidden: !userInvocable,
       progressMessage: isSkill || config.isSkillMode ? 'loading' : 'running',
       userFacingName(): string {
-        return displayName || commandName
+        return isSkill ? commandName : displayName || commandName
       },
       async getPromptForCommand(args, context) {
         // For skills from skills/ directory, include base directory
@@ -725,9 +706,10 @@ async function loadSkillsFromDirectory(
 
       // A root skill's cache directory is usually a version/hash. Keep its
       // command name stable across installation locations and updates.
-      const skillDirectoryName = resolve(skillsPath) === resolve(pluginPath)
-        ? pluginName
-        : basename(skillsPath)
+      const skillDirectoryName =
+        resolve(skillsPath) === resolve(pluginPath)
+          ? pluginName
+          : basename(skillsPath)
       const skillName = `${pluginName}:${skillDirectoryName}`
 
       const file: PluginMarkdownFile = {
@@ -943,9 +925,10 @@ export const getPluginSkills = memoize(async (): Promise<Command[]> => {
 
   const allSkills = perPluginSkills.flat()
   logForDebugging(`Total plugin skills loaded: ${allSkills.length}`)
-  return allSkills
+  return registerConditionalSkills(allSkills)
 })
 
 export function clearPluginSkillsCache(): void {
   getPluginSkills.cache?.clear?.()
+  clearConditionalPluginSkills()
 }

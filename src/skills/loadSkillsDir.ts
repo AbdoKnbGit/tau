@@ -164,7 +164,7 @@ function parseHooksFromFrontmatter(
  * Parse paths frontmatter from a skill, using the same format as CLAUDE.md rules.
  * Returns undefined if no paths are specified or if all patterns are match-all.
  */
-function parseSkillPaths(frontmatter: FrontmatterData): string[] | undefined {
+export function parseSkillPaths(frontmatter: FrontmatterData): string[] | undefined {
   if (!frontmatter.paths) {
     return undefined
   }
@@ -194,7 +194,7 @@ export function parseSkillFrontmatterFields(
   frontmatter: FrontmatterData,
   markdownContent: string,
   resolvedName: string,
-  descriptionFallbackLabel: 'Skill' | 'Custom command' = 'Skill',
+  descriptionFallbackLabel: 'Skill' | 'Custom command' | 'Plugin skill' | 'Plugin command' = 'Skill',
 ): {
   displayName: string | undefined
   description: string
@@ -831,34 +831,16 @@ export const getSkillDirCommands = memoize(
     }
 
     // Separate conditional skills (with paths frontmatter) from unconditional ones
-    const unconditionalSkills: Command[] = []
-    const newConditionalSkills: Command[] = []
-    for (const skill of deduplicatedSkills) {
-      if (
-        skill.type === 'prompt' &&
-        skill.paths &&
-        skill.paths.length > 0 &&
-        !activatedConditionalSkillNames.has(skill.name)
-      ) {
-        newConditionalSkills.push(skill)
-      } else {
-        unconditionalSkills.push(skill)
-      }
-    }
-
-    // Store conditional skills for later activation when matching files are touched
-    for (const skill of newConditionalSkills) {
-      conditionalSkills.set(skill.name, skill)
-    }
-
-    if (newConditionalSkills.length > 0) {
+    const unconditionalSkills = registerConditionalSkills(deduplicatedSkills)
+    const conditionalCount = deduplicatedSkills.length - unconditionalSkills.length
+    if (conditionalCount > 0) {
       logForDebugging(
-        `[skills] ${newConditionalSkills.length} conditional skills stored (activated when matching files are touched)`,
+        `[skills] ${conditionalCount} conditional skills stored (activated when matching files are touched)`,
       )
     }
 
     logForDebugging(
-      `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length}, .agents: ${allSkillsWithPaths.length - agentsStart})`,
+      `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${conditionalCount} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length}, .agents: ${allSkillsWithPaths.length - agentsStart})`,
     )
 
     return unconditionalSkills
@@ -889,6 +871,28 @@ const dynamicSkills = new Map<string, Command>()
 const conditionalSkills = new Map<string, Command>()
 // Names of skills that have been activated (survives cache clears within a session)
 const activatedConditionalSkillNames = new Set<string>()
+
+/** Share path-triggered activation between folder and plugin skills. */
+export function registerConditionalSkills(skills: Command[]): Command[] {
+  return skills.filter(skill => {
+    if (skill.type !== 'prompt' || !skill.paths?.length ||
+      activatedConditionalSkillNames.has(skill.name)) return true
+    conditionalSkills.set(skill.name, skill)
+    return false
+  })
+}
+
+/** A plugin reload must discard conditional skills from disabled plugins too. */
+export function clearConditionalPluginSkills(): void {
+  for (const skills of [conditionalSkills, dynamicSkills]) {
+    for (const [name, skill] of skills) {
+      if (skill.type === 'prompt' && skill.source === 'plugin') {
+        skills.delete(name)
+        activatedConditionalSkillNames.delete(name)
+      }
+    }
+  }
+}
 
 // Signal fired when dynamic skills are loaded
 const skillsLoaded = createSignal()

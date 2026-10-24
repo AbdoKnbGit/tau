@@ -58,6 +58,7 @@ import {
   createSubagentContext,
 } from '../../utils/forkedAgent.js'
 import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterHooks.js'
+import { registerSkillHooks } from '../../utils/hooks/registerSkillHooks.js'
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
 import {
@@ -306,6 +307,7 @@ function isRecordableMessage(
 
 async function* runAgentWithoutProviderOverride({
   agentDefinition,
+  forkedSkill,
   promptMessages,
   toolUseContext,
   canUseTool,
@@ -330,6 +332,7 @@ async function* runAgentWithoutProviderOverride({
   onQueryProgress,
 }: {
   agentDefinition: AgentDefinition
+  forkedSkill?: Command & { type: 'prompt' }
   promptMessages: Message[]
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
@@ -681,6 +684,21 @@ async function* runAgentWithoutProviderOverride({
       true, // isAgent - converts Stop to SubagentStop
     )
   }
+  if (forkedSkill?.hooks && (
+    !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(forkedSkill.source)
+  )) {
+    registerSkillHooks(
+      rootSetAppState,
+      agentId,
+      forkedSkill.hooks,
+      forkedSkill.name,
+      forkedSkill.skillRoot,
+      forkedSkill.pluginInfo?.root
+        ? { root: forkedSkill.pluginInfo.root, id: forkedSkill.pluginInfo.repository }
+        : undefined,
+      true,
+    )
+  }
 
   // Preload skills from agent frontmatter
   const skillsToPreload = agentDefinition.skills ?? []
@@ -977,7 +995,7 @@ async function* runAgentWithoutProviderOverride({
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // Clean up agent's session hooks
-    if (agentDefinition.hooks) {
+    if (agentDefinition.hooks || forkedSkill?.hooks) {
       clearSessionHooks(rootSetAppState, agentId)
     }
     // Clean up prompt cache tracking state for this agent

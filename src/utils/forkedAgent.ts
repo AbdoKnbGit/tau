@@ -22,6 +22,8 @@ import { registerForkedAgent } from '../services/api/cacheAffinity.js'
 import { accumulateUsage, updateUsage } from '../services/api/claude.js'
 import { EMPTY_USAGE, type NonNullableUsage } from '../services/api/logging.js'
 import type { ToolUseContext } from '../Tool.js'
+import { getBuiltInAgents } from '../tools/AgentTool/builtInAgents.js'
+import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import type { AgentId } from '../types/ids.js'
 import type { Message } from '../types/message.js'
@@ -35,6 +37,7 @@ import {
   getLastAssistantMessage,
 } from './messages.js'
 import { createDenialTrackingState } from './permissions/denialTracking.js'
+import { filterDeniedAgents } from './permissions/permissions.js'
 import { parseToolListFromCLI } from './permissions/permissionSetup.js'
 import { recordSidechainTranscript } from './sessionStorage.js'
 import type { SystemPrompt } from './systemPromptType.js'
@@ -186,7 +189,7 @@ export type PreparedForkedContext = {
   skillContent: string
   /** Modified getAppState with allowed tools */
   modifiedGetAppState: ToolUseContext['getAppState']
-  /** The general-purpose agent to use */
+  /** The agent selected by the skill, or the default agent */
   baseAgent: AgentDefinition
   /** Initial prompt messages */
   promptMessages: Message[]
@@ -201,6 +204,35 @@ export async function prepareForkedCommandContext(
   args: string,
   context: ToolUseContext,
 ): Promise<PreparedForkedContext> {
+  const { activeAgents, allowedAgentTypes } = context.options.agentDefinitions
+  // Prefer active definitions (including custom overrides). Explicit skill
+  // frontmatter can also select standard built-ins omitted from the normal
+  // catalog, without adding them to the parent's advertised agent list.
+  const candidates = command.agent
+    ? [
+        ...activeAgents,
+        ...getBuiltInAgents({ forExplicitSelection: true }).filter(
+          agent => agent.agentType === command.agent &&
+            !activeAgents.some(active => active.agentType === agent.agentType),
+        ),
+      ]
+    : activeAgents
+  const agents = filterDeniedAgents(
+    allowedAgentTypes
+      ? candidates.filter(agent => allowedAgentTypes.includes(agent.agentType))
+      : candidates,
+    context.getAppState().toolPermissionContext,
+    AGENT_TOOL_NAME,
+  )
+  const baseAgent = command.agent
+    ? agents.find(agent => agent.agentType === command.agent)
+    : agents.find(agent => agent.agentType === 'general-purpose') ?? agents[0]
+  if (!baseAgent) {
+    throw new Error(command.agent
+      ? `Agent '${command.agent}' requested by skill '${command.name}' is not available. Check the agent name and agent permissions.`
+      : 'No agent available for forked execution')
+  }
+
   // Get skill content with $ARGUMENTS replaced
   const skillPrompt = await command.getPromptForCommand(args, context)
   const skillContent = skillPrompt
@@ -215,18 +247,6 @@ export async function prepareForkedCommandContext(
     context.getAppState,
     allowedTools,
   )
-
-  // Use command.agent if specified, otherwise 'general-purpose'
-  const agentTypeName = command.agent ?? 'general-purpose'
-  const agents = context.options.agentDefinitions.activeAgents
-  const baseAgent =
-    agents.find(a => a.agentType === agentTypeName) ??
-    agents.find(a => a.agentType === 'general-purpose') ??
-    agents[0]
-
-  if (!baseAgent) {
-    throw new Error('No agent available for forked execution')
-  }
 
   // Prepare prompt messages
   const promptMessages = [createUserMessage({ content: skillContent })]

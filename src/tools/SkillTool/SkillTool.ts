@@ -226,6 +226,7 @@ async function executeForkedSkill(
     // Run the sub-agent
     for await (const message of runAgent({
       agentDefinition,
+      forkedSkill: command,
       promptMessages,
       toolUseContext: {
         ...context,

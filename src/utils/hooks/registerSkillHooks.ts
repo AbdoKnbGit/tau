@@ -15,7 +15,7 @@ import { addSessionHook, removeSessionHook } from './sessionHooks.js'
  * @param sessionId - The current session ID
  * @param hooks - The hooks settings from the skill's frontmatter
  * @param skillName - The name of the skill (for logging)
- * @param skillRoot - The base directory of the skill (for CLAUDE_PLUGIN_ROOT env var)
+ * @param skillRoot - The base directory of the skill (CLAUDE_SKILL_DIR)
  */
 export function registerSkillHooks(
   setAppState: (updater: (prev: AppState) => AppState) => void,
@@ -23,33 +23,41 @@ export function registerSkillHooks(
   hooks: HooksSettings,
   skillName: string,
   skillRoot?: string,
+  plugin?: { root: string; id: string },
+  isAgent = false,
 ): void {
   let registeredCount = 0
 
   for (const eventName of HOOK_EVENTS) {
     const matchers = hooks[eventName]
     if (!matchers) continue
+    const targetEvent =
+      isAgent && eventName === 'Stop' ? 'SubagentStop' : eventName
 
     for (const matcher of matchers) {
-      for (const hook of matcher.hooks) {
+      for (const configuredHook of matcher.hooks) {
+        // Each registration owns its one-shot callback, even when another
+        // skill declares an identical hook object.
+        const hook = { ...configuredHook }
         // For once: true hooks, use onHookSuccess callback to remove after execution
         const onHookSuccess = hook.once
           ? () => {
               logForDebugging(
                 `Removing one-shot hook for event ${eventName} in skill '${skillName}'`,
               )
-              removeSessionHook(setAppState, sessionId, eventName, hook)
+              removeSessionHook(setAppState, sessionId, targetEvent, hook, true)
             }
           : undefined
 
         addSessionHook(
           setAppState,
           sessionId,
-          eventName,
+          targetEvent,
           matcher.matcher || '',
           hook,
           onHookSuccess,
           skillRoot,
+          plugin,
         )
         registeredCount++
       }

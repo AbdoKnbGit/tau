@@ -11,11 +11,12 @@
  *    unsatisfied deps (session-local, does NOT write settings)
  */
 
+import { satisfies } from 'semver'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
 import type { EditableSettingSource } from '../settings/constants.js'
 import { getSettingsForSource } from '../settings/settings.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
-import type { PluginId } from './schemas.js'
+import type { DependencyRef, PluginId } from './schemas.js'
 
 /**
  * Synthetic marketplace sentinel for `--plugin-dir` plugins (pluginLoader.ts
@@ -36,9 +37,15 @@ const INLINE_MARKETPLACE = 'inline'
  * verifyAndDemote handles bare deps via name-only matching.
  */
 export function qualifyDependency(
-  dep: string,
+  ref: DependencyRef,
   declaringPluginId: string,
 ): string {
+  const dep =
+    typeof ref === 'string'
+      ? ref
+      : ref.marketplace
+        ? `${ref.name}@${ref.marketplace}`
+        : ref.name
   if (parsePluginIdentifier(dep).marketplace) return dep
   const mkt = parsePluginIdentifier(declaringPluginId).marketplace
   if (!mkt || mkt === INLINE_MARKETPLACE) return dep
@@ -52,13 +59,14 @@ export function qualifyDependency(
  */
 export type DependencyLookupResult = {
   // Entries may be bare names; qualifyDependency normalizes them.
-  dependencies?: string[]
+  dependencies?: DependencyRef[]
 }
 
 export type ResolutionResult =
   | { ok: true; closure: PluginId[] }
   | { ok: false; reason: 'cycle'; chain: PluginId[] }
   | { ok: false; reason: 'not-found'; missing: PluginId; requiredBy: PluginId }
+  | { ok: false; reason: 'version'; dependency: string; message: string }
   | {
       ok: false
       reason: 'cross-marketplace'
@@ -97,6 +105,10 @@ export async function resolveDependencyClosure(
   lookup: (id: PluginId) => Promise<DependencyLookupResult | null>,
   alreadyEnabled: ReadonlySet<PluginId>,
   allowedCrossMarketplaces: ReadonlySet<string> = new Set(),
+  options?: {
+    onDependency?: (id: string, ref: DependencyRef, requiredBy: string) => void
+    shouldSkipEnabled?: (id: string) => boolean
+  },
 ): Promise<ResolutionResult> {
   const rootMarketplace = parsePluginIdentifier(rootId).marketplace
   const closure: PluginId[] = []
@@ -114,13 +126,19 @@ export async function resolveDependencyClosure(
     // installed_plugins.json stale) would return an empty closure and
     // `cacheAndRegisterPlugin` would never fire — user sees
     // "✔ Successfully installed" but nothing materializes.
-    if (id !== rootId && alreadyEnabled.has(id)) return null
+    if (
+      id !== rootId &&
+      alreadyEnabled.has(id) &&
+      (options?.shouldSkipEnabled?.(id) ?? true)
+    )
+      return null
     // Security: block auto-install across marketplace boundaries. Runs AFTER
     // the alreadyEnabled check — if the user manually installed a cross-mkt
     // dep, it's in alreadyEnabled and we never reach this.
     const idMarketplace = parsePluginIdentifier(id).marketplace
     if (
       idMarketplace !== rootMarketplace &&
+      !alreadyEnabled.has(id) &&
       !(idMarketplace && allowedCrossMarketplaces.has(idMarketplace))
     ) {
       return {
@@ -144,6 +162,7 @@ export async function resolveDependencyClosure(
     stack.push(id)
     for (const rawDep of entry.dependencies ?? []) {
       const dep = qualifyDependency(rawDep, id)
+      options?.onDependency?.(dep, rawDep, id)
       const err = await walk(dep, id)
       if (err) return err
     }
@@ -178,19 +197,14 @@ export function verifyAndDemote(plugins: readonly LoadedPlugin[]): {
   demoted: Set<string>
   errors: PluginError[]
 } {
-  const known = new Set(plugins.map(p => p.source))
   const enabled = new Set(plugins.filter(p => p.enabled).map(p => p.source))
-  // Name-only indexes for bare deps from --plugin-dir (@inline) plugins:
-  // the real marketplace is unknown, so match "B" against any enabled "B@*".
-  // enabledByName is a multiset: if B@epic AND B@other are both enabled,
-  // demoting one mustn't make "B" disappear from the index.
-  const knownByName = new Set(
-    plugins.map(p => parsePluginIdentifier(p.source).name),
-  )
-  const enabledByName = new Map<string, number>()
-  for (const id of enabled) {
-    const n = parsePluginIdentifier(id).name
-    enabledByName.set(n, (enabledByName.get(n) ?? 0) + 1)
+  const byId = new Map(plugins.map(p => [p.source, p]))
+  const byName = new Map<string, LoadedPlugin[]>()
+  for (const plugin of plugins) {
+    const name = parsePluginIdentifier(plugin.source).name
+    const candidates = byName.get(name) ?? []
+    candidates.push(plugin)
+    byName.set(name, candidates)
   }
   const errors: PluginError[] = []
 
@@ -201,24 +215,61 @@ export function verifyAndDemote(plugins: readonly LoadedPlugin[]): {
       if (!enabled.has(p.source)) continue
       for (const rawDep of p.manifest.dependencies ?? []) {
         const dep = qualifyDependency(rawDep, p.source)
-        // Bare dep ← @inline plugin: match by name only (see enabledByName)
-        const isBare = !parsePluginIdentifier(dep).marketplace
-        const satisfied = isBare
-          ? (enabledByName.get(dep) ?? 0) > 0
-          : enabled.has(dep)
+        const { name, marketplace } = parsePluginIdentifier(dep)
+        // A session-local copy overrides a marketplace dependency by name,
+        // including qualified references. Local development copies have no
+        // version requirement.
+        const local = byId.get(`${name}@${INLINE_MARKETPLACE}`)
+        const exact = byId.get(dep)
+        const candidates = local
+          ? [local]
+          : marketplace
+            ? exact
+              ? [exact]
+              : []
+            : (byName.get(name) ?? [])
+        const range = typeof rawDep === 'object' ? rawDep.version : undefined
+        const active = candidates.filter(candidate =>
+          enabled.has(candidate.source),
+        )
+        const present = active.length > 0
+        const matchingVersion =
+          !range ||
+          active.some(
+            candidate =>
+              candidate === local ||
+              satisfies(
+                candidate.dependencyVersion ?? candidate.manifest.version ?? '',
+                range,
+              ),
+          )
+        const satisfied = present && matchingVersion
         if (!satisfied) {
           enabled.delete(p.source)
-          const count = enabledByName.get(p.name) ?? 0
-          if (count <= 1) enabledByName.delete(p.name)
-          else enabledByName.set(p.name, count - 1)
           errors.push({
             type: 'dependency-unsatisfied',
             source: p.source,
             plugin: p.name,
-            dependency: dep,
-            reason: (isBare ? knownByName.has(dep) : known.has(dep))
-              ? 'not-enabled'
-              : 'not-found',
+            dependency: local?.source ?? dep,
+            reason:
+              present && !matchingVersion
+                ? 'version'
+                : candidates.length > 0
+                  ? 'not-enabled'
+                  : 'not-found',
+            ...(present && !matchingVersion
+              ? {
+                  requiredVersion: range,
+                  installedVersion: active
+                    .map(
+                      candidate =>
+                        candidate.dependencyVersion ??
+                        candidate.manifest.version ??
+                        'unknown',
+                    )
+                    .join(', '),
+                }
+              : {}),
           })
           changed = true
           break
@@ -254,9 +305,11 @@ export function findReverseDependents(
         (p.manifest.dependencies ?? []).some(d => {
           const qualified = qualifyDependency(d, p.source)
           // Bare dep (from @inline plugin): match by name only
-          return parsePluginIdentifier(qualified).marketplace
-            ? qualified === pluginId
-            : qualified === targetName
+          return pluginId === `${targetName}@${INLINE_MARKETPLACE}`
+            ? parsePluginIdentifier(qualified).name === targetName
+            : parsePluginIdentifier(qualified).marketplace
+              ? qualified === pluginId
+              : qualified === targetName
         }),
     )
     .map(p => p.name)

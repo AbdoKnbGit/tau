@@ -1,4 +1,5 @@
 import { z } from 'zod/v4'
+import { validRange } from 'semver'
 import { HooksSchema } from '../../schemas/hooks.js'
 import { McpServerConfigSchema } from '../../services/mcp/types.js'
 import { lazySchema } from '../lazySchema.js'
@@ -1355,23 +1356,13 @@ export const PluginIdSchema = lazySchema(() =>
 )
 
 const DEP_REF_REGEX =
-  /^[a-z0-9][-a-z0-9._]*(@[a-z0-9][-a-z0-9._]*)?(@\^[^@]*)?$/i
+  /^[a-z0-9][-a-z0-9._]*(@[a-z0-9][-a-z0-9._]*)?(@\^[^@]+)?$/i
 
 /**
  * Schema for entries in a plugin's `dependencies` array.
  *
- * Accepts three forms, all normalized to a plain "name" or "name@mkt" string
- * by the transform — downstream code (qualifyDependency, resolveDependencyClosure,
- * verifyAndDemote) never sees versions or objects:
- *
- *   "plugin"                → bare, resolved against declaring plugin's marketplace
- *   "plugin@marketplace"    → qualified
- *   "plugin@mkt@^1.2"       → trailing @^version silently stripped (forwards-compat)
- *   {name, marketplace?, …} → object form, version etc. stripped (forwards-compat)
- *
- * The latter two are permitted-but-ignored so future clients adding version
- * constraints don't cause old clients to fail schema validation and reject
- * the whole plugin. See CC-993 for the eventual version-range design.
+ * Preserve version requirements through parsing; consumers resolve the name
+ * separately from the semver constraint.
  */
 export const DependencyRefSchema = lazySchema(() =>
   z.union([
@@ -1381,7 +1372,14 @@ export const DependencyRefSchema = lazySchema(() =>
         DEP_REF_REGEX,
         'Dependency must be a plugin name, optionally qualified with @marketplace',
       )
-      .transform(s => s.replace(/@\^[^@]*$/, '')),
+      .transform(s => {
+        const match = /^(.*)@(\^[^@]+)$/.exec(s)
+        if (!match) return s
+        const [name, marketplace] = match[1]!.split('@')
+        return { name: name!, ...(marketplace ? { marketplace } : {}), version: match[2]! }
+      })
+      .refine(value => typeof value === 'string' || validRange(value.version) !== null,
+        'Invalid dependency version range'),
     z
       .object({
         name: z
@@ -1393,11 +1391,15 @@ export const DependencyRefSchema = lazySchema(() =>
           .min(1)
           .regex(/^[a-z0-9][-a-z0-9._]*$/i)
           .optional(),
+        version: z.string().refine(value => value.trim().length > 0 && validRange(value) !== null,
+          'Invalid dependency version range').optional(),
       })
       .loose()
-      .transform(o => (o.marketplace ? `${o.name}@${o.marketplace}` : o.name)),
+      .transform(o => ({ name: o.name, marketplace: o.marketplace, version: o.version })),
   ]),
 )
+
+export type DependencyRef = string | { name: string; marketplace?: string; version?: string }
 
 /**
  * Schema for plugin reference in settings (repo or user level)
@@ -1455,6 +1457,7 @@ export const SettingsPluginEntrySchema = lazySchema(() =>
 export const InstalledPluginSchema = lazySchema(() =>
   z.object({
     version: z.string().describe('Currently installed version'),
+    dependencyVersion: z.string().optional(),
     installedAt: z.string().describe('ISO 8601 timestamp of installation'),
     lastUpdated: z
       .string()
@@ -1535,6 +1538,7 @@ export const PluginInstallationEntrySchema = lazySchema(() =>
       .describe('Absolute path to the versioned plugin directory'),
     // Preserved from V1:
     version: z.string().optional().describe('Currently installed version'),
+    dependencyVersion: z.string().optional(),
     installedAt: z
       .string()
       .optional()

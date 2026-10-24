@@ -17,6 +17,7 @@
  * - /plugin menu — sets needsRefresh, user runs /reload-plugins (PR 5b)
  */
 
+import uniqBy from 'lodash-es/uniqBy.js'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import { reinitializeLspServerManager } from '../../services/lsp/manager.js'
@@ -27,8 +28,9 @@ import type { PluginError } from '../../types/plugin.js'
 import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
 import { logError } from '../log.js'
+import { skillChangeDetector } from '../skills/skillChangeDetector.js'
 import { clearAllCaches } from './cacheUtils.js'
-import { getPluginCommands } from './loadPluginCommands.js'
+import { getPluginCommands, getPluginSkills } from './loadPluginCommands.js'
 import { loadPluginHooks } from './loadPluginHooks.js'
 import { loadPluginLspServers } from './lspPluginIntegration.js'
 import { loadPluginMcpServers } from './mcpPluginIntegration.js'
@@ -86,10 +88,12 @@ export async function refreshActivePlugins(
   // the plugin, returning plugin-cache-miss. loadAllPlugins warms the
   // cache-only memoize on completion, so the awaits below are ~free.
   const pluginResult = await loadAllPlugins()
-  const [pluginCommands, agentDefinitions] = await Promise.all([
+  const [legacyCommands, pluginSkills, agentDefinitions] = await Promise.all([
     getPluginCommands(),
+    getPluginSkills(),
     getAgentDefinitionsWithOverrides(getOriginalCwd()),
   ])
+  const pluginCommands = uniqBy([...legacyCommands, ...pluginSkills], 'name')
 
   const { enabled, disabled, errors } = pluginResult
 
@@ -171,6 +175,11 @@ export async function refreshActivePlugins(
       )
     )
   }, 0)
+
+  // The interactive slash-command list is local React state, separate from
+  // AppState.plugins.commands. Refresh it too so newly installed skills appear
+  // and disabled or renamed skills do not survive in the old local list.
+  skillChangeDetector.notifyManualReload()
 
   logForDebugging(
     `refreshActivePlugins: ${enabled.length} enabled, ${pluginCommands.length} commands, ${agentDefinitions.allAgents.length} agents, ${hook_count} hooks, ${mcp_count} MCP, ${lsp_count} LSP`,

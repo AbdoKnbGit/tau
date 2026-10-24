@@ -33,11 +33,12 @@ export type PromptCommand = {
   pluginInfo?: {
     pluginManifest: PluginManifest
     repository: string
+    root?: string
   }
   disableNonInteractive?: boolean
   // Hooks to register when this skill is invoked
   hooks?: HooksSettings
-  // Base directory for skill resources (used to set CLAUDE_PLUGIN_ROOT environment variable for skill hooks)
+  // Base directory for skill resources and CLAUDE_SKILL_DIR in skill hooks
   skillRoot?: string
   // Execution context: 'inline' (default) or 'fork' (run as sub-agent)
   // 'inline' = skill content expands into the current conversation

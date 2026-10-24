@@ -152,6 +152,7 @@ async function executeForkedSlashCommand(command: CommandBase & PromptCommand, a
       const agentMessages: Message[] = [];
       for await (const message of runAgent({
         agentDefinition,
+        forkedSkill: command,
         promptMessages,
         toolUseContext: {
           ...context,
@@ -232,6 +233,7 @@ async function executeForkedSlashCommand(command: CommandBase & PromptCommand, a
   try {
     for await (const message of runAgent({
       agentDefinition,
+      forkedSkill: command,
       promptMessages,
       toolUseContext: {
         ...context,
@@ -909,8 +911,11 @@ async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCom
   // where source is known. Mirrors the agent frontmatter gate in runAgent.ts.
   const hooksAllowedForThisSkill = !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source);
   if (command.hooks && hooksAllowedForThisSkill) {
-    const sessionId = getSessionId();
-    registerSkillHooks(context.setAppState, sessionId, command.hooks, command.name, command.type === 'prompt' ? command.skillRoot : undefined);
+    const sessionId = context.agentId ?? getSessionId();
+    registerSkillHooks(context.setAppState, sessionId, command.hooks, command.name,
+      command.type === 'prompt' ? command.skillRoot : undefined,
+      command.pluginInfo?.root ? { root: command.pluginInfo.root, id: command.pluginInfo.repository } : undefined,
+      context.agentId !== undefined);
   }
 
   // Record skill invocation for compaction preservation, scoped by agent context.

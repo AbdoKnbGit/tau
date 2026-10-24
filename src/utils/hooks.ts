@@ -183,6 +183,7 @@ import {
   getSessionHookCallback,
   clearSessionHooks,
   type SessionDerivedHookMatcher,
+  type SessionHookEntry,
   type FunctionHook,
 } from './hooks/sessionHooks.js'
 import type { AppState } from '../state/AppState.js'
@@ -1068,7 +1069,9 @@ async function execCommandHook(
     }
   }
   if (skillRoot) {
-    envVars.CLAUDE_PLUGIN_ROOT = toHookPath(skillRoot)
+    envVars.CLAUDE_SKILL_DIR = toHookPath(skillRoot)
+    if (!pluginRoot) envVars.CLAUDE_PLUGIN_ROOT = toHookPath(skillRoot)
+    command = command.replace(/\$\{CLAUDE_SKILL_DIR\}/g, () => toHookPath(skillRoot))
   }
 
   // CLAUDE_ENV_FILE points to a .sh file that the hook writes env var
@@ -1119,7 +1122,7 @@ async function execCommandHook(
     // variables, into `command` and each argument, keeping every boundary.
     const expand = (value: string) => {
       let expanded = value.replace(
-        /\$\{(CLAUDE_PROJECT_DIR|CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA)\}/g,
+        /\$\{(CLAUDE_PROJECT_DIR|CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|CLAUDE_SKILL_DIR)\}/g,
         (placeholder, name: string) => envVars[name] ?? placeholder,
       )
       if (pluginOpts) {
@@ -1605,6 +1608,7 @@ type FunctionHookMatcher = {
  */
 type MatchedHook = {
   hook: HookCommand | HookCallback | FunctionHook
+  sessionHook?: SessionHookEntry
   pluginRoot?: string
   pluginId?: string
   skillRoot?: string
@@ -1625,7 +1629,7 @@ function isInternalHook(matched: MatchedHook): boolean {
  * template don't collapse: after expansion they point to different files.
  */
 function hookDedupKey(m: MatchedHook, payload: string): string {
-  return `${m.pluginRoot ?? m.skillRoot ?? ''}\0${payload}`
+  return `${m.pluginRoot ?? ''}\0${m.skillRoot ?? ''}\0${payload}`
 }
 
 /**
@@ -1895,6 +1899,9 @@ export async function getMatchingHooks(
           : 'settings'
       return matcher.hooks.map(hook => ({
         hook,
+        ...(appState && hook.type !== 'callback'
+          ? { sessionHook: getSessionHookCallback(appState, sessionId, hookEvent, matchQuery ?? '', hook, true) }
+          : {}),
         pluginRoot,
         pluginId,
         skillRoot,
@@ -2274,30 +2281,6 @@ export async function* executeHooks({
     hookDefinitionsJson,
   )
 
-  // Yield progress messages for each hook before execution
-  for (const { hook } of matchingHooks) {
-    yield {
-      message: {
-        type: 'progress',
-        data: {
-          type: 'hook_progress',
-          hookEvent,
-          hookName,
-          command: getHookDisplayText(hook),
-          ...(hook.type === 'prompt' && { promptText: hook.prompt }),
-          ...('statusMessage' in hook &&
-            hook.statusMessage != null && {
-              statusMessage: hook.statusMessage,
-            }),
-        },
-        parentToolUseID: toolUseID,
-        toolUseID,
-        timestamp: new Date().toISOString(),
-        uuid: randomUUID(),
-      },
-    }
-  }
-
   // Track wall-clock time for the entire hook batch
   const batchStartTime = Date.now()
 
@@ -2324,8 +2307,56 @@ export async function* executeHooks({
 
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(async function* (
-    { hook, pluginRoot, pluginId, skillRoot },
+    matched,
     hookIndex,
+  ): AsyncGenerator<HookResult | { progress: AggregatedHookResult }> {
+    const { hook, sessionHook } = matched
+    if (sessionHook?.onceState) {
+      if (sessionHook.onceState !== 'ready') return
+      sessionHook.onceState = 'running'
+    }
+    try {
+      yield {
+        progress: {
+          message: {
+            type: 'progress',
+            data: {
+              type: 'hook_progress',
+              hookEvent,
+              hookName,
+              command: getHookDisplayText(hook),
+              ...(hook.type === 'prompt' && { promptText: hook.prompt }),
+              ...('statusMessage' in hook &&
+                hook.statusMessage != null && { statusMessage: hook.statusMessage }),
+            },
+            parentToolUseID: toolUseID,
+            toolUseID,
+            timestamp: new Date().toISOString(),
+            uuid: randomUUID(),
+          },
+        },
+      }
+      for await (const result of executeMatchedHook(matched, hookIndex)) {
+        // Complete before yielding: another tool can start while the caller
+        // consumes this result. Failures leave the registration retryable.
+        if (sessionHook && result.outcome === 'success') {
+          if (sessionHook.onceState) sessionHook.onceState = 'complete'
+          try {
+            sessionHook.onHookSuccess?.(sessionHook.hook, result as AggregatedHookResult)
+          } catch (error) {
+            logError(Error('Session hook success callback failed', { cause: error }))
+          }
+        }
+        yield result
+      }
+    } finally {
+      if (sessionHook?.onceState === 'running') sessionHook.onceState = 'ready'
+    }
+  })
+
+  async function* executeMatchedHook(
+    { hook, pluginRoot, pluginId, skillRoot }: MatchedHook,
+    hookIndex: number,
   ): AsyncGenerator<HookResult> {
     if (hook.type === 'callback') {
       const callbackTimeoutMs = hook.timeout ? hook.timeout * 1000 : timeoutMs
@@ -3001,7 +3032,7 @@ export async function* executeHooks({
       }
       return
     }
-  })
+  }
 
   // Track outcomes for logging
   const outcomes = {
@@ -3014,8 +3045,22 @@ export async function* executeHooks({
   let permissionBehavior: PermissionResult['behavior'] | undefined
   let permissionDecisionReason: string | undefined
 
+  async function* hookResults() {
+    try {
+      yield* all(hookPromises)
+    } finally {
+      // all() does not close its children when its consumer stops early.
+      // Release reservations even when a caller returns on a blocking result.
+      await Promise.all(hookPromises.map(generator => generator.return(undefined)))
+    }
+  }
+
   // Run all hooks in parallel and wait for all to complete
-  for await (const settledResult of all(hookPromises)) {
+  for await (const settledResult of hookResults()) {
+    if ('progress' in settledResult) {
+      yield settledResult.progress
+      continue
+    }
     const result = blockOnHookFailure(
       settledResult,
       hookEvent,
@@ -3201,29 +3246,6 @@ export async function* executeHooks({
       }
     }
 
-    // Invoke session hook callback if this is a command/prompt/function hook (not a callback hook)
-    if (appState && result.hook.type !== 'callback') {
-      const sessionId = getSessionId()
-      // Use empty string as matcher when matchQuery is undefined (e.g., for Stop hooks)
-      const matcher = matchQuery ?? ''
-      const hookEntry = getSessionHookCallback(
-        appState,
-        sessionId,
-        hookEvent,
-        matcher,
-        result.hook,
-      )
-      // Invoke onHookSuccess only on success outcome
-      if (hookEntry?.onHookSuccess && result.outcome === 'success') {
-        try {
-          hookEntry.onHookSuccess(result.hook, result as AggregatedHookResult)
-        } catch (error) {
-          logError(
-            Error('Session hook success callback failed', { cause: error }),
-          )
-        }
-      }
-    }
   }
 
   const totalDurationMs = Date.now() - batchStartTime
@@ -3398,8 +3420,28 @@ export async function executeHooksOutsideREPL({
   }
 
   // Run all hooks in parallel with individual timeouts
-  const hookPromises = matchingHooks.map(
-    async ({ hook, pluginRoot, pluginId, skillRoot }, hookIndex) => {
+  const hookPromises = matchingHooks.map(async (matched, hookIndex) => {
+    const { hook, pluginRoot, pluginId, skillRoot, sessionHook } = matched
+    if (sessionHook?.onceState) {
+      if (sessionHook.onceState !== 'ready') return undefined
+      sessionHook.onceState = 'running'
+    }
+    try {
+      const result = await executeMatchedHook()
+      if (sessionHook && result.succeeded) {
+        if (sessionHook.onceState) sessionHook.onceState = 'complete'
+        try {
+          sessionHook.onHookSuccess?.(sessionHook.hook, result)
+        } catch (error) {
+          logError(Error('Session hook success callback failed', { cause: error }))
+        }
+      }
+      return result
+    } finally {
+      if (sessionHook?.onceState === 'running') sessionHook.onceState = 'ready'
+    }
+
+    async function executeMatchedHook(): Promise<HookOutsideReplResult> {
       const failureBlocks = (timedOut = false) => !signal?.aborted &&
         !!hookFailureBlockReason(hook, hookEvent, timedOut)
       // Handle callback hooks
@@ -3754,11 +3796,12 @@ export async function executeHooksOutsideREPL({
           blocked: failureBlocks(abortSignal.aborted && !signal?.aborted),
         }
       }
-    },
-  )
+    }
+  })
 
   // Wait for all hooks to complete and collect results
-  const results: HookOutsideReplResult[] = await Promise.all(hookPromises)
+  const results = (await Promise.all(hookPromises))
+    .filter((result): result is HookOutsideReplResult => result !== undefined)
   return results.map(result => result.blocked && !result.blockingReason
     ? { ...result, blockingReason: result.output || 'Blocked by hook' }
     : result)

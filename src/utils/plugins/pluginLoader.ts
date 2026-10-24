@@ -46,7 +46,7 @@ import {
 } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, join, relative, resolve, sep } from 'path'
-import { getInlinePlugins } from '../../bootstrap/state.js'
+import { getInlinePlugins, getOriginalCwd } from '../../bootstrap/state.js'
 import {
   BUILTIN_MARKETPLACE_NAME,
   getBuiltinPlugins,
@@ -676,7 +676,7 @@ async function installFromGitHub(
   return installFromGit(gitUrl, targetPath, ref, sha)
 }
 
-async function preferredGitHubPluginUrl(repo: string): Promise<string> {
+export async function preferredGitHubPluginUrl(repo: string): Promise<string> {
   // Match marketplace acquisition: public GitHub plugins must work on machines
   // without SSH keys or a trusted GitHub host key. Explicit SSH URLs stay SSH.
   const useSsh =
@@ -691,7 +691,7 @@ async function preferredGitHubPluginUrl(repo: string): Promise<string> {
  * or any URL that passes validateGitUrl (https, http,
  * file, git@ ssh).
  */
-async function resolveGitSubdirUrl(url: string): Promise<string> {
+export async function resolveGitSubdirUrl(url: string): Promise<string> {
   if (/^[a-zA-Z0-9-_.]+\/[a-zA-Z0-9-_.]+$/.test(url)) {
     return preferredGitHubPluginUrl(url)
   }
@@ -917,6 +917,7 @@ export async function cachePlugin(
   source: PluginSource,
   options?: {
     manifest?: PluginManifest
+    temporary?: boolean
   },
 ): Promise<{ path: string; manifest: PluginManifest; gitCommitSha?: string }> {
   const cachePath = getPluginCachePath()
@@ -1100,6 +1101,8 @@ export async function cachePlugin(
       description: `Plugin cached from ${typeof source === 'string' ? source : source.source}`,
     }
   }
+
+  if (options?.temporary) return { path: tempPath, manifest, gitCommitSha }
 
   const finalName = manifest.name.replace(/[^a-zA-Z0-9-_]/g, '-')
   const finalPath = join(cachePath, finalName)
@@ -2100,24 +2103,31 @@ async function loadPluginsFromMarketplaces({
       // installed_plugins.json records what's actually cached on disk
       // (version for the full loader's first-pass probe, installPath for
       // the cache-only loader's direct read).
-      const installEntry = installedPluginsData.plugins[pluginId]?.[0]
-      return cacheOnly
-        ? loadPluginFromMarketplaceEntryCacheOnly(
+      const installations = installedPluginsData.plugins[pluginId] ?? []
+      const installEntry = ['managed', 'local', 'project', 'user']
+        .map(scope => installations.find(i => i.scope === scope &&
+          (scope === 'managed' || scope === 'user' || i.projectPath === getOriginalCwd())))
+        .find(Boolean)
+      const loaded = cacheOnly || installEntry?.dependencyVersion
+        ? await loadPluginFromMarketplaceEntryCacheOnly(
             result.entry,
             result.marketplaceInstallLocation,
             pluginId,
-            enabledValue === true,
+            enabledValue === true || Array.isArray(enabledValue),
             errors,
             installEntry?.installPath,
+            Boolean(installEntry?.dependencyVersion),
           )
-        : loadPluginFromMarketplaceEntry(
+        : await loadPluginFromMarketplaceEntry(
             result.entry,
             result.marketplaceInstallLocation,
             pluginId,
-            enabledValue === true,
+            enabledValue === true || Array.isArray(enabledValue),
             errors,
             installEntry?.version,
           )
+      if (loaded) loaded.dependencyVersion = installEntry?.dependencyVersion
+      return loaded
     }),
   )
 
@@ -2154,10 +2164,11 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
   enabled: boolean,
   errorsOut: PluginError[],
   installPath: string | undefined,
+  useInstalledPath = false,
 ): Promise<LoadedPlugin | null> {
   let pluginPath: string
 
-  if (typeof entry.source === 'string') {
+  if (typeof entry.source === 'string' && !useInstalledPath) {
     // Local relative path — read from the marketplace source dir directly.
     // Skip copyPluginToVersionedCache; startup doesn't need a fresh copy.
     let marketplaceDir: string
@@ -2490,6 +2501,15 @@ async function finishLoadingPluginFromPath(
     entry.strict ?? true, // Respect marketplace entry's strict setting
   )
   errors.push(...pluginErrors)
+
+  // Marketplace entries may declare dependencies as well as plugin.json.
+  // Keep both requirements so neither source can silently drop a constraint.
+  if (entry.dependencies?.length) {
+    plugin.manifest = {
+      ...plugin.manifest,
+      dependencies: [...(plugin.manifest.dependencies ?? []), ...entry.dependencies],
+    }
+  }
 
   // Set sha from source if available (for github and url source types)
   if (

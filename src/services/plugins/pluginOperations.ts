@@ -12,6 +12,7 @@
  * - Can throw errors for unexpected failures
  */
 import { dirname, join } from 'path'
+import { satisfies } from 'semver'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { isBuiltinPluginId } from '../../plugins/builtinPlugins.js'
 import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
@@ -60,6 +61,7 @@ import { deletePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js
 import { isPluginBlockedByPolicy } from '../../utils/plugins/pluginPolicy.js'
 import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js'
 import { calculatePluginVersion } from '../../utils/plugins/pluginVersioning.js'
+import { getInstalledDependencyRequirements, selectDependencyVersion } from '../../utils/plugins/dependencyVersions.js'
 import type {
   PluginMarketplaceEntry,
   PluginScope,
@@ -1010,22 +1012,32 @@ async function performPluginUpdate({
   let newVersion: string
   let shouldCleanupSource = false
   let gitCommitSha: string | undefined
+  let candidateVersion: string | undefined
+  const requirements = (await getInstalledDependencyRequirements(scope, projectPath, new Set([pluginId]))).get(pluginId) ?? []
+  let selected: Awaited<ReturnType<typeof selectDependencyVersion>>
+  try {
+    selected = await selectDependencyVersion(pluginId, entry, marketplaceInstallLocation, requirements)
+  } catch (error) {
+    return { success: false, message: errorMessage(error), pluginId, scope }
+  }
 
   // Handle remote vs local plugins
-  if (typeof entry.source !== 'string') {
+  if (selected || typeof entry.source !== 'string') {
     // Remote plugin: download to temp directory first
-    const cacheResult = await cachePlugin(entry.source, {
+    const cacheResult = await cachePlugin(selected?.source ?? entry.source, {
       manifest: { name: entry.name },
+      temporary: true,
     })
     sourcePath = cacheResult.path
     shouldCleanupSource = true
-    gitCommitSha = cacheResult.gitCommitSha
+    gitCommitSha = selected?.sha ?? cacheResult.gitCommitSha
+    candidateVersion = selected?.version ?? cacheResult.manifest.version
 
     // Calculate version from downloaded plugin. For git-subdir sources,
     // cachePlugin captured the commit SHA before discarding the ephemeral
     // clone (the extracted subdir has no .git, so the installPath-based
     // fallback in calculatePluginVersion can't recover it).
-    newVersion = await calculatePluginVersion(
+    newVersion = selected ? `${selected.version}-${selected.sha.slice(0, 12)}` : await calculatePluginVersion(
       pluginId,
       entry.source,
       cacheResult.manifest,
@@ -1098,10 +1110,15 @@ async function performPluginUpdate({
       sourcePath,
       entry.version,
     )
+    candidateVersion = pluginManifest?.version
   }
 
   // Use try/finally to ensure temp directory cleanup on any error
   try {
+    if (!requirements.every(r => candidateVersion && satisfies(candidateVersion, r.range))) {
+      return { success: false, pluginId, scope, oldVersion,
+        message: `Skipping update of "${pluginId}": installed dependents require ${requirements.map(r => `${r.range} (${r.requiredBy})`).join(', ')}, candidate ${candidateVersion ?? 'unknown'}` }
+    }
     // Check if this version already exists in cache
     let versionedPath = getVersionedCachePath(pluginId, newVersion)
 
@@ -1143,6 +1160,7 @@ async function performPluginUpdate({
       versionedPath,
       newVersion,
       gitCommitSha,
+      selected?.version,
     )
 
     if (oldVersionPath && oldVersionPath !== versionedPath) {

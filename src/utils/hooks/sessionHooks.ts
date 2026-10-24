@@ -30,13 +30,20 @@ export type FunctionHook = {
   statusMessage?: string
 }
 
+export type SessionHookEntry = {
+  hook: HookCommand | FunctionHook
+  onHookSuccess?: OnHookSuccess
+  // Stored on the registration, so concurrent matches share a reservation
+  // even after the successful run removes the entry from session storage.
+  onceState?: 'ready' | 'running' | 'complete'
+}
+
 type SessionHookMatcher = {
   matcher: string
   skillRoot?: string
-  hooks: Array<{
-    hook: HookCommand | FunctionHook
-    onHookSuccess?: OnHookSuccess
-  }>
+  pluginRoot?: string
+  pluginId?: string
+  hooks: SessionHookEntry[]
 }
 
 export type SessionStore = {
@@ -73,6 +80,7 @@ export function addSessionHook(
   hook: HookCommand,
   onHookSuccess?: OnHookSuccess,
   skillRoot?: string,
+  plugin?: { root: string; id: string },
 ): void {
   addHookToSession(
     setAppState,
@@ -82,6 +90,7 @@ export function addSessionHook(
     hook,
     onHookSuccess,
     skillRoot,
+    plugin,
   )
 }
 
@@ -172,14 +181,24 @@ function addHookToSession(
   hook: HookCommand | FunctionHook,
   onHookSuccess?: OnHookSuccess,
   skillRoot?: string,
+  plugin?: { root: string; id: string },
 ): void {
   setAppState(prev => {
     const store = prev.sessionHooks.get(sessionId) ?? { hooks: {} }
     const eventMatchers = store.hooks[event] || []
+    const entry: SessionHookEntry = {
+      hook,
+      onHookSuccess,
+      ...('once' in hook && hook.once ? { onceState: 'ready' as const } : {}),
+    }
 
     // Find existing matcher or create new one
     const existingMatcherIndex = eventMatchers.findIndex(
-      m => m.matcher === matcher && m.skillRoot === skillRoot,
+      m =>
+        m.matcher === matcher &&
+        m.skillRoot === skillRoot &&
+        m.pluginRoot === plugin?.root &&
+        m.pluginId === plugin?.id,
     )
 
     let updatedMatchers: SessionHookMatcher[]
@@ -188,9 +207,8 @@ function addHookToSession(
       updatedMatchers = [...eventMatchers]
       const existingMatcher = updatedMatchers[existingMatcherIndex]!
       updatedMatchers[existingMatcherIndex] = {
-        matcher: existingMatcher.matcher,
-        skillRoot: existingMatcher.skillRoot,
-        hooks: [...existingMatcher.hooks, { hook, onHookSuccess }],
+        ...existingMatcher,
+        hooks: [...existingMatcher.hooks, entry],
       }
     } else {
       // Create new matcher
@@ -199,7 +217,8 @@ function addHookToSession(
         {
           matcher,
           skillRoot,
-          hooks: [{ hook, onHookSuccess }],
+          ...(plugin ? { pluginRoot: plugin.root, pluginId: plugin.id } : {}),
+          hooks: [entry],
         },
       ]
     }
@@ -227,6 +246,7 @@ export function removeSessionHook(
   sessionId: string,
   event: HookEvent,
   hook: HookCommand,
+  identityOnly = false,
 ): void {
   setAppState(prev => {
     const store = prev.sessionHooks.get(sessionId)
@@ -239,8 +259,8 @@ export function removeSessionHook(
     // Remove the hook from all matchers
     const updatedMatchers = eventMatchers
       .map(matcher => {
-        const updatedHooks = matcher.hooks.filter(
-          h => !isHookEqual(h.hook, hook),
+        const updatedHooks = matcher.hooks.filter(h =>
+          identityOnly ? h.hook !== hook : !isHookEqual(h.hook, hook),
         )
 
         return updatedHooks.length > 0
@@ -272,6 +292,8 @@ export type SessionDerivedHookMatcher = {
   matcher: string
   hooks: HookCommand[]
   skillRoot?: string
+  pluginRoot?: string
+  pluginId?: string
 }
 
 /**
@@ -285,6 +307,9 @@ function convertToHookMatchers(
   return sessionMatchers.map(sm => ({
     matcher: sm.matcher,
     skillRoot: sm.skillRoot,
+    ...(sm.pluginRoot
+      ? { pluginRoot: sm.pluginRoot, pluginId: sm.pluginId }
+      : {}),
     // Filter out function hooks - they can't be persisted to HookMatcher format
     hooks: sm.hooks
       .map(h => h.hook)
@@ -400,12 +425,8 @@ export function getSessionHookCallback(
   event: HookEvent,
   matcher: string,
   hook: HookCommand | FunctionHook,
-):
-  | {
-      hook: HookCommand | FunctionHook
-      onHookSuccess?: OnHookSuccess
-    }
-  | undefined {
+  identityOnly = false,
+): SessionHookEntry | undefined {
   const store = appState.sessionHooks.get(sessionId)
   if (!store) {
     return undefined
@@ -416,7 +437,15 @@ export function getSessionHookCallback(
     return undefined
   }
 
-  // Find the hook in the matchers
+  // Matched hooks retain their object identity. Prefer it over structural
+  // equality: different skills can use the same command in different roots.
+  for (const matcherEntry of eventMatchers) {
+    const hookEntry = matcherEntry.hooks.find(h => h.hook === hook)
+    if (hookEntry) return hookEntry
+  }
+  if (identityOnly) return undefined
+
+  // Fallback for callers that reconstruct a hook rather than executing it.
   for (const matcherEntry of eventMatchers) {
     if (matcherEntry.matcher === matcher || matcher === '') {
       const hookEntry = matcherEntry.hooks.find(h => isHookEqual(h.hook, hook))

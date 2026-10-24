@@ -53,6 +53,7 @@ export type LoadedPlugin = {
   path: string
   source: string
   repository: string // Repository identifier, usually same as source
+  dependencyVersion?: string // Semver from a resolved release tag (cache version also includes its commit)
   enabled?: boolean
   isBuiltin?: boolean // true for built-in plugins that ship with the CLI
   sha?: string // Git commit SHA for version pinning (from marketplace entry source)
@@ -269,7 +270,9 @@ export type PluginError =
       source: string
       plugin: string
       dependency: string
-      reason: 'not-enabled' | 'not-found'
+      reason: 'not-enabled' | 'not-found' | 'version'
+      requiredVersion?: string
+      installedVersion?: string
     }
   | {
       type: 'plugin-cache-miss'
@@ -353,6 +356,9 @@ export function getPluginErrorMessage(error: PluginError): string {
       }
       return `Marketplace '${error.marketplace}' is not in the allowed marketplace list`
     case 'dependency-unsatisfied': {
+      if (error.reason === 'version') {
+        return `Requires "${error.dependency}" ${error.requiredVersion}, installed ${error.installedVersion}`
+      }
       const hint =
         error.reason === 'not-enabled'
           ? 'disabled — enable it or remove the dependency'

@@ -2,7 +2,6 @@ import { useCallback, useEffect } from 'react'
 import type { Command } from '../commands.js'
 import {
   clearCommandMemoizationCaches,
-  clearCommandsCache,
   getCommands,
 } from '../commands.js'
 import { onGrowthBookRefresh } from '../services/analytics/growthbook.js'
@@ -28,8 +27,8 @@ export function useSkillsChange(
   const handleChange = useCallback(async () => {
     if (!cwd) return
     try {
-      // Clear all command caches to ensure fresh load
-      clearCommandsCache()
+      // The detector invalidates caches before notifying us. Clearing them
+      // again here would erase dynamic/path-conditional skills on activation.
       const commands = await getCommands(cwd)
       onCommandsChange(commands)
     } catch (error) {

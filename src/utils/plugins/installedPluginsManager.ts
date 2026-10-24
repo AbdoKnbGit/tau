@@ -424,6 +424,7 @@ export function addPluginInstallation(
     scope,
     installPath,
     version: metadata.version,
+    dependencyVersion: metadata.dependencyVersion,
     installedAt: metadata.installedAt || new Date().toISOString(),
     lastUpdated: new Date().toISOString(),
     gitCommitSha: metadata.gitCommitSha,
@@ -492,6 +493,20 @@ export function getInMemoryInstalledPlugins(): InstalledPluginsFileV2 {
   return inMemoryInstalledPlugins
 }
 
+/** Apply only explicitly installed plugins to the session's version snapshot.
+ * Background updates keep using updateInstallationPathOnDisk instead.
+ */
+export function refreshInstalledPluginSnapshot(pluginIds: readonly string[]): void {
+  if (inMemoryInstalledPlugins === null) return
+  const disk = loadInstalledPluginsFromDisk()
+  const plugins = { ...inMemoryInstalledPlugins.plugins }
+  for (const id of pluginIds) {
+    if (disk.plugins[id]) plugins[id] = disk.plugins[id]!
+    else delete plugins[id]
+  }
+  inMemoryInstalledPlugins = { ...inMemoryInstalledPlugins, plugins }
+}
+
 /**
  * Load installed plugins directly from disk, bypassing all caches.
  * Used by background updater to check for changes without affecting
@@ -541,6 +556,7 @@ export function updateInstallationPathOnDisk(
   newPath: string,
   newVersion: string,
   gitCommitSha?: string,
+  dependencyVersion?: string,
 ): void {
   const diskData = loadInstalledPluginsFromDisk()
   const installations = diskData.plugins[pluginId]
@@ -559,6 +575,7 @@ export function updateInstallationPathOnDisk(
   if (entry) {
     entry.installPath = newPath
     entry.version = newVersion
+    entry.dependencyVersion = dependencyVersion
     entry.lastUpdated = new Date().toISOString()
     if (gitCommitSha !== undefined) {
       entry.gitCommitSha = gitCommitSha
@@ -882,6 +899,7 @@ export function addInstalledPlugin(
     scope,
     installPath: metadata.installPath,
     version: metadata.version,
+    dependencyVersion: metadata.dependencyVersion,
     installedAt: metadata.installedAt,
     lastUpdated: metadata.lastUpdated,
     gitCommitSha: metadata.gitCommitSha,

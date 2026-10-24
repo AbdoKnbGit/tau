@@ -35,7 +35,9 @@ export function getOneShotAgentTypes(): ReadonlySet<string> {
   return types
 }
 
-export function getBuiltInAgents(): AgentDefinition[] {
+export function getBuiltInAgents(
+  options: { forExplicitSelection?: boolean } = {},
+): AgentDefinition[] {
   // Allow disabling all built-in agents via env var (useful for SDK users who want a blank slate)
   // Only applies in noninteractive mode (SDK/API usage)
   if (
@@ -63,7 +65,9 @@ export function getBuiltInAgents(): AgentDefinition[] {
     STATUSLINE_SETUP_AGENT,
   ]
 
-  if (areExplorePlanAgentsEnabled()) {
+  // Skills can explicitly request the standard read-only agents even when
+  // the default catalog omits them. Keep the advertised catalog unchanged.
+  if (options.forExplicitSelection || areExplorePlanAgentsEnabled()) {
     agents.push(EXPLORE_AGENT, PLAN_AGENT)
   }
 
