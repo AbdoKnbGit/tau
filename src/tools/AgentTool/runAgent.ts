@@ -1116,6 +1116,10 @@ export async function* runAgent(options: RunAgentOptions) {
       `${configError}\nFix the agent's frontmatter, then spawn it again.`,
     )
   }
+  if (options.agentDefinition.source === 'plugin') {
+    const { recordPluginUse } = await import('../../utils/plugins/usage.js')
+    recordPluginUse(options.agentDefinition.plugin)
+  }
 
   const provider = options.agentDefinition.provider
   let context: ForcedProviderContext | undefined = canApplyAgentProvider(provider)

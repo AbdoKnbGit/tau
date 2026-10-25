@@ -1,4 +1,6 @@
 import { join } from 'path'
+import { realpath } from 'fs/promises'
+import { isWithinDirectory } from './pluginFiles.js'
 import { expandEnvVarsInString } from '../../services/mcp/envExpansion.js'
 import {
   type McpServerConfig,
@@ -133,12 +135,19 @@ export async function loadPluginMcpServers(
   errors: PluginError[] = [],
 ): Promise<Record<string, McpServerConfig> | undefined> {
   let servers: Record<string, McpServerConfig> = {}
+  const allowFile = async (path: string) => {
+    if (plugin.discoveryScope !== 'project') return true
+    if (isMcpbSource(path)) return false
+    try {
+      return isWithinDirectory(await realpath(plugin.path), await realpath(join(plugin.path, path)))
+    } catch { return false }
+  }
 
   // Check for .mcp.json in plugin directory first (lowest priority)
-  const defaultMcpServers = await loadMcpServersFromFile(
+  const defaultMcpServers = await allowFile('.mcp.json') ? await loadMcpServersFromFile(
     plugin.path,
     '.mcp.json',
-  )
+  ) : null
   if (defaultMcpServers) {
     servers = { ...servers, ...defaultMcpServers }
   }
@@ -149,6 +158,7 @@ export async function loadPluginMcpServers(
 
     // Handle different mcpServers formats
     if (typeof mcpServersSpec === 'string') {
+      if (!await allowFile(mcpServersSpec)) return Object.keys(servers).length ? servers : undefined
       // Check if it's an MCPB file
       if (isMcpbSource(mcpServersSpec)) {
         const mcpbServers = await loadMcpServersFromMcpb(
@@ -177,6 +187,7 @@ export async function loadPluginMcpServers(
         mcpServersSpec.map(async spec => {
           try {
             if (typeof spec === 'string') {
+              if (!await allowFile(spec)) return null
               // Check if it's an MCPB file
               if (isMcpbSource(spec)) {
                 return await loadMcpServersFromMcpb(plugin, spec, errors)
@@ -342,6 +353,7 @@ export function addPluginScopeToServers(
   servers: Record<string, McpServerConfig>,
   pluginName: string,
   pluginSource: string,
+  projectScope = false,
 ): Record<string, ScopedMcpServerConfig> {
   const scopedServers: Record<string, ScopedMcpServerConfig> = {}
 
@@ -350,7 +362,7 @@ export function addPluginScopeToServers(
     const scopedName = `plugin:${pluginName}:${name}`
     const scoped: ScopedMcpServerConfig = {
       ...config,
-      scope: 'dynamic', // Use dynamic scope for plugin servers
+      scope: projectScope ? 'project' : 'dynamic',
       pluginSource,
     }
     scopedServers[scopedName] = scoped
@@ -415,6 +427,7 @@ export async function extractMcpServersFromPlugins(
         resolvedServers,
         plugin.name,
         plugin.source,
+        plugin.discoveryScope === 'project',
       )
     }),
   )
@@ -630,5 +643,5 @@ export async function getPluginMcpServers(
   }
 
   // Add plugin scope
-  return addPluginScopeToServers(resolvedServers, plugin.name, plugin.source)
+  return addPluginScopeToServers(resolvedServers, plugin.name, plugin.source, plugin.discoveryScope === 'project')
 }

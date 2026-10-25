@@ -3,7 +3,7 @@ import { chmod, open, rename, stat, unlink } from 'fs/promises'
 import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import { dirname, join, parse } from 'path'
-import type { PluginError } from '../../types/plugin.js'
+import type { PluginError, PluginLoadResult } from '../../types/plugin.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
 import {
@@ -1119,7 +1119,7 @@ export async function getClaudeCodeMcpConfigs(
   // Load plugin MCP servers
   const pluginMcpServers: Record<string, ScopedMcpServerConfig> = {}
 
-  const pluginResult = await loadAllPluginsCacheOnly()
+  const pluginResult: PluginLoadResult = await loadAllPluginsCacheOnly()
 
   // Collect MCP-specific errors during server loading
   const mcpErrors: PluginError[] = []
@@ -1154,7 +1154,9 @@ export async function getClaudeCodeMcpConfigs(
   )
   for (const servers of pluginServerResults) {
     if (servers) {
-      Object.assign(pluginMcpServers, servers)
+      for (const [name, config] of Object.entries(servers)) {
+        if (config.scope !== 'project' || getProjectMcpServerStatus(name) === 'approved') pluginMcpServers[name] = config
+      }
     }
   }
 
@@ -1253,6 +1255,29 @@ export async function getClaudeCodeMcpConfigs(
   }
 
   return { servers: filtered, errors: mcpErrors }
+}
+
+/** Repository plugin servers use the same approval flow as project .mcp.json. */
+export async function getPendingProjectMcpServers(): Promise<string[]> {
+  if (
+    doesEnterpriseMcpConfigExist() ||
+    getPowerModeFromSettings(getInitialSettings()) === 'cheap'
+  ) return []
+  const servers = isRestrictedToPluginOnly('mcp')
+    ? {}
+    : { ...getMcpConfigsByScope('project').servers }
+  const { enabled }: PluginLoadResult = await loadAllPluginsCacheOnly()
+  for (const plugin of enabled) {
+    if (plugin.discoveryScope === 'project') {
+      Object.assign(servers, await getPluginMcpServers(plugin))
+    }
+  }
+  return Object.entries(servers)
+    .filter(([name, config]) =>
+      getProjectMcpServerStatus(name) === 'pending' &&
+      isMcpServerAllowedByPolicy(name, config),
+    )
+    .map(([name]) => name)
 }
 
 /**

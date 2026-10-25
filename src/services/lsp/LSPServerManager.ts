@@ -349,7 +349,10 @@ export function createLSPServerManager(): LSPServerManager {
     if (!server) return undefined
 
     try {
-      return await server.sendRequest<T>(method, params)
+      const result = await server.sendRequest<T>(method, params)
+      const { recordPluginUse } = await import('../../utils/plugins/usage.js')
+      recordPluginUse(server.config.pluginSource)
+      return result
     } catch (error) {
       const err = error as Error
       logError(

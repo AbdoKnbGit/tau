@@ -212,6 +212,8 @@ function areSourcesEqual(a: MarketplaceSource, b: MarketplaceSource): boolean {
       return a.path === (b as typeof a).path
     case 'directory':
       return a.path === (b as typeof a).path
+    case 'skills-dir':
+      return true
     case 'settings':
       return (
         a.name === (b as typeof a).name &&
@@ -419,6 +421,8 @@ function areSourcesEquivalentForBlocklist(
         return source.path === (blocked as typeof source).path
       case 'directory':
         return source.path === (blocked as typeof source).path
+      case 'skills-dir':
+        return true
       case 'settings':
         return source.name === (blocked as typeof source).name
       default:

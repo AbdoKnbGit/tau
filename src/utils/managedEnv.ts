@@ -187,7 +187,15 @@ export function applySafeConfigEnvironmentVariables(): void {
 export function applyConfigEnvironmentVariables(): void {
   Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
 
-  Object.assign(process.env, filterSettingsEnv(getSettings_DEPRECATED()?.env))
+  const mergedEnv = filterSettingsEnv(getSettings_DEPRECATED()?.env)
+  // Repository settings cannot introduce session plugins through environment.
+  Object.assign(process.env, Object.fromEntries(Object.entries(mergedEnv).filter(([key]) => key.toUpperCase() !== 'CLAUDE_CODE_PLUGIN_DIRS')))
+  for (const source of TRUSTED_SETTING_SOURCES) {
+    if (!isSettingSourceEnabled(source)) continue
+    for (const [key, value] of Object.entries(filterSettingsEnv(getSettingsForSource(source)?.env))) {
+      if (key.toUpperCase() === 'CLAUDE_CODE_PLUGIN_DIRS') process.env[key] = value
+    }
+  }
 
   // Clear caches so agents are rebuilt with the new env vars
   clearCACertsCache()

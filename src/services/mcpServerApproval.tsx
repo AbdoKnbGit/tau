@@ -4,8 +4,7 @@ import { MCPServerMultiselectDialog } from '../components/MCPServerMultiselectDi
 import type { Root } from '../ink.js';
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js';
 import { AppStateProvider } from '../state/AppState.js';
-import { getMcpConfigsByScope } from './mcp/config.js';
-import { getProjectMcpServerStatus } from './mcp/utils.js';
+import { getPendingProjectMcpServers } from './mcp/config.js';
 
 /**
  * Show MCP server approval dialogs for pending project servers.
@@ -13,10 +12,7 @@ import { getProjectMcpServerStatus } from './mcp/utils.js';
  * from main.tsx instead of creating a separate one).
  */
 export async function handleMcpjsonServerApprovals(root: Root): Promise<void> {
-  const {
-    servers: projectServers
-  } = getMcpConfigsByScope('project');
-  const pendingServers = Object.keys(projectServers).filter(serverName => getProjectMcpServerStatus(serverName) === 'pending');
+  const pendingServers = await getPendingProjectMcpServers();
   if (pendingServers.length === 0) {
     return;
   }

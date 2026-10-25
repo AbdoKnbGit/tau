@@ -19,10 +19,10 @@ import { parsePluginIdentifier } from './pluginIdentifier.js'
 import type { DependencyRef, PluginId } from './schemas.js'
 
 /**
- * Synthetic marketplace sentinel for `--plugin-dir` plugins (pluginLoader.ts
- * sets `source = "{name}@inline"`). Not a real marketplace — bare deps from
- * these plugins cannot meaningfully inherit it.
+ * These origins are not real marketplaces. Bare dependencies from local or
+ * synced plugins resolve against the loaded inventory by name.
  */
+const LOCAL_PLUGIN_ORIGINS = new Set(['inline', 'skills-dir', 'synced'])
 const INLINE_MARKETPLACE = 'inline'
 
 /**
@@ -31,9 +31,8 @@ const INLINE_MARKETPLACE = 'inline'
  * cross-marketplace deps are blocked anyway, so the @-suffix is boilerplate
  * in the common case.
  *
- * EXCEPTION: if the declaring plugin is @inline (loaded via --plugin-dir),
- * bare deps are returned unchanged. `inline` is a synthetic sentinel, not a
- * real marketplace — fabricating "dep@inline" would never match anything.
+ * EXCEPTION: for a local or synced plugin, bare deps are returned unchanged.
+ * Fabricating a marketplace-qualified ID would hide installed dependencies.
  * verifyAndDemote handles bare deps via name-only matching.
  */
 export function qualifyDependency(
@@ -48,7 +47,7 @@ export function qualifyDependency(
         : ref.name
   if (parsePluginIdentifier(dep).marketplace) return dep
   const mkt = parsePluginIdentifier(declaringPluginId).marketplace
-  if (!mkt || mkt === INLINE_MARKETPLACE) return dep
+  if (!mkt || LOCAL_PLUGIN_ORIGINS.has(mkt)) return dep
   return `${dep}@${mkt}`
 }
 

@@ -298,6 +298,7 @@ export function resolvePluginLspEnvironment(
 export function addPluginScopeToLspServers(
   servers: Record<string, LspServerConfig>,
   pluginName: string,
+  pluginSource?: string,
 ): Record<string, ScopedLspServerConfig> {
   const scopedServers: Record<string, ScopedLspServerConfig> = {}
 
@@ -308,6 +309,7 @@ export function addPluginScopeToLspServers(
       ...config,
       scope: 'dynamic', // Use dynamic scope for plugin servers
       source: pluginName,
+      ...(pluginSource ? { pluginSource } : {}),
     }
   }
 
@@ -354,7 +356,7 @@ export async function getPluginLspServers(
   }
 
   // Add plugin scope
-  return addPluginScopeToLspServers(resolvedServers, plugin.name)
+  return addPluginScopeToLspServers(resolvedServers, plugin.name, plugin.source)
 }
 
 /**
@@ -371,7 +373,7 @@ export async function extractLspServersFromPlugins(
 
     const servers = await loadPluginLspServers(plugin, errors)
     if (servers) {
-      const scopedServers = addPluginScopeToLspServers(servers, plugin.name)
+      const scopedServers = addPluginScopeToLspServers(servers, plugin.name, plugin.source)
       Object.assign(allServers, scopedServers)
 
       // Store the servers on the plugin for caching

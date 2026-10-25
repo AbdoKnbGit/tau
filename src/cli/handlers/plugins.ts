@@ -21,7 +21,7 @@ import {
   VALID_INSTALLABLE_SCOPES,
   VALID_UPDATE_SCOPES,
 } from '../../services/plugins/pluginCliCommands.js'
-import { getPluginErrorMessage } from '../../types/plugin.js'
+import { getPluginErrorMessage, type PluginLoadResult } from '../../types/plugin.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
@@ -180,18 +180,21 @@ export async function pluginListHandler(options: {
     enabled: loadedEnabled,
     disabled: loadedDisabled,
     errors: loadErrors,
-  } = await loadAllPlugins()
+  }: PluginLoadResult = await loadAllPlugins()
   const allLoadedPlugins = [...loadedEnabled, ...loadedDisabled]
   const inlinePlugins = allLoadedPlugins.filter(p =>
-    p.source.endsWith('@inline'),
+    p.source.endsWith('@inline') || p.source.endsWith('@skills-dir'),
   )
   // Path-level inline failures (dir doesn't exist, parse error before
   // manifest is read) use source='inline[N]'. Plugin-level errors after
   // manifest read use source='name@inline'. Collect both for the session
   // section — these are otherwise invisible since they have no pluginId.
   const inlineLoadErrors = loadErrors.filter(
-    e => e.source.endsWith('@inline') || e.source.startsWith('inline['),
+    e => e.source.endsWith('@inline') || e.source.endsWith('@skills-dir') || e.source === 'skills-dir' || e.source.startsWith('inline['),
   )
+  const unmatchedLocalErrors = inlineLoadErrors.filter(e => !inlinePlugins.some(
+    p => e.source === p.source || ('plugin' in e && e.plugin === p.name),
+  ))
 
   if (options.json) {
     // Create a map of plugin source to loaded plugin for quick lookup
@@ -271,7 +274,7 @@ export async function pluginListHandler(options: {
       plugins.push({
         id: p.source,
         version: p.manifest.version ?? 'unknown',
-        scope: 'session',
+        scope: p.discoveryScope ? 'skills-dir' : 'session',
         enabled: p.enabled !== false,
         installPath: p.path,
         mcpServers:
@@ -282,13 +285,11 @@ export async function pluginListHandler(options: {
     // Path-level inline failures (--plugin-dir /nonexistent): no LoadedPlugin
     // exists so the loop above can't surface them. Mirror the human-path
     // handling so JSON consumers see the failure instead of silent omission.
-    for (const e of inlineLoadErrors.filter(e =>
-      e.source.startsWith('inline['),
-    )) {
+    for (const e of unmatchedLocalErrors) {
       plugins.push({
         id: e.source,
         version: 'unknown',
-        scope: 'session',
+        scope: e.source.endsWith('@skills-dir') || e.source === 'skills-dir' ? 'skills-dir' : 'session',
         enabled: false,
         installPath: 'path' in e ? e.path : '',
         errors: [getPluginErrorMessage(e)],
@@ -401,10 +402,14 @@ export async function pluginListHandler(options: {
     }
   }
 
-  if (inlinePlugins.length > 0 || inlineLoadErrors.length > 0) {
+  for (const group of [
+    { title: 'Session-only plugins', plugins: inlinePlugins.filter(p => !p.discoveryScope), errors: unmatchedLocalErrors.filter(e => !e.source.includes('skills-dir')) },
+    { title: 'Skills-directory plugins', plugins: inlinePlugins.filter(p => p.discoveryScope), errors: unmatchedLocalErrors.filter(e => e.source.includes('skills-dir')) },
+  ]) {
+    if (!group.plugins.length && !group.errors.length) continue
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log('Session-only plugins (--plugin-dir):\n')
-    for (const p of inlinePlugins) {
+    console.log(`${group.title}:\n`)
+    for (const p of group.plugins) {
       // Same dirName≠manifestName fallback as the JSON path above — error
       // sources use the dir basename but p.source uses the manifest name.
       const pErrors = inlineLoadErrors.filter(
@@ -413,7 +418,7 @@ export async function pluginListHandler(options: {
       const status =
         pErrors.length > 0
           ? `${figures.cross} loaded with errors`
-          : `${figures.tick} loaded`
+          : p.enabled ? `${figures.tick} loaded` : `${figures.cross} disabled`
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  ${figures.pointer} ${p.source}`)
       // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -431,9 +436,7 @@ export async function pluginListHandler(options: {
     }
     // Path-level failures: no LoadedPlugin object exists. Show them so
     // `--plugin-dir /typo` doesn't just silently produce nothing.
-    for (const e of inlineLoadErrors.filter(e =>
-      e.source.startsWith('inline['),
-    )) {
+    for (const e of group.errors) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(
         `  ${figures.pointer} ${e.source}: ${figures.cross} ${getPluginErrorMessage(e)}\n`,

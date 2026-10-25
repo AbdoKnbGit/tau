@@ -2,14 +2,13 @@ import { c as _c } from "react/compiler-runtime";
 import { homedir } from 'os';
 import React from 'react';
 import { logEvent } from 'src/services/analytics/index.js';
-import { setSessionTrustAccepted } from '../../bootstrap/state.js';
 import type { Command } from '../../commands.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Link, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { getMcpConfigsByScope } from '../../services/mcp/config.js';
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js';
-import { checkHasTrustDialogAccepted, saveCurrentProjectConfig } from '../../utils/config.js';
+import { acceptExplicitWorkspaceTrust, hasExplicitWorkspaceTrust, checkHasTrustDialogAccepted, saveCurrentProjectConfig } from '../../utils/config.js';
 import { getCwd } from '../../utils/cwd.js';
 import { getFsImplementation } from '../../utils/fsOperations.js';
 import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js';
@@ -19,12 +18,14 @@ import { getApiKeyHelperSources, getAwsCommandsSources, getBashPermissionSources
 type Props = {
   onDone(): void;
   commands?: Command[];
+  requireExplicitTrust?: boolean;
 };
 export function TrustDialog(t0) {
   const $ = _c(33);
   const {
     onDone,
-    commands
+    commands,
+    requireExplicitTrust
   } = t0;
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
@@ -125,7 +126,7 @@ export function TrustDialog(t0) {
   }
   const hasSkillsBash = t11;
   const hasAnyBashExecution = bashSettingSources.length > 0 || hasSlashCommandBash || hasSkillsBash;
-  const hasTrustDialogAccepted = checkHasTrustDialogAccepted();
+  const hasTrustDialogAccepted = requireExplicitTrust ? hasExplicitWorkspaceTrust() : checkHasTrustDialogAccepted();
   let t12;
   let t13;
   if ($[13] !== hasAnyBashExecution) {
@@ -171,9 +172,8 @@ export function TrustDialog(t0) {
         hasOtelHeadersHelper,
         hasDangerousEnvVars
       });
-      if (isHomeDir_0) {
-        setSessionTrustAccepted(true);
-      } else {
+      acceptExplicitWorkspaceTrust(!isHomeDir_0);
+      if (!isHomeDir_0) {
         saveCurrentProjectConfig(_temp5);
       }
       onDone();

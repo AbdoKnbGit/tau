@@ -1018,6 +1018,7 @@ export const MarketplaceSourceSchema = lazySchema(() =>
         .string()
         .describe('Local directory containing .claude-plugin/marketplace.json'),
     }),
+    z.object({ source: z.literal('skills-dir') }),
     z.object({
       source: z.literal('hostPattern'),
       hostPattern: z

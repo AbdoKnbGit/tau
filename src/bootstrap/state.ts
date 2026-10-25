@@ -5,7 +5,7 @@ import type { LoggerProvider } from '@opentelemetry/sdk-logs'
 import type { MeterProvider } from '@opentelemetry/sdk-metrics'
 import type { BasicTracerProvider } from '@opentelemetry/sdk-trace-base'
 import { realpathSync } from 'fs'
-import { getEnvironmentPluginPaths } from 'src/utils/plugins/sessionPaths.js'
+import { getEnvironmentPluginPaths, getSessionPluginUrls } from 'src/utils/plugins/sessionPaths.js'
 import sumBy from 'lodash-es/sumBy.js'
 import { cwd } from 'process'
 import type { HookEvent, ModelUsage } from 'src/entrypoints/agentSdkTypes.js'
@@ -174,6 +174,7 @@ type State = {
   // When running from home dir, trust dialog is shown but not saved to disk.
   // This flag allows features requiring trust to work during the session.
   sessionTrustAccepted: boolean
+  explicitWorkspaceTrustPath?: string
   // Session-only flag to disable session persistence to disk
   sessionPersistenceDisabled: boolean
   // Track if user has exited plan mode in this session (for re-entry guidance)
@@ -1329,7 +1330,7 @@ export function setInlinePlugins(plugins: Array<string>): void {
 }
 
 export function getInlinePlugins(): Array<string> {
-  return [...new Set([...STATE.inlinePlugins, ...getEnvironmentPluginPaths()])]
+  return [...new Set([...STATE.inlinePlugins, ...getEnvironmentPluginPaths(), ...getSessionPluginUrls()])]
 }
 
 export function setChromeFlagOverride(value: boolean | undefined): void {
@@ -1402,8 +1403,14 @@ export function removeSessionCronTasks(ids: readonly string[]): number {
   return removed
 }
 
-export function setSessionTrustAccepted(accepted: boolean): void {
+export function setSessionTrustAccepted(accepted: boolean, explicit = false): void {
   STATE.sessionTrustAccepted = accepted
+  if (!accepted) STATE.explicitWorkspaceTrustPath = undefined
+  else if (explicit) STATE.explicitWorkspaceTrustPath = getOriginalCwd()
+}
+
+export function hasSessionExplicitWorkspaceTrust(): boolean {
+  return STATE.explicitWorkspaceTrustPath === getOriginalCwd()
 }
 
 export function getSessionTrustAccepted(): boolean {

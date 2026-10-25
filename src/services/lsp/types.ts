@@ -19,4 +19,5 @@ export type LspServerConfig = {
 export type ScopedLspServerConfig = LspServerConfig & {
   scope?: 'dynamic' | 'builtin'
   source?: string
+  pluginSource?: string
 }

@@ -621,7 +621,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     const command = findCommand(commandName, commands)
 
     // Track skill usage for ranking
-    recordSkillUsage(commandName)
+    recordSkillUsage(commandName, command?.type === 'prompt' ? command.pluginInfo?.repository : undefined)
 
     // Check if skill should run as a forked sub-agent
     if (command?.type === 'prompt' && command.context === 'fork') {

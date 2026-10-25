@@ -89,6 +89,8 @@ import { preparePluginHookFile, preparePluginManifestHooks, type PluginHookIssue
 import { copyDir } from './pluginFiles.js'
 export { copyDir } from './pluginFiles.js'
 import { assignPluginHookOwners } from './hookOwnership.js'
+import { resolveSessionPluginPath } from './sessionArchives.js'
+import { discoverSkillsDirectoryPlugins } from './skillsDirectory.js'
 import { getManagedPluginNames } from './managedPlugins.js'
 import {
   formatSourceForDisplay,
@@ -2956,13 +2958,22 @@ async function loadSessionOnlyPlugins(
   if (sessionPluginPaths.length === 0) {
     return { plugins: [], errors: [] }
   }
+  if (getSettingsForSource('policySettings')?.disableSideloadFlags) {
+    throw new Error('Session plugin flags are disabled by your organization\'s managed settings.')
+  }
 
   const plugins: LoadedPlugin[] = []
   const errors: PluginError[] = []
 
   const paths: string[] = []
-  for (const input of sessionPluginPaths) {
-    const root = resolve(input)
+  for (const [inputIndex, input] of sessionPluginPaths.entries()) {
+    let root: string
+    try {
+      root = await resolveSessionPluginPath(input)
+    } catch (error) {
+      errors.push({ type: 'generic-error', source: `inline[${inputIndex}]`, error: `Could not load session plugin ${input}: ${errorMessage(error)}` })
+      continue
+    }
     // A parent folder can group plugins without becoming a plugin itself.
     const components = ['.claude-plugin/plugin.json', 'plugin.json', 'commands', 'skills', 'agents', 'hooks', '.mcp.json']
     if (!(await Promise.all(components.map(p => pathExists(join(root, p))))).some(Boolean)) {
@@ -3039,25 +3050,44 @@ async function loadSessionOnlyPlugins(
   return { plugins, errors }
 }
 
-/**
- * Merge plugins from session (--plugin-dir), marketplace (installed), and
- * builtin sources. Session plugins override marketplace plugins with the
- * same name — the user explicitly pointed at a directory for this session.
- *
- * Exception: marketplace plugins locked by managed settings (policySettings)
- * cannot be overridden. Enterprise admin intent beats local dev convenience.
- * When a session plugin collides with a managed one, the session copy is
- * dropped and an error is returned for surfacing.
- *
- * Without this dedup, both versions sat in the array and marketplace won
- * on first-match, making --plugin-dir useless for iterating on an
- * installed plugin.
- */
+/** Discover local plugin folders without recording marketplace installations. */
+async function loadSkillsDirectoryPlugins(): Promise<{ plugins: LoadedPlugin[]; errors: PluginError[] }> {
+  const plugins: LoadedPlugin[] = []
+  const errors: PluginError[] = []
+  let candidates: Awaited<ReturnType<typeof discoverSkillsDirectoryPlugins>>
+  try {
+    candidates = await discoverSkillsDirectoryPlugins()
+  } catch (error) {
+    return { plugins, errors: [{ type: 'generic-error', source: 'skills-dir', error: errorMessage(error) }] }
+  }
+  const settings = getSettings_DEPRECATED().enabledPlugins ?? {}
+  for (const candidate of candidates) {
+    const source = `${basename(candidate.path)}@skills-dir`
+    try {
+      const result = await createPluginFromPath(candidate.path, source, true, basename(candidate.path))
+      const plugin = result.plugin
+      plugin.source = `${plugin.name}@skills-dir`
+      plugin.repository = plugin.source
+      plugin.discoveryScope = candidate.scope
+      const preference = settings[plugin.source]
+      plugin.enabled = typeof preference === 'boolean' ? preference : plugin.manifest.defaultEnabled ?? true
+      plugins.push(plugin)
+      errors.push(...result.errors.map(error => ({ ...error, source: plugin.source })))
+    } catch (error) {
+      errors.push({ type: 'generic-error', source, error: errorMessage(error) })
+    }
+  }
+  return { plugins, errors }
+}
+
+/** Merge enabled sources by manifest namespace, honoring managed ownership. */
 export function mergePluginSources(sources: {
   session: LoadedPlugin[]
   marketplace: LoadedPlugin[]
   builtin: LoadedPlugin[]
+  skillsDirectory?: LoadedPlugin[]
   managedNames?: Set<string> | null
+  managedPluginIds?: Record<string, unknown>
 }): { plugins: LoadedPlugin[]; errors: PluginError[] } {
   const errors: PluginError[] = []
   const managed = new Set(sources.managedNames ?? [])
@@ -3073,7 +3103,7 @@ export function mergePluginSources(sources: {
   //
   // Include both the installation ID and the loaded manifest namespace.
   const sessionPlugins = sources.session.filter(p => {
-    if (managed?.has(p.name)) {
+    if (managed.has(p.name) && sources.managedPluginIds?.[p.source] === undefined) {
       logForDebugging(
         `Plugin "${p.name}" from --plugin-dir is blocked by managed settings`,
         { level: 'warn' },
@@ -3099,11 +3129,22 @@ export function mergePluginSources(sources: {
     }
     return true
   })
+  const occupied = new Map([...sessionPlugins, ...marketplacePlugins].filter(p => p.enabled).map(p => [p.name, p]))
+  const skillsDirectory = (sources.skillsDirectory ?? []).filter(plugin => {
+    const owner = occupied.get(plugin.name)
+    if (plugin.enabled && (owner || (managed.has(plugin.name) && sources.managedPluginIds?.[plugin.source] === undefined))) {
+      errors.push({ type: 'generic-error', source: plugin.source, plugin: plugin.name,
+        error: `Not loaded — the name "${plugin.name}" is already taken by ${owner ? `${owner.source} (${owner.path})` : 'managed settings'}, which takes precedence` })
+      return false
+    }
+    if (plugin.enabled) occupied.set(plugin.name, plugin)
+    return true
+  })
   // Session first, then non-overridden marketplace, then builtin.
   // Downstream first-match consumers see session plugins before
   // installed ones for any that slipped past the name filter.
   return {
-    plugins: [...sessionPlugins, ...marketplacePlugins, ...sources.builtin],
+    plugins: [...sessionPlugins, ...marketplacePlugins, ...skillsDirectory, ...sources.builtin],
     errors,
   }
 }
@@ -3207,11 +3248,12 @@ async function assemblePluginLoadResult(
   // getInlinePlugins() is a synchronous state read with no dependency on
   // marketplace loading, so these two sources can be fetched concurrently.
   const inlinePlugins = getInlinePlugins()
-  const [marketplaceResult, sessionResult] = await Promise.all([
+  const [marketplaceResult, sessionResult, skillsDirectoryResult] = await Promise.all([
     marketplaceLoader(),
     inlinePlugins.length > 0
       ? loadSessionOnlyPlugins(inlinePlugins)
       : Promise.resolve({ plugins: [], errors: [] }),
+    loadSkillsDirectoryPlugins(),
   ])
   // 3. Load built-in plugins that ship with the CLI
   const builtinResult = getBuiltinPlugins()
@@ -3223,11 +3265,14 @@ async function assemblePluginLoadResult(
     session: sessionResult.plugins,
     marketplace: marketplaceResult.plugins,
     builtin: [...builtinResult.enabled, ...builtinResult.disabled],
+    skillsDirectory: skillsDirectoryResult.plugins,
     managedNames: getManagedPluginNames(),
+    managedPluginIds: getSettingsForSource('policySettings')?.enabledPlugins,
   })
   const allErrors = [
     ...marketplaceResult.errors,
     ...sessionResult.errors,
+    ...skillsDirectoryResult.errors,
     ...mergeErrors,
   ]
 

@@ -15,7 +15,7 @@ import { dirname, join } from 'path'
 import { satisfies } from 'semver'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { isBuiltinPluginId } from '../../plugins/builtinPlugins.js'
-import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
+import type { LoadedPlugin, PluginManifest, PluginLoadResult } from '../../types/plugin.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage, isENOENT, toError } from '../../utils/errors.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
@@ -59,13 +59,14 @@ import {
 } from '../../utils/plugins/pluginLoader.js'
 import { deletePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
 import { isPluginBlockedByPolicy } from '../../utils/plugins/pluginPolicy.js'
-import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js'
+import { checkEnabledPlugins, getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js'
 import { calculatePluginVersion } from '../../utils/plugins/pluginVersioning.js'
 import { getInstalledDependencyRequirements, selectDependencyVersion } from '../../utils/plugins/dependencyVersions.js'
 import type {
   PluginMarketplaceEntry,
   PluginScope,
 } from '../../utils/plugins/schemas.js'
+import { isSettingSourceEnabled } from '../../utils/settings/constants.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -190,6 +191,7 @@ function findPluginInSettings(plugin: string): {
   const searchOrder: InstallableScope[] = ['local', 'project', 'user']
 
   for (const scope of searchOrder) {
+    if (!isSettingSourceEnabled(scopeToSettingSource(scope))) continue
     const enabledPlugins = getSettingsForSource(
       scopeToSettingSource(scope),
     )?.enabledPlugins
@@ -202,6 +204,29 @@ function findPluginInSettings(plugin: string): {
     }
   }
   return null
+}
+
+/** Choose a file this session reads; repository toggles should stay local. */
+function defaultPluginToggleScope(projectPlugin = false): InstallableScope | undefined {
+  const order: InstallableScope[] = projectPlugin
+    ? ['local', 'project', 'user']
+    : ['user', 'local', 'project']
+  return order.find(scope => isSettingSourceEnabled(scopeToSettingSource(scope)))
+}
+
+function pluginToggleRestriction(pluginId: string, enabled: boolean): string | undefined {
+  if (enabled && isPluginBlockedByPolicy(pluginId)) {
+    return `Plugin "${pluginId}" is blocked by your organization's policy and cannot be enabled`
+  }
+  // The first declared value wins: managed settings override command-line settings.
+  for (const source of ['policySettings', 'flagSettings'] as const) {
+    const value = getSettingsForSource(source)?.enabledPlugins?.[pluginId]
+    if (value !== undefined) {
+      return Boolean(value) === enabled ? undefined :
+        `Cannot ${enabled ? 'enable' : 'disable'} plugin "${pluginId}": ${source === 'policySettings' ? 'managed settings' : 'command-line settings'} override editable settings.`
+    }
+  }
+  return undefined
 }
 
 /**
@@ -566,12 +591,24 @@ export async function setPluginEnabledOp(
 ): Promise<PluginOperationResult> {
   const operation = enabled ? 'enable' : 'disable'
 
-  // Built-in plugins: always use user-scope settings, bypass the normal
+  if (scope) {
+    assertInstallableScope(scope)
+    if (!isSettingSourceEnabled(scopeToSettingSource(scope))) {
+      return { success: false, message: `Cannot ${operation} plugin in ${scope} scope: this session excludes that settings source.` }
+    }
+  }
+
+  // Built-in plugins: prefer user-scope settings, bypass the normal
   // scope-resolution + installed_plugins lookup (they're not installed).
   if (isBuiltinPluginId(plugin)) {
-    const { error } = updateSettingsForSource('userSettings', {
+    const restriction = pluginToggleRestriction(plugin, enabled)
+    if (restriction) return { success: false, message: restriction }
+    const targetScope = scope ?? findPluginInSettings(plugin)?.scope ?? defaultPluginToggleScope()
+    if (!targetScope) return { success: false, message: `Cannot ${operation} plugin: this session has no writable settings source enabled.` }
+    const targetSource = scopeToSettingSource(targetScope)
+    const { error } = updateSettingsForSource(targetSource, {
       enabledPlugins: {
-        ...getSettingsForSource('userSettings')?.enabledPlugins,
+        ...getSettingsForSource(targetSource)?.enabledPlugins,
         [plugin]: enabled,
       },
     })
@@ -588,12 +625,8 @@ export async function setPluginEnabledOp(
       message: `Successfully ${operation}d built-in plugin: ${pluginName}`,
       pluginId: plugin,
       pluginName,
-      scope: 'user',
+      scope: targetScope,
     }
-  }
-
-  if (scope) {
-    assertInstallableScope(scope)
   }
 
   // ── Resolve pluginId and scope from settings ──
@@ -601,6 +634,7 @@ export async function setPluginEnabledOp(
   // this plugin. Does NOT pre-gate on installed_plugins.json.
   let pluginId: string
   let resolvedScope: InstallableScope
+  let localPlugin: LoadedPlugin | undefined
 
   const found = findPluginInSettings(plugin)
 
@@ -624,11 +658,17 @@ export async function setPluginEnabledOp(
     pluginId = found.pluginId
     resolvedScope = found.scope
   } else if (plugin.includes('@')) {
-    // Not in any settings scope, but full pluginId given — default to user
-    // scope (matches install default). This allows enabling a plugin that
-    // was cached but never declared.
+    // Default-enabled local plugins may have no settings entry or installation.
+    // Never write their toggle to a settings source the session ignores.
     pluginId = plugin
-    resolvedScope = 'user'
+    const origin = parsePluginIdentifier(pluginId).marketplace
+    if (origin === 'inline' || origin === 'skills-dir') {
+      const loaded: PluginLoadResult = await loadAllPlugins()
+      localPlugin = [...loaded.enabled, ...loaded.disabled].find(p => p.source === pluginId)
+    }
+    const targetScope = defaultPluginToggleScope(localPlugin?.discoveryScope === 'project')
+    if (!targetScope) return { success: false, message: `Cannot ${operation} plugin: this session has no writable settings source enabled.` }
+    resolvedScope = targetScope
   } else {
     return {
       success: false,
@@ -639,12 +679,8 @@ export async function setPluginEnabledOp(
   // ── Policy guard ──
   // Org-blocked plugins cannot be enabled at any scope. Check after pluginId
   // is resolved so we catch both full identifiers and bare-name lookups.
-  if (enabled && isPluginBlockedByPolicy(pluginId)) {
-    return {
-      success: false,
-      message: `Plugin "${pluginId}" is blocked by your organization's policy and cannot be enabled`,
-    }
-  }
+  const restriction = pluginToggleRestriction(pluginId, enabled)
+  if (restriction) return { success: false, message: restriction }
 
   const settingSource = scopeToSettingSource(resolvedScope)
   const scopeSettingsValue =
@@ -684,10 +720,17 @@ export async function setPluginEnabledOp(
   // undefined (plugin not in this scope yet), which would read as "already
   // disabled", but the whole point of the override is to write an explicit
   // `false` that masks the lower scope's `true`.
-  const isCurrentlyEnabled =
+  const origin = parsePluginIdentifier(pluginId).marketplace
+  if (!localPlugin && (origin === 'inline' || origin === 'skills-dir')) {
+    const loaded: PluginLoadResult = await loadAllPlugins()
+    localPlugin = [...loaded.enabled, ...loaded.disabled].find(p => p.source === pluginId)
+  }
+  const isCurrentlyEnabled = localPlugin && scopeSettingsValue === undefined && !isOverride
+    ? localPlugin.enabled
+    :
     scope && !isOverride
       ? scopeSettingsValue === true
-      : getPluginEditableScopes().has(pluginId)
+      : (await checkEnabledPlugins()).includes(pluginId)
   if (enabled === isCurrentlyEnabled) {
     return {
       success: false,

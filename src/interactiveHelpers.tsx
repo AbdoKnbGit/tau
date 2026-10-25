@@ -25,7 +25,7 @@ import { AppStateProvider } from './state/AppState.js';
 import { onChangeAppState } from './state/onChangeAppState.js';
 import { normalizeApiKeyForConfig } from './utils/authPortable.js';
 import { getExternalClaudeMdIncludes, getMemoryFiles, shouldShowClaudeMdExternalIncludesWarning } from './utils/claudemd.js';
-import { checkHasTrustDialogAccepted, getCustomApiKeyStatus, getGlobalConfig, saveGlobalConfig } from './utils/config.js';
+import { checkHasTrustDialogAccepted, hasExplicitWorkspaceTrust, getCustomApiKeyStatus, getGlobalConfig, saveGlobalConfig } from './utils/config.js';
 import { updateDeepLinkTerminalPreference } from './utils/deepLink/terminalPreference.js';
 import { isEnvTruthy, isRunningOnHomespace } from './utils/envUtils.js';
 import { type FpsMetrics, FpsTracker } from './utils/fpsTracker.js';
@@ -208,16 +208,26 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
     // If it returns true, the TrustDialog would auto-resolve regardless of
     // security features, so we can skip the dynamic import and render cycle.
     trace(`checkHasTrustDialogAccepted = ${checkHasTrustDialogAccepted()}`);
-    if (!checkHasTrustDialogAccepted()) {
+    const hadExplicitWorkspaceTrust = hasExplicitWorkspaceTrust();
+    const { discoverSkillsDirectoryPlugins } = await import('./utils/plugins/skillsDirectory.js');
+    const requireExplicitTrust = !hadExplicitWorkspaceTrust &&
+      (await discoverSkillsDirectoryPlugins(true).catch(() => [])).some(plugin => plugin.scope === 'project');
+    if (!checkHasTrustDialogAccepted() || requireExplicitTrust) {
       const {
         TrustDialog
       } = await import('./components/TrustDialog/TrustDialog.js');
-      await showSetupDialog(root, done => <TrustDialog commands={commands} onDone={done} />);
+      await showSetupDialog(root, done => <TrustDialog commands={commands} onDone={done} requireExplicitTrust={requireExplicitTrust} />);
     }
 
     // Signal that trust has been verified for this session.
     // GrowthBook checks this to decide whether to include auth headers.
     setSessionTrustAccepted(true);
+    if (!hadExplicitWorkspaceTrust && hasExplicitWorkspaceTrust()) {
+      // Pre-trust discovery intentionally omitted repository plugins. Refresh
+      // that inventory before asking about their project-scoped MCP servers.
+      const { clearAllCaches } = await import('./utils/plugins/cacheUtils.js');
+      clearAllCaches();
+    }
 
     // Reset and reinitialize GrowthBook after trust is established.
     // Defense for login/logout: clears any prior client so the next init

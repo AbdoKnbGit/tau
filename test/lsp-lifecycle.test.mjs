@@ -16,6 +16,7 @@ const stubs = {
   'config.js': `export const getAllLspServers = () => globalThis.__lspTest.loadConfig()`,
   'debug.js': 'export const logForDebugging = () => {}',
   'log.js': 'export const logError = () => {}',
+  'usage.js': 'export const recordPluginUse = () => {}',
   'envUtils.js': 'export const isBareMode = () => false',
   'settings.js':
     'export const getInitialSettings = () => globalThis.__lspTest.settings',

@@ -535,7 +535,7 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
 
   // Track skill usage for ranking (only for prompt commands that are user-invocable)
   if (command.type === 'prompt' && command.userInvocable !== false) {
-    recordSkillUsage(commandName);
+    recordSkillUsage(commandName, command.pluginInfo?.repository);
   }
 
   // Check if the command is user-invocable

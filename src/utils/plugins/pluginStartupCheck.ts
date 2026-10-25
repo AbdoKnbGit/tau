@@ -2,7 +2,7 @@ import { join } from 'path'
 import { getCwd } from '../cwd.js'
 import { logForDebugging } from '../debug.js'
 import { logError } from '../log.js'
-import type { SettingSource } from '../settings/constants.js'
+import { isSettingSourceEnabled, type SettingSource } from '../settings/constants.js'
 import {
   getInitialSettings,
   getSettingsForSource,
@@ -122,6 +122,7 @@ export function getPluginEditableScopes(): Map<string, ExtendedPluginScope> {
   ]
 
   for (const { scope, source } of scopeSources) {
+    if (!isSettingSourceEnabled(source)) continue
     const settings = getSettingsForSource(source)
     if (!settings?.enabledPlugins) {
       continue

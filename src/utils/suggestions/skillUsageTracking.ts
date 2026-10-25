@@ -1,4 +1,5 @@
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
+import { recordPluginUse } from '../plugins/usage.js'
 
 const SKILL_USAGE_DEBOUNCE_MS = 60_000
 
@@ -10,7 +11,8 @@ const lastWriteBySkill = new Map<string, number>()
  * Records a skill usage for ranking purposes.
  * Updates both usage count and last used timestamp.
  */
-export function recordSkillUsage(skillName: string): void {
+export function recordSkillUsage(skillName: string, pluginId?: string): void {
+  recordPluginUse(pluginId)
   const now = Date.now()
   const lastWrite = lastWriteBySkill.get(skillName)
   // The ranking algorithm uses a 7-day half-life, so sub-minute granularity

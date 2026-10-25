@@ -31,6 +31,7 @@ import type { Root } from './ink.js';
 import { SHOW_CURSOR } from './ink/termio/dec.js';
 import { exitWithError, exitWithMessage, getRenderContext, renderAndRun, showSetupScreens } from './interactiveHelpers.js';
 import { initBuiltinPlugins } from './plugins/bundled/index.js';
+import { getEnvironmentPluginPaths, setSessionPluginUrls } from './utils/plugins/sessionPaths.js';
 import { launchRepl } from './replLauncher.js';
 import { hasGrowthBookEnvOverride, initializeGrowthBook, refreshGrowthBookAfterAuthChange } from './services/analytics/growthbook.js';
 import { fetchBootstrapData } from './services/api/bootstrap.js';
@@ -1026,9 +1027,17 @@ async function run(): Promise<CommanderCommand> {
     // builds the type as options are added. Narrow with a runtime guard;
     // the collect accumulator + [] default guarantee string[] in practice.
     const pluginDir = thisCommand.getOptionValue('pluginDir');
+    const pluginUrl = thisCommand.getOptionValue('pluginUrl');
+    setSessionPluginUrls(Array.isArray(pluginUrl) ? pluginUrl : []);
+    if (getSettingsForSource('policySettings')?.disableSideloadFlags &&
+        ((Array.isArray(pluginDir) && pluginDir.length) || (Array.isArray(pluginUrl) && pluginUrl.length) || getEnvironmentPluginPaths().length)) {
+      thisCommand.error('Session plugin flags are disabled by your organization\'s managed settings.');
+    }
     if (Array.isArray(pluginDir) && pluginDir.length > 0 && pluginDir.every(p => typeof p === 'string')) {
       setInlinePlugins(pluginDir);
-      clearPluginCache('preAction: --plugin-dir inline plugins');
+    }
+    if ((Array.isArray(pluginDir) && pluginDir.length) || (Array.isArray(pluginUrl) && pluginUrl.length)) {
+      clearPluginCache('preAction: session plugin flags');
     }
     runMigrations();
     profileCheckpoint('preAction_after_migrations');
@@ -1086,7 +1095,9 @@ async function run(): Promise<CommanderCommand> {
   // `mcp` and `add` as paths, then choked on --transport as an unknown
   // top-level option. Single-value + collect accumulator means each
   // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
-  .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Tau in Chrome integration').option('--no-chrome', 'Disable Tau in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
+  .option('--plugin-dir <path>', 'Load a plugin directory or ZIP for this session (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
+  .option('--plugin-url <urls>', 'Load plugin ZIP archives from URLs for this session (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
+  .option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Tau in Chrome integration').option('--no-chrome', 'Disable Tau in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
     trace('action_handler_start');
     profileCheckpoint('action_handler_start');
 
@@ -2099,7 +2110,7 @@ async function run(): Promise<CommanderCommand> {
     const commandsStart = Date.now();
     // Join the promises kicked before setup() (or start fresh if
     // worktreeEnabled gated the early kick). Both memoized by cwd.
-    const [commands, agentDefinitionsResult] = await Promise.all([commandsPromise ?? getCommands(currentCwd), agentDefsPromise ?? getAgentDefinitionsWithOverrides(currentCwd)]);
+    let [commands, agentDefinitionsResult] = await Promise.all([commandsPromise ?? getCommands(currentCwd), agentDefsPromise ?? getAgentDefinitionsWithOverrides(currentCwd)]);
     logForDebugging(`[STARTUP] Commands and agents loaded in ${Date.now() - commandsStart}ms`);
     profileCheckpoint('action_commands_loaded');
 
@@ -2331,7 +2342,14 @@ async function run(): Promise<CommanderCommand> {
       trace('Calling showSetupScreens()...');
       logForDebugging('[STARTUP] Running showSetupScreens()...');
       const setupScreensStart = Date.now();
+      const { hasExplicitWorkspaceTrust } = await import('./utils/config.js');
+      const hadExplicitWorkspaceTrust = hasExplicitWorkspaceTrust();
       const onboardingShown = await showSetupScreens(root, permissionMode, allowDangerouslySkipPermissions, commands, enableClaudeInChrome, devChannels);
+      if (!hadExplicitWorkspaceTrust && hasExplicitWorkspaceTrust()) {
+        [commands, agentDefinitionsResult] = await Promise.all([getCommands(currentCwd), getAgentDefinitionsWithOverrides(currentCwd)]);
+        agentDefinitions.allAgents = [...agentDefinitionsResult.allAgents, ...cliAgents];
+        agentDefinitions.activeAgents = getActiveAgentsFromList(agentDefinitions.allAgents);
+      }
       trace('showSetupScreens() completed');
       logForDebugging(`[STARTUP] showSetupScreens() completed in ${Date.now() - setupScreensStart}ms`);
 
@@ -2475,9 +2493,13 @@ async function run(): Promise<CommanderCommand> {
     }
 
     // Resolve MCP configs (started early, overlaps with setup/trust dialog work)
+    const prefetchedMcpConfigs = await mcpConfigPromise;
+    // Interactive setup can grant workspace trust and approve project servers.
+    // Re-read the cached inventory with those final decisions before connecting.
     const {
       servers: existingMcpConfigs
-    } = await mcpConfigPromise;
+    } = !isNonInteractiveSession && !strictMcpConfig && !isBareMode()
+      ? await getClaudeCodeMcpConfigs(dynamicMcpConfig) : prefetchedMcpConfigs;
     logForDebugging(`[STARTUP] MCP configs resolved in ${mcpConfigResolvedMs}ms (awaited at +${Date.now() - mcpConfigStart}ms)`);
     // Cheap mode must also suppress explicit --mcp-config connections. The
     // config loader already hides file-based servers, but spreading dynamic
@@ -4213,6 +4235,23 @@ async function run(): Promise<CommanderCommand> {
 
   // Plugin validate command
   const pluginCmd = program.command('plugin').alias('plugins').description('Manage Tau plugins').configureHelp(createSortedHelpConfig());
+  pluginCmd.command('init <name>').alias('new').description('Scaffold a plugin in your personal skills directory')
+    .option('--description <text>', 'Plugin description').option('--author <name>', 'Author name').option('--author-email <email>', 'Author email')
+    .option('--with <components...>', 'Starter components: skills, agents, hooks, mcp, lsp, output-style, channel')
+    .option('-f, --force', 'Replace an existing manifest while preserving component files')
+    .action(async (name, options) => {
+      const { scaffoldPlugin } = await import('./utils/plugins/scaffold.js');
+      const { cliOk, cliError } = await import('./cli/exit.js');
+      try {
+        const path = await scaffoldPlugin(name, options);
+        cliOk(`Created plugin "${name}" at ${path}\nIt will auto-load next session as ${name}@skills-dir. Run /reload-plugins to load it now.\nTo disable: tau plugin disable ${name}@skills-dir`);
+      } catch (error) { cliError(errorMessage(error)); }
+    });
+  pluginCmd.command('details <name>').description('Show plugin components and projected context token cost').action(async name => {
+    const { getPluginDetails } = await import('./utils/plugins/details.js');
+    const { cliOk, cliError } = await import('./cli/exit.js');
+    try { cliOk(await getPluginDetails(name)); } catch (error) { cliError(errorMessage(error)); }
+  });
   pluginCmd.command('validate <path>').description('Validate a plugin or marketplace manifest').addOption(coworkOption()).action(async (manifestPath: string, options: {
     cowork?: boolean;
   }) => {

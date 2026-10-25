@@ -824,7 +824,9 @@ async function loadSkillsFromDirectory(
   return skills
 }
 
-export const getPluginSkills = memoize(async (): Promise<Command[]> => {
+// Read the complete inventory without activating path-conditional skills. Cost
+// reports need those entries too, but must not change the running skill list.
+export async function getPluginSkillInventory(): Promise<Command[]> {
   // --bare: same gate as getPluginCommands above — honor explicit
   // --plugin-dir, skip marketplace auto-load.
   if (isBareMode() && getInlinePlugins().length === 0) {
@@ -925,8 +927,12 @@ export const getPluginSkills = memoize(async (): Promise<Command[]> => {
 
   const allSkills = perPluginSkills.flat()
   logForDebugging(`Total plugin skills loaded: ${allSkills.length}`)
-  return registerConditionalSkills(allSkills)
-})
+  return allSkills
+}
+
+export const getPluginSkills = memoize(async (): Promise<Command[]> =>
+  registerConditionalSkills(await getPluginSkillInventory()),
+)
 
 export function clearPluginSkillsCache(): void {
   getPluginSkills.cache?.clear?.()

@@ -542,6 +542,7 @@ export const SettingsSchema = lazySchema(() =>
             'Users can still add their own MCP servers, but only the admin-defined allowlist applies.',
         ),
       // Force customizations through plugins only (LinkedIn ask via GTM)
+      disableSideloadFlags: z.boolean().optional(),
       strictPluginOnlyCustomization: z
         .preprocess(
           // Forwards-compat: drop unknown surface names so a future enum

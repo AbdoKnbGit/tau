@@ -199,7 +199,7 @@ export function excludeStalePluginClients(
 } {
   const stale = mcp.clients.filter(c => {
     const fresh = configs[c.name]
-    if (!fresh) return c.config.scope === 'dynamic'
+    if (!fresh) return c.config.scope === 'dynamic' || Boolean(c.config.pluginSource)
     return hashMcpConfig(c.config) !== hashMcpConfig(fresh)
   })
   if (stale.length === 0) {

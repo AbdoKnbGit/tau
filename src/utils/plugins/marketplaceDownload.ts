@@ -35,6 +35,20 @@ export async function downloadMarketplaceJson(
   url: string,
   headers: Record<string, string>,
 ) {
+  return downloadPluginResource(url, headers, 5 * 1024 * 1024)
+}
+
+export async function downloadPluginArchive(url: string): Promise<Buffer> {
+  const response = await downloadPluginResource(url, {}, 50 * 1024 * 1024, 'arraybuffer')
+  return Buffer.from(response.data)
+}
+
+async function downloadPluginResource(
+  url: string,
+  headers: Record<string, string>,
+  maxContentLength: number,
+  responseType?: AxiosRequestConfig['responseType'],
+) {
   let current = new URL(url)
   let requestHeaders = { ...headers }
   let guarded = false
@@ -85,7 +99,8 @@ export async function downloadMarketplaceJson(
     }
     const response = await axios.get(current.href, {
       timeout: Math.max(1, deadline - Date.now()),
-      maxContentLength: 5 * 1024 * 1024,
+      maxContentLength,
+      responseType,
       maxRedirects: 0,
       headers: requestHeaders,
       lookup: pinnedLookup,

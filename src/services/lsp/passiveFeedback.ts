@@ -6,6 +6,7 @@ import { logError } from '../../utils/log.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import type { DiagnosticFile } from '../diagnosticTracking.js'
 import { registerPendingLSPDiagnostic } from './LSPDiagnosticRegistry.js'
+import { recordPluginUse } from '../../utils/plugins/usage.js'
 import type { LSPServerManager } from './LSPServerManager.js'
 import type { LSPServerInstance } from './LSPServerInstance.js'
 
@@ -199,6 +200,7 @@ export function registerLSPNotificationHandlers(
             // Convert LSP diagnostics to Claude format (can throw on invalid URIs)
             const diagnosticFiles =
               formatDiagnosticsForAttachment(diagnosticParams)
+            recordPluginUse(serverInstance.config.pluginSource)
 
             // Only send notification if there are diagnostics
             const firstFile = diagnosticFiles[0]

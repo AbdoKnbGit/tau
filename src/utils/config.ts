@@ -4,7 +4,7 @@ import { unwatchFile, watchFile } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import pickBy from 'lodash-es/pickBy.js'
 import { basename, dirname, join, resolve } from 'path'
-import { getOriginalCwd, getSessionTrustAccepted } from '../bootstrap/state.js'
+import { getOriginalCwd, getSessionTrustAccepted, hasSessionExplicitWorkspaceTrust, setSessionTrustAccepted } from '../bootstrap/state.js'
 import { getAutoMemEntrypoint } from '../memdir/paths.js'
 import { logEvent } from '../services/analytics/index.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
@@ -196,6 +196,7 @@ export type GlobalConfig = {
   apiKeyHelper?: string
   projects?: Record<string, ProjectConfig>
   numStartups: number
+  explicitWorkspaceTrust?: Record<string, boolean>
   installMethod?: InstallMethod
   autoUpdates?: boolean
   // Flag to distinguish protection-based disabling from user preference
@@ -535,6 +536,7 @@ export type GlobalConfig = {
 
   // Skill usage tracking for autocomplete ranking
   skillUsage?: Record<string, { usageCount: number; lastUsedAt: number }>
+  pluginLastUsed?: Record<string, number>
   // Official marketplace auto-install tracking
   officialMarketplaceAutoInstallAttempted?: boolean // Whether auto-install was attempted
   officialMarketplaceAutoInstalled?: boolean // Whether auto-install succeeded
@@ -815,6 +817,25 @@ export function checkHasTrustDialogAccepted(): boolean {
   // on every call so that trust dialog acceptance is picked up mid-session.
   // (lodash memoize doesn't fit here because it would also cache false.)
   return (_trustAccepted ||= computeTrustDialogAccepted())
+}
+
+/** Repository plugins require consent for this directory, not an ancestor. */
+export function hasExplicitWorkspaceTrust(): boolean {
+  const path = normalizePathForConfigKey(getOriginalCwd())
+  const config = getGlobalConfig()
+  return hasSessionExplicitWorkspaceTrust() ||
+    config.explicitWorkspaceTrust?.[path] === true ||
+    config.projects?.[path]?.hasTrustDialogAccepted === true
+}
+
+/** Called only by the user's explicit trust-dialog choice, never inherited trust. */
+export function acceptExplicitWorkspaceTrust(persist: boolean): void {
+  setSessionTrustAccepted(true, true)
+  if (!persist) return
+  const path = normalizePathForConfigKey(getOriginalCwd())
+  saveGlobalConfig(current => ({ ...current,
+    explicitWorkspaceTrust: { ...current.explicitWorkspaceTrust, [path]: true },
+  }))
 }
 
 function computeTrustDialogAccepted(): boolean {

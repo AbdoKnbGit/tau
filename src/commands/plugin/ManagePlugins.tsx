@@ -40,6 +40,7 @@ import { type PersistablePluginScope, parsePluginIdentifier } from '../../utils/
 import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js';
 import { loadPluginOptions, type PluginOptionSchema, savePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js';
 import { isPluginBlockedByPolicy } from '../../utils/plugins/pluginPolicy.js';
+import { getPluginLastUsed } from '../../utils/plugins/usage.js';
 import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js';
 import { getSettings_DEPRECATED, getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js';
 import { jsonParse } from '../../utils/slowOperations.js';
@@ -438,6 +439,7 @@ export function ManagePlugins({
   const [pluginStates, setPluginStates] = useState<PluginState[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingToggles, setPendingToggles] = useState<Map<string, 'will-enable' | 'will-disable'>>(new Map());
+  const toggleInFlight = useRef(false);
 
   // Guard to prevent auto-navigation from re-triggering after the user
   // navigates away (targetPlugin is never cleared by the parent).
@@ -446,6 +448,7 @@ export function ManagePlugins({
   // Ref, not state: it's consumed by a one-shot effect that already re-runs on
   // viewState/selectedPlugin, so a render-triggering state var would be redundant.
   const pendingAutoActionRef = useRef<'enable' | 'disable' | 'uninstall' | undefined>(undefined);
+  const pluginOptionsOperationRef = useRef('Enabled');
 
   // MCP toggle hook
   const toggleMcpServer = useMcpToggleEnabled();
@@ -467,7 +470,7 @@ export function ManagePlugins({
       // User can configure later via the Configure options menu if they want.
       setViewState('plugin-list');
       setSelectedPlugin(null);
-      setResult('Plugin enabled. Configuration skipped — run /reload-plugins to apply.');
+      setResult(`Plugin ${pluginOptionsOperationRef.current.toLowerCase()}. Configuration skipped — run /reload-plugins to apply.`);
       if (onManageComplete) {
         void onManageComplete();
       }
@@ -1103,22 +1106,20 @@ export function ManagePlugins({
       // that handle their own settings updates, so we only need to clear caches here
       clearAllCaches();
 
-      // Prompt for manifest.userConfig + channel userConfig if the plugin ends
-      // up enabled. Re-read settings rather than keying on `operation ===
-      // 'enable'`: install enables on install, so the menu shows "Disable"
-      // first. PluginOptionsFlow itself checks getUnconfiguredOptions — if
-      // nothing needs filling, it calls onDone('skipped') immediately.
+      const operationName = operation === 'enable' ? 'Enabled' : operation === 'disable' ? 'Disabled' : operation === 'update' ? 'Updated' : 'Uninstalled';
+      // Configuration belongs to enable/update, never disable/uninstall. A
+      // removed settings entry is not evidence that an uninstalled plugin runs.
       const pluginIdNow = selectedPlugin.plugin.source;
       const settingsAfter = getSettings_DEPRECATED();
       const enabledAfter = settingsAfter?.enabledPlugins?.[pluginIdNow] !== false;
-      if (enabledAfter) {
+      if (enabledAfter && (operation === 'enable' || operation === 'update')) {
+        pluginOptionsOperationRef.current = operationName;
         setIsProcessing(false);
         setViewState({
           type: 'plugin-options'
         });
         return;
       }
-      const operationName = operation === 'enable' ? 'Enabled' : operation === 'disable' ? 'Disabled' : operation === 'update' ? 'Updated' : 'Uninstalled';
 
       // Single-line warning — notification timeout is ~8s, multi-line would scroll off.
       // The persistent record is in the Errors tab (dependency-unsatisfied after reload).
@@ -1156,7 +1157,7 @@ export function ManagePlugins({
 
   // Handle toggle enable/disable
   const handleToggle = React.useCallback(() => {
-    if (selectedIndex >= filteredItems.length) return;
+    if (toggleInFlight.current || selectedIndex >= filteredItems.length) return;
     const item_7 = filteredItems[selectedIndex];
     if (item_7?.type === 'flagged-plugin') return;
     if (item_7?.type === 'plugin') {
@@ -1167,39 +1168,31 @@ export function ManagePlugins({
       const pluginScope_0 = item_7.scope;
       const isBuiltin_0 = pluginScope_0 === 'builtin';
       if (isBuiltin_0 || isInstallableScope(pluginScope_0)) {
-        const newPending = new Map(pendingToggles);
         // Omit scope — see handleSingleOperation's enable/disable comment.
-        if (currentPending) {
-          // Cancel: reverse the operation back to the original state
-          newPending.delete(pluginId_4);
-          void (async () => {
-            try {
-              if (currentPending === 'will-disable') {
-                await enablePluginOp(pluginId_4);
-              } else {
-                await disablePluginOp(pluginId_4);
-              }
-              clearAllCaches();
-            } catch (err_0) {
-              logError(err_0);
+        const enable = currentPending ? currentPending === 'will-disable' : !isEnabled_0;
+        toggleInFlight.current = true;
+        setProcessError(null);
+        void (async () => {
+          try {
+            const result = enable ? await enablePluginOp(pluginId_4) : await disablePluginOp(pluginId_4);
+            if (!result.success) {
+              setProcessError(result.message);
+              return;
             }
-          })();
-        } else {
-          newPending.set(pluginId_4, isEnabled_0 ? 'will-disable' : 'will-enable');
-          void (async () => {
-            try {
-              if (isEnabled_0) {
-                await disablePluginOp(pluginId_4);
-              } else {
-                await enablePluginOp(pluginId_4);
-              }
-              clearAllCaches();
-            } catch (err_1) {
-              logError(err_1);
-            }
-          })();
-        }
-        setPendingToggles(newPending);
+            clearAllCaches();
+            setPendingToggles(previous => {
+              const next = new Map(previous);
+              if (currentPending) next.delete(pluginId_4);
+              else next.set(pluginId_4, enable ? 'will-enable' : 'will-disable');
+              return next;
+            });
+          } catch (err) {
+            setProcessError(errorMessage(err));
+            logError(toError(err));
+          } finally {
+            toggleInFlight.current = false;
+          }
+        })();
       }
     } else if (item_7?.type === 'mcp') {
       void toggleMcpServer(item_7.client.name);
@@ -1644,10 +1637,10 @@ export function ManagePlugins({
     return <PluginOptionsFlow plugin={selectedPlugin.plugin} pluginId={pluginId_10} onDone={(outcome, detail) => {
       switch (outcome) {
         case 'configured':
-          finish(`✓ Enabled and configured ${selectedPlugin.plugin.name}. Run /reload-plugins to apply.`);
+          finish(`✓ ${pluginOptionsOperationRef.current} and configured ${selectedPlugin.plugin.name}. Run /reload-plugins to apply.`);
           break;
         case 'skipped':
-          finish(`✓ Enabled ${selectedPlugin.plugin.name}. Run /reload-plugins to apply.`);
+          finish(`✓ ${pluginOptionsOperationRef.current} ${selectedPlugin.plugin.name}. Run /reload-plugins to apply.`);
           break;
         case 'error':
           finish(`Failed to save configuration: ${detail}`);
@@ -1845,6 +1838,10 @@ export function ManagePlugins({
         </Box>
 
         {/* Plugin details */}
+        {getPluginLastUsed(selectedPlugin.plugin.source) && <Box>
+            <Text dimColor>Last used: </Text>
+            <Text>{getPluginLastUsed(selectedPlugin.plugin.source)}</Text>
+          </Box>}
         {selectedPlugin.plugin.manifest.version && <Box>
             <Text dimColor>Version: </Text>
             <Text>{selectedPlugin.plugin.manifest.version}</Text>
@@ -2189,6 +2186,10 @@ export function ManagePlugins({
       {/* Scroll down indicator */}
       {pagination.scrollPosition.canScrollDown && <Box>
           <Text dimColor> {figures.arrowDown} more below</Text>
+        </Box>}
+
+      {processError && <Box marginTop={1}>
+          <Text color="error">{processError}</Text>
         </Box>}
 
       {/* Help text */}
