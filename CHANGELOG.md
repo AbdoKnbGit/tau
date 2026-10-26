@@ -3,6 +3,26 @@
 All notable changes to **Tau**, from the first release to the latest.
 Each version lists what was fixed or added, newest first.
 
+## v0.92.44 (2026-10-26)
+
+- Document the Sub-agent model setting in the README, with its Auto, Same as main model, Custom and Global modes
+- Send images to vision models from Read, attachments and paste on every provider, with OCR text or a marker for text-only models instead of base64; price and size Command Code models from its own catalog, including long-context tiers; update the Fireworks models, with Nexus Auto replacing FireRouter and thinking options from Fireworks' docs and models.dev (39a72e5)
+- Add mod tool APIs (not completed): scoped tool registration, calls and permission queries with live reload, safe plugin and MCP output during reload and history replay, and subprocess trees stopped on timeout, cancellation and output limits (a100555)
+- Add plugin mod runtime support (not completed): load JavaScript and TypeScript hook modules with validated imports, with mod commands, lifecycle middleware, reload and policy controls (e37ee28)
+- Load ZIP and URL plugins with session cleanup, discover trusted skills-directory plugins, and add plugin scaffolding, component cost inspection and local usage tracking (a1dfb82)
+- Honor marketplace aliases, owner allowlists and reserved source identities, support environment and parent-directory plugins, and keep cached links within allowed roots (594a8c1)
+- Fix the provider list crashing when CI is set without an Anthropic key, so /models, the Global sub-agent picker and the /surf wizard still open (f0853f2)
+- Fix the hook engine tests ending early on Node 20 and 22 (621f1b4)
+- Add a Global mode to the Sub-agent model setting: sub-agents run on a model and effort from any configured provider while the main chat stays unchanged (e836aa5)
+- Add a Sub-agent model setting in /config: Auto, Same as main model, or a Custom model saved per provider; running and resumed sub-agents keep their provider and model (77db900)
+- Honor plugin skill frontmatter and explicit reloads, resolve compatible dependency releases, and keep skill hooks scoped without duplicate one-shot runs (9d7089b)
+- Auto-select the recommended answer to questions in bypass mode, falling back to the first choice, and label automatic choices (9564d45)
+- Add a /config option to ask questions in bypass mode, off by default (a598be8)
+- Clear stale sub-agent names across sessions while keeping live background agents and follow-up routing (4af4284)
+- Fix compact math grouping in fractions and scripted bases, and separate aligned equation columns (a986053)
+- Render common LaTeX math as compact Unicode in terminal Markdown views, including incomplete streaming equations (6a600c8)
+- Resume deferred tools with current hooks and permissions, bound Stop continuations, and complete hook metadata and lifecycle behavior (eaee80d)
+
 ## v0.92.43 (2026-10-19)
 
 - Refresh the README screenshots, add the Python kernel demo, and document all 30 selectable providers, including xAI and Meta

@@ -200,6 +200,19 @@ Here a named agent looks for bugs, gets a follow-up task after it has finished, 
   <img src="docs/Agent33.PNG" alt="The agent reporting back with the verified fixes">
 </p>
 
+### Configurable sub-agent model
+
+Choose the model your sub-agents run on in `/config`, then **Sub-agent model**. Only sub-agents change: your main chat keeps its model, effort and cache.
+
+- **Auto** (default): sub-agents work as before, each built-in agent on its usual model tier for your provider.
+- **Same as main model**: every sub-agent runs on the model you are chatting with.
+- **Custom**: pick a model and its effort for each provider, and sub-agents use the one saved for the provider you are on.
+- **Global**: one provider, model and effort for every sub-agent, even when your main chat runs on another provider.
+
+It applies to the built-in agents and to agent files that don't name their own model or provider. A sub-agent keeps its provider and model until it is done, even if you switch providers meanwhile, and keeps them when you send it a new task.
+
+**Why it matters:** sub-agents do most of the reading and searching, so they send most of the requests. Code with Claude Opus, set **Global** to DeepSeek's `deepseek-flash`, and five parallel Explore agents search your codebase for a fraction of the cost while your main chat stays on Opus. Want sub-agents as sharp as your main chat instead? Pick **Same as main model**.
+
 ### Pay only for what you use
 
 Tau thinks about your money and your preferences before anything else. A normal workflow doesn't need skills, agents or MCP servers, so you can leave them off and stay in cheap mode. When you need them, one command turns them on: `/mode normal`. You don't need an MCP server for things like diagrams or browser automation either, because those tools are built into Tau. Switch each of them on or off with `/tools`, so you pay less, or nothing, for what you don't use.
