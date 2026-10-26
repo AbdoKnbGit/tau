@@ -567,6 +567,7 @@ function isCoreCommandOverride(
  */
 export async function getCommands(cwd: string): Promise<Command[]> {
   const allCommands = await loadAllCommands(cwd)
+  const { getModCommands } = await import('./utils/plugins/mods/manager.js')
 
   // Get dynamic skills discovered during file operations. Cheap power mode
   // ignores them — folder skills are off no matter how they were discovered.
@@ -576,7 +577,7 @@ export async function getCommands(cwd: string): Promise<Command[]> {
       : getDynamicSkills()
 
   // Build base commands without dynamic skills
-  const baseCommands = allCommands.filter(
+  const baseCommands = [...allCommands, ...getModCommands()].filter(
     _ => meetsAvailabilityRequirement(_) && isCommandEnabled(_),
   )
 

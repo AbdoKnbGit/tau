@@ -134,6 +134,8 @@ export async function processSessionStartHooks(
   }
 
   // Execute SessionStart hooks, ignoring blocking errors
+  const { startPluginMods } = await import('./plugins/mods/manager.js')
+  await startPluginMods().catch(error => logError(error))
   // Use the provided agentType or fall back to the one stored in bootstrap state
   const resolvedAgentType = agentType ?? getMainThreadAgentType()
   for await (const hookResult of executeSessionStartHooks(

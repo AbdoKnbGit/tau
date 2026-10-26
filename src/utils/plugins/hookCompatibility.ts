@@ -31,10 +31,11 @@ export function preparePluginManifestHooks(
 export function preparePluginHookFile(
   value: unknown,
   onUnsupported: (issue: PluginHookIssue) => void,
+  supportsModules = false,
 ): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value
   const raw = value as Record<string, unknown>
-  if ('modules' in raw) {
+  if ('modules' in raw && !supportsModules) {
     onUnsupported({
       path: 'modules',
       message:

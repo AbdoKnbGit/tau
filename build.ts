@@ -50,7 +50,7 @@ export class SandboxManager {
   isEnabled() { return false; }
   getViolations() { return []; }
   static isSupportedPlatform() { return false; }
-  static checkDependencies() { return { supported: false }; }
+  static checkDependencies() { return { supported: false, errors: ['Sandbox runtime is unavailable in this build'], warnings: [] }; }
   static wrapWithSandbox(command) { return command; }
   static async initialize() {}
   static updateConfig() {}

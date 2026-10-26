@@ -3,6 +3,7 @@ import { feature } from 'bun:bundle'
 import { pendingDeferredHookTool } from '../utils/hooks/deferredTool.js'
 import { readFile, stat } from 'fs/promises'
 import { dirname } from 'path'
+import { getModCommands } from '../utils/plugins/mods/manager.js'
 import {
   downloadUserSettings,
   redownloadUserSettings,
@@ -1812,7 +1813,9 @@ function runHeadlessStreaming(
   const idleTimeout = createIdleTimeoutManager(() => !running)
 
   // Mutable commands and agents for hot reloading
-  let currentCommands = commands
+  // SessionStart may register mod commands after main's initial inventory.
+  // An empty inventory deliberately disables slash commands.
+  let currentCommands = commands.length ? [...commands, ...getModCommands().filter(mod => !commands.some(command => command.name === mod.name))] : commands
   let currentAgents = agents
 
   // Clear all plugin-related caches, reload commands/agents/hooks.

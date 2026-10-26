@@ -33,7 +33,7 @@ const r = await loadBuiltRuntime({
     'assignPluginHookOwners', 'copyDir', 'createZipFromDirectory', 'extractZipToDirectory',
     'downloadMarketplaceJson', 'isBlockedMarketplaceRedirectHost', 'getRegisteredHooks',
     'clearRegisteredPluginHooks', 'loadAllPluginsCacheOnly', 'clearPluginHookCache',
-    'registerLoadedPluginHooks: loadPluginHooks2', 'processOrphanedPluginVersion',
+    'registerLoadedPluginHooks: loadPluginHooks', 'processOrphanedPluginVersion',
     'getSettingsForSource', 'resetSettingsCache', 'getManagedFilePath', 'isSourceAllowedByPolicy',
     'ManagePlugins', 'MCPConnectionContext', 'installResolvedPlugin', 'clearAllCaches', 'loadAllPlugins', 'setInlinePlugins',
     'setAllowedSettingSources', 'updateSettingsForSource', 'refreshActivePlugins',

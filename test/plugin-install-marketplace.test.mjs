@@ -40,7 +40,7 @@ after(() => {
 const runtime = await loadBuiltRuntime({
   paths: ['src/commands/plugin/PluginSettings.tsx', 'src/utils/plugins/pluginLoader.ts',
     'src/utils/plugins/loadPluginHooks.ts', 'src/utils/plugins/loadPluginCommands.ts', 'src/utils/plugins/validatePlugin.ts'],
-  exports: ['PluginSettings', 'parsePluginArgs', 'resolveInstallMarketplace', 'loadPluginHooks',
+  exports: ['PluginSettings', 'parsePluginArgs', 'resolveInstallMarketplace', 'loadPluginHooks: readPluginHooksFile',
     'parseMarketplaceInput', 'addInstallMarketplace', 'getMarketplace', 'cachePlugin', 'PluginSourceSchema', 'calculatePluginVersion',
     'execFileNoThrowWithCwd', 'preferredGitHubPluginUrl', 'resolveGitSubdirUrl',
     'createPluginFromPath', 'convertPluginHooksToMatchers', 'HOOK_EVENTS', 'loadSkillsFromDirectory',
@@ -276,7 +276,7 @@ test('CLI install adds a source, installs by its manifest name and honors projec
   assert.match(run('plugin', 'install', 'cli-fixture', '--marketplace', 'cli-actual'), /Successfully installed/)
 })
 
-test('hook module plugins report their actual compatibility problem', async () => {
+test('standalone declarative loader reports modules when no mod collector is supplied', async () => {
   const hooks = join(root, 'module-hooks.json')
   writeJson(hooks, { modules: ['./register.tsx'] })
   const issues = []
@@ -287,7 +287,7 @@ test('hook module plugins report their actual compatibility problem', async () =
   assert.ok((await runtime.loadPluginHooks(hooks, 'normal-hooks')).SessionStart)
 })
 
-test('mixed hook files keep supported handlers and report unsupported modules, events and types', async () => {
+test('mixed hook files collect modules without execution and report unsupported declarative events and types', async () => {
   const path = fixture('mixed-hooks', 'mixed-hooks-market', 'mixed-hooks')
   const standard = join(path, 'hooks/hooks.json')
   const additional = join(path, 'extra-hooks.json')
@@ -306,16 +306,19 @@ test('mixed hook files keep supported handlers and report unsupported modules, e
   writeJson(additional, { modules: ['./second.ts'], hooks: {
     SessionStart: [{ hooks: [{ type: 'command', command: 'echo additional' }] }],
   } })
+  writeFileSync(join(path, 'hooks/register.tsx'), "throw new Error('must not execute during discovery'); export function register(on) {}")
+  writeFileSync(join(path, 'second.ts'), 'export function register(on) {}')
   const { plugin, errors } = await runtime.createPluginFromPath(path, 'mixed-hooks@test', true, 'mixed-hooks')
   assert.deepEqual(plugin.hooksConfig.SessionStart.flatMap(m => m.hooks.map(h => h.command)), [
     'echo standard', 'echo additional', 'echo inline',
   ])
-  assert.equal(errors.length, 6, JSON.stringify(errors))
+  assert.equal(plugin.modEntries.length, 2)
+  assert.equal(errors.length, 4, JSON.stringify(errors))
   assert.ok(errors.every(error => error.type === 'hook-load-failed'))
   assert.match(errors.map(error => error.reason).join('\n'), /FutureInlineEvent/)
   assert.match(errors.map(error => error.reason).join('\n'), /FutureEvent/)
   assert.match(errors.map(error => error.reason).join('\n'), /type "future"/)
-  const validated = await runtime.validateHooksJson(standard)
+  const validated = await runtime.validateHooksJson(standard, path)
   assert.equal(validated.success, true)
   assert.equal(validated.warnings.length, 3)
   const manifestValidated = await runtime.validatePluginManifest(join(path, '.claude-plugin/plugin.json'))

@@ -90,12 +90,14 @@ export async function refreshActivePlugins(
   // the plugin, returning plugin-cache-miss. loadAllPlugins warms the
   // cache-only memoize on completion, so the awaits below are ~free.
   const pluginResult = await loadAllPlugins()
+  const { startPluginMods, getModCommands } = await import('./mods/manager.js')
+  await startPluginMods(true)
   const [legacyCommands, pluginSkills, agentDefinitions] = await Promise.all([
     getPluginCommands(),
     getPluginSkills(),
     getAgentDefinitionsWithOverrides(getOriginalCwd()),
   ])
-  const pluginCommands = uniqBy([...legacyCommands, ...pluginSkills], 'name')
+  const pluginCommands = uniqBy([...legacyCommands, ...pluginSkills, ...getModCommands()], 'name')
 
   const { enabled, disabled, errors } = pluginResult
 

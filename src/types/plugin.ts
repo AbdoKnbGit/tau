@@ -69,6 +69,7 @@ export type LoadedPlugin = {
   hooksConfig?: HooksSettings
   hooksSuppressedBy?: string
   discoveryScope?: 'user' | 'project'
+  modEntries?: string[]
   mcpServers?: Record<string, McpServerConfig>
   lspServers?: Record<string, LspServerConfig>
   settings?: Record<string, unknown>

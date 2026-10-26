@@ -644,7 +644,7 @@ function validateComponentFile(
  * at runtime (pluginLoader uses .parse() not .safeParse()) — a bad hooks.json
  * breaks the whole plugin. Surfacing it here is essential.
  */
-async function validateHooksJson(filePath: string): Promise<ValidationResult> {
+async function validateHooksJson(filePath: string, pluginRoot: string): Promise<ValidationResult> {
   let content: string
   try {
     content = await readFile(filePath, { encoding: 'utf-8' })
@@ -693,7 +693,7 @@ async function validateHooksJson(filePath: string): Promise<ValidationResult> {
 
   const warnings: ValidationWarning[] = []
   const result = PluginHooksSchema().safeParse(
-    preparePluginHookFile(parsed, issue => warnings.push(issue)),
+    preparePluginHookFile(parsed, issue => warnings.push(issue), true),
   )
   if (!result.success) {
     return {
@@ -705,6 +705,17 @@ async function validateHooksJson(filePath: string): Promise<ValidationResult> {
     }
   }
 
+  if (parsed && typeof parsed === 'object' && 'modules' in parsed) {
+    const modules = (parsed as { modules: unknown }).modules
+    try {
+      if (!Array.isArray(modules) || modules.length !== 1 || typeof modules[0] !== 'string' || !/^\.\.?[\\/]/.test(modules[0])) throw new Error('modules must contain one relative module path')
+      const { compileMod } = await import('./mods/compiler.js')
+      const compiled = await compileMod(pluginRoot, path.resolve(path.dirname(filePath), modules[0]))
+      warnings.push({ path: 'modules', message: `Mod hooks: ${compiled.events.join(', ') || '(none)'}; calls: ${compiled.calls.map(call => '$.' + call).join(', ') || '(none)'}` })
+    } catch (error) {
+      return { success: false, errors: [{ path: 'modules', message: errorMessage(error) }], warnings, filePath, fileType: 'hooks' }
+    }
+  }
   return {
     success: true,
     errors: [],
@@ -802,11 +813,16 @@ export async function validatePluginContents(
     }
   }
 
-  const hooksResult = await validateHooksJson(
-    path.join(pluginDir, 'hooks', 'hooks.json'),
-  )
-  if (hooksResult.errors.length > 0 || hooksResult.warnings.length > 0) {
-    results.push(hooksResult)
+  const hookFiles = new Set([path.join(pluginDir, 'hooks', 'hooks.json')])
+  try {
+    const manifest = JSON.parse(await readFile(path.join(pluginDir, '.claude-plugin', 'plugin.json'), 'utf8'))
+    for (const entry of Array.isArray(manifest.hooks) ? manifest.hooks : [manifest.hooks]) {
+      if (typeof entry === 'string') hookFiles.add(path.resolve(pluginDir, entry))
+    }
+  } catch { /* Manifest diagnostics are reported by validatePluginManifest. */ }
+  for (const hookFile of hookFiles) {
+    const hooksResult = await validateHooksJson(hookFile, pluginDir)
+    if (hooksResult.errors.length > 0 || hooksResult.warnings.length > 0) results.push(hooksResult)
   }
 
   return results

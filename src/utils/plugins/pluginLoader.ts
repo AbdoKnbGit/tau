@@ -1206,11 +1206,12 @@ export async function loadPluginManifest(
  * @returns Validated HooksSettings
  * @throws Error if file doesn't exist or is invalid
  */
-async function loadPluginHooks(
+async function readPluginHooksFile(
   hooksConfigPath: string,
   pluginName: string,
   onUnsupported: (reason: string) => void = reason =>
     logForDebugging(reason, { level: 'warn' }),
+  onModule?: (path: string) => void,
 ): Promise<HooksSettings> {
   if (!(await pathExists(hooksConfigPath))) {
     throw new Error(
@@ -1220,11 +1221,19 @@ async function loadPluginHooks(
 
   const content = await readFile(hooksConfigPath, { encoding: 'utf-8' })
   const rawHooksConfig = jsonParse(content)
+  if (onModule && rawHooksConfig && typeof rawHooksConfig === 'object' && 'modules' in rawHooksConfig) {
+    const modules = (rawHooksConfig as { modules: unknown }).modules
+    if (!Array.isArray(modules) || modules.length !== 1 || typeof modules[0] !== 'string' || !/^\.\.?[\\/]/.test(modules[0])) {
+      onUnsupported('Mod modules must be an array containing one relative entry path')
+    } else {
+      onModule(resolve(dirname(hooksConfigPath), modules[0]))
+    }
+  }
   // Filter only unsupported, well-formed extensions. Malformed supported hooks
   // must still fail validation, rather than appearing to have loaded successfully.
   const compatibleConfig = preparePluginHookFile(rawHooksConfig, issue =>
     onUnsupported(`Plugin "${pluginName}": ${issue.message} (${hooksConfigPath}: ${issue.path})`),
-  )
+    Boolean(onModule))
   const validatedPluginHooks = PluginHooksSchema().parse(compatibleConfig)
 
   return validatedPluginHooks.hooks as HooksSettings
@@ -1608,6 +1617,7 @@ export async function createPluginFromPath(
   // Step 5: Load hooks configuration
   let mergedHooks: HooksSettings | undefined
   const loadedHookPaths = new Set<string>() // Track loaded hook files
+  const modEntries = new Set<string>()
   const reportUnsupportedHook = (hookPath: string) => (reason: string) => {
     logForDebugging(reason, { level: 'warn' })
     errors.push({
@@ -1623,10 +1633,11 @@ export async function createPluginFromPath(
   const standardHooksPath = join(pluginPath, 'hooks', 'hooks.json')
   if (await pathExists(standardHooksPath)) {
     try {
-      mergedHooks = await loadPluginHooks(
+      mergedHooks = await readPluginHooksFile(
         standardHooksPath,
         manifest.name,
         reportUnsupportedHook(standardHooksPath),
+        path => modEntries.add(path),
       )
       // Track the normalized path to prevent duplicate loading
       try {
@@ -1716,10 +1727,11 @@ export async function createPluginFromPath(
         }
 
         try {
-          const additionalHooks = await loadPluginHooks(
+          const additionalHooks = await readPluginHooksFile(
             hookFilePath,
             manifest.name,
             reportUnsupportedHook(hookFilePath),
+            path => modEntries.add(path),
           )
           try {
             mergedHooks = mergeHooksSettings(mergedHooks, additionalHooks)
@@ -1767,6 +1779,7 @@ export async function createPluginFromPath(
   if (mergedHooks) {
     plugin.hooksConfig = mergedHooks
   }
+  if (modEntries.size) plugin.modEntries = [...modEntries]
 
   // Step 6: Load plugin settings
   // Settings can come from settings.json in the plugin directory or from manifest.settings

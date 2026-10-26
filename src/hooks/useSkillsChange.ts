@@ -39,7 +39,14 @@ export function useSkillsChange(
     }
   }, [cwd, onCommandsChange])
 
-  useEffect(() => skillChangeDetector.subscribe(handleChange), [handleChange])
+  useEffect(() => {
+    const unsubscribe = skillChangeDetector.subscribe(handleChange)
+    // A fast mod startup can finish before the REPL subscribes.
+    void import('../utils/plugins/mods/manager.js').then(({ activeModCount }) => {
+      if (activeModCount()) void handleChange()
+    })
+    return unsubscribe
+  }, [handleChange])
 
   const handleGrowthBookRefresh = useCallback(async () => {
     if (!cwd) return

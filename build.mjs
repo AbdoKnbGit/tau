@@ -91,7 +91,7 @@ export class SandboxManager {
   isEnabled() { return false; }
   getViolations() { return []; }
   static isSupportedPlatform() { return false; }
-  static checkDependencies() { return { supported: false }; }
+  static checkDependencies() { return { supported: false, errors: ['Sandbox runtime is unavailable in this build'], warnings: [] }; }
   static wrapWithSandbox(command) { return command; }
   static async initialize() {}
   static updateConfig() {}
@@ -258,7 +258,12 @@ const result = await build({
   // the bundle so all the lazy-loaded modules (semver, PowerShellTool,
   // etc.) work at runtime.
   banner: {
-    js: `import { createRequire as __createRequireForESM } from 'node:module';\nconst require = __createRequireForESM(import.meta.url);`,
+    js: `import { createRequire as __createRequireForESM } from 'node:module';
+import { fileURLToPath as __fileURLToPathForESM } from 'node:url';
+import { dirname as __dirnameForESM } from 'node:path';
+const require = __createRequireForESM(import.meta.url);
+const __filename = __fileURLToPathForESM(import.meta.url);
+const __dirname = __dirnameForESM(__filename);`,
   },
   define: {
     // Build-time MACRO constants

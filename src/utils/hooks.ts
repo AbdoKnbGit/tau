@@ -4,6 +4,7 @@
  * in Tau's lifecycle.
  */
 import { basename } from 'path'
+import { hasModEvent } from './plugins/mods/manager.js'
 import { feature } from 'bun:bundle'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { pathExists } from './file.js'
@@ -1762,6 +1763,7 @@ export function hasHookForEvent(
   appState: AppState | undefined,
   sessionId: string,
 ): boolean {
+  if (hasModEvent(`classic.${hookEvent}`)) return true
   const snap = getHooksConfigFromSnapshot()?.[hookEvent]
   if (snap && snap.length > 0) return true
   const reg = getRegisteredHooks()?.[hookEvent]
@@ -2134,6 +2136,7 @@ export async function* executeHooks({
   forceSyncExecution,
   requestPrompt,
   toolInputSummary,
+  skipMods = false,
 }: {
   hookInput: HookInput
   toolUseID: string
@@ -2149,6 +2152,7 @@ export async function* executeHooks({
     toolInputSummary?: string | null,
   ) => (request: PromptRequest) => Promise<PromptResponse>
   toolInputSummary?: string | null
+  skipMods?: boolean
 }): AsyncGenerator<AggregatedHookResult> {
   if (shouldDisableAllHooksIncludingManaged()) {
     return
@@ -2174,6 +2178,24 @@ export async function* executeHooks({
     logForDebugging(
       `Skipping ${hookName} hook execution - workspace trust not accepted`,
     )
+    return
+  }
+
+  if (!skipMods && hasModEvent(`classic.${hookEvent}`)) {
+    const { dispatchModEvent, takeModLogs } = await import('./plugins/mods/manager.js')
+    const { toClassicResult, fromClassicResult } = await import('./plugins/mods/classic.js')
+    const collected: AggregatedHookResult[] = []
+    const result = await dispatchModEvent(`classic.${hookEvent}`, hookInput, async rewritten => {
+      // Identity fields belong to the host even when a mod rewrites event data.
+      const nextInput = { ...rewritten, hook_event_name: hookEvent, session_id: hookInput.session_id, cwd: hookInput.cwd, transcript_path: hookInput.transcript_path } as HookInput
+      const results: AggregatedHookResult[] = []
+      for await (const item of executeHooks({ hookInput: nextInput, toolUseID, matchQuery, signal, timeoutMs, toolUseContext, getAppState, messages, forceSyncExecution, requestPrompt, toolInputSummary, skipMods: true })) results.push(item)
+      collected.push(...results)
+      return toClassicResult(results)
+    }, signal)
+    for (const item of collected) if (item.message) yield { message: item.message }
+    for (const text of takeModLogs()) yield { message: createAttachmentMessage({ type: 'hook_system_message', content: text, hookName: `classic.${hookEvent}`, toolUseID, hookEvent }) }
+    yield fromClassicResult(result as Record<string, unknown>)
     return
   }
 
@@ -4580,6 +4602,8 @@ export async function executeSessionEndHooks(
   const { signal: endSignal, cleanup } = createCombinedAbortSignal(signal, { timeoutMs })
   let results: HookOutsideReplResult[]
   try {
+    const { endPluginMods } = await import('./plugins/mods/manager.js')
+    await endPluginMods(reason, endSignal).catch(error => logForDebugging(`Mod session.end failed: ${String(error)}`, { level: 'warn' }))
     results = await executeHooksOutsideREPL({
       getAppState,
       hookInput,
