@@ -36,6 +36,7 @@ import { getCurrentSessionTitle } from '../utils/sessionStorage.js';
 import { doesMostRecentAssistantMessageExceed200k } from '../utils/tokens.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
 import { getAPIProvider, PROVIDER_DISPLAY_NAMES, isThirdPartyProvider } from '../utils/model/providers.js';
+import { runOutsideProviderScope } from '../utils/forcedProvider.js';
 import { isVimModeEnabled } from './PromptInput/utils.js';
 
 /** Returns a short provider label for the status line, or empty string for Anthropic. */
@@ -300,7 +301,10 @@ function StatusLineInner({
         previousStateRef.current.messageId = currentMessageId;
         previousStateRef.current.exceeds200kTokens = exceeds200kTokens;
       }
-      const statusInput = buildStatusLineCommandInput(permissionModeRef.current, exceeds200kTokens, settingsRef.current, msgs, Array.from(addedDirsRef.current.keys()), mainLoopModelRef.current, vimModeRef.current);
+      // The main session's reading, whichever sub-agent's update scheduled it:
+      // inside its provider scope this would pair the session's model with
+      // the agent's provider and window.
+      const statusInput = runOutsideProviderScope(() => buildStatusLineCommandInput(permissionModeRef.current, exceeds200kTokens, settingsRef.current, msgs, Array.from(addedDirsRef.current.keys()), mainLoopModelRef.current, vimModeRef.current));
       const text = await executeStatusLineCommand(statusInput, controller.signal, undefined, logResult);
       if (!controller.signal.aborted) {
         setAppState(prev => {

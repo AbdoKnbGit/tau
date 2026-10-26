@@ -56,6 +56,8 @@ function fixture() {
   let request
   let lifecycleProvider
   let lifecycleSource
+  const consumerProviders = []
+  let scheduledProvider
   let iteratorProvider
   let toolsProvider
   let finish
@@ -68,13 +70,22 @@ function fixture() {
         params.agentDefinition.provider,
         () => runtime.getAPIProvider(),
       )
+      // Work the agent schedules from its own steps, as its progress
+      // summaries do, stays on its route and so on its prompt cache.
+      await new Promise(resolveTimer => setTimeout(() => {
+        scheduledProvider = runtime.getAPIProvider()
+        resolveTimer()
+      }, 0))
+      yield { type: 'progress' }
     },
     async lifecycle(params) {
       try {
         await Promise.resolve()
         lifecycleProvider = runtime.getAPIProvider()
         lifecycleSource = runtime.getForcedProviderContext()?.source ?? (runtime.getForcedProviderContext() ? 'explicit' : undefined)
-        for await (const _message of params.makeStream()) { /* consume */ }
+        // What the lifecycle does with each message (progress updates that
+        // re-render the main screen) happens between the agent's steps.
+        for await (const _message of params.makeStream()) consumerProviders.push(runtime.getAPIProvider())
         finish({ metadata: params.metadata })
       } catch (error) {
         finish({ error })
@@ -108,6 +119,8 @@ function fixture() {
     request: () => request,
     lifecycleProvider: () => lifecycleProvider,
     lifecycleSource: () => lifecycleSource,
+    consumerProviders: () => consumerProviders,
+    scheduledProvider: () => scheduledProvider,
     iteratorProvider: () => iteratorProvider,
     toolsProvider: () => toolsProvider,
     async resume(meta) {
@@ -173,10 +186,15 @@ test('an agent resumes on its saved route after the session changes provider and
   })
   assert.equal(f.request().model, GEMINI_MEDIUM)
   assert.equal(metadata.resolvedAgentModel, GEMINI_MEDIUM)
-  assert.equal(f.lifecycleProvider(), 'antigravity')
-  assert.equal(f.lifecycleSource(), 'spawn')
   assert.equal(f.toolsProvider(), 'antigravity')
   assert.equal(f.iteratorProvider(), 'antigravity')
+  assert.equal(f.scheduledProvider(), 'antigravity')
+  // Only the agent runs on its route. The lifecycle around it stays on the
+  // session's provider, as for a spawn: its progress updates re-render the
+  // main screen, which must not read the agent's provider.
+  assert.equal(f.lifecycleProvider(), 'openai')
+  assert.equal(f.lifecycleSource(), undefined)
+  assert.deepEqual(f.consumerProviders(), ['openai'])
   assert.deepEqual(f.runtime.getAgentResolvedModel(f.agent.agentType), { model: GEMINI_MEDIUM, provider: 'antigravity' })
   assert.equal(f.runtime.getAPIProvider(), 'openai', 'resume must not move the session')
   assert.equal(f.runtime.getForcedProviderContext(), undefined, 'the scope must not escape')

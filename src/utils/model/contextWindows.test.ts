@@ -188,6 +188,19 @@ test('Argon resolves its full context before the picker or remote catalog is loa
     'Argon context must not invent limits for unrelated Gemini 4 models')
 })
 
+test("a local build's window answers only for a local runtime", () => {
+  useCatalogue({})
+  assert(getProviderCatalogContextWindow('mistral:7b', 'ollama') === 32_768, 'Ollama keeps its Mistral 7B build')
+  assert(getProviderCatalogContextWindow('llama3', 'lmstudio') === 8_192, 'LM Studio keeps its Llama 3 build')
+  // A hosted provider that does not describe a model leaves it to the default
+  // window, whatever family its name starts with.
+  for (const [model, provider] of [['mistral-large-4', 'requesty'], ['llama3-70b-instruct', 'vercel'], ['mixtral-8x22b', 'groq']] as const) {
+    const window = getProviderCatalogContextWindow(model, provider)
+    assert(window === undefined, `${provider}/${model} took a local build's window: ${window}`)
+  }
+  assert(getProviderCatalogContextWindow('mistral:7b') === 32_768, 'a lookup with no provider is unchanged')
+})
+
 test('with no catalogue entry an unknown model stays unknown', () => {
   useCatalogue({})
   const window = getProviderCatalogContextWindow('claude-fable-5-1', 'opencode')

@@ -215,9 +215,11 @@ test('Mistral worker resumes its saved route after the parent changes provider a
   })
   assert.equal(f.request().model, 'mistral-large-2512')
   assert.equal(metadata.resolvedAgentModel, 'mistral-large-2512')
-  assert.equal(f.lifecycleProvider(), 'mistral')
   assert.equal(f.toolsProvider(), 'mistral')
   assert.equal(f.iteratorProvider(), 'mistral')
+  // Only the worker runs on its route; the lifecycle around it stays on the
+  // parent's provider, as for a spawn.
+  assert.equal(f.lifecycleProvider(), 'openrouter')
   assert.equal(
     f.runtime.getAPIProvider(),
     'openrouter',
@@ -258,7 +260,7 @@ test('resume route is scoped inside an existing caller provider override', async
       assert.equal(f.runtime.getAPIProvider(), 'openrouter')
     },
   )
-  assert.equal(f.lifecycleProvider(), 'mistral')
+  assert.equal(f.lifecycleProvider(), 'openrouter')
   assert.equal(f.iteratorProvider(), 'mistral')
   assert.equal(f.runtime.getForcedProvider(), undefined)
 })
@@ -277,7 +279,7 @@ test('fork resume retains the original inherited model after parent changes', as
     provider: 'mistral',
     model: 'mistral-large-4-latest',
   })
-  assert.equal(f.lifecycleProvider(), 'mistral')
+  assert.equal(f.lifecycleProvider(), 'openrouter')
   assert.equal(f.runtime.getAPIProvider(), 'openrouter')
 })
 

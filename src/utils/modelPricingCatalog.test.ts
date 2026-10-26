@@ -4,7 +4,21 @@
  * Run: bun run src/utils/modelPricingCatalog.test.ts
  */
 
-import {
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import type { CatalogTable } from './modelPricingCatalog.js'
+
+// The table lives under <home>/.config/claude-code, and a refresh re-reads it
+// from there when the copy in memory is outdated. Point home at an empty
+// directory so this machine's own table cannot decide these results; set
+// before the module resolves the path.
+const home = mkdtempSync(join(tmpdir(), 'tau-model-prices-'))
+const previousHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+process.env.HOME = home
+process.env.USERPROFILE = home
+
+const {
   deriveTable,
   lookupCatalogContextWindow,
   lookupCatalogEfforts,
@@ -18,8 +32,7 @@ import {
   isModelPricingDisabled,
   resolveCatalogProvider,
   rowToPrice,
-  type CatalogTable,
-} from './modelPricingCatalog.js'
+} = await import('./modelPricingCatalog.js')
 
 let passed = 0
 let failed = 0
@@ -672,6 +685,12 @@ test('a current table is not downloaded again for thinking values', () => {
     downloads.restore()
   }
 })
+
+for (const [key, value] of Object.entries(previousHome)) {
+  if (value === undefined) delete process.env[key]
+  else process.env[key] = value
+}
+rmSync(home, { recursive: true, force: true })
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

@@ -1,10 +1,14 @@
 import {
   canApplyAgentProvider,
+  driveInProviderScope,
   getForcedProvider,
   getForcedProviderContext,
+  getScopedProvider,
+  runOutsideProviderScope,
   runWithAgentProvider,
   runWithForcedProvider,
 } from './forcedProvider.js'
+import { createStore } from '../state/store.js'
 
 let passed = 0
 let failed = 0
@@ -105,6 +109,65 @@ async function main(): Promise<void> {
     runWithAgentProvider(undefined, () =>
       assert(getForcedProvider() === undefined, 'a provider appeared'),
     )
+  })
+
+  await test('a driven agent runs on its route while its consumer stays on the session', async () => {
+    const route = { provider: 'alibaba', source: 'spawn' } as const
+    const agentSaw: Array<string | undefined> = []
+    async function* agent(): AsyncGenerator<number, void> {
+      agentSaw.push(getScopedProvider())
+      yield 1
+      await Promise.resolve()
+      agentSaw.push(getScopedProvider())
+      yield 2
+    }
+    const consumerSaw: Array<string | undefined> = []
+    for await (const _step of driveInProviderScope(route, agent())) {
+      consumerSaw.push(getScopedProvider())
+    }
+    assert(agentSaw.join() === 'alibaba,alibaba', `agent saw ${agentSaw.join()}`)
+    assert(consumerSaw.length === 2 && consumerSaw.every(p => p === undefined), `consumer saw ${consumerSaw.join()}`)
+  })
+
+  await test('a consumer that stops early closes the agent on its route', async () => {
+    let closedOn: string | undefined
+    async function* agent(): AsyncGenerator<number, void> {
+      try {
+        yield 1
+        yield 2
+      } finally {
+        closedOn = getScopedProvider()
+      }
+    }
+    for await (const _step of driveInProviderScope({ provider: 'alibaba', source: 'spawn' }, agent())) break
+    assert(closedOn === 'alibaba', `closed on ${closedOn}`)
+  })
+
+  await test("an update from inside a sub-agent's scope re-renders the main screen outside it", async () => {
+    const store = createStore({ n: 0 }, undefined, runOutsideProviderScope)
+    let updaterSaw: string | undefined
+    let listenerSaw: string | undefined = 'never called'
+    let scheduledSaw: string | undefined = 'never ran'
+    let scheduled!: Promise<void>
+    store.subscribe(() => {
+      listenerSaw = getScopedProvider()
+      // React schedules its render from the listener; the render inherits
+      // whatever scope the listener ran in.
+      scheduled = new Promise(resolve => setImmediate(() => {
+        scheduledSaw = getScopedProvider()
+        resolve()
+      }))
+    })
+    runWithForcedProvider({ provider: 'alibaba', source: 'spawn' }, () =>
+      store.setState(prev => {
+        updaterSaw = getScopedProvider()
+        return { n: prev.n + 1 }
+      }),
+    )
+    await scheduled
+    assert(updaterSaw === 'alibaba', 'the update itself runs where its caller is')
+    assert(listenerSaw === undefined, `listener saw ${listenerSaw}`)
+    assert(scheduledSaw === undefined, `scheduled render saw ${scheduledSaw}`)
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

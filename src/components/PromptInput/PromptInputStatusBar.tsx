@@ -13,6 +13,7 @@ import {
   subscribeContextBaseline,
 } from '../../utils/contextBaseline.js'
 import { getCwd } from '../../utils/cwd.js'
+import { runOutsideProviderScope } from '../../utils/forcedProvider.js'
 import { modelDisplayStringForProvider } from '../../utils/model/display.js'
 import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
 import {
@@ -200,7 +201,10 @@ export function PromptInputStatusBar({
     statusRowFits(isFullscreenEnvEnabled(), rows)
   const mainLoopModel = useMainLoopModel()
   const permissionMode = useAppState(s => s.toolPermissionContext.mode)
-  const provider = getAPIProvider()
+  // This row describes the main session. A re-render scheduled from inside a
+  // sub-agent's provider scope would otherwise read that agent's provider and
+  // measure the session's model against its window.
+  const provider = runOutsideProviderScope(getAPIProvider)
   const lastMessageCount = messages.length
 
   // The initial-context measurement lands after the first render, and nothing
@@ -246,12 +250,12 @@ export function PromptInputStatusBar({
 
   // The model that actually runs, which the statusLine command reports too.
   // Under opusplan it differs from the configured one, and so does its window.
-  const runtimeModel = getRuntimeMainLoopModel({
+  const runtimeModel = runOutsideProviderScope(() => getRuntimeMainLoopModel({
     permissionMode,
     mainLoopModel,
     exceeds200kTokens: doesMostRecentAssistantMessageExceed200k(messages),
-  })
-  const context = readContextUsage(messages, runtimeModel)
+  }))
+  const context = runOutsideProviderScope(() => readContextUsage(messages, runtimeModel))
 
   const cwd = shortenSessionCwd(getCwd())
   const status = formatSessionStatus(

@@ -46,6 +46,7 @@ import { getTools } from './tools.js';
 import { createSyntheticOutputTool, isSyntheticOutputToolEnabled } from './tools/SyntheticOutputTool/SyntheticOutputTool.js';
 import { canUserConfigureAdvisor, getInitialAdvisorSetting, isAdvisorEnabled, isValidAdvisorModel, modelSupportsAdvisor } from './utils/advisor.js';
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js';
+import { runOutsideProviderScope } from './utils/forcedProvider.js';
 import { count, uniq } from './utils/array.js';
 import { installAsciicastRecorder } from './utils/asciicast.js';
 import { getSubscriptionType, isClaudeAISubscriber, prefetchAwsCredentialsAndBedRockInfoIfSafe, prefetchGcpCredentialsIfSafe, validateForceLoginOrg } from './utils/auth.js';
@@ -2759,7 +2760,7 @@ async function run(): Promise<CommanderCommand> {
       };
 
       // Init app state
-      const headlessStore = createStore(headlessInitialState, onChangeAppState);
+      const headlessStore = createStore(headlessInitialState, onChangeAppState, runOutsideProviderScope);
 
       // Check if bypassPermissions should be disabled based on Statsig gate
       // This runs in parallel to the code below, to avoid blocking the main loop.

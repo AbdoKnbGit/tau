@@ -1,6 +1,7 @@
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import type { APIProvider } from './providers.js'
 import {
+  isLocalProvider,
   lookupCatalogContextWindow,
   lookupCatalogPromptCeiling,
   noteMissingContextWindow,
@@ -238,8 +239,16 @@ const KNOWN_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
   'kimi-k2-0905-preview': 262_144,
   'kimi-k2-0711-preview': 131_072,
   'qwen3-coder-next': 256_000,
+}
 
-  // Ollama common models.
+/**
+ * Common Ollama builds by family name: `mistral` is Mistral 7B at 32K and
+ * `llama3` is 8K. They describe a model pulled into a local runtime, so only a
+ * local runtime's lookup reads them. On a hosted provider a family name says
+ * nothing about the model: one it does not describe, such as
+ * `mistral-large-4`, takes the default window rather than a local build's.
+ */
+const LOCAL_MODEL_CONTEXT_WINDOWS: ContextWindowMap = {
   llama3: 8_192,
   'llama3.1': 128_000,
   'llama3.2': 128_000,
@@ -298,16 +307,6 @@ const PREFIX_CONTEXT_WINDOWS: ContextWindowMap = {
   'kimi-k2-turbo-preview': 262_144,
   'kimi-k2-0905-preview': 262_144,
   'kimi-k2-0711-preview': 131_072,
-  'llama3.3': 128_000,
-  'llama3.2': 128_000,
-  'llama3.1': 128_000,
-  llama3: 8_192,
-  codellama: 16_384,
-  mixtral: 32_768,
-  mistral: 32_768,
-  'qwen2.5': 128_000,
-  phi3: 128_000,
-  'command-r': 128_000,
 }
 
 const VARIANT_SUFFIXES = new Set([
@@ -398,7 +397,17 @@ export function getProviderCatalogContextWindow(
     return exactWindow
   }
 
-  return lookupPrefixes(candidates)
+  const prefixWindow = lookupPrefixes(candidates, PREFIX_CONTEXT_WINDOWS)
+  if (prefixWindow !== undefined) {
+    return prefixWindow
+  }
+
+  // Only a local runtime's model is one of these builds.
+  if (provider !== undefined && !isLocalProvider(provider)) {
+    return undefined
+  }
+  return lookupRecord(candidates, LOCAL_MODEL_CONTEXT_WINDOWS)
+    ?? lookupPrefixes(candidates, LOCAL_MODEL_CONTEXT_WINDOWS)
 }
 
 /** What the sources scoped to one host say, most authoritative first. */
@@ -561,12 +570,15 @@ function lookupRecord(
   return undefined
 }
 
-function lookupPrefixes(candidates: readonly string[]): number | undefined {
-  const keys = Object.keys(PREFIX_CONTEXT_WINDOWS).sort((a, b) => b.length - a.length)
+function lookupPrefixes(
+  candidates: readonly string[],
+  windows: ContextWindowMap,
+): number | undefined {
+  const keys = Object.keys(windows).sort((a, b) => b.length - a.length)
   for (const candidate of candidates) {
     for (const key of keys) {
       if (candidate.startsWith(key)) {
-        return PREFIX_CONTEXT_WINDOWS[key]
+        return windows[key]
       }
     }
   }

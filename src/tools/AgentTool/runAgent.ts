@@ -93,6 +93,7 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import {
   canApplyAgentProvider,
+  driveInProviderScope,
   getForcedProviderContext,
   isExplicitProviderOverride,
   runWithForcedProvider,
@@ -1182,17 +1183,10 @@ export async function* runAgent(options: RunAgentOptions) {
       : { provider: getAPIProvider(), source: 'spawn' }
   }
 
-  const iterator = runAgentWithoutProviderOverride(options, mistralRouting, settingTarget, context)
-
-  try {
-    while (true) {
-      const next = await runWithForcedProvider(context, () => iterator.next())
-      if (next.done) return
-      yield next.value
-    }
-  } finally {
-    await runWithForcedProvider(context, () => iterator.return(undefined))
-  }
+  yield* driveInProviderScope(
+    context,
+    runAgentWithoutProviderOverride(options, mistralRouting, settingTarget, context),
+  )
 }
 
 /**

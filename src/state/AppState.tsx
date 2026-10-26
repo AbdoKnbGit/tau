@@ -6,6 +6,7 @@ import { logForDebugging } from '../utils/debug.js';
 import { createDisabledBypassPermissionsContext, isBypassPermissionsModeDisabled } from '../utils/permissions/permissionSetup.js';
 import { applySettingsChange } from '../utils/settings/applySettingsChange.js';
 import type { SettingSource } from '../utils/settings/constants.js';
+import { runOutsideProviderScope } from '../utils/forcedProvider.js';
 import { createStore } from './store.js';
 
 import { type AppState, type AppStateStore, getDefaultAppState } from './AppStateStore.js';
@@ -37,7 +38,7 @@ export function AppStateProvider(t0) {
   }
   let t1;
   if ($[0] !== initialState || $[1] !== onChangeAppState) {
-    t1 = () => createStore(initialState ?? getDefaultAppState(), onChangeAppState);
+    t1 = () => createStore(initialState ?? getDefaultAppState(), onChangeAppState, runOutsideProviderScope);
     $[0] = initialState;
     $[1] = onChangeAppState;
     $[2] = t1;

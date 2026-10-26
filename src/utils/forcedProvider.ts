@@ -73,6 +73,30 @@ export function runOutsideProviderScope<T>(fn: () => T): T {
 }
 
 /**
+ * Drive `stream` inside `ctx` one step at a time.
+ *
+ * The generator's own code (an agent's turns and tools) runs on the scoped
+ * provider; whoever consumes it runs outside, between steps. A consumer that
+ * updates the main screen or queues a main-thread notice must not carry the
+ * agent's provider there: a re-render it triggers would read it, and the
+ * session bar would show the agent's provider with the session's model.
+ */
+export async function* driveInProviderScope<T>(
+  ctx: ForcedProviderContext,
+  stream: AsyncGenerator<T, void>,
+): AsyncGenerator<T, void> {
+  try {
+    while (true) {
+      const next = await _forcedProvider.run(ctx, () => stream.next())
+      if (next.done) return
+      yield next.value
+    }
+  } finally {
+    await _forcedProvider.run(ctx, () => stream.return(undefined))
+  }
+}
+
+/**
  * Read the currently forced provider, if any. Returns undefined when the
  * call is happening outside a runWithForcedProvider() scope, and inside a
  * spawn scope, which pins nothing anyone chose.

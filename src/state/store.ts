@@ -10,6 +10,12 @@ export type Store<T> = {
 export function createStore<T>(
   initialState: T,
   onChange?: OnChange<T>,
+  /**
+   * Runs the change handler and the listeners. The app's store passes one
+   * that leaves any provider scope: a sub-agent updating it must not carry its
+   * provider into the re-render that update triggers.
+   */
+  notify: (run: () => void) => void = run => run(),
 ): Store<T> {
   let state = initialState
   const listeners = new Set<Listener>()
@@ -22,8 +28,10 @@ export function createStore<T>(
       const next = updater(prev)
       if (Object.is(next, prev)) return
       state = next
-      onChange?.({ newState: next, oldState: prev })
-      for (const listener of listeners) listener()
+      notify(() => {
+        onChange?.({ newState: next, oldState: prev })
+        for (const listener of listeners) listener()
+      })
     },
 
     subscribe: (listener: Listener) => {

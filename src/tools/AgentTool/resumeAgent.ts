@@ -37,9 +37,11 @@ import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { getAgentModelScope, isBuiltInAgent } from './loadAgentsDir.js'
 import {
+  driveInProviderScope,
   isExplicitProviderOverride,
   runWithAgentProvider,
   runWithForcedProvider,
+  type ForcedProviderContext,
 } from '../../utils/forcedProvider.js'
 import { setAgentResolvedModel } from './agentModelManager.js'
 import { getAgentConversation } from './resumeParity.js'
@@ -147,12 +149,10 @@ export async function resumeAgentBackground({
       ? getAgentResumeRoute(meta)
       : undefined
   const spawnModel = mistralRoute?.model ?? savedRoute?.model ?? meta?.model
+  const resumeScope: ForcedProviderContext | undefined = mistralRoute
+    ?? (savedRoute ? { provider: savedRoute.provider, source: 'spawn' } : undefined)
   const withResumeProvider = <T>(fn: () => T): T =>
-    mistralRoute
-      ? runWithForcedProvider(mistralRoute, fn)
-      : savedRoute
-        ? runWithForcedProvider({ provider: savedRoute.provider, source: 'spawn' }, fn)
-        : fn()
+    resumeScope ? runWithForcedProvider(resumeScope, fn) : fn()
 
   const uiDescription = meta?.description ?? '(resumed)'
 
@@ -310,35 +310,40 @@ export async function resumeAgentBackground({
   // runAsyncAgentLifecycle's finally already releases the scope.
   beginAgentFileScope(agentBackgroundTask.agentId, uiDescription)
 
-  void withResumeProvider(() =>
-    runWithAgentContext(asyncAgentContext, () =>
-      wrapWithCwd(() =>
-        runAsyncAgentLifecycle({
-          taskId: agentBackgroundTask.agentId,
-          abortController: agentBackgroundTask.abortController!,
-          makeStream: onCacheSafeParams =>
-            runAgent({
-              ...runAgentParams,
-              override: {
-                ...runAgentParams.override,
-                agentId: asAgentId(agentBackgroundTask.agentId),
-                abortController: agentBackgroundTask.abortController!,
-              },
-              onCacheSafeParams,
-            }),
-          metadata,
-          description: uiDescription,
-          toolUseContext,
-          rootSetAppState,
-          agentIdForCleanup: agentId,
-          enableSummarization:
-            isCoordinatorMode() ||
-            isForkSubagentEnabled() ||
-            getSdkAgentProgressSummariesEnabled(),
-          getWorktreeResult: async () =>
-            resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
-        }),
-      ),
+  // Only the agent runs on its route, one step at a time, as runAgent holds a
+  // spawned agent. The lifecycle around it stays on the session's provider,
+  // as for a spawn: its progress updates re-render the main screen, and a
+  // re-render inside the route would show the agent's provider beside the
+  // session's model and measure the session against that provider's window.
+  void runWithAgentContext(asyncAgentContext, () =>
+    wrapWithCwd(() =>
+      runAsyncAgentLifecycle({
+        taskId: agentBackgroundTask.agentId,
+        abortController: agentBackgroundTask.abortController!,
+        makeStream: onCacheSafeParams => {
+          const stream = runAgent({
+            ...runAgentParams,
+            override: {
+              ...runAgentParams.override,
+              agentId: asAgentId(agentBackgroundTask.agentId),
+              abortController: agentBackgroundTask.abortController!,
+            },
+            onCacheSafeParams,
+          })
+          return resumeScope ? driveInProviderScope(resumeScope, stream) : stream
+        },
+        metadata,
+        description: uiDescription,
+        toolUseContext,
+        rootSetAppState,
+        agentIdForCleanup: agentId,
+        enableSummarization:
+          isCoordinatorMode() ||
+          isForkSubagentEnabled() ||
+          getSdkAgentProgressSummariesEnabled(),
+        getWorktreeResult: async () =>
+          resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
+      }),
     ),
   )
 
