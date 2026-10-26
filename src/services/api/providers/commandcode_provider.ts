@@ -28,14 +28,32 @@ import {
   supportsCommandCodeEffortSelection,
 } from '../../../utils/model/commandCodeThinking.js'
 import { getCommandCodeCatalogContextWindow } from '../../../utils/model/commandCodeCatalog.js'
+import {
+  commandCodeRegistryContextWindow,
+  recordCommandCodeCatalog,
+} from '../../../utils/model/commandCodeRegistry.js'
 import { getSessionId } from '../../../bootstrap/state.js'
 import { foldersWithProjectFiles } from '../../../utils/projectFiles.js'
+import { isMediaBlock } from '../../../lanes/shared/media_blocks.js'
+import { prefetchMediaText, renderMediaForTextLane } from '../../../lanes/shared/media_extract.js'
+import { decideImageSupport, prepareImageSupport } from '../../../lanes/shared/vision_capability.js'
+import { ProviderHttpError } from '../transport_error.js'
 
 const COMMAND_CODE_API_BASE_URL = 'https://api.commandcode.ai'
 const COMMAND_CODE_PROVIDER_BASE_URL = `${COMMAND_CODE_API_BASE_URL}/provider/v1`
 const COMMAND_CODE_ALPHA_GENERATE_PATH = '/alpha/generate'
 const COMMAND_CODE_CLI_VERSION = process.env.COMMAND_CODE_CLI_VERSION ?? '0.32.2'
 const COMMAND_CODE_CACHE_CONTROL = { type: 'ephemeral' } as const
+// Overflow wording relayed from the upstreams: the OpenRouter transformer's
+// markers (another router), plus the Kimi/MiniMax and Qwen phrasings.
+const COMMAND_CODE_CONTEXT_EXCEEDED_MARKERS = [
+  'context length',
+  'context_length_exceeded',
+  'prompt is too long',
+  'maximum context',
+  'exceeded model token limit',
+  'range of input length',
+] as const
 const commandCodeEnvironmentContextBySession = new Map<string, Promise<Record<string, unknown>>>()
 let fallbackCommandCodeAlphaSessionId: string | null = null
 
@@ -120,14 +138,21 @@ export class CommandCodeProvider extends OpenAIProvider {
 
   async listModels(): Promise<ModelInfo[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/models`, {
-        headers: this._headers(),
-        signal: AbortSignal.timeout(8_000),
-      })
+      // The client view is the catalog Command Code's own CLI reads: the
+      // /models rows plus hidden ones, each with its prices, image input and
+      // aliases. The picker keeps to the rows /models lists.
+      let response = await this._fetchModels('?view=client')
+      const isCatalog = response.ok
+      if (!response.ok) {
+        // A gateway in front of Command Code may serve only the plain list.
+        await response.body?.cancel()
+        response = await this._fetchModels('')
+      }
       if (response.ok) {
-        const data = await response.json()
-        const rawModels = extractModelRows(data)
+        const rawModels = extractModelRows(await response.json())
+        if (isCatalog) recordCommandCodeCatalog(rawModels)
         const models = rawModels
+          .filter(raw => raw.hidden !== true)
           .map(toCommandCodeModelInfo)
           .filter((model): model is ModelInfo => model !== null)
         if (models.length > 0) return mergeCommandCodeModels(models)
@@ -137,6 +162,13 @@ export class CommandCodeProvider extends OpenAIProvider {
     }
 
     return fallbackModels()
+  }
+
+  private _fetchModels(query: string): Promise<Response> {
+    return fetch(`${this.baseUrl}/models${query}`, {
+      headers: this._headers(),
+      signal: AbortSignal.timeout(8_000),
+    })
   }
 
   resolveModel(model: string): string {
@@ -162,6 +194,10 @@ export class CommandCodeProvider extends OpenAIProvider {
         'Command Code API error: this endpoint requires a higher Command Code plan.\n'
         + `${detail || 'Switch to a Go-plan model from /models, or upgrade your Command Code plan.'}`,
       )
+    }
+    if (isCommandCodeContextOverflow(detail)) {
+      return new ProviderHttpError(this.name, status, body, headers,
+        `Prompt is too long (commandcode ${status}): ${detail}`)
     }
     if (status === 400 && /wrong endpoint|\/messages|chat\/completions|unsupported_model/i.test(detail)) {
       return new Error(
@@ -245,9 +281,21 @@ export class CommandCodeProvider extends OpenAIProvider {
     model: string,
     alphaSessionId: string,
   ): Promise<Record<string, unknown>> {
+    // A model that can see gets every image as an image part; documents, and
+    // images for a text-only model, go as OCR text or a /vision-model
+    // description, resolved here before the sync converter renders them.
+    // Asked only once an image is present, then frozen like every lane's.
+    let imageSupport: boolean | undefined
+    const canSeeImages = (): boolean => (imageSupport ??= decideImageSupport(this.name, model))
+    await prepareImageSupport(this.name, model, params.messages, params.signal)
+    await prefetchMediaText(params.messages, {
+      includeImages: () => !canSeeImages(),
+      signal: params.signal,
+    })
+
     const requestParams: Record<string, unknown> = {
       stream: true,
-      messages: toCommandCodeAlphaMessages(params.messages),
+      messages: toCommandCodeAlphaMessages(params.messages, canSeeImages),
       max_tokens: params.max_tokens,
       model,
     }
@@ -299,7 +347,7 @@ export class CommandCodeProvider extends OpenAIProvider {
       if (!type) continue
 
       if (type === 'error') {
-        throw new Error(`Command Code API stream error: ${commandCodeAlphaErrorDetail(event)}`)
+        throw commandCodeStreamError(commandCodeAlphaErrorDetail(event))
       }
 
       if (type === 'finish-step' || type === 'finish_step') {
@@ -562,7 +610,7 @@ export class CommandCodeProvider extends OpenAIProvider {
       }
       if (parsed.type === 'error') {
         const detail = parsed.error?.message ?? parsed.error?.type ?? json
-        throw new Error(`Command Code API stream error: ${detail}`)
+        throw commandCodeStreamError(detail)
       }
       return parsed
     } catch (error) {
@@ -649,7 +697,8 @@ function toCommandCodeModelInfo(raw: RawCommandCodeModel): ModelInfo | null {
 }
 
 export function getCommandCodeFallbackContextWindow(modelId: string): number {
-  const catalogWindow = getCommandCodeCatalogContextWindow(modelId)
+  const catalogWindow = commandCodeRegistryContextWindow(modelId)
+    ?? getCommandCodeCatalogContextWindow(modelId)
   if (catalogWindow !== undefined) return catalogWindow
   const leaf = (modelId.split('/').pop() ?? modelId).toLowerCase()
   if (leaf.includes('kimi-k3')) return 1_000_000
@@ -727,7 +776,10 @@ function toCommandCodeAlphaTools(tools: readonly ProviderTool[]): Array<Record<s
   return result
 }
 
-function toCommandCodeAlphaMessages(messages: readonly ProviderMessage[]): Array<Record<string, unknown>> {
+function toCommandCodeAlphaMessages(
+  messages: readonly ProviderMessage[],
+  canSeeImages: () => boolean,
+): Array<Record<string, unknown>> {
   const toolNames = commandCodeToolNameById(messages)
   const result: Array<Record<string, unknown>> = []
 
@@ -737,13 +789,19 @@ function toCommandCodeAlphaMessages(messages: readonly ProviderMessage[]): Array
       continue
     }
 
+    // Only a user message can carry the images a tool returned.
+    const resultImages = message.role === 'user'
+      ? message.content.flatMap(block => block.type === 'tool_result' ? alphaToolResultImages(block.content) : [])
+      : []
+    const forwardImages = resultImages.length > 0 && canSeeImages()
     const toolResults = message.content
       .filter(block => block.type === 'tool_result')
-      .map(block => toCommandCodeAlphaToolResultBlock(block, toolNames))
+      .map(block => toCommandCodeAlphaToolResultBlock(block, toolNames, forwardImages))
       .filter((block): block is Record<string, unknown> => block !== null)
+    const toolResultImages = forwardImages ? resultImages : []
     const otherBlocks = message.content
       .filter(block => block.type !== 'tool_result')
-      .map(block => toCommandCodeAlphaContentBlock(block))
+      .map(block => toCommandCodeAlphaContentBlock(block, canSeeImages))
       .filter((block): block is Record<string, unknown> => block !== null)
 
     if (message.role === 'assistant') {
@@ -759,8 +817,13 @@ function toCommandCodeAlphaMessages(messages: readonly ProviderMessage[]): Array
     if (toolResults.length > 0) {
       result.push({ role: 'tool', content: toolResults })
     }
-    if (otherBlocks.length > 0) {
-      result.push({ role: 'user', content: otherBlocks })
+    // A tool result is text only on this endpoint, so the images a tool
+    // returned follow it the way an attached image travels.
+    const userContent = toolResultImages.length > 0
+      ? [{ type: 'text', text: 'Images from the tool result above:' }, ...toolResultImages, ...otherBlocks]
+      : otherBlocks
+    if (userContent.length > 0) {
+      result.push({ role: 'user', content: userContent })
     }
   }
 
@@ -813,11 +876,33 @@ function hasCommandCodeCacheControl(value: unknown): boolean {
   return isRecord(value) && value.cache_control !== undefined
 }
 
-function toCommandCodeAlphaContentBlock(block: ProviderContentBlock): Record<string, unknown> | null {
+/** An image /alpha/generate can carry as an image part. */
+function isAlphaSendableImage(block: unknown): block is ProviderContentBlock {
+  return isRecord(block) && block.type === 'image' && isRecord(block.source)
+}
+
+/** A tool result's images, as the image parts a user message carries. */
+function alphaToolResultImages(content: ProviderContentBlock['content']): Array<Record<string, unknown>> {
+  return Array.isArray(content)
+    ? content.filter(isAlphaSendableImage).map(block => ({ type: 'image', source: block.source }))
+    : []
+}
+
+function toCommandCodeAlphaContentBlock(
+  block: ProviderContentBlock,
+  canSeeImages: () => boolean,
+): Record<string, unknown> | null {
   const cacheControl = (block as { cache_control?: unknown }).cache_control
   const withCache = (value: Record<string, unknown>): Record<string, unknown> => (
     cacheControl ? { ...value, cache_control: cacheControl } : value
   )
+
+  // An attachment that does not go out as an image part goes as text. A
+  // `document` is not in ProviderContentBlock's union: without this it misses
+  // every case below and goes out as null.
+  if (isMediaBlock(block) && !(isAlphaSendableImage(block) && canSeeImages())) {
+    return withCache({ type: 'text', text: renderMediaForTextLane(block) })
+  }
 
   switch (block.type) {
     case 'text':
@@ -859,6 +944,7 @@ function commandCodeToolNameById(messages: readonly ProviderMessage[]): Map<stri
 function toCommandCodeAlphaToolResultBlock(
   block: ProviderContentBlock,
   toolNames: ReadonlyMap<string, string>,
+  imagesSentSeparately: boolean,
 ): Record<string, unknown> | null {
   if (block.type !== 'tool_result') return null
   const toolCallId = block.tool_use_id ?? ''
@@ -868,7 +954,7 @@ function toCommandCodeAlphaToolResultBlock(
     ...(toolNames.get(toolCallId) ? { toolName: toolNames.get(toolCallId) } : {}),
     output: {
       type: block.is_error ? 'error-text' : 'text',
-      value: toolResultToText(block.content),
+      value: toolResultToText(block.content, imagesSentSeparately),
     },
   }
 }
@@ -1145,16 +1231,44 @@ function commandCodeAlphaErrorDetail(event: CommandCodeAlphaEvent): string {
   return firstString(event.message, event.detail) ?? JSON.stringify(event)
 }
 
-function toolResultToText(value: unknown): string {
+function isCommandCodeContextOverflow(detail: string): boolean {
+  const lower = detail.toLowerCase()
+  return COMMAND_CODE_CONTEXT_EXCEEDED_MARKERS.some(marker => lower.includes(marker))
+}
+
+/**
+ * An `error` event on a Command Code stream. An overflow leads with "Prompt is
+ * too long": that is what gets it reported as a context overflow, and what
+ * /compact's truncate-and-retry waits for. As a generic stream error the
+ * session stays stuck, resending the same oversized history every turn.
+ */
+function commandCodeStreamError(detail: string): Error {
+  const prefix = isCommandCodeContextOverflow(detail) ? 'Prompt is too long (commandcode): ' : ''
+  return new Error(`${prefix}Command Code API stream error: ${detail}`)
+}
+
+/**
+ * @param imagesSentSeparately true when the caller also sends the result's
+ *   images as image parts in the user message that follows it.
+ */
+function toolResultToText(value: unknown, imagesSentSeparately = false): string {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) {
+    // Text-only results keep the bare join, so history already sent replays
+    // byte-identically.
+    const separator = value.some(isMediaBlock) ? '\n' : ''
     return value.map(part => {
       if (typeof part === 'string') return part
+      if (imagesSentSeparately && isAlphaSendableImage(part)) return '[image attached below]'
+      // Never JSON.stringify a media block: that puts its whole base64
+      // payload in the prompt as text. See lanes/shared/media_blocks.ts.
+      if (isMediaBlock(part)) return renderMediaForTextLane(part)
       if (isRecord(part)) return firstString(part.text, part.value, part.content) ?? JSON.stringify(part)
       return String(part)
-    }).join('')
+    }).join(separator)
   }
   if (value === null || value === undefined) return ''
+  if (isMediaBlock(value)) return renderMediaForTextLane(value)
   if (isRecord(value)) {
     return firstString(value.text, value.value, value.content) ?? JSON.stringify(value)
   }

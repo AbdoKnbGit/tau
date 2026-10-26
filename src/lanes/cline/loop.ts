@@ -60,7 +60,7 @@ import {
   isClinePassProvider,
   recordClinePassModelNames,
 } from '../../utils/model/clinePassCatalog.js'
-import { decideImageSupport } from '../shared/vision_capability.js'
+import { decideImageSupport, recordModelVision } from '../shared/vision_capability.js'
 import { substituteUnsendableMedia } from '../shared/media_extract.js'
 import { buildClineToolsForRequest } from './tools.js'
 import {
@@ -404,6 +404,15 @@ export class ClineLane implements Lane {
     if (!load) {
       load = this._fetchCatalog(root, providerHint)
         .then((fresh) => {
+          // The catalog states each model's input modalities. Remembering
+          // them is what lets a request send real pixels to a model that
+          // reads images.
+          for (const row of fresh.models ?? []) {
+            const input = row.architecture?.input_modalities
+            if (Array.isArray(input)) {
+              recordModelVision(providerHint ?? 'cline', row.id, input.includes('image'))
+            }
+          }
           // A partial refresh keeps the last good copy of the missing feed.
           const previous = this.catalogs.get(root)
           const models = fresh.models ?? previous?.models ?? null

@@ -169,6 +169,20 @@ export type CatalogTable = {
    * window, so these are what hold it to the prompt the host will accept.
    */
   ceilings?: Record<string, Record<string, number>>
+  /**
+   * Whether a model takes image input, per host and lowercased model id, for
+   * every model whose row states its input modalities. Absent from tables
+   * written before it was stored; such a table answers nothing here and is
+   * replaced at the next refresh.
+   */
+  images?: Record<string, Record<string, boolean>>
+  /**
+   * The thinking values a model accepts, per host and lowercased model id,
+   * least effort first, with `none` leading when thinking can be switched
+   * off. Kept only for EFFORT_HOSTS, whose providers draw their effort
+   * picker from it; absent from tables written before it was stored.
+   */
+  efforts?: Record<string, Record<string, string[]>>
 }
 
 /** The shape modelCost.ts consumes. Declared here to avoid importing it. */
@@ -225,6 +239,45 @@ const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
  * though it were somebody's API.
  */
 const NEVER_PRICED: ReadonlySet<string> = new Set(['ollama', 'lmstudio'])
+
+/**
+ * Hosts whose thinking options the table keeps. Other providers either have
+ * a catalog of their own (Cline, Alibaba, OpenCode) or no effort control.
+ */
+const EFFORT_HOSTS: ReadonlySet<string> = new Set(['fireworks-ai'])
+
+/** models.dev's effort values, least effort first. */
+const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'adaptive'] as const
+
+/**
+ * A row's `reasoning_options` as the values it accepts: `none` first when a
+ * toggle (or a `none` effort) can switch thinking off, then the effort values
+ * in order. A token budget is not an effort and is left out. Undefined when
+ * the row states no options: that says nothing about which values it takes.
+ */
+function readEfforts(model: unknown): string[] | undefined {
+  const row = model as { reasoning?: unknown, reasoning_options?: unknown } | null
+  if (row?.reasoning !== true || !Array.isArray(row.reasoning_options)) return undefined
+  let canTurnOff = false
+  const stated = new Set<string>()
+  for (const option of row.reasoning_options as Array<Record<string, unknown> | null>) {
+    if (option?.type === 'toggle') canTurnOff = true
+    if (option?.type !== 'effort' || !Array.isArray(option.values)) continue
+    for (const value of option.values) {
+      if (value === 'none') canTurnOff = true
+      else if (typeof value === 'string') stated.add(value)
+    }
+  }
+  const levels = EFFORT_ORDER.filter(level => stated.has(level))
+  if (!canTurnOff && levels.length === 0) return undefined
+  return canTurnOff ? ['none', ...levels] : levels
+}
+
+/** Hosts a model's image input is read from, where that differs from pricing. */
+const VISION_HOSTS: Readonly<Record<string, string>> = {
+  ollama: 'ollama-cloud',
+  cline: 'openrouter',
+}
 
 /**
  * The models.dev provider id for a Tau provider, or null when it must not be
@@ -284,6 +337,8 @@ export function deriveTable(payload: unknown, fetchedAt: number): CatalogTable {
   const providers: CatalogTable['providers'] = {}
   const limits: NonNullable<CatalogTable['limits']> = {}
   const ceilings: NonNullable<CatalogTable['ceilings']> = {}
+  const images: NonNullable<CatalogTable['images']> = {}
+  const efforts: NonNullable<CatalogTable['efforts']> = {}
   if (payload && typeof payload === 'object') {
     for (const [providerId, provider] of Object.entries(
       payload as Record<string, unknown>,
@@ -294,6 +349,8 @@ export function deriveTable(payload: unknown, fetchedAt: number): CatalogTable {
       const rows: Record<string, CatalogPriceRow> = {}
       const windows: Record<string, number> = {}
       const hostCeilings: Record<string, number> = {}
+      const hostImages: Record<string, boolean> = {}
+      const hostEfforts: Record<string, string[]> = {}
       for (const [modelId, model] of Object.entries(
         models as Record<string, unknown>,
       )) {
@@ -306,6 +363,16 @@ export function deriveTable(payload: unknown, fetchedAt: number): CatalogTable {
           windows[windowKey] = window
           const ceiling = promptCeiling(limit)
           if (ceiling !== null) hostCeilings[windowKey] = ceiling
+        }
+        // Only a row that states its input modalities says anything here:
+        // a missing list is not evidence that the model is blind.
+        const inputModalities = (model as { modalities?: { input?: unknown } } | null)?.modalities?.input
+        if (Array.isArray(inputModalities) && typeof hostImages[windowKey] !== 'boolean') {
+          hostImages[windowKey] = inputModalities.includes('image')
+        }
+        if (EFFORT_HOSTS.has(providerId) && !hostEfforts[windowKey]) {
+          const values = readEfforts(model)
+          if (values) hostEfforts[windowKey] = values
         }
 
         const cost = (model as { cost?: unknown } | null)?.cost as
@@ -330,9 +397,11 @@ export function deriveTable(payload: unknown, fetchedAt: number): CatalogTable {
       if (Object.keys(hostCeilings).length > 0) {
         ceilings[providerId] = hostCeilings
       }
+      if (Object.keys(hostImages).length > 0) images[providerId] = hostImages
+      if (Object.keys(hostEfforts).length > 0) efforts[providerId] = hostEfforts
     }
   }
-  return { version: CACHE_VERSION, fetchedAt, providers, limits, ceilings }
+  return { version: CACHE_VERSION, fetchedAt, providers, limits, ceilings, images, efforts }
 }
 
 /**
@@ -388,7 +457,7 @@ function loadTable(): CatalogTable | null {
     if (!parsed.providers || typeof parsed.providers !== 'object') return null
     // Windows are optional: a table from before they were stored still
     // prices. A malformed block is dropped rather than trusted.
-    for (const key of ['limits', 'ceilings'] as const) {
+    for (const key of ['limits', 'ceilings', 'images', 'efforts'] as const) {
       const block = parsed[key]
       if (block !== undefined && (block === null || typeof block !== 'object')) {
         parsed[key] = undefined
@@ -491,6 +560,119 @@ function lookupHostValue(
 }
 
 /**
+ * Whether models.dev says a model on this host takes image input, or
+ * undefined when the host's row states nothing. Host-scoped like windows:
+ * one host can serve a text-only build of a model another serves with vision.
+ *
+ * A pure read, like prices: a table from before images were stored fails
+ * hasCurrentShape, so the next refresh the cost or window paths ask for
+ * replaces it instead of waiting out the day.
+ */
+export function lookupCatalogImageInput(
+  tauProvider: string,
+  candidates: readonly string[],
+): boolean | undefined {
+  if (isModelPricingDisabled()) return undefined
+  // Modality is not a price, so the hosts pricing must skip still answer:
+  // a local Ollama model is the one Ollama's cloud rows describe, and Cline
+  // serves OpenRouter's catalogue under OpenRouter's ids.
+  const providerId = VISION_HOSTS[tauProvider] ?? PROVIDER_ALIASES[tauProvider] ?? tauProvider
+
+  const values = loadTable()?.images?.[providerId]
+  if (!values) return undefined
+  for (const candidate of candidates) {
+    const id = candidate.toLowerCase()
+    // The same dotted/dashed tolerance prices get, for the same ids.
+    for (const key of [id, id.replace(/\./g, '-')]) {
+      const value = values[key]
+      if (typeof value === 'boolean') return value
+    }
+  }
+  return undefined
+}
+
+/**
+ * Whether every host that describes a model agrees it takes image input, or
+ * undefined when none does or they disagree. For a model its own host does
+ * not list yet: a new release usually reaches other hosts first. The exact id
+ * is tried before the id without its vendor prefix, and a split answer is no
+ * answer, since one host can serve a text-only build of a vision model.
+ */
+export function lookupCatalogImageInputAnyHost(
+  candidates: readonly string[],
+): boolean | undefined {
+  if (isModelPricingDisabled()) return undefined
+  const current = loadTable()
+  if (!current?.images) return undefined
+  const index = consensusIndex(current)
+  for (const candidate of candidates) {
+    const id = candidate.toLowerCase()
+    for (const [map, key] of [[index.byId, id], [index.byLeaf, leafOf(id)]] as const) {
+      const value = map.get(key)
+      if (value !== undefined) return value ?? undefined
+    }
+  }
+  return undefined
+}
+
+type ConsensusIndex = {
+  table: CatalogTable
+  /** true/false where every host agrees, null where they disagree. */
+  byId: Map<string, boolean | null>
+  byLeaf: Map<string, boolean | null>
+}
+let consensus: ConsensusIndex | null = null
+
+function consensusIndex(current: CatalogTable): ConsensusIndex {
+  if (consensus?.table === current) return consensus
+  const byId = new Map<string, boolean | null>()
+  const byLeaf = new Map<string, boolean | null>()
+  const note = (map: Map<string, boolean | null>, key: string, value: boolean) => {
+    const seen = map.get(key)
+    map.set(key, seen === undefined || seen === value ? value : null)
+  }
+  for (const values of Object.values(current.images ?? {})) {
+    for (const [id, value] of Object.entries(values)) {
+      note(byId, id, value)
+      note(byLeaf, leafOf(id), value)
+    }
+  }
+  consensus = { table: current, byId, byLeaf }
+  return consensus
+}
+
+function leafOf(id: string): string {
+  return id.slice(id.lastIndexOf('/') + 1)
+}
+
+/**
+ * Start a refresh when one is due and wait for it, at most `timeoutMs`. For
+ * a decision that is frozen once made, so it should not be made before the
+ * table exists: a fresh install would otherwise decide without it.
+ */
+export async function awaitModelPricesFresh(timeoutMs: number, signal?: AbortSignal): Promise<void> {
+  if (isModelPricingDisabled() || isEssentialTrafficOnly()) return
+  ensureModelPricesFresh()
+  const pending = refreshPromise
+  if (!pending || signal?.aborted) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  try {
+    await Promise.race([
+      pending,
+      new Promise<void>(resolve => {
+        timer = setTimeout(resolve, timeoutMs)
+        onAbort = resolve
+        signal?.addEventListener('abort', onAbort, { once: true })
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    if (onAbort) signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+/**
  * Note that a host's window could not be answered from the catalogue.
  *
  * Refreshes it when it could not have answered: nothing downloaded yet, a
@@ -510,6 +692,38 @@ export function noteMissingContextWindow(tauProvider: string): void {
   if (!providerId) return
   const limits = loadTable()?.limits
   if (limits && !limits[providerId]) return
+  ensureModelPricesFresh()
+}
+
+/**
+ * The thinking values models.dev says a model on this host accepts, or
+ * undefined when its row states none. Host-scoped and a pure read, like
+ * image input; only EFFORT_HOSTS are kept.
+ */
+export function lookupCatalogEfforts(
+  tauProvider: string,
+  candidates: readonly string[],
+): readonly string[] | undefined {
+  if (isModelPricingDisabled()) return undefined
+  const providerId = resolveCatalogProvider(tauProvider)
+  const values = providerId ? loadTable()?.efforts?.[providerId] : undefined
+  if (!values) return undefined
+  for (const candidate of candidates) {
+    const value = values[candidate.trim().toLowerCase()]
+    if (Array.isArray(value)) return value
+  }
+  return undefined
+}
+
+/**
+ * Note that thinking options were looked up. Refreshes the table when it
+ * could not have answered: nothing downloaded yet, or a table from before the
+ * options were stored. Same gating as noteMissingContextWindow; returns
+ * immediately.
+ */
+export function noteMissingCatalogEfforts(): void {
+  if (isModelPricingDisabled() || isEssentialTrafficOnly()) return
+  if (loadTable()?.efforts) return
   ensureModelPricesFresh()
 }
 
@@ -533,6 +747,7 @@ export function resetCatalogForTests(next?: CatalogTable | null): void {
   refreshFailures = 0
   lastRefreshFailureAt = 0
   refreshInFlight = false
+  refreshPromise = null
 }
 
 /**
@@ -572,6 +787,7 @@ function writeTableAtomically(derived: CatalogTable): void {
 }
 
 let refreshInFlight = false
+let refreshPromise: Promise<void> | null = null
 let refreshFailures = 0
 let lastRefreshFailureAt = 0
 
@@ -590,7 +806,7 @@ function refreshRetryDelay(failures: number): number {
  * to learn context windows and prompt ceilings.
  */
 function hasCurrentShape(table: CatalogTable | null): boolean {
-  return Boolean(table?.limits && table.ceilings)
+  return Boolean(table?.limits && table.ceilings && table.images && table.efforts)
 }
 
 /**
@@ -634,7 +850,7 @@ export function ensureModelPricesFresh(): void {
   if (hasCurrentShape(current) && age >= 0 && age < TTL_MS) return
 
   refreshInFlight = true
-  void (async () => {
+  refreshPromise = (async () => {
     try {
       const response = await fetch(CATALOG_URL, {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -660,6 +876,7 @@ export function ensureModelPricesFresh(): void {
       // priced models into unpriced ones.
     } finally {
       refreshInFlight = false
+      refreshPromise = null
     }
   })()
 }

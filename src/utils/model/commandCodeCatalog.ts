@@ -118,7 +118,7 @@ export const COMMAND_CODE_85_MODELS: readonly CommandCodeCatalogModel[] = [
     contextWindow: 1000000,
     inputTokens: 2.0,
     outputTokens: 10.0,
-    promptCacheReadTokens: 0.2,
+    promptCacheReadTokens: 0.1,
     promptCacheWriteTokens: 2.5,
     webSearchRequests: 0.01,
     efforts: ['default', 'none', 'low', 'medium', 'high', 'max'],
@@ -611,9 +611,9 @@ export const COMMAND_CODE_85_MODELS: readonly CommandCodeCatalogModel[] = [
     id: 'ling-3-1-flash',
     name: 'Ling 3.1 Flash',
     contextWindow: 262000,
-    inputTokens: 0.0,
-    outputTokens: 0.0,
-    promptCacheReadTokens: 0.0,
+    inputTokens: 0.3,
+    outputTokens: 0.9,
+    promptCacheReadTokens: 0.06,
     promptCacheWriteTokens: 0.0,
     webSearchRequests: 0.01,
     efforts: ['default'],
@@ -988,10 +988,22 @@ export function findCommandCodeCatalogModel(
   return undefined
 }
 
+/**
+ * The row listed under exactly this id or display name. Windows, prices and
+ * names come only from here: the substring fallback above read Kimi K3.1 Pro
+ * as Kimi K3 and MiniMax M3.1 Flash as MiniMax M3, so they borrowed another
+ * model's price and label.
+ */
+function findExactCommandCodeCatalogModel(
+  modelId: string,
+): CommandCodeCatalogModel | undefined {
+  return CATALOG_BY_KEY.get(normalizeCommandCodeKey(modelId))
+}
+
 export function getCommandCodeCatalogContextWindow(
   modelId: string,
 ): number | undefined {
-  return findCommandCodeCatalogModel(modelId)?.contextWindow
+  return findExactCommandCodeCatalogModel(modelId)?.contextWindow
 }
 
 export function getCommandCodeCatalogCosts(
@@ -1003,7 +1015,7 @@ export function getCommandCodeCatalogCosts(
   promptCacheWriteTokens: number
   webSearchRequests: number
 } | null {
-  const model = findCommandCodeCatalogModel(modelId)
+  const model = findExactCommandCodeCatalogModel(modelId)
   if (!model) return null
   return {
     inputTokens: model.inputTokens,
@@ -1023,5 +1035,5 @@ export function getCommandCodeCatalogEfforts(
 export function getCommandCodeCatalogDisplayName(
   modelId: string,
 ): string | undefined {
-  return findCommandCodeCatalogModel(modelId)?.name
+  return findExactCommandCodeCatalogModel(modelId)?.name
 }

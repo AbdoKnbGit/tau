@@ -602,24 +602,25 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
     supportsToolCalling: true,
     defaultTier: 'pro',
     tiers: {
-      // Every tier resolves to a row in the curated catalog (see
-      // transformers/fireworks.ts) so a subagent/tier spawn can't land on a
-      // model the picker doesn't list. Flash anchors haiku everywhere as the
-      // cheap/fast row. Override per-tier via FIREWORKS_MODEL_* env vars.
+      // Every tier resolves to a serverless row in the curated catalog (see
+      // utils/model/fireworksCatalog.ts) so a subagent/tier spawn can't land
+      // on a model the picker doesn't list. DeepSeek V4.1 Flash anchors haiku
+      // everywhere as the cheap/fast row. Override per-tier via
+      // FIREWORKS_MODEL_* env vars.
       free: {
-        opus:   process.env.FIREWORKS_MODEL_OPUS_FREE   ?? 'accounts/fireworks/models/glm-5p2',
-        sonnet: process.env.FIREWORKS_MODEL_SONNET_FREE ?? 'accounts/fireworks/models/minimax-m3',
-        haiku:  process.env.FIREWORKS_MODEL_HAIKU_FREE  ?? 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        opus:   process.env.FIREWORKS_MODEL_OPUS_FREE   ?? 'accounts/fireworks/models/glm-5p3',
+        sonnet: process.env.FIREWORKS_MODEL_SONNET_FREE ?? 'accounts/fireworks/models/minimax-m3p1-flash',
+        haiku:  process.env.FIREWORKS_MODEL_HAIKU_FREE  ?? 'accounts/fireworks/models/deepseek-v4p1-flash',
       },
       pro: {
         opus:   process.env.FIREWORKS_MODEL_OPUS   ?? 'accounts/fireworks/models/kimi-k3',
-        sonnet: process.env.FIREWORKS_MODEL_SONNET ?? 'accounts/fireworks/models/kimi-k2p7-code',
-        haiku:  process.env.FIREWORKS_MODEL_HAIKU  ?? 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        sonnet: process.env.FIREWORKS_MODEL_SONNET ?? 'accounts/fireworks/models/glm-5p3',
+        haiku:  process.env.FIREWORKS_MODEL_HAIKU  ?? 'accounts/fireworks/models/deepseek-v4p1-flash',
       },
       plus: {
-        opus:   process.env.FIREWORKS_MODEL_OPUS   ?? 'accounts/fireworks/models/qwen3p8-2p4t-a95b',
+        opus:   process.env.FIREWORKS_MODEL_OPUS   ?? 'accounts/fireworks/models/qwen3p8-max',
         sonnet: process.env.FIREWORKS_MODEL_SONNET ?? 'accounts/fireworks/models/kimi-k3',
-        haiku:  process.env.FIREWORKS_MODEL_HAIKU  ?? 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        haiku:  process.env.FIREWORKS_MODEL_HAIKU  ?? 'accounts/fireworks/models/deepseek-v4p1-flash',
       },
     },
   },

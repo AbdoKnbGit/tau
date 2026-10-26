@@ -71,7 +71,7 @@ import {
   KILO_FALLBACK_MODELS,
   KILO_FALLBACK_FREE_IDS,
 } from './catalog.js'
-import { decideImageSupport } from '../shared/vision_capability.js'
+import { decideImageSupport, recordModelVision } from '../shared/vision_capability.js'
 import { substituteUnsendableMedia } from '../shared/media_extract.js'
 import { applyKiloCacheBreakpoints } from './cache.js'
 import {
@@ -223,6 +223,15 @@ export class KiloLane implements Lane {
       }
     } catch {
       // Fall through to the curated fallback below.
+    }
+
+    // The gateway states each model's input modalities. Remembering them is
+    // what lets a request send real pixels to a model that reads images.
+    for (const m of rawModels) {
+      const input = m.architecture?.input_modalities
+      if (typeof m.id === 'string' && Array.isArray(input)) {
+        recordModelVision('kilocode', m.id, input.includes('image'))
+      }
     }
 
     let models = rawModels

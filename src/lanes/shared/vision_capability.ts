@@ -130,21 +130,61 @@ export function modelAcceptsImages(
   const direct = memory.get(keyFor(provider, model))
   if (direct !== undefined) return direct
 
-  // OpenRouter-style suffixes (`:free`, `:nitro`) and provider-prefixed ids
-  // describe routing, not modality — fall back to the bare id.
-  const bare = model.replace(/:(free|nitro|floor|online|extended)$/i, '')
+  // OpenRouter-style suffixes (`:free`, `:nitro`), Tau's own `::` variant
+  // markers (Cline's `::cline-effort=high`) and provider-prefixed ids describe
+  // routing, not modality — fall back to the bare id.
+  const bare = model.split('::')[0]!.replace(/:(free|nitro|floor|online|extended)$/i, '')
   if (bare !== model) {
     const stripped = memory.get(keyFor(provider, bare))
     if (stripped !== undefined) return stripped
   }
 
+  // The provider's own catalog, before any other provider's word for it. It
+  // is known before /models is ever opened, so a model the catalog calls
+  // vision-capable is never frozen as text-only on its first attachment.
+  // The full id first: on some hosts a suffix is part of the real id
+  // (Command Code's `inclusionai/ling-3.1-flash:free` is text only).
+  const fromCatalog = catalogImageInput(provider, model)
+    ?? (bare !== model ? catalogImageInput(provider, bare) : undefined)
+  if (fromCatalog !== undefined) return fromCatalog
+
   // Same model id learned under a different provider (the OpenRouter catalog
-  // is the richest source, and gateways resell the same weights).
-  const suffix = `::${bare.trim().toLowerCase()}`
+  // is the richest source, and gateways resell the same weights). A vendor
+  // prefix is routing too, so `xiaomi/mimo-v2.6-pro` answers for
+  // `mimo-v2.6-pro`, though only when no id matches exactly. Providers that
+  // disagree are no answer, whatever order they were recorded in: one may
+  // serve a text-only build of a vision model.
+  const id = bare.trim().toLowerCase()
+  const leaf = leafOf(id)
+  let exact: boolean | null | undefined
+  let sameLeaf: boolean | null | undefined
   for (const [k, v] of memory) {
-    if (k.endsWith(suffix)) return v
+    const known = k.slice(k.indexOf('::') + 2)
+    if (known === id) exact = agree(exact, v)
+    else if (leafOf(known) === leaf) sameLeaf = agree(sameLeaf, v)
   }
-  return undefined
+  return (exact !== undefined ? exact : sameLeaf) ?? undefined
+}
+
+/** Fold one more answer in: kept while they agree, null once they do not. */
+function agree(seen: boolean | null | undefined, value: boolean): boolean | null {
+  return seen === undefined || seen === value ? value : null
+}
+
+function leafOf(id: string): string {
+  return id.slice(id.lastIndexOf('/') + 1)
+}
+
+function catalogImageInput(provider: string, model: string): boolean | undefined {
+  try {
+    // Required lazily, like storePath: the catalogs read files and config
+    // that this sync converter path must not load at import time.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const catalogs = require('../../utils/model/catalogVision.js') as typeof import('../../utils/model/catalogVision.js')
+    return catalogs.catalogImageInput(provider, model)
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -178,6 +218,42 @@ export function decideImageSupport(
   const answer = modelAcceptsImages(provider, model) === true
   decided.set(key, answer)
   return answer
+}
+
+/** How long a model's first image decision may wait for the models.dev table. */
+const IMAGE_DECISION_WAIT_MS = 6_000
+
+/**
+ * Give the models.dev table a bounded chance to arrive before a model's first
+ * image decision, which is frozen once made. On a fresh install the table is
+ * not there yet, and deciding without it would leave every model nothing else
+ * describes on text for the whole session.
+ *
+ * A no-op once the model is decided or already known, and for a request that
+ * carries no image.
+ */
+export async function prepareImageSupport(
+  provider: string | undefined,
+  model: string | undefined,
+  messages: readonly unknown[],
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!provider || !model || decided.has(keyFor(provider, model))) return
+  if (!messages.some(carriesImage)) return
+  if (modelAcceptsImages(provider, model) !== undefined) return
+  try {
+    const { awaitModelPricesFresh } = await import('../../utils/modelPricingCatalog.js')
+    await awaitModelPricesFresh(IMAGE_DECISION_WAIT_MS, signal)
+  } catch {
+    // The decision goes ahead with what is known, as before.
+  }
+}
+
+function carriesImage(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  if ((value as { type?: unknown }).type === 'image') return true
+  const content = (value as { content?: unknown }).content
+  return Array.isArray(content) && content.some(carriesImage)
 }
 
 /** Test hook. */

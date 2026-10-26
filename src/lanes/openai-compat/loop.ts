@@ -109,6 +109,7 @@ import {
 } from '../../utils/model/openrouterStrictSchema.js'
 import { buildDirectHistory, convertDirectHistory } from './direct_history.js'
 import { isDirectProvider, isDirectThinkingProvider, listDirectProviderModels } from '../../utils/model/directProviderCatalog.js'
+import { FIREWORKS_AUTO_MODEL } from '../../utils/model/fireworksCatalog.js'
 import { mistralModelInfo } from '../../utils/model/mistralCatalog.js'
 import {
   getOpencodeEffort,
@@ -292,11 +293,15 @@ interface CompatCatalogModel extends OpenRouterCatalogModel {
   supports_reasoning?: boolean
   supports_tool_calling?: boolean
   supports_vision?: boolean
+  /** Fireworks states image input under this name. */
+  supports_image_input?: boolean
   task?: string | { name?: string; type?: string; id?: string }
   capabilities?: {
     completion_chat?: boolean
     function_calling?: boolean
     vision?: boolean
+    /** GitHub Copilot states what a model supports here. */
+    supports?: { vision?: boolean }
     /** GitHub Copilot states its token limits here, not at the top level. */
     limits?: {
       max_prompt_tokens?: number
@@ -752,6 +757,11 @@ export class OpenAICompatLane implements Lane {
     // one that can be half-written. See ../shared/truncation.ts.
     let outputCapTruncated = false
     const inFlightToolCall = new InFlightToolCall<number>()
+    // Fireworks' Nexus Auto names the model that served the turn on every
+    // chunk. The message carries it, so the turn is priced at that model's
+    // rate (modelCost.ts, pricedModel).
+    const routesPerTurn = provider === 'fireworks' && model === FIREWORKS_AUTO_MODEL
+    let servedModel: string | undefined
 
     const emitMessageStart = () => {
       if (messageStartEmitted) return undefined
@@ -763,7 +773,7 @@ export class OpenAICompatLane implements Lane {
           type: 'message' as const,
           role: 'assistant' as const,
           content: [],
-          model,
+          model: servedModel ?? model,
           stop_reason: null,
           stop_sequence: null,
           usage: {
@@ -991,6 +1001,9 @@ export class OpenAICompatLane implements Lane {
           // Apply per-provider response normalization (reasoning field
           // renames etc.) so downstream IR emission is uniform.
           chunk = applyProviderResponseQuirks(chunk, provider)
+          if (routesPerTurn && !servedModel && typeof chunk.model === 'string' && chunk.model.trim()) {
+            servedModel = chunk.model.trim()
+          }
 
           // Stream-level usage (present on final chunk for most providers).
           if (chunk.usage) {
@@ -1776,7 +1789,9 @@ function isCloudflareTextGenerationModel(model: CompatCatalogModel): boolean {
 function compatCatalogStatesModality(model: CompatCatalogModel): boolean {
   return (
     typeof model.supports_vision === 'boolean'
+    || typeof model.supports_image_input === 'boolean'
     || typeof model.capabilities?.vision === 'boolean'
+    || typeof model.capabilities?.supports?.vision === 'boolean'
     || (Array.isArray(model.tags) && model.tags.some(t => t === 'vision'))
     || openRouterModelAcceptsImages(model)
   )
@@ -1795,7 +1810,9 @@ function normalizeCompatCatalogTags(model: CompatCatalogModel): string[] {
   }
   if (
     model.supports_vision === true
+    || model.supports_image_input === true
     || model.capabilities?.vision === true
+    || model.capabilities?.supports?.vision === true
     || tags.has('vision')
     // OpenRouter-shaped rows carry `architecture.input_modalities`.
     || openRouterModelAcceptsImages(model)
@@ -2945,6 +2962,11 @@ function toLmStudioNativeModelInfo(model: LmStudioNativeModel): LmStudioModelInf
     ...(model.variants ?? []),
     ...(model.loaded_instances ?? []).map(instance => instance.id).filter((id): id is string => typeof id === 'string' && id.length > 0),
   ]
+  // LM Studio states image input per model, and a request may name the model
+  // by its key or by any variant or loaded instance.
+  if (typeof model.capabilities?.vision === 'boolean') {
+    for (const id of [model.key, ...aliases]) recordModelVision('lmstudio', id, model.capabilities.vision)
+  }
 
   return {
     id: model.key,

@@ -6,6 +6,7 @@ import {
   getCommandCodeCatalogDisplayName,
   getCommandCodeCatalogEfforts,
 } from './commandCodeCatalog.js'
+import { commandCodeRegistryName } from './commandCodeRegistry.js'
 
 export type CommandCodeEffort =
   | 'default'
@@ -401,6 +402,7 @@ export function commandCodeAnthropicBudgetForEffort(
 
 export function getCommandCodeModelDisplayName(modelId: string): string | null {
   const catalogName = getCommandCodeCatalogDisplayName(modelId)
+    ?? commandCodeRegistryName(modelId)
   if (catalogName) return catalogName
 
   const leaf = modelId.split('/').pop() ?? modelId

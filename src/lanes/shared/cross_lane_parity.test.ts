@@ -30,6 +30,7 @@ import {
   OPENAI_COMPAT_TOOL_USAGE_RULES,
   appendStrictParamsHint,
 } from './mcp_bridge.js'
+import { MCP_INSTRUCTION_UPDATES_GUIDANCE } from '../../constants/mcpInstructions.js'
 
 let passed = 0
 let failed = 0
@@ -100,11 +101,20 @@ function main(): void {
     }
   }
 
-  // Every preamble fits under 1KB so cache cost stays small.
+  // Every preamble stays small so cache cost stays small. The MCP updates
+  // guidance is one block every lane carries verbatim, so it is budgeted once
+  // and each lane's own rules get the rest. The lane budget was 1KB of
+  // everything until that block (d32cd66), the deferred-tool rule (3cdf4e3)
+  // and Codex's tool-name rule (d02801b) were added on purpose.
+  test('shared MCP guidance under 512 bytes', () => {
+    const b = Buffer.byteLength(MCP_INSTRUCTION_UPDATES_GUIDANCE, 'utf-8')
+    assert(b < 512, `shared MCP guidance too long: ${b} bytes`)
+  })
   for (const { lane, rules } of preambles) {
-    test(`${lane} preamble under 1024 bytes`, () => {
-      const b = Buffer.byteLength(rules, 'utf-8')
-      assert(b < 1024, `${lane} preamble too long: ${b} bytes`)
+    test(`${lane} preamble under 1280 bytes besides the shared MCP guidance`, () => {
+      assert(rules.includes(MCP_INSTRUCTION_UPDATES_GUIDANCE), `${lane} preamble lacks the shared MCP guidance`)
+      const b = Buffer.byteLength(rules.replace(MCP_INSTRUCTION_UPDATES_GUIDANCE, ''), 'utf-8')
+      assert(b < 1280, `${lane} preamble too long: ${b} bytes`)
     })
   }
 

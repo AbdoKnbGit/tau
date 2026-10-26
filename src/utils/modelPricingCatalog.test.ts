@@ -7,8 +7,10 @@
 import {
   deriveTable,
   lookupCatalogContextWindow,
+  lookupCatalogEfforts,
   lookupCatalogPrice,
   lookupCatalogPromptCeiling,
+  noteMissingCatalogEfforts,
   noteMissingContextWindow,
   resetCatalogForTests,
   isLocalProvider,
@@ -595,6 +597,76 @@ test('a table that does not describe the host is not downloaded again for it', (
   const downloads = countFailedDownloads()
   try {
     noteMissingContextWindow('antigravity')
+    assert(downloads.calls() === 0, `expected no download, got ${downloads.calls()}`)
+  } finally {
+    downloads.restore()
+  }
+})
+
+const EFFORT_PAYLOAD = {
+  'fireworks-ai': {
+    models: {
+      'accounts/fireworks/models/ember-1': {
+        reasoning: true,
+        reasoning_options: [
+          { type: 'toggle' },
+          { type: 'effort', values: ['low', 'medium', 'high', 'max'] },
+          { type: 'budget_tokens', min: 1024 },
+        ],
+      },
+      'accounts/fireworks/models/glm-5p3': {
+        reasoning: true,
+        reasoning_options: [{ type: 'effort', values: ['max', 'low', 'high'] }],
+      },
+      'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b': {
+        reasoning: true,
+        reasoning_options: [{ type: 'toggle' }],
+      },
+      'accounts/fireworks/models/plain-chat': { reasoning: false },
+      'accounts/fireworks/models/unstated': { reasoning: true },
+    },
+  },
+  openrouter: {
+    models: {
+      'z-ai/glm-5.3': { reasoning: true, reasoning_options: [{ type: 'effort', values: ['low'] }] },
+    },
+  },
+}
+
+test('keeps the thinking values a Fireworks row accepts, off first and least effort first', () => {
+  const table = deriveTable(EFFORT_PAYLOAD, NOW)
+  resetCatalogForTests(table)
+  const ladder = (id: string) =>
+    JSON.stringify(lookupCatalogEfforts('fireworks', [`accounts/fireworks/models/${id}`]) ?? null)
+  assert(ladder('ember-1') === '["none","low","medium","high","max"]', `ember-1: ${ladder('ember-1')}`)
+  assert(ladder('glm-5p3') === '["low","high","max"]', `glm-5p3: ${ladder('glm-5p3')}`)
+  assert(
+    ladder('nemotron-lightning-3p5-30b-a3b') === '["none"]',
+    `a bare toggle: ${ladder('nemotron-lightning-3p5-30b-a3b')}`,
+  )
+  assert(ladder('plain-chat') === 'null', 'a model that does not reason has no values')
+  assert(ladder('unstated') === 'null', 'no stated options is no answer')
+  assert(table.efforts?.openrouter === undefined, 'only hosts that draw their picker from the table are kept')
+})
+
+test('a table from before thinking values were stored is refreshed for them', () => {
+  const table = windowTable()
+  delete table.efforts
+  resetCatalogForTests(table)
+  const downloads = countFailedDownloads()
+  try {
+    noteMissingCatalogEfforts()
+    assert(downloads.calls() === 1, `expected one download, got ${downloads.calls()}`)
+  } finally {
+    downloads.restore()
+  }
+})
+
+test('a current table is not downloaded again for thinking values', () => {
+  resetCatalogForTests(windowTable())
+  const downloads = countFailedDownloads()
+  try {
+    noteMissingCatalogEfforts()
     assert(downloads.calls() === 0, `expected no download, got ${downloads.calls()}`)
   } finally {
     downloads.restore()

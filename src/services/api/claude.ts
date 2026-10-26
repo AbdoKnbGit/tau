@@ -184,7 +184,7 @@ import {
 import { returnValue } from 'src/utils/generators.js'
 import { headlessProfilerCheckpoint } from 'src/utils/headlessProfiler.js'
 import { isMcpInstructionsDeltaEnabled } from 'src/utils/mcpInstructionsDelta.js'
-import { calculateUSDCost } from 'src/utils/modelCost.js'
+import { calculateUSDCost, pricedModel } from 'src/utils/modelCost.js'
 import { endQueryProfile, queryCheckpoint } from 'src/utils/queryProfiler.js'
 import {
   modelSupportsAdaptiveThinking,
@@ -2952,7 +2952,7 @@ async function* queryModel(
             }
 
             // Update cost
-            const costUSDForPart = calculateUSDCost(resolvedModel, usage)
+            const costUSDForPart = calculateUSDCost(pricedModel(resolvedModel, partialMessage?.model), usage)
             costUSD += addToTotalSessionCost(
               costUSDForPart,
               usage,
@@ -3068,7 +3068,7 @@ async function* queryModel(
           // input cost is exact and the abandoned output tokens go unbilled
           // rather than being guessed at.
           costUSD += addToTotalSessionCost(
-            calculateUSDCost(resolvedModel, usage),
+            calculateUSDCost(pricedModel(resolvedModel, partialMessage?.model), usage),
             usage,
             options.model,
           )
@@ -3631,7 +3631,10 @@ async function* queryModel(
       const fallbackUsage = fallbackMessage.message.usage
       usage = updateUsage(EMPTY_USAGE, fallbackUsage)
       stopReason = fallbackMessage.message.stop_reason
-      const fallbackCost = calculateUSDCost(resolvedModel, fallbackUsage)
+      const fallbackCost = calculateUSDCost(
+        pricedModel(resolvedModel, fallbackMessage.message.model),
+        fallbackUsage,
+      )
       costUSD += addToTotalSessionCost(
         fallbackCost,
         fallbackUsage,

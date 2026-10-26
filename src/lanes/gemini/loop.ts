@@ -93,6 +93,7 @@ import {
   GEMINI_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
 import { geminiSafeToolName } from '../shared/gemini_schema.js'
+import { describeUnsendableMedia } from '../shared/media_blocks.js'
 import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
 import { parseAntigravityClaudeTier } from '../../utils/model/antigravityClaudeTiers.js'
 import { selectGeminiToolsForRequest } from './lazy_tools.js'
@@ -1400,6 +1401,12 @@ function splitToolResultContent(content: unknown): {
         continue
       }
       texts.push(`[image attached: ${mimeType}]`)
+      continue
+    }
+    if (b.type === 'document') {
+      // Same marker as a top-level document. The stringify below would send
+      // a PDF folded into a tool result as base64 text.
+      texts.push(describeUnsendableMedia(b, 'this lane forwards images only'))
       continue
     }
     // Bare {text} legacy block or unknown shape.

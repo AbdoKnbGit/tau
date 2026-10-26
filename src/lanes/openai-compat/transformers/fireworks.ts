@@ -10,11 +10,11 @@
  * Catalog: we DON'T live-fetch `/v1/models`. That endpoint returns the
  * account's entire visible registry (hundreds of rows — every public
  * serverless model plus the account's own fine-tunes/embeddings), which
- * buries the handful of models worth coding with. Instead we surface a
- * curated, static catalog of the serverless coding/agentic rows via
- * `staticCatalog()`. The lane returns it verbatim (no `/models` call) since
- * `preferLiveModelCatalog` is unset. Drift is handled without code edits:
- * set `FIREWORKS_MODELS` (comma-separated ids) to replace the list.
+ * buries the handful of models worth coding with. Instead we surface the
+ * curated list in utils/model/fireworksCatalog.ts via `staticCatalog()`. The
+ * lane returns it verbatim (no `/models` call) since `preferLiveModelCatalog`
+ * is unset. Drift is handled without code edits: set `FIREWORKS_MODELS`
+ * (comma-separated ids) to replace the list.
  *
  * Cache management: Fireworks routes requests with the same `prompt_cache_key`
  * to the same backend to maximize KV-cache hit rates (it takes priority over
@@ -33,6 +33,10 @@
 
 import type { ModelInfo } from '../../../services/api/providers/base_provider.js'
 import { getCompatRequestEffort } from '../../../utils/model/compatEffort.js'
+import {
+  FIREWORKS_MODELS,
+  qualifyFireworksId,
+} from '../../../utils/model/fireworksCatalog.js'
 import type { HeaderContext, Transformer, TransformContext } from './base.js'
 import type { OpenAIChatRequest } from './shared_types.js'
 
@@ -42,47 +46,6 @@ import type { OpenAIChatRequest } from './shared_types.js'
 const NON_CHAT_MARKERS = [
   'embedding', 'reranker', 'guard', 'safeguard', 'firesearch', 'ocr', 'voyage',
 ]
-
-const FIREWORKS_MODEL_PREFIX = 'accounts/fireworks/models/'
-
-// Curated serverless coding/agentic catalog. Ids are the canonical
-// fully-qualified serverless names; context windows are the published
-// serverless limits (informational — the picker shows them but the
-// gateway is authoritative). Only tags the picker knows how to render
-// (tools/reasoning/fast/recommended) are used.
-interface FireworksCatalogEntry {
-  id: string
-  name: string
-  contextWindow?: number
-  tags: string[]
-  // Explicit override when tool-calling support can't be inferred from the
-  // 'tools' tag (e.g. gpt-oss-20b is a chat-only row with no function calling).
-  supportsToolCalling?: boolean
-}
-
-// Ids use Fireworks' `p`-for-decimal convention (kimi-k2p7 = Kimi K2.7,
-// qwen3p8-2p4t-a95b = Qwen 3.8, 2.4T total / 95B active). Grouped
-// high-capability first, then fast/low-latency.
-//
-// contextWindow is informational only — the picker renders it, the gateway is
-// authoritative — so it is set only where the figure is actually published.
-// The rows without one simply render no context chip rather than a guess.
-const FIREWORKS_CODING_MODELS: readonly FireworksCatalogEntry[] = [
-  // ── High capability ──
-  { id: 'kimi-k3',              name: 'Kimi K3', tags: ['tools', 'recommended'] },
-  { id: 'qwen3p8-2p4t-a95b',    name: 'Qwen 3.8 2.4T-A95B', tags: ['tools'] },
-  { id: 'glm-5p2',              name: 'GLM 5.2', tags: ['tools'] },
-  { id: 'kimi-k2p7-code',       name: 'Kimi K2.7 Code', tags: ['tools'] },
-  // ── Fast / low latency ──
-  { id: 'minimax-m3',           name: 'MiniMax M3', tags: ['tools', 'fast'] },
-  { id: 'deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash', contextWindow: 1048576, tags: ['tools', 'fast'] },
-]
-
-function qualifyFireworksId(id: string): string {
-  const trimmed = id.trim()
-  if (!trimmed) return trimmed
-  return trimmed.startsWith('accounts/') ? trimmed : `${FIREWORKS_MODEL_PREFIX}${trimmed}`
-}
 
 function buildFireworksCatalog(): ModelInfo[] {
   // Env override (no code edit needed if the serverless roster drifts):
@@ -95,17 +58,17 @@ function buildFireworksCatalog(): ModelInfo[] {
       .filter(part => part.length > 0)
       .map(raw => {
         const id = qualifyFireworksId(raw)
-        const short = id.slice(FIREWORKS_MODEL_PREFIX.length)
+        const short = id.slice(id.lastIndexOf('/') + 1)
         return { id, name: short, supportsToolCalling: true, provider: 'Fireworks AI' }
       })
   }
-  return FIREWORKS_CODING_MODELS.map(entry => ({
+  return FIREWORKS_MODELS.map(entry => ({
     id: qualifyFireworksId(entry.id),
     name: entry.name,
     ...(entry.contextWindow ? { contextWindow: entry.contextWindow } : {}),
     provider: 'Fireworks AI',
     tags: entry.tags,
-    supportsToolCalling: entry.supportsToolCalling ?? entry.tags.includes('tools'),
+    supportsToolCalling: entry.toolCalling ?? true,
   }))
 }
 

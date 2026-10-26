@@ -25,6 +25,7 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
+import { recordModelVision } from '../../lanes/shared/vision_capability.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 
 const exec = promisify(execFile)
@@ -212,6 +213,32 @@ export async function listLocalOllamaModels(): Promise<string[]> {
 }
 
 /**
+ * Ask the daemon what each pulled model takes. `/api/show` lists `vision`
+ * among a model's capabilities, and remembering it is what lets a request
+ * send real pixels. An older daemon omits `capabilities`, which records
+ * nothing and leaves the current answer in place.
+ */
+async function recordOllamaVision(ids: readonly string[]): Promise<void> {
+  await Promise.all(ids.map(async id => {
+    try {
+      const response = await fetch(`${ollamaBase()}/api/show`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: id }),
+        signal: AbortSignal.timeout(3_000),
+      })
+      if (!response.ok) return
+      const { capabilities } = (await response.json()) as { capabilities?: unknown }
+      if (Array.isArray(capabilities)) {
+        recordModelVision('ollama', id, capabilities.includes('vision'))
+      }
+    } catch {
+      // A model the daemon will not describe keeps its current answer.
+    }
+  }))
+}
+
+/**
  * Fetch an Ollama catalog split into cloud / local / toolless sections.
  *
  * Cloud models come from the fixed approved list. A cloud model is
@@ -224,6 +251,7 @@ export async function listLocalOllamaModels(): Promise<string[]> {
  */
 export async function getOllamaCatalog(): Promise<OllamaCatalog> {
   const pulled = new Set(await listLocalOllamaModels())
+  void recordOllamaVision([...pulled])
   const cloudSet = new Set(CLOUD_MODELS_LIST)
 
   const cloud: OllamaModelInfo[] = CLOUD_MODELS_LIST.map(id => ({

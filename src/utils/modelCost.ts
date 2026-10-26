@@ -34,6 +34,8 @@ import {
 } from './modelPricingCatalog.js'
 import { getProviderModelSet } from './model/configs.js'
 import { getCommandCodeCatalogCosts } from './model/commandCodeCatalog.js'
+import { commandCodeRegistryPrice } from './model/commandCodeRegistry.js'
+import { FIREWORKS_AUTO_MODEL, FIREWORKS_MODEL_PREFIX } from './model/fireworksCatalog.js'
 import { getXaiCatalogPrice } from './model/xaiCatalog.js'
 import { getMetaCatalogPrice } from './model/metaCatalog.js'
 
@@ -219,163 +221,66 @@ function getAntigravityClaudeTierCosts(model: string): ModelCosts | null {
   }
 }
 
+/** A `:free` variant no catalog prices: every one Command Code lists is free. */
+const COMMAND_CODE_FREE = {
+  inputTokens: 0,
+  outputTokens: 0,
+  promptCacheReadTokens: 0,
+  promptCacheWriteTokens: 0,
+  webSearchRequests: 0,
+} as const satisfies ModelCosts
+
 /**
- * Published pricing for Command Code models from context.txt.
- * Rates in USD per million tokens.
+ * Command Code's published rates, by exact id. Its own catalog answers first
+ * (the copy listModels last fetched, else the one bundled at build time), then
+ * models.dev's `commandcode` rows, then Tau's table. A model none of them
+ * lists stays unpriced: matching on the nearest name billed Kimi K3.1 Pro at
+ * Kimi K3's rate. Long-context tiers apply to the whole prompt the request
+ * occupied, cached tokens included.
  */
-function getCommandCodeModelCosts(model: string): ModelCosts | null {
+function getCommandCodeModelCosts(model: string, usage: Usage): ModelCosts | null {
   if (getAPIProvider() !== 'commandcode') return null
-  const catalogCosts = getCommandCodeCatalogCosts(model)
-  if (catalogCosts) return catalogCosts
+  const promptTokens =
+    (usage.input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0)
+  return commandCodeRegistryPrice(model, promptTokens)
+    ?? lookupCatalogPrice('commandcode', model, promptTokens)
+    ?? getCommandCodeCatalogCosts(model)
+    ?? (/:free$/i.test(model.trim()) ? COMMAND_CODE_FREE : null)
+}
 
-  const leaf = (model.split('/').pop() ?? model).toLowerCase()
+/**
+ * The model a response is priced at. Fireworks' Nexus Auto (`auto`) picks a
+ * model for each turn, names it in the response, and bills the turn at that
+ * model's rate; every other response is priced as requested.
+ */
+export function pricedModel(requested: string, served: string | undefined): string {
+  return getAPIProvider() === 'fireworks'
+    && requested.trim() === FIREWORKS_AUTO_MODEL
+    && typeof served === 'string' && served.trim()
+    ? served.trim()
+    : requested
+}
 
-  if (leaf.includes('kimi-k3')) {
-    return {
-      inputTokens: 3.00,
-      outputTokens: 15.00,
-      promptCacheReadTokens: 0.30,
-      promptCacheWriteTokens: 3.75,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('kimi-k2.6')) {
-    return {
-      inputTokens: 0.95,
-      outputTokens: 4.00,
-      promptCacheReadTokens: 0.16,
-      promptCacheWriteTokens: 1.1875,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('kimi-k2.5')) {
-    return {
-      inputTokens: 0.60,
-      outputTokens: 3.00,
-      promptCacheReadTokens: 0.10,
-      promptCacheWriteTokens: 0.75,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('qwen3.7-max') || leaf.includes('qwen3.8-max')) {
-    return {
-      inputTokens: 2.50,
-      outputTokens: 7.50,
-      promptCacheReadTokens: 0.50,
-      promptCacheWriteTokens: 3.13,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('qwen3.7-plus')) {
-    return {
-      inputTokens: 0.40,
-      outputTokens: 1.60,
-      promptCacheReadTokens: 0.08,
-      promptCacheWriteTokens: 0.50,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('minimax-m3')) {
-    return {
-      inputTokens: 0.30,
-      outputTokens: 1.20,
-      promptCacheReadTokens: 0.06,
-      promptCacheWriteTokens: 0.375,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('minimax-m2.7')) {
-    return {
-      inputTokens: 0.30,
-      outputTokens: 1.20,
-      promptCacheReadTokens: 0.06,
-      promptCacheWriteTokens: 0.375,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('minimax-m2.5')) {
-    return {
-      inputTokens: 0.30,
-      outputTokens: 1.20,
-      promptCacheReadTokens: 0.03,
-      promptCacheWriteTokens: 0.375,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('deepseek-v4-pro')) {
-    return {
-      inputTokens: 0.66,
-      outputTokens: 1.98,
-      promptCacheReadTokens: 0.022,
-      promptCacheWriteTokens: 0.825,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('deepseek-v4') || leaf.includes('deepseek-v4-flash')) {
-    return {
-      inputTokens: 0.15,
-      outputTokens: 0.60,
-      promptCacheReadTokens: 0.003,
-      promptCacheWriteTokens: 0.1875,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('glm-5.1')) {
-    return {
-      inputTokens: 1.40,
-      outputTokens: 4.40,
-      promptCacheReadTokens: 0.26,
-      promptCacheWriteTokens: 1.75,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('glm-5')) {
-    return {
-      inputTokens: 1.00,
-      outputTokens: 3.20,
-      promptCacheReadTokens: 0.20,
-      promptCacheWriteTokens: 1.25,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('gpt-5.6-luna')) {
-    return {
-      inputTokens: 0.20,
-      outputTokens: 1.20,
-      promptCacheReadTokens: 0.02,
-      promptCacheWriteTokens: 0.25,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('gpt-6-luna')) {
-    return {
-      inputTokens: 0.10,
-      outputTokens: 0.50,
-      promptCacheReadTokens: 0.01,
-      promptCacheWriteTokens: 0.125,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('gpt-5.3-codex')) {
-    return {
-      inputTokens: 2.00,
-      outputTokens: 8.00,
-      promptCacheReadTokens: 0.50,
-      promptCacheWriteTokens: 2.50,
-      webSearchRequests: 0.01,
-    }
-  }
-  if (leaf.includes('gpt-5.4-mini')) {
-    return {
-      inputTokens: 0.75,
-      outputTokens: 4.50,
-      promptCacheReadTokens: 0.075,
-      promptCacheWriteTokens: 0.9375,
-      webSearchRequests: 0.01,
-    }
-  }
-
-  return null
+/**
+ * Rates for a model Nexus Auto served, which responses name by bare id. A
+ * Fireworks model or router (`glm-5p3`, `kimi-k3-fast`) bills at its
+ * serverless rate. A closed model (`claude-opus-5-5`, `gpt-6.1-sol`) bills to
+ * the Anthropic or OpenAI key connected to the Fireworks account, at that
+ * vendor's own rate.
+ */
+function getFireworksServedModelCosts(model: string, usage: Usage): ModelCosts | null {
+  const id = model.trim()
+  if (getAPIProvider() !== 'fireworks' || !id || id.includes('/')) return null
+  const promptTokens =
+    (usage.input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0)
+  return lookupCatalogPrice('fireworks', `${FIREWORKS_MODEL_PREFIX}${id}`, promptTokens)
+    ?? lookupCatalogPrice('fireworks', `accounts/fireworks/routers/${id}`, promptTokens)
+    ?? lookupCatalogPrice('firstParty', id, promptTokens)
+    ?? lookupCatalogPrice('openai', id, promptTokens)
 }
 
 /**
@@ -501,8 +406,11 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts | null {
   const antigravityClaudeCosts = getAntigravityClaudeTierCosts(model)
   if (antigravityClaudeCosts) return antigravityClaudeCosts
 
-  const commandCodeCosts = getCommandCodeModelCosts(model)
+  const commandCodeCosts = getCommandCodeModelCosts(model, usage)
   if (commandCodeCosts) return commandCodeCosts
+
+  const fireworksServedCosts = getFireworksServedModelCosts(model, usage)
+  if (fireworksServedCosts) return fireworksServedCosts
 
   const xaiCosts = getXaiModelCosts(model, usage)
   if (xaiCosts) return xaiCosts

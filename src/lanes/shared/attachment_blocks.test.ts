@@ -39,6 +39,7 @@ import {
   _seedMediaExtractionForTest,
 } from './media_extract.js'
 import {
+  modelAcceptsImages,
   recordModelVision,
   _resetVisionCapabilityForTest,
   _seedVisionCapabilityForTest,
@@ -47,9 +48,12 @@ import {
   openRouterModelAcceptsImages,
   toOpenRouterModelInfo,
 } from '../../utils/model/openrouterCatalog.js'
+import { resetCatalogForTests } from '../../utils/modelPricingCatalog.js'
 
-// Hermetic: also stops the store reading this machine's real capability cache.
+// Hermetic: also stops the store reading this machine's real capability cache,
+// and an empty models.dev table stops lookups reading or downloading a real one.
 _resetVisionCapabilityForTest()
+resetCatalogForTests({ version: 2, fetchedAt: Date.now(), providers: {}, limits: {}, ceilings: {}, images: {}, efforts: {} })
 
 let passed = 0
 let failed = 0
@@ -104,6 +108,13 @@ const pastedPdf: ProviderMessage[] = [
   { role: 'user', content: [{ type: 'text', text: 'read this spec' }, documentBlock] },
 ]
 
+/** Read's PDF folded into its tool_result, as the universal smoosh does. */
+const readPdf: ProviderMessage[] = [
+  { role: 'user', content: 'read the spec' },
+  { role: 'assistant', content: [{ type: 'tool_use', id: 'call_2', name: 'Read', input: { file_path: 'a.pdf' } }] },
+  { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_2', content: [{ type: 'text', text: 'PDF read' }, documentBlock] }] },
+]
+
 section('attachment blocks — openai-compat:')
 
 test('pasted image becomes a marker, never base64', () => {
@@ -126,7 +137,7 @@ test('tool_result image becomes a marker, never base64', () => {
 test('pdf document block becomes a marker', () => {
   const out = _convertHistoryToOpenAIForTest(pastedPdf, '', 'mistral', 'devstral-latest')
   const serialized = JSON.stringify(out)
-  assert.equal(serialized.includes(B64), false)
+  assert.equal(serialized.includes(PDF_B64), false)
   assert.match(serialized, /document not sent \(application\/pdf\)/)
 })
 
@@ -183,7 +194,7 @@ test('tool_result image rides in a trailing user message, not in the output stri
 test('pdf document block becomes a marker, never base64', () => {
   const out = convertHistoryToCodex(pastedPdf, new Map())
   const serialized = JSON.stringify(out)
-  assert.equal(serialized.includes(B64), false)
+  assert.equal(serialized.includes(PDF_B64), false)
   assert.match(serialized, /document not sent \(application\/pdf\)/)
 })
 
@@ -214,8 +225,19 @@ test('tool_result image path still works (regression guard)', () => {
 test('pdf document block becomes a marker', () => {
   const out = _convertHistoryToGeminiForTest(pastedPdf)
   const serialized = JSON.stringify(out)
-  assert.equal(serialized.includes(B64), false)
+  assert.equal(serialized.includes(PDF_B64), false)
   assert.match(serialized, /document not sent \(application\/pdf\)/)
+})
+
+test('pdf inside a tool_result becomes a marker, never base64', () => {
+  const out = _convertHistoryToGeminiForTest(readPdf)
+  const serialized = JSON.stringify(out)
+  assert.equal(serialized.includes(PDF_B64), false, 'base64 leaked into the functionResponse')
+  const response = out.flatMap((c: any) => c.parts).find((p: any) => p.functionResponse)
+  assert.equal(
+    response.functionResponse.response.content,
+    'PDF read\n[document not sent (application/pdf): this lane forwards images only]',
+  )
 })
 
 section('attachment blocks — qwen:')
@@ -429,6 +451,60 @@ test('an unknown model stays on the safe text path', () => {
   const serialized = JSON.stringify(out)
   assert.equal(serialized.includes('image_url'), false)
   assert.match(serialized, /image not sent \(image\/png\)/)
+})
+
+test("a provider's own catalog decides before any live data loads", () => {
+  _resetVisionCapabilityForTest()
+  // MiMo: pasted, and read through the Read tool, both reach the model as pixels.
+  for (const history of [pastedImage, readImage]) {
+    const out = JSON.stringify(_convertHistoryToOpenAIForTest(history, '', 'mimo', 'mimo-v2.6-pro'))
+    assert.ok(out.includes(`data:image/png;base64,${B64}`), 'MiMo V2.6 Pro should get the real image')
+  }
+  // The same catalog lists V2.5 Pro as text only.
+  const textOnly = JSON.stringify(_convertHistoryToOpenAIForTest(pastedImage, '', 'mimo', 'mimo-v2.5-pro'))
+  assert.equal(textOnly.includes('image_url'), false)
+  // models.dev rows answer for the direct providers.
+  assert.equal(modelAcceptsImages('moonshot', 'kimi-k2.6'), true)
+  assert.equal(modelAcceptsImages('deepseek', 'deepseek-v4-pro'), false)
+})
+
+test('evidence under a vendor-prefixed id answers for the bare id', () => {
+  _resetVisionCapabilityForTest()
+  _seedVisionCapabilityForTest('openrouter', 'acme/model-x', true)
+  assert.equal(modelAcceptsImages('copilot', 'model-x'), true)
+  // An exact id still wins over the same name under another vendor.
+  _seedVisionCapabilityForTest('vercel', 'model-x', false)
+  assert.equal(modelAcceptsImages('copilot', 'model-x'), false)
+  // Providers that disagree are no answer, in whichever order they were
+  // recorded: one may serve a text-only build.
+  _seedVisionCapabilityForTest('requesty', 'model-x', true)
+  assert.equal(modelAcceptsImages('copilot', 'model-x'), undefined)
+  _resetVisionCapabilityForTest()
+  _seedVisionCapabilityForTest('openrouter', 'acme/model-y', false)
+  _seedVisionCapabilityForTest('vercel', 'other/model-y', true)
+  assert.equal(modelAcceptsImages('copilot', 'model-y'), undefined)
+})
+
+test('a model its own host does not list takes the answer every other host agrees on', () => {
+  _resetVisionCapabilityForTest()
+  resetCatalogForTests({
+    version: 2, fetchedAt: Date.now(), providers: {}, limits: {}, ceilings: {},
+    images: { a: { 'acme/new-vl': true, 'mixed-model': true }, b: { 'new-vl': true, 'mixed-model': false }, c: { 'acme/new-text': false } },
+  })
+  try {
+    assert.equal(modelAcceptsImages('commandcode', 'acme/new-vl'), true)
+    assert.equal(modelAcceptsImages('commandcode', 'acme/new-text'), false)
+    // Hosts that disagree are no answer: one may serve a text-only build.
+    assert.equal(modelAcceptsImages('commandcode', 'other/mixed-model'), undefined)
+  } finally {
+    resetCatalogForTests({ version: 2, fetchedAt: Date.now(), providers: {}, limits: {}, ceilings: {}, images: {}, efforts: {} })
+  }
+})
+
+test("a Cline effort variant does not hide the model's capability", () => {
+  _resetVisionCapabilityForTest()
+  _seedVisionCapabilityForTest('cline', 'anthropic/claude-sonnet-4.5', true)
+  assert.equal(modelAcceptsImages('cline', 'anthropic/claude-sonnet-4.5::cline-effort=high'), true)
 })
 
 test('sending real images stays deterministic across turns', () => {

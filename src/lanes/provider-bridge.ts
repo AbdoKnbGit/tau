@@ -39,7 +39,7 @@ import { getSessionId } from '../bootstrap/state.js'
 import { filterProviderToolsForLane } from './tool_filter.js'
 import { prefetchMediaText } from './shared/media_extract.js'
 import { markFailedToolResults } from './shared/tool_error_text.js'
-import { decideImageSupport } from './shared/vision_capability.js'
+import { decideImageSupport, prepareImageSupport } from './shared/vision_capability.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { createRetryableConnectionError } from '../services/api/transport_error.js'
 import { isAntigravityModelId, isAntigravityGeminiModel } from '../services/api/providers/gemini_code_assist.js'
@@ -284,6 +284,7 @@ export class LaneBackedProvider implements BaseProvider {
       // the converters: a network call there would slow every turn and make
       // the serialized history non-deterministic, breaking the prompt cache.
       if (!LANES_WITH_NATIVE_MEDIA.has(lane.name)) {
+        await prepareImageSupport(providerHint, resolvedModel, params.messages ?? [], controller.signal)
         await prefetchMediaText(params.messages ?? [], {
           // Thunk: consulted (and frozen) only if an unresolved image is
           // actually present, so the same answer the converter uses.

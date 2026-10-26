@@ -282,6 +282,7 @@ async function captureMoonshotRequest(sessionId?: string): Promise<{
 async function captureFireworksRequest(
   sessionId?: string,
   throughBridge = false,
+  { model = 'accounts/fireworks/models/minimax-m3', served = model }: { model?: string, served?: string } = {},
 ): Promise<{
   request: CapturedRequest
   events: AnthropicStreamEvent[]
@@ -302,13 +303,13 @@ async function captureFireworksRequest(
       {
         id: 'chatcmpl-fireworks',
         object: 'chat.completion.chunk',
-        model: 'accounts/fireworks/models/minimax-m3',
+        model: served,
         choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }],
       },
       {
         id: 'chatcmpl-fireworks',
         object: 'chat.completion.chunk',
-        model: 'accounts/fireworks/models/minimax-m3',
+        model: served,
         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
         usage: { prompt_tokens: 200, completion_tokens: 5, total_tokens: 205 },
         // Fireworks reports cache hits only via perf_metrics for streaming.
@@ -326,7 +327,7 @@ async function captureFireworksRequest(
     const events: AnthropicStreamEvent[] = []
     const stream = throughBridge
       ? await new LaneBackedProvider(lane, 'fireworks').stream({
-          model: 'accounts/fireworks/models/minimax-m3',
+          model,
           messages: [{ role: 'user', content: 'hello' }],
           system: 'stable system prompt',
           tools: [],
@@ -334,7 +335,7 @@ async function captureFireworksRequest(
           ...(sessionId ? { sessionId } : {}),
         } as any)
       : lane.streamAsProvider({
-          model: 'accounts/fireworks/models/minimax-m3',
+          model,
           messages: [{ role: 'user', content: 'hello' }],
           system: 'stable system prompt',
           tools: [],
@@ -779,6 +780,22 @@ async function main(): Promise<void> {
     assert(request.body.user === undefined, `user=${request.body.user}`)
     assert(request.body.prompt_cache_key === undefined,
       `prompt_cache_key=${request.body.prompt_cache_key}`)
+  })
+
+  await test('fireworks auto sends `auto` and names the model that served the turn', async () => {
+    const { request, events } = await captureFireworksRequest('sess-fw-auto', false, { model: 'auto', served: 'glm-5p3' })
+    assert(request.body.model === 'auto', `request model=${request.body.model}`)
+    const start = events.find(ev => ev.type === 'message_start') as any
+    assert(start?.message?.model === 'glm-5p3', `message_start model=${start?.message?.model}`)
+  })
+
+  await test('fireworks pinned models keep the requested id on the message', async () => {
+    const { events } = await captureFireworksRequest('sess-fw-pin', false, { served: 'accounts/fireworks/models/other' })
+    const start = events.find(ev => ev.type === 'message_start') as any
+    assert(
+      start?.message?.model === 'accounts/fireworks/models/minimax-m3',
+      `message_start model=${start?.message?.model}`,
+    )
   })
 
   await test('fireworks folds perf_metrics cached-prompt-tokens into cache read', async () => {

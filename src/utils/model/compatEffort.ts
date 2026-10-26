@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { selectInheritedEffort, type EffortFallback } from './effortInheritance.js'
 import { getAllReasoningLevels, modelSupportsReasoning } from './openaiReasoning.js'
+import { FIREWORKS_AUTO_MODEL, qualifyFireworksId } from './fireworksCatalog.js'
+import { lookupCatalogEfforts, noteMissingCatalogEfforts } from '../modelPricingCatalog.js'
 
 const LEVELS = ['low', 'medium', 'high'] as const
 export type CompatEffort = typeof LEVELS[number] | 'none' | 'on' | 'xhigh' | 'max' | 'adaptive'
@@ -35,16 +37,45 @@ function gatewayOpenAIEfforts(model: string): readonly CompatEffort[] {
 // Use effective tiers rather than aliases that the server silently promotes.
 // https://docs.fireworks.ai/api-reference/post-chatcompletions#body-reasoning-effort
 function fireworksEffortLevels(model: string): readonly CompatEffort[] {
+  // Nexus Auto reads the harness's effort when it picks the turn's model.
+  // https://docs.fireworks.ai/nexus/orchestration-preferences
+  if (model.trim() === FIREWORKS_AUTO_MODEL) return ['low', 'medium', 'high', 'xhigh', 'max']
   const m = model.slice(model.lastIndexOf('/') + 1)
   if (/^(?:deepseek-v4|kimi-k3)/.test(m)) return ['none', 'low', 'high', 'max']
   if (/^glm-5[.p]2/.test(m)) return ['none', 'high', 'max']
-  if (/^qwen3[.p]8/.test(m)) return ['none', 'low', 'medium', 'xhigh']
-  if (/^minimax-m3/.test(m)) return [...LEVELS, 'adaptive']
+  // The documented qwen3p8 conversation styles; Flash Next is a different architecture.
+  if (/^qwen3[.p]8(?!-flash)/.test(m)) return ['none', 'low', 'medium', 'xhigh']
+  // `adaptive` is MiniMax M3's alone; M3.1 Flash takes its own ladder.
+  if (/^minimax-m3(?![.p]\d)/.test(m)) return [...LEVELS, 'adaptive']
   if (/^(?:minimax-m2|gpt-oss)/.test(m)) return LEVELS
   if (/^(?:deepseek-v3[.p][12]|glm-(?:4[.p][567]|5[.p]1))/.test(m)) return ['none', 'on']
-  // A custom deployment or an unrecognized row may use a non-thinking chat
-  // template. Leave its server default alone instead of inferring a knob.
-  return []
+  // Rows the reasoning docs do not cover: the values models.dev says this row
+  // accepts. A custom deployment or an unrecognized row may use a
+  // non-thinking chat template, so nothing stated means no knob.
+  return statedFireworksEffortLevels(model)
+}
+
+const COMPAT_EFFORTS: ReadonlySet<string> = new Set([...LEVELS, 'none', 'xhigh', 'max', 'adaptive'])
+
+// Read once per model per process: the effort reaches the rendered prompt on
+// some models, so a table that arrives or refreshes mid-session must not
+// change what a running conversation sends.
+const statedLadders = new Map<string, readonly CompatEffort[]>()
+
+function statedFireworksEffortLevels(model: string): readonly CompatEffort[] {
+  const key = model.trim().toLowerCase()
+  const frozen = statedLadders.get(key)
+  if (frozen) return frozen
+  // Fireworks takes a bare name (`glm-5p3`) as well as the full path.
+  const stated = lookupCatalogEfforts('fireworks', [key, qualifyFireworksId(key)])
+  if (!stated) noteMissingCatalogEfforts()
+  const levels = (stated ?? []).filter(value => COMPAT_EFFORTS.has(value)) as CompatEffort[]
+  // A bare toggle: thinking off, or on at the server's level (sent as medium).
+  const ladder: readonly CompatEffort[] = levels.length === 1 && levels[0] === 'none'
+    ? ['none', 'on']
+    : levels
+  statedLadders.set(key, ladder)
+  return ladder
 }
 
 function path(): string {

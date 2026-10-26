@@ -19,6 +19,8 @@ import {
   persistProviderContextWindows,
 } from './contextWindowStore.js'
 import { getCommandCodeCatalogContextWindow } from './commandCodeCatalog.js'
+import { commandCodeRegistryContextWindow } from './commandCodeRegistry.js'
+import { getFireworksModelMeta, qualifyFireworksId } from './fireworksCatalog.js'
 import { getXaiContextWindow } from './xaiCatalog.js'
 import { getMetaContextWindow } from './metaCatalog.js'
 
@@ -422,17 +424,28 @@ function lookupHostWindow(
     }
   }
 
+  // Command Code's own catalog, then Tau's table: exact ids both, so a new
+  // model never takes a near-namesake's window.
   if (provider === 'commandcode') {
-    const catalogWindow = getCommandCodeCatalogContextWindow(model)
-    if (catalogWindow !== undefined) return catalogWindow
-    for (const candidate of candidates) {
-      const w = getCommandCodeCatalogContextWindow(candidate)
-      if (w !== undefined) return w
+    for (const candidate of [model, ...candidates]) {
+      const window = commandCodeRegistryContextWindow(candidate)
+        ?? getCommandCodeCatalogContextWindow(candidate)
+      if (window !== undefined) return window
     }
   }
 
   if (isDirectProvider(provider)) {
     const window = getDirectModelMeta(provider, model)?.contextWindow
+    if (window !== undefined) return window
+  }
+
+  // Fireworks rows models.dev does not describe (Nexus Auto, on-demand-only
+  // models): the window their model page states. The rest come from
+  // models.dev, which keys them by full path where Fireworks also takes a
+  // bare name (`glm-5p3`).
+  if (provider === 'fireworks') {
+    const window = getFireworksModelMeta(model)?.contextWindow
+      ?? lookupCatalogContextWindow(provider, [qualifyFireworksId(model)])
     if (window !== undefined) return window
   }
 
