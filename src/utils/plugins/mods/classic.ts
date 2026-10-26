@@ -58,6 +58,54 @@ export function validateModResult(
         value.context.some((text: unknown) => typeof text !== 'string'))
     )
       throw new Error('Command context must be an array of strings')
+  } else if (event === 'tool.call') {
+    if (value.deny !== undefined) {
+      if (
+        typeof value.deny !== 'string' ||
+        !value.deny.trim() ||
+        value.result !== undefined ||
+        value.context !== undefined ||
+        value.ref !== undefined ||
+        value.text !== undefined ||
+        value.isError !== undefined
+      )
+        throw new Error(
+          'tool.call deny must be a nonempty reason without a result',
+        )
+    } else {
+      if (!Object.hasOwn(value, 'result'))
+        throw new Error('tool.call must return { result } or { deny }')
+      if (
+        value.context !== undefined &&
+        (!Array.isArray(value.context) ||
+          value.context.some(
+            (text: unknown) => typeof text !== 'string' || !text.trim(),
+          ))
+      )
+        throw new Error('Tool context must contain nonempty strings')
+      if (value.isError !== undefined && value.isError !== true)
+        throw new Error('tool.call isError must be true when set')
+      if (value.text !== undefined && typeof value.text !== 'string')
+        throw new Error('Tool text must be a string')
+      if (
+        value.ref !== undefined &&
+        (!Number.isSafeInteger(value.ref) || value.ref < 1)
+      )
+        throw new Error('Invalid tool result reference')
+    }
+  } else if (event === 'tool.check') {
+    if (!['allow', 'ask', 'deny'].includes(value.decision))
+      throw new Error('tool.check decision must be allow, ask, or deny')
+    for (const key of [
+      'reason',
+      'rule',
+      'hook',
+      'setting',
+      'decider',
+      'ceiling',
+    ])
+      if (value[key] !== undefined && typeof value[key] !== 'string')
+        throw new Error(`tool.check ${key} must be a string`)
   } else if (event === 'session.start' && typeof value.cwd !== 'string')
     throw new Error('session.start must return { cwd }')
   else if (event === 'session.end' && typeof value.sessionId !== 'string')

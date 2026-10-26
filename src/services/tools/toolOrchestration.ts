@@ -5,6 +5,7 @@ import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
 import { beginDeferredHookBatch } from '../../utils/hooks/deferredTool.js'
+import { hasModEvent } from '../../utils/plugins/mods/manager.js'
 
 function getMaxToolUseConcurrency(): number {
   return (
@@ -97,7 +98,7 @@ function partitionToolCalls(
   return toolUseMessages.reduce((acc: Batch[], toolUse) => {
     const tool = findToolByName(toolUseContext.options.tools, toolUse.name)
     const parsedInput = tool?.inputSchema.safeParse(toolUse.input)
-    const isConcurrencySafe = parsedInput?.success
+    const isConcurrencySafe = !hasModEvent('tool.call') && !hasModEvent('tool.check') && parsedInput?.success
       ? (() => {
           try {
             return Boolean(tool?.isConcurrencySafe(parsedInput.data))

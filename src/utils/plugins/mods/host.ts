@@ -1,4 +1,4 @@
-import { execFile } from 'child_process'
+import { execa } from 'execa'
 import { createHash, randomUUID } from 'crypto'
 import {
   mkdir,
@@ -26,7 +26,9 @@ import {
 import { getPluginDataDir } from '../pluginDirectories.js'
 import { logForDebugging } from '../../debug.js'
 import * as lockfile from '../../lockfile.js'
+import { resolveWindowsTaskkillPath } from '../../execFileNoThrow.js'
 import type { ModHost, ModRecord } from './runtime.js'
+import type { ModToolRegistry, ModToolInfo } from './tools.js'
 
 export type ModCommandSpec = {
   name: string
@@ -40,6 +42,8 @@ export type ModHostContext = {
   commands: Map<string, ModCommandSpec>
   reserved: Set<string>
   commandsChanged(): Promise<void>
+  tools?: ModToolRegistry
+  listTools?(): Promise<ModToolInfo[]>
   log(text: string): void
 }
 
@@ -158,28 +162,99 @@ export function runModProcess(
     throw new Error('process.run stdin must be text')
   if (init.cwd !== undefined && typeof init.cwd !== 'string')
     throw new Error('process.run cwd must be a path')
-  return new Promise((resolveResult, reject) => {
-    const child = execFile(
-      argv[0]!,
-      argv.slice(1),
-      {
-        cwd: resolve(getOriginalCwd(), init.cwd ?? '.'),
-        env: { ...process.env, ...init.env },
-        signal,
-        timeout,
-        windowsHide: true,
-        maxBuffer: 1024 * 1024,
-        encoding: 'utf8',
-      },
-      (error, stdout, stderr) => {
-        if (error && (error.killed || typeof error.code !== 'number'))
-          reject(error)
-        else resolveResult({ exitCode: error?.code ?? 0, stdout, stderr })
-      },
-    )
-    // A child may close its input early; execFile's completion owns the result.
-    child.stdin?.on('error', () => {})
-    child.stdin?.end(init.stdin ?? '')
+  signal?.throwIfAborted()
+  const child = execa(argv[0]!, argv.slice(1), {
+    cwd: resolve(getOriginalCwd(), init.cwd ?? '.'),
+    env: { ...process.env, ...init.env },
+    // A POSIX process group and Windows taskkill /T keep child programs from
+    // surviving the command wrapper that launched them.
+    detached: process.platform !== 'win32',
+    windowsHide: true,
+    // Collect bounded output below so overflow can stop the entire tree before
+    // the process library kills its wrapper and orphans descendants.
+    buffer: false,
+    encoding: 'utf8',
+    input: init.stdin ?? '',
+    stripFinalNewline: false,
+    reject: false,
+  })
+  let timedOut = false,
+    canceled = false,
+    maxBuffer = false,
+    stopping: Promise<void> | undefined
+  const stop = () => {
+    if (stopping) return stopping
+    stopping = (async () => {
+      if (child.pid) {
+        if (process.platform === 'win32') {
+          const taskkill = resolveWindowsTaskkillPath()
+          if (taskkill) {
+            // Finish tree enumeration before killing the wrapper itself;
+            // killing cmd.exe first can orphan its descendants.
+            await execa(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
+              reject: false,
+              timeout: 10_000,
+              stdin: 'ignore', stdout: 'ignore', stderr: 'ignore',
+              detached: true,
+              cleanup: false,
+              windowsHide: true,
+            }).catch(() => {})
+          }
+        } else {
+          try { process.kill(-child.pid, 'SIGKILL') } catch {}
+        }
+      }
+      try { child.kill('SIGKILL') } catch {}
+    })()
+    return stopping
+  }
+  const stdout: Buffer[] = [], stderr: Buffer[] = []
+  const collect = (chunks: Buffer[]) => {
+    let bytes = 0
+    return (chunk: Buffer | string) => {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      const available = Math.max(0, 1024 * 1024 - bytes)
+      if (available) chunks.push(data.subarray(0, available))
+      bytes += data.byteLength
+      if (bytes > 1024 * 1024) {
+        maxBuffer = true
+        void stop()
+      }
+    }
+  }
+  child.stdout?.on('data', collect(stdout))
+  child.stderr?.on('data', collect(stderr))
+  const abort = () => {
+    canceled = true
+    void stop()
+  }
+  const timer = setTimeout(() => {
+    timedOut = true
+    void stop()
+  }, timeout)
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) abort()
+  return child.then(async result => {
+    await stopping
+    const output = {
+      stdout: Buffer.concat(stdout).toString('utf8'),
+      stderr: Buffer.concat(stderr).toString('utf8'),
+    }
+    if (timedOut || canceled || maxBuffer) {
+      throw Object.assign(new Error(timedOut
+        ? `Mod process timed out after ${timeout} milliseconds`
+        : canceled ? 'Mod process canceled' : 'Mod process output exceeds 1 MiB'), {
+        timedOut, isCanceled: canceled, isMaxBuffer: maxBuffer,
+        ...output,
+      })
+    }
+    if (result.timedOut || result.isCanceled || result.isMaxBuffer ||
+      result.isTerminated || result.exitCode === undefined)
+      throw Object.assign(result, output)
+    return { exitCode: result.exitCode, ...output }
+  }).finally(() => {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
   })
 }
 
@@ -209,6 +284,14 @@ export function createModHost(context: ModHostContext): ModHost {
         return getIsInteractive() ? ['terminal'] : []
       case 'session.surface':
         return getIsInteractive() ? 'terminal' : null
+      case 'tool.register':
+        if (!context.tools)
+          throw new Error('Tool registration requires a bound plugin session')
+        return context.tools.register(first)
+      case 'tool.list':
+        if (!context.listTools)
+          throw new Error('Tool listing requires a bound plugin session')
+        return context.listTools()
       case 'command.register': {
         if (
           !first ||

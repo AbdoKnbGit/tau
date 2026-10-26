@@ -11,6 +11,7 @@ import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import { isOptionalPrebuiltToolName } from '../../utils/prebuiltToolToggles.js'
 import { runToolUse } from './toolExecution.js'
+import { hasModEvent } from '../../utils/plugins/mods/manager.js'
 
 type MessageUpdate = {
   message?: Message
@@ -111,7 +112,7 @@ export class StreamingToolExecutor {
     }
 
     const parsedInput = toolDefinition.inputSchema.safeParse(block.input)
-    const isConcurrencySafe = parsedInput?.success
+    const isConcurrencySafe = !hasModEvent('tool.call') && !hasModEvent('tool.check') && parsedInput?.success
       ? (() => {
           try {
             return Boolean(toolDefinition.isConcurrencySafe(parsedInput.data))

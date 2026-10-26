@@ -18,6 +18,14 @@ Object.assign(process.env, {
 })
 process.chdir(project)
 const r = await loadMcpRuntime({
+  transform(source) {
+    const section = source.split('// src/utils/settings/changeDetector.ts\n')[1]?.split('\n// ')[0]
+    assert.ok(section, 'missing settings watcher module')
+    const change = section.match(/function (handleChange\d*)\(/)?.[1]
+    const deletion = section.match(/function (handleDelete\d*)\(/)?.[1]
+    assert.ok(change && deletion, 'missing settings watcher handlers')
+    return source + `\nconst settingsFileChangedForTest = ${change};\nconst settingsFileDeletedForTest = ${deletion};\n`
+  },
   paths: [
     'src/utils/settings/settings.ts', 'src/utils/settings/validation.ts',
     'src/utils/settings/changeDetector.ts', 'src/skills/loadSkillsDir.ts',
@@ -29,7 +37,7 @@ const r = await loadMcpRuntime({
     'getSettingsWithErrors',
     'parseSkillFrontmatterFields', 'parseAgentFromMarkdown', 'parseAgentFromJson', 'parseAgentsFromJson',
     'settingsChangeDetector', 'setOriginalCwd', 'clearInternalWrites',
-    'settingsFileChanged: handleChange', 'settingsFileDeleted: handleDelete',
+    'settingsFileChanged: settingsFileChangedForTest', 'settingsFileDeleted: settingsFileDeletedForTest',
     'getConfigChangeExecutor: () => executeConfigChangeHooks',
     'setConfigChangeExecutor: fn => { executeConfigChangeHooks = fn }',
   ],

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test, { after } from 'node:test'
 
@@ -313,4 +313,108 @@ test('duplicate matches report where they are', async () => {
     const rejection = await audit.FileEditTool.validateInput(input, context)
     assert.match(rejection.message, /Found 2 matches of the string to replace \(starting at lines 2, 7\)/)
   }, ['a', 'dup();', 'b', 'c', 'd', 'e', 'dup();'])
+})
+
+async function rewrittenRead(actualFile, originalFile, context, extra = {}) {
+  const id = `read-rewritten-${++ids}`
+  const assistant = {message:{id:'rewritten-message',content:[{
+    type:'tool_use',id,name:'Read',input:{file_path:originalFile,...extra},
+  }]}}
+  const result = await audit.FileReadTool.call({file_path:actualFile,...extra},
+    {...context,toolUseId:id},undefined,assistant)
+  const block = audit.FileReadTool.mapToolResultToToolResultBlockParam(result.data,id)
+  context.messages.push({type:'user',message:{role:'user',content:[block]}})
+  return {data:result.data,text:block.content}
+}
+
+test('rewritten file identity returns contents instead of exact or range cache notes', async () => {
+  await fixture(async (file, context) => {
+    const alias = join(dirname(file),'other-name.txt')
+    writeFileSync(alias,'different original path content')
+    await modelRead(file,context)
+    await modelRead(alias,context)
+    const aliasState = context.readFileState.get(alias)
+    for (const extra of [{},{offset:40,limit:5}]) {
+      const result = await rewrittenRead(file,alias,context,extra)
+      assert.equal(result.data.type,'text')
+      assert.ok(result.text.includes(extra.offset?'row 40:':'row 1:'))
+      assert.equal(context.readFileState.get(file).hiddenRead,true)
+      assert.equal(context.readFileState.get(alias),aliasState,'Unrelated cached contents must survive')
+    }
+  })
+})
+
+test('a read exposed under an alias cannot become the first direct read cache anchor', async () => {
+  await fixture(async (file,context)=>{
+    await rewrittenRead(file,join(dirname(file),'not-the-actual-file.txt'),context)
+    const direct = await modelRead(file,context)
+    assert.equal(direct.data.type,'text')
+    assert.equal(context.readFileState.get(file).hiddenRead,undefined)
+    assert.equal((await modelRead(file,context)).data.type,'file_unchanged','Ordinary same-path dedup remains enabled')
+  })
+})
+
+test('equivalent relative and absolute file paths retain normal read dedup', async () => {
+  await fixture(async(file,context)=>{
+    await modelRead(file,context)
+    const sameFile = await rewrittenRead(file,relative(process.cwd(),file),context)
+    assert.equal(sameFile.data.type,'file_unchanged')
+    assert.equal(context.readFileState.get(file).hiddenRead,undefined)
+  })
+})
+
+test('atomic replacement with a preserved timestamp returns the new content', async () => {
+  await fixture(async(file,context)=>{
+    const pinned = new Date(Math.floor(Date.now()/1000)*1000-10000)
+    utimesSync(file,pinned,pinned)
+    await modelRead(file,context)
+    const previous = statSync(file)
+    const replacement = join(dirname(file),'replacement.txt')
+    writeFileSync(replacement,'new receipt with the same timestamp\n')
+    utimesSync(replacement,previous.atime,previous.mtime)
+    renameSync(replacement,file)
+    assert.equal(Math.floor(statSync(file).mtimeMs),Math.floor(previous.mtimeMs))
+    const current = await modelRead(file,context)
+    assert.equal(current.data.type,'text')
+    assert.match(current.text,/new receipt with the same timestamp/)
+    assert.equal((await modelRead(file,context)).data.type,'file_unchanged')
+  })
+})
+
+test('same-size in-place writes with a preserved timestamp do not reuse stale Read output', async () => {
+  await fixture(async(file,context)=>{
+    const pinned = new Date(Math.floor(Date.now()/1000)*1000-10000)
+    utimesSync(file,pinned,pinned)
+    await modelRead(file,context)
+    const previous = statSync(file)
+    writeFileSync(file,'after--content\n')
+    utimesSync(file,previous.atime,previous.mtime)
+    assert.equal(statSync(file).size,previous.size)
+    assert.equal(Math.floor(statSync(file).mtimeMs),Math.floor(previous.mtimeMs))
+    const current = await modelRead(file,context)
+    assert.equal(current.data.type,'text')
+    assert.match(current.text,/after--content/)
+  },['before-content',''])
+})
+
+test('notebook dedup requires its complete result to remain visible after compaction or replacement', async () => {
+  await fixture(async (file, context) => {
+    const notebook = join(dirname(file), 'analysis.ipynb')
+    writeFileSync(notebook, JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: { kernelspec: { language: 'python' } },
+      cells: [{ id: 'calculation', cell_type: 'code', metadata: {}, source: ['print(6 * 7)'], outputs: [], execution_count: null }],
+    }))
+    assert.equal((await modelRead(notebook, context)).data.type, 'notebook')
+    assert.equal((await modelRead(notebook, context)).data.type, 'file_unchanged', 'Visible unchanged notebooks retain normal dedup')
+    context.messages.length = 0
+    assert.equal((await modelRead(notebook, context)).data.type, 'notebook', 'A compacted result must be sent again')
+    context.messages.at(-1).message.content[0].content = '[Old notebook result cleared]'
+    assert.equal((await modelRead(notebook, context)).data.type, 'notebook', 'A replaced result must be sent again')
+    assert.equal((await modelRead(notebook, context)).data.type, 'file_unchanged')
+    const hidden = await audit.FileReadTool.call({ file_path: notebook }, { ...context, toolUseId: 'notebook-api', readResultHidden: true }, undefined, parent)
+    assert.equal(hidden.data.type, 'notebook', 'Code consumers always receive the notebook cells')
+    assert.equal((await modelRead(notebook, context)).data.type, 'notebook', 'A hidden read cannot anchor later model output')
+  })
 })

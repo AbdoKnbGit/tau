@@ -1614,6 +1614,7 @@ type MatchedHook = {
   pluginId?: string
   skillRoot?: string
   hookSource?: string
+  managed?: boolean
 }
 
 function isInternalHook(matched: MatchedHook): boolean {
@@ -1884,6 +1885,12 @@ export async function getMatchingHooks(
         )
       : hookMatchers
 
+    const managedPolicy = getSettingsForSource('policySettings')
+    const managedHookKeys = new Set(
+      (managedPolicy?.hooks?.[hookEvent] ?? []).flatMap(matcher =>
+        matcher.hooks.map(hook => hookIdentityKey(hook)),
+      ),
+    )
     const matchedHooks: MatchedHook[] = filteredMatchers.flatMap(matcher => {
       // Check if this is a PluginHookMatcher (has pluginRoot) or SkillHookMatcher (has skillRoot)
       const pluginRoot =
@@ -1908,6 +1915,10 @@ export async function getMatchingHooks(
         pluginId,
         skillRoot,
         hookSource,
+        managed: pluginId
+          ? managedPolicy?.enabledPlugins?.[pluginId] === true
+          : hook.type === 'callback' || hook.type === 'function' ||
+            managedHookKeys.has(hookIdentityKey(hook)),
       }))
     })
 
@@ -2137,6 +2148,7 @@ export async function* executeHooks({
   requestPrompt,
   toolInputSummary,
   skipMods = false,
+  hookTier,
 }: {
   hookInput: HookInput
   toolUseID: string
@@ -2153,6 +2165,7 @@ export async function* executeHooks({
   ) => (request: PromptRequest) => Promise<PromptResponse>
   toolInputSummary?: string | null
   skipMods?: boolean
+  hookTier?: 'managed' | 'unmanaged'
 }): AsyncGenerator<AggregatedHookResult> {
   if (shouldDisableAllHooksIncludingManaged()) {
     return
@@ -2181,7 +2194,7 @@ export async function* executeHooks({
     return
   }
 
-  if (!skipMods && hasModEvent(`classic.${hookEvent}`)) {
+  if (!skipMods && hookTier !== 'managed' && hasModEvent(`classic.${hookEvent}`)) {
     const { dispatchModEvent, takeModLogs } = await import('./plugins/mods/manager.js')
     const { toClassicResult, fromClassicResult } = await import('./plugins/mods/classic.js')
     const collected: AggregatedHookResult[] = []
@@ -2189,7 +2202,7 @@ export async function* executeHooks({
       // Identity fields belong to the host even when a mod rewrites event data.
       const nextInput = { ...rewritten, hook_event_name: hookEvent, session_id: hookInput.session_id, cwd: hookInput.cwd, transcript_path: hookInput.transcript_path } as HookInput
       const results: AggregatedHookResult[] = []
-      for await (const item of executeHooks({ hookInput: nextInput, toolUseID, matchQuery, signal, timeoutMs, toolUseContext, getAppState, messages, forceSyncExecution, requestPrompt, toolInputSummary, skipMods: true })) results.push(item)
+      for await (const item of executeHooks({ hookInput: nextInput, toolUseID, matchQuery, signal, timeoutMs, toolUseContext, getAppState, messages, forceSyncExecution, requestPrompt, toolInputSummary, skipMods: true, hookTier })) results.push(item)
       collected.push(...results)
       return toClassicResult(results)
     }, signal)
@@ -2213,13 +2226,16 @@ export async function* executeHooks({
   }
   // Use the agent's session ID if available, otherwise fall back to main session
   const sessionId = toolUseContext?.agentId ?? getSessionId()
-  const matchingHooks = await getMatchingHooks(
+  const allMatchingHooks = await getMatchingHooks(
     appState,
     sessionId,
     hookEvent,
     hookInput,
     toolUseContext?.options?.tools,
   )
+  const matchingHooks = hookTier
+    ? allMatchingHooks.filter(hook => hookTier === 'managed' ? hook.managed : !hook.managed)
+    : allMatchingHooks
   if (matchingHooks.length === 0) {
     return
   }
@@ -3853,6 +3869,7 @@ export async function* executePreToolHooks<ToolInput>(
     toolInputSummary?: string | null,
   ) => (request: PromptRequest) => Promise<PromptResponse>,
   toolInputSummary?: string | null,
+  hookTier?: 'managed' | 'unmanaged',
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3882,6 +3899,7 @@ export async function* executePreToolHooks<ToolInput>(
     toolUseContext,
     requestPrompt,
     toolInputSummary,
+    hookTier,
   })
 }
 
@@ -3907,6 +3925,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   durationMs?: number,
+  hookTier?: 'managed' | 'unmanaged',
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: PostToolUseHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
@@ -3926,6 +3945,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
     signal,
     timeoutMs,
     toolUseContext,
+    hookTier,
   })
 }
 

@@ -14,8 +14,26 @@ import {
 export const inputSchema = lazySchema(() => z.object({}).passthrough())
 type InputSchema = ReturnType<typeof inputSchema>
 
+// The transport normalizes resources/audio to text and images to API image
+// blocks. Keep that array contract alongside persisted/structured string output.
 export const outputSchema = lazySchema(() =>
-  z.string().describe('MCP tool execution result'),
+  z.union([
+    z.string(),
+    z.array(z.discriminatedUnion('type', [
+      z.object({ type: z.literal('text'), text: z.string() }).passthrough(),
+      z.object({
+        type: z.literal('image'),
+        source: z.union([
+          z.object({
+            type: z.literal('base64'),
+            media_type: z.enum(['image/jpeg', 'image/png', 'image/gif', 'image/webp']),
+            data: z.string(),
+          }).passthrough(),
+          z.object({ type: z.literal('url'), url: z.string() }).passthrough(),
+        ]),
+      }).passthrough(),
+    ])),
+  ]).optional().describe('MCP tool execution result'),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
 
@@ -65,7 +83,12 @@ export const MCPTool = buildTool({
   renderToolUseProgressMessage,
   renderToolResultMessage,
   isResultTruncated(output: Output): boolean {
-    return isOutputLineTruncated(output)
+    if (typeof output === 'string') return isOutputLineTruncated(output)
+    if (!Array.isArray(output)) return false
+    return output.some(block =>
+      block?.type === 'text' && typeof block.text === 'string' &&
+      isOutputLineTruncated(block.text),
+    )
   },
   mapToolResultToToolResultBlockParam(content, toolUseID) {
     return {

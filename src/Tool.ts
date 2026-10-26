@@ -488,6 +488,9 @@ export type Tool<
    * already self-bounds via its own limits).
    */
   maxResultSizeChars: number
+  /** Invalidate model-visible reuse when middleware replaces/discards an actual
+   * result. The underlying tool retains ownership of its execution state. */
+  onResultReplaced?(input: z.infer<Input>, context: ToolUseContext): void
   /**
    * When true, enables strict mode for this tool, which causes the API to
    * more strictly adhere to tool instructions and parameter schemas.

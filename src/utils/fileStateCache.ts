@@ -32,10 +32,12 @@ export type FileState = {
   sourceMapsIncluded?: boolean
   /** Model-visible Read results of this file (see FileReadTool/rangeDedup.ts). */
   seenRanges?: readonly SeenRange[]
+  /** Fingerprint of the complete model-visible notebook result. */
+  seenNotebook?: { readonly toolUseId: string; readonly contentHash: string }
   /** Lines the last Read answered with a range note; repeating it sends them. */
   lastRangeStub?: { readonly start: number; readonly end: number }
-  /** Stored by a Read whose result the model did not see (readResultHidden),
-   *  so no dedup note may point back to it. */
+  /** Stored by a Read whose result was hidden or exposed under a rewritten
+   *  path, so no dedup note may point back to it under this file's identity. */
   hiddenRead?: true
 }
 

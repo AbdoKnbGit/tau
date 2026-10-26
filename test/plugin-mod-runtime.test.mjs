@@ -257,6 +257,27 @@ test('synchronous runaway mod is terminated without hanging the host', async () 
   assert.ok(Date.now() - start < 2000)
 })
 
+test('awaiting core or host API work does not consume the hook execution budget', async () => {
+  const mod =
+    await runtime(`export function register(on){on('command.run',async($,e,next)=>{
+    await $.clock.sleep(100);const result=await next(e);return {text:result.text+':'+(next.budget.remainingMs>0)};
+  })}`)
+  const result = await mod.dispatch(
+    'command.run',
+    { command: 'wait' },
+    async () => {
+      await new Promise((done) => setTimeout(done, 100))
+      return { text: 'done' }
+    },
+    async (method) => {
+      assert.equal(method, 'clock.sleep')
+      await new Promise((done) => setTimeout(done, 100))
+    },
+    { timeoutMs: 60 },
+  )
+  assert.equal(result.text, 'done:true')
+})
+
 test('abort terminates a synchronous runaway and does not run the core action', async () => {
   const mod = await runtime(
     `export function register(on) { on('command.run', async () => { while(true) {} }); }`,
@@ -287,7 +308,7 @@ test('abort terminates a synchronous runaway and does not run the core action', 
 test('renaming the registration parameter cannot silently register an unsupported event', async () => {
   await assert.rejects(
     runtime(
-      `export function register(subscribe) { subscribe('tool.check', async ($,e,next)=>next(e)); }`,
+      `export function register(subscribe) { subscribe('tool.describe', async ($,e,next)=>next(e)); }`,
     ),
     /does not yet support mod event/,
   )
@@ -320,7 +341,7 @@ test('static validation rejects unsupported APIs and imports without evaluating 
       /plugin-relative/,
     ],
     [
-      "export function register(on){on('tool.call', async ($,e,next)=>next(e))}",
+      "export function register(on){on('tool.describe', async ($,e,next)=>next(e))}",
       /does not yet support mod event/,
     ],
     [
@@ -631,5 +652,89 @@ test('trust, bare mode and managed-only policy prevent mod startup side effects'
     r.setSessionTrustAccepted(true, true)
     r.setInlinePlugins([])
     reset()
+  }
+})
+
+test('normal and recovered tool results inherit downstream context without repeating the action', async () => {
+  for (const recovery of [false, true]) {
+    const outer = recovery
+      ? `on('tool.call',async($,e,next)=>{await next(e);throw new Error('after')}).catch(async()=>({result:{value:'recovered'},context:['inner-note','recovery-note']}));`
+      : `on('tool.call',async($,e,next)=>{const value=await next(e);return {...value,context:['inner-note','outer-note']}});`
+    const mod = await runtime(`export function register(on){${outer}
+      on('tool.call',async($,e,next)=>({...await next(e),context:['inner-note']}));}`)
+    let calls = 0
+    const validated = [],
+      result = await mod.dispatch(
+        'tool.call',
+        { tool: 'FixtureTool', path: 'test' },
+        async () => {
+          calls++
+          return { result: { value: 'core' }, context: ['core-note'] }
+        },
+        host,
+        { validateResult: (value) => validated.push(value) },
+      )
+    assert.equal(calls, 1)
+    assert.deepEqual(result.context, [
+      'core-note',
+      'inner-note',
+      recovery ? 'recovery-note' : 'outer-note',
+    ])
+    assert.deepEqual(result.result, { value: recovery ? 'recovered' : 'core' })
+    assert.deepEqual(validated.at(-1), result)
+  }
+})
+
+test('unawaited host work cannot hide a synchronous runaway before or after an await', async () => {
+  for (const afterAwait of [false, true]) {
+    const mod = await runtime(`export function register(on){on('command.run',async($)=>{
+      ${afterAwait ? 'await $.clock.sleep(1);' : ''}
+      void $.clock.sleep(600000);while(true){}
+    })}`)
+    const controller = new AbortController(),
+      guard = setTimeout(() => controller.abort(), 2000),
+      started = Date.now(),
+      warnings = []
+    let pendingWaits = 0,
+      abortedWaits = 0,
+      coreCalls = 0
+    try {
+      const result = await mod.dispatch(
+        'command.run',
+        { command: 'runaway' },
+        async () => {
+          coreCalls++
+          return { text: 'fallback' }
+        },
+        async (method, args, signal) => {
+          assert.equal(method, 'clock.sleep')
+          if (args[0] === 1) return
+          assert.equal(args[0], 600000)
+          pendingWaits++
+          await new Promise((resolve, reject) => {
+            const aborted = () => {
+              abortedWaits++
+              reject(new Error('host wait aborted'))
+            }
+            if (signal.aborted) aborted()
+            else signal.addEventListener('abort', aborted, { once: true })
+          })
+        },
+        {
+          timeoutMs: 100,
+          signal: controller.signal,
+          warn: (message) => warnings.push(message),
+        },
+      )
+      assert.equal(result.text, 'fallback')
+      assert.equal(coreCalls, 1)
+      assert.equal(pendingWaits, 1)
+      assert.equal(abortedWaits, 1)
+      assert.equal(controller.signal.aborted, false)
+      assert.match(warnings.join('\n'), /timed out/)
+      assert.ok(Date.now() - started < 2000)
+    } finally {
+      clearTimeout(guard)
+    }
   }
 })

@@ -83,6 +83,8 @@ import {
   TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../../utils/errors.js'
 import { executePermissionDeniedHooks } from '../../utils/hooks.js'
+import { hasModEvent } from '../../utils/plugins/mods/manager.js'
+import { getModToolContext } from '../../utils/plugins/mods/toolContext.js'
 import { logError } from '../../utils/log.js'
 import { getSessionId } from '../../bootstrap/state.js'
 import { noteToolCall } from './repeatToolGuard.js'
@@ -791,7 +793,7 @@ async function* runToolUseInner(
 function streamedCheckPermissionsAndCallTool(
   tool: Tool,
   toolUseID: string,
-  input: { [key: string]: boolean | string | number },
+  input: Record<string, unknown>,
   toolUseContext: ToolUseContext,
   canUseTool: CanUseToolFn,
   assistantMessage: AssistantMessage,
@@ -1109,7 +1111,7 @@ function prependNoteToToolResult(
 async function checkPermissionsAndCallTool(
   tool: Tool,
   toolUseID: string,
-  input: { [key: string]: boolean | string | number },
+  input: Record<string, unknown>,
   toolUseContext: ToolUseContext,
   canUseTool: CanUseToolFn,
   assistantMessage: AssistantMessage,
@@ -1120,23 +1122,33 @@ async function checkPermissionsAndCallTool(
   onToolProgress: (
     progress: ToolProgress<ToolProgressData> | ProgressMessage<HookProgress>,
   ) => void,
+  modControl?: {
+    inside: boolean
+    managedPermission?: PermissionResult
+    permission?(reason: string | undefined): void
+    result?(value: unknown): void
+  },
 ): Promise<MessageUpdateLazy[]> {
-  const lazyCallDecision = await getLazyToolCallDecision({
-    tool,
-    messages: toolUseContext.messages,
-    tools: toolUseContext.options.tools,
-    // A response can come from a routed/fallback model that differs from the
-    // configured main-loop model. Discovery support must match the request
-    // that actually produced this tool_use, not stale session configuration.
-    model:
-      typeof assistantMessage.message.model === 'string' &&
-      assistantMessage.message.model.trim().length > 0
-        ? assistantMessage.message.model
-        : toolUseContext.options.mainLoopModel,
-    getToolPermissionContext: async () =>
-      toolUseContext.getAppState().toolPermissionContext,
-    agents: toolUseContext.options.agentDefinitions.activeAgents,
-  })
+  const wrapMods = !modControl?.inside &&
+    (hasModEvent('tool.call') || hasModEvent('tool.check'))
+  const lazyCallDecision = getModToolContext()?.dispatchOptions?.origin
+    ? { action: 'execute' as const }
+    : await getLazyToolCallDecision({
+        tool,
+        messages: toolUseContext.messages,
+        tools: toolUseContext.options.tools,
+        // A response can come from a routed/fallback model that differs from the
+        // configured main-loop model. Discovery support must match the request
+        // that actually produced this tool_use, not stale session configuration.
+        model:
+          typeof assistantMessage.message.model === 'string' &&
+          assistantMessage.message.model.trim().length > 0
+            ? assistantMessage.message.model
+            : toolUseContext.options.mainLoopModel,
+        getToolPermissionContext: async () =>
+          toolUseContext.getAppState().toolPermissionContext,
+        agents: toolUseContext.options.agentDefinitions.activeAgents,
+      })
   if (lazyCallDecision.action === 'reject_unavailable') {
     logForDebugging(
       `${tool.name} call blocked because the provider omitted its schema`,
@@ -1356,7 +1368,9 @@ async function checkPermissionsAndCallTool(
   }
 
   // Validate input values. Each tool has its own validation logic
-  let isValidCall = await tool.validateInput?.(
+  // Middleware can replace paths/arguments. Validate tool semantics against
+  // the effective core input, after managed hooks and the mod chain.
+  let isValidCall = wrapMods ? undefined : await tool.validateInput?.(
     parsedInput.data,
     toolUseContext,
   )
@@ -1429,7 +1443,7 @@ async function checkPermissionsAndCallTool(
   // with a pendingClassifierCheck. This avoids flashing "classifier running"
   // for commands that auto-allow via prefix rules.
   if (
-    tool.name === BASH_TOOL_NAME &&
+    !wrapMods && tool.name === BASH_TOOL_NAME &&
     parsedInput.data &&
     'command' in parsedInput.data
   ) {
@@ -1488,7 +1502,8 @@ async function checkPermissionsAndCallTool(
   let shouldPreventContinuation = false
   let shouldDeferTool = false
   let stopReason: string | undefined
-  let hookPermissionResult: PermissionResult | undefined
+  let hookPermissionResult: PermissionResult | undefined =
+    modControl?.managedPermission
   const preToolHookInfos: StopHookInfo[] = []
   const preToolHookStart = Date.now()
   for await (const result of runPreToolUseHooks(
@@ -1500,6 +1515,7 @@ async function checkPermissionsAndCallTool(
     requestId,
     mcpServerType,
     mcpServerBaseUrl,
+    wrapMods ? 'managed' : modControl?.inside ? 'unmanaged' : undefined,
   )) {
     switch (result.type) {
       case 'deferTool':
@@ -1558,11 +1574,21 @@ async function checkPermissionsAndCallTool(
     }
   }
   const preToolHookDurationMs = Date.now() - preToolHookStart
-  if (shouldDeferTool && hookPermissionResult?.behavior !== 'deny' &&
-    !shouldPreventContinuation && deferHookToolCall(toolUseID, toolUseContext)) {
+  if (
+    shouldDeferTool &&
+    hookPermissionResult?.behavior !== 'deny' &&
+    !shouldPreventContinuation &&
+    deferHookToolCall(toolUseID, toolUseContext)
+  ) {
     return resultingMessages
   }
   getStatsStore()?.observe('pre_tool_hook_duration_ms', preToolHookDurationMs)
+  if (
+    modControl?.managedPermission?.behavior === 'ask' &&
+    hookPermissionResult?.behavior !== 'deny'
+  ) {
+    hookPermissionResult = modControl.managedPermission
+  }
   if (preToolHookDurationMs >= SLOW_PHASE_LOG_THRESHOLD_MS) {
     logForDebugging(
       `Slow PreToolUse hooks: ${preToolHookDurationMs}ms for ${tool.name} (${preToolHookInfos.length} hooks)`,
@@ -1589,6 +1615,72 @@ async function checkPermissionsAndCallTool(
         ),
       })
     }
+  }
+
+  if (
+    wrapMods &&
+    hookPermissionResult?.behavior !== 'deny' &&
+    !shouldPreventContinuation
+  ) {
+    if (
+      hookPermissionResult &&
+      'updatedInput' in hookPermissionResult &&
+      hookPermissionResult.updatedInput
+    ) {
+      processedInput = hookPermissionResult.updatedInput
+    }
+    const { runModToolCall } =
+      await import('../../utils/plugins/mods/toolBridge.js')
+    const modCoreInput = (rewritten: Record<string, unknown>) => {
+      // Canonical paths are exposed to observers, while unchanged file paths
+      // retain the original call spelling in tool output and the transcript.
+      if (
+        backfilledClone &&
+        'file_path' in rewritten &&
+        rewritten.file_path ===
+          (backfilledClone as Record<string, unknown>).file_path &&
+        typeof (callInput as Record<string, unknown>).file_path === 'string'
+      ) {
+        return {
+          ...rewritten,
+          file_path: (callInput as Record<string, unknown>).file_path,
+        }
+      }
+      return rewritten
+    }
+    const bridged = await runModToolCall({
+      tool,
+      toolUseID,
+      input: processedInput,
+      context: toolUseContext,
+      assistant: assistantMessage,
+      canUseTool,
+      dispatchOptions: getModToolContext()?.dispatchOptions,
+      core: (rewritten, permission, result) =>
+        checkPermissionsAndCallTool(
+          tool,
+          toolUseID,
+          modCoreInput(rewritten),
+          toolUseContext,
+          canUseTool,
+          assistantMessage,
+          messageId,
+          requestId,
+          mcpServerType,
+          mcpServerBaseUrl,
+          onToolProgress,
+          {
+            inside: true,
+            managedPermission:
+              hookPermissionResult && 'updatedInput' in hookPermissionResult
+                ? { ...hookPermissionResult, updatedInput: rewritten }
+                : hookPermissionResult,
+            permission,
+            result,
+          },
+        ),
+    })
+    return [...resultingMessages, ...bridged]
   }
 
   const toolAttributes: Record<string, string | number | boolean> = {}
@@ -1627,8 +1719,14 @@ async function checkPermissionsAndCallTool(
     canUseTool,
     assistantMessage,
     toolUseID,
+    wrapMods && hookPermissionResult?.behavior === 'deny',
   )
   const permissionDecision = resolved.decision
+  modControl?.permission?.(
+    permissionDecision.behavior === 'allow'
+      ? undefined
+      : permissionDecision.message,
+  )
   processedInput = resolved.input
   const permissionDurationMs = Date.now() - permissionStart
   // In auto mode, canUseTool awaits the classifier (side_query) — if that's
@@ -2208,6 +2306,7 @@ async function checkPermissionsAndCallTool(
       toolUseResult: unknown,
       preMappedBlock?: ToolResultBlockParam,
     ) {
+      modControl?.result?.(toolUseResult)
       // Reuse the original mapping unless a hook supplied a replacement.
       const mappedResultBlock = preMappedBlock
         ? await processPreMappedToolResultBlock(
@@ -2292,6 +2391,7 @@ async function checkPermissionsAndCallTool(
       mcpServerType,
       mcpServerBaseUrl,
       durationMs,
+      modControl?.inside ? 'unmanaged' : undefined,
     )) {
       if ('classifierContext' in hookResult) {
         hookClassifierContext = hookResult.classifierContext
@@ -2331,6 +2431,7 @@ async function checkPermissionsAndCallTool(
 
     // Finish hooks before mapping any tool result so built-in tools can be
     // rewritten too. Emit the result before hook context for every tool kind.
+    if (toolOutputReplaced) tool.onResultReplaced?.(callInput, toolUseContext)
     await addToolResult(
       toolOutput,
       toolOutputReplaced ? undefined : mappedToolResultBlock,

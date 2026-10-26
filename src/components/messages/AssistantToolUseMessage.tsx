@@ -15,10 +15,12 @@ import { logError } from '../../utils/log.js';
 import { parseToolInputForDisplay } from '../../utils/toolInputForDisplay.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 import { MessageResponse } from '../MessageResponse.js';
+import { ToolRendererContent } from '../ToolRendererContent.js';
 import { useSelectedMessageBg } from '../messageActions.js';
 import { SentryErrorBoundary } from '../SentryErrorBoundary.js';
 import { ToolUseLoader } from '../ToolUseLoader.js';
 import { HookProgressMessage } from './HookProgressMessage.js';
+import { RecordedToolUseMessage } from './RecordedToolMessages.js';
 type Props = {
   param: ToolUseBlockParam;
   addMargin: boolean;
@@ -89,8 +91,7 @@ export function AssistantToolUseMessage(t0) {
   }
   const parsed = t1;
   if (!parsed) {
-    logError(new Error(tools ? `Tool ${param.name} not found` : `Tools array is undefined for tool ${param.name}`));
-    return null;
+    return <RecordedToolUseMessage param={param} addMargin={addMargin} verbose={verbose} isError={lookups.erroredToolUseIDs.has(param.id)} />;
   }
   const {
     tool: tool_0,
@@ -232,7 +233,7 @@ export function AssistantToolUseMessage(t0) {
   }
   let t12;
   if ($[48] !== t10 || $[49] !== t11 || $[50] !== t6 || $[51] !== t7 || $[52] !== t9) {
-    t12 = <Box flexDirection="row" flexWrap="nowrap" minWidth={t6}>{t7}{t9}{t10}{t11}</Box>;
+    t12 = <Box flexDirection="row" flexWrap="nowrap" minWidth={t6}>{t7}{t9}{t10}<ToolRendererContent>{t11}</ToolRendererContent></Box>;
     $[48] = t10;
     $[49] = t11;
     $[50] = t6;
@@ -357,7 +358,7 @@ function renderToolUseProgressMessage(tool: Tool, tools: Tools, lookups: ReturnT
         <SentryErrorBoundary>
           <HookProgressMessage hookEvent="PreToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
         </SentryErrorBoundary>
-        {toolMessages}
+        <ToolRendererContent>{toolMessages}</ToolRendererContent>
       </>;
   } catch (error) {
     logError(new Error(`Error rendering tool use progress message for ${tool.name}: ${error}`));
@@ -366,7 +367,7 @@ function renderToolUseProgressMessage(tool: Tool, tools: Tools, lookups: ReturnT
 }
 function renderToolUseQueuedMessage(tool: Tool): React.ReactNode {
   try {
-    return tool.renderToolUseQueuedMessage?.();
+    return <ToolRendererContent>{tool.renderToolUseQueuedMessage?.()}</ToolRendererContent>;
   } catch (error) {
     logError(new Error(`Error rendering tool use queued message for ${tool.name}: ${error}`));
     return null;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { loadMcpRuntime, fixtureTool, executeBlock, fixtureContext } from './helpers/mcp-built-runtime.mjs'
@@ -8,7 +8,11 @@ import { loadMcpRuntime, fixtureTool, executeBlock, fixtureContext } from './hel
 const testDirectory = mkdtempSync(join(tmpdir(), 'tau-mcp-boundaries-'))
 process.env.CLAUDE_CONFIG_DIR = testDirectory
 test.after(() => rmSync(testDirectory, { recursive: true, force: true }))
-const r = await loadMcpRuntime()
+const r = await loadMcpRuntime({paths:['src/utils/plugins/mods/manager.ts'],exports:[
+  'startPluginMods','stopPluginMods','setInlinePlugins','resetSettingsCache','clearAllCaches','getModWarnings',
+  'setSessionTrustAccepted','setIsInteractive','getIsInteractive','getManagedFilePath',
+  'setAllowedSettingSources','hasModEvent',
+]})
 const name = 'FixtureTool'
 const iterable = values => (async function* () { yield* values })()
 const params = (providerHint, model) => ({
@@ -112,6 +116,55 @@ for (const [route, decode] of Object.entries(routes)) {
     }
   })
 }
+
+test('all provider decode routes reach the same mod rewrite, permission and result pipeline', async () => {
+  const plugin = join(testDirectory,'route-mod')
+  mkdirSync(join(plugin,'.claude-plugin'),{recursive:true})
+  mkdirSync(join(plugin,'hooks'),{recursive:true})
+  writeFileSync(join(plugin,'.claude-plugin/plugin.json'),JSON.stringify({name:'route-integration',version:'1.0.0'}))
+  writeFileSync(join(plugin,'hooks/hooks.json'),JSON.stringify({modules:['./register.ts']}))
+  writeFileSync(join(plugin,'hooks/register.ts'),`export function register(on){
+    on('tool.call',{tool:'FixtureTool'},async($,e,next)=>({...await next({...e,value:'rewritten'}),result:'mod-result'}));
+    on('tool.check',{tool:'FixtureTool'},async($,e,next)=>e.input.value==='rewritten'?next(e):{decision:'deny',reason:'wrong core input'});
+  }`)
+  const interactive = r.getIsInteractive()
+  const simple = process.env.CLAUDE_CODE_SIMPLE
+  process.env.CLAUDE_CODE_SIMPLE='0'
+  r.getManagedFilePath.cache.set(undefined,join(testDirectory,'managed'))
+  r.setIsInteractive(false);r.setSessionTrustAccepted(true,true)
+  r.setAllowedSettingSources(['userSettings','projectSettings','localSettings'])
+  r.setInlinePlugins([plugin]);r.resetSettingsCache();r.clearAllCaches()
+  try {
+    await r.startPluginMods(true)
+    assert.deepEqual(r.getModWarnings(),[])
+    assert.equal(r.hasModEvent('tool.call'),true,'The test must load the actual compiled mod')
+    const executeEffective = async(block,tool)=>{
+      const results=[]
+      for await(const update of r.runToolUse(block,
+        {type:'assistant',uuid:'lane-mod-assistant',message:{id:'lane-mod-message',content:[block]}},
+        async(_tool,input)=>({behavior:'allow',updatedInput:input}),fixtureContext([tool])))
+        results.push(...(update.message?.message?.content??[]).filter(item=>item.type==='tool_result'))
+      return {results}
+    }
+    for (const [route,decode] of Object.entries(routes)) {
+      const message = await decode(JSON.stringify({value:'original'}))
+      const [block] = r.normalizeContentFromAPI(message.content,[],undefined)
+      const tool = fixtureTool({isEnabled:()=>true})
+      const result = await executeEffective(block,tool)
+      assert.deepEqual(tool.calls,[{value:'rewritten'}],route+' must execute effective mod input once')
+      assert.equal(result.results[0].content,'mod-result',route+' must retain rewritten model output')
+      const bad = await decode('{"value":')
+      const [badBlock] = r.normalizeContentFromAPI(bad.content,[],undefined)
+      const invalid = fixtureTool({isEnabled:()=>true})
+      const refused = await executeEffective(badBlock,invalid)
+      assert.equal(invalid.calls.length,0,route+' malformed wire input must never execute')
+      assert.equal(refused.results[0].is_error,true)
+    }
+  } finally {
+    await r.stopPluginMods();r.setInlinePlugins([]);r.setIsInteractive(interactive);r.resetSettingsCache();r.clearAllCaches()
+    if(simple===undefined)delete process.env.CLAUDE_CODE_SIMPLE;else process.env.CLAUDE_CODE_SIMPLE=simple
+  }
+})
 
 for (const Lane of [r.GeminiLane, r.KiroLane]) {
   test(`R2 ${Lane.name} own-loop mode retains arguments and refuses failed/incomplete calls`, async () => {

@@ -593,7 +593,7 @@ const MessagesImpl = ({
     }
     if (msg_6.type !== 'user') return false;
     const b_0 = msg_6.message.content[0];
-    if (b_0?.type !== 'tool_result' || b_0.is_error || !msg_6.toolUseResult) return false;
+    if (b_0?.type !== 'tool_result' || b_0.is_error || msg_6.toolUseResult === undefined) return false;
     const name = lookupsRef.current.toolUseByToolUseID.get(b_0.tool_use_id)?.name;
     const tool = name ? findToolByName(tools, name) : undefined;
     return tool?.isResultTruncated?.(msg_6.toolUseResult as never) ?? false;
@@ -660,7 +660,7 @@ const MessagesImpl = ({
     // If this is a tool_result message and the tool implements
     // extractSearchText, prefer that — it's precise (tool-owned)
     // vs renderableSearchText's field-name heuristic.
-    if (msg_9.type === 'user' && msg_9.toolUseResult && Array.isArray(msg_9.message.content)) {
+    if (msg_9.type === 'user' && msg_9.toolUseResult !== undefined && Array.isArray(msg_9.message.content)) {
       const tr = msg_9.message.content.find(b_1 => b_1.type === 'tool_result');
       if (tr && 'tool_use_id' in tr) {
         const tu = lookups_0.toolUseByToolUseID.get(tr.tool_use_id);

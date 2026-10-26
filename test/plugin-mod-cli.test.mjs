@@ -218,7 +218,7 @@ export function register(on) {
         async () => {
           write(
             join(plugin, 'hooks/register.ts'),
-            "throw new Error('MUST_NOT_EXECUTE'); export function register(on){on('tool.check',async($,e,next)=>next(e))}",
+            "throw new Error('MUST_NOT_EXECUTE'); export function register(on){on('tool.describe',async($,e,next)=>next(e))}",
           )
           const result = await run(
             ['plugin', 'validate', plugin],

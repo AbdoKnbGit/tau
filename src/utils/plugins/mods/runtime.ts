@@ -5,6 +5,7 @@ import { MOD_EVENTS, MOD_METHODS } from './contracts.js'
 import { MOD_WORKER_SOURCE } from './worker.js'
 import { validateModResult } from './classic.js'
 import { logForDebugging } from '../../debug.js'
+import type { ModCallFrame } from './toolContext.js'
 
 export type ModRecord = Record<string, any>
 export type ModHook = { event: string; matcher?: ModRecord; hasCatch: boolean }
@@ -12,6 +13,7 @@ export type ModHost = (
   method: string,
   args: any[],
   signal: AbortSignal,
+  frame?: ModCallFrame,
 ) => Promise<unknown>
 export type ModContinuation = (event: ModRecord) => Promise<unknown>
 type ModInvocationResult =
@@ -29,6 +31,8 @@ export class ModRuntime {
       host: ModHost
       next: ModContinuation
       signal: AbortSignal
+      pause(): () => void
+      heartbeat(): void
     }
   >()
   private dead = false
@@ -108,6 +112,8 @@ export class ModRuntime {
           else invocation?.resolve({ matched: true, value: message.value })
         }
         if (message.type === 'call') void this.handleCall(message)
+        if (message.type === 'heartbeat')
+          this.pending.get(message.invocation)?.heartbeat()
       })
     })
   }
@@ -134,6 +140,7 @@ export class ModRuntime {
       })
       return
     }
+    const resume = invocation.pause()
     try {
       const value = await (message.method === 'next'
         ? invocation.next(message.args[0])
@@ -148,6 +155,8 @@ export class ModRuntime {
         id: message.id,
         error: error instanceof Error ? error.message : String(error),
       })
+    } finally {
+      resume()
     }
   }
   private invoke(
@@ -169,15 +178,32 @@ export class ModRuntime {
         finish(() => reject(new Error('Mod event aborted')))
         void this.dispose()
       }
-      const timeout = setTimeout(
-        () => {
-          finish(() => reject(new Error('Mod hook timed out')))
-          void this.dispose()
-        },
-        Math.max(1, meta.deadline - Date.now()),
-      )
+      let remaining = Math.max(1, meta.deadline - Date.now()),
+        started = Date.now(),
+        waiting = 0
+      let timeout: ReturnType<typeof setTimeout>
+      let watchdog: ReturnType<typeof setTimeout> | undefined
+      let finished = false
+      const expired = () => {
+        finish(() => reject(new Error('Mod hook timed out')))
+        void this.dispose()
+      }
+      // Pending host work can pause the active budget, but must never mask
+      // synchronous worker code that stopped yielding to its event loop.
+      const heartbeat = () => {
+        if (!waiting || finished) return
+        clearTimeout(watchdog)
+        watchdog = setTimeout(expired, Math.max(1, meta.budget))
+      }
+      const arm = () => {
+        started = Date.now()
+        timeout = setTimeout(expired, remaining)
+      }
       const finish = (action: () => void) => {
+        if (finished) return
+        finished = true
         clearTimeout(timeout)
+        clearTimeout(watchdog)
         signal?.removeEventListener('abort', abort)
         controller.abort()
         this.pending.delete(id)
@@ -188,10 +214,33 @@ export class ModRuntime {
       this.pending.set(id, {
         resolve: (value) => finish(() => resolve(value)),
         reject: (error) => finish(() => reject(error)),
-        host,
+        host: (method, args, signal) =>
+          host(method, args, signal, {
+            runtime: this,
+            hook: index,
+            event: meta.event,
+          }),
         next,
         signal: controller.signal,
+        heartbeat,
+        pause: () => {
+          if (waiting++ === 0) {
+            remaining = Math.max(1, remaining - (Date.now() - started))
+            clearTimeout(timeout)
+            heartbeat()
+          }
+          let resumed = false
+          return () => {
+            if (resumed) return
+            resumed = true
+            if (--waiting === 0 && !finished) {
+              clearTimeout(watchdog)
+              arm()
+            }
+          }
+        },
       })
+      arm()
       this.worker.postMessage({
         type: 'invoke',
         index,
@@ -210,12 +259,14 @@ export class ModRuntime {
       signal?: AbortSignal
       timeoutMs?: number
       origin?: { plugin: string; tier: string }
+      skipHook?: number
+      validateResult?: (result: ModRecord) => void
       warn?: (message: string) => void
     } = {},
   ): Promise<unknown> {
     await this.ready
     const indexes = this.hooks.flatMap((hook, index) =>
-      hook.event === event ? [index] : [],
+      hook.event === event && index !== options.skipHook ? [index] : [],
     )
     const run = async (
       position: number,
@@ -250,6 +301,24 @@ export class ModRuntime {
             presentation: current.presentation,
           }
         }
+        if (event === 'tool.call' || event === 'tool.check') {
+          const keys =
+            event === 'tool.call'
+              ? ['tool', 'tool_use_id', 'agentId', 'consent']
+              : ['tool', 'input', 'tool_use_id', 'isReadOnly', 'ceiling']
+          for (const key of keys) {
+            if (
+              rewritten[key] !== undefined &&
+              JSON.stringify(rewritten[key]) !== JSON.stringify(current[key])
+            )
+              return Promise.reject(new Error(`${event} cannot rewrite ${key}`))
+          }
+          rewritten = { ...rewritten }
+          for (const key of keys) {
+            if (current[key] === undefined) delete rewritten[key]
+            else rewritten[key] = current[key]
+          }
+        }
         return (called = run(position + 1, rewritten))
       }
       let recovering = false
@@ -258,6 +327,22 @@ export class ModRuntime {
         deadline: Date.now() + budget,
         budget,
         origin: options.origin ?? { plugin: 'engine', tier: 'core' },
+        event,
+      }
+      const normalizeResult = async (value: unknown): Promise<ModRecord> => {
+        validateModResult(event, value)
+        let result = value
+        if (event === 'tool.call' && !result.deny && called) {
+          const downstream = (await called) as ModRecord
+          const own = result.context ?? []
+          const inherited = (downstream.context ?? []).filter(
+            (text: string) => !own.includes(text),
+          )
+          if (inherited.length)
+            result = { ...result, context: [...inherited, ...own] }
+        }
+        options.validateResult?.(result)
+        return result
       }
       try {
         const invocation = await this.invoke(
@@ -271,9 +356,7 @@ export class ModRuntime {
         // Matcher execution belongs to the worker and shares the handler's
         // timeout. Its transport metadata is separate from a mod's return value.
         if (!invocation.matched) return run(position + 1, current)
-        const result = invocation.value
-        validateModResult(event, result)
-        return result
+        return await normalizeResult(invocation.value)
       } catch (error) {
         if (options.signal?.aborted) throw error
         const message = error instanceof Error ? error.message : String(error)
@@ -297,9 +380,7 @@ export class ModRuntime {
             )
             if (!recovery.matched)
               throw new Error('Mod catch handler was unexpectedly skipped')
-            const result = recovery.value
-            validateModResult(event, result)
-            return result
+            return await normalizeResult(recovery.value)
           } catch (failure) {
             options.warn?.(
               `${this.plugin.name}: ${event} catch failed: ${String(failure)}`,

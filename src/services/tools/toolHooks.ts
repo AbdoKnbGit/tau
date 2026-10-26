@@ -31,6 +31,7 @@ import { checkRuleBasedPermissions } from '../../utils/permissions/permissions.j
 import { formatError } from '../../utils/toolErrors.js'
 import { isMcpTool } from '../mcp/utils.js'
 import type { McpServerType, MessageUpdateLazy } from './toolExecution.js'
+import { hasModEvent } from '../../utils/plugins/mods/manager.js'
 import { createHookClassifierAnnotation, type HookClassifierAnnotation, type HookClassifierNote } from '../../utils/hooks/classifierContext.js'
 
 export type PostToolUseHooksResult<Output> =
@@ -50,6 +51,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
   durationMs?: number,
+  hookTier?: 'managed' | 'unmanaged',
 ): AsyncGenerator<PostToolUseHooksResult<Output>> {
   const postToolStartTime = Date.now()
   try {
@@ -69,6 +71,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
       toolUseContext.abortController.signal,
       undefined,
       durationMs,
+      hookTier,
     )) {
       try {
         // Check if we were aborted during hook execution
@@ -377,10 +380,29 @@ export async function resolveHookPermissionDecision(
   canUseTool: CanUseToolFn,
   assistantMessage: AssistantMessage,
   toolUseID: string,
+  skipModChecks = false,
 ): Promise<{
   decision: PermissionDecision
   input: Record<string, unknown>
 }> {
+  if (!skipModChecks && hasModEvent('tool.check')) {
+    const { resolveModToolPermissionDecision } = await import('../../utils/plugins/mods/permissions.js')
+    const { getModToolContext, withModToolContext } = await import('../../utils/plugins/mods/toolContext.js')
+    const { settleToolPermissionDecision } = await import('../../utils/permissions/permissions.js')
+    const nextInput = hookPermissionResult?.behavior !== 'deny' && hookPermissionResult && 'updatedInput' in hookPermissionResult
+      ? hookPermissionResult.updatedInput ?? input : input
+    const checked = await withModToolContext({
+      ...getModToolContext(), toolUseContext, assistantMessage, canUseTool,
+    }, () => resolveModToolPermissionDecision(tool, nextInput, toolUseContext, { hookPermissionResult, toolUseID }))
+    const settled = await settleToolPermissionDecision(tool, nextInput, toolUseContext, assistantMessage, toolUseID, checked)
+    if (settled.behavior === 'deny') return { decision: settled, input: nextInput }
+    // Use the normal frontend/SDK permission callback for unresolved asks and
+    // required host callbacks. forceDecision avoids a second mod dispatch.
+    const decision = settled.behavior === 'ask' || toolUseContext.requireCanUseTool
+      ? await canUseTool(tool, nextInput, toolUseContext, assistantMessage, toolUseID, settled)
+      : settled
+    return { decision, input: nextInput }
+  }
   const requiresInteraction = tool.requiresUserInteraction?.()
   const requireCanUseTool = toolUseContext.requireCanUseTool
 
@@ -481,6 +503,7 @@ export async function* runPreToolUseHooks(
   requestId: string | undefined,
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
+  hookTier?: 'managed' | 'unmanaged',
 ): AsyncGenerator<
   | {
       type: 'message'
@@ -514,6 +537,7 @@ export async function* runPreToolUseHooks(
       undefined, // timeoutMs - use default
       toolUseContext.requestPrompt,
       tool.getToolUseSummary?.(processedInput),
+      hookTier,
     )) {
       try {
         if (result.deferTool) yield { type: 'deferTool' }

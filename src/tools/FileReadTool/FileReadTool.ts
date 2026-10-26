@@ -1,4 +1,5 @@
-import type { Base64ImageSource } from '@anthropic-ai/sdk/resources/index.mjs'
+import type { Base64ImageSource, ContentBlockParam, ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
+import { createHash } from 'node:crypto'
 import { readdir, readFile as readFileAsync } from 'fs/promises'
 import * as path from 'path'
 import { posix, win32 } from 'path'
@@ -35,10 +36,10 @@ import {
   addLineNumbers,
   FILE_NOT_FOUND_CWD_NOTE,
   findSimilarFile,
-  getFileModificationTimeAsync,
   suggestPathUnderCwd,
 } from '../../utils/file.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
+import type { FileState } from '../../utils/fileStateCache.js'
 import { formatFileSize } from '../../utils/format.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import {
@@ -448,6 +449,14 @@ export const FileReadTool = buildTool({
   // Output is bounded by maxTokens (validateContentTokens). Persisting to a
   // file the model reads back with Read is circular — never persist.
   maxResultSizeChars: Infinity,
+  onResultReplaced({ file_path }, context) {
+    const filePath = expandPath(file_path)
+    const previous = context.readFileState.get(filePath)
+    if (previous)
+      context.readFileState.set(filePath, {
+        ...previous, hiddenRead: true, seenRanges: undefined, seenNotebook: undefined, lastRangeStub: undefined,
+      })
+  },
   strict: true,
   async description() {
     return DESCRIPTION
@@ -715,55 +724,22 @@ export const FileReadTool = buildTool({
       'tengu_read_dedup_killswitch',
       false,
     )
-    // A Read whose result goes to code (the Eval bridge) or into a summary
-    // must return the text itself, never a note pointing elsewhere.
-    const readHidden = context.readResultHidden === true
-    // Skeleton reads never dedup: they are cheap to recompute and their
-    // output shape differs from the full-content read the dedup stub
-    // would point the model back to. (Auto-skeleton reads don't need a
-    // guard here: a prior skeleton stores isPartialView: true with
-    // offset: undefined, which the conditions below already reject.)
-    const existingState =
-      dedupKillswitch || readHidden || skeleton === true
-        ? undefined
-        : readFileState.get(fullFilePath)
-    // Only dedup entries that came from a prior Read (offset is always set
-    // by Read). Edit/Write store offset=undefined — their readFileState
-    // entry reflects post-edit mtime, so deduping against it would wrongly
-    // point the model at the pre-edit Read content.
-    if (
-      existingState &&
-      !existingState.isPartialView &&
-      // The model never saw a hidden read's text, so it cannot refer to it.
-      !existingState.hiddenRead &&
-      // Right after a range note, repeating the Read must send the lines
-      // (rangeDedup.ts), so this stub does not answer it either.
-      !existingState.lastRangeStub &&
-      (existingState.sourceMapsIncluded ?? false) === include_source_maps &&
-      existingState.offset !== undefined
-    ) {
-      const rangeMatch =
-        existingState.offset === offset && existingState.limit === limit
-      if (rangeMatch) {
-        try {
-          const mtimeMs = await getFileModificationTimeAsync(fullFilePath)
-          if (mtimeMs === existingState.timestamp) {
-            const analyticsExt = getFileExtensionForAnalytics(fullFilePath)
-            logEvent('tengu_file_read_dedup', {
-              ...(analyticsExt !== undefined && { ext: analyticsExt }),
-            })
-            return markPagesIgnored({
-              data: {
-                type: 'file_unchanged' as const,
-                file: { filePath: file_path },
-              },
-            })
-          }
-        } catch {
-          // stat failed — fall through to full read
-        }
-      }
-    }
+    // Code consumers need actual text. A path rewrite also loses the visible
+    // identity of the cached file: the model's tool_use still names the original
+    // path, whose most recent result can belong to a different file.
+    const originalInput = Array.isArray(parentMessage?.message.content)
+      ? parentMessage.message.content.find((block: ContentBlockParam): block is ToolUseBlockParam =>
+          block.type === 'tool_use' && block.id === context.toolUseId,
+        )?.input
+      : undefined
+    const rewrittenPath = originalInput !== null && typeof originalInput === 'object' &&
+      'file_path' in originalInput && typeof originalInput.file_path === 'string' &&
+      expandPath(originalInput.file_path) !== fullFilePath
+    const readHidden = context.readResultHidden === true || rewrittenPath
+    // Compare the selected contents after reading them. Timestamp equality is
+    // insufficient: atomic replacements, restored mtimes and same-tick writes
+    // can change a file without changing its recorded modification time.
+    const exactDedup = !dedupKillswitch && !readHidden && skeleton !== true
 
     // Range dedup only for Reads whose result reaches the model as this
     // tool_result. Internal reads (changed-file notices, @-mentions, memory)
@@ -837,6 +813,7 @@ export const FileReadTool = buildTool({
         include_source_maps,
         rangeDedup,
         readHidden,
+        exactDedup,
       )
       return markPagesIgnored(result)
     } catch (error) {
@@ -865,6 +842,7 @@ export const FileReadTool = buildTool({
               include_source_maps,
               rangeDedup,
               readHidden,
+              exactDedup,
             )
             return markPagesIgnored(result)
           } catch (altError) {
@@ -1136,6 +1114,38 @@ function createImageResponse(
 /** Share of the read limit an outline aims for when it has to fold to fit. */
 const SKELETON_FIT_MARGIN = 0.9
 
+function sameRead(
+  previous: FileState | undefined,
+  content: string,
+  offset: number,
+  limit: number | undefined,
+  includeSourceMaps: boolean,
+): boolean {
+  return !!previous && !previous.isPartialView && !previous.hiddenRead &&
+    !previous.lastRangeStub && previous.offset === offset &&
+    previous.limit === limit && previous.content === content &&
+    (previous.sourceMapsIncluded ?? false) === includeSourceMaps
+}
+
+function notebookContentHash(content: unknown): string {
+  return createHash('sha256').update(jsonStringify(content) ?? '').digest('hex')
+}
+
+function notebookResultStillInContext(
+  previous: FileState | undefined,
+  messages: ToolUseContext['messages'],
+): boolean {
+  const seen = previous?.seenNotebook
+  if (!seen) return false
+  return messages?.some(message =>
+    message.type === 'user' && Array.isArray(message.message.content) &&
+    message.message.content.some(block =>
+      block.type === 'tool_result' && block.tool_use_id === seen.toolUseId &&
+      !block.is_error && notebookContentHash(block.content) === seen.contentHash,
+    ),
+  ) ?? false
+}
+
 async function callInner(
   file_path: string,
   fullFilePath: string,
@@ -1153,6 +1163,7 @@ async function callInner(
   includeSourceMaps = false,
   rangeDedup = false,
   readHidden = false,
+  exactDedup = false,
 ): Promise<{
   data: Output
   newMessages?: ReturnType<typeof createUserMessage>[]
@@ -1178,11 +1189,26 @@ async function callInner(
 
     // Get mtime via async stat (single call, no prior existence check)
     const stats = await getFsImplementation().stat(resolvedFilePath)
+    const previous = readFileState.get(fullFilePath)
+    if (exactDedup && sameRead(previous, cellsJson, offset, limit, false) &&
+      (!rangeDedup || notebookResultStillInContext(previous, context.messages))) {
+      if (previous!.timestamp !== Math.floor(stats.mtimeMs))
+        readFileState.set(fullFilePath, { ...previous!, timestamp: Math.floor(stats.mtimeMs) })
+      return { data: { type: 'file_unchanged', file: { filePath: file_path } } }
+    }
     readFileState.set(fullFilePath, {
       content: cellsJson,
       timestamp: Math.floor(stats.mtimeMs),
       offset,
       limit,
+      ...(rangeDedup && context.toolUseId !== undefined ? {
+        seenNotebook: {
+          toolUseId: context.toolUseId,
+          contentHash: notebookContentHash(
+            mapNotebookCellsToToolResult(cells, context.toolUseId).content,
+          ),
+        },
+      } : {}),
       ...(readHidden ? { hiddenRead: true as const } : {}),
     })
     recordFileRead(fullFilePath, context.agentId)
@@ -1607,6 +1633,12 @@ async function callInner(
   context.abortController.signal.throwIfAborted()
 
   const previous = readFileState.get(fullFilePath)
+  if (exactDedup && sameRead(previous, content, offset, limit, includeSourceMaps) &&
+    (!rangeDedup || findUnchangedSeenRange(previous, firstLine, view.content, context.messages))) {
+    if (previous!.timestamp !== Math.floor(mtimeMs))
+      readFileState.set(fullFilePath, { ...previous!, timestamp: Math.floor(mtimeMs) })
+    return { data: { type: 'file_unchanged', file: { filePath: file_path } } }
+  }
   const sourceMapsOmitted = view.omitted || (
     previous?.sourceMapsOmitted === true &&
     !(lineOffset === 0 && lineCount === totalLines)

@@ -8,6 +8,7 @@ import type { Tool, ToolPermissionContext, Tools } from '../Tool.js'
 import { getPowerModeFromSettings } from './powerMode.js'
 import { filterDisabledPrebuiltTools } from './prebuiltToolToggles.js'
 import type { SettingsJson } from './settings/types.js'
+import { filterCurrentModTools } from './plugins/mods/tools.js'
 
 type SettingsWithPrebuiltToolToggles = Pick<
   SettingsJson,
@@ -23,7 +24,7 @@ const PR_ACTIVITY_TOOL_SUFFIXES = [
 ]
 
 export function isPrActivitySubscriptionTool(name: string): boolean {
-  return PR_ACTIVITY_TOOL_SUFFIXES.some(suffix => name.endsWith(suffix))
+  return PR_ACTIVITY_TOOL_SUFFIXES.some((suffix) => name.endsWith(suffix))
 }
 
 // Dead code elimination: conditional imports for feature-gated modules
@@ -43,7 +44,7 @@ const coordinatorModeModule = feature('COORDINATOR_MODE')
  */
 export function applyCoordinatorToolFilter(tools: Tools): Tools {
   return tools.filter(
-    t =>
+    (t) =>
       COORDINATOR_MODE_ALLOWED_TOOLS.has(t.name) ||
       isPrActivitySubscriptionTool(t.name),
   )
@@ -73,7 +74,10 @@ export function mergeAndFilterTools(
   // overlap with assembled tools. uniqBy handles this deduplication.
   // Partition-sort for prompt-cache stability (same as assembleToolPool):
   // built-ins must stay a contiguous prefix for the server's cache policy.
-  const filteredInitialTools = filterDisabledPrebuiltTools(initialTools, settings)
+  const filteredInitialTools = filterDisabledPrebuiltTools(
+    filterCurrentModTools(initialTools),
+    settings,
+  )
   const [mcp, builtIn] = partition(
     uniqBy([...filteredInitialTools, ...assembled], 'name'),
     isMcpTool,
@@ -87,7 +91,7 @@ export function mergeAndFilterTools(
   // after a mid-session switch to cheap.
   const cheap = getPowerModeFromSettings(settings) === 'cheap'
   const effectiveBuiltIn = cheap
-    ? builtIn.filter(tool => CHEAP_MODE_CORE_TOOL_NAME_SET.has(tool.name))
+    ? builtIn.filter((tool) => CHEAP_MODE_CORE_TOOL_NAME_SET.has(tool.name))
     : builtIn
   const tools = [
     ...effectiveBuiltIn.sort(byName),

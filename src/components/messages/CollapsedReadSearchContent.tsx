@@ -15,6 +15,7 @@ import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
 import type { ThemeName } from '../../utils/theme.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
+import { ToolRendererContent } from '../ToolRendererContent.js';
 import { useSelectedMessageBg } from '../messageActions.js';
 import { PrBadge } from '../PrBadge.js';
 import { ToolUseLoader } from '../ToolUseLoader.js';
@@ -114,11 +115,11 @@ function VerboseToolUse(t0) {
       } else {
         t8 = $[23];
       }
-      t1 = <Box key={content.id} flexDirection="column" marginTop={1} backgroundColor={bg}><Box flexDirection="row">{t8}<Text><Text bold={true}>{userFacingName}</Text>{toolUseMessage && <Text>({toolUseMessage})</Text>}</Text>{input && tool.renderToolUseTag?.(input)}</Box>{isResolved && !isError && toolResult !== undefined && <Box>{tool.renderToolResultMessage?.(toolResult, [], {
+      t1 = <Box key={content.id} flexDirection="column" marginTop={1} backgroundColor={bg}><Box flexDirection="row">{t8}<Text><Text bold={true}>{userFacingName}</Text>{toolUseMessage && <Text>({toolUseMessage})</Text>}</Text><ToolRendererContent>{input && tool.renderToolUseTag?.(input)}</ToolRendererContent></Box>{isResolved && !isError && toolResult !== undefined && <Box><ToolRendererContent>{tool.renderToolResultMessage?.(toolResult, [], {
             verbose: true,
             tools,
             theme
-          })}</Box>}</Box>;
+          })}</ToolRendererContent></Box>}</Box>;
     }
     $[0] = bg;
     $[1] = content.id;

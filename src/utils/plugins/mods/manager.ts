@@ -16,16 +16,34 @@ import { isFullscreenActive } from '../../fullscreen.js'
 import { qualifyDependency } from '../dependencyResolver.js'
 import { createModHost, type ModCommandSpec } from './host.js'
 import {
+  createModToolRegistry,
+  publishModToolRegistries,
+  type ModToolRegistry,
+} from './tools.js'
+export { getModTools, getModToolRevision, subscribeModTools } from './tools.js'
+import {
   ModRuntime,
   type ModRecord,
   type ModHost,
   type ModContinuation,
 } from './runtime.js'
+import {
+  getModToolContext,
+  readModToolSnapshot,
+  withModToolContext,
+} from './toolContext.js'
+
+export type ModDispatchOptions = {
+  origin?: { plugin: string; tier: string }
+  skip?: { runtime: ModRuntime; hook: number }
+  validateResult?: (result: ModRecord) => void
+}
 
 type ActiveMod = {
   plugin: LoadedPlugin
   runtime: ModRuntime
   commands: Map<string, ModCommandSpec>
+  tools: ModToolRegistry
   host: ModHost
 }
 let active: ActiveMod[] = []
@@ -83,8 +101,9 @@ export async function dispatchModEvent(
   input: ModRecord,
   core: ModContinuation,
   signal?: AbortSignal,
+  options?: ModDispatchOptions,
 ): Promise<unknown> {
-  return dispatchModSnapshot(active, event, input, core, signal)
+  return dispatchModSnapshot(active, event, input, core, signal, options)
 }
 
 function dispatchModSnapshot(
@@ -93,19 +112,42 @@ function dispatchModSnapshot(
   input: ModRecord,
   core: ModContinuation,
   signal?: AbortSignal,
+  options: ModDispatchOptions = {},
 ): Promise<unknown> {
   const mods = snapshot.filter((mod) => allowed(mod.plugin))
+  const bound = getModToolContext()
   const run = (index: number, current: ModRecord): Promise<unknown> => {
     const mod = mods[index]
-    if (!mod) return core(current)
+    if (!mod) return withModToolContext(bound, () => core(current))
     return mod.runtime.dispatch(
       event,
       current,
       (next) => run(index + 1, next),
-      mod.host,
+      (method, args, signal, frame) =>
+        withModToolContext(
+          bound
+            ? {
+                ...bound,
+                frame: frame
+                  ? { ...frame, plugin: mod.plugin.name }
+                  : bound.frame,
+              }
+            : undefined,
+          async () => {
+            if (method === 'tool.call' || method === 'tool.check') {
+              const { runModToolAPI } = await import('./toolApi.js')
+              return runModToolAPI(method, args[0], signal, mod.plugin.name)
+            }
+            return mod.host(method, args, signal, frame)
+          },
+        ),
       {
         signal,
         warn,
+        origin: options.origin,
+        skipHook:
+          options.skip?.runtime === mod.runtime ? options.skip.hook : undefined,
+        validateResult: options.validateResult,
       },
     )
   }
@@ -123,19 +165,35 @@ export function getModCommands(): Command[] {
         loadedFrom: 'plugin' as const,
         load: async () => ({
           call: async (args: string, context: LocalJSXCommandContext) => {
-            const result = (await dispatchModEvent(
-              'command.run',
+            const { hasPermissionsToUseTool } =
+              await import('../../permissions/permissions.js')
+            const { createAssistantMessage } = await import('../../messages.js')
+            const assistant =
+              [...(context.messages ?? [])]
+                .reverse()
+                .find((message) => message.type === 'assistant') ??
+              createAssistantMessage({ content: [] })
+            const result = (await withModToolContext(
               {
-                command: spec.name,
-                args,
-                origin: { kind: getIsInteractive() ? 'composer' : 'sdk' },
-                presentation: {
-                  isFullscreen: isFullscreenActive(),
-                  columns: process.stdout.columns || 80,
-                },
+                toolUseContext: context,
+                canUseTool: context.canUseTool ?? hasPermissionsToUseTool,
+                assistantMessage: assistant,
               },
-              async () => ({ text: `No mod handled /${spec.name}.` }),
-              context.abortController.signal,
+              () =>
+                dispatchModEvent(
+                  'command.run',
+                  {
+                    command: spec.name,
+                    args,
+                    origin: { kind: getIsInteractive() ? 'composer' : 'sdk' },
+                    presentation: {
+                      isFullscreen: isFullscreenActive(),
+                      columns: process.stdout.columns || 80,
+                    },
+                  },
+                  async () => ({ text: `No mod handled /${spec.name}.` }),
+                  context.abortController.signal,
+                ),
             )) as ModRecord
             const text = [
               ...takeModLogs(),
@@ -188,6 +246,7 @@ export function orderPluginMods(plugins: LoadedPlugin[]): LoadedPlugin[] {
 export async function stopPluginMods(): Promise<void> {
   const previous = active
   active = []
+  await publishModToolRegistries([])
   await Promise.allSettled(previous.map((mod) => mod.runtime.dispose()))
 }
 
@@ -224,6 +283,7 @@ export async function startPluginMods(reload = false): Promise<void> {
         .flatMap((command) => [command.name, ...(command.aliases ?? [])]),
     )
     const next: ActiveMod[] = []
+    const reservedTools = new Map<string, ModToolRegistry>()
     warnings.length = 0
     for (const plugin of ordered) {
       const { loadPluginOptions } = await import('../pluginOptionsStorage.js')
@@ -246,15 +306,64 @@ export async function startPluginMods(reload = false): Promise<void> {
             options,
           )
           await runtime.initialize()
+          const tools = createModToolRegistry({
+            plugin: plugin.name,
+            isCurrent: () =>
+              active.some(
+                (item) => item.runtime === runtime && allowed(item.plugin),
+              ),
+            reserved: reservedTools,
+            changed: async () => {},
+          })
           const mod: ActiveMod = {
             plugin,
             runtime,
             commands,
+            tools,
             host: createModHost({
               id: plugin.source,
               name: plugin.name,
               commands,
               reserved,
+              tools,
+              listTools: async () => {
+                const { getModToolContext } = await import('./toolContext.js')
+                const bound = getModToolContext()
+                const { assembleToolPool, filterToolsByDenyRules } =
+                  await import('../../../tools.js')
+                const state =
+                  bound?.toolUseContext.getAppState() ??
+                  (
+                    await import('../../../state/AppState.js')
+                  ).getDefaultAppState()
+                const available = bound
+                  ? readModToolSnapshot(bound.toolUseContext).tools
+                  : assembleToolPool(state.toolPermissionContext, [])
+                // Startup registrations are private until publication. Once a
+                // tool invocation binds, its effective inventory is the scope.
+                const own = bound ? [] : [...tools.tools.values()]
+                const inventory = new Map(
+                  filterToolsByDenyRules(
+                    [...available, ...own],
+                    state.toolPermissionContext,
+                  ).map((tool) => [tool.name, tool]),
+                )
+                const all = [...inventory.values()]
+                return Promise.all(
+                  all.map(async (tool) => ({
+                    name: tool.name,
+                    description: await tool.description(
+                      {},
+                      {
+                        isNonInteractiveSession: !getIsInteractive(),
+                        toolPermissionContext: state.toolPermissionContext,
+                        tools: all,
+                      },
+                    ),
+                    mcp: tool.isMcp === true,
+                  })),
+                )
+              },
               commandsChanged: async () => {
                 // Startup registrations stay private until the complete new
                 // snapshot has finished its session.start middleware chain.
@@ -293,12 +402,17 @@ export async function startPluginMods(reload = false): Promise<void> {
         },
         async (e) => ({ cwd: e.cwd }),
       )
-      await stopPluginMods()
+      // Replace the live snapshot atomically below without publishing an empty
+      // registry in between. Unchanged tool definitions keep their cache bytes.
+      const previous = active
+      active = []
+      await Promise.allSettled(previous.map((mod) => mod.runtime.dispose()))
     } catch (error) {
       await Promise.allSettled(next.map((mod) => mod.runtime.dispose()))
       throw error
     }
     active = next
+    await publishModToolRegistries(next.map((mod) => mod.tools))
     started = true
     clearCommandsCache()
     const { skillChangeDetector } =

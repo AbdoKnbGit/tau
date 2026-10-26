@@ -7,6 +7,7 @@ import {
 } from '../../services/mcp/mcpStringUtils.js'
 import { isWhatsAppDrivenTurn } from '../../services/whatsapp/turnState.js'
 import { isSelfLearningEnabled } from '../../memdir/paths.js'
+import { hasModEvent } from '../plugins/mods/manager.js'
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../tools/AskUserQuestionTool/prompt.js'
@@ -544,9 +545,32 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
   context,
   assistantMessage,
   toolUseID,
+  forceDecision,
 ): Promise<PermissionDecision> => {
-  const result = await hasPermissionsToUseToolInner(tool, input, context)
+  let result = forceDecision ?? await hasPermissionsToUseToolInner(tool, input, context)
+  if (!forceDecision) {
+    if (hasModEvent('tool.check')) {
+      const { resolveModToolPermissionDecision } = await import('../plugins/mods/permissions.js')
+      const { getModToolContext, withModToolContext } = await import('../plugins/mods/toolContext.js')
+      const bound = getModToolContext()
+      result = await withModToolContext({
+        ...bound, toolUseContext: context, assistantMessage,
+        canUseTool: bound?.canUseTool ?? hasPermissionsToUseTool,
+      }, () => resolveModToolPermissionDecision(tool, input, context, { toolUseID, baseDecision: result }))
+    }
+  }
+  return settleToolPermissionDecision(tool, input, context, assistantMessage, toolUseID, result)
+}
 
+/** Settle a declarative/mod verdict without re-running its checks or hooks. */
+export async function settleToolPermissionDecision(
+  tool: Tool,
+  input: Record<string, unknown>,
+  context: ToolUseContext,
+  assistantMessage: AssistantMessage,
+  toolUseID: string,
+  result: PermissionDecision,
+): Promise<PermissionDecision> {
 
   // Reset consecutive denials on any allowed tool use in auto mode.
   // This ensures that a successful tool use (even one auto-allowed by rules)
@@ -1226,7 +1250,7 @@ export async function checkRuleBasedPermissions(
   return null
 }
 
-async function hasPermissionsToUseToolInner(
+export async function hasPermissionsToUseToolInner(
   tool: Tool,
   input: { [key: string]: unknown },
   context: ToolUseContext,

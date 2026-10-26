@@ -9,6 +9,7 @@ import type { NormalizedUserMessage, ProgressMessage } from '../../../types/mess
 import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierApproval } from '../../../utils/classifierApprovals.js';
 import type { buildMessageLookups } from '../../../utils/messages.js';
 import { MessageResponse } from '../../MessageResponse.js';
+import { ToolRendererContent } from '../../ToolRendererContent.js';
 import { HookProgressMessage } from '../HookProgressMessage.js';
 type Props = {
   message: NormalizedUserMessage;
@@ -49,7 +50,7 @@ export function UserToolSuccessMessage({
   React.useEffect(() => {
     deleteClassifierApproval(toolUseID);
   }, [toolUseID]);
-  if (!message.toolUseResult || !tool) {
+  if (message.toolUseResult === undefined || !tool) {
     return null;
   }
 
@@ -61,7 +62,7 @@ export function UserToolSuccessMessage({
   if (parsedOutput && !parsedOutput.success) {
     return null;
   }
-  const toolResult = parsedOutput?.data ?? message.toolUseResult;
+  const toolResult = parsedOutput?.success ? parsedOutput.data : message.toolUseResult;
   const renderedMessage = tool.renderToolResultMessage?.(toolResult as never, filterToolProgressMessages(progressMessagesForMessage), {
     style,
     theme,
@@ -84,7 +85,7 @@ export function UserToolSuccessMessage({
   const rendersAsAssistantText = tool.userFacingName(undefined) === '';
   return <Box flexDirection="column">
       <Box flexDirection="column" width={rendersAsAssistantText ? undefined : width}>
-        {renderedMessage}
+        <ToolRendererContent>{renderedMessage}</ToolRendererContent>
         {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
                 <Text dimColor>
                   <Text color="success">{figures.tick}</Text>

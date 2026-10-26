@@ -9,6 +9,8 @@ import { UserToolErrorMessage } from './UserToolErrorMessage.js';
 import { UserToolRejectMessage } from './UserToolRejectMessage.js';
 import { UserToolSuccessMessage } from './UserToolSuccessMessage.js';
 import { useGetToolFromMessages } from './utils.js';
+import { RecordedToolResultMessage } from '../RecordedToolMessages.js';
+import { FallbackToolUseRejectedMessage } from '../../FallbackToolUseRejectedMessage.js';
 type Props = {
   param: ToolResultBlockParam;
   message: NormalizedUserMessage;
@@ -34,9 +36,6 @@ export function UserToolResultMessage(t0) {
     isTranscriptMode
   } = t0;
   const toolUse = useGetToolFromMessages(param.tool_use_id, tools, lookups);
-  if (!toolUse) {
-    return null;
-  }
   if (typeof param.content === "string" && param.content.startsWith(CANCEL_MESSAGE)) {
     let t1;
     if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
@@ -46,6 +45,15 @@ export function UserToolResultMessage(t0) {
       t1 = $[0];
     }
     return t1;
+  }
+  if (!toolUse) {
+    if (typeof param.content === 'string' && param.content.startsWith(REJECT_MESSAGE) || param.content === INTERRUPT_MESSAGE_FOR_TOOL_USE) {
+      return <FallbackToolUseRejectedMessage />;
+    }
+    if (param.is_error) {
+      return <UserToolErrorMessage progressMessagesForMessage={progressMessagesForMessage} tools={tools} param={param} verbose={verbose} isTranscriptMode={isTranscriptMode} />;
+    }
+    return <RecordedToolResultMessage param={param} verbose={verbose} />;
   }
   if (typeof param.content === "string" && param.content.startsWith(REJECT_MESSAGE) || param.content === INTERRUPT_MESSAGE_FOR_TOOL_USE) {
     const t1 = toolUse.toolUse.input as {

@@ -19,7 +19,7 @@ const api = new vm.Script(
     'use strict';
     delete globalThis.__bridge;
     const factories = Object.create(null), modules = Object.create(null), hooks = [];
-    const signals = new Map();
+    const signals = new Map(), budgets = new Map();
     // Plugin globals are mutable. Keep transport serialization independent of
     // anything a handler returns or assigns to JSON.stringify/JSON.parse.
     const parse = JSON.parse, stringify = JSON.stringify, create = Object.create;
@@ -79,9 +79,15 @@ const api = new vm.Script(
     }
     const call = async (invocation, method, args) => {
       if (method === 'store.set' && stringify(args[1]) === undefined) throw new Error('store.set requires JSON data');
-      const reply = read(await bridge(invocation, method, stringify(args)));
-      if (reply.error) throw new Error(reply.error);
-      return reply.value;
+      const budget = budgets.get(invocation);
+      if (budget && budget.waiting++ === 0) budget.paused = Date.now();
+      try {
+        const reply = read(await bridge(invocation, method, stringify(args)));
+        if (reply.error) throw new Error(reply.error);
+        return reply.value;
+      } finally {
+        if (budget && --budget.waiting === 0) budget.deadline += Date.now() - budget.paused;
+      }
     };
     return {
       install(id, imports, factory) { factories[id] = { imports: read(imports), factory }; },
@@ -109,6 +115,8 @@ const api = new vm.Script(
           throwIfAborted() { if (aborted) throw new Error('Mod event aborted'); },
         });
         signals.set(invocation, () => { aborted = true; for (const listener of listeners) listener(); });
+        const budget = { deadline: meta.deadline, waiting: 0, paused: 0 };
+        budgets.set(invocation, budget);
         const api = { plugin: freeze(read(plugin)) };
         for (const method of read(methods)) {
           const [namespace, name] = method.split('.');
@@ -124,12 +132,12 @@ const api = new vm.Script(
         Object.assign(next, {
           signal, origin: freeze(meta.origin), called: meta.called,
           ...(meta.error ? { error: freeze(meta.error) } : {}),
-          budget: Object.freeze({ ms: meta.budget, get remainingMs() { return Math.max(0, meta.deadline - Date.now()); } }),
+          budget: Object.freeze({ ms: meta.budget, get remainingMs() { return Math.max(0, budget.deadline - (budget.waiting ? budget.paused : Date.now())); } }),
         });
         try {
           const result = await (meta.error ? hook.catch : hook.handler)(freeze(api), input, Object.freeze(next));
           return encodeResult(true, result);
-        } finally { signals.delete(invocation); }
+        } finally { signals.delete(invocation); budgets.delete(invocation); }
       },
       abort(invocation) { signals.get(invocation)?.(); },
     };
@@ -144,9 +152,14 @@ parentPort.on('message', message => {
   }
   if (message.type === 'abort') { api.abort(message.invocation); return; }
   if (message.type === 'invoke') {
+    // This timer runs outside the mod realm. It cannot fire while plugin code
+    // blocks the worker, including after starting an unawaited host request.
+    const heartbeat = setInterval(() => parentPort.postMessage({ type: 'heartbeat', invocation: message.invocation }), Math.max(1, Math.min(1000, Math.floor(message.meta.budget / 4))));
+    heartbeat.unref();
     Promise.resolve(api.invoke(message.index, message.invocation, JSON.stringify(message.input), JSON.stringify(message.meta), JSON.stringify(workerData.plugin), JSON.stringify(workerData.methods)))
       .then(encoded => parentPort.postMessage({ type: 'result', id: message.invocation, ...JSON.parse(encoded) }))
-      .catch(error => parentPort.postMessage({ type: 'result', id: message.invocation, error: String(error?.message ?? error) }));
+      .catch(error => parentPort.postMessage({ type: 'result', id: message.invocation, error: String(error?.message ?? error) }))
+      .finally(() => clearInterval(heartbeat));
   }
 });
 (async () => {

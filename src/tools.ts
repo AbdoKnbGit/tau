@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { toolMatchesName, type Tool, type Tools } from './Tool.js'
+import { filterCurrentModTools, getModTools } from './utils/plugins/mods/tools.js'
 import { AgentTool } from './tools/AgentTool/AgentTool.js'
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
@@ -391,7 +392,9 @@ export function assembleToolPool(
   // Cheap power mode ignores MCP tools entirely, including tools from
   // servers that were already connected before a mid-session mode switch.
   const effectiveMcpTools =
-    getPowerModeFromSettings(getInitialSettings()) === 'cheap' ? [] : mcpTools
+    getPowerModeFromSettings(getInitialSettings()) === 'cheap'
+      ? []
+      : [...filterCurrentModTools(mcpTools), ...getModTools()]
 
   // Filter out MCP tools that are in the deny list
   const allowedMcpTools = filterToolsByDenyRules(
@@ -436,5 +439,5 @@ export function getMergedTools(
   if (getPowerModeFromSettings(getInitialSettings()) === 'cheap') {
     return [...builtInTools]
   }
-  return [...builtInTools, ...mcpTools]
+  return uniqBy([...builtInTools, ...filterToolsByDenyRules([...filterCurrentModTools(mcpTools), ...getModTools()], permissionContext)], 'name')
 }
