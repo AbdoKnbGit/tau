@@ -241,15 +241,15 @@ Tau gets better the more you use it. After a substantial task, or on demand via 
 New worktrees start from your current commit by default, including unpushed commits.
 Use `/config` to choose the remote's freshly fetched default branch instead. [Configuration and examples](docs/worktree-base.md).
 
+### Latex native rendering
+
+LaTeX renders automatically as compact Unicode across all providers in replies, thinking, plans, agent messages, tables, and previews.
+For example, `$E=mc^2$` renders as `E=mc²`; inline and display equations work without installing TeX.
+Greek letters, fractions, roots, scripts, and common matrices are supported; code, prompts, logs, and tool output stay literal.
+Copying or exporting preserves the original LaTeX. Unsupported expressions stay readable as source; full TeX documents and custom macros are unsupported.
+
 ---
 
 ## License
 
 MIT
-
-## Latex native rendering
-
-LaTeX renders automatically as compact Unicode across all providers in replies, thinking, plans, agent messages, tables, and previews.
-Use `$...$` or `\(...\)` inline, and `$$...$$` or `\[...\]` for display math, with no TeX installation.
-Greek letters, fractions, roots, scripts, and common matrices are supported; code, prompts, logs, and tool output stay literal.
-Copying or exporting preserves the original LaTeX. Unsupported expressions stay readable as source; full TeX documents and custom macros are unsupported.

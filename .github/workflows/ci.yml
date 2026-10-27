@@ -85,8 +85,12 @@ jobs:
           done
           exit "$INSTALL_STATUS"
 
+      # Launcher tests exercise the generated dist/cli.mjs artifact.
+      - name: Build with esbuild (default, Node-only)
+        run: npm run build
+
       - name: Test installer, release gate, lifecycle bridge, and production lock
-        run: node --test packages/tau-installer/test/installer.test.mjs test/lifecycle-bridge.test.mjs test/platform-support.test.mjs test/production-shrinkwrap.test.mjs test/release-gate.test.mjs test/rust-lsp-setup.test.mjs test/update-routing.test.mjs test/voice-platform-packages.test.mjs test/auth-port-owners.test.mjs
+        run: node --test packages/tau-installer/test/installer.test.mjs test/lifecycle-bridge.test.mjs test/node-runtime.test.mjs test/platform-support.test.mjs test/production-shrinkwrap.test.mjs test/release-gate.test.mjs test/rust-lsp-setup.test.mjs test/update-routing.test.mjs test/voice-platform-packages.test.mjs test/auth-port-owners.test.mjs
 
       - name: Test realtime voice settings, controls, and release integrity
         run: npm run test:voice
@@ -109,9 +113,6 @@ jobs:
           trap 'rm -f .tau-installer-pack.json' EXIT
           npm pack --dry-run --ignore-scripts --json ./packages/tau-installer > .tau-installer-pack.json
           node -e "const { readFileSync } = require('node:fs'); const parsed = JSON.parse(readFileSync('.tau-installer-pack.json', 'utf8')); const pack = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0]; if (!pack) throw new Error('npm pack returned no package'); const actual = pack.files.map(file => file.path).sort(); const expected = ['README.md', 'bin/tau-installer.mjs', 'lib/installer.mjs', 'package.json'].sort(); if (pack.name !== '@abdoknbgit/tau-installer') throw new Error('Packed the wrong package: ' + pack.name); if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('Unexpected installer tarball contents: ' + JSON.stringify(actual));"
-
-      - name: Build with esbuild (default, Node-only)
-        run: npm run build
 
       - name: Test Bash working directory persistence and provider adapters
         run: node --test test/bash-cwd-persistence.test.mjs
