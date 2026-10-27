@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import test from 'node:test'
@@ -45,7 +46,7 @@ export function __subagentModelSetting() {
     AgentTool: ${agentToolName}, getAgentModel, getAgentModelDisplay, getAgentModelScope,
     getAPIProvider, runWithAgentProvider, runWithForcedProvider, getForcedProviderContext,
     getForcedProvider, getAgentResolvedModel, createStore, agentRunner: runAgent,
-    updateSettingsForSource, getInitialSettings, readAgentMetadata, createUserMessage,
+    updateSettingsForSource, getInitialSettings, readAgentMetadata, createUserMessage, flushSessionStorage,
     getSubagentSettingTarget, resolveSubagentModelPick, setXaiEffort, clearXaiEffort,
     getMainLoopModel, getSmallFastModel, countMessagesTokensWithAPI, handlePromptSubmit, QueryGuard,
     setInnerAgentStream(makeStream) { runAgentWithoutProviderOverride = makeStream ?? realInner; },
@@ -124,13 +125,20 @@ test.beforeEach(() => {
   delete process.env.ANTHROPIC_MODEL
   setSetting(undefined)
 })
-test.after(() => {
-  process.chdir(originalCwd)
-  for (const key of Object.keys(process.env)) {
-    if (!(key in originalEnv)) delete process.env[key]
+test.after(async () => {
+  try {
+    // Real agents queue transcript writes. Finish them while the test's config
+    // and cwd still apply, before removing their destination directory.
+    await runtime.flushSessionStorage()
+  } finally {
+    process.chdir(originalCwd)
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) delete process.env[key]
+    }
+    Object.assign(process.env, originalEnv)
+    assert.equal(dirname(resolve(tempRoot)), resolve(tmpdir()))
+    await rm(tempRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
-  Object.assign(process.env, originalEnv)
-  rmSync(tempRoot, { recursive: true, force: true })
 })
 
 test('built-in agents carry the setting scope; the fork never does', () => {
