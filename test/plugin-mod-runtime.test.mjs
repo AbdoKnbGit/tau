@@ -278,9 +278,9 @@ test('awaiting core or host API work does not consume the hook execution budget'
   assert.equal(result.text, 'done:true')
 })
 
-test('abort terminates a synchronous runaway and does not run the core action', async () => {
+test('abort terminates a synchronous runaway and does not run the core action', {timeout:10_000}, async () => {
   const mod = await runtime(
-    `export function register(on) { on('command.run', async () => { while(true) {} }); }`,
+    `export function register(on) { on('command.run', async ($,e) => { if(e.args==='probe')return {text:'worker survived'};while(true) {} }); }`,
   )
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 100)
@@ -303,6 +303,42 @@ test('abort terminates a synchronous runaway and does not run the core action', 
     clearTimeout(timer)
   }
   assert.equal(ran, false)
+  const warnings=[],started=Date.now()
+  assert.equal((await mod.dispatch(
+    'command.run', {args:'probe'}, async()=>({text:'fallback'}), host,
+    {timeoutMs:5000,warn:message=>warnings.push(message)},
+  )).text,'fallback')
+  assert.ok(Date.now()-started<3000,'unresponsive worker is killed by the cancellation watchdog')
+  assert.match(warnings.join('\n'),/Mod is unloaded/)
+})
+
+test('abort watchdog also terminates a runaway cancellation continuation', {timeout:10_000}, async () => {
+  const mod=await runtime(`export function register(on){on('command.run',async($,e)=>{
+    if(e.args==='probe')return {text:'worker survived'};
+    try {await $.clock.sleep(30000)}catch{while(true){}}
+    return {text:'unexpected'}
+  })}`)
+  const controller=new AbortController()
+  let waiting=false
+  const pending=mod.dispatch('command.run',{},async()=>({text:'unexpected core'}),async(method,_args,signal)=>{
+    assert.equal(method,'clock.sleep')
+    waiting=true
+    await new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new Error('host wait aborted')),{once:true}))
+  },{signal:controller.signal}).then(value=>({value}),error=>({error}))
+  try {
+    const deadline=Date.now()+3000
+    while(!waiting){assert.ok(Date.now()<deadline,'worker reached its host wait');await new Promise(resolve=>setTimeout(resolve,10))}
+    controller.abort()
+    assert.match((await pending).error?.message??'',/Mod event aborted/)
+    const warnings=[],started=Date.now()
+    const result=await mod.dispatch('command.run',{args:'probe'},async()=>({text:'fallback'}),host,{timeoutMs:5000,warn:message=>warnings.push(message)})
+    assert.equal(result.text,'fallback')
+    assert.ok(Date.now()-started<3000,'cancelled catch-loop cannot falsely acknowledge cancellation')
+    assert.match(warnings.join('\n'),/Mod is unloaded/)
+  } finally {
+    controller.abort()
+    await pending
+  }
 })
 
 test('renaming the registration parameter cannot silently register an unsupported event', async () => {

@@ -5,6 +5,8 @@ import type {
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { withMessageDisplay } from './utils/hooks/messageDisplay.js'
+import { withModTurnLifecycle } from './utils/plugins/mods/lifecycle.js'
+import { hasModEvent } from './utils/plugins/mods/manager.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import {
   calculateTokenWarningState,
@@ -292,7 +294,11 @@ export async function* query(
   Terminal
 > {
   const consumedCommandUuids: string[] = []
-  const terminal = yield* withMessageDisplay(queryLoop(params, consumedCommandUuids), params.toolUseContext)
+  const source = queryLoop(params, consumedCommandUuids)
+  const lifecycle = isConversationQuerySource(params.querySource)
+    ? withModTurnLifecycle(source, params.toolUseContext, params.canUseTool)
+    : source
+  const terminal = yield* withMessageDisplay(lifecycle, params.toolUseContext)
   // Only reached if queryLoop returned normally. Skipped on throw (error
   // propagates through yield*) and on .return() (Return completion closes
   // both generators). This gives the same asymmetric started-without-completed
@@ -2056,6 +2062,9 @@ async function* queryLoop(
     const queuedCommandsSnapshot = getCommandsByMaxPriority(
       sleepRan || (isMainThread && receiverProvider === 'openai') ? 'later' : 'next',
     ).filter(cmd => {
+      // Submit hooks need the normal between-turn path to rewrite history or
+      // restore a dropped prompt. Notifications can still arrive mid-turn.
+      if (cmd.mode === 'prompt' && hasModEvent('prompt.submit')) return false
       if (!isMidTurnNotification(cmd, { sleepRan, isMainThread, provider: receiverProvider })) return false
       if (isSlashCommand(cmd)) return false
       if (isMainThread) return cmd.agentId === undefined

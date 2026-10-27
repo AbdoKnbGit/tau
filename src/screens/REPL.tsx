@@ -3331,6 +3331,8 @@ export function REPL({
           setCursorOffset: () => {},
           clearBuffer: () => {},
           resetHistory: () => {}
+        }, undefined, {
+          uuid: initialMsg.message.uuid
         });
       } else {
         // Plan messages or complex content (images, etc.) - send directly to model
@@ -3359,6 +3361,7 @@ export function REPL({
   }, options?: {
     fromKeybinding?: boolean;
     voiceMode?: boolean;
+    uuid?: UUID;
   }) => {
     if (options?.voiceMode && activeRemote.isRemoteMode) {
       throw new Error('Voice delegation requires a local Tau agent session.');
@@ -3541,11 +3544,12 @@ export function REPL({
     // Queued command processing (executeQueuedInput) doesn't call onSubmit,
     // so notifications and already-queued user input won't be added to history here.
     // Skip history for keybinding-triggered commands (user didn't type the command).
+    const submissionUuid = options?.uuid ?? randomUUID();
     if (!options?.fromKeybinding) {
       addToHistory({
         display: speculationAccept || options?.voiceMode ? input : prependModeCharacterToInput(input, inputMode),
         pastedContents: speculationAccept || options?.voiceMode ? {} : pastedContents
-      });
+      }, submissionUuid);
       // Add the just-submitted command to the front of the ghost-text
       // cache so it's suggested immediately (not after the 60s TTL).
       if (!options?.voiceMode && inputMode === 'bash') {
@@ -3704,7 +3708,8 @@ export function REPL({
       // Note: empty input already handled by early return above
       const userMessage = createUserMessage({
         content: messageContent,
-        imagePasteIds
+        imagePasteIds,
+        uuid: submissionUuid
       });
       setMessages(prev => [...prev, userMessage]);
 
@@ -3719,6 +3724,7 @@ export function REPL({
     await awaitPendingHooks();
     await handlePromptSubmit({
       input,
+      uuid: submissionUuid,
       helpers,
       queryGuard,
       isExternalLoading,

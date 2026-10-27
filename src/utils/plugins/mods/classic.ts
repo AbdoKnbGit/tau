@@ -49,6 +49,25 @@ export function validateModResult(
       )
         throw new Error(`${key} must be a string`)
     }
+  } else if (event === 'prompt.submit') {
+    const allowed = new Set(['text', 'context', 'drop'])
+    for (const key of Object.keys(value))
+      if (!allowed.has(key)) throw new Error(`Unsupported prompt.submit result field: ${key}`)
+    if (value.drop !== undefined) {
+      if (typeof value.drop !== 'string' || !value.drop.trim() || value.text !== undefined || value.context !== undefined)
+        throw new Error('prompt.submit drop must be a nonempty reason without text or context')
+      value.drop = value.drop.slice(0, 4096)
+    } else {
+      if (typeof value.text !== 'string') throw new Error('prompt.submit must return { text } or { drop }')
+      if (value.context !== undefined && (!Array.isArray(value.context) || value.context.some((text: unknown) => typeof text !== 'string')))
+        throw new Error('Prompt context must be an array of strings')
+    }
+  } else if (event === 'turn.start') {
+    if (typeof value.turnId !== 'string' || Object.keys(value).some(key => key !== 'turnId'))
+      throw new Error('turn.start must return { turnId }')
+  } else if (event === 'turn.complete') {
+    if (typeof value.text !== 'string' || Object.keys(value).some(key => key !== 'text'))
+      throw new Error('turn.complete must return { text }')
   } else if (event === 'command.run') {
     if (value.text !== undefined && typeof value.text !== 'string')
       throw new Error('Command text must be a string')

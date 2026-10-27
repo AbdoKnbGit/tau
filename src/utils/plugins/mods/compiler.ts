@@ -24,6 +24,220 @@ export type CompiledMod = {
   digest: string
 }
 
+/** Keep source inspection bounded without recursive JavaScript traversal. */
+function modNodes(
+  ast: ts.SourceFile,
+  fail: (node: ts.Node, reason: string) => never,
+): ts.Node[] {
+  const nodes: ts.Node[] = []
+  const pending = [{ node: ast as ts.Node, depth: 0 }]
+  let scopes = 0
+  while (pending.length) {
+    const { node, depth } = pending.pop()!
+    if (depth > 512) fail(node, 'Mod source is nested too deeply to scan')
+    if (
+      (ts.isFunctionLike(node) ||
+        ts.isBlock(node) ||
+        ts.isModuleBlock(node) ||
+        ts.isClassLike(node)) &&
+      ++scopes > 2000
+    )
+      fail(node, 'Mod source exceeds 2000 scopes')
+    nodes.push(node)
+    const children: ts.Node[] = []
+    ts.forEachChild(node, (child) => {
+      children.push(child)
+    })
+    for (let index = children.length - 1; index >= 0; index--)
+      pending.push({ node: children[index]!, depth: depth + 1 })
+  }
+  return nodes
+}
+
+/** Resolve names lexically: a shadowed or imported name is not the helper. */
+function modAPIHelpers(
+  ast: ts.SourceFile,
+  nodes: ts.Node[],
+  fail: (node: ts.Node, reason: string) => never,
+) {
+  type Helper = {
+    declaration: ts.Declaration
+    fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction
+    parameters: readonly ts.ParameterDeclaration[]
+  }
+  const declarations: Array<{ name: ts.Identifier; helper: Helper }> = []
+  for (const statement of ast.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body)
+      declarations.push({
+        name: statement.name,
+        helper: {
+          declaration: statement,
+          fn: statement,
+          parameters: statement.parameters,
+        },
+      })
+    else if (
+      ts.isVariableStatement(statement) &&
+      statement.declarationList.flags & ts.NodeFlags.Const
+    ) {
+      for (const declaration of statement.declarationList.declarations)
+        if (
+          ts.isIdentifier(declaration.name) &&
+          declaration.initializer &&
+          (ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(declaration.initializer))
+        )
+          declarations.push({
+            name: declaration.name,
+            helper: {
+              declaration,
+              fn: declaration.initializer,
+              parameters: declaration.initializer.parameters,
+            },
+          })
+    }
+  }
+  const candidates = declarations.filter(({ helper }) =>
+    helper.parameters.some(
+      (parameter) =>
+        ts.isIdentifier(parameter.name) &&
+        parameter.name.text === '$' &&
+        !parameter.dotDotDotToken,
+    ),
+  )
+  if (!candidates.length)
+    return { accepts: (_node: ts.Identifier) => false, checkWrites() {} }
+  // No type checking or dependency loading is needed; the binder supplies
+  // declaration identity for this one already-parsed file.
+  const host: ts.CompilerHost = {
+    getSourceFile: (name) =>
+      resolve(name) === resolve(ast.fileName) ? ast : undefined,
+    getDefaultLibFileName: () => '',
+    writeFile() {},
+    getCurrentDirectory: () => dirname(ast.fileName),
+    getDirectories: () => [],
+    fileExists: (name) => resolve(name) === resolve(ast.fileName),
+    readFile: () => undefined,
+    getCanonicalFileName: (name) => name,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => '\n',
+  }
+  const checker = ts
+    .createProgram([ast.fileName], { noLib: true, noResolve: true }, host)
+    .getTypeChecker()
+  const helpers = new Map<ts.Symbol, Helper>()
+  for (const { name, helper } of candidates) {
+    const symbol = checker.getSymbolAtLocation(name)
+    if (
+      symbol &&
+      symbol.declarations?.every(
+        (declaration) =>
+          declaration === helper.declaration ||
+          (ts.isFunctionDeclaration(declaration) && !declaration.body),
+      )
+    ) {
+      helpers.set(symbol, helper)
+      // A named function expression's recursive name denotes the same
+      // top-level function, but has its own lexical symbol.
+      if (ts.isFunctionExpression(helper.fn) && helper.fn.name) {
+        const self = checker.getSymbolAtLocation(helper.fn.name)
+        if (self) helpers.set(self, helper)
+      }
+    }
+  }
+  const passed = new Set<ts.Symbol>()
+  return {
+    accepts(node: ts.Identifier): boolean {
+      const call = node.parent
+      if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression))
+        return false
+      const symbol = checker.getSymbolAtLocation(call.expression)
+      const helper = symbol && helpers.get(symbol)
+      const argumentIndex = call.arguments.indexOf(node)
+      // Spreads make the runtime argument position unknowable. TypeScript's
+      // explicit `this` parameter, unlike normal parameters, is erased.
+      if (call.arguments.slice(0, argumentIndex).some(ts.isSpreadElement))
+        return false
+      const parameter = helper?.parameters.filter(
+        (parameter) =>
+          !ts.isIdentifier(parameter.name) || parameter.name.text !== 'this',
+      )[argumentIndex]
+      if (
+        !symbol ||
+        !parameter ||
+        parameter.dotDotDotToken ||
+        !ts.isIdentifier(parameter.name) ||
+        parameter.name.text !== '$'
+      )
+        return false
+      passed.add(symbol)
+      return true
+    },
+    checkWrites() {
+      const passedFunctions = new Set(
+        [...passed].map((symbol) => helpers.get(symbol)!.fn),
+      )
+      for (const node of nodes) {
+        if (!ts.isIdentifier(node)) continue
+        if (node.text === 'arguments') {
+          let owner = node.parent
+          while (
+            owner &&
+            !(ts.isFunctionLike(owner) && !ts.isArrowFunction(owner))
+          )
+            owner = owner.parent
+          if (owner && passedFunctions.has(owner as ts.FunctionDeclaration))
+            fail(
+              node,
+              'A mod API helper must use its $ parameter directly, not arguments',
+            )
+        }
+        const symbol = ts.isShorthandPropertyAssignment(node.parent)
+          ? checker.getShorthandAssignmentValueSymbol(node.parent)
+          : checker.getSymbolAtLocation(node)
+        if (!symbol || !passed.has(symbol)) continue
+        let target: ts.Node = node
+        while (target.parent) {
+          const parent = target.parent
+          if (
+            (ts.isBinaryExpression(parent) &&
+              parent.left === target &&
+              parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+              parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            ((ts.isPrefixUnaryExpression(parent) ||
+              ts.isPostfixUnaryExpression(parent)) &&
+              (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+                parent.operator === ts.SyntaxKind.MinusMinusToken)) ||
+            ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) &&
+              parent.initializer === target)
+          )
+            fail(node, 'A mod API helper cannot be reassigned')
+          if (
+            (ts.isParenthesizedExpression(parent) &&
+              parent.expression === target) ||
+            ((ts.isAsExpression(parent) ||
+              ts.isTypeAssertionExpression(parent) ||
+              ts.isNonNullExpression(parent) ||
+              ts.isSatisfiesExpression(parent)) &&
+              parent.expression === target) ||
+            (ts.isArrayLiteralExpression(parent) &&
+              parent.elements.includes(target as ts.Expression)) ||
+            ((ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent)) &&
+              parent.expression === target) ||
+            (ts.isPropertyAssignment(parent) &&
+              parent.initializer === target) ||
+            (ts.isShorthandPropertyAssignment(parent) &&
+              parent.name === target) ||
+            ts.isObjectLiteralExpression(parent)
+          )
+            target = parent
+          else break
+        }
+      }
+    },
+  }
+}
+
 /** Parse and compile plugin-owned modules without evaluating any plugin code. */
 export async function compileMod(
   root: string,
@@ -70,6 +284,8 @@ export async function compileMod(
         ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1
       throw new Error(`${canonical}:${line}: ${reason}`)
     }
+    const nodes = modNodes(ast, fail)
+    const helpers = modAPIHelpers(ast, nodes, fail)
     const visit = (node: ts.Node) => {
       if (
         ts.isJsxElement(node) ||
@@ -166,11 +382,15 @@ export async function compileMod(
               node,
               'Write mod API calls as $.namespace.method(...); namespaces cannot be aliased',
             )
-        } else fail(node, 'The mod API cannot be passed or aliased')
+        } else if (!helpers.accepts(node))
+          fail(
+            node,
+            'The mod API can only be passed directly to a same-file top-level helper with a $ parameter; it cannot be aliased',
+          )
       }
-      ts.forEachChild(node, visit)
     }
-    visit(ast)
+    for (const node of nodes) visit(node)
+    helpers.checkWrites()
     for (const specifier of specifiers) {
       if (specifier === 'claude-code') {
         imports[specifier] = 'claude-code'

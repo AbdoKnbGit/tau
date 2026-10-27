@@ -2,6 +2,9 @@ export const MOD_EVENTS = new Set([
   'session.start',
   'session.end',
   'command.run',
+  'prompt.submit',
+  'turn.start',
+  'turn.complete',
   'tool.call',
   'tool.check',
   ...[

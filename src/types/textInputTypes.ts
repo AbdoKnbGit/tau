@@ -311,6 +311,7 @@ export type QueuedCommand = {
   priority?: QueuePriority
   /** Internal task provenance; never inferred from model-visible XML text. */
   taskNotificationType?: 'local_agent'
+  /** Stable submission identity, also used by explicitly recorded prompt history. */
   uuid?: UUID
   orphanedPermission?: OrphanedPermission
   /** Raw pasted contents including images. Images are resized at execution time. */

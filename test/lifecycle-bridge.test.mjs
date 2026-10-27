@@ -728,83 +728,61 @@ test('the generated marker is not part of the root package files allowlist', () 
   assert.equal(manifest.files.includes(LIFECYCLE_MARKER_FILENAME), false);
 });
 
-test('the generated launcher fails closed when its integrity verifier throws', () => {
+function makeLauncherFixture({ agent, verifier, sourceCheckout = false } = {}) {
   const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  const buildSource = readFileSync(join(repositoryRoot, 'build.mjs'), 'utf8');
-  const launcherStart = buildSource.indexOf('const launcher = `');
-  const launcherWrite = buildSource.indexOf(
-    "writeFileSync('./dist/cli.mjs', launcher)",
-    launcherStart,
-  );
-  const launcherEnd = buildSource.lastIndexOf('`', launcherWrite);
+  const root = makePackage(join(makeTemporaryRoot(), 'tau'));
+  mkdirSync(join(root, 'dist'));
+  mkdirSync(join(root, 'scripts'));
+  copyFileSync(join(repositoryRoot, 'dist', 'cli.mjs'), join(root, 'dist', 'cli.mjs'));
+  if (agent !== undefined) writeFileSync(join(root, 'dist', 'tau.mjs'), agent);
+  if (verifier !== undefined) writeFileSync(join(root, 'scripts', 'verify-deps.mjs'), verifier);
+  if (sourceCheckout) mkdirSync(join(root, 'src'));
+  return root;
+}
 
-  assert.notEqual(launcherStart, -1, 'launcher template is missing');
-  assert.notEqual(launcherWrite, -1, 'launcher write is missing');
-  assert.notEqual(launcherEnd, -1, 'launcher template terminator is missing');
+function runLauncher(root) {
+  return spawnSync(process.execPath, [join(root, 'dist', 'cli.mjs')], {
+    cwd: root, encoding: 'utf8', timeout: 10000, windowsHide: true,
+    env: { ...process.env, TAU_SKIP_PREFLIGHT: '0' },
+  });
+}
 
-  const launcherSource = buildSource.slice(launcherStart, launcherEnd);
-  const exceptionHandler = launcherSource.slice(
-    launcherSource.indexOf('} catch (error) {'),
-  );
+const healthyVerifier = `export const getLifecycleMarkerStatus=()=>({ok:true});export const findMissingDeps=()=>[];`;
 
-  assert.match(launcherSource, /Installation integrity check failed/);
-  assert.match(launcherSource, /manualFixInstructions/);
-  assert.match(exceptionHandler, /stopForIntegrityFailure/);
-  assert.ok(
-    exceptionHandler.indexOf('stopForIntegrityFailure') <
-      exceptionHandler.indexOf('await import(pathToFileURL(agentBundlePath).href)'),
-    'the broken installation must exit before importing the agent bundle',
-  );
+test('the generated launcher fails closed when its integrity verifier throws', () => {
+  const root = makeLauncherFixture({
+    verifier: `throw new Error('fixture verifier failure');`,
+    agent: `console.log('AGENT-MUST-NOT-LOAD');`,
+    sourceCheckout: true,
+  });
+  const result = runLauncher(root);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Installation integrity check failed.*verifier could not run/);
+  assert.match(result.stderr, /npm run build/);
+  assert.doesNotMatch(result.stdout, /AGENT-MUST-NOT-LOAD/);
 });
 
 test('the generated launcher checks required installed files before import', () => {
-  const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  const buildSource = readFileSync(join(repositoryRoot, 'build.mjs'), 'utf8');
-  const launcherStart = buildSource.indexOf('const launcher = `');
-  const launcherWrite = buildSource.indexOf(
-    "writeFileSync('./dist/cli.mjs', launcher)",
-    launcherStart,
-  );
-  const launcherEnd = buildSource.lastIndexOf('`', launcherWrite);
-  const launcherSource = buildSource.slice(launcherStart, launcherEnd);
-  const bundleCheck = launcherSource.indexOf('if (!existsSync(agentBundlePath))');
-  const verifierCheck = launcherSource.indexOf('if (!existsSync(verifierPath))');
-  const bundleImport = launcherSource.indexOf(
-    'await import(pathToFileURL(agentBundlePath).href)',
-  );
-
-  assert.notEqual(bundleCheck, -1, 'agent bundle existence check is missing');
-  assert.notEqual(verifierCheck, -1, 'installed verifier existence check is missing');
-  assert.notEqual(bundleImport, -1, 'agent bundle import is missing');
-  assert.ok(bundleCheck < bundleImport, 'bundle must be checked before import');
-  assert.ok(verifierCheck < bundleImport, 'verifier must be checked before import');
-  assert.match(launcherSource, /if \(!isSourceCheckout\) \{[\s\S]*installation verifier is missing/);
-  assert.match(launcherSource, /npm run build/);
-  assert.match(launcherSource, /npx -y @abdoknbgit\/tau-installer@latest/);
+  const missingBundle = runLauncher(makeLauncherFixture({ verifier: healthyVerifier }));
+  assert.equal(missingBundle.status, 1);
+  assert.match(missingBundle.stderr, /agent bundle is missing/);
+  const missingVerifier = runLauncher(makeLauncherFixture({ agent: `console.log('AGENT-MUST-NOT-LOAD');` }));
+  assert.equal(missingVerifier.status, 1);
+  assert.match(missingVerifier.stderr, /installation verifier is missing/);
+  assert.match(missingVerifier.stderr, /tau-installer@latest/);
+  assert.doesNotMatch(missingVerifier.stdout, /AGENT-MUST-NOT-LOAD/);
 });
 
 test('the generated launcher catches only module and native load failures', () => {
-  const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  const buildSource = readFileSync(join(repositoryRoot, 'build.mjs'), 'utf8');
-  const launcherStart = buildSource.indexOf('const launcher = `');
-  const launcherWrite = buildSource.indexOf(
-    "writeFileSync('./dist/cli.mjs', launcher)",
-    launcherStart,
-  );
-  const launcherEnd = buildSource.lastIndexOf('`', launcherWrite);
-  const launcherSource = buildSource.slice(launcherStart, launcherEnd);
-  const bundleCatch = launcherSource.slice(
-    launcherSource.lastIndexOf('try {'),
-  );
-
-  assert.match(bundleCatch, /await import\(pathToFileURL\(agentBundlePath\)\.href\)/);
-  assert.match(bundleCatch, /if \(isIntegrityLoadFailure\(error\)\)/);
-  assert.match(launcherSource, /ERR_MODULE_NOT_FOUND/);
-  assert.match(launcherSource, /ERR_DLOPEN_FAILED/);
-  assert.match(bundleCatch, /throw error/);
-  assert.ok(
-    bundleCatch.indexOf('stopForIntegrityFailure') <
-      bundleCatch.indexOf('throw error'),
-    'recognized load failures recover while unrelated errors are rethrown',
-  );
+  for (const code of ['ERR_MODULE_NOT_FOUND', 'ERR_DLOPEN_FAILED']) {
+    const result = runLauncher(makeLauncherFixture({ verifier: healthyVerifier,
+      agent: `throw Object.assign(new Error('fixture load failure'),{code:${JSON.stringify(code)}});` }));
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Installation integrity check failed.*agent bundle could not load/);
+  }
+  const unrelated = runLauncher(makeLauncherFixture({ verifier: healthyVerifier,
+    agent: `throw new Error('fixture programming failure');` }));
+  assert.equal(unrelated.status, 1);
+  assert.match(unrelated.stderr, /fixture programming failure/);
+  assert.doesNotMatch(unrelated.stderr, /Installation integrity check failed/);
 });

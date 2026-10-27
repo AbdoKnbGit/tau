@@ -1,4 +1,5 @@
 import type { QueuedCommand } from '../types/textInputTypes.js'
+import { hasModEvent } from './plugins/mods/manager.js'
 import {
   dequeue,
   dequeueAllMatching,
@@ -36,8 +37,8 @@ function isSlashCommand(cmd: QueuedCommand): boolean {
 /**
  * Processes commands from the queue.
  *
- * Slash commands (starting with '/') and bash-mode commands are processed
- * one at a time so each goes through the executeInput path individually.
+ * Slash commands (starting with '/'), bash-mode commands, and prompts with
+ * submission hooks are processed one at a time through executeInput.
  * Bash commands need individual processing to preserve per-command error
  * isolation, exit codes, and progress UI. Other non-slash commands are
  * batched: all items **with the same mode** as the highest-priority item
@@ -68,9 +69,14 @@ export function processQueueIfReady({
     return { processed: false }
   }
 
-  // Slash commands and bash-mode commands are processed individually.
-  // Bash commands need per-command error isolation, exit codes, and progress UI.
-  if (isSlashCommand(next) || next.mode === 'bash') {
+  // Submission hooks can drop a prompt and restore its input. Keep that result
+  // independent from later prompts so a drop cannot suppress their model turn
+  // or lose its own restored input in executeUserInput's batched result.
+  if (
+    isSlashCommand(next) ||
+    next.mode === 'bash' ||
+    (next.mode === 'prompt' && hasModEvent('prompt.submit'))
+  ) {
     const cmd = dequeue(isMainThread)!
     void executeInput([cmd])
     return { processed: true }

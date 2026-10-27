@@ -3104,7 +3104,7 @@ async function run(): Promise<CommanderCommand> {
 
     // Add CLI initial prompt to history
     if (inputPrompt) {
-      addToHistory(String(inputPrompt));
+      addToHistory(String(inputPrompt), initialState.initialMessage?.message.uuid);
     }
     const initialTools = mcpTools;
 

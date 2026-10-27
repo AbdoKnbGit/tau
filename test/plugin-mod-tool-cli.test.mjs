@@ -201,13 +201,7 @@ on('command.run',{command:'api-read'},async($,e)=>{const r=await $.tool.call({to
           child.once('error', reject)
         })
         exits.push({ code, stderr })
-        if (code !== 0)
-          assert.ok(
-            process.platform === 'win32' &&
-              code === 3221226505 &&
-              stderr.includes('UV_HANDLE_CLOSING'),
-            stderr + '\n' + stdout,
-          )
+        assert.equal(code, 0, stderr + '\n' + stdout)
         return stdout
       } finally {
         clearTimeout(timer)
@@ -298,14 +292,8 @@ on('command.run',{command:'api-read'},async($,e)=>{const r=await $.tool.call({to
         discovery[0].tools,
         'Discovery must keep the native tool prefix stable',
       )
-      const nativeFailure = exits.some((exit) => exit.code !== 0)
       await t.test(
         'native process shutdown exits cleanly',
-        {
-          todo: nativeFailure
-            ? 'Existing Windows UV_HANDLE_CLOSING also reproduces without plugins'
-            : false,
-        },
         () => {
           assert.ok(
             exits.every((exit) => exit.code === 0),

@@ -65,6 +65,9 @@ import {
 import { processTextPrompt } from './processTextPrompt.js'
 import { applyHookSessionTitle, formatBlockedPrompt, takePendingLifecycleHookMessages, rememberLifecycleHookMessages, restorePendingLifecycleHookMessages } from '../hooks/lifecycleHooks.js'
 import { setPromptId } from '../../bootstrap/state.js'
+import { capturePromptHistoryEntry, revisePromptHistoryEntry } from '../../history.js'
+import { hasModEvent } from '../plugins/mods/manager.js'
+import { replaceSubmittedPromptText, submittedPromptText, submitModPrompt } from '../plugins/mods/lifecycle.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext & {
   /** Context from submission hooks, also delivered to a directly forked skill. */
   userPromptHookMessages?: AttachmentMessage[]
@@ -152,7 +155,9 @@ export async function processUserInput({
   isMeta?: boolean
   skipAttachments?: boolean
 }): Promise<ProcessUserInputBaseResult> {
-  const inputString = typeof input === 'string' ? input : null
+  let inputString = typeof input === 'string' ? input : null
+  const recordedHistory = capturePromptHistoryEntry(uuid)
+  const historyEntry = isMeta ? undefined : recordedHistory
   // Immediately show the user input prompt while we are still processing the input.
   // Skip for isMeta (system-generated prompts like scheduled tasks) — those
   // should run invisibly.
@@ -164,6 +169,43 @@ export async function processUserInput({
 
   const appState = context.getAppState()
   rememberLifecycleHookMessages(context.messages)
+
+  const originalText = submittedPromptText(input)
+  const finalBlock = typeof input === 'string' ? undefined : input.at(-1)
+  const commandText = typeof input === 'string' ? input : finalBlock?.type === 'text' ? finalBlock.text : undefined
+  const originalParsed = mode === 'prompt' && commandText?.startsWith('/')
+    ? parseSlashCommand(commandText) : undefined
+  const originalCommand = originalParsed
+    ? findCommand(originalParsed.commandName, context.options.commands) : undefined
+  const asText = !!skipSlashCommands && !(bridgeOrigin && originalCommand && isBridgeSafeCommand(originalCommand))
+  const submitsModPrompt = mode === 'prompt' &&
+    (!originalParsed || (asText ? !(bridgeOrigin && originalCommand) : !originalCommand || originalCommand.type === 'prompt'))
+  const modHookMessages: AttachmentMessage[] = []
+  let reservedPromptId: string | undefined
+  if (submitsModPrompt && hasModEvent('prompt.submit')) {
+    reservedPromptId = context.promptId ?? randomUUID()
+    setPromptId(reservedPromptId)
+    const result = await submitModPrompt({
+      text: originalText,
+      origin: { kind: bridgeOrigin ? 'bridge' : context.options.isNonInteractiveSession ? 'sdk' : 'composer' },
+    }, context, canUseTool)
+    if (result.drop !== undefined) {
+      const reason = `Prompt dropped by a hook: ${result.drop}`
+      revisePromptHistoryEntry(historyEntry, null)
+      return { messages: [createSystemMessage(reason, 'warning')], shouldQuery: false, resultError: reason, nextInput: originalText, submitNextInput: false }
+    }
+    input = replaceSubmittedPromptText(input, result.text)
+    inputString = typeof input === 'string' ? input : null
+    if (result.text !== originalText) {
+      preExpansionInput = result.text
+      revisePromptHistoryEntry(historyEntry, result.text)
+      if (!isMeta) setUserInputOnProcessing?.(result.text)
+    }
+    if (result.context?.length) modHookMessages.push(createAttachmentMessage({
+      type: 'hook_additional_context', content: result.context.map(applyTruncation),
+      hookName: 'prompt.submit', hookEvent: 'UserPromptSubmit', toolUseID: `mod-${reservedPromptId}`,
+    }))
+  }
 
   const processBase = (
     submission: Pick<
@@ -201,7 +243,7 @@ export async function processUserInput({
     | { stopped: ProcessUserInputBaseResult }
     | { hookMessages: ProcessUserInputBaseResult['messages'] }
   > => {
-    const hookMessages: ProcessUserInputBaseResult['messages'] = []
+    const hookMessages: ProcessUserInputBaseResult['messages'] = [...modHookMessages]
     queryCheckpoint('query_hooks_start')
     for await (const hookResult of executeUserPromptSubmitHooks(
       inputMessage,
@@ -313,9 +355,11 @@ export async function processUserInput({
   // interpolation and forked agents. Everything else (other modes, other
   // commands, unknown /input that may be a path) is checked once processing
   // shows it queries.
+  const rewrittenFinalBlock = typeof input === 'string' ? undefined : input.at(-1)
+  const rewrittenCommandText = typeof input === 'string' ? input : rewrittenFinalBlock?.type === 'text' ? rewrittenFinalBlock.text : undefined
   const parsedCommand =
-    mode === 'prompt' && inputString?.startsWith('/')
-      ? parseSlashCommand(inputString)
+    mode === 'prompt' && rewrittenCommandText?.startsWith('/')
+      ? parseSlashCommand(rewrittenCommandText)
       : undefined
   const command = parsedCommand
     ? findCommand(parsedCommand.commandName, context.options.commands)
@@ -330,7 +374,7 @@ export async function processUserInput({
       (sentAsText ? !(bridgeOrigin && command) : command?.type === 'prompt'))
 
   if (!submitsBeforeExpansion) {
-    const result = await processBase()
+    const result = await processBase(reservedPromptId ? { promptId: reservedPromptId } : {})
     queryCheckpoint('query_process_user_input_base_end')
     if (!result.shouldQuery) {
       return result
@@ -348,7 +392,7 @@ export async function processUserInput({
 
   // The prompt's id exists before its hooks run, so they and their telemetry
   // carry it; processing reuses it instead of starting another.
-  const promptId = randomUUID()
+  const promptId = reservedPromptId ?? randomUUID()
   setPromptId(promptId)
   const hooks = await runSubmitHooks({
     messages: [

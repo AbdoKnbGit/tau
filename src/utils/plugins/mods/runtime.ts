@@ -35,6 +35,11 @@ export class ModRuntime {
       heartbeat(): void
     }
   >()
+  private cancellations = new Map<string, {
+    watchdog: ReturnType<typeof setTimeout>
+    done: Promise<void>
+    acknowledge(): void
+  }>()
   private dead = false
   private ready: Promise<void>
   constructor(
@@ -111,6 +116,15 @@ export class ModRuntime {
             invocation?.resolve({ matched: false })
           else invocation?.resolve({ matched: true, value: message.value })
         }
+        if (message.type === 'aborted') {
+          const cancellation = this.cancellations.get(message.invocation)
+          if (cancellation) {
+            clearTimeout(cancellation.watchdog)
+            this.cancellations.delete(message.invocation)
+            cancellation.acknowledge()
+          }
+          this.releaseWorker()
+        }
         if (message.type === 'call') void this.handleCall(message)
         if (message.type === 'heartbeat')
           this.pending.get(message.invocation)?.heartbeat()
@@ -123,8 +137,16 @@ export class ModRuntime {
   }
   private fail(error: Error): void {
     this.dead = true
+    for (const cancellation of this.cancellations.values()) {
+      clearTimeout(cancellation.watchdog)
+      cancellation.acknowledge()
+    }
+    this.cancellations.clear()
     for (const invocation of this.pending.values()) invocation.reject(error)
     this.pending.clear()
+  }
+  private releaseWorker(): void {
+    if (!this.pending.size && !this.cancellations.size) this.worker.unref()
   }
   async dispose(): Promise<void> {
     this.fail(new Error('Mod unloaded'))
@@ -159,7 +181,7 @@ export class ModRuntime {
       resume()
     }
   }
-  private invoke(
+  private async invoke(
     index: number,
     input: ModRecord,
     meta: ModRecord,
@@ -167,16 +189,31 @@ export class ModRuntime {
     next: ModContinuation,
     signal?: AbortSignal,
   ): Promise<ModInvocationResult> {
+    // Let cancelled continuations settle before another hook starts. Its own
+    // execution budget must not include the cancellation acknowledgement wait.
+    if (this.cancellations.size) {
+      const waitingAt = Date.now()
+      while (this.cancellations.size)
+        await Promise.all([...this.cancellations.values()].map(item => item.done))
+      meta = { ...meta, deadline: meta.deadline + Date.now() - waitingAt }
+    }
     if (this.dead) return Promise.reject(new Error('Mod is unloaded'))
     if (signal?.aborted) return Promise.reject(new Error('Mod event aborted'))
     const id = randomUUID(),
       controller = new AbortController()
     this.worker.ref()
     return new Promise((resolve, reject) => {
-      // Termination also stops synchronous loops, which cannot receive an abort message.
+      // A responsive worker can cancel this invocation and retain its module
+      // state for completion and future hooks. Synchronous loops cannot receive
+      // the cancellation message, so keep the worker alive until ack or kill.
       const abort = () => {
+        let acknowledge!: () => void
+        const done = new Promise<void>(resolve => { acknowledge = resolve })
+        this.cancellations.set(id, {
+          watchdog: setTimeout(() => void this.dispose(), 1000), done, acknowledge,
+        })
+        this.worker.postMessage({ type: 'abort', invocation: id })
         finish(() => reject(new Error('Mod event aborted')))
-        void this.dispose()
       }
       let remaining = Math.max(1, meta.deadline - Date.now()),
         started = Date.now(),
@@ -207,7 +244,7 @@ export class ModRuntime {
         signal?.removeEventListener('abort', abort)
         controller.abort()
         this.pending.delete(id)
-        if (!this.pending.size) this.worker.unref()
+        this.releaseWorker()
         action()
       }
       signal?.addEventListener('abort', abort, { once: true })
@@ -284,6 +321,17 @@ export class ModRuntime {
         )
           return Promise.reject(new Error('next() requires an event object'))
         if (recovering && called) return called
+        if (event === 'prompt.submit' || event === 'turn.start' || event === 'turn.complete') {
+          if (called) return Promise.reject(new Error('next() has already been called'))
+          const mutable = event === 'prompt.submit' ? new Set(['text', 'context']) : new Set<string>()
+          for (const key of new Set([...Object.keys(current), ...Object.keys(rewritten)])) {
+            if (!mutable.has(key) && rewritten[key] !== undefined && JSON.stringify(rewritten[key]) !== JSON.stringify(current[key]))
+              return Promise.reject(new Error(`${event} cannot rewrite ${key}`))
+          }
+          rewritten = { ...current, ...Object.fromEntries(Object.entries(rewritten).filter(([key]) => mutable.has(key))) }
+          if (event === 'prompt.submit' && (typeof rewritten.text !== 'string' || (rewritten.context !== undefined && (!Array.isArray(rewritten.context) || rewritten.context.some((text: unknown) => typeof text !== 'string')))))
+            return Promise.reject(new Error('prompt.submit requires text and optional string context'))
+        }
         if (event === 'command.run') {
           for (const key of ['command', 'origin', 'presentation']) {
             if (
@@ -331,6 +379,13 @@ export class ModRuntime {
       }
       const normalizeResult = async (value: unknown): Promise<ModRecord> => {
         validateModResult(event, value)
+        if (event === 'prompt.submit' && value.drop !== undefined && called) {
+          const downstream = await called as ModRecord
+          if (downstream.drop === undefined)
+            throw new Error('prompt.submit returned a drop after its next() was answered')
+        }
+        if (event === 'turn.start' && value.turnId !== input.turnId)
+          throw new Error('turn.start cannot rewrite turnId')
         let result = value
         if (event === 'tool.call' && !result.deny && called) {
           const downstream = (await called) as ModRecord

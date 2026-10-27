@@ -10,7 +10,7 @@ const context = vm.createContext(Object.create(null), {
 });
 const bridge = (invocation, method, encoded) => new Promise((resolve, reject) => {
   const id = ++sequence;
-  pending.set(id, { resolve, reject });
+  pending.set(id, { resolve, reject, invocation });
   parentPort.postMessage({ type: 'call', id, invocation, method, args: JSON.parse(encoded) });
 });
 context.__bridge = bridge;
@@ -108,38 +108,57 @@ const api = new vm.Script(
         }
         let aborted = false;
         const listeners = new Set();
+        let cancel;
+        const cancelled = new Promise((_, reject) => { cancel = () => reject(new Error('Mod event aborted')); });
         const signal = Object.freeze({
           get aborted() { return aborted; },
           addEventListener(name, listener) { if (name === 'abort') listeners.add(listener); },
           removeEventListener(name, listener) { if (name === 'abort') listeners.delete(listener); },
           throwIfAborted() { if (aborted) throw new Error('Mod event aborted'); },
         });
-        signals.set(invocation, () => { aborted = true; for (const listener of listeners) listener(); });
+        signals.set(invocation, () => {
+          aborted = true;
+          cancel();
+          for (const listener of listeners) { try { Promise.resolve(listener()).catch(() => {}); } catch {} }
+          listeners.clear();
+        });
         const budget = { deadline: meta.deadline, waiting: 0, paused: 0 };
         budgets.set(invocation, budget);
         const api = { plugin: freeze(read(plugin)) };
+        const invokeCall = async (method, args) => {
+          signal.throwIfAborted();
+          return call(invocation, method, args);
+        };
         for (const method of read(methods)) {
           const [namespace, name] = method.split('.');
           api[namespace] ??= {};
           api[namespace][name] = (...args) => {
-            const pending = call(invocation, method, args);
+            const pending = invokeCall(method, args);
             // ui.log is a synchronous API; report failures without unhandled rejections.
             if (method === 'ui.log') { pending.catch(() => {}); return; }
             return pending;
           };
         }
-        const next = async event => freeze(await call(invocation, 'next', [event]));
+        const next = async event => freeze(await invokeCall('next', [event]));
         Object.assign(next, {
           signal, origin: freeze(meta.origin), called: meta.called,
           ...(meta.error ? { error: freeze(meta.error) } : {}),
           budget: Object.freeze({ ms: meta.budget, get remainingMs() { return Math.max(0, budget.deadline - (budget.waiting ? budget.paused : Date.now())); } }),
         });
         try {
-          const result = await (meta.error ? hook.catch : hook.handler)(freeze(api), input, Object.freeze(next));
+          const result = await Promise.race([
+            (meta.error ? hook.catch : hook.handler)(freeze(api), input, Object.freeze(next)),
+            cancelled,
+          ]);
           return encodeResult(true, result);
         } finally { signals.delete(invocation); budgets.delete(invocation); }
       },
-      abort(invocation) { signals.get(invocation)?.(); },
+      abort(invocation) {
+        const cancel = signals.get(invocation);
+        signals.delete(invocation);
+        budgets.delete(invocation);
+        cancel?.();
+      },
     };
   }.toString() + ')(__bridge)',
 ).runInContext(context, { timeout: 1000 });
@@ -150,7 +169,19 @@ parentPort.on('message', message => {
     request?.resolve(JSON.stringify({ value: message.value, error: message.error }));
     return;
   }
-  if (message.type === 'abort') { api.abort(message.invocation); return; }
+  if (message.type === 'abort') {
+    api.abort(message.invocation);
+    for (const [id, request] of pending) {
+      if (request.invocation !== message.invocation) continue;
+      pending.delete(id);
+      request.resolve(JSON.stringify({ error: 'Mod event aborted' }));
+    }
+    // Cancellation can resume a handler's catch/finally in microtasks. Only
+    // acknowledge after those drain, so a runaway continuation cannot clear
+    // the host watchdog before blocking this worker's event loop.
+    setImmediate(() => parentPort.postMessage({ type: 'aborted', invocation: message.invocation }));
+    return;
+  }
   if (message.type === 'invoke') {
     // This timer runs outside the mod realm. It cannot fire while plugin code
     // blocks the worker, including after starting an unawaited host request.

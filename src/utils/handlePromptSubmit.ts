@@ -126,6 +126,7 @@ export type HandlePromptSubmitParams = BaseExecutionParams & {
   }) => void
   streamMode?: SpinnerMode
   hasInterruptibleToolInProgress?: boolean
+  /** Stable submission identity, shared with its history entry and queued message. */
   uuid?: UUID
   /**
    * When true, input starting with `/` is treated as plain text.

@@ -5,7 +5,8 @@ import capitalize from 'lodash-es/capitalize.js'
 import memoize from 'lodash-es/memoize.js'
 import { createConnection } from 'net'
 import * as os from 'os'
-import { basename, join, sep as pathSeparator, resolve } from 'path'
+import { basename, dirname, join, sep as pathSeparator, resolve } from 'path'
+import { resolveWindowsSystemExecutable } from '../../scripts/platform-support.mjs'
 import { logEvent } from 'src/services/analytics/index.js'
 import { getIsScrollDraining, getOriginalCwd } from '../bootstrap/state.js'
 import { callIdeRpc } from '../services/mcp/client.js'
@@ -1093,10 +1094,14 @@ async function detectRunningIDEsImpl(): Promise<IdeType[]> {
         }
       }
     } else if (platform === 'windows') {
-      // On Windows, use tasklist with findstr for multiple patterns
+      // Read the process list directly: a shell pipeline can leave descendants
+      // holding the project directory open after a fast headless turn exits.
+      const tasklist = resolveWindowsSystemExecutable('tasklist.exe')
+      if (!tasklist) return runningIDEs
       const result = await execa(
-        'tasklist | findstr /I "Code.exe Cursor.exe Windsurf.exe idea64.exe pycharm64.exe webstorm64.exe phpstorm64.exe rubymine64.exe clion64.exe goland64.exe rider64.exe datagrip64.exe appcode.exe dataspell64.exe aqua64.exe gateway64.exe fleet.exe studio64.exe"',
-        { shell: true, reject: false },
+        tasklist,
+        ['/FO', 'CSV', '/NH'],
+        { cwd: dirname(tasklist), windowsHide: true, timeout: 2000, reject: false },
       )
       const stdout = result.stdout ?? ''
 

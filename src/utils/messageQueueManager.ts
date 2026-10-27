@@ -3,6 +3,7 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs
 import { isHiddenBashInput } from 'src/components/PromptInput/inputModes.js'
 import type { Permutations } from 'src/types/utils.js'
 import { getSessionId } from '../bootstrap/state.js'
+import { discardPromptHistoryEntry } from '../history.js'
 import type { AppState } from '../state/AppState.js'
 import type {
   QueueOperation,
@@ -279,6 +280,7 @@ export function remove(commandsToRemove: QueuedCommand[]): void {
   const before = commandQueue.length
   for (let i = commandQueue.length - 1; i >= 0; i--) {
     if (commandsToRemove.includes(commandQueue[i]!)) {
+      discardPromptHistoryEntry(commandQueue[i]!.uuid)
       commandQueue.splice(i, 1)
     }
   }
@@ -302,6 +304,7 @@ export function removeByFilter(
   const removed: QueuedCommand[] = []
   for (let i = commandQueue.length - 1; i >= 0; i--) {
     if (predicate(commandQueue[i]!)) {
+      discardPromptHistoryEntry(commandQueue[i]!.uuid)
       removed.unshift(commandQueue.splice(i, 1)[0]!)
     }
   }
@@ -324,6 +327,7 @@ export function clearCommandQueue(): void {
   if (commandQueue.length === 0) {
     return
   }
+  for (const command of commandQueue) discardPromptHistoryEntry(command.uuid)
   commandQueue.length = 0
   notifySubscribers()
 }
@@ -333,6 +337,7 @@ export function clearCommandQueue(): void {
  * Used for test cleanup.
  */
 export function resetCommandQueue(): void {
+  for (const command of commandQueue) discardPromptHistoryEntry(command.uuid)
   commandQueue.length = 0
   snapshot = Object.freeze([])
 }
@@ -487,6 +492,7 @@ export function popAllEditable(
   }
 
   for (const command of editable) {
+    discardPromptHistoryEntry(command.uuid)
     logOperation(
       'popAll',
       typeof command.value === 'string' ? command.value : undefined,

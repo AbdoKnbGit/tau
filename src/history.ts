@@ -1,4 +1,5 @@
 import { appendFile, writeFile } from 'fs/promises'
+import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { getProjectRoot, getSessionId } from './bootstrap/state.js'
 import { registerCleanup } from './utils/cleanupRegistry.js'
@@ -105,10 +106,26 @@ function deserializeLogEntry(line: string): LogEntry {
 
 async function* makeLogEntryReader(): AsyncGenerator<LogEntry> {
   const currentSession = getSessionId()
+  const seen = new Set<string>()
+  const revisions = new Map<string, LogEntry>()
+  const current = (entry: LogEntry) => {
+    if (entry.id) {
+      if (entry.revision) {
+        if (!revisions.has(entry.id)) revisions.set(entry.id, entry)
+        return undefined
+      }
+      if (seen.has(entry.id)) return undefined
+      seen.add(entry.id)
+      entry = revisions.get(entry.id) ?? entry
+    }
+    return entry.removed ? undefined : entry
+  }
 
   // Start with entries that have yet to be flushed to disk
-  for (let i = pendingEntries.length - 1; i >= 0; i--) {
-    yield pendingEntries[i]!
+  const pending = [...pendingEntries]
+  for (let i = pending.length - 1; i >= 0; i--) {
+    const entry = current(pending[i]!)
+    if (entry) yield entry
   }
 
   // Read from global history file (shared across all projects)
@@ -117,7 +134,8 @@ async function* makeLogEntryReader(): AsyncGenerator<LogEntry> {
   try {
     for await (const line of readLinesReverse(historyPath)) {
       try {
-        const entry = deserializeLogEntry(line)
+        const entry = current(deserializeLogEntry(line))
+        if (!entry) continue
         // removeLastFromHistory slow path: entry was flushed before removal,
         // so filter here so both getHistory (Up-arrow) and makeHistoryReader
         // (ctrl+r search) skip it consistently.
@@ -217,6 +235,9 @@ export async function* getHistory(): AsyncGenerator<HistoryEntry> {
 }
 
 type LogEntry = {
+  id?: string
+  removed?: boolean
+  revision?: boolean
   display: string
   pastedContents: Record<number, StoredPastedContent>
   timestamp: number
@@ -283,6 +304,9 @@ let isWriting = false
 let currentFlushPromise: Promise<void> | null = null
 let cleanupRegistered = false
 let lastAddedEntry: LogEntry | null = null
+// Only real submissions with explicit IDs can be revised by prompt hooks.
+// Saved drafts (Escape) and SDK prompts never match by their text.
+const submissionHistory = new Map<string, LogEntry>()
 // Timestamps of entries already flushed to disk that should be skipped when
 // reading. Used by removeLastFromHistory when the entry has raced past the
 // pending buffer. Session-scoped (module state resets on process restart).
@@ -352,9 +376,10 @@ async function flushPromptHistory(retries: number): Promise<void> {
   }
 }
 
-async function addToPromptHistory(
+function addToPromptHistory(
   command: HistoryEntry | string,
-): Promise<void> {
+  submissionId?: string,
+): string {
   const entry =
     typeof command === 'string'
       ? { display: command, pastedContents: {} }
@@ -396,6 +421,7 @@ async function addToPromptHistory(
 
   const logEntry: LogEntry = {
     ...entry,
+    id: submissionId ?? randomUUID(),
     pastedContents: storedPastedContents,
     timestamp: Date.now(),
     project: getProjectRoot(),
@@ -404,11 +430,17 @@ async function addToPromptHistory(
 
   pendingEntries.push(logEntry)
   lastAddedEntry = logEntry
+  if (submissionId) {
+    submissionHistory.set(submissionId, logEntry)
+    if (submissionHistory.size > MAX_HISTORY_ITEMS)
+      submissionHistory.delete(submissionHistory.keys().next().value!)
+  }
   currentFlushPromise = flushPromptHistory(0)
   void currentFlushPromise
+  return logEntry.id!
 }
 
-export function addToHistory(command: HistoryEntry | string): void {
+export function addToHistory(command: HistoryEntry | string, submissionId?: string): string | undefined {
   // Skip history when running in a tmux session spawned by Tau's Tungsten tool.
   // This prevents verification/test sessions from polluting the user's real command history.
   if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY)) {
@@ -430,13 +462,40 @@ export function addToHistory(command: HistoryEntry | string): void {
     })
   }
 
-  void addToPromptHistory(command)
+  return addToPromptHistory(command, submissionId)
 }
 
 export function clearPendingHistoryEntries(): void {
   pendingEntries = []
   lastAddedEntry = null
+  submissionHistory.clear()
   skippedTimestamps.clear()
+}
+
+/** Capture before awaiting hooks so later submissions cannot change the target. */
+export function capturePromptHistoryEntry(submissionId?: string): object | undefined {
+  if (!submissionId) return undefined
+  const entry = submissionHistory.get(submissionId)
+  submissionHistory.delete(submissionId)
+  return entry?.sessionId === getSessionId() ? entry : undefined
+}
+
+export function discardPromptHistoryEntry(submissionId?: string): void {
+  if (submissionId) submissionHistory.delete(submissionId)
+}
+
+/** An append-only revision also replaces an entry whose asynchronous flush won the race. */
+export function revisePromptHistoryEntry(token: object | undefined, display: string | null): void {
+  if (!token) return
+  const entry = token as LogEntry
+  if (!entry.id || entry.sessionId !== getSessionId()) return
+  const revised = { ...entry, ...(display === null ? { removed: true } : { display }) }
+  const index = pendingEntries.indexOf(entry)
+  if (index >= 0 && !entry.revision) pendingEntries[index] = revised
+  else pendingEntries.push({ ...revised, revision: true })
+  if (lastAddedEntry === entry) lastAddedEntry = display === null ? null : revised
+  currentFlushPromise = flushPromptHistory(0)
+  void currentFlushPromise
 }
 
 /**
@@ -454,6 +513,7 @@ export function removeLastFromHistory(): void {
   if (!lastAddedEntry) return
   const entry = lastAddedEntry
   lastAddedEntry = null
+  if (entry.id) submissionHistory.delete(entry.id)
 
   const idx = pendingEntries.lastIndexOf(entry)
   if (idx !== -1) {

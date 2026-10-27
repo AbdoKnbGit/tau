@@ -72,27 +72,6 @@ See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 
 ## Features
 
-### Terminal math
-
-LaTeX math renders automatically as compact Unicode in Tau's Markdown views,
-including replies from every provider, expanded thinking, plans, agent messages,
-tables, and previews. Use `$x^2$` or `\(x^2\)` inline, and `$$...$$` or
-`\[...\]` for display equations. For multiline display math, put the opening
-and closing delimiters on their own lines.
-
-Greek letters, operators, fractions, roots, scripts, and common matrix and
-alignment environments are supported without installing TeX. For example,
-`$E=mc^2$` becomes `E=mc²` and `$\frac{a+b}{c}$` becomes `(a+b)⁄c`.
-Equations use ordinary terminal text wrapping; matrices use compact rows
-separated by semicolons. In Markdown table cells, write `\lvert` and `\rvert`
-for vertical bars so they do not become table separators.
-
-Code spans and fences remain literal, as do raw prompts, logs, and tool output.
-Copying or exporting a response retains its original LaTeX. Unknown commands,
-unsupported TeX features, malformed expressions, and formulas beyond the parser's
-size or nesting limits remain readable as source. Full TeX documents, custom
-macros, and pixel typesetting are outside this terminal notation renderer.
-
 ### Multi-provider, natively
 
 30 providers with native adapters. Not a routing layer, not a translation proxy. Each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
@@ -267,3 +246,10 @@ Use `/config` to choose the remote's freshly fetched default branch instead. [Co
 ## License
 
 MIT
+
+## Latex native rendering
+
+LaTeX renders automatically as compact Unicode across all providers in replies, thinking, plans, agent messages, tables, and previews.
+Use `$...$` or `\(...\)` inline, and `$$...$$` or `\[...\]` for display math, with no TeX installation.
+Greek letters, fractions, roots, scripts, and common matrices are supported; code, prompts, logs, and tool output stay literal.
+Copying or exporting preserves the original LaTeX. Unsupported expressions stay readable as source; full TeX documents and custom macros are unsupported.
