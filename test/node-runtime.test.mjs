@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { test } from 'node:test'
@@ -101,7 +101,11 @@ test('launcher restarts once with a compatible runtime and preserves args, cwd, 
       timeout: 10_000,
     })
     assert.equal(result.status, 7, result.stderr)
-    assert.deepEqual(JSON.parse(result.stdout), { args, cwd: root, env: 'preserved', restarted: '1' })
+    const reported = JSON.parse(result.stdout)
+    // Temporary directories may use a symlink alias for the same working directory.
+    assert.deepEqual({ ...reported, cwd: realpathSync(reported.cwd) }, {
+      args, cwd: realpathSync(root), env: 'preserved', restarted: '1',
+    })
     const continued = spawnSync(process.execPath, [cli, ...args], {
       cwd: root, encoding: 'utf8', windowsHide: true,
       env: { ...process.env, TAU_SKIP_PREFLIGHT: '1', TAU_RUNTIME_TEST_NO_ALTERNATIVE: '1' }, timeout: 10_000,
