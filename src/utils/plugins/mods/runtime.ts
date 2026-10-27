@@ -321,9 +321,9 @@ export class ModRuntime {
         )
           return Promise.reject(new Error('next() requires an event object'))
         if (recovering && called) return called
-        if (event === 'prompt.submit' || event === 'turn.start' || event === 'turn.complete') {
+        if (event === 'prompt.submit' || event === 'skill.prompt' || event === 'turn.start' || event === 'turn.complete') {
           if (called) return Promise.reject(new Error('next() has already been called'))
-          const mutable = event === 'prompt.submit' ? new Set(['text', 'context']) : new Set<string>()
+          const mutable = event === 'prompt.submit' ? new Set(['text', 'context']) : event === 'skill.prompt' ? new Set(['text', 'frontmatter']) : new Set<string>()
           for (const key of new Set([...Object.keys(current), ...Object.keys(rewritten)])) {
             if (!mutable.has(key) && rewritten[key] !== undefined && JSON.stringify(rewritten[key]) !== JSON.stringify(current[key]))
               return Promise.reject(new Error(`${event} cannot rewrite ${key}`))
@@ -331,6 +331,8 @@ export class ModRuntime {
           rewritten = { ...current, ...Object.fromEntries(Object.entries(rewritten).filter(([key]) => mutable.has(key))) }
           if (event === 'prompt.submit' && (typeof rewritten.text !== 'string' || (rewritten.context !== undefined && (!Array.isArray(rewritten.context) || rewritten.context.some((text: unknown) => typeof text !== 'string')))))
             return Promise.reject(new Error('prompt.submit requires text and optional string context'))
+          if (event === 'skill.prompt' && (typeof rewritten.text !== 'string' || !rewritten.frontmatter || typeof rewritten.frontmatter !== 'object' || Array.isArray(rewritten.frontmatter)))
+            return Promise.reject(new Error('skill.prompt requires text and a frontmatter object'))
         }
         if (event === 'command.run') {
           for (const key of ['command', 'origin', 'presentation']) {

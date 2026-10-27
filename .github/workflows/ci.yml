@@ -167,6 +167,13 @@ jobs:
       - name: Test plugin dependencies, skills, reload, and hook isolation
         run: node --test test/plugin-runtime-boundaries.test.mjs test/plugin-local-loading.test.mjs test/plugin-dependency-versions.test.mjs test/plugin-skill-compatibility.test.mjs test/plugin-reload-skills.test.mjs test/hook-engine-compatibility.test.mjs test/headless-hook-resume.test.mjs
 
+      - name: Test skill prompt mods and real CLI requests
+        # Exercise the built CLI and real mod workers on every OS in the matrix.
+        run: node --test test/plugin-mod-skill-prompt.test.mjs test/plugin-mod-skill-prompt-cli.test.mjs
+
+      - name: Test hook process launching and failure isolation
+        run: node --test test/hook-process-launch.test.mjs
+
       - name: Smoke test - version
         run: node dist/cli.mjs --version
 

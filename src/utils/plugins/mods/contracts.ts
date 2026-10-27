@@ -3,6 +3,7 @@ export const MOD_EVENTS = new Set([
   'session.end',
   'command.run',
   'prompt.submit',
+  'skill.prompt',
   'turn.start',
   'turn.complete',
   'tool.call',

@@ -60,6 +60,7 @@ export type FrontmatterData = {
 
 export type ParsedMarkdown = {
   frontmatter: FrontmatterData
+  frontmatterProblem?: string
   content: string
 }
 
@@ -145,20 +146,26 @@ export function parseFrontmatter(
   const content = markdown.slice(match[0].length)
 
   let frontmatter: FrontmatterData = {}
-  try {
-    const parsed = parseYaml(frontmatterText) as FrontmatterData | null
+  let frontmatterProblem: string | undefined
+  const accept = (parsed: unknown) => {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      frontmatter = parsed
+      frontmatter = parsed as FrontmatterData
+    } else if (
+      (parsed !== null && parsed !== undefined) ||
+      frontmatterText.replace(/^\s*#.*$/gm, '').trim()
+    ) {
+      frontmatterProblem = 'is a list or a single value, not a table'
     }
+  }
+  try {
+    accept(parseYaml(frontmatterText))
   } catch {
     // YAML parsing failed - try again after quoting problematic values
     try {
       const quotedText = quoteProblematicValues(frontmatterText)
-      const parsed = parseYaml(quotedText) as FrontmatterData | null
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        frontmatter = parsed
-      }
+      accept(parseYaml(quotedText))
     } catch (retryError) {
+      frontmatterProblem = 'could not be parsed as YAML'
       // Still failed - log for debugging so users can diagnose broken frontmatter
       const location = sourcePath ? ` in ${sourcePath}` : ''
       logForDebugging(
@@ -170,6 +177,7 @@ export function parseFrontmatter(
 
   return {
     frontmatter,
+    ...(frontmatterProblem ? { frontmatterProblem } : {}),
     content,
   }
 }

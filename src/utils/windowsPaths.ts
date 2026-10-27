@@ -1,28 +1,28 @@
 import memoize from 'lodash-es/memoize.js'
+import { statSync } from 'fs'
 import * as path from 'path'
 import * as pathWin32 from 'path/win32'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
-import { execSync_DEPRECATED } from './execSyncWrapper.js'
+import { executablePaths } from './executablePath.js'
 import { memoizeWithLRU } from './memoize.js'
 import { getPlatform } from './platform.js'
 
 /**
- * Check if a file or directory exists on Windows using the dir command
+ * Check an executable path without passing it through a shell.
  * @param path - The path to check
  * @returns true if the path exists, false otherwise
  */
 function checkPathExists(path: string): boolean {
   try {
-    execSync_DEPRECATED(`dir "${path}"`, { stdio: 'pipe' })
-    return true
+    return statSync(path).isFile()
   } catch {
     return false
   }
 }
 
 /**
- * Find an executable using where.exe on Windows
+ * Find an executable on the native PATH without shell output decoding.
  * @param executable - The name of the executable to find
  * @returns The path to the executable or null if not found
  */
@@ -44,16 +44,12 @@ function findExecutable(executable: string): string | null {
     }
   }
 
-  // Fall back to where.exe
+  // Fall back to PATH. Keep paths as native strings: where.exe uses the
+  // console code page and can corrupt non-ASCII installation directories.
   try {
-    const result = execSync_DEPRECATED(`where.exe ${executable}`, {
-      stdio: 'pipe',
-      encoding: 'utf8',
-    }).trim()
-
     // SECURITY: Filter out any results from the current directory
     // to prevent executing malicious git.bat/cmd/exe files
-    const paths = result.split('\r\n').filter(Boolean)
+    const paths = executablePaths(executable)
     const cwd = getCwd().toLowerCase()
 
     for (const candidatePath of paths) {
@@ -103,7 +99,7 @@ export function setShellIfWindows(): void {
  * Find the path where `bash.exe` included with git-bash exists.
  * Returns null if git-bash is not installed.
  */
-export const findGitBashPath = memoize((): string | null => {
+export function discoverGitBashPath(): string | null {
   if (process.env.CLAUDE_CODE_GIT_BASH_PATH) {
     if (checkPathExists(process.env.CLAUDE_CODE_GIT_BASH_PATH)) {
       return process.env.CLAUDE_CODE_GIT_BASH_PATH
@@ -122,7 +118,9 @@ export const findGitBashPath = memoize((): string | null => {
   }
 
   return null
-})
+}
+
+export const findGitBashPath = memoize(discoverGitBashPath)
 
 /** Convert a Windows path to a POSIX path using pure JS. */
 export const windowsPathToPosixPath = memoizeWithLRU(

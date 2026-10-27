@@ -68,6 +68,7 @@ import { isRestrictedToPluginOnly } from '../utils/settings/pluginOnlyPolicy.js'
 import { HooksSchema, type HooksSettings } from '../utils/settings/types.js'
 import { createSignal } from '../utils/signal.js'
 import { registerMCPSkillBuilders } from './mcpSkillBuilders.js'
+import { createSkillMetadata, type SkillMetadata } from './skillMetadata.js'
 
 export type LoadedFrom =
   | 'commands_DEPRECATED'
@@ -298,6 +299,7 @@ export function createSkillCommand({
   paths,
   effort,
   shell,
+  skillMetadata,
 }: {
   skillName: string
   displayName: string | undefined
@@ -321,6 +323,7 @@ export function createSkillCommand({
   paths: string[] | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
+  skillMetadata?: SkillMetadata
 }): Command {
   return {
     type: 'prompt',
@@ -349,6 +352,7 @@ export function createSkillCommand({
     loadedFrom,
     hooks,
     skillRoot: baseDir,
+    skillMetadata,
     async getPromptForCommand(args, toolUseContext) {
       let finalContent = baseDir
         ? `Base directory for this skill: ${baseDir}\n\n${markdownContent}`
@@ -452,7 +456,7 @@ async function loadSkillsFromSkillsDir(
           return null
         }
 
-        const { frontmatter, content: markdownContent } = parseFrontmatter(
+        const { frontmatter, frontmatterProblem, content: markdownContent } = parseFrontmatter(
           content,
           skillFilePath,
         )
@@ -472,6 +476,7 @@ async function loadSkillsFromSkillsDir(
             markdownContent,
             source,
             baseDir: skillDirPath,
+            skillMetadata: createSkillMetadata(frontmatter, skillFilePath, frontmatterProblem),
             loadedFrom: 'skills',
             paths,
           }),
@@ -584,6 +589,7 @@ async function loadSkillsFromCommandsDir(
       baseDir,
       filePath,
       frontmatter,
+      frontmatterProblem,
       content,
       source,
     } of processedFiles) {
@@ -609,6 +615,7 @@ async function loadSkillsFromCommandsDir(
           skill: createSkillCommand({
             ...parsed,
             skillName: cmdName,
+            skillMetadata: createSkillMetadata(frontmatter, filePath, frontmatterProblem),
             displayName: undefined,
             markdownContent: content,
             source,

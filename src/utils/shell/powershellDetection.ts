@@ -21,8 +21,8 @@ async function probePath(p: string): Promise<string | null> {
  * binary at /opt/microsoft/powershell/7/pwsh is reliable. On
  * Windows/macOS, PATH is sufficient.
  */
-export async function findPowerShell(): Promise<string | null> {
-  const pwshPath = await which('pwsh')
+export async function findPowerShell(lookup = which): Promise<string | null> {
+  const pwshPath = await lookup('pwsh')
   if (pwshPath) {
     // Snap launcher hangs in subprocesses. Prefer the direct binary.
     // Check both the resolved PATH entry and its symlink target: on
@@ -48,7 +48,7 @@ export async function findPowerShell(): Promise<string | null> {
     return pwshPath
   }
 
-  const powershellPath = await which('powershell')
+  const powershellPath = await lookup('powershell')
   if (powershellPath) {
     return powershellPath
   }

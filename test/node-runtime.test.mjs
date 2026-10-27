@@ -69,6 +69,19 @@ test('Tau managed runtimes are resolved from the user directory and revalidated 
   assert.equal(findCompatibleNodeRuntime({ ...options, exists: () => false }), null, 'Removed runtimes must not be reused from a cached selection')
 })
 
+test('runtime discovery matches native environment casing instead of object insertion order', () => {
+  const options = {
+    execPath: '/current/node', exists: () => true, realpath: path => path,
+    probe: () => probeResult('24.22.1'),
+  }
+  for (const platform of ['linux', 'darwin']) {
+    assert.equal(findCompatibleNodeRuntime({ ...options, platform, env: { Path: '/wrong' } }), null)
+    assert.equal(findCompatibleNodeRuntime({ ...options, platform, env: { Path: '/wrong', PATH: '/right' } }), '/right/node')
+  }
+  assert.equal(findCompatibleNodeRuntime({ ...options, platform: 'win32', env: { Path: 'C:\\wrong', PATH: 'C:\\right' } }), 'C:\\right\\node.exe')
+  assert.equal(managedNodeRuntimePath({ localappdata: 'C:\\wrong', LOCALAPPDATA: 'C:\\right' }, 'win32'), 'C:\\right\\Tau\\runtime\\node.exe')
+})
+
 // Exercise the actual generated launcher using injected runtime facts. The
 // alternate invocation is the real Node binary, running the same launcher;
 // no mock agent/network request can hide an argument or exit-code regression.

@@ -23,7 +23,7 @@ export function replaceSubmittedPromptText(input: string | ContentBlockParam[], 
   return input.flatMap<ContentBlockParam>((block, i) => block.type !== 'text' ? [block] : i === index ? [{ ...block, text }] : [])
 }
 
-async function inToolContext<T>(context: ToolUseContext, canUseTool: CanUseToolFn | undefined, action: () => Promise<T>, assistant?: AssistantMessage): Promise<T> {
+export async function inToolContext<T>(context: ToolUseContext, canUseTool: CanUseToolFn | undefined, action: () => Promise<T>, assistant?: AssistantMessage): Promise<T> {
   const permission = canUseTool ?? (await import('../../permissions/permissions.js')).hasPermissionsToUseTool
   return withModToolContext({
     toolUseContext: context,

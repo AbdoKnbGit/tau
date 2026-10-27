@@ -6,8 +6,8 @@
 import { basename } from 'path'
 import { hasModEvent } from './plugins/mods/manager.js'
 import { feature } from 'bun:bundle'
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
-import { pathExists } from './file.js'
+import type { ChildProcessWithoutNullStreams } from 'child_process'
+import { hookWorkingDirectory, isHookDirectory, powerShellHookArgs, prepareWindowsHookScript, startHookProcess } from './hooks/commandProcess.js'
 import { wrapSpawn } from './ShellCommand.js'
 import { TaskOutput } from './task/TaskOutput.js'
 import { getCwd } from './cwd.js'
@@ -19,10 +19,8 @@ import {
 } from './sessionEnvironment.js'
 import { subprocessEnv } from './subprocessEnv.js'
 import { getPlatform } from './platform.js'
-import { findGitBashPath, windowsPathToPosixPath } from './windowsPaths.js'
-import { getCachedPowerShellPath } from './shell/powershellDetection.js'
-import { DEFAULT_HOOK_SHELL } from './shell/shellProvider.js'
-import { buildPowerShellArgs } from './shell/powershellProvider.js'
+import { windowsPathToPosixPath } from './windowsPaths.js'
+import { getHookGitBashPath, getHookPowerShellPath } from './hooks/shellResolution.js'
 import {
   loadPluginOptions,
   substituteUserConfigVariables,
@@ -947,9 +945,15 @@ async function execCommandHook(
   // With `args` the hook runs in exec form: `command` is spawned directly with
   // no shell, so `shell` and the bash accommodations below do not apply.
   const execForm = hook.args !== undefined
-  const shellType = hookShell(hook)
+  const shellType = execForm ? 'bash' : hookShell(hook)
 
   const isPowerShell = shellType === 'powershell'
+  // PowerShell can initialize $input's decoder before the command's UTF-8
+  // setup executes. JSON Unicode escapes preserve the same parsed values even
+  // under a legacy console code page; other transports keep their UTF-8 bytes.
+  const stdinJson = (json: string) => isPowerShell
+    ? json.replace(/[\u0080-\uffff]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)
+    : json
 
   // --
   // Windows bash path: hooks run via Git Bash (Cygwin), NOT cmd.exe.
@@ -988,7 +992,7 @@ async function execCommandHook(
     // bricks UserPromptSubmit/Stop until restart. The pre-check is necessary
     // because exit-2-from-missing-script is indistinguishable from an
     // intentional block after spawn.
-    if (!(await pathExists(pluginRoot))) {
+    if (!(await isHookDirectory(pluginRoot))) {
       throw new Error(
         `Plugin directory does not exist: ${pluginRoot}` +
           (pluginId ? ` (${pluginId} — run /plugin to reinstall)` : ''),
@@ -1016,25 +1020,7 @@ async function execCommandHook(
     }
   }
 
-  // On Windows (bash only), auto-prepend `bash` for .sh scripts so they
-  // execute instead of opening in the default file handler. PowerShell
-  // runs .ps1 files natively — no prepend needed.
-  if (!execForm && isWindows && !isPowerShell && command.trim().match(/\.sh(\s|$|")/)) {
-    if (!command.trim().startsWith('bash ')) {
-      command = `bash ${command}`
-    }
-  }
-
-  // CLAUDE_CODE_SHELL_PREFIX wraps the command via POSIX quoting
-  // (formatShellPrefixCommand uses shell-quote). This makes no sense for
-  // PowerShell — see design §8.1. For now PS hooks ignore the prefix;
-  // a CLAUDE_CODE_PS_SHELL_PREFIX (or shell-aware prefix) is a follow-up.
-  const finalCommand =
-    !execForm && !isPowerShell && process.env.CLAUDE_CODE_SHELL_PREFIX
-      ? formatShellPrefixCommand(process.env.CLAUDE_CODE_SHELL_PREFIX, command)
-      : command
-
-  const hookTimeoutMs = hook.timeout
+  let hookTimeoutMs = hook.timeout
     ? hook.timeout * 1000
     : defaultHookTimeoutMs(hookEvent)
 
@@ -1043,6 +1029,12 @@ async function execCommandHook(
     ...subprocessEnv(),
     CLAUDE_PROJECT_DIR: toHookPath(projectDir),
   }
+  // Match the UTF-8 pipe protocol even when Python defaults to an ANSI code
+  // page. Preserve an explicit user override, as the shell tool does.
+  const pythonEncodingKey = isWindows
+    ? Object.keys(envVars).sort().find(key => key.toUpperCase() === 'PYTHONIOENCODING')
+    : 'PYTHONIOENCODING'
+  envVars.PYTHONIOENCODING = (pythonEncodingKey && envVars[pythonEncodingKey]) || 'utf-8'
   // Read the resolved per-turn value, rather than inheriting stale effort
   // metadata from a parent process or guessing for unsupported models.
   const inputEffort = jsonParse(jsonInput)?.effort?.level
@@ -1075,6 +1067,15 @@ async function execCommandHook(
     command = command.replace(/\$\{CLAUDE_SKILL_DIR\}/g, () => toHookPath(skillRoot))
   }
 
+  // Finish all substitutions before script detection and shell-prefix wrapping.
+  if (!execForm && isWindows && !isPowerShell) {
+    command = prepareWindowsHookScript(command)
+  }
+  const finalCommand =
+    !execForm && !isPowerShell && process.env.CLAUDE_CODE_SHELL_PREFIX
+      ? formatShellPrefixCommand(process.env.CLAUDE_CODE_SHELL_PREFIX, command)
+      : command
+
   // CLAUDE_ENV_FILE points to a .sh file that the hook writes env var
   // definitions into; getSessionEnvironmentScript() concatenates them and
   // bashProvider injects the content into bash commands. A PS hook would
@@ -1096,10 +1097,10 @@ async function execCommandHook(
   // AsyncLocalStorage. Validate before spawning since spawn() emits async
   // 'error' events for missing cwd rather than throwing synchronously.
   const hookCwd = getCwd()
-  const safeCwd = (await pathExists(hookCwd)) ? hookCwd : getOriginalCwd()
+  const safeCwd = await hookWorkingDirectory(hookCwd, getOriginalCwd())
   if (safeCwd !== hookCwd) {
     logForDebugging(
-      `Hooks: cwd ${hookCwd} not found, falling back to original cwd`,
+      `Hooks: cwd ${hookCwd} is unavailable, falling back to original cwd`,
       { level: 'warn' },
     )
   }
@@ -1137,42 +1138,58 @@ async function execCommandHook(
         { level: 'warn' },
       )
     }
-    child = spawn(expand(hook.command), hook.args!.map(expand), {
+    child = await startHookProcess(expand(hook.command), hook.args!.map(expand), {
       env: envVars,
       cwd: safeCwd,
       windowsHide: true,
-    }) as ChildProcessWithoutNullStreams
+    }, signal)
   } else if (effectiveShellType === 'powershell') {
-    const pwshPath = await getCachedPowerShellPath()
+    const pwshPath = await getHookPowerShellPath()
     if (!pwshPath) {
       throw new Error(
         `Hook "${hook.command}" needs a shell, but neither bash nor PowerShell ` +
           `is available on this system. Install Git Bash (Windows) or PowerShell 7+.`,
       )
     }
-    child = spawn(pwshPath, buildPowerShellArgs(finalCommand), {
+    const preparationStarted = Date.now()
+    const args = await powerShellHookArgs(pwshPath, finalCommand, {
+      cwd: safeCwd, env: envVars, signal, timeout: hookTimeoutMs,
+    })
+    hookTimeoutMs -= Date.now() - preparationStarted
+    if (hookTimeoutMs <= 0) throw new Error('Hook timed out while preparing the PowerShell command')
+    child = await startHookProcess(pwshPath, args, {
       env: envVars,
       cwd: safeCwd,
       // Prevent visible console window on Windows (no-op on other platforms)
       windowsHide: true,
-    }) as ChildProcessWithoutNullStreams
+    }, signal)
   } else {
     // On Windows, use Git Bash explicitly (cmd.exe can't run bash syntax).
     // On other platforms, shell: true uses /bin/sh.
-    const gitBashPath = isWindows ? findGitBashPath() : null
+    const gitBashPath = isWindows ? getHookGitBashPath() : null
     if (isWindows && !gitBashPath) {
       throw new Error(
         `Hook "${hook.command}" needs Git Bash. Install Git for Windows and restart Tau.`,
       )
     }
     const shell = isWindows ? gitBashPath! : true
-    child = spawn(finalCommand, [], {
+    child = await startHookProcess(finalCommand, [], {
       env: envVars,
       cwd: safeCwd,
       shell,
       // Prevent visible console window on Windows (no-op on other platforms)
       windowsHide: true,
-    }) as ChildProcessWithoutNullStreams
+    }, signal)
+  }
+
+  // Cancellation can arrive between the spawn event and this async continuation.
+  // wrapSpawn listens for future aborts, so close this handoff gap explicitly.
+  if (signal.aborted) {
+    child.kill()
+    child.stdin.destroy()
+    child.stdout.destroy()
+    child.stderr.destroy()
+    signal.throwIfAborted()
   }
 
   // Hooks use pipe mode — stdout must be streamed into JS so we can parse
@@ -1195,7 +1212,7 @@ async function execCommandHook(
     // bash `read -r line` returns exit 1 (EOF before delimiter) — the
     // variable IS populated but `if read -r line; then ...` skips the
     // branch. See gh-30509 / CC-161.
-    child.stdin.write(jsonInput + '\n', 'utf8')
+    child.stdin.write(stdinJson(jsonInput) + '\n', 'utf8')
     child.stdin.end()
     stdinWritten = true
 
@@ -1285,7 +1302,7 @@ async function execCommandHook(
             promptChain = promptChain.then(async () => {
               try {
                 const response = await reqPrompt(promptReq)
-                child.stdin.write(jsonStringify(response) + '\n', 'utf8')
+                child.stdin.write(stdinJson(jsonStringify(response)) + '\n', 'utf8')
               } catch (err) {
                 logForDebugging(`Hooks: Prompt request handling failed: ${err}`)
                 // User cancelled or prompt failed — close stdin so the hook
@@ -1399,7 +1416,7 @@ async function execCommandHook(
           }
         })
         // Explicitly specify UTF-8 encoding to ensure proper handling of Unicode characters
-        child.stdin.write(jsonInput + '\n', 'utf8')
+        child.stdin.write(stdinJson(jsonInput) + '\n', 'utf8')
         // When requestPrompt is provided, keep stdin open for prompt responses
         if (!requestPrompt) {
           child.stdin.end()

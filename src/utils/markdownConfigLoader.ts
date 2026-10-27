@@ -41,6 +41,7 @@ export type MarkdownFile = {
   filePath: string
   baseDir: string
   frontmatter: FrontmatterData
+  frontmatterProblem?: string
   content: string
   source: SettingSource
 }
@@ -550,6 +551,7 @@ async function loadMarkdownFiles(dir: string): Promise<
   {
     filePath: string
     frontmatter: FrontmatterData
+    frontmatterProblem?: string
     content: string
   }[]
 > {
@@ -581,11 +583,12 @@ async function loadMarkdownFiles(dir: string): Promise<
     files.map(async filePath => {
       try {
         const rawContent = await readFile(filePath, { encoding: 'utf-8' })
-        const { frontmatter, content } = parseFrontmatter(rawContent, filePath)
+        const { frontmatter, frontmatterProblem, content } = parseFrontmatter(rawContent, filePath)
 
         return {
           filePath,
           frontmatter,
+          frontmatterProblem,
           content,
         }
       } catch (error) {

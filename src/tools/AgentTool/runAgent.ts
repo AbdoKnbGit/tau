@@ -735,77 +735,6 @@ async function* runAgentWithoutProviderOverride({
     )
   }
 
-  // Preload skills from agent frontmatter
-  const skillsToPreload = agentDefinition.skills ?? []
-  if (skillsToPreload.length > 0) {
-    const allSkills = await getSkillToolCommands(getProjectRoot())
-
-    // Filter valid skills and warn about missing ones
-    const validSkills: Array<{
-      skillName: string
-      skill: (typeof allSkills)[0] & { type: 'prompt' }
-    }> = []
-
-    for (const skillName of skillsToPreload) {
-      // Resolve the skill name, trying multiple strategies:
-      // 1. Exact match (hasCommand checks name, userFacingName, aliases)
-      // 2. Fully-qualified with agent's plugin prefix (e.g., "my-skill" → "plugin:my-skill")
-      // 3. Suffix match on ":skillName" for plugin-namespaced skills
-      const resolvedName = resolveSkillName(
-        skillName,
-        allSkills,
-        agentDefinition,
-      )
-      if (!resolvedName) {
-        logForDebugging(
-          `[Agent: ${agentDefinition.agentType}] Warning: Skill '${skillName}' specified in frontmatter was not found`,
-          { level: 'warn' },
-        )
-        continue
-      }
-
-      const skill = getCommand(resolvedName, allSkills)
-      if (skill.type !== 'prompt') {
-        logForDebugging(
-          `[Agent: ${agentDefinition.agentType}] Warning: Skill '${skillName}' is not a prompt-based skill`,
-          { level: 'warn' },
-        )
-        continue
-      }
-      validSkills.push({ skillName, skill })
-    }
-
-    // Load all skill contents concurrently and add to initial messages
-    const { formatSkillLoadingMetadata } = await import(
-      '../../utils/processUserInput/processSlashCommand.js'
-    )
-    const loaded = await Promise.all(
-      validSkills.map(async ({ skillName, skill }) => ({
-        skillName,
-        skill,
-        content: await skill.getPromptForCommand('', toolUseContext),
-      })),
-    )
-    for (const { skillName, skill, content } of loaded) {
-      logForDebugging(
-        `[Agent: ${agentDefinition.agentType}] Preloaded skill '${skillName}'`,
-      )
-
-      // Add command-message metadata so the UI shows which skill is loading
-      const metadata = formatSkillLoadingMetadata(
-        skillName,
-        skill.progressMessage,
-      )
-
-      initialMessages.push(
-        createUserMessage({
-          content: [{ type: 'text', text: metadata }, ...content],
-          isMeta: true,
-        }),
-      )
-    }
-  }
-
   // Initialize agent-specific MCP servers (additive to parent's servers)
   const {
     clients: mergedMcpClients,
@@ -876,93 +805,170 @@ async function* runAgentWithoutProviderOverride({
     contentReplacementState,
   })
 
-  // Preserve tool use results for subagents with viewable transcripts (in-process teammates)
-  if (preserveToolUseResults) {
-    agentToolUseContext.preserveToolUseResults = true
-  }
-
-  // Expose cache-safe params for background summarization (prompt cache sharing)
-  if (onCacheSafeParams) {
-    onCacheSafeParams({
-      systemPrompt: agentSystemPrompt,
-      userContext: resolvedUserContext,
-      systemContext: resolvedSystemContext,
-      toolUseContext: agentToolUseContext,
-      forkContextMessages: initialMessages,
-    })
-  }
-
-  // Record initial messages before the query loop starts, plus the agentType
-  // so resume can route correctly when subagent_type is omitted. Persistence
-  // failures are logged without failing the agent.
-  void recordSidechainTranscript(initialMessages, agentId).catch(_err =>
-    logForDebugging(`Failed to record sidechain transcript: ${_err}`),
-  )
-  // A resume continues on the provider and model the agent ran on, so a
-  // later /provider, /model or Sub-agent model change cannot move it to
-  // another model (and a cold prompt cache) mid-task. Agents pinned by their
-  // file or by an explicit caller provider resolve as before.
-  const routeEffort = agentDefinition.effort === undefined
-    ? settingTarget?.effort ?? resumeEffort
-    : undefined
-  const savedRoute = getAPIProvider() !== 'mistral' &&
-    agentDefinition.provider === undefined &&
-    !isExplicitProviderOverride()
-    ? {
-        provider: getAPIProvider(),
-        model: resolvedAgentModel,
-        ...(routeEffort !== undefined && { effort: routeEffort }),
-      }
-    : undefined
-  const metadataWrite = writeAgentMetadata(agentId, {
-    agentType: agentDefinition.agentType,
-    ...(worktreePath && { worktreePath }),
-    ...(description && { description }),
-    spawnedAsync: spawnShapeAsync,
-    ...(model && { model }),
-    ...(getAPIProvider() === 'mistral' && {
-      mistralRoute: {
-        provider: 'mistral' as const,
-        model: resolvedAgentModel,
-        ...(routeEffort !== undefined && { effort: routeEffort }),
-      },
-    }),
-    ...(savedRoute && { route: savedRoute }),
-  }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
-  // A completed worker must be resumable on its saved route immediately, and
-  // worktree cleanup must not race this write and erase that route.
-  if (getAPIProvider() === 'mistral' || savedRoute) await metadataWrite
-
-  // Track the last recorded message UUID for parent chain continuity
-  let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
-
-  // The conversation exactly as the query loop runs it, attachments included
-  // (the sidechain transcript drops those), so a resume in this process sends
-  // the same prefix. See resumeParity.ts.
-  const liveConversation: Message[] = [...initialMessages]
-
-  // Serialize Antigravity Gemini agents: the backend keeps ~one implicit
-  // cache slot per account, so concurrent agent streams evict each other
-  // on every request (measured 0% agent cache hits + repeated parent
-  // full-context re-ingests in parallel batches). Top-level spawns only —
-  // a nested spawn's parent agent already holds the gate and is blocked
-  // on this child, so re-acquiring here would deadlock.
+  const liveConversation: Message[] = []
   let releaseAntigravityAgentTurn: (() => void) | undefined
-  if (
-    !toolUseContext.agentId &&
-    shouldSerializeAntigravityAgents(getAPIProvider(), resolvedAgentModel)
-  ) {
-    if (antigravityAgentGateBusy()) {
-      logForDebugging(
-        `[Agent: ${agentDefinition.agentType}] Antigravity agent gate busy — may wait for a slot (cache protection)`,
+  try {
+    // Preload skills from agent frontmatter
+    const skillsToPreload = agentDefinition.skills ?? []
+    if (skillsToPreload.length > 0) {
+      const allSkills = await getSkillToolCommands(getProjectRoot())
+
+      // Filter valid skills and warn about missing ones
+      const validSkills: Array<{
+        skillName: string
+        skill: (typeof allSkills)[0] & { type: 'prompt' }
+      }> = []
+
+      for (const skillName of skillsToPreload) {
+        // Resolve the skill name, trying multiple strategies:
+        // 1. Exact match (hasCommand checks name, userFacingName, aliases)
+        // 2. Fully-qualified with agent's plugin prefix (e.g., "my-skill" → "plugin:my-skill")
+        // 3. Suffix match on ":skillName" for plugin-namespaced skills
+        const resolvedName = resolveSkillName(
+          skillName,
+          allSkills,
+          agentDefinition,
+        )
+        if (!resolvedName) {
+          logForDebugging(
+            `[Agent: ${agentDefinition.agentType}] Warning: Skill '${skillName}' specified in frontmatter was not found`,
+            { level: 'warn' },
+          )
+          continue
+        }
+
+        const skill = getCommand(resolvedName, allSkills)
+        if (skill.type !== 'prompt') {
+          logForDebugging(
+            `[Agent: ${agentDefinition.agentType}] Warning: Skill '${skillName}' is not a prompt-based skill`,
+            { level: 'warn' },
+          )
+          continue
+        }
+        validSkills.push({ skillName, skill })
+      }
+
+      // Expand using the child's tools and permissions, after its context exists.
+      const { expandSkillPrompt } = await import('../../utils/plugins/mods/skillPrompt.js')
+      const { formatSkillLoadingMetadata } = await import(
+        '../../utils/processUserInput/processSlashCommand.js'
+      )
+      // Finish every expansion before disposing the child context on failure.
+      const expansions = await Promise.allSettled(
+        validSkills.map(async ({ skillName, skill }) => ({
+          skillName,
+          skill,
+          content: await expandSkillPrompt(skill, '', agentToolUseContext, canUseTool),
+        })),
+      )
+      const failure = expansions.find(result => result.status === 'rejected')
+      if (failure) throw failure.reason
+      const loaded = expansions.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+      for (const { skillName, skill, content } of loaded) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Preloaded skill '${skillName}'`,
+        )
+
+        // Add command-message metadata so the UI shows which skill is loading
+        const metadata = formatSkillLoadingMetadata(
+          skillName,
+          skill.progressMessage,
+        )
+
+        initialMessages.push(
+          createUserMessage({
+            content: [{ type: 'text', text: metadata }, ...content],
+            isMeta: true,
+          }),
+        )
+      }
+    }
+
+    // Preserve tool use results for subagents with viewable transcripts (in-process teammates)
+    if (preserveToolUseResults) {
+      agentToolUseContext.preserveToolUseResults = true
+    }
+
+    // Expose cache-safe params for background summarization (prompt cache sharing)
+    if (onCacheSafeParams) {
+      onCacheSafeParams({
+        systemPrompt: agentSystemPrompt,
+        userContext: resolvedUserContext,
+        systemContext: resolvedSystemContext,
+        toolUseContext: agentToolUseContext,
+        forkContextMessages: initialMessages,
+      })
+    }
+
+    // Record initial messages before the query loop starts, plus the agentType
+    // so resume can route correctly when subagent_type is omitted. Persistence
+    // failures are logged without failing the agent.
+    void recordSidechainTranscript(initialMessages, agentId).catch(_err =>
+      logForDebugging(`Failed to record sidechain transcript: ${_err}`),
+    )
+    // A resume continues on the provider and model the agent ran on, so a
+    // later /provider, /model or Sub-agent model change cannot move it to
+    // another model (and a cold prompt cache) mid-task. Agents pinned by their
+    // file or by an explicit caller provider resolve as before.
+    const routeEffort = agentDefinition.effort === undefined
+      ? settingTarget?.effort ?? resumeEffort
+      : undefined
+    const savedRoute = getAPIProvider() !== 'mistral' &&
+      agentDefinition.provider === undefined &&
+      !isExplicitProviderOverride()
+      ? {
+          provider: getAPIProvider(),
+          model: resolvedAgentModel,
+          ...(routeEffort !== undefined && { effort: routeEffort }),
+        }
+      : undefined
+    const metadataWrite = writeAgentMetadata(agentId, {
+      agentType: agentDefinition.agentType,
+      ...(worktreePath && { worktreePath }),
+      ...(description && { description }),
+      spawnedAsync: spawnShapeAsync,
+      ...(model && { model }),
+      ...(getAPIProvider() === 'mistral' && {
+        mistralRoute: {
+          provider: 'mistral' as const,
+          model: resolvedAgentModel,
+          ...(routeEffort !== undefined && { effort: routeEffort }),
+        },
+      }),
+      ...(savedRoute && { route: savedRoute }),
+    }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
+    // A completed worker must be resumable on its saved route immediately, and
+    // worktree cleanup must not race this write and erase that route.
+    if (getAPIProvider() === 'mistral' || savedRoute) await metadataWrite
+
+    // Track the last recorded message UUID for parent chain continuity
+    let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
+
+    // The conversation exactly as the query loop runs it, attachments included
+    // (the sidechain transcript drops those), so a resume in this process sends
+    // the same prefix. See resumeParity.ts.
+    liveConversation.push(...initialMessages)
+
+    // Serialize Antigravity Gemini agents: the backend keeps ~one implicit
+    // cache slot per account, so concurrent agent streams evict each other
+    // on every request (measured 0% agent cache hits + repeated parent
+    // full-context re-ingests in parallel batches). Top-level spawns only —
+    // a nested spawn's parent agent already holds the gate and is blocked
+    // on this child, so re-acquiring here would deadlock.
+    if (
+      !toolUseContext.agentId &&
+      shouldSerializeAntigravityAgents(getAPIProvider(), resolvedAgentModel)
+    ) {
+      if (antigravityAgentGateBusy()) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Antigravity agent gate busy — may wait for a slot (cache protection)`,
+        )
+      }
+      releaseAntigravityAgentTurn = await acquireAntigravityAgentTurn(
+        agentAbortController.signal,
       )
     }
-    releaseAntigravityAgentTurn = await acquireAntigravityAgentTurn(
-      agentAbortController.signal,
-    )
-  }
 
-  try {
     for await (const message of query({
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,

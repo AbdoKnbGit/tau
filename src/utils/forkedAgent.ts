@@ -10,7 +10,7 @@
 
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
-import type { PromptCommand } from '../commands.js'
+import type { CommandBase, PromptCommand } from '../commands.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import { query } from '../query.js'
@@ -200,9 +200,10 @@ export type PreparedForkedContext = {
  * This handles the common setup that both SkillTool and slash commands need.
  */
 export async function prepareForkedCommandContext(
-  command: PromptCommand,
+  command: CommandBase & PromptCommand,
   args: string,
   context: ToolUseContext,
+  canUseTool?: CanUseToolFn,
 ): Promise<PreparedForkedContext> {
   const { activeAgents, allowedAgentTypes } = context.options.agentDefinitions
   // Prefer active definitions (including custom overrides). Explicit skill
@@ -234,7 +235,8 @@ export async function prepareForkedCommandContext(
   }
 
   // Get skill content with $ARGUMENTS replaced
-  const skillPrompt = await command.getPromptForCommand(args, context)
+  const { expandSkillPrompt } = await import('./plugins/mods/skillPrompt.js')
+  const skillPrompt = await expandSkillPrompt(command, args, context, canUseTool)
   const skillContent = skillPrompt
     .map(block => (block.type === 'text' ? block.text : ''))
     .join('\n')

@@ -80,7 +80,7 @@ async function executeForkedSlashCommand(command: CommandBase & PromptCommand, a
     modifiedGetAppState,
     baseAgent,
     promptMessages
-  } = await prepareForkedCommandContext(command, args, context);
+  } = await prepareForkedCommandContext(command, args, context, canUseTool);
   promptMessages.push(...(context.userPromptHookMessages ?? []), ...expansionMessages);
 
   // Merge skill's effort into the agent definition so runAgent applies it
@@ -762,7 +762,7 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
             if (command.context === 'fork') {
               return await executeForkedSlashCommand(command, args, context, precedingInputBlocks, setToolJSX, canUseTool ?? hasPermissionsToUseTool, hookMessages);
             }
-            const result = await getMessagesForPromptSlashCommand(command, args, context, precedingInputBlocks, imageContentBlocks, uuid);
+            const result = await getMessagesForPromptSlashCommand(command, args, context, precedingInputBlocks, imageContentBlocks, uuid, canUseTool);
             result.messages.push(...hookMessages);
             return result;
           } catch (e) {
@@ -851,7 +851,7 @@ function formatCommandLoadingMetadata(command: CommandBase & PromptCommand, args
   }
   return formatSlashCommandLoadingMetadata(command.name, args);
 }
-export async function processPromptSlashCommand(commandName: string, args: string, commands: Command[], context: ToolUseContext, imageContentBlocks: ContentBlockParam[] = []): Promise<SlashCommandResult> {
+export async function processPromptSlashCommand(commandName: string, args: string, commands: Command[], context: ToolUseContext, imageContentBlocks: ContentBlockParam[] = [], canUseTool?: CanUseToolFn): Promise<SlashCommandResult> {
   const command = findCommand(commandName, commands);
   if (!command) {
     throw new MalformedCommandError(`Unknown command: ${commandName}`);
@@ -859,9 +859,9 @@ export async function processPromptSlashCommand(commandName: string, args: strin
   if (command.type !== 'prompt') {
     throw new Error(`Unexpected ${command.type} command. Expected 'prompt' command. Use /${commandName} directly in the main conversation.`);
   }
-  return getMessagesForPromptSlashCommand(command, args, context, [], imageContentBlocks);
+  return getMessagesForPromptSlashCommand(command, args, context, [], imageContentBlocks, undefined, canUseTool);
 }
-async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCommand, args: string, context: ToolUseContext, precedingInputBlocks: ContentBlockParam[] = [], imageContentBlocks: ContentBlockParam[] = [], uuid?: string): Promise<SlashCommandResult> {
+async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCommand, args: string, context: ToolUseContext, precedingInputBlocks: ContentBlockParam[] = [], imageContentBlocks: ContentBlockParam[] = [], uuid?: string, canUseTool?: CanUseToolFn): Promise<SlashCommandResult> {
   // In coordinator mode (main thread only), skip loading the full skill content
   // and permissions. The coordinator only has Agent + TaskStop tools, so the
   // skill content and allowedTools are useless. Instead, send a brief summary
@@ -904,7 +904,8 @@ async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCom
       command
     };
   }
-  const result = await command.getPromptForCommand(args, context);
+  const { expandSkillPrompt } = await import('../plugins/mods/skillPrompt.js');
+  const result = await expandSkillPrompt(command, args, context, canUseTool);
 
   // Register skill hooks if defined. Under ["hooks"]-only (skills not locked),
   // user skills still load and reach this point — block hook REGISTRATION here

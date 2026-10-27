@@ -2,6 +2,13 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { posix, win32 } from 'node:path'
 
+function environmentValue(env, name, platform) {
+  if (platform !== 'win32') return env[name]
+  // Match Node's child-process environment handling, including duplicate casing.
+  const key = Object.keys(env).sort().find(key => key.toUpperCase() === name)
+  return key === undefined ? undefined : env[key]
+}
+
 function fullyQualifiedPath(directory, platform) {
   if (/[\0\r\n]/.test(directory)) return false
   return platform === 'win32'
@@ -32,8 +39,7 @@ export function nodeRuntimeMessage(version, issue) {
 
 export function managedNodeRuntimePath(env = process.env, platform = process.platform) {
   if (platform !== 'win32') return null
-  const key = Object.keys(env).find(name => name.toLowerCase() === 'localappdata')
-  const directory = key ? env[key] : undefined
+  const directory = environmentValue(env, 'LOCALAPPDATA', platform)
   return directory && fullyQualifiedPath(directory, platform)
     ? win32.join(directory, 'Tau', 'runtime', 'node.exe')
     : null
@@ -54,7 +60,7 @@ export function findCompatibleNodeRuntime({
 } = {}) {
   const separator = platform === 'win32' ? ';' : ':'
   const paths = platform === 'win32' ? win32 : posix
-  const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path')
+  const searchPath = environmentValue(env, 'PATH', platform)
   const canonical = value => {
     let result
     try { result = realpath(value) } catch { result = value }
@@ -62,7 +68,7 @@ export function findCompatibleNodeRuntime({
   }
   const seen = new Set([canonical(execPath)])
   const candidates = []
-  for (const entry of (pathKey ? env[pathKey] ?? '' : '').split(separator)) {
+  for (const entry of (searchPath ?? '').split(separator)) {
     const directory = entry.replace(/^"(.*)"$/, '$1')
     if (!fullyQualifiedPath(directory, platform)) continue
     candidates.push(paths.join(directory, platform === 'win32' ? 'node.exe' : 'node'))

@@ -4,7 +4,7 @@ import { wrapForMultiplexer } from '../../ink/termio/osc.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { getPlatform } from '../platform.js'
 import { DEFAULT_HOOK_SHELL } from '../shell/shellProvider.js'
-import { findGitBashPath } from '../windowsPaths.js'
+import { getHookGitBashPath } from './shellResolution.js'
 
 // Per-event facts from the hooks reference, kept in one place so the runners
 // read tables instead of naming events.
@@ -52,7 +52,7 @@ export function defaultHookTimeoutMs(event: string): number {
 }
 
 function isGitBashMissing(): boolean {
-  return getPlatform() === 'windows' && !findGitBashPath()
+  return getPlatform() === 'windows' && !getHookGitBashPath()
 }
 
 /** Shell for a shell-form command hook: its own, else bash, else PowerShell on Windows without Git Bash. */

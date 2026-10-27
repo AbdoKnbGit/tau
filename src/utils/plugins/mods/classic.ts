@@ -62,6 +62,9 @@ export function validateModResult(
       if (value.context !== undefined && (!Array.isArray(value.context) || value.context.some((text: unknown) => typeof text !== 'string')))
         throw new Error('Prompt context must be an array of strings')
     }
+  } else if (event === 'skill.prompt') {
+    if (typeof value.text !== 'string' || Object.keys(value).some(key => key !== 'text'))
+      throw new Error('skill.prompt must return { text }')
   } else if (event === 'turn.start') {
     if (typeof value.turnId !== 'string' || Object.keys(value).some(key => key !== 'turnId'))
       throw new Error('turn.start must return { turnId }')

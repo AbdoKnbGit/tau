@@ -206,7 +206,7 @@ async function executeForkedSkill(
   })
 
   const { modifiedGetAppState, baseAgent, promptMessages, skillContent } =
-    await prepareForkedCommandContext(command, args || '', context)
+    await prepareForkedCommandContext(command, args || '', context, canUseTool)
 
   // Merge skill's effort into the agent definition so runAgent applies it
   const agentDefinition =
@@ -613,7 +613,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     ) {
       const slug = remoteSkillModules!.stripCanonicalPrefix(commandName)
       if (slug !== null) {
-        return executeRemoteSkill(slug, commandName, parentMessage, context)
+        return executeRemoteSkill(slug, commandName, parentMessage, context, canUseTool)
       }
     }
 
@@ -645,6 +645,8 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       args || '', // Pass args if provided
       commands,
       context,
+      [],
+      canUseTool,
     )
 
     if (!processedCommand.shouldQuery) {
@@ -895,6 +897,7 @@ const SAFE_SKILL_PROPERTIES = new Set([
   'pluginInfo',
   'disableNonInteractive',
   'skillRoot',
+  'skillMetadata',
   'context',
   'agent',
   'getPromptForCommand',
@@ -982,6 +985,7 @@ async function executeRemoteSkill(
   commandName: string,
   parentMessage: AssistantMessage,
   context: ToolUseContext,
+  canUseTool: CanUseToolFn,
 ): Promise<ToolResult<Output>> {
   const { getDiscoveredRemoteSkill, loadRemoteSkill, logRemoteSkillLoaded } =
     remoteSkillModules!
@@ -1076,7 +1080,7 @@ async function executeRemoteSkill(
   // Strip YAML frontmatter (---\nname: x\n---) before prepending the header
   // (matches loadSkillsDir.ts:333). parseFrontmatter returns the original
   // content unchanged if no frontmatter is present.
-  const { content: bodyContent } = parseFrontmatter(content, skillPath)
+  const { content: bodyContent, frontmatter, frontmatterProblem } = parseFrontmatter(content, skillPath)
 
   // Inject base directory header + ${CLAUDE_SKILL_DIR}/${CLAUDE_SESSION_ID}
   // substitution (matches loadSkillsDir.ts) so the model can resolve relative
@@ -1090,6 +1094,14 @@ async function executeRemoteSkill(
     /\$\{CLAUDE_SESSION_ID\}/g,
     getSessionId(),
   )
+
+  const { createSkillMetadata } = await import('../../skills/skillMetadata.js')
+  const { applySkillPromptMods } = await import('../../utils/plugins/mods/skillPrompt.js')
+  finalContent = await applySkillPromptMods({
+    name: commandName,
+    source: 'syncedSkills',
+    skillMetadata: createSkillMetadata(frontmatter, skillPath, frontmatterProblem),
+  }, finalContent, context, canUseTool)
 
   // Register with compaction-preservation state. Use the cached file path so
   // post-compact restoration knows where the content came from. Must use

@@ -40,6 +40,8 @@ export type PromptCommand = {
   hooks?: HooksSettings
   // Base directory for skill resources and CLAUDE_SKILL_DIR in skill hooks
   skillRoot?: string
+  // Informational file snapshot; mod edits never alter execution settings.
+  skillMetadata?: import('../skills/skillMetadata.js').SkillMetadata
   // Execution context: 'inline' (default) or 'fork' (run as sub-agent)
   // 'inline' = skill content expands into the current conversation
   // 'fork' = skill runs in a sub-agent with separate context and token budget
