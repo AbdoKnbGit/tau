@@ -118,9 +118,10 @@ export const AllowedMcpServerEntrySchema = lazySchema(() =>
       serverName: z
         .string()
         .regex(
-          /^[a-zA-Z0-9_-]+$/,
-          'Server name can only contain letters, numbers, hyphens, and underscores',
+          /^[^\x00-\x1f\x7f]+$/u,
+          'Server name must be nonempty and contain no control characters',
         )
+        .refine(name => name.trim().length > 0, 'Server name must not be blank')
         .optional()
         .describe('Name of the MCP server that users are allowed to configure'),
       serverCommand: z
@@ -167,9 +168,10 @@ export const DeniedMcpServerEntrySchema = lazySchema(() =>
       serverName: z
         .string()
         .regex(
-          /^[a-zA-Z0-9_-]+$/,
-          'Server name can only contain letters, numbers, hyphens, and underscores',
+          /^[^\x00-\x1f\x7f]+$/u,
+          'Server name must be nonempty and contain no control characters',
         )
+        .refine(name => name.trim().length > 0, 'Server name must not be blank')
         .optional()
         .describe('Name of the MCP server that is explicitly blocked'),
       serverCommand: z

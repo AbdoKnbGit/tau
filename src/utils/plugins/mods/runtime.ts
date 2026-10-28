@@ -1,7 +1,7 @@
 import { Worker } from 'worker_threads'
 import { randomUUID } from 'crypto'
 import type { CompiledMod } from './compiler.js'
-import { MOD_EVENTS, MOD_METHODS } from './contracts.js'
+import { MOD_EVENTS, MOD_METHODS, MOD_API_EVENTS } from './contracts.js'
 import { MOD_WORKER_SOURCE } from './worker.js'
 import { validateModResult } from './classic.js'
 import { logForDebugging } from '../../debug.js'
@@ -321,6 +321,8 @@ export class ModRuntime {
         )
           return Promise.reject(new Error('next() requires an event object'))
         if (recovering && called) return called
+        if (MOD_API_EVENTS.has(event) && called)
+          return Promise.reject(new Error('next() has already been called'))
         if (event === 'prompt.submit' || event === 'skill.prompt' || event === 'turn.start' || event === 'turn.complete') {
           if (called) return Promise.reject(new Error('next() has already been called'))
           const mutable = event === 'prompt.submit' ? new Set(['text', 'context']) : event === 'skill.prompt' ? new Set(['text', 'frontmatter']) : new Set<string>()

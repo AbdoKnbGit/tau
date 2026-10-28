@@ -297,7 +297,7 @@ const MAX_MCP_DESCRIPTION_LENGTH = 2048
  */
 let reportedInvalidToolTimeout = false
 
-function getMcpToolTimeoutMs(): number {
+export function getMcpToolTimeoutMs(): number {
   const raw = process.env.MCP_TOOL_TIMEOUT
   if (raw === undefined || raw.trim() === '') return DEFAULT_MCP_TOOL_TIMEOUT_MS
 
@@ -2533,8 +2533,8 @@ async function processBatched<T>(
 export async function getMcpToolsCommandsAndResources(
   onConnectionAttempt: (params: {
     client: MCPServerConnection
-    tools: Tool[]
-    commands: Command[]
+    tools?: Tool[]
+    commands?: Command[]
     resources?: ServerResource[]
   }) => void,
   mcpConfigs?: Record<string, ScopedMcpServerConfig>,

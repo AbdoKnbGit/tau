@@ -1,5 +1,6 @@
 import type { AggregatedHookResult } from '../../hooks.js'
 import type { ModRecord } from './runtime.js'
+import { MOD_API_EVENTS } from './contracts.js'
 
 const fields: Record<string, string[]> = {
   SessionStart: [
@@ -25,7 +26,11 @@ export function validateModResult(
   if (!result || typeof result !== 'object' || Array.isArray(result))
     throw new Error('Mod must return an event result object')
   const value = result as ModRecord
-  if (event.startsWith('classic.')) {
+  if (MOD_API_EVENTS.has(event)) {
+    const denied = Object.hasOwn(value, 'deny')
+    if (Object.keys(value).length !== 1 || (denied ? typeof value.deny !== 'string' || !value.deny.trim() : !Object.hasOwn(value, 'value')))
+      throw new Error(`${event} must return { value } or { deny: reason }`)
+  } else if (event.startsWith('classic.')) {
     const allowed = new Set([
       'block',
       'preventContinuation',

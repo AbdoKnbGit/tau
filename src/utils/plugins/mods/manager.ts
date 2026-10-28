@@ -15,6 +15,7 @@ import {
 import { isFullscreenActive } from '../../fullscreen.js'
 import { qualifyDependency } from '../dependencyResolver.js'
 import { createModHost, type ModCommandSpec } from './host.js'
+import { MOD_API_EVENTS } from './contracts.js'
 import {
   createModToolRegistry,
   publishModToolRegistries,
@@ -134,6 +135,19 @@ function dispatchModSnapshot(
               }
             : undefined,
           async () => {
+            if (MOD_API_EVENTS.has(method)) {
+              const { mcpApiInput, runModMcpAPI } = await import('./mcpApi.js')
+              const result = await dispatchModSnapshot(
+                snapshot.slice(0, snapshot.indexOf(mod)),
+                method,
+                mcpApiInput(method, args),
+                async input => ({ value: await runModMcpAPI(method, input, signal, mod.plugin) }),
+                signal,
+                { origin: { plugin: mod.plugin.name, tier: 'user' } },
+              ) as ModRecord
+              if (result.deny !== undefined) throw new Error(`${method} refused: ${result.deny}`)
+              return result.value
+            }
             if (method === 'tool.call' || method === 'tool.check') {
               const { runModToolAPI } = await import('./toolApi.js')
               return runModToolAPI(method, args[0], signal, mod.plugin.name)

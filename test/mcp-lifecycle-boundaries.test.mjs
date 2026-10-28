@@ -4,7 +4,7 @@ import test from 'node:test'
 import ts from 'typescript'
 import { loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
 
-const r = await loadMcpRuntime()
+const r = await loadMcpRuntime({ paths: ['src/services/mcp/modSession.ts'], exports: ['applyModMcpUpdate'] })
 const hookSource = readFileSync('src/services/mcp/useManageMCPConnections.ts', 'utf8')
 const transpiled = ts.transpileModule(hookSource, { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true,
@@ -35,6 +35,7 @@ function mountHook() {
     if (path === 'react') return { useRef: current => ({ current }), useCallback: fn => { callbacks.push(fn); return fn }, useEffect() {} }
     if (path.includes('AppState')) return { useAppState: select => select(state), useAppStateStore: () => ({ getState: () => state }), useSetAppState: () => setAppState }
     if (path === './client.js') return { ...r, reconnectMcpServerImpl: async () => { reconnects++; throw new Error('unexpected reconnect') } }
+    if (path === './modSession.js') return r
     if (path === 'bun:bundle') return { feature: () => false }
     if (path.includes('notifications.js')) return { useNotifications: () => ({ addNotification() {} }) }
     if (path.includes('powerMode.js')) return { getPowerModeFromSettings: () => 'normal' }
@@ -127,6 +128,94 @@ test('R3 a current close still removes its tools and resources', async () => {
   assert.equal(hook.state().mcp.tools.length, 0)
   assert.equal(hook.state().mcp.resources[name], undefined)
   assert.equal(r.connectToServer.cache.get(key), undefined)
+})
+
+test('a mod publication guard permits its own completed disconnect cleanup', async () => {
+  const name = `mod_close_${++id}`
+  const config = { type: 'stdio', scope: 'local' }
+  const client = connection(name, config)
+  const key = r.getServerCacheKey(name, config)
+  const owner = Promise.resolve(client)
+  r.connectToServer.cache.set(key, owner)
+  const current = (retired = false) => r.connectToServer.cache.get(key) === owner || (retired && !r.connectToServer.cache.has(key))
+  const hook = mountHook()
+  hook.publish({ client, tools: [{ name: `mcp__${name}__inspect`, mcpInfo: { serverName: name } }], commands: [] }, current)
+  hook.flush()
+  await client.client.onclose()
+  hook.flush()
+  assert.equal(hook.state().mcp.clients[0].type, 'failed')
+  assert.equal(hook.state().mcp.tools.length, 0)
+})
+
+for (const pendingInStore of [false, true]) {
+  test(`a mod close before its first catalog flush settles ${pendingInStore ? 'a pending' : 'an absent'} client`, async () => {
+    const name = `mod_queued_close_${++id}`
+    const config = { type: 'stdio', scope: 'local' }
+    const client = connection(name, config)
+    const key = r.getServerCacheKey(name, config)
+    const owner = Promise.resolve(client)
+    r.connectToServer.cache.set(key, owner)
+    const current = (retired = false) => r.connectToServer.cache.get(key) === owner || (retired && !r.connectToServer.cache.has(key))
+    const hook = mountHook()
+    if (pendingInStore) {
+      hook.publish({ client: { name, config, type: 'pending' } })
+      hook.flush()
+      hook.acknowledgements.length = 0
+    }
+    hook.publish({ client, tools: [{ name: `mcp__${name}__inspect`, mcpInfo: { serverName: name } }], commands: [], resources: [{ uri: 'fixture://queued' }] }, current)
+    // Close while the connected catalog is still in the production batch queue.
+    assert.equal(hook.state().mcp.tools.length, 0)
+    await client.client.onclose()
+    hook.flush()
+    assert.equal(hook.state().mcp.clients[0]?.type, 'failed')
+    assert.equal(hook.state().mcp.tools.length, 0)
+    assert.equal(hook.state().mcp.resources[name], undefined)
+    assert.equal(r.connectToServer.cache.get(key), undefined)
+    assert.deepEqual(hook.acknowledgements, [name], 'the terminal publication must release readiness')
+  })
+}
+
+test('a queued mod close cannot replace a new owner published during cleanup', async () => {
+  const name = `mod_queued_replacement_${++id}`
+  const config = { type: 'stdio', scope: 'local' }
+  const cleanupStarted = deferred()
+  const cleanupDone = deferred()
+  const old = connection(name, config, async () => { cleanupStarted.resolve(); await cleanupDone.promise })
+  const next = connection(name, config)
+  const key = r.getServerCacheKey(name, config)
+  const owner = Promise.resolve(old)
+  r.connectToServer.cache.set(key, owner)
+  const current = (retired = false) => r.connectToServer.cache.get(key) === owner || (retired && !r.connectToServer.cache.has(key))
+  const hook = mountHook()
+  hook.publish({ client: old, tools: [{ name: `mcp__${name}__old`, mcpInfo: { serverName: name } }], commands: [] }, current)
+  const closing = old.client.onclose()
+  await cleanupStarted.promise
+  const replacement = Promise.resolve(next)
+  r.connectToServer.cache.set(key, replacement)
+  hook.publish({ client: next, tools: [{ name: `mcp__${name}__new`, mcpInfo: { serverName: name } }], commands: [] }, () => r.connectToServer.cache.get(key) === replacement)
+  cleanupDone.resolve()
+  await closing
+  hook.flush()
+  assert.equal(hook.state().mcp.clients[0].client, next.client)
+  assert.equal(hook.state().mcp.clients[0].type, 'connected')
+  assert.deepEqual(hook.state().mcp.tools.map(tool => tool.name), [`mcp__${name}__new`])
+  assert.deepEqual(hook.acknowledgements, [name])
+  assert.equal(r.connectToServer.cache.get(key), replacement)
+  await r.clearServerCache(name, config, next.client)
+})
+
+test('interactive catalog refresh keeps existing tools in place', () => {
+  const hook = mountHook()
+  const one = connection('one', { type: 'stdio', scope: 'local' })
+  const two = connection('two', { type: 'stdio', scope: 'local' })
+  const first = { name: 'mcp__one__inspect', mcpInfo: { serverName: 'one' } }
+  const second = { name: 'mcp__two__inspect', mcpInfo: { serverName: 'two' } }
+  hook.publish({ client: one, tools: [first], commands: [] })
+  hook.publish({ client: two, tools: [second], commands: [] })
+  hook.flush()
+  hook.publish({ client: one, tools: [{ ...first }], commands: [] })
+  hook.flush()
+  assert.deepEqual(hook.state().mcp.tools.map(tool => tool.name), [first.name, second.name])
 })
 
 test('R3 catalogs with the same name and different configurations never overlap', async () => {

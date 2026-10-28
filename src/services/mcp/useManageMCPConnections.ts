@@ -4,9 +4,11 @@ import { useCallback, useEffect, useRef } from 'react'
 import { getSessionId } from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import type { Tool } from '../../Tool.js'
+import { registerModMcpPublisher, applyModMcpUpdate } from './modSession.js'
 import {
   clearServerCache,
   clearMcpAuthCache,
+  connectToServer,
   getServerCacheKey,
   isCurrentMcpConnection,
   fetchCommandsForClient,
@@ -38,8 +40,6 @@ import {
   ResourceListChangedNotificationSchema,
   ToolListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import omit from 'lodash-es/omit.js'
-import reject from 'lodash-es/reject.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -79,7 +79,6 @@ import {
   isChannelPermissionRelayEnabled,
 } from './channelPermissions.js'
 import { registerElicitationHandler } from './elicitationHandler.js'
-import { getMcpPrefix } from './mcpStringUtils.js'
 import {
   MCP_SOURCE_LOCAL_CONFIG,
   acknowledgeMcpPublication,
@@ -90,7 +89,7 @@ import {
   settleMcpSource,
   skipMcpSource,
 } from './readiness.js'
-import { commandBelongsToServer, excludeStalePluginClients } from './utils.js'
+import { excludeStalePluginClients } from './utils.js'
 
 // Constants for reconnection with exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 5
@@ -239,6 +238,8 @@ export function useManageMCPConnections(
   type PendingUpdate = MCPServerConnection & {
     /** Recheck lifecycle ownership when this batched update is applied. */
     expectedClient?: Extract<MCPServerConnection, { type: 'connected' }>['client']
+    /** A connection can close before its first queued publication is flushed. */
+    allowUnpublished?: boolean
     isCurrent?: () => boolean
     tools?: Tool[]
     commands?: Command[]
@@ -267,10 +268,15 @@ export function useManageMCPConnections(
           const current = mcp.clients.find(
             (c: MCPServerConnection) => c.name === update.name,
           )
-          if (!current || !('client' in current) || current.client !== update.expectedClient) continue
+          if (current && 'client' in current) {
+            if (current.client !== update.expectedClient) continue
+          } else if (!update.allowUnpublished || (current &&
+            (current.type !== 'pending' ||
+              getServerCacheKey(current.name, current.config) !== getServerCacheKey(update.name, update.config)))) continue
         }
         const {
           expectedClient: _expectedClient,
+          allowUnpublished: _allowUnpublished,
           isCurrent: _isCurrent,
           tools: rawTools,
           commands: rawCmds,
@@ -290,49 +296,7 @@ export function useManageMCPConnections(
             ? (rawRes ?? [])
             : rawRes
 
-        const prefix = getMcpPrefix(client.name)
-        const existingClientIndex = mcp.clients.findIndex(
-          c => c.name === client.name,
-        )
-
-        const updatedClients =
-          existingClientIndex === -1
-            ? [...mcp.clients, client]
-            : mcp.clients.map(c => (c.name === client.name ? client : c))
-
-        const updatedTools =
-          tools === undefined
-            ? mcp.tools
-            : [...reject(mcp.tools, t => t.name?.startsWith(prefix)), ...tools]
-
-        const updatedCommands =
-          commands === undefined
-            ? mcp.commands
-            : [
-                ...reject(mcp.commands, c =>
-                  commandBelongsToServer(c, client.name),
-                ),
-                ...commands,
-              ]
-
-        // omit() returns a copy WITHOUT the key, so spreading it over the
-        // full map put the old entry straight back: a server that lost its
-        // resources kept publishing the ones it no longer had. Take the
-        // omitted copy as the whole new map instead of merging into the old.
-        const updatedResources =
-          resources === undefined
-            ? mcp.resources
-            : resources.length > 0
-              ? { ...mcp.resources, [client.name]: resources }
-              : omit(mcp.resources, client.name)
-
-        mcp = {
-          ...mcp,
-          clients: updatedClients,
-          tools: updatedTools,
-          commands: updatedCommands,
-          resources: updatedResources,
-        }
+        mcp = applyModMcpUpdate(mcp, { client, tools, commands, resources })
         published.push(update)
       }
 
@@ -373,10 +337,10 @@ export function useManageMCPConnections(
       resources,
     }: {
       client: MCPServerConnection
-      tools: Tool[]
-      commands: Command[]
+      tools?: Tool[]
+      commands?: Command[]
       resources?: ServerResource[]
-    }, isCurrent?: () => boolean) => {
+    }, isCurrent?: (retired?: boolean) => boolean) => {
       if (isCurrent && !isCurrent()) return
       updateServer({ ...client, tools, commands, resources, isCurrent })
 
@@ -386,8 +350,8 @@ export function useManageMCPConnections(
           cancelReconnect(client.name)
           const cacheKey = getServerCacheKey(client.name, client.config)
           // Include queued publications: the store may still be one batch behind.
-          const isActiveClient = () => {
-            if (isCurrent && !isCurrent()) return false
+          const isActiveClient = (retired = false) => {
+            if (isCurrent && !isCurrent(retired)) return false
             const pending = pendingUpdatesRef.current.filter(update => update.name === client.name).at(-1)
             const current =
               pending ??
@@ -421,7 +385,7 @@ export function useManageMCPConnections(
               )
               return false
             })
-            if (!retired || !isActiveClient()) return
+            if (!retired || !isActiveClient(true)) return
 
             // TODO: This really isn't great: ideally we'd check appstate as the source of truth
             // as to whether it was disconnected due to a disable, but appstate is stale at this
@@ -591,7 +555,13 @@ export function useManageMCPConnections(
 
               void reconnectWithBackoff()
             } else {
-              updateServer({ ...client, type: 'failed', expectedClient: client.client })
+              updateServer({
+                ...client,
+                type: 'failed',
+                expectedClient: client.client,
+                allowUnpublished: true,
+                isCurrent: () => !connectToServer.cache.has(cacheKey) && (!isCurrent || isCurrent(true)),
+              })
             }
           }
 
@@ -1119,6 +1089,7 @@ export function useManageMCPConnections(
   useEffect(() => registerMcpPublisher(onConnectionAttempt), [
     onConnectionAttempt,
   ])
+  useEffect(() => registerModMcpPublisher(onConnectionAttempt, true), [onConnectionAttempt])
 
   // Cleanup all timers on unmount
   useEffect(() => {

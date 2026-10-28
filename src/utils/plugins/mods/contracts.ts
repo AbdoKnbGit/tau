@@ -1,4 +1,6 @@
+export const MOD_API_EVENTS = new Set(['mcp.call', 'mcp.connect'])
 export const MOD_EVENTS = new Set([
+  ...MOD_API_EVENTS,
   'session.start',
   'session.end',
   'command.run',
@@ -17,6 +19,7 @@ export const MOD_EVENTS = new Set([
   ].map((event) => `classic.${event}`),
 ])
 export const MOD_METHODS = new Set([
+  ...MOD_API_EVENTS,
   'session.cwd',
   'session.root',
   'session.id',

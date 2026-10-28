@@ -23,6 +23,7 @@ export type ToolInputJSONSchema = {
 import type { Notification } from './context/notifications.js'
 import type {
   MCPServerConnection,
+  ScopedMcpServerConfig,
   ServerResource,
 } from './services/mcp/types.js'
 import type {
@@ -173,6 +174,7 @@ export type ToolUseContext = {
     verbose: boolean
     thinkingConfig: ThinkingConfig
     mcpClients: MCPServerConnection[]
+    dynamicMcpConfig?: Record<string, ScopedMcpServerConfig>
     mcpResources: Record<string, ServerResource[]>
     isNonInteractiveSession: boolean
     agentDefinitions: AgentDefinitionsResult

@@ -104,6 +104,7 @@ const kairosGate = feature('KAIROS') ? require('./assistant/gate.js') as typeof 
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { checkQuotaStatus } from './services/claudeAiLimits.js';
 import { getMcpToolsCommandsAndResources, prefetchAllMcpResources } from './services/mcp/client.js';
+import { setModMcpSessionOptions, registerModMcpPublisher, applyModMcpUpdate } from './services/mcp/modSession.js';
 import { MCP_SOURCE_LOCAL_CONFIG, acknowledgeMcpPublication, beginMcpSource, registerMcpPublisher, settleMcpSource, skipMcpSource } from './services/mcp/readiness.js';
 import { waitForMcpLaunchBarrier } from './services/mcp/launchBarrier.js';
 import { VALID_INSTALLABLE_SCOPES, VALID_UPDATE_SCOPES } from './services/plugins/pluginCliCommands.js';
@@ -2511,6 +2512,8 @@ async function run(): Promise<CommanderCommand> {
       ...dynamicMcpConfig
     };
 
+    setModMcpSessionOptions({ strict: strictMcpConfig || isBareMode(), dynamic: dynamicMcpConfig });
+
     // Separate SDK configs from regular MCP configs
     const sdkMcpConfigs: Record<string, McpSdkServerConfig> = {};
     const regularMcpConfigs: Record<string, ScopedMcpServerConfig> = {};
@@ -2761,6 +2764,13 @@ async function run(): Promise<CommanderCommand> {
 
       // Init app state
       const headlessStore = createStore(headlessInitialState, onChangeAppState, runOutsideProviderScope);
+      const releaseModMcpPublisher = registerModMcpPublisher((update, isCurrent) => {
+        headlessStore.setState(prev => isCurrent && !isCurrent() ? prev : ({
+          ...prev,
+          mcp: applyModMcpUpdate(prev.mcp, update),
+        }));
+      });
+      registerCleanup(async () => { releaseModMcpPublisher(); });
 
       // Check if bypassPermissions should be disabled based on Statsig gate
       // This runs in parallel to the code below, to avoid blocking the main loop.

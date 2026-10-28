@@ -79,6 +79,9 @@ const api = new vm.Script(
     }
     const call = async (invocation, method, args) => {
       if (method === 'store.set' && stringify(args[1]) === undefined) throw new Error('store.set requires JSON data');
+      // JSON encodes undefined array entries as null. Omitted optional trailing
+      // arguments must stay omitted across the worker boundary.
+      while (args.length && args[args.length - 1] === undefined) args.pop();
       const budget = budgets.get(invocation);
       if (budget && budget.waiting++ === 0) budget.paused = Date.now();
       try {

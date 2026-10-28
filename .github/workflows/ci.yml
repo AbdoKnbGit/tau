@@ -171,6 +171,13 @@ jobs:
         # Exercise the built CLI and real mod workers on every OS in the matrix.
         run: node --test test/plugin-mod-skill-prompt.test.mjs test/plugin-mod-skill-prompt-cli.test.mjs
 
+      - name: Test direct mod MCP calls and connection lifecycle
+        run: node --test test/plugin-mod-direct-mcp.test.mjs test/plugin-mod-direct-mcp-cli.test.mjs test/plugin-mod-mcp-publication.test.mjs test/plugin-mod-mcp-api.test.mjs test/plugin-mod-read-cache.test.mjs test/plugin-mod-process-platform.test.mjs test/mcp-lifecycle-boundaries.test.mjs
+
+      - name: Test Windows mod process shims outside test-worker mode
+        if: runner.os == 'Windows'
+        run: node test/plugin-mod-process-platform.test.mjs
+
       - name: Test hook process launching and failure isolation
         run: node --test test/hook-process-launch.test.mjs
 
