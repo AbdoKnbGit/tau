@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -103,6 +103,56 @@ test('no note once the earlier result has left the conversation', async () => {
     await modelRead(file, context)
     context.messages[context.messages.length - 1].message.content[0].content = '[Old tool result content cleared]'
     assert.equal((await modelRead(file, context, { offset: 80, limit: 5 })).data.type, 'text')
+  })
+})
+
+test('directory aliases cannot hide changed contents or revive cleared Read history', async () => {
+  await fixture(async (file, context) => {
+    const root = dirname(file)
+    const first = join(root, 'first target')
+    const second = join(root, 'second target')
+    const alias = join(root, 'directory alias')
+    mkdirSync(first)
+    mkdirSync(second)
+    const firstFile = join(first, 'receipt.txt')
+    const secondFile = join(second, 'receipt.txt')
+    const aliasFile = join(alias, 'receipt.txt')
+    writeFileSync(firstFile, 'first receipt\n')
+    writeFileSync(secondFile, 'other receipt\n')
+    const originalStamp = statSync(firstFile)
+    utimesSync(secondFile, originalStamp.atime, originalStamp.mtime)
+    symlinkSync(first, alias, process.platform === 'win32' ? 'junction' : 'dir')
+
+    const initial = await modelRead(aliasFile, context)
+    assert.equal(initial.data.type, 'text')
+    assert.equal(initial.data.file.content, 'first receipt\n')
+    const originalHistory = JSON.stringify(context.messages)
+    const originalHistoryLength = context.messages.length
+    // Physical and logical names may have separate history. Read both through
+    // the real tool; the same alias must still dedup its own retained result.
+    await modelRead(firstFile, context)
+    assert.equal((await modelRead(aliasFile, context)).data.type, 'file_unchanged')
+
+    // Change the actual symlink, not a mocked path resolver. A cached alias
+    // mapping must not follow the old target after the filesystem changes.
+    unlinkSync(alias)
+    symlinkSync(second, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    const changed = await modelRead(aliasFile, context)
+    assert.equal(changed.data.type, 'text')
+    assert.equal(changed.data.file.content, 'other receipt\n')
+    await modelRead(secondFile, context)
+    assert.equal((await modelRead(firstFile, context)).data.type, 'file_unchanged', 'The earlier target keeps its own history')
+
+    // Equal mtimes are not proof of equal contents, including through aliases.
+    const stamp = statSync(secondFile)
+    writeFileSync(secondFile, 'final receipt\n')
+    utimesSync(secondFile, stamp.atime, stamp.mtime)
+    const edited = await modelRead(aliasFile, context)
+    assert.equal(edited.data.type, 'text')
+    assert.equal(edited.data.file.content, 'final receipt\n')
+    assert.equal(JSON.stringify(context.messages.slice(0, originalHistoryLength)), originalHistory, 'Earlier model-visible bytes stay unchanged')
+    context.messages.length = 0
+    assert.equal((await modelRead(secondFile, context)).data.type, 'text', 'An alias cannot revive compacted history')
   })
 })
 

@@ -4,10 +4,14 @@ import {
   mkdirSync,
   writeFileSync,
   existsSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { after, test } from 'node:test'
 import { loadBuiltRuntime } from './helpers/ink-built-runtime.mjs'
 
@@ -58,14 +62,38 @@ test('portable mod processes preserve argv, stdin, environment, cwd, final newli
     env: { MOD_PROCESS_VALUE: 'actual environment', MOD_PROCESS_EXIT: '7' },
   })
   assert.equal(result.exitCode, 7)
-  assert.deepEqual(JSON.parse(result.stdout), {
+  const { cwd, ...output } = JSON.parse(result.stdout)
+  // The OS may report the physical path, e.g. macOS /var -> /private/var.
+  assert.equal(realpathSync(cwd), realpathSync(project))
+  assert.deepEqual(output, {
     args,
     stdin: 'input\nsecond line\n',
-    cwd: project,
     environment: 'actual environment',
   })
   assert.ok(result.stdout.endsWith('\n'))
   assert.equal(result.stderr, 'stderr preserved\n')
+})
+
+test('mod process cwd follows directory links for absolute and relative overrides', async () => {
+  const target = join(root, 'cwd target with spaces')
+  const alias = join(root, 'linked cwd with spaces')
+  mkdirSync(target)
+  symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  assert.equal(lstatSync(alias).isSymbolicLink(), true)
+  writeFileSync(join(target, 'cwd marker.txt'), 'linked directory contents')
+  writeFileSync(join(project, 'cwd marker.txt'), 'wrong default directory')
+  const script = `const fs=require('node:fs');const marker=fs.readFileSync('cwd marker.txt','utf8');fs.writeFileSync(process.argv[1],marker);console.log(JSON.stringify({cwd:process.cwd(),marker}));`
+  for (const [index, cwd] of [alias, relative(project, alias)].entries()) {
+    const filename = `relative output ${index}.txt`
+    const result = await r.runModProcess([process.execPath, '-e', script, filename], { cwd })
+    assert.equal(result.exitCode, 0, result.stderr)
+    assert.equal(result.stderr, '')
+    const output = JSON.parse(result.stdout)
+    assert.equal(realpathSync(output.cwd), realpathSync(target))
+    assert.equal(output.marker, 'linked directory contents')
+    assert.equal(readFileSync(join(target, filename), 'utf8'), 'linked directory contents')
+    assert.equal(existsSync(join(project, filename)), false)
+  }
 })
 
 test(

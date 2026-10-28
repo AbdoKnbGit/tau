@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { after, test } from 'node:test'
 import { loadMcpRuntime, fixtureContext } from './helpers/mcp-built-runtime.mjs'
 
 const previousCwd = process.cwd()
-const root = mkdtempSync(join(tmpdir(), 'tau-mod-read-cache-'))
+// Node resolves cwd physically after chdir (e.g. macOS /var -> /private/var).
+// This fixture tests absolute/relative spellings of that cwd, not distinct
+// symlink aliases, which intentionally may carry separate Read histories.
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'tau-mod-read-cache-')))
 const project = join(root, 'project')
 mkdirSync(project)
 Object.assign(process.env, {
