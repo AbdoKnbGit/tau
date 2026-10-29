@@ -26,9 +26,9 @@ export async function powerShellHookArgs(
   // syntax. For those commands, ask its parser for the insertion point. Do not
   // wrap the command in a scriptblock: that loses the automatic $input stream.
   if (/\b(?:using|param|begin|process|end|clean)\b/i.test(command)) {
-    const encoded = Buffer.from(command, 'utf8').toString('base64')
     const parse = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';
-$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'));
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false);
+$source = [Console]::In.ReadToEnd();
 $tokens = $null; $errors = $null;
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors);
 if ($errors.Count) { @{syntaxError = $true} | ConvertTo-Json -Compress; exit 0 };
@@ -39,12 +39,13 @@ if ($ast.BeginBlock) { $start = $ast.BeginBlock.Extent.StartOffset; $opening = $
 elseif ($ast.ProcessBlock -or $ast.CleanBlock -or ($ast.EndBlock -and -not $ast.EndBlock.Unnamed)) { $begin = $true };
 @{offset = $offset; begin = $begin} | ConvertTo-Json -Compress`
     // Keep the generated multiline parser script out of Windows command-line
-    // interpretation, including hosts whose standard streams are redirected.
+    // interpretation. Source travels on stdin so encoding the probe cannot
+    // multiply the hook's length past the OS command-line limit.
     const parserArgs = ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(parse, 'utf16le').toString('base64')]
     const result = await execa(shell, parserArgs, {
       cwd: options.cwd, env: options.env, cancelSignal: options.signal,
       timeout: options.timeout, windowsHide: true,
-      input: '', reject: false,
+      input: command, reject: false,
     })
     options.signal.throwIfAborted()
     if (result.timedOut) throw new HookPreparationTimeoutError()

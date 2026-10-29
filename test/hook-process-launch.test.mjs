@@ -56,6 +56,7 @@ test('PowerShell parser preparation retains the configured deadline and never si
   try {
     globalThis[parserProbeKey] = async (_shell, _args, actual) => {
       assert.equal(actual.timeout, options.timeout, 'Parser startup shares the hook deadline without a hidden shorter cap')
+      assert.equal(actual.input, command, 'Source crosses the parser boundary as UTF-8 stdin')
       return { exitCode: 0, stdout: JSON.stringify({ offset: 7, begin: false }) }
     }
     const args = await r.powerShellHookArgs(process.execPath, command, options)
@@ -274,7 +275,8 @@ test('Windows PowerShell 5.1 fallback preserves Unicode JSON and script syntax',
   const previous = process.env.PATH
   try {
     process.env.PATH = dirname(path)
-    const result = await runPowerShell("param([string]$value='漢字'); $data = $input | ConvertFrom-Json; @{expected=$value; actual=$data.unicode; root=$env:CLAUDE_SKILL_DIR} | ConvertTo-Json -Compress", 'PostToolUse', project)
+    const sourcePadding = '<#' + '漢字 source '.repeat(1000) + '#>'
+    const result = await runPowerShell("param([string]$value='漢字'); " + sourcePadding + "; $data = $input | ConvertFrom-Json; @{expected=$value; actual=$data.unicode; root=$env:CLAUDE_SKILL_DIR} | ConvertTo-Json -Compress", 'PostToolUse', project)
     assert.equal(result.status, 0, result.stderr)
     assert.equal(result.stderr, '')
     assert.deepEqual(JSON.parse(result.stdout), {expected: '漢字', actual: '漢字', root: project})
