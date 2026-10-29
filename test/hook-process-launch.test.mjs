@@ -31,6 +31,12 @@ const run = (hook, event = 'PostToolUse', skillRoot) => r.execCommandHook(
 const node = script => ({ command: process.execPath, args: ['-e', script] })
 const shellQuote = text => `'${text.replaceAll("'", "'\\''")}'`
 const shellNode = shellQuote(process.execPath.replaceAll('\\', '/'))
+// Protocol checks include cold .NET startup on hosted machines. Keep their
+// budget separate from the short, explicit deadline regression below.
+const powerShellProtocolTimeoutSeconds = 30
+const runPowerShell = (command, event = 'PostToolUse', skillRoot) => run({
+  shell: 'powershell', command, timeout: powerShellProtocolTimeoutSeconds,
+}, event, skillRoot)
 
 test('missing executable fails before a background hook can claim success', async () => {
   for (const async of [false, true]) {
@@ -139,11 +145,13 @@ test('Python hooks receive the same JSON protocol without Node-specific rewritin
   assert.deepEqual(data.args, ['a b', '; literal', '漢字'])
 })
 
-test('PowerShell hooks launch with explicit shell selection and native skill paths', async t => {
-  const probe = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], { timeout: 5000, windowsHide: true })
-  if (probe.error || probe.status !== 0) return t.skip('PowerShell 7 is not installed')
-  const result = await run({ shell: 'powershell', command: '$data = [Console]::ReadLine() | ConvertFrom-Json; @{root = $env:CLAUDE_SKILL_DIR; unicode = $data.unicode} | ConvertTo-Json -Compress' }, 'PostToolUse', project)
-  assert.equal(result.status, 0, result.stderr)
+test('PowerShell hooks launch with explicit shell selection and native skill paths', { timeout: 300_000 }, async t => {
+  const probe = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], { timeout: powerShellProtocolTimeoutSeconds * 1000, windowsHide: true, encoding: 'utf8' })
+  if (probe.error?.code === 'ENOENT') return t.skip('PowerShell 7 is not installed')
+  assert.equal(probe.error, undefined, `PowerShell startup failed: ${probe.error?.message ?? ''}; ${probe.stderr ?? ''}`)
+  assert.equal(probe.status, 0, `PowerShell startup exited ${probe.status}: ${probe.stderr ?? ''}`)
+  const result = await runPowerShell('$data = [Console]::ReadLine() | ConvertFrom-Json; @{root = $env:CLAUDE_SKILL_DIR; unicode = $data.unicode} | ConvertTo-Json -Compress', 'PostToolUse', project)
+  assert.equal(result.status, 0, JSON.stringify(result))
   assert.deepEqual(JSON.parse(result.stdout), {root: project, unicode: '漢字'})
   for (const command of [
     "param([string]$value='default'); [Console]::Write($value)",
@@ -152,17 +160,34 @@ test('PowerShell hooks launch with explicit shell selection and native skill pat
     "begin <# { comment, not the opening brace #> { $value='default' } end { [Console]::Write($value) }",
     "end { [Console]::Write('default') }",
   ]) {
-    const result = await run({ shell: 'powershell', command })
-    assert.equal(result.status, 0, result.stderr)
+    const result = await runPowerShell(command)
+    assert.equal(result.status, 0, JSON.stringify(result))
     assert.equal(result.stderr, '')
     assert.equal(result.stdout, 'default')
   }
-  const pipeline = await run({ shell: 'powershell', command: '$input | ForEach-Object { $_ }' })
-  assert.equal(pipeline.status, 0, pipeline.stderr)
+  const pipeline = await runPowerShell('$input | ForEach-Object { $_ }')
+  assert.equal(pipeline.status, 0, JSON.stringify(pipeline))
   assert.equal(JSON.parse(pipeline.stdout).tool_name, 'Read')
   assert.equal(JSON.parse(pipeline.stdout).unicode, '漢字')
-  const denied = await run({ shell: 'powershell', command: 'exit 2' })
+  const denied = await runPowerShell('exit 2')
   assert.equal(denied.status, 2)
+})
+
+test('hook deadlines report their reason without turning ordinary exits into timeouts', { timeout: 15_000 }, async () => {
+  const expired = await run({ ...node('setInterval(() => {}, 1000)'), timeout: 0.2 })
+  assert.notEqual(expired.status, 0)
+  assert.notEqual(expired.status, 2, 'A deadline is an execution failure, not a policy block')
+  assert.equal(expired.timedOut, true)
+  assert.match(expired.stderr, /timed out/i)
+  assert.ok(expired.stderr.includes('0.2s'), expired.stderr)
+  assert.match(expired.output, /timed out/i)
+  for (const code of [0, 2, 143]) {
+    const exited = await run(node(`console.error('explicit exit'); process.exit(${code})`))
+    assert.equal(exited.status, code)
+    assert.equal(exited.timedOut, undefined)
+    assert.equal(exited.stderr.trim(), 'explicit exit')
+    assert.doesNotMatch(exited.output, /timed out/i)
+  }
 })
 
 test('Windows batch hooks require explicit shell invocation and report direct-exec errors', { skip: process.platform !== 'win32' }, async () => {

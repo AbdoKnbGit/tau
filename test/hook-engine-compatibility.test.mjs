@@ -155,6 +155,40 @@ test('hook timeout blocks when requested; cancelling the caller never becomes a 
   }
 })
 
+test('command deadlines are errors, caller aborts are cancellations, and partial success JSON cannot override a timeout', async () => {
+  const script = 'console.log(JSON.stringify({decision:"approve"}));setInterval(()=>{},1000)'
+  for (const outside of [false, true]) {
+    const hook = command(script, { timeout: 0.5, onFailure: 'continue' })
+    const expired = await run(hook, { outside })
+    assert.equal(blocked(expired), false)
+    if (outside) {
+      assert.ok(expired.some(result => result.succeeded === false && /timed out/i.test(result.output)), JSON.stringify(expired))
+    } else {
+      const attachments = expired.flatMap(result => result.message?.attachment ? [result.message.attachment] : [])
+      assert.ok(attachments.some(item => item.type === 'hook_non_blocking_error' && /timed out/i.test(item.stderr)), JSON.stringify(expired))
+      assert.ok(!attachments.some(item => item.type === 'hook_cancelled'))
+      assert.ok(!expired.some(result => result.permissionBehavior === 'allow'))
+    }
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 100)
+    try {
+      const cancelled = await run({ ...hook, timeout: 5, onFailure: 'block' }, { outside, signal: controller.signal })
+      assert.equal(blocked(cancelled), false)
+      if (outside) assert.ok(cancelled.some(result => result.output === 'Hook cancelled'), JSON.stringify(cancelled))
+      else assert.ok(cancelled.some(result => result.message?.attachment?.type === 'hook_cancelled'), JSON.stringify(cancelled))
+      assert.doesNotMatch(JSON.stringify(cancelled), /timed out/i)
+    } finally { clearTimeout(timer) }
+  }
+})
+
+test('a model-switch command timeout keeps the current model even when ordinary failures may continue', async () => {
+  for (const outside of [false, true]) {
+    const results = await run(command('setInterval(()=>{},1000)', { timeout: 0.1, onFailure: 'continue' }), { event: 'PreModelSwitch', outside })
+    assert.equal(blocked(results), true, JSON.stringify(results))
+    assert.match(JSON.stringify(results), /timed out/i)
+  }
+})
+
 test('HTTP failures, malformed responses, timeouts and cancellation obey failure policy', async () => {
   const requests = []
   const server = createServer((request, response) => {

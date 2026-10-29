@@ -36,6 +36,8 @@ export type ShellCommand = {
   result: Promise<ExecResult>
   kill: () => void
   status: 'running' | 'backgrounded' | 'completed' | 'killed'
+  /** True only when the foreground execution deadline actually fired. */
+  readonly timedOut?: boolean
   /**
    * Cleans up stream resources (event listeners).
    * Should be called after the command completes or is killed to prevent memory leaks.
@@ -122,6 +124,7 @@ class ShellCommandImpl implements ShellCommand {
   #timeoutId: NodeJS.Timeout | null = null
   #sizeWatchdog: NodeJS.Timeout | null = null
   #killedForSize = false
+  #timedOut = false
   #maxOutputBytes: number
   #abortSignal: AbortSignal
   #onTimeoutCallback:
@@ -138,6 +141,7 @@ class ShellCommandImpl implements ShellCommand {
     if (self.#shouldAutoBackground && self.#onTimeoutCallback) {
       self.#onTimeoutCallback(self.background.bind(self))
     } else {
+      self.#timedOut = true
       self.#doKill(SIGTERM)
     }
   }
@@ -183,6 +187,10 @@ class ShellCommandImpl implements ShellCommand {
 
   get status(): 'running' | 'backgrounded' | 'completed' | 'killed' {
     return this.#status
+  }
+
+  get timedOut(): boolean {
+    return this.#timedOut
   }
 
   #abortHandler(): void {

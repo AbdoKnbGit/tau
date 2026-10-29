@@ -374,6 +374,8 @@ export interface HookBlockingError {
 export type ElicitationResponse = ElicitResult
 
 export interface HookResult {
+  /** The hook deadline fired independently of caller cancellation. */
+  timedOut?: boolean
   deferTool?: boolean
   classifierContext?: string
   message?: HookResultMessage
@@ -919,6 +921,7 @@ async function execCommandHook(
   status: number
   aborted?: boolean
   backgrounded?: boolean
+  timedOut?: true
 }> {
   // Gated to once-per-session events to keep diag_log volume bounded.
   // started/completed live inside the try/finally so setup-path throws
@@ -1020,9 +1023,10 @@ async function execCommandHook(
     }
   }
 
-  let hookTimeoutMs = hook.timeout
+  const configuredHookTimeoutMs = hook.timeout
     ? hook.timeout * 1000
     : defaultHookTimeoutMs(hookEvent)
+  let hookTimeoutMs = configuredHookTimeoutMs
 
   // Build env vars — all paths go through toHookPath for Windows POSIX conversion
   const envVars: NodeJS.ProcessEnv = {
@@ -1437,6 +1441,7 @@ async function execCommandHook(
     output: string
     status: number
     aborted?: boolean
+    timedOut?: true
   }>(resolve => {
     let exitCode: number | null = null
 
@@ -1457,12 +1462,20 @@ async function execCommandHook(
                 .filter(line => !processedPromptLines.has(line.trim()))
                 .join('\n')
 
+        // A timeout normally closes the process with a signal, so its raw
+        // exit code is null and stderr may be empty. Preserve the host's
+        // explicit deadline reason without waiting on a second result promise
+        // or treating a genuine exit 2 as a timeout/policy decision.
+        const timeoutMessage = shellCommand.timedOut
+          ? `Hook timed out after ${configuredHookTimeoutMs / 1000}s`
+          : undefined
         resolve({
           stdout: finalStdout,
-          stderr,
-          output,
-          status: exitCode!,
+          stderr: timeoutMessage ? [timeoutMessage, stderr].filter(Boolean).join('\n') : stderr,
+          output: timeoutMessage ? [output, timeoutMessage].filter(Boolean).join('\n') : output,
+          status: timeoutMessage ? 1 : exitCode!,
           aborted: signal.aborted,
+          ...(timeoutMessage ? { timedOut: true as const } : {}),
         })
       })
     })
@@ -2113,7 +2126,8 @@ function blockOnHookFailure(
   hookEvent: HookEvent,
   cancelledByCaller: boolean,
 ): HookResult {
-  const timedOut = result.outcome === 'cancelled' && !cancelledByCaller
+  const timedOut = !cancelledByCaller &&
+    (result.timedOut === true || result.outcome === 'cancelled')
   if (result.outcome !== 'non_blocking_error' && !timedOut) return result
   if ((result.hook.type === 'callback' || result.hook.type === 'function') && !(hookEvent === 'PreModelSwitch' && timedOut)) {
     return result
@@ -2763,6 +2777,25 @@ export async function* executeHooks({
         return
       }
 
+      // The runner's deadline is independent from caller cancellation. Do not
+      // parse partial JSON from a timed-out process as a successful decision.
+      if (!signal?.aborted && (abortSignal.aborted || result.timedOut)) {
+        const reason = `Hook timed out after ${commandTimeoutMs / 1000}s`
+        emitHookResponse({
+          hookId, hookName, hookEvent, output: reason,
+          stdout: result.stdout, stderr: reason, exitCode: 1, outcome: 'error',
+        })
+        yield {
+          message: createAttachmentMessage({
+            type: 'hook_non_blocking_error', hookName, toolUseID, hookEvent,
+            stderr: reason, stdout: result.stdout, exitCode: 1,
+            command: hookCommand, durationMs,
+          }),
+          outcome: 'non_blocking_error' as const, timedOut: true, hook,
+        }
+        return
+      }
+
       if (result.aborted) {
         emitHookResponse({
           hookId,
@@ -3058,8 +3091,17 @@ export async function* executeHooks({
       // Clean up on error
       cleanup?.()
 
+      if (signal?.aborted) {
+        emitHookResponse({ hookId, hookName, hookEvent, output: 'Hook cancelled', stdout: '', stderr: '', exitCode: 1, outcome: 'cancelled' })
+        yield {
+          message: createAttachmentMessage({ type: 'hook_cancelled', hookName, toolUseID, hookEvent, command: hookCommand, durationMs: Date.now() - hookStartMs }),
+          outcome: 'cancelled' as const, hook,
+        }
+        return
+      }
       const errorMessage =
-        error instanceof Error ? error.message : String(error)
+        abortSignal.aborted ? `Hook timed out after ${commandTimeoutMs / 1000}s`
+          : error instanceof Error ? error.message : String(error)
       emitHookResponse({
         hookId,
         hookName,
@@ -3082,7 +3124,8 @@ export async function* executeHooks({
           command: hookCommand,
           durationMs: Date.now() - hookStartMs,
         }),
-        outcome: abortSignal.aborted ? 'cancelled' as const : 'non_blocking_error' as const,
+        outcome: 'non_blocking_error' as const,
+        ...(abortSignal.aborted ? { timedOut: true } : {}),
         hook,
       }
       return
@@ -3740,8 +3783,8 @@ export async function executeHooksOutsideREPL({
           return { command: commandText, succeeded: true, output: '', blocked: false }
         }
 
-        if (result.aborted) {
-          logForDebugging(`${hookName} [${commandText}] cancelled`)
+        if (result.aborted || ('timedOut' in result && result.timedOut)) {
+          logForDebugging(`${hookName} [${commandText}] ${signal?.aborted ? 'cancelled' : 'timed out'}`)
           return {
             command: commandText,
             succeeded: false,
@@ -3839,7 +3882,9 @@ export async function executeHooksOutsideREPL({
         cleanup?.()
 
         const errorMessage =
-          error instanceof Error ? error.message : String(error)
+          signal?.aborted ? 'Hook cancelled'
+            : abortSignal.aborted ? `Hook timed out after ${commandTimeoutMs / 1000}s`
+              : error instanceof Error ? error.message : String(error)
         logForDebugging(
           `${hookName} [${commandText}] failed to run: ${errorMessage}`,
           { level: 'error' },
