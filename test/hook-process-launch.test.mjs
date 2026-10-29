@@ -16,9 +16,21 @@ Object.assign(process.env, {
   TAU_MCP_TEST_BUNDLE: resolve(process.env.TAU_MCP_TEST_BUNDLE ?? 'dist/tau.mjs'),
 })
 process.chdir(project)
+const parserProbeKey = Symbol.for('tau.test.hook-parser-probe')
 const r = await loadMcpRuntime({
   paths: ['src/utils/hooks.ts', 'src/utils/cwd.ts', 'src/utils/hooks/shellResolution.ts', 'src/utils/hooks/commandProcess.ts', 'src/utils/executablePath.ts'],
-  exports: ['execCommandHook', 'runWithCwdOverride', 'setOriginalCwd', 'getOriginalCwd', 'setIsInteractive', 'getHookGitBashPath', 'getHookPowerShellPath', 'startHookProcess', 'executablePaths'],
+  exports: ['execCommandHook', 'runWithCwdOverride', 'setOriginalCwd', 'getOriginalCwd', 'setIsInteractive', 'getHookGitBashPath', 'getHookPowerShellPath', 'startHookProcess', 'executablePaths', 'powerShellHookArgs'],
+  transform(source) {
+    // Control only the parser subprocess boundary. The hook preparation and
+    // launcher remain the shipped implementation; ordinary tests use real shells.
+    let replacements = 0
+    source = source.replace(/async function powerShellHookArgs\([\s\S]*?await (execa\d*)\(shell,/, (match, executable) => {
+      replacements++
+      return match.replace(`await ${executable}(shell,`, `await (globalThis[Symbol.for('tau.test.hook-parser-probe')] ?? ${executable})(shell,`)
+    })
+    assert.equal(replacements, 1, 'Locate the PowerShell parser subprocess boundary')
+    return source
+  },
 })
 r.setIsInteractive(false)
 r.setOriginalCwd(project)
@@ -37,6 +49,57 @@ const powerShellProtocolTimeoutSeconds = 30
 const runPowerShell = (command, event = 'PostToolUse', skillRoot) => run({
   shell: 'powershell', command, timeout: powerShellProtocolTimeoutSeconds,
 }, event, skillRoot)
+
+test('PowerShell parser preparation retains the configured deadline and never silently drops UTF-8 setup', async () => {
+  const command = "param(); [Console]::Write('漢字')"
+  const options = { cwd: project, env: process.env, signal: new AbortController().signal, timeout: 9000 }
+  try {
+    globalThis[parserProbeKey] = async (_shell, _args, actual) => {
+      assert.equal(actual.timeout, options.timeout, 'Parser startup shares the hook deadline without a hidden shorter cap')
+      return { exitCode: 0, stdout: JSON.stringify({ offset: 7, begin: false }) }
+    }
+    const args = await r.powerShellHookArgs(process.execPath, command, options)
+    assert.ok(args.at(-1).startsWith('param()'))
+    assert.match(args.at(-1), /UTF8Encoding/)
+    assert.ok(args.at(-1).endsWith("; [Console]::Write('漢字')"))
+
+    for (const result of [
+      { exitCode: undefined, timedOut: true, stdout: '' },
+      { exitCode: undefined, isTerminated: true, signal: 'SIGTERM', stdout: '' },
+      { exitCode: 1, stdout: '' },
+      { exitCode: 2, stdout: '' },
+      { exitCode: 0, stdout: 'not JSON' },
+      { exitCode: 0, stdout: JSON.stringify({ offset: -1, begin: false }) },
+    ]) {
+      globalThis[parserProbeKey] = async () => result
+      await assert.rejects(r.powerShellHookArgs(process.execPath, command, options), result.timedOut ? /timed out/i : /PowerShell/i)
+    }
+
+    // A real syntax error still reaches PowerShell unchanged for its own diagnosis.
+    globalThis[parserProbeKey] = async () => ({ exitCode: 0, stdout: JSON.stringify({ syntaxError: true }) })
+    assert.equal((await r.powerShellHookArgs(process.execPath, command, options)).at(-1), command)
+
+    const controller = new AbortController()
+    globalThis[parserProbeKey] = async () => {
+      controller.abort()
+      return { exitCode: undefined, isCanceled: true, stdout: '' }
+    }
+    await assert.rejects(r.powerShellHookArgs(process.execPath, command, { ...options, signal: controller.signal }), error => error.name === 'AbortError')
+  } finally { delete globalThis[parserProbeKey] }
+})
+
+test('a PowerShell preparation timeout cannot launch the command or become a policy exit', async t => {
+  if (!await r.getHookPowerShellPath()) return t.skip('PowerShell is not installed')
+  const marker = join(project, 'preparation-must-not-run.txt')
+  try {
+    globalThis[parserProbeKey] = async () => ({ exitCode: undefined, timedOut: true, stdout: '' })
+    const result = await runPowerShell(`param(); [IO.File]::WriteAllText('${marker.replaceAll("'", "''")}', 'ran')`)
+    assert.equal(result.timedOut, true)
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /timed out.*prepar/i)
+    assert.equal(existsSync(marker), false)
+  } finally { delete globalThis[parserProbeKey] }
+})
 
 test('missing executable fails before a background hook can claim success', async () => {
   for (const async of [false, true]) {
@@ -171,6 +234,12 @@ test('PowerShell hooks launch with explicit shell selection and native skill pat
   assert.equal(JSON.parse(pipeline.stdout).unicode, '漢字')
   const denied = await runPowerShell('exit 2')
   assert.equal(denied.status, 2)
+  const malformed = await runPowerShell('param([string]$value=); [Console]::Write("must not run")')
+  assert.notEqual(malformed.status, 0)
+  assert.notEqual(malformed.status, 2)
+  assert.ok(malformed.stderr.trim(), 'PowerShell retains its original syntax diagnosis')
+  assert.equal(malformed.stdout, '')
+  assert.equal(malformed.timedOut, undefined)
 })
 
 test('hook deadlines report their reason without turning ordinary exits into timeouts', { timeout: 15_000 }, async () => {
@@ -194,7 +263,7 @@ test('Windows batch hooks require explicit shell invocation and report direct-ex
   const script = join(project, 'batch hook.cmd')
   writeFileSync(script, '@echo off\r\necho BATCH-OK\r\n')
   await assert.rejects(run({ command: script, args: [] }), /Batch scripts require an explicit/)
-  const result = await run({ shell: 'powershell', command: `& '${script.replaceAll("'", "''")}'` })
+  const result = await runPowerShell(`& '${script.replaceAll("'", "''")}'`)
   assert.equal(result.status, 0, result.stderr)
   assert.equal(result.stdout.trim(), 'BATCH-OK')
 })
@@ -205,7 +274,7 @@ test('Windows PowerShell 5.1 fallback preserves Unicode JSON and script syntax',
   const previous = process.env.PATH
   try {
     process.env.PATH = dirname(path)
-    const result = await run({ shell: 'powershell', command: "param([string]$value='漢字'); $data = $input | ConvertFrom-Json; @{expected=$value; actual=$data.unicode; root=$env:CLAUDE_SKILL_DIR} | ConvertTo-Json -Compress" }, 'PostToolUse', project)
+    const result = await runPowerShell("param([string]$value='漢字'); $data = $input | ConvertFrom-Json; @{expected=$value; actual=$data.unicode; root=$env:CLAUDE_SKILL_DIR} | ConvertTo-Json -Compress", 'PostToolUse', project)
     assert.equal(result.status, 0, result.stderr)
     assert.equal(result.stderr, '')
     assert.deepEqual(JSON.parse(result.stdout), {expected: '漢字', actual: '漢字', root: project})

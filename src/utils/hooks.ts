@@ -7,7 +7,7 @@ import { basename } from 'path'
 import { hasModEvent } from './plugins/mods/manager.js'
 import { feature } from 'bun:bundle'
 import type { ChildProcessWithoutNullStreams } from 'child_process'
-import { hookWorkingDirectory, isHookDirectory, powerShellHookArgs, prepareWindowsHookScript, startHookProcess } from './hooks/commandProcess.js'
+import { HookPreparationTimeoutError, hookWorkingDirectory, isHookDirectory, powerShellHookArgs, prepareWindowsHookScript, startHookProcess } from './hooks/commandProcess.js'
 import { wrapSpawn } from './ShellCommand.js'
 import { TaskOutput } from './task/TaskOutput.js'
 import { getCwd } from './cwd.js'
@@ -1156,11 +1156,19 @@ async function execCommandHook(
       )
     }
     const preparationStarted = Date.now()
-    const args = await powerShellHookArgs(pwshPath, finalCommand, {
-      cwd: safeCwd, env: envVars, signal, timeout: hookTimeoutMs,
-    })
-    hookTimeoutMs -= Date.now() - preparationStarted
-    if (hookTimeoutMs <= 0) throw new Error('Hook timed out while preparing the PowerShell command')
+    let args: string[]
+    try {
+      args = await powerShellHookArgs(pwshPath, finalCommand, {
+        cwd: safeCwd, env: envVars, signal, timeout: hookTimeoutMs,
+      })
+      hookTimeoutMs -= Date.now() - preparationStarted
+      signal.throwIfAborted()
+      if (hookTimeoutMs <= 0) throw new HookPreparationTimeoutError()
+    } catch (error) {
+      signal.throwIfAborted()
+      if (!(error instanceof HookPreparationTimeoutError)) throw error
+      return { stdout: '', stderr: error.message, output: error.message, status: 1, timedOut: true }
+    }
     child = await startHookProcess(pwshPath, args, {
       env: envVars,
       cwd: safeCwd,

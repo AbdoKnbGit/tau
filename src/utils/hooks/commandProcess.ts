@@ -4,12 +4,21 @@ import { getErrnoCode } from '../errors.js'
 import { buildPowerShellArgs } from '../shell/powershellProvider.js'
 import { execa } from 'execa'
 
+export class HookPreparationTimeoutError extends Error {
+  constructor() {
+    super('Hook timed out while preparing the PowerShell command')
+    this.name = 'HookPreparationTimeoutError'
+  }
+}
+
 /** Hook stdin/stdout is UTF-8 JSON, including under Windows PowerShell 5.1. */
 export async function powerShellHookArgs(
   shell: string,
   command: string,
   options: { cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal; timeout: number },
 ): Promise<string[]> {
+  options.signal.throwIfAborted()
+  if (options.timeout <= 0) throw new HookPreparationTimeoutError()
   const setup = '[Console]::InputEncoding = [Console]::OutputEncoding = $OutputEncoding = [System.Text.UTF8Encoding]::new($false);\n'
   let offset = 0
   let begin = false
@@ -18,33 +27,45 @@ export async function powerShellHookArgs(
   // wrap the command in a scriptblock: that loses the automatic $input stream.
   if (/\b(?:using|param|begin|process|end|clean)\b/i.test(command)) {
     const encoded = Buffer.from(command, 'utf8').toString('base64')
-    const parse = `$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'));
+    const parse = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'));
 $tokens = $null; $errors = $null;
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors);
-if ($errors.Count) { exit 1 };
+if ($errors.Count) { @{syntaxError = $true} | ConvertTo-Json -Compress; exit 0 };
 $offset = 0; $begin = $false;
 if ($ast.ParamBlock) { $offset = $ast.ParamBlock.Extent.EndOffset };
 foreach ($using in $ast.UsingStatements) { $offset = [Math]::Max($offset, $using.Extent.EndOffset) };
 if ($ast.BeginBlock) { $start = $ast.BeginBlock.Extent.StartOffset; $opening = $tokens | Where-Object { $_.Kind -eq 'LCurly' -and $_.Extent.StartOffset -ge $start } | Select-Object -First 1; $offset = $opening.Extent.EndOffset }
 elseif ($ast.ProcessBlock -or $ast.CleanBlock -or ($ast.EndBlock -and -not $ast.EndBlock.Unnamed)) { $begin = $true };
 @{offset = $offset; begin = $begin} | ConvertTo-Json -Compress`
-    const result = await execa(shell, buildPowerShellArgs(parse), {
+    // Keep the generated multiline parser script out of Windows command-line
+    // interpretation, including hosts whose standard streams are redirected.
+    const parserArgs = ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(parse, 'utf16le').toString('base64')]
+    const result = await execa(shell, parserArgs, {
       cwd: options.cwd, env: options.env, cancelSignal: options.signal,
-      timeout: Math.min(options.timeout, 5000), windowsHide: true,
+      timeout: options.timeout, windowsHide: true,
       input: '', reject: false,
     })
     options.signal.throwIfAborted()
-    // Preserve the original shell diagnosis for malformed source or unavailable
-    // parser features. This process only parses text; it never runs the hook.
-    if (result.exitCode !== 0) return buildPowerShellArgs(command)
+    if (result.timedOut) throw new HookPreparationTimeoutError()
+    // Infrastructure failures must not run the hook without UTF-8 setup. Only
+    // an explicit parser diagnosis below may preserve the original command.
+    if (result.failed || result.exitCode !== 0) {
+      throw new Error('Unable to prepare the PowerShell hook: the syntax parser did not complete successfully')
+    }
     try {
       const parsed = JSON.parse(result.stdout)
+      // This process only parses text. Let PowerShell report malformed source
+      // itself, preserving its original diagnostic without executing the body.
+      if (parsed?.syntaxError === true) return buildPowerShellArgs(command)
       if (!Number.isInteger(parsed.offset) || parsed.offset < 0 || parsed.offset > command.length || typeof parsed.begin !== 'boolean') {
-        return buildPowerShellArgs(command)
+        throw new Error('Invalid parser response')
       }
       offset = parsed.offset
       begin = parsed.begin
-    } catch { return buildPowerShellArgs(command) }
+    } catch {
+      throw new Error('Unable to prepare the PowerShell hook: the syntax parser returned an invalid response')
+    }
   }
   return buildPowerShellArgs(command.slice(0, offset) + '\n' +
     (begin ? `begin { ${setup} }\n` : setup) + command.slice(offset))
