@@ -32,7 +32,7 @@ async function prepare($,text){
   return {text:policy.rewritten,context:[policy.context]};
 }
 export function register(on){
-  on('prompt.submit',async($,e)=>prepare($,e.text));
+  on('prompt.submit',async($,e,next)=>{const result=await prepare($,e.text);return result.drop?result:next({...e,...result})});
   on('turn.start',async($,e,next)=>{await $.fs.write('start.json',JSON.stringify(e));return next(e)});
   on('turn.complete',async($,e)=>{await $.fs.write('complete.json',JSON.stringify(e));return {text:'Completion observed'}});
 }`)

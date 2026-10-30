@@ -8,6 +8,9 @@ import { logForDebugging } from '../../debug.js'
 import { dispatchModEvent, hasModEvent } from './manager.js'
 import type { ModRecord } from './runtime.js'
 import { withModToolContext } from './toolContext.js'
+import { beginModMainTurn, bindModAgentConversation, isModTurnAbort } from './sessionState.js'
+import { acceptQueuedModPrompt } from './promptQueue.js'
+import type { ModDispatchOptions } from './manager.js'
 
 type TurnMessage = Message | RequestStartEvent | StreamEvent | TombstoneMessage | ToolUseSummaryMessage
 
@@ -32,12 +35,16 @@ export async function inToolContext<T>(context: ToolUseContext, canUseTool: CanU
   }, action)
 }
 
-export async function submitModPrompt(event: ModRecord, context: ToolUseContext, canUseTool?: CanUseToolFn): Promise<ModRecord> {
-  return inToolContext(context, canUseTool, async () => await dispatchModEvent(
+export async function submitModPrompt(event: ModRecord, context: ToolUseContext, canUseTool?: CanUseToolFn, options?: ModDispatchOptions): Promise<ModRecord> {
+  let entered: ModRecord | undefined
+  const result = await inToolContext(context, canUseTool, async () => await dispatchModEvent(
     'prompt.submit', event,
-    async e => ({ text: e.text, ...(e.context !== undefined ? { context: e.context } : {}) }),
-    context.abortController.signal,
+    async e => (entered = { text: e.text, ...(e.context !== undefined ? { context: e.context } : {}), ...(e.origin ? { origin: e.origin } : {}) }),
+    context.abortController.signal, options,
   ) as ModRecord)
+  // Only next() enters a prompt. Context attached to a returned receipt after
+  // next() has resolved must not change the already accepted submission.
+  return entered ?? (result.drop !== undefined ? result : { drop: 'the prompt was handled without entering the session' })
 }
 
 /** Observe the complete shared query, rather than individual model requests. */
@@ -46,8 +53,13 @@ export async function* withModTurnLifecycle<T>(
   context: ToolUseContext,
   canUseTool: CanUseToolFn,
 ): AsyncGenerator<TurnMessage, T> {
-  if (!hasModEvent('turn.start') && !hasModEvent('turn.complete')) return yield* source
+  // A cancelled queued submission never acquired a turn. The query source
+  // handles its aborted controller without emitting a new lifecycle pair.
+  if (context.abortController.signal.aborted) return yield* source
   const turnId = randomUUID()
+  const endTurn = !context.agentId ? beginModMainTurn(turnId, context.abortController) : undefined
+  const agentMessages = context.agentId ? [...context.messages] : undefined
+  const endAgent = context.agentId ? bindModAgentConversation(context.agentId, () => agentMessages!) : undefined
   const startedAt = Date.now()
   const requests = new Map<string, AssistantMessage>()
   const streamedUsage = new Map<string, Record<string, number>>()
@@ -59,12 +71,34 @@ export async function* withModTurnLifecycle<T>(
   let terminal: T
   let completeText = ''
   try {
-    if (!context.agentId && hasModEvent('turn.start'))
-      await inToolContext(context, canUseTool, () => dispatchModEvent('turn.start', { turnId }, async e => ({ turnId: e.turnId }), context.abortController.signal))
+    if (!context.agentId) {
+      for (const message of context.messages)
+        if (message.type === 'user') acceptQueuedModPrompt(message.uuid)
+    }
+    if (!context.agentId && hasModEvent('turn.start')) {
+      try {
+        await inToolContext(context, canUseTool, () => dispatchModEvent('turn.start', { turnId }, async e => ({ turnId: e.turnId }), context.abortController.signal))
+      } catch (error) {
+        // Aborting its own turn is an acknowledged API action. Let the query
+        // return its ordinary aborted result instead of surfacing a hook error.
+        if (!isModTurnAbort(context.abortController.signal)) throw error
+      }
+    }
     while (true) {
       const next = await source.next()
       if (next.done) { done = true; terminal = next.value; break }
       const message = next.value
+      if (agentMessages) {
+        if (message.type === 'tombstone') {
+          const index = agentMessages.findIndex(item => item.uuid === message.message.uuid)
+          if (index >= 0) agentMessages.splice(index, 1)
+        } else if (['user', 'assistant', 'attachment', 'system', 'progress'].includes(message.type)) {
+          const row = message as Message
+          const index = agentMessages.findIndex(item => item.uuid === row.uuid)
+          if (index >= 0) agentMessages[index] = row
+          else agentMessages.push(row)
+        }
+      }
       if (message.type === 'stream_request_start') streamingResponseId = undefined
       if (message.type === 'assistant' && !message.isApiErrorMessage) {
         assistant = message
@@ -91,6 +125,7 @@ export async function* withModTurnLifecycle<T>(
     try {
       if (!done) await source.return(undefined as T)
     } finally {
+      endTurn?.()
       if (hasModEvent('turn.complete')) {
         let usage: Record<string, number> | null = null
         for (const [id, request] of requests) {
@@ -116,6 +151,7 @@ export async function* withModTurnLifecycle<T>(
           logForDebugging(`Mod turn.complete failed: ${String(error)}`)
         }
       }
+      endAgent?.()
     }
   }
   // Informational messages are presentation only and are excluded from API history.

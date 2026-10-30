@@ -3,7 +3,7 @@ import type { Attributes, Meter, MetricOptions } from '@opentelemetry/api'
 import type { logs } from '@opentelemetry/api-logs'
 import type { LoggerProvider } from '@opentelemetry/sdk-logs'
 import type { MeterProvider } from '@opentelemetry/sdk-metrics'
-import type { BasicTracerProvider } from '@opentelemetry/sdk-trace-base'
+import type { TracerProvider } from '@opentelemetry/sdk-trace'
 import { realpathSync } from 'fs'
 import { getEnvironmentPluginPaths, getSessionPluginUrls } from 'src/utils/plugins/sessionPaths.js'
 import sumBy from 'lodash-es/sumBy.js'
@@ -126,7 +126,7 @@ type State = {
   // Meter provider state
   meterProvider: MeterProvider | null
   // Tracer provider state
-  tracerProvider: BasicTracerProvider | null
+  tracerProvider: TracerProvider | null
   // Agent color state
   agentColorMap: Map<string, AgentColorName>
   agentColorIndex: number
@@ -1132,10 +1132,10 @@ export function getMeterProvider(): MeterProvider | null {
 export function setMeterProvider(provider: MeterProvider | null): void {
   STATE.meterProvider = provider
 }
-export function getTracerProvider(): BasicTracerProvider | null {
+export function getTracerProvider(): TracerProvider | null {
   return STATE.tracerProvider
 }
-export function setTracerProvider(provider: BasicTracerProvider | null): void {
+export function setTracerProvider(provider: TracerProvider | null): void {
   STATE.tracerProvider = provider
 }
 

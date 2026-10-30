@@ -26,6 +26,7 @@ import {
   getAllBrowserDataPaths,
   getAllNativeMessagingHostsDirs,
   getAllWindowsRegistryKeys,
+  isClaudeInChromeAvailable,
   openInChrome,
 } from './common.js'
 import { getChromeSystemPrompt } from './prompt.js'
@@ -37,6 +38,10 @@ const NATIVE_HOST_IDENTIFIER = 'com.anthropic.claude_code_browser_extension'
 const NATIVE_HOST_MANIFEST_NAME = `${NATIVE_HOST_IDENTIFIER}.json`
 
 export function shouldEnableClaudeInChrome(chromeFlag?: boolean): boolean {
+  if (!isClaudeInChromeAvailable()) {
+    return false
+  }
+
   // Disable by default in non-interactive sessions (e.g., SDK, CI)
   if (getIsNonInteractiveSession() && chromeFlag !== true) {
     return false
@@ -75,6 +80,7 @@ export function shouldAutoEnableClaudeInChrome(): boolean {
   }
 
   shouldAutoEnable =
+    isClaudeInChromeAvailable() &&
     getIsInteractive() &&
     isChromeExtensionInstalled_CACHED_MAY_BE_STALE() &&
     (process.env.USER_TYPE === 'ant' ||

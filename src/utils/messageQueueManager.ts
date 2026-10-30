@@ -56,6 +56,10 @@ const commandQueue: QueuedCommand[] = []
 /** Frozen snapshot — recreated on every mutation for useSyncExternalStore. */
 let snapshot: readonly QueuedCommand[] = Object.freeze([])
 const queueChanged = createSignal()
+const commandsDiscarded = createSignal<[readonly QueuedCommand[]]>()
+
+/** Discard notifications exclude dequeues, which transfer ownership to a runner. */
+export const subscribeToDiscardedCommands = commandsDiscarded.subscribe
 
 function notifySubscribers(): void {
   snapshot = Object.freeze([...commandQueue])
@@ -277,15 +281,16 @@ export function remove(commandsToRemove: QueuedCommand[]): void {
     return
   }
 
-  const before = commandQueue.length
+  const removed: QueuedCommand[] = []
   for (let i = commandQueue.length - 1; i >= 0; i--) {
     if (commandsToRemove.includes(commandQueue[i]!)) {
       discardPromptHistoryEntry(commandQueue[i]!.uuid)
-      commandQueue.splice(i, 1)
+      removed.push(commandQueue.splice(i, 1)[0]!)
     }
   }
 
-  if (commandQueue.length !== before) {
+  if (removed.length) {
+    commandsDiscarded.emit(removed)
     notifySubscribers()
   }
 
@@ -310,6 +315,7 @@ export function removeByFilter(
   }
 
   if (removed.length > 0) {
+    commandsDiscarded.emit(removed)
     notifySubscribers()
     for (const _cmd of removed) {
       logOperation('remove')
@@ -327,8 +333,10 @@ export function clearCommandQueue(): void {
   if (commandQueue.length === 0) {
     return
   }
-  for (const command of commandQueue) discardPromptHistoryEntry(command.uuid)
+  const removed = [...commandQueue]
+  for (const command of removed) discardPromptHistoryEntry(command.uuid)
   commandQueue.length = 0
+  commandsDiscarded.emit(removed)
   notifySubscribers()
 }
 
@@ -337,9 +345,11 @@ export function clearCommandQueue(): void {
  * Used for test cleanup.
  */
 export function resetCommandQueue(): void {
-  for (const command of commandQueue) discardPromptHistoryEntry(command.uuid)
+  const removed = [...commandQueue]
+  for (const command of removed) discardPromptHistoryEntry(command.uuid)
   commandQueue.length = 0
   snapshot = Object.freeze([])
+  if (removed.length) commandsDiscarded.emit(removed)
 }
 
 // ============================================================================
@@ -365,6 +375,7 @@ export function isPromptInputModeEditable(
 export function isQueuedCommandEditable(cmd: QueuedCommand): boolean {
   return (
     isPromptInputModeEditable(cmd.mode) &&
+    !cmd.modPrompt &&
     !cmd.isMeta &&
     !isQueuedHiddenBashCommand(cmd)
   )
@@ -389,6 +400,7 @@ function isQueuedHiddenBashCommand(cmd: QueuedCommand): boolean {
  * keyboard user sees what is pending) but stay non-editable.
  */
 export function isQueuedCommandVisible(cmd: QueuedCommand): boolean {
+  if (cmd.modPrompt) return true
   if (
     (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
     cmd.origin?.kind === 'channel'

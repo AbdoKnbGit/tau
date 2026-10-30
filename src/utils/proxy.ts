@@ -15,6 +15,7 @@ import {
   getMTLSAgent,
   getMTLSConfig,
   getTLSFetchOptions,
+  loadUndiciForDispatcher,
   type TLSConfig,
 } from './mtls.js'
 
@@ -196,8 +197,7 @@ export function createAxiosInstance(
  * Now respects NO_PROXY environment variable
  */
 export const getProxyAgent = memoize((uri: string): undici.Dispatcher => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const undiciMod = require('undici') as typeof undici
+  const undiciMod = loadUndiciForDispatcher()
   const mtlsConfig = getMTLSConfig()
   const caCerts = getCACertificates()
 

@@ -37,7 +37,7 @@ export function getCLISyspromptPrefix(options?: {
 }): CLISyspromptPrefix | '' {
   // Reports supply their own task prompt. Code Assist can reject the injected
   // Claude Agent SDK identity with an opaque 429 even when this account/model
-  // can serve the same report without it. Keep chat and other providers intact.
+  // can serve the same report without it. Keep other providers intact.
   if (options?.requestProvider === 'antigravity' && options.querySource === 'report') {
     return ''
   }
@@ -49,6 +49,11 @@ export function getCLISyspromptPrefix(options?: {
   if (options?.isNonInteractive) {
     if (options.hasAppendSystemPrompt) {
       return AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX
+    }
+    // Code Assist answers this identity with the same opaque 429 on every
+    // print-mode turn, so those turns carry the CLI's own identity instead.
+    if (options.requestProvider === 'antigravity') {
+      return DEFAULT_PREFIX
     }
     return AGENT_SDK_PREFIX
   }

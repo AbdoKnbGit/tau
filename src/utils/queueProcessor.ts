@@ -1,10 +1,12 @@
 import type { QueuedCommand } from '../types/textInputTypes.js'
 import { hasModEvent } from './plugins/mods/manager.js'
+import { dropQueuedModPrompt } from './plugins/mods/promptQueue.js'
 import {
   dequeue,
   dequeueAllMatching,
   hasCommandsInQueue,
   peek,
+  getCommandQueue,
 } from './messageQueueManager.js'
 
 type ProcessQueueParams = {
@@ -74,18 +76,33 @@ export function processQueueIfReady({
   // or lose its own restored input in executeUserInput's batched result.
   if (
     isSlashCommand(next) ||
+    next.modPrompt ||
     next.mode === 'bash' ||
     (next.mode === 'prompt' && hasModEvent('prompt.submit'))
   ) {
     const cmd = dequeue(isMainThread)!
-    void executeInput([cmd])
+    if (cmd.modPrompt) {
+      // The turn-start acknowledgement removes accepted receipts. If input
+      // processing exits first, settle the pending API call instead of leaking it.
+      try {
+        void executeInput([cmd]).then(
+          () => { dropQueuedModPrompt(cmd.uuid) },
+          error => { dropQueuedModPrompt(cmd.uuid, `the prompt could not run: ${String(error)}`) },
+        )
+      } catch (error) {
+        dropQueuedModPrompt(cmd.uuid, `the prompt could not run: ${String(error)}`)
+      }
+    } else void executeInput([cmd])
     return { processed: true }
   }
 
   // Drain all non-slash-command items with the same mode at once.
   const targetMode = next.mode
+  const queue = getCommandQueue()
+  const barrier = queue.findIndex(cmd => isMainThread(cmd) && cmd.modPrompt)
+  const beforeBarrier = barrier < 0 ? undefined : new Set(queue.slice(0, barrier))
   const commands = dequeueAllMatching(
-    cmd => isMainThread(cmd) && !isSlashCommand(cmd) && cmd.mode === targetMode,
+    cmd => isMainThread(cmd) && !cmd.modPrompt && (!beforeBarrier || beforeBarrier.has(cmd)) && !isSlashCommand(cmd) && cmd.mode === targetMode,
   )
   if (commands.length === 0) {
     return { processed: false }

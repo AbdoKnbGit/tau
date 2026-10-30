@@ -113,6 +113,8 @@ import {
   isShuttingDown,
 } from 'src/utils/gracefulShutdown.js'
 import { registerCleanup } from 'src/utils/cleanupRegistry.js'
+import { bindModSession, markModSessionStopped } from '../utils/plugins/mods/sessionState.js'
+import { dropQueuedModPrompt } from '../utils/plugins/mods/promptQueue.js'
 import { createIdleTimeoutManager } from 'src/utils/idleTimeout.js'
 import type {
   SDKStatus,
@@ -461,6 +463,7 @@ export function canBatchWith(
 ): boolean {
   return (
     next !== undefined &&
+    !head.modPrompt && !next.modPrompt &&
     next.mode === 'prompt' &&
     next.workload === head.workload &&
     next.isMeta === head.isMeta
@@ -1060,6 +1063,7 @@ function runHeadlessStreaming(
   // gracefulShutdown persists session state and flushes analytics, with a
   // failsafe timer that force-exits if cleanup hangs.
   const sigintHandler = () => {
+    markModSessionStopped()
     logForDiagnosticsNoPII('info', 'shutdown_signal', { signal: 'SIGINT' })
     if (abortController && !abortController.signal.aborted) {
       abortController.abort()
@@ -1178,6 +1182,14 @@ function runHeadlessStreaming(
   // include Assistant, User, Attachment, and Progress messages.
   // TODO: Clean up this code to avoid passing around a mutable array.
   const mutableMessages: Message[] = initialMessages
+  const releaseModSession = bindModSession({
+    getMessages: () => mutableMessages,
+    getModel: () => getMainLoopModel(),
+    getTools: () => buildAllTools(getAppState()),
+    setMessages: next => { mutableMessages.splice(0, mutableMessages.length, ...next) },
+    isBusy: () => running,
+  })
+  registerCleanup(releaseModSession)
   // ask() is a one-turn convenience wrapper and creates a QueryEngine for
   // every dequeued SDK command. Keep the replacement map at conversation
   // scope so prior aggregate previews never expand between those engines.
@@ -2149,7 +2161,8 @@ function runHeadlessStreaming(
           // when a sub-agent's provider scope reached this drain (a resumed
           // agent queues its notification from inside its route's scope).
           const cmd = command
-          await runOutsideProviderScope(() => runWithWorkload(cmd.workload ?? options.workload, async () => {
+          try {
+            await runOutsideProviderScope(() => runWithWorkload(cmd.workload ?? options.workload, async () => {
             for await (const message of ask({
               commands: uniqBy(
                 [...currentCommands, ...appState.mcp.commands],
@@ -2158,6 +2171,7 @@ function runHeadlessStreaming(
               prompt: input,
               promptUuid: cmd.uuid,
               isMeta: cmd.isMeta,
+              modPrompt: cmd.modPrompt,
               cwd: cwd(),
               tools: allTools,
               verbose: options.verbose,
@@ -2262,7 +2276,10 @@ function runHeadlessStreaming(
                 output.enqueue(message)
               }
             }
-          })) // end runWithWorkload
+            })) // end runWithWorkload
+          } finally {
+            if (cmd.modPrompt) dropQueuedModPrompt(cmd.uuid)
+          }
 
           for (const uuid of batchUuids) {
             notifyCommandLifecycle(uuid, 'completed')

@@ -31,10 +31,14 @@ if (isWin) {
   trace('Accessing env vars...');
   const isCI = !!process.env.CI;
   const hasSession = !!(process.env.SESSIONNAME || process.env.WT_SESSION || process.env.ConEmuPID);
-  trace(`isCI = ${isCI}, hasSession = ${hasSession}`);
+  // Print mode draws no interface and is made for pipes. A piped stdout has to
+  // stay a pipe: as a TTY it takes the terminal cleanup codes at exit, which
+  // land in the caller's output and break anything parsing it.
+  const isPrint = process.argv.slice(2).some(arg => arg === '-p' || arg === '--print');
+  trace(`isCI = ${isCI}, hasSession = ${hasSession}, isPrint = ${isPrint}`);
 
   let fixed = false;
-  if (!isTTY && !isCI && hasSession) {
+  if (!isTTY && !isCI && hasSession && !isPrint) {
     trace('Windows TTY fix triggered');
 
     // ── Strategy A: Create real TTY streams from fd 0/1/2 ──────────

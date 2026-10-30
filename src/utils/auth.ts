@@ -47,6 +47,7 @@ import { clearBetasCaches } from './betas.js'
 import {
   type AccountInfo,
   checkHasTrustDialogAccepted,
+  getCustomApiKeyStatus,
   getGlobalConfig,
   saveGlobalConfig,
 } from './config.js'
@@ -241,6 +242,25 @@ export function hasAnthropicApiKeyAuth(): boolean {
   return key !== null && source !== 'none'
 }
 
+/**
+ * Print mode takes ANTHROPIC_API_KEY without asking, which is what CI wants. A
+ * key the user already refused at the interactive prompt stays refused when a
+ * subscription login can serve the request, so the run does not bill that key,
+ * or fail on its balance, with the login sitting unused. With no login to fall
+ * back on, the key is still used.
+ */
+function isEnvApiKeyRefusedForLogin(apiKey: string): boolean {
+  try {
+    return (
+      getCustomApiKeyStatus(normalizeApiKeyForConfig(apiKey)) === 'rejected' &&
+      shouldUseClaudeAIAuth(getClaudeAIOAuthTokens()?.scopes)
+    )
+  } catch {
+    // Config is not readable before init, so nothing is known to be refused.
+    return false
+  }
+}
+
 export function getAnthropicApiKeyWithSource(
   opts: { skipRetrievingKeyFromApiKeyHelper?: boolean } = {},
 ): {
@@ -273,7 +293,11 @@ export function getAnthropicApiKeyWithSource(
 
   // Always check for direct environment variable when the user ran claude --print.
   // This is useful for CI, etc.
-  if (preferThirdPartyAuthentication() && apiKeyEnv) {
+  if (
+    preferThirdPartyAuthentication() &&
+    apiKeyEnv &&
+    !isEnvApiKeyRefusedForLogin(apiKeyEnv)
+  ) {
     return {
       key: apiKeyEnv,
       source: 'ANTHROPIC_API_KEY',

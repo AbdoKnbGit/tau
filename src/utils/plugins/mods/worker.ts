@@ -10,7 +10,7 @@ const context = vm.createContext(Object.create(null), {
 });
 const bridge = (invocation, method, encoded) => new Promise((resolve, reject) => {
   const id = ++sequence;
-  pending.set(id, { resolve, reject, invocation });
+  pending.set(id, { resolve, reject, invocation, method });
   parentPort.postMessage({ type: 'call', id, invocation, method, args: JSON.parse(encoded) });
 });
 context.__bridge = bridge;
@@ -23,6 +23,7 @@ const api = new vm.Script(
     // Plugin globals are mutable. Keep transport serialization independent of
     // anything a handler returns or assigns to JSON.stringify/JSON.parse.
     const parse = JSON.parse, stringify = JSON.stringify, create = Object.create;
+    const hasOwn = Object.hasOwn;
     let registering = true;
     const freeze = value => {
       if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -38,6 +39,7 @@ const api = new vm.Script(
       const envelope = create(null);
       envelope.matched = matched;
       if (matched) envelope.value = value;
+      if (matched && value && typeof value === 'object' && hasOwn(value, 'value') && value.value === undefined) envelope.voidAPIValue = true;
       return stringify(envelope);
     };
     const encode = value => stringify(value, (_key, val) => val instanceof RegExp
@@ -87,6 +89,7 @@ const api = new vm.Script(
       try {
         const reply = read(await bridge(invocation, method, stringify(args)));
         if (reply.error) throw new Error(reply.error);
+        if (reply.voidAPIValue) reply.value.value = undefined;
         return reply.value;
       } finally {
         if (budget && --budget.waiting === 0) budget.deadline += Date.now() - budget.paused;
@@ -169,13 +172,16 @@ parentPort.on('message', message => {
   if (message.type === 'reply') {
     const request = pending.get(message.id);
     pending.delete(message.id);
-    request?.resolve(JSON.stringify({ value: message.value, error: message.error }));
+    request?.resolve(JSON.stringify({ value: message.value, error: message.error, voidAPIValue: message.voidAPIValue }));
     return;
   }
   if (message.type === 'abort') {
     api.abort(message.invocation);
     for (const [id, request] of pending) {
       if (request.invocation !== message.invocation) continue;
+      // A queued prompt has its own lifetime and settles with its actual drop
+      // receipt even when the hook which submitted it is being cancelled.
+      if (request.method === 'prompt.submit') continue;
       pending.delete(id);
       request.resolve(JSON.stringify({ error: 'Mod event aborted' }));
     }

@@ -91,6 +91,19 @@ function createStderrLogger(): ClientOptions['logger'] {
   }
 }
 
+// Tau has its own telemetry. Left on, the SDK would add spans and trace headers of
+// its own to the requests of anyone who has telemetry enabled.
+const SDK_TELEMETRY_OFF = { traces: false, propagation: false }
+
+// SDK 1.x moved to a newer API version, sends API keys as bearer tokens and dropped
+// this query. The API version decides how the API behaves and gateways can key on the
+// rest, so these requests stay as they were until Tau moves on purpose.
+const ANTHROPIC_API_VERSION_HEADER = { 'anthropic-version': '2023-06-01' }
+const ANTHROPIC_BETA_QUERY = { beta: 'true' }
+// Bedrock and Vertex carry the version in the body, and take it from this header.
+const BEDROCK_API_VERSION_HEADER = { 'anthropic-version': 'bedrock-2023-05-31' }
+const VERTEX_API_VERSION_HEADER = { 'anthropic-version': 'vertex-2023-10-16' }
+
 export async function getAnthropicClient({
   apiKey,
   maxRetries,
@@ -183,10 +196,13 @@ export async function getAnthropicClient({
       }
       const baseURL = getProviderBaseUrl('agentrouter').replace(/\/v1\/?$/i, '/')
       return new Anthropic({
+        // The SDK takes one credential and sends it as a bearer token, and this gateway
+        // expects the token in both headers.
         apiKey: agentRouterKey,
-        authToken: agentRouterKey,
         baseURL,
-        defaultHeaders,
+        defaultHeaders: { ...ANTHROPIC_API_VERSION_HEADER, 'x-api-key': agentRouterKey, ...defaultHeaders },
+        defaultQuery: ANTHROPIC_BETA_QUERY,
+        openTelemetry: SDK_TELEMETRY_OFF,
         maxRetries,
         timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
         dangerouslyAllowBrowser: true,
@@ -206,6 +222,7 @@ export async function getAnthropicClient({
 
   const ARGS = {
     defaultHeaders,
+    openTelemetry: SDK_TELEMETRY_OFF,
     maxRetries,
     timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
     dangerouslyAllowBrowser: true,
@@ -225,8 +242,9 @@ export async function getAnthropicClient({
         ? process.env.ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
         : getAWSRegion()
 
-    const bedrockArgs: ConstructorParameters<typeof AnthropicBedrock>[0] = {
+    const bedrockArgs: NonNullable<ConstructorParameters<typeof AnthropicBedrock>[0]> = {
       ...ARGS,
+      defaultHeaders: { ...BEDROCK_API_VERSION_HEADER, ...defaultHeaders },
       awsRegion,
       ...(isEnvTruthy(process.env.CLAUDE_CODE_SKIP_BEDROCK_AUTH) && {
         skipAuth: true,
@@ -246,9 +264,11 @@ export async function getAnthropicClient({
       // Refresh auth and get credentials with cache clearing
       const cachedCredentials = await refreshAndGetAwsCredentials()
       if (cachedCredentials) {
-        bedrockArgs.awsAccessKey = cachedCredentials.accessKeyId
-        bedrockArgs.awsSecretKey = cachedCredentials.secretAccessKey
-        bedrockArgs.awsSessionToken = cachedCredentials.sessionToken
+        Object.assign(bedrockArgs, {
+          awsAccessKey: cachedCredentials.accessKeyId,
+          awsSecretKey: cachedCredentials.secretAccessKey,
+          awsSessionToken: cachedCredentials.sessionToken,
+        })
       }
     }
     // we have always been lying about the return type - this doesn't support batching or models
@@ -256,19 +276,30 @@ export async function getAnthropicClient({
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
     const { AnthropicFoundry } = await import('@anthropic-ai/foundry-sdk')
+    let FoundryClient = AnthropicFoundry
     // Determine Azure AD token provider based on configuration
     // SDK reads ANTHROPIC_FOUNDRY_API_KEY by default
     let azureADTokenProvider: (() => Promise<string>) | undefined
     if (!process.env.ANTHROPIC_FOUNDRY_API_KEY) {
       if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_FOUNDRY_AUTH)) {
-        // Mock token provider for testing/proxy scenarios (similar to Vertex mock GoogleAuth)
+        // Mock token provider for testing/proxy scenarios (similar to Vertex mock GoogleAuth).
+        // The SDK refuses an empty token, so this mode never asks for it.
         azureADTokenProvider = () => Promise.resolve('')
+        FoundryClient = class extends AnthropicFoundry {
+          override async authHeaders() {
+            return undefined
+          }
+        }
       } else {
         // Use real Azure AD authentication with DefaultAzureCredential
         const {
           DefaultAzureCredential: AzureCredential,
           getBearerTokenProvider,
-        } = await import('@azure/identity')
+        } = await import('@azure/identity').catch(() => {
+          throw new Error(
+            'Foundry sign-in needs the optional package @azure/identity (it requires Node 22 or newer). Install it in the same environment as Tau, or set ANTHROPIC_FOUNDRY_API_KEY.',
+          )
+        })
         azureADTokenProvider = getBearerTokenProvider(
           new AzureCredential(),
           'https://cognitiveservices.azure.com/.default',
@@ -278,11 +309,12 @@ export async function getAnthropicClient({
 
     const foundryArgs: ConstructorParameters<typeof AnthropicFoundry>[0] = {
       ...ARGS,
+      defaultHeaders: { ...ANTHROPIC_API_VERSION_HEADER, ...defaultHeaders },
       ...(azureADTokenProvider && { azureADTokenProvider }),
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
     }
     // we have always been lying about the return type - this doesn't support batching or models
-    return new AnthropicFoundry(foundryArgs) as unknown as Anthropic
+    return new FoundryClient(foundryArgs) as unknown as Anthropic
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)) {
     // Refresh GCP credentials if gcpAuthRefresh is configured and credentials are expired
@@ -333,7 +365,8 @@ export async function getAnthropicClient({
       ? ({
           // Mock GoogleAuth for testing/proxy scenarios
           getClient: () => ({
-            getRequestHeaders: () => ({}),
+            // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+            getRequestHeaders: () => new Headers(),
           }),
         } as unknown as GoogleAuth)
       : new GoogleAuth({
@@ -355,6 +388,7 @@ export async function getAnthropicClient({
 
     const vertexArgs: ConstructorParameters<typeof AnthropicVertex>[0] = {
       ...ARGS,
+      defaultHeaders: { ...VERTEX_API_VERSION_HEADER, ...defaultHeaders },
       region: getVertexRegionForModel(model),
       googleAuth,
       ...(isDebugToStdErr() && { logger: createStderrLogger() }),
@@ -364,8 +398,9 @@ export async function getAnthropicClient({
   }
 
   // Determine authentication method based on available tokens
+  const resolvedApiKey = isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey()
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),
+    apiKey: resolvedApiKey,
     authToken: isClaudeAISubscriber()
       ? getClaudeAIOAuthTokens()?.accessToken
       : undefined,
@@ -375,6 +410,12 @@ export async function getAnthropicClient({
       ? { baseURL: getOauthConfig().BASE_API_URL }
       : {}),
     ...ARGS,
+    defaultHeaders: {
+      ...ANTHROPIC_API_VERSION_HEADER,
+      ...(resolvedApiKey && { Authorization: null, 'x-api-key': resolvedApiKey }),
+      ...defaultHeaders,
+    },
+    defaultQuery: ANTHROPIC_BETA_QUERY,
     ...(isDebugToStdErr() && { logger: createStderrLogger() }),
   }
 
@@ -425,8 +466,13 @@ function buildFetch(
   fetchOverride: ClientOptions['fetch'],
   source: string | undefined,
 ): ClientOptions['fetch'] {
-  // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-  const inner = fetchOverride ?? globalThis.fetch
+  // Read when called: this client's fetch options are built after this runs,
+  // and building them can replace the global (see loadUndiciForDispatcher).
+  const inner: NonNullable<ClientOptions['fetch']> =
+    fetchOverride ??
+    ((input, init) =>
+      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+      globalThis.fetch(input, init))
   // Only send to the first-party API — Bedrock/Vertex/Foundry don't log it
   // and unknown headers risk rejection by strict proxies (inc-4029 class).
   const injectClientRequestId =

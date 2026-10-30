@@ -29,6 +29,7 @@ import * as lockfile from '../../lockfile.js'
 import { resolveWindowsTaskkillPath } from '../../execFileNoThrow.js'
 import type { ModHost, ModRecord } from './runtime.js'
 import type { ModToolRegistry, ModToolInfo } from './tools.js'
+import { abortModMainTurn, readModSessionMessages, readModSessionModel, readModSessionTurns } from './sessionState.js'
 
 export type ModCommandSpec = {
   name: string
@@ -280,6 +281,14 @@ export function createModHost(context: ModHostContext): ModHost {
         return getProjectRoot()
       case 'session.id':
         return getSessionId()
+      case 'session.model':
+        return readModSessionModel()
+      case 'session.turns':
+        return readModSessionTurns()
+      case 'session.messages':
+        return readModSessionMessages(first, signal)
+      case 'turn.abort':
+        return abortModMainTurn(first)
       case 'session.surfaces':
         return getIsInteractive() ? ['terminal'] : []
       case 'session.surface':

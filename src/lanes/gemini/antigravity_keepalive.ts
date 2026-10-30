@@ -55,7 +55,7 @@ interface UndiciLike {
 
 export type UndiciLoader = () => { module: UndiciLike; version?: string }
 
-function loadNpmUndici(): { module: UndiciLike; version?: string } {
+export function loadNpmUndici(): { module: UndiciLike; version?: string } {
   // Lazy like utils/mtls.ts: the package is only loaded when the experiment runs.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const module = require('undici') as UndiciLike

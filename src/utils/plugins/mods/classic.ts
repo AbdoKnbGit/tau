@@ -55,11 +55,11 @@ export function validateModResult(
         throw new Error(`${key} must be a string`)
     }
   } else if (event === 'prompt.submit') {
-    const allowed = new Set(['text', 'context', 'drop'])
+    const allowed = new Set(['text', 'context', 'drop', 'origin'])
     for (const key of Object.keys(value))
       if (!allowed.has(key)) throw new Error(`Unsupported prompt.submit result field: ${key}`)
     if (value.drop !== undefined) {
-      if (typeof value.drop !== 'string' || !value.drop.trim() || value.text !== undefined || value.context !== undefined)
+      if (typeof value.drop !== 'string' || !value.drop.trim() || value.text !== undefined || value.context !== undefined || value.origin !== undefined)
         throw new Error('prompt.submit drop must be a nonempty reason without text or context')
       value.drop = value.drop.slice(0, 4096)
     } else {

@@ -167,9 +167,15 @@ jobs:
       - name: Test plugin dependencies, skills, reload, and hook isolation
         run: node --test test/plugin-runtime-boundaries.test.mjs test/plugin-local-loading.test.mjs test/plugin-dependency-versions.test.mjs test/plugin-skill-compatibility.test.mjs test/plugin-reload-skills.test.mjs test/hook-engine-compatibility.test.mjs test/headless-hook-resume.test.mjs
 
+      - name: Test MCPB bundles, provider SDKs, sign-in, tool schemas, proxy and CA fetch, telemetry exporters, and optional integrations
+        run: node --test test/plugin-mcpb-loading.test.mjs test/plugin-mcpb-cli.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/print-mode-requests.test.mjs test/tool-schema-spelling.test.mjs test/undici-dispatcher-fetch.test.mjs test/telemetry-otlp-exporters.test.mjs test/optional-integrations.test.mjs
+
       - name: Test skill prompt mods and real CLI requests
         # Exercise the built CLI and real mod workers on every OS in the matrix.
         run: node --test test/plugin-mod-skill-prompt.test.mjs test/plugin-mod-skill-prompt-cli.test.mjs
+
+      - name: Test mod session APIs and independent queued turns
+        run: node --test test/plugin-mod-session-state.test.mjs test/plugin-mod-session-messages.test.mjs test/plugin-mod-session-api.test.mjs test/plugin-mod-prompt-api-queue.test.mjs test/plugin-mod-prompt-submit-api.test.mjs test/plugin-mod-prompt-submit-cli.test.mjs test/plugin-mod-prompt-turn.test.mjs test/plugin-mod-prompt-turn-cli.test.mjs test/plugin-mod-prompt-queue.test.mjs
 
       - name: Test direct mod MCP calls and connection lifecycle
         run: node --test test/plugin-mod-direct-mcp.test.mjs test/plugin-mod-direct-mcp-cli.test.mjs test/plugin-mod-mcp-publication.test.mjs test/plugin-mod-mcp-api.test.mjs test/plugin-mod-read-cache.test.mjs test/plugin-mod-process-platform.test.mjs test/mcp-lifecycle-boundaries.test.mjs
@@ -444,6 +450,25 @@ jobs:
   # Contributors who prefer Bun shouldn't be surprised by the build path
   # rotting. Linux-only is fine; Bun on Windows CI is flaky, and this is
   # a contributor-convenience path, not a shipped artifact.
+  # Node's built-in fetch is on a newer undici major than the package Tau ships, so
+  # proxies and custom CA certificates take a path the versions above never reach.
+  node-26-fetch:
+    if: github.event_name != 'schedule'
+    name: Node 26 - proxy and custom CA fetch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Test fetch, provider SDKs, and an MCPB plugin through the built CLI
+        run: node --test test/undici-dispatcher-fetch.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/plugin-mcpb-cli.test.mjs
+
   build-bun:
     if: github.event_name != 'schedule'
     name: Build with Bun (opt-in alternate path)

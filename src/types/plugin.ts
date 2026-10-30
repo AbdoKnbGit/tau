@@ -216,6 +216,13 @@ export type PluginError =
       reason: string
     }
   | {
+      type: 'mcpb-runtime-missing'
+      source: string
+      plugin: string
+      mcpbPath: string
+      reason: string
+    }
+  | {
       type: 'mcpb-invalid-manifest'
       source: string
       plugin: string
@@ -338,6 +345,8 @@ export function getPluginErrorMessage(error: PluginError): string {
       return `Failed to download MCPB from ${error.url}: ${error.reason}`
     case 'mcpb-extract-failed':
       return `Failed to extract MCPB ${error.mcpbPath}: ${error.reason}`
+    case 'mcpb-runtime-missing':
+      return error.reason
     case 'mcpb-invalid-manifest':
       return `MCPB manifest invalid at ${error.mcpbPath}: ${error.validationError}`
     case 'lsp-config-invalid':

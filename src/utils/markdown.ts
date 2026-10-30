@@ -69,9 +69,8 @@ export function formatToken(
       // The prior path tried a native subprocess highlighter first, which
       // blocked the event loop on every streaming delta and froze the UI (see
       // nativeRendering.ts). This colorizer is synchronous but in-process, so
-      // streamed code is colored without that freeze. The `highlight`
-      // (cli-highlight) arg is intentionally unused — it never loads in this
-      // build — leaving it null here would have shown code with no color.
+      // streamed code is colored without that freeze. The `highlight` arg is
+      // intentionally unused: this path colors code whether or not it is ready.
       return highlightCode(token.text, token.lang || null, theme) + EOL
     }
     case 'codespan': {

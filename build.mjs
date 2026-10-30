@@ -11,32 +11,27 @@
 import { build } from 'esbuild'
 import { spawnSync } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { isBuiltin } from 'module'
 import { isAbsolute, join, resolve } from 'path'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
 const bundledRuntimePackages = new Set(['e2b', 'google-auth-library'])
 const optionalExternalPackages = new Set([
-  '@anthropic-ai/bedrock-sdk',
-  '@anthropic-ai/foundry-sdk',
-  '@anthropic-ai/mcpb',
-  '@anthropic-ai/vertex-sdk',
-  '@aws-sdk/client-bedrock',
-  '@aws-sdk/client-sts',
   '@azure/identity',
   '@computer-use/nut-js',
-  '@opentelemetry/exporter-logs-otlp-grpc',
-  '@opentelemetry/exporter-logs-otlp-http',
-  '@opentelemetry/exporter-logs-otlp-proto',
-  '@opentelemetry/exporter-metrics-otlp-grpc',
-  '@opentelemetry/exporter-metrics-otlp-http',
-  '@opentelemetry/exporter-metrics-otlp-proto',
-  '@opentelemetry/exporter-prometheus',
-  '@opentelemetry/exporter-trace-otlp-grpc',
-  '@opentelemetry/exporter-trace-otlp-http',
-  '@opentelemetry/exporter-trace-otlp-proto',
   'modifiers-napi',
   'node-pty',
-  'yaml',
+])
+// Imports esbuild leaves unresolved because they sit in a try block: the code
+// around each one copes with the package being absent. Anything else missing at
+// runtime is the bug the audit below stops, so add to this list only with such a guard.
+const toleratedMissingImports = new Set([
+  'bun:ffi', // upstreamproxy: Bun only
+  'cacache', // cleanup: clearing npm's cache is best effort
+  'encoding', // node-fetch: optional charset conversion
+  'image-processor-napi', // falls back to sharp
+  'source-map-support', // typescript: optional stack mapping
+  'url-handler-napi', // deep links: macOS app bundle only
 ])
 const runtimeDependencies = Object.keys(pkg.dependencies ?? {})
 const externalRuntimePackages = [
@@ -281,12 +276,42 @@ const __dirname = __dirnameForESM(__filename);`,
   },
   plugins: [tauPlugin],
   logLevel: 'warning',
+  metafile: true,
 })
 
 if (result.errors?.length) {
   console.error('Build failed:')
   for (const err of result.errors) {
     console.error(err)
+  }
+  process.exit(1)
+}
+
+// ─── Runtime import audit ──────────────────────────────────────────
+//
+// A package that is imported lazily, left out of the bundle and not installed
+// only fails when a user reaches that feature. Declare it in dependencies, or
+// in devDependencies to bundle it, instead of letting it ship broken.
+
+const availableAtRuntime = new Set([
+  ...externalRuntimePackages,
+  ...Object.keys(pkg.optionalDependencies ?? {}),
+  ...Object.keys(pkg.peerDependencies ?? {}),
+  ...toleratedMissingImports,
+])
+const missingAtRuntime = new Map()
+for (const [file, input] of Object.entries(result.metafile.inputs)) {
+  for (const { path, external } of input.imports) {
+    // Relative and src/ paths here are type-only imports esbuild dropped.
+    if (!external || /^(\.|src\/|<)/.test(path) || isBuiltin(path)) continue
+    const name = path.split('/').slice(0, path.startsWith('@') ? 2 : 1).join('/')
+    if (!availableAtRuntime.has(name)) missingAtRuntime.set(name, file)
+  }
+}
+if (missingAtRuntime.size > 0) {
+  console.error('Build failed: these imports would not exist at runtime:')
+  for (const [name, file] of missingAtRuntime) {
+    console.error(`  ${name} (imported by ${file})`)
   }
   process.exit(1)
 }
@@ -410,7 +435,7 @@ import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { findCompatibleNodeRuntime, getNodeRuntimeIssue, nodeRuntimeMessage } from '../scripts/node-runtime.mjs'
+import { findCompatibleNodeRuntime, getNodeRuntimeIssue, nodeEndOfLifeMessage, nodeRuntimeMessage } from '../scripts/node-runtime.mjs'
 
 // The dependency tree needs require(esm) (e.g. e2b's CommonJS build requires
 // the ESM-only chalk 5): Node 20.19+, 22.12+, or 23+. Fail with a clear
@@ -557,7 +582,17 @@ try {
   throw error
 }
 }
-if (useCurrentRuntime) await loadAgent()
+if (useCurrentRuntime) {
+  // On stderr, because stdout belongs to print mode and MCP. NODE_NO_WARNINGS is
+  // Node's own off switch.
+  const warning = runtimeIssue
+    ? nodeRuntimeMessage(process.version, runtimeIssue)
+    : nodeEndOfLifeMessage(process.version)
+  if (warning && process.env.NODE_NO_WARNINGS !== '1' && typeof Bun === 'undefined') {
+    process.stderr.write(warning)
+  }
+  await loadAgent()
+}
 `
 // Keep startup recovery self-contained even if an interrupted installation
 // omitted the scripts directory. Only Node built-ins remain external.

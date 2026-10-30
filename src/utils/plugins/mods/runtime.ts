@@ -6,6 +6,7 @@ import { MOD_WORKER_SOURCE } from './worker.js'
 import { validateModResult } from './classic.js'
 import { logForDebugging } from '../../debug.js'
 import type { ModCallFrame } from './toolContext.js'
+import { isModTurnAbort } from './sessionState.js'
 
 export type ModRecord = Record<string, any>
 export type ModHook = { event: string; matcher?: ModRecord; hasCatch: boolean }
@@ -33,6 +34,7 @@ export class ModRuntime {
       signal: AbortSignal
       pause(): () => void
       heartbeat(): void
+      deferSelfAbort(): () => void
     }
   >()
   private cancellations = new Map<string, {
@@ -41,6 +43,9 @@ export class ModRuntime {
     acknowledge(): void
   }>()
   private dead = false
+  // A submitted prompt belongs to the loaded mod, not the hook invocation
+  // which queued it. Normal hook completion must not cancel that next turn.
+  private lifetime = new AbortController()
   private ready: Promise<void>
   constructor(
     readonly plugin: { name: string; root: string },
@@ -114,7 +119,10 @@ export class ModRuntime {
           if (message.error) invocation?.reject(new Error(message.error))
           else if (message.matched === false)
             invocation?.resolve({ matched: false })
-          else invocation?.resolve({ matched: true, value: message.value })
+          else {
+            if (message.voidAPIValue && message.value && typeof message.value === 'object') message.value.value = undefined
+            invocation?.resolve({ matched: true, value: message.value })
+          }
         }
         if (message.type === 'aborted') {
           const cancellation = this.cancellations.get(message.invocation)
@@ -137,6 +145,7 @@ export class ModRuntime {
   }
   private fail(error: Error): void {
     this.dead = true
+    this.lifetime.abort(error)
     for (const cancellation of this.cancellations.values()) {
       clearTimeout(cancellation.watchdog)
       cancellation.acknowledge()
@@ -162,12 +171,19 @@ export class ModRuntime {
       })
       return
     }
-    const resume = invocation.pause()
+    // Awaiting a next-turn receipt from a blocking hook cannot make progress.
+    // Keep its normal execution budget running; fire-and-forget submission
+    // returns from the hook immediately and retains the mod's lifetime signal.
+    const resume = message.method === 'prompt.submit' ? () => {} : invocation.pause()
+    const releaseSelfAbort = message.method === 'turn.abort' ? invocation.deferSelfAbort() : () => {}
     try {
       const value = await (message.method === 'next'
         ? invocation.next(message.args[0])
-        : invocation.host(message.method, message.args, invocation.signal))
-      this.worker.postMessage({ type: 'reply', id: message.id, value })
+        : invocation.host(message.method, message.args,
+          message.method === 'prompt.submit' ? this.lifetime.signal : invocation.signal))
+      this.worker.postMessage({ type: 'reply', id: message.id, value,
+        voidAPIValue: message.method === 'next' && value !== null && typeof value === 'object' && Object.hasOwn(value, 'value') && value.value === undefined,
+      })
     } catch (error) {
       logForDebugging(
         `${this.plugin.name}: mod API ${message.method} failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
@@ -178,6 +194,7 @@ export class ModRuntime {
         error: error instanceof Error ? error.message : String(error),
       })
     } finally {
+      releaseSelfAbort()
       resume()
     }
   }
@@ -206,7 +223,9 @@ export class ModRuntime {
       // A responsive worker can cancel this invocation and retain its module
       // state for completion and future hooks. Synchronous loops cannot receive
       // the cancellation message, so keep the worker alive until ack or kill.
-      const abort = () => {
+      let selfAbort = 0
+      let deferredAbort: ReturnType<typeof setTimeout> | undefined
+      const abortNow = () => {
         let acknowledge!: () => void
         const done = new Promise<void>(resolve => { acknowledge = resolve })
         this.cancellations.set(id, {
@@ -214,6 +233,12 @@ export class ModRuntime {
         })
         this.worker.postMessage({ type: 'abort', invocation: id })
         finish(() => reject(new Error('Mod event aborted')))
+      }
+      const abort = () => {
+        // An own-turn abort must acknowledge its API reply before cancelling
+        // the caller. Bound the grace period so a handler cannot hold shutdown.
+        if (selfAbort && isModTurnAbort(signal)) deferredAbort ??= setTimeout(abortNow, 1000)
+        else abortNow()
       }
       let remaining = Math.max(1, meta.deadline - Date.now()),
         started = Date.now(),
@@ -241,6 +266,7 @@ export class ModRuntime {
         finished = true
         clearTimeout(timeout)
         clearTimeout(watchdog)
+        clearTimeout(deferredAbort)
         signal?.removeEventListener('abort', abort)
         controller.abort()
         this.pending.delete(id)
@@ -260,6 +286,7 @@ export class ModRuntime {
         next,
         signal: controller.signal,
         heartbeat,
+        deferSelfAbort: () => { selfAbort++; return () => { selfAbort-- } },
         pause: () => {
           if (waiting++ === 0) {
             remaining = Math.max(1, remaining - (Date.now() - started))
@@ -313,6 +340,7 @@ export class ModRuntime {
       const index = indexes[position]
       if (index === undefined) return core(current)
       let called: Promise<unknown> | undefined
+      let downstreamFailure: unknown
       const next = (rewritten: ModRecord) => {
         if (
           !rewritten ||
@@ -371,7 +399,10 @@ export class ModRuntime {
             else rewritten[key] = current[key]
           }
         }
-        return (called = run(position + 1, rewritten))
+        return (called = run(position + 1, rewritten).catch(error => {
+          downstreamFailure = error
+          throw error
+        }))
       }
       let recovering = false
       const budget = options.timeoutMs ?? 30_000
@@ -388,6 +419,8 @@ export class ModRuntime {
           if (downstream.drop === undefined)
             throw new Error('prompt.submit returned a drop after its next() was answered')
         }
+        if (event === 'prompt.submit' && value.origin !== undefined && JSON.stringify(value.origin) !== JSON.stringify(input.origin))
+          throw new Error('prompt.submit cannot rewrite origin')
         if (event === 'turn.start' && value.turnId !== input.turnId)
           throw new Error('turn.start cannot rewrite turnId')
         let result = value
@@ -419,7 +452,10 @@ export class ModRuntime {
       } catch (error) {
         if (options.signal?.aborted) throw error
         const message = error instanceof Error ? error.message : String(error)
-        options.warn?.(`${this.plugin.name}: ${event} hook skipped: ${message}`)
+        // A transparent middleware forwarding a refused/stale API call has
+        // not failed. Preserve the core error without a misleading hook warning.
+        const forwardedFailure = downstreamFailure !== undefined && message === (downstreamFailure instanceof Error ? downstreamFailure.message : String(downstreamFailure))
+        if (!forwardedFailure) options.warn?.(`${this.plugin.name}: ${event} hook skipped: ${message}`)
         recovering = true
         if (this.hooks[index]?.hasCatch && this.dead) throw error
         if (this.hooks[index]?.hasCatch && !this.dead) {

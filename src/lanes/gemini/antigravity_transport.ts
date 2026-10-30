@@ -8,13 +8,15 @@
 
 import { getCACertificates } from '../../utils/caCerts.js'
 import { hasNodeOption } from '../../utils/envUtils.js'
-import { getMTLSConfig } from '../../utils/mtls.js'
+import { getMTLSConfig, loadUndiciForDispatcher } from '../../utils/mtls.js'
 import { getProxyUrl, shouldBypassProxy } from '../../utils/proxy.js'
 import {
   ANTIGRAVITY_KEEPALIVE_IDLE_MS,
   antigravityKeepAliveRequested,
   chooseAntigravityKeepAlive,
+  loadNpmUndici,
   type AntigravityTlsMaterial,
+  type UndiciLoader,
 } from './antigravity_keepalive.js'
 
 export interface AntigravityTransportProfile {
@@ -63,6 +65,12 @@ function customTlsMaterial(): AntigravityTlsMaterial | undefined {
   return { ...mtls, ...(ca && { ca }) }
 }
 
+// A dispatcher from the undici package needs a fetch that can read its responses.
+const loadUndiciWithMatchingFetch: UndiciLoader = () => {
+  loadUndiciForDispatcher()
+  return loadNpmUndici()
+}
+
 /**
  * Transport for one Antigravity Gemini request. With
  * TAU_ANTIGRAVITY_KEEPALIVE=0 this is always the default dispatcher.
@@ -74,7 +82,7 @@ export function antigravityTransportFor(url: string): AntigravityTransport {
     proxied: profile.route === 'proxy',
     runtime: profile.runtime,
     tls: profile.route === 'direct' ? customTlsMaterial() : undefined,
-  })
+  }, loadUndiciWithMatchingFetch)
   return {
     profile: {
       ...profile,

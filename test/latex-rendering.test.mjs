@@ -24,11 +24,14 @@ const distPath = resolve('dist/tau.mjs')
 const bundle = readFileSync(distPath, 'utf8')
 const entry = /\nvoid main\d*\(\);\r?\n/
 assert.match(bundle, entry, 'the test must disable the CLI entry point')
+// esbuild renames a symbol when a bundled package uses the same name.
+const messagesComponent = bundle.match(/\b(Messages\d*) = React\d*\.memo\(MessagesImpl,/)?.[1]
+assert.ok(messagesComponent, 'the Messages component was not found in the bundle')
 const auditPath = join(dirname(distPath), `.latex-rendering-${process.pid}.mjs`)
 writeFileSync(auditPath, bundle.replace(entry, '\n') + `
 export function latexTestRuntime() {
   init_exportRenderer(); init_Markdown(); init_AppState(); init_store();
-  return { Markdown, StreamingMarkdown, Messages, StaticKeybindingProvider,
+  return { Markdown, StreamingMarkdown, Messages: ${messagesComponent}, StaticKeybindingProvider,
     AppStoreContext, createStore, getDefaultAppState, createAssistantMessage,
     createUserMessage, TerminalSizeContext, TerminalWriteProvider,
     MermaidDiagramsContext, fitMermaidArt, getCliHighlightPromise,

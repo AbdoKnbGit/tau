@@ -112,6 +112,56 @@ export function getWebSocketTLSOptions(): tls.ConnectionOptions | undefined {
 }
 
 /**
+ * Load the undici package to build a dispatcher from it.
+ *
+ * Node's built-in fetch is a separate copy of undici, and it can only read
+ * responses from a dispatcher of its own major or older. With a newer built-in
+ * copy (undici 8 in Node 26, against a package on 7) every response arrives with
+ * no headers: JSON bodies stop parsing, retry-after is lost and HTTP MCP servers
+ * fail to connect. Plain fetch() also ignores the package's global dispatcher, so
+ * it skips a configured proxy. In that case the fetch classes come from the package
+ * too, so both sides are one copy. Callers read the global fetch when they run, so
+ * none of them have to change.
+ */
+export const loadUndiciForDispatcher = memoize((): typeof undici => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const undiciMod = require('undici') as typeof undici
+  let packaged: string | undefined
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    packaged = (require('undici/package.json') as { version?: string }).version
+  } catch {
+    // Unknown, so the comparison below can't vouch for Node's copy.
+  }
+  const major = (version: string | undefined) => Number(version?.split('.')[0])
+  // Node's copy stays only when known to fit: distribution builds may not report
+  // a version, and the package's own pair works on every Node.
+  const builtinCopyFits = major(process.versions.undici) <= major(packaged)
+  // A fetch someone else installed, a preload's for instance, stays in place.
+  // Node's own has the shape WebIDL gives it: named fetch, one required argument.
+  // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+  const current = globalThis.fetch as typeof fetch | undefined
+  if (
+    typeof Bun === 'undefined' &&
+    !builtinCopyFits &&
+    current?.name === 'fetch' &&
+    current.length === 1
+  ) {
+    logForDebugging(
+      `undici: using the package's fetch (${packaged}) over Node's (${process.versions.undici})`,
+    )
+    Object.assign(globalThis, {
+      fetch: undiciMod.fetch,
+      Headers: undiciMod.Headers,
+      Request: undiciMod.Request,
+      Response: undiciMod.Response,
+      FormData: undiciMod.FormData,
+    })
+  }
+  return undiciMod
+})
+
+/**
  * Get fetch options with TLS configuration (mTLS + CA certs) for undici
  */
 export function getTLSFetchOptions(): {
@@ -134,10 +184,9 @@ export function getTLSFetchOptions(): {
     return { tls: tlsConfig }
   }
   logForDebugging('TLS: Created undici agent with custom certificates')
-  // Create a custom undici Agent with TLS options. Lazy-required so that
+  // Create a custom undici Agent with TLS options. Lazy-loaded so that
   // the ~1.5MB undici package is only loaded when mTLS/CA certs are configured.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const undiciMod = require('undici') as typeof undici
+  const undiciMod = loadUndiciForDispatcher()
   const agent = new undiciMod.Agent({
     connect: {
       cert: tlsConfig.cert,

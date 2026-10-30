@@ -34,6 +34,8 @@ export function formatErrorMessage(error: PluginError): string {
       return `Failed to download MCPB from ${error.url}: ${error.reason}`;
     case 'mcpb-extract-failed':
       return `Failed to extract MCPB ${error.mcpbPath}: ${error.reason}`;
+    case 'mcpb-runtime-missing':
+      return error.reason;
     case 'mcpb-invalid-manifest':
       return `MCPB manifest invalid at ${error.mcpbPath}: ${error.validationError}`;
     case 'marketplace-blocked-by-policy':
@@ -96,6 +98,8 @@ export function getErrorGuidance(error: PluginError): string | null {
       return 'Check your internet connection and URL accessibility';
     case 'mcpb-extract-failed':
       return 'Verify the MCPB file is valid and not corrupted';
+    case 'mcpb-runtime-missing':
+      return 'Fix what the message describes, then run /reload-plugins';
     case 'mcpb-invalid-manifest':
       return 'Contact the plugin author about the invalid manifest';
     case 'marketplace-blocked-by-policy':

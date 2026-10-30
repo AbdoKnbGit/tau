@@ -8,6 +8,7 @@ import {
   findCompatibleNodeRuntime,
   getNodeRuntimeIssue,
   managedNodeRuntimePath,
+  nodeEndOfLifeMessage,
   nodeRuntimeMessage,
 } from '../scripts/node-runtime.mjs'
 
@@ -25,7 +26,32 @@ test('runtime checks preserve require(esm) support and use the upstream Windows 
     assert.equal(getNodeRuntimeIssue(version, 'linux'), 'require-esm', version)
   for (const version of ['', 'bad', '24.22', '24.22.1-alpha.1'])
     assert.equal(getNodeRuntimeIssue(version), 'unsupported-version', version)
-  assert.equal(nodeRuntimeMessage('v24.19.0', 'windows-shutdown'), '')
+})
+
+test('the Windows warning names the version that fixes the bug on the same line', () => {
+  const now = new Date('2026-10-30')
+  const windows = version => nodeRuntimeMessage(version, 'windows-shutdown', now)
+  assert.match(windows('v24.19.0'), /Node\.js v24\.19\.0 has a Windows bug/)
+  assert.match(windows('v24.19.0'), /Update to Node\.js 24\.20 or newer/)
+  assert.match(windows('v26.6.0'), /Update to Node\.js 26\.7 or newer/)
+  // These lines ended without the fix, so they go to a supported line instead.
+  assert.match(windows('v25.9.0'), /Update to Node\.js 24 LTS/)
+  assert.match(windows('v23.11.0'), /Update to Node\.js 24 LTS/)
+  assert.match(windows('v24.19.0'), /https:\/\/nodejs\.org/)
+  assert.match(nodeRuntimeMessage('v20.18.0', 'require-esm', now), /Install Node\.js 24 LTS from https:\/\/nodejs\.org/)
+})
+
+test('a release line is only called unsupported once it has ended', () => {
+  const now = new Date('2026-10-30')
+  assert.match(nodeEndOfLifeMessage('v20.19.0', now), /Node\.js v20\.19\.0 stopped getting security updates on 2026-04-30\. Update to Node\.js 24 LTS/)
+  assert.match(nodeEndOfLifeMessage('v25.9.0', now), /stopped getting security updates/)
+  for (const version of ['v22.12.0', 'v24.22.2', 'v26.13.0', 'v27.0.0', 'bad'])
+    assert.equal(nodeEndOfLifeMessage(version, now), '', version)
+  assert.equal(nodeEndOfLifeMessage('v22.12.0', new Date('2027-04-30')), '', 'Still supported on its last day')
+  assert.match(nodeEndOfLifeMessage('v22.12.0', new Date('2027-05-01')), /on 2027-04-30/)
+  // The recommendation moves on by itself when the line it names ends.
+  assert.match(nodeEndOfLifeMessage('v24.22.2', new Date('2028-05-01')), /Update to Node\.js 26 LTS/)
+  assert.match(nodeEndOfLifeMessage('v26.13.0', new Date('2029-05-01')), /Update to the current Node\.js LTS/)
 })
 
 test('runtime fallback follows PATH order, skips relative/current/duplicate candidates and rejects bad probes', () => {
@@ -108,12 +134,14 @@ test('launcher restarts once with a compatible runtime and preserves args, cwd, 
     `)
   try {
     const args = ['with spaces', 'Unicode-é-漢字', 'a&b', '--flag=value', '']
+    // Node's own off switch, so the run on the good runtime can be told apart from a warning.
     const result = spawnSync(process.execPath, [cli, ...args], {
       cwd: root, encoding: 'utf8', windowsHide: true,
-      env: { ...process.env, TAU_SKIP_PREFLIGHT: '1', TAU_RUNTIME_TEST_VALUE: 'preserved' },
+      env: { ...process.env, TAU_SKIP_PREFLIGHT: '1', TAU_RUNTIME_TEST_VALUE: 'preserved', NODE_NO_WARNINGS: '1' },
       timeout: 10_000,
     })
     assert.equal(result.status, 7, result.stderr)
+    assert.equal(result.stderr, '', 'A restart onto a good runtime has nothing to warn about')
     const reported = JSON.parse(result.stdout)
     // Temporary directories may use a symlink alias for the same working directory.
     assert.deepEqual({ ...reported, cwd: realpathSync(reported.cwd) }, {
@@ -121,17 +149,23 @@ test('launcher restarts once with a compatible runtime and preserves args, cwd, 
     })
     const continued = spawnSync(process.execPath, [cli, ...args], {
       cwd: root, encoding: 'utf8', windowsHide: true,
-      env: { ...process.env, TAU_SKIP_PREFLIGHT: '1', TAU_RUNTIME_TEST_NO_ALTERNATIVE: '1' }, timeout: 10_000,
+      env: { ...process.env, NODE_NO_WARNINGS: undefined, TAU_SKIP_PREFLIGHT: '1', TAU_RUNTIME_TEST_NO_ALTERNATIVE: '1' }, timeout: 10_000,
     })
     assert.equal(continued.status, 7, continued.stderr)
-    assert.equal(continued.stderr, '', 'A missing alternative must not add a warning')
-    assert.deepEqual(JSON.parse(continued.stdout).args, args, 'An affected Windows runtime remains usable without an alternative')
+    assert.match(continued.stderr, /Windows bug/, 'With no alternative the user has to be told to update')
+    assert.deepEqual(JSON.parse(continued.stdout).args, args, 'The warning stays out of stdout, and an affected Windows runtime remains usable')
+    const silenced = spawnSync(process.execPath, [cli, ...args], {
+      cwd: root, encoding: 'utf8', windowsHide: true,
+      env: { ...process.env, NODE_NO_WARNINGS: '1', TAU_SKIP_PREFLIGHT: '1', TAU_RUNTIME_TEST_NO_ALTERNATIVE: '1' }, timeout: 10_000,
+    })
+    assert.equal(silenced.status, 7, silenced.stderr)
+    assert.equal(silenced.stderr, '', 'NODE_NO_WARNINGS=1 turns the warning off')
     const failedAlternative = spawnSync(process.execPath, [cli, ...args], {
       cwd: root, encoding: 'utf8', windowsHide: true,
-      env: { ...process.env, TAU_SKIP_PREFLIGHT: '1', TAU_RUNTIME_TEST_BAD_ALTERNATIVE: join(root, 'missing-node') }, timeout: 10_000,
+      env: { ...process.env, NODE_NO_WARNINGS: undefined, TAU_SKIP_PREFLIGHT: '1', TAU_RUNTIME_TEST_BAD_ALTERNATIVE: join(root, 'missing-node') }, timeout: 10_000,
     })
     assert.equal(failedAlternative.status, 7, failedAlternative.stderr)
-    assert.equal(failedAlternative.stderr, '', 'An unavailable optional runtime must fall back quietly')
+    assert.match(failedAlternative.stderr, /Windows bug/, 'An unavailable alternative leaves the user on the affected runtime')
     assert.deepEqual(JSON.parse(failedAlternative.stdout).args, args)
     const rejected = spawnSync(process.execPath, [cli], {
       cwd: root, encoding: 'utf8', windowsHide: true,

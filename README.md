@@ -22,7 +22,7 @@ Tau is an adaptive coding harness that is simple to use. It costs less to run, g
 npx -y @abdoknbgit/tau-installer@latest
 ```
 
-**Requirements:** Node.js 20.19+ or 22.12+ (require(esm) support), Git, Bash, `gh` for GitHub automation, and Go 1.25.8+ to build the optional native Tau helpers from source.
+**Requirements:** Node.js 24 LTS is recommended (20.19+ and 22.12+ also run Tau, and on Windows use 24.20+ or 26.7+; Tau warns you if your version has a known problem or no longer gets security updates), Git, Bash, `gh` for GitHub automation, and Go 1.25.8+ to build the optional native Tau helpers from source.
 
 ---
 
@@ -215,6 +215,13 @@ A configurable fallback system can move work to another model/provider when the 
 ### Session management and flexibility
 
 Tree navigation, cloning, branching, and resume commands make long sessions easier to control without losing context.
+
+### Run Tau from scripts and CI
+
+`tau -p "your task"` runs one task with no interface, prints the answer and exits, so Tau fits in scripts, CI jobs, git hooks and pipes.
+Use it to review code in CI, fix files in bulk, explain a log you pipe in, or produce JSON for your own tools.
+You decide what it can see and do: choose its tools, allow only what the task needs, cap its turns, and read its cache and token numbers.
+How to use it, with examples: **[PRINT-MODE.md](PRINT-MODE.md)**.
 
 ### Session info for your scripts
 

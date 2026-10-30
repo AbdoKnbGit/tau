@@ -6,29 +6,35 @@
 /// <reference lib="dom" />
 
 import { extname } from 'path'
+import { highlightCode } from '../components/StructuredDiff/colorDiff.js'
+import { getGlobalConfig } from './config.js'
+import { resolveThemeSetting } from './systemTheme.js'
 
 export type CliHighlight = {
-  highlight: typeof import('cli-highlight').highlight
-  supportsLanguage: typeof import('cli-highlight').supportsLanguage
+  highlight: (code: string, options: { language: string }) => string
+  supportsLanguage: (language: string) => boolean
 }
 
 // One promise shared by Fallback.tsx, markdown.ts, events.ts, getLanguageName.
-// The highlight.js import piggybacks: cli-highlight has already pulled it into
-// the module cache, so the second import() is a cache hit — no extra bytes
-// faulted in.
 let cliHighlightPromise: Promise<CliHighlight | null> | undefined
 
-let loadedGetLanguage: typeof import('highlight.js').getLanguage | undefined
+let loadedGetLanguage: typeof import('highlight.js').default.getLanguage | undefined
 
+// Same in-process colorizer as markdown code blocks. The cli-highlight package
+// would add a second, older highlight.js next to the one Tau already ships.
 async function loadCliHighlight(): Promise<CliHighlight | null> {
   try {
-    const cliHighlight = await import('cli-highlight')
-    // cache hit — cli-highlight already loaded highlight.js
-    const highlightJs = await import('highlight.js')
-    loadedGetLanguage = highlightJs.getLanguage
+    // The ESM entry only has a default export, which is the instance.
+    const { default: hljs } = await import('highlight.js')
+    loadedGetLanguage = hljs.getLanguage
     return {
-      highlight: cliHighlight.highlight,
-      supportsLanguage: cliHighlight.supportsLanguage,
+      highlight: (code, { language }) =>
+        highlightCode(
+          code,
+          language,
+          resolveThemeSetting(getGlobalConfig().theme),
+        ),
+      supportsLanguage: language => hljs.getLanguage(language) !== undefined,
     }
   } catch {
     return null
@@ -41,7 +47,7 @@ export function getCliHighlightPromise(): Promise<CliHighlight | null> {
 }
 
 /**
- * eg. "foo/bar.ts" → "TypeScript". Awaits the shared cli-highlight load,
+ * eg. "foo/bar.ts" → "TypeScript". Awaits the shared highlighter load,
  * then reads highlight.js's language registry. All callers are telemetry
  * (OTel counter attributes, permission-dialog unary events) — none block
  * on this, they fire-and-forget or the consumer already handles Promise<string>.

@@ -524,7 +524,8 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           skipSlashCommands: cmd.skipSlashCommands,
           bridgeOrigin: cmd.bridgeOrigin,
           isMeta: cmd.isMeta,
-          skipAttachments: !isFirst,
+          modPrompt: cmd.modPrompt,
+          skipAttachments: !!cmd.modPrompt || !isFirst,
         })
         // Stamp origin here rather than threading another arg through
         // processUserInput → processUserInputBase → processTextPrompt → createUserMessage.

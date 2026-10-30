@@ -68,6 +68,8 @@ import { setPromptId } from '../../bootstrap/state.js'
 import { capturePromptHistoryEntry, revisePromptHistoryEntry } from '../../history.js'
 import { hasModEvent } from '../plugins/mods/manager.js'
 import { replaceSubmittedPromptText, submittedPromptText, submitModPrompt } from '../plugins/mods/lifecycle.js'
+import { getQueuedModPrompt, prepareQueuedModPrompt, dropQueuedModPrompt, bindQueuedModPrompt } from '../plugins/mods/promptQueue.js'
+import { resumeModSessionOnUserInput } from '../plugins/mods/sessionState.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext & {
   /** Context from submission hooks, also delivered to a directly forked skill. */
   userPromptHookMessages?: AttachmentMessage[]
@@ -93,13 +95,45 @@ export type ProcessUserInputBaseResult = {
   // A hook refused the submission before a model turn. Headless callers must
   // surface the reason as an error result, without echoing the blocked prompt.
   resultError?: string
+  /** The original API drop receipt, before the visible rejection prefix. */
+  promptDropReason?: string
   // When set, prefills or submits the next input after command completes
   // Used by /discover to chain into the selected feature's command
   nextInput?: string
   submitNextInput?: boolean
 }
 
-export async function processUserInput({
+export async function processUserInput(args: Parameters<typeof processUserInputImpl>[0]): Promise<ProcessUserInputBaseResult> {
+  const queued = getQueuedModPrompt(args.uuid)
+  if (args.modPrompt && !queued) return { messages: [], shouldQuery: false }
+  if (queued) bindQueuedModPrompt(args.uuid, args.context.abortController)
+  if (!args.modPrompt && !args.isMeta && args.mode === 'prompt') resumeModSessionOnUserInput()
+  try {
+    const result = await processUserInputImpl(args)
+    if (queued) {
+      if (!getQueuedModPrompt(args.uuid)) return { messages: [], shouldQuery: false }
+      if (!result.shouldQuery) dropQueuedModPrompt(args.uuid, result.promptDropReason ?? result.resultError)
+      for (const message of result.messages) {
+        if (message.type === 'user' && message.uuid === args.uuid) {
+          message.origin = queued.origin
+          if (!queued.origin.asUser) {
+            const content = message.message.content
+            message.message = { ...message.message, content: [
+              { type: 'text', text: `The ${queued.origin.name} plugin sent a message:` },
+              ...(typeof content === 'string' ? [{ type: 'text' as const, text: content }] : content),
+            ] }
+          }
+        }
+      }
+    }
+    return result
+  } catch (error) {
+    if (queued) dropQueuedModPrompt(args.uuid, `the prompt could not enter the session: ${error instanceof Error ? error.message : String(error)}`)
+    throw error
+  }
+}
+
+async function processUserInputImpl({
   input,
   preExpansionInput,
   mode,
@@ -117,6 +151,7 @@ export async function processUserInput({
   bridgeOrigin,
   isMeta,
   skipAttachments,
+  modPrompt,
 }: {
   input: string | Array<ContentBlockParam>
   /**
@@ -154,6 +189,7 @@ export async function processUserInput({
    */
   isMeta?: boolean
   skipAttachments?: boolean
+  modPrompt?: boolean
 }): Promise<ProcessUserInputBaseResult> {
   let inputString = typeof input === 'string' ? input : null
   const recordedHistory = capturePromptHistoryEntry(uuid)
@@ -171,6 +207,13 @@ export async function processUserInput({
   rememberLifecycleHookMessages(context.messages)
 
   const originalText = submittedPromptText(input)
+  const queuedPrompt = modPrompt ? getQueuedModPrompt(uuid) : undefined
+  if (queuedPrompt) {
+    skipSlashCommands = true
+    skipAttachments = true
+    pastedContents = undefined
+    ideSelection = undefined
+  }
   const finalBlock = typeof input === 'string' ? undefined : input.at(-1)
   const commandText = typeof input === 'string' ? input : finalBlock?.type === 'text' ? finalBlock.text : undefined
   const originalParsed = mode === 'prompt' && commandText?.startsWith('/')
@@ -182,18 +225,21 @@ export async function processUserInput({
     (!originalParsed || (asText ? !(bridgeOrigin && originalCommand) : !originalCommand || originalCommand.type === 'prompt'))
   const modHookMessages: AttachmentMessage[] = []
   let reservedPromptId: string | undefined
-  if (submitsModPrompt && hasModEvent('prompt.submit')) {
+  if (submitsModPrompt && (queuedPrompt || hasModEvent('prompt.submit'))) {
     reservedPromptId = context.promptId ?? randomUUID()
     setPromptId(reservedPromptId)
     const result = await submitModPrompt({
       text: originalText,
-      origin: { kind: bridgeOrigin ? 'bridge' : context.options.isNonInteractiveSession ? 'sdk' : 'composer' },
-    }, context, canUseTool)
+      origin: queuedPrompt?.origin ?? { kind: bridgeOrigin ? 'bridge' : context.options.isNonInteractiveSession ? 'sdk' : 'composer' },
+      wait: false,
+      ...(queuedPrompt?.attachments ? { attachments: queuedPrompt.attachments } : {}),
+    }, context, canUseTool, queuedPrompt?.skip ? { skip: queuedPrompt.skip } : undefined)
     if (result.drop !== undefined) {
       const reason = `Prompt dropped by a hook: ${result.drop}`
       revisePromptHistoryEntry(historyEntry, null)
-      return { messages: [createSystemMessage(reason, 'warning')], shouldQuery: false, resultError: reason, nextInput: originalText, submitNextInput: false }
+      return { messages: [createSystemMessage(reason, 'warning')], shouldQuery: false, resultError: reason, ...(queuedPrompt ? { promptDropReason: result.drop } : { nextInput: originalText, submitNextInput: false }) }
     }
+    if (queuedPrompt) prepareQueuedModPrompt(uuid, result as { text: string; context?: string[] })
     input = replaceSubmittedPromptText(input, result.text)
     inputString = typeof input === 'string' ? input : null
     if (result.text !== originalText) {

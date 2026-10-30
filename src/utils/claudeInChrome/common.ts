@@ -1,3 +1,4 @@
+import { BROWSER_TOOLS } from '@ant/claude-for-chrome-mcp'
 import { readdirSync } from 'fs'
 import { stat } from 'fs/promises'
 import { homedir, platform, tmpdir, userInfo } from 'os'
@@ -10,6 +11,14 @@ import { getPlatform } from '../platform.js'
 import { which } from '../which.js'
 
 export const CLAUDE_IN_CHROME_MCP_SERVER_NAME = 'claude-in-chrome'
+
+/**
+ * The integration's package is not part of every build, and a build without it
+ * has no browser tools to offer. Asking the package keeps this correct either way.
+ */
+export function isClaudeInChromeAvailable(): boolean {
+  return BROWSER_TOOLS.length > 0
+}
 
 // Re-export ChromiumBrowser type for setup.ts
 export type { ChromiumBrowser } from './setupPortable.js'
@@ -409,7 +418,11 @@ export async function detectAvailableBrowser(): Promise<ChromiumBrowser | null> 
 }
 
 export function isClaudeInChromeMCPServer(name: string): boolean {
-  return normalizeNameForMCP(name) === CLAUDE_IN_CHROME_MCP_SERVER_NAME
+  // Without the integration the name is free: a user's own server may use it.
+  return (
+    isClaudeInChromeAvailable() &&
+    normalizeNameForMCP(name) === CLAUDE_IN_CHROME_MCP_SERVER_NAME
+  )
 }
 
 const MAX_TRACKED_TABS = 200

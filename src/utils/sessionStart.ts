@@ -11,6 +11,8 @@ import { logError } from './log.js'
 import { loadPluginHooks } from './plugins/loadPluginHooks.js'
 import { applyHookSessionTitle, sessionStartResumeMetadata } from './hooks/lifecycleHooks.js'
 import type { Message } from '../types/message.js'
+import { bindModSession, getModSessionBinding } from './plugins/mods/sessionState.js'
+import { getMainLoopModel } from './model/model.js'
 
 type SessionStartHooksOptions = {
   sessionId?: string
@@ -134,6 +136,9 @@ export async function processSessionStartHooks(
   }
 
   // Execute SessionStart hooks, ignoring blocking errors
+  // Startup hooks precede the renderer/headless loop. Expose the startup
+  // transcript until its live owner takes over; the queue survives that handoff.
+  if (!getModSessionBinding()) bindModSession({ getMessages: () => messages, getModel: () => model ?? getMainLoopModel() })
   const { startPluginMods } = await import('./plugins/mods/manager.js')
   await startPluginMods().catch(error => logError(error))
   // Use the provided agentType or fall back to the one stored in bootstrap state

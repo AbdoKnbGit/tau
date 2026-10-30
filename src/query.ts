@@ -321,6 +321,7 @@ async function* queryLoop(
   Terminal
 > {
   // Immutable params — never reassigned during the query loop.
+  if (params.toolUseContext.abortController.signal.aborted) return { reason: 'aborted_tools' }
   const {
     systemPrompt,
     userContext,

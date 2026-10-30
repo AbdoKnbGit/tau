@@ -1,11 +1,8 @@
-import type {
-  McpbManifest,
-  McpbUserConfigurationOption,
-} from '@anthropic-ai/mcpb'
+import type { McpbManifestAny } from '@anthropic-ai/mcpb'
 import axios from 'axios'
-import { createHash } from 'crypto'
-import { chmod, writeFile } from 'fs/promises'
-import { dirname, join } from 'path'
+import { createHash, randomBytes } from 'crypto'
+import { chmod, readFile, rename, rm, writeFile } from 'fs/promises'
+import { dirname, join, sep } from 'path'
 import type { McpServerConfig } from '../../services/mcp/types.js'
 import { logForDebugging } from '../debug.js'
 import { parseAndValidateManifestFromBytes } from '../dxt/helpers.js'
@@ -21,6 +18,14 @@ import {
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getSystemDirectories } from '../systemDirectories.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
+import { resolveMcpbLaunch } from './mcpbRuntime.js'
+import { pluginDataDirPath } from './pluginDirectories.js'
+
+type McpbManifest = McpbManifestAny
+type McpbUserConfigurationOption = NonNullable<
+  McpbManifestAny['user_config']
+>[string]
+
 /**
  * User configuration values for MCPB
  */
@@ -66,6 +71,8 @@ export type McpbCacheMetadata = {
   extractedPath: string
   cachedAt: string
   lastChecked: string
+  sourceMtimeMs?: number
+  sourceSize?: number
 }
 
 /**
@@ -407,6 +414,76 @@ export function validateUserConfig(
   return { valid: errors.length === 0, errors }
 }
 
+type McpbVariables = Record<string, string | string[]>
+
+const LONE_USER_CONFIG_VARIABLE = /^\$\{(user_config\.[^}]+)\}$/
+
+/**
+ * Fill ${...} variables. Values go in literally: String.replace with a string
+ * replacement would turn a password like pa$$word into pa$word. A variable alone
+ * in an array can expand to several arguments, and an optional setting with no
+ * value drops out instead of reaching the server as the text "${user_config.x}".
+ * Other unknown variables stay, for resolvePluginMcpEnvironment to fill.
+ */
+function substituteMcpbVariables(
+  value: unknown,
+  variables: McpbVariables,
+): unknown {
+  if (typeof value === 'string') {
+    return value.replace(/\$\{([^}]+)\}/g, (match, name: string) => {
+      const replacement = variables[name]
+      if (replacement !== undefined) {
+        return Array.isArray(replacement) ? replacement.join(' ') : replacement
+      }
+      return name.startsWith('user_config.') ? '' : match
+    })
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(item => {
+      const lone =
+        typeof item === 'string' ? LONE_USER_CONFIG_VARIABLE.exec(item) : null
+      if (!lone) return [substituteMcpbVariables(item, variables)]
+      return variables[lone[1]!] ?? []
+    })
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        substituteMcpbVariables(item, variables),
+      ]),
+    )
+  }
+  return value
+}
+
+function baseMcpbVariables(extractedPath: string): McpbVariables {
+  return {
+    __dirname: extractedPath,
+    pathSeparator: sep,
+    '/': sep,
+    ...getSystemDirectories(),
+  }
+}
+
+/** Manifest defaults, with their own ${HOME}-style variables filled in. */
+function userConfigDefaults(
+  schema: UserConfigSchema,
+  extractedPath: string,
+): UserConfigValues {
+  const variables = baseMcpbVariables(extractedPath)
+  const defaults: UserConfigValues = {}
+  for (const [key, option] of Object.entries(schema)) {
+    if (option.default !== undefined) {
+      defaults[key] = substituteMcpbVariables(
+        option.default,
+        variables,
+      ) as UserConfigValues[string]
+    }
+  }
+  return defaults
+}
+
 /**
  * Generate MCP server configuration from DXT manifest
  */
@@ -415,18 +492,8 @@ async function generateMcpConfig(
   extractedPath: string,
   userConfig: UserConfigValues = {},
 ): Promise<McpServerConfig> {
-  // Lazy import: @anthropic-ai/mcpb barrel pulls in zod v3 schemas (~700KB of
-  // bound closures). See dxt/helpers.ts for details.
-  const { getMcpConfigForManifest } = await import('@anthropic-ai/mcpb')
-  const mcpConfig = await getMcpConfigForManifest({
-    manifest,
-    extensionPath: extractedPath,
-    systemDirs: getSystemDirectories(),
-    userConfig,
-    pathSeparator: '/',
-  })
-
-  if (!mcpConfig) {
+  const baseConfig = manifest.server?.mcp_config
+  if (!baseConfig) {
     const error = new Error(
       `Failed to generate MCP server configuration from manifest "${manifest.name}"`,
     )
@@ -434,7 +501,43 @@ async function generateMcpConfig(
     throw error
   }
 
-  return mcpConfig as McpServerConfig
+  const override = baseConfig.platform_overrides?.[process.platform]
+  const variables = baseMcpbVariables(extractedPath)
+  for (const [key, value] of Object.entries(userConfig)) {
+    variables[`user_config.${key}`] = Array.isArray(value)
+      ? value.map(String)
+      : String(value)
+  }
+  const env = override?.env || baseConfig.env
+  const launch = await resolveMcpbLaunch(
+    {
+      command: substituteMcpbVariables(
+        override?.command || baseConfig.command,
+        variables,
+      ) as string,
+      args: substituteMcpbVariables(
+        override?.args || baseConfig.args || [],
+        variables,
+      ) as string[],
+      env: env
+        ? Object.fromEntries(
+            Object.entries(env as Record<string, string>)
+              // An unset optional setting leaves the variable unset, not empty.
+              .filter(([, value]) => {
+                const lone = LONE_USER_CONFIG_VARIABLE.exec(value)
+                return !lone || variables[lone[1]!] !== undefined
+              })
+              .map(([key, value]) => [
+                key,
+                substituteMcpbVariables(value, variables) as string,
+              ]),
+          )
+        : undefined,
+    },
+    manifest.compatibility,
+    extractedPath,
+  )
+  return launch as McpServerConfig
 }
 
 /**
@@ -462,8 +565,25 @@ async function loadCacheMetadata(
   }
 }
 
+/** Nobody, in this session or another, can see half a file. */
+async function writeFileAtomic(
+  path: string,
+  data: string | Uint8Array,
+): Promise<void> {
+  const temporaryPath = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+  try {
+    await writeFile(temporaryPath, data)
+    await rename(temporaryPath, path)
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => {})
+    throw error
+  }
+}
+
 /**
- * Save cache metadata for an MCPB source
+ * Save cache metadata for an MCPB source. Best effort: without it the next load
+ * only has to hash the bundle again. Other clients sharing ~/.claude read this
+ * file, so existing fields keep their meaning.
  */
 async function saveCacheMetadata(
   cacheDir: string,
@@ -471,9 +591,14 @@ async function saveCacheMetadata(
   metadata: McpbCacheMetadata,
 ): Promise<void> {
   const metadataPath = getMetadataPath(cacheDir, source)
-
-  await getFsImplementation().mkdir(cacheDir)
-  await writeFile(metadataPath, jsonStringify(metadata, null, 2), 'utf-8')
+  try {
+    await getFsImplementation().mkdir(cacheDir)
+    await writeFileAtomic(metadataPath, jsonStringify(metadata, null, 2))
+  } catch (error) {
+    logForDebugging(`Failed to save MCPB cache metadata: ${error}`, {
+      level: 'warn',
+    })
+  }
 }
 
 /**
@@ -541,8 +666,22 @@ async function downloadMcpb(
   }
 }
 
+async function hasSameBytes(path: string, data: Uint8Array): Promise<boolean> {
+  try {
+    return Buffer.compare(await readFile(path), data) === 0
+  } catch {
+    return false
+  }
+}
+
 /**
  * Extract MCPB file and write contents to extraction directory.
+ *
+ * The directory is named after the bundle's hash, so its right contents are
+ * known. A file that already has them is left alone: it may be a running server,
+ * which neither Windows nor Linux will let us overwrite. Anything else is
+ * replaced atomically, so this is safe to repeat, to resume after a crash, and
+ * to run from several sessions at once. Files are written byte for byte.
  *
  * @param modes - name→mode map from `parseZipModes`. MCPB bundles can ship
  *   native MCP server binaries, so preserving the exec bit matters here.
@@ -563,41 +702,27 @@ async function extractMcpbContents(
   // Write all files. Filter directory entries from the count so progress
   // messages use the same denominator as filesWritten (which skips them).
   let filesWritten = 0
-  const entries = Object.entries(unzipped).filter(([k]) => !k.endsWith('/'))
+  const entries = Object.entries(unzipped).filter(
+    ([k]) => !k.endsWith('/') && !k.endsWith('\\'),
+  )
   const totalFiles = entries.length
 
-  for (const [filePath, fileData] of entries) {
-    // Directory entries (common in zip -r, Python zipfile, Java ZipOutputStream)
-    // are filtered above — writeFile would create `bin/` as an empty regular
-    // file, then mkdir for `bin/server` would fail with ENOTDIR. The
-    // mkdir(dirname(fullPath)) below creates parent dirs implicitly.
+  for (const [entryName, fileData] of entries) {
+    // Older Windows zip tools write backslashes, which are plain filename
+    // characters on macOS and Linux.
+    const fullPath = join(extractPath, entryName.replaceAll('\\', '/'))
+    await getFsImplementation().mkdir(dirname(fullPath))
 
-    const fullPath = join(extractPath, filePath)
-    const dir = dirname(fullPath)
-
-    // Ensure directory exists (recursive handles already-existing)
-    if (dir !== extractPath) {
-      await getFsImplementation().mkdir(dir)
+    if (!(await hasSameBytes(fullPath, fileData))) {
+      try {
+        await writeFileAtomic(fullPath, fileData)
+      } catch (error) {
+        // Fine if another session got there first.
+        if (!(await hasSameBytes(fullPath, fileData))) throw error
+      }
     }
 
-    // Determine if text or binary
-    const isTextFile =
-      filePath.endsWith('.json') ||
-      filePath.endsWith('.js') ||
-      filePath.endsWith('.ts') ||
-      filePath.endsWith('.txt') ||
-      filePath.endsWith('.md') ||
-      filePath.endsWith('.yml') ||
-      filePath.endsWith('.yaml')
-
-    if (isTextFile) {
-      const content = new TextDecoder().decode(fileData)
-      await writeFile(fullPath, content, 'utf-8')
-    } else {
-      await writeFile(fullPath, Buffer.from(fileData))
-    }
-
-    const mode = modes[filePath]
+    const mode = modes[entryName]
     if (mode && mode & 0o111) {
       // Swallow EPERM/ENOTSUP (NFS root_squash, some FUSE mounts) — losing +x
       // is the pre-PR behavior and better than aborting mid-extraction.
@@ -617,72 +742,156 @@ async function extractMcpbContents(
 }
 
 /**
- * Check if an MCPB source has changed and needs re-extraction
+ * Check if an MCPB source has changed and needs re-extraction. A matching
+ * timestamp and size is the fast path. Otherwise only the bytes can tell:
+ * timestamps move both ways through copies, restores and checkouts.
  */
-export async function checkMcpbChanged(
+async function checkMcpbChanged(
   source: string,
   pluginPath: string,
+  cacheDir: string,
+  metadata: McpbCacheMetadata,
 ): Promise<boolean> {
-  const fs = getFsImplementation()
-  const cacheDir = getMcpbCacheDir(pluginPath)
-  const metadata = await loadCacheMetadata(cacheDir, source)
+  // URLs are re-checked by plugin updates, which start from a new folder.
+  if (isUrl(source)) return false
 
-  if (!metadata) {
-    // No cache metadata, needs loading
+  const fs = getFsImplementation()
+  const localPath = join(pluginPath, source)
+  let stats
+  try {
+    stats = await fs.stat(localPath)
+  } catch (error) {
+    logForDebugging(`MCPB source file unavailable: ${localPath}: ${error}`)
     return true
   }
 
-  // Check if extraction directory still exists
+  // Floor to the ms precision other clients store.
+  const sourceMtimeMs = Math.floor(stats.mtimeMs)
+  if (
+    metadata.sourceMtimeMs === sourceMtimeMs &&
+    (metadata.sourceSize ?? stats.size) === stats.size
+  ) {
+    return false
+  }
+  const contentHash = generateContentHash(await fs.readFileBytes(localPath))
+  if (contentHash !== metadata.contentHash) return true
+
+  await saveCacheMetadata(cacheDir, source, {
+    ...metadata,
+    extractedPath: join(cacheDir, contentHash),
+    sourceMtimeMs,
+    sourceSize: stats.size,
+    lastChecked: new Date().toISOString(),
+  })
+  return false
+}
+
+type CachedMcpb = {
+  manifest: McpbManifest
+  extractedPath: string
+  contentHash: string
+}
+
+/**
+ * A cache entry we can run, or null to extract again, which repairs anything
+ * wrong here. The path is rebuilt from the cache folder rather than read from
+ * the metadata: that absolute path goes stale when a plugin folder is copied or
+ * moved, or reached from both Windows and WSL.
+ */
+async function readCachedMcpb(
+  cacheDir: string,
+  source: string,
+  pluginPath: string,
+): Promise<CachedMcpb | null> {
+  const metadata = await loadCacheMetadata(cacheDir, source)
+  if (!metadata || !/^[0-9a-f]+$/.test(metadata.contentHash ?? '')) return null
+  const { contentHash } = metadata
+  const extractedPath = join(cacheDir, contentHash)
+  const fs = getFsImplementation()
   try {
-    await fs.stat(metadata.extractedPath)
+    if (await checkMcpbChanged(source, pluginPath, cacheDir, metadata)) {
+      return null
+    }
+    const manifest = await parseAndValidateManifestFromBytes(
+      await fs.readFileBytes(join(extractedPath, 'manifest.json')),
+    )
+    const entryPoint = manifest.server?.entry_point
+    if (entryPoint) {
+      await fs.stat(join(extractedPath, entryPoint.replaceAll('\\', '/')))
+    }
+    return { manifest, extractedPath, contentHash }
+  } catch (error) {
+    logForDebugging(`Cached MCPB is unusable, extracting again: ${error}`)
+    return null
+  }
+}
+
+/**
+ * Plugins can live somewhere read-only (CLAUDE_CODE_PLUGIN_SEED_DIR, a managed
+ * install), so fall back to the plugin's data folder, which uninstall removes.
+ */
+async function writableCacheDir(
+  primary: string,
+  fallback: string,
+): Promise<string> {
+  const fs = getFsImplementation()
+  try {
+    await fs.mkdir(primary)
+    const probe = join(primary, `.write-test-${process.pid}-${randomBytes(4).toString('hex')}`)
+    await writeFile(probe, '')
+    await rm(probe, { force: true })
+    return primary
   } catch (error) {
     const code = getErrnoCode(error)
-    if (code === 'ENOENT') {
-      logForDebugging(`MCPB extraction path missing: ${metadata.extractedPath}`)
-    } else {
-      logForDebugging(
-        `MCPB extraction path inaccessible: ${metadata.extractedPath}: ${error}`,
-        { level: 'error' },
-      )
-    }
-    return true
+    if (code !== 'EACCES' && code !== 'EPERM' && code !== 'EROFS') throw error
+    logForDebugging(`${primary} is read-only, using ${fallback}`)
+    await fs.mkdir(fallback)
+    return fallback
+  }
+}
+
+async function finishMcpbLoad(
+  { manifest, extractedPath, contentHash }: CachedMcpb,
+  pluginId: string,
+  providedUserConfig: UserConfigValues | undefined,
+  forceConfigDialog: boolean | undefined,
+): Promise<McpbLoadResult | McpbNeedsConfigResult> {
+  const schema = manifest.user_config as UserConfigSchema | undefined
+  if (!schema || Object.keys(schema).length === 0) {
+    const mcpConfig = await generateMcpConfig(manifest, extractedPath)
+    return { manifest, mcpConfig, extractedPath, contentHash }
   }
 
-  // For local files, check mtime
-  if (!isUrl(source)) {
-    const localPath = join(pluginPath, source)
-    let stats
-    try {
-      stats = await fs.stat(localPath)
-    } catch (error) {
-      const code = getErrnoCode(error)
-      if (code === 'ENOENT') {
-        logForDebugging(`MCPB source file missing: ${localPath}`)
-      } else {
-        logForDebugging(
-          `MCPB source file inaccessible: ${localPath}: ${error}`,
-          { level: 'error' },
-        )
-      }
-      return true
-    }
+  // Server name from DXT manifest
+  const serverName = manifest.name
+  const savedConfig = loadMcpServerUserConfig(pluginId, serverName)
+  // A required setting with a default is already satisfied.
+  const userConfig = {
+    ...userConfigDefaults(schema, extractedPath),
+    ...(providedUserConfig || savedConfig),
+  }
+  const validation = validateUserConfig(userConfig, schema)
 
-    const cachedTime = new Date(metadata.cachedAt).getTime()
-    // Floor to match the ms precision of cachedAt (ISO string). Sub-ms
-    // precision on mtimeMs would make a freshly-cached file appear "newer"
-    // than its own cache timestamp when both happen in the same millisecond.
-    const fileTime = Math.floor(stats.mtimeMs)
-
-    if (fileTime > cachedTime) {
-      logForDebugging(
-        `MCPB file modified: ${new Date(fileTime)} > ${new Date(cachedTime)}`,
-      )
-      return true
+  // Return needs-config if: forced (reconfiguration) OR validation failed
+  if (forceConfigDialog || !validation.valid) {
+    return {
+      status: 'needs-config',
+      manifest,
+      extractedPath,
+      contentHash,
+      configSchema: schema,
+      existingConfig: savedConfig || {},
+      validationErrors: validation.valid ? [] : validation.errors,
     }
   }
 
-  // For URLs, we'll re-check on explicit update (handled elsewhere)
-  return false
+  // Save config if it was provided (first time or reconfiguration)
+  if (providedUserConfig) {
+    saveMcpServerUserConfig(pluginId, serverName, providedUserConfig, schema)
+  }
+
+  const mcpConfig = await generateMcpConfig(manifest, extractedPath, userConfig)
+  return { manifest, mcpConfig, extractedPath, contentHash }
 }
 
 /**
@@ -704,99 +913,30 @@ export async function loadMcpbFile(
   forceConfigDialog?: boolean,
 ): Promise<McpbLoadResult | McpbNeedsConfigResult> {
   const fs = getFsImplementation()
-  const cacheDir = getMcpbCacheDir(pluginPath)
-  await fs.mkdir(cacheDir)
+  const primaryCacheDir = getMcpbCacheDir(pluginPath)
+  const fallbackCacheDir = join(pluginDataDirPath(pluginId), 'mcpb-cache')
 
   logForDebugging(`Loading MCPB from source: ${source}`)
 
   // Check cache first
-  const metadata = await loadCacheMetadata(cacheDir, source)
-  if (metadata && !(await checkMcpbChanged(source, pluginPath))) {
-    logForDebugging(
-      `Using cached MCPB from ${metadata.extractedPath} (hash: ${metadata.contentHash})`,
-    )
-
-    // Load manifest from cache
-    const manifestPath = join(metadata.extractedPath, 'manifest.json')
-    let manifestContent: string
-    try {
-      manifestContent = await fs.readFile(manifestPath, { encoding: 'utf-8' })
-    } catch (error) {
-      if (isENOENT(error)) {
-        const err = new Error(`Cached manifest not found: ${manifestPath}`)
-        logError(err)
-        throw err
-      }
-      throw error
-    }
-
-    const manifestData = new TextEncoder().encode(manifestContent)
-    const manifest = await parseAndValidateManifestFromBytes(manifestData)
-
-    // Check for user_config requirement
-    if (manifest.user_config && Object.keys(manifest.user_config).length > 0) {
-      // Server name from DXT manifest
-      const serverName = manifest.name
-
-      // Try to load existing config from settings.json or use provided config
-      const savedConfig = loadMcpServerUserConfig(pluginId, serverName)
-      const userConfig = providedUserConfig || savedConfig || {}
-
-      // Validate we have all required fields
-      const validation = validateUserConfig(userConfig, manifest.user_config)
-
-      // Return needs-config if: forced (reconfiguration) OR validation failed
-      if (forceConfigDialog || !validation.valid) {
-        return {
-          status: 'needs-config',
-          manifest,
-          extractedPath: metadata.extractedPath,
-          contentHash: metadata.contentHash,
-          configSchema: manifest.user_config,
-          existingConfig: savedConfig || {},
-          validationErrors: validation.valid ? [] : validation.errors,
-        }
-      }
-
-      // Save config if it was provided (first time or reconfiguration)
-      if (providedUserConfig) {
-        saveMcpServerUserConfig(
-          pluginId,
-          serverName,
-          providedUserConfig,
-          manifest.user_config ?? {},
-        )
-      }
-
-      // Generate MCP config WITH user config
-      const mcpConfig = await generateMcpConfig(
-        manifest,
-        metadata.extractedPath,
-        userConfig,
+  for (const dir of [primaryCacheDir, fallbackCacheDir]) {
+    const cached = await readCachedMcpb(dir, source, pluginPath)
+    if (cached) {
+      logForDebugging(
+        `Using cached MCPB from ${cached.extractedPath} (hash: ${cached.contentHash})`,
       )
-
-      return {
-        manifest,
-        mcpConfig,
-        extractedPath: metadata.extractedPath,
-        contentHash: metadata.contentHash,
-      }
-    }
-
-    // No user_config required - generate config without it
-    const mcpConfig = await generateMcpConfig(manifest, metadata.extractedPath)
-
-    return {
-      manifest,
-      mcpConfig,
-      extractedPath: metadata.extractedPath,
-      contentHash: metadata.contentHash,
+      return finishMcpbLoad(
+        cached,
+        pluginId,
+        providedUserConfig,
+        forceConfigDialog,
+      )
     }
   }
 
   // Not cached or changed - need to download/load and extract
+  const cacheDir = await writableCacheDir(primaryCacheDir, fallbackCacheDir)
   let mcpbData: Uint8Array
-  let mcpbFilePath: string
 
   if (isUrl(source)) {
     // Download from URL
@@ -804,8 +944,11 @@ export async function loadMcpbFile(
       .update(source)
       .digest('hex')
       .substring(0, 8)
-    mcpbFilePath = join(cacheDir, `${sourceHash}.mcpb`)
-    mcpbData = await downloadMcpb(source, mcpbFilePath, onProgress)
+    mcpbData = await downloadMcpb(
+      source,
+      join(cacheDir, `${sourceHash}.mcpb`),
+      onProgress,
+    )
   } else {
     // Load from local path
     const localPath = join(pluginPath, source)
@@ -816,7 +959,6 @@ export async function loadMcpbFile(
 
     try {
       mcpbData = await fs.readFileBytes(localPath)
-      mcpbFilePath = localPath
     } catch (error) {
       if (isENOENT(error)) {
         const err = new Error(`MCPB file not found: ${localPath}`)
@@ -852,7 +994,7 @@ export async function loadMcpbFile(
   // Parse and validate manifest
   const manifest = await parseAndValidateManifestFromBytes(manifestData)
   logForDebugging(
-    `MCPB manifest: ${manifest.name} v${manifest.version} by ${manifest.author.name}`,
+    `MCPB manifest: ${manifest.name} v${manifest.version} by ${manifest.author?.name}`,
   )
 
   // Check if manifest has server config
@@ -868,101 +1010,33 @@ export async function loadMcpbFile(
   const extractPath = join(cacheDir, contentHash)
   await extractMcpbContents(unzipped, extractPath, modes, onProgress)
 
-  // Check for user_config requirement
-  if (manifest.user_config && Object.keys(manifest.user_config).length > 0) {
-    // Server name from DXT manifest
-    const serverName = manifest.name
-
-    // Try to load existing config from settings.json or use provided config
-    const savedConfig = loadMcpServerUserConfig(pluginId, serverName)
-    const userConfig = providedUserConfig || savedConfig || {}
-
-    // Validate we have all required fields
-    const validation = validateUserConfig(userConfig, manifest.user_config)
-
-    if (!validation.valid) {
-      // Save cache metadata even though config is incomplete
-      const newMetadata: McpbCacheMetadata = {
-        source,
-        contentHash,
-        extractedPath: extractPath,
-        cachedAt: new Date().toISOString(),
-        lastChecked: new Date().toISOString(),
-      }
-      await saveCacheMetadata(cacheDir, source, newMetadata)
-
-      // Return "needs configuration" status
-      return {
-        status: 'needs-config',
-        manifest,
-        extractedPath: extractPath,
-        contentHash,
-        configSchema: manifest.user_config,
-        existingConfig: savedConfig || {},
-        validationErrors: validation.errors,
-      }
-    }
-
-    // Save config if it was provided (first time or reconfiguration)
-    if (providedUserConfig) {
-      saveMcpServerUserConfig(
-        pluginId,
-        serverName,
-        providedUserConfig,
-        manifest.user_config ?? {},
-      )
-    }
-
-    // Generate MCP config WITH user config
-    if (onProgress) {
-      onProgress('Generating MCP server configuration...')
-    }
-
-    const mcpConfig = await generateMcpConfig(manifest, extractPath, userConfig)
-
-    // Save cache metadata
-    const newMetadata: McpbCacheMetadata = {
-      source,
-      contentHash,
-      extractedPath: extractPath,
-      cachedAt: new Date().toISOString(),
-      lastChecked: new Date().toISOString(),
-    }
-    await saveCacheMetadata(cacheDir, source, newMetadata)
-
-    return {
-      manifest,
-      mcpConfig,
-      extractedPath: extractPath,
-      contentHash,
-    }
+  // Before the config step: a missing setting or runtime must not cost another
+  // extraction once the user has fixed it.
+  const now = new Date().toISOString()
+  let sourceStats
+  if (!isUrl(source)) {
+    sourceStats = await fs.stat(join(pluginPath, source)).catch(() => undefined)
   }
-
-  // No user_config required - generate config without it
-  if (onProgress) {
-    onProgress('Generating MCP server configuration...')
-  }
-
-  const mcpConfig = await generateMcpConfig(manifest, extractPath)
-
-  // Save cache metadata
-  const newMetadata: McpbCacheMetadata = {
+  await saveCacheMetadata(cacheDir, source, {
     source,
     contentHash,
     extractedPath: extractPath,
-    cachedAt: new Date().toISOString(),
-    lastChecked: new Date().toISOString(),
-  }
-  await saveCacheMetadata(cacheDir, source, newMetadata)
+    cachedAt: now,
+    lastChecked: now,
+    ...(sourceStats && {
+      sourceMtimeMs: Math.floor(sourceStats.mtimeMs),
+      sourceSize: sourceStats.size,
+    }),
+  })
 
   logForDebugging(
     `Successfully loaded MCPB: ${manifest.name} (extracted to ${extractPath})`,
   )
 
-  return {
-    manifest,
-    mcpConfig: mcpConfig as McpServerConfig,
-    extractedPath: extractPath,
-    contentHash,
-  }
+  return finishMcpbLoad(
+    { manifest, extractedPath: extractPath, contentHash },
+    pluginId,
+    providedUserConfig,
+    forceConfigDialog,
+  )
 }

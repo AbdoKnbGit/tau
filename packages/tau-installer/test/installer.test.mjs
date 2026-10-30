@@ -144,7 +144,13 @@ test("reviewed policies cover every lifecycle script in the published production
     .map(([path, metadata]) => packageNameFromPath(path, metadata))
     .sort();
 
-  assert.deepEqual(productionScriptPackages, [...ALLOWED_SCRIPTS].sort());
+  // sharp has had no install script since 0.35, but the latest installer also
+  // installs older releases (`tau update --version`), which still run it.
+  const olderReleaseScripts = ["sharp"];
+  assert.deepEqual(
+    [...productionScriptPackages, ...olderReleaseScripts].sort(),
+    [...ALLOWED_SCRIPTS].sort(),
+  );
   assert.deepEqual(
     Object.keys(tauManifest.allowScripts).sort(),
     [...ALLOWED_SCRIPTS, "esbuild"].sort(),

@@ -6,6 +6,7 @@ export function isMidTurnNotification(
   command: QueuedCommand,
   options: { sleepRan: boolean; isMainThread: boolean; provider: APIProvider },
 ): boolean {
+  if (command.modPrompt) return false
   if (options.sleepRan || command.priority !== 'later') return true
   return options.isMainThread
     && options.provider === 'openai'

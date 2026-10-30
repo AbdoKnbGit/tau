@@ -12,6 +12,7 @@ import { logForDebugging } from '../debug.js'
 import { errorMessage, isENOENT } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { jsonParse } from '../slowOperations.js'
+import { McpbRuntimeError } from './mcpbRuntime.js'
 import {
   isMcpbSource,
   loadMcpbFile,
@@ -86,6 +87,17 @@ async function loadMcpServersFromMcpb(
 
     // Use plugin@repository as source (consistent with other plugin errors)
     const source = `${plugin.name}@${plugin.repository}`
+
+    if (error instanceof McpbRuntimeError) {
+      errors.push({
+        type: 'mcpb-runtime-missing',
+        source,
+        plugin: plugin.name,
+        mcpbPath,
+        reason: errorMsg,
+      })
+      return null
+    }
 
     // Determine error type based on error message
     const isUrl = mcpbPath.startsWith('http')

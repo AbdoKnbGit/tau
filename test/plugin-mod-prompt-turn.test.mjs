@@ -120,6 +120,32 @@ test('prompt drop prevents settings hooks and skill interpolation and restores t
   assert.doesNotMatch(JSON.stringify(result.messages), /secret/)
 })
 
+test('a prompt answer without next enters nothing and post-next context cannot change what entered', async () => {
+  await mod(`on('prompt.submit',async()=>({text:'handled without next'}));`)
+  const handled = await submit('original')
+  assert.equal(handled.shouldQuery, false)
+  assert.doesNotMatch(JSON.stringify(handled.messages), /handled without next/)
+  await mod(`on('prompt.submit',async($,e,next)=>{const result=await next({...e,text:'accepted',context:['early context']});return {...result,context:['late context']}});`)
+  const accepted = await submit('original')
+  assert.equal(accepted.shouldQuery, true)
+  assert.equal(promptText(accepted), 'accepted')
+  assert.match(JSON.stringify(accepted.messages), /early context/)
+  assert.doesNotMatch(JSON.stringify(accepted.messages), /late context/)
+})
+
+test('an own-turn abort at turn.start returns normally without sampling or a hook warning', async () => {
+  await mod(`on('turn.start',async($,e,next)=>{await $.turn.abort({turnId:e.turnId});return next(e)});on('turn.complete',async($,e,next)=>{await $.fs.write('own-abort-complete.json',JSON.stringify(e));return next(e)});`)
+  const ctx = context()
+  let sampled = false
+  const result = await drain(r.query({messages:[r.createUserMessage({content:'abort before sampling'})],systemPrompt:[],userContext:{},systemContext:{},canUseTool:permit,toolUseContext:ctx,querySource:'repl_main_thread',deps:{
+    callModel:async function*(){sampled=true;throw new Error('aborted turn sampled')},
+  }}))
+  assert.equal(sampled, false)
+  assert.deepEqual(result.terminal, {reason:'aborted_tools'})
+  assert.equal(JSON.parse(readFileSync(join(project,'own-abort-complete.json'),'utf8')).isAborted, true)
+  assert.deepEqual(r.getModWarnings(), [])
+})
+
 test('local commands bypass prompt hooks; late drops reuse the accepted result once', async () => {
   await mod(`on('prompt.submit',async($,e,next)=>{await next({...e,text:'accepted'});return {drop:'too late'}});`)
   let calls=0

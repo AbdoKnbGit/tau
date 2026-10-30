@@ -136,17 +136,34 @@ function dispatchModSnapshot(
             : undefined,
           async () => {
             if (MOD_API_EVENTS.has(method)) {
-              const { mcpApiInput, runModMcpAPI } = await import('./mcpApi.js')
+              const isMcp = method === 'mcp.call' || method === 'mcp.connect'
+              const mcp = isMcp ? await import('./mcpApi.js') : undefined
+              if (!mcp && (args.length > 1 || (args[0] !== undefined && (!args[0] || typeof args[0] !== 'object' || Array.isArray(args[0])))))
+                throw new Error(`${method} takes an optional argument object`)
               const result = await dispatchModSnapshot(
                 snapshot.slice(0, snapshot.indexOf(mod)),
                 method,
-                mcpApiInput(method, args),
-                async input => ({ value: await runModMcpAPI(method, input, signal, mod.plugin) }),
+                mcp ? mcp.mcpApiInput(method, args) : args[0] ?? {},
+                async input => ({ value: mcp
+                  ? await mcp.runModMcpAPI(method, input, signal, mod.plugin)
+                  : await mod.host(method, [input], signal, frame) }),
                 signal,
                 { origin: { plugin: mod.plugin.name, tier: 'user' } },
               ) as ModRecord
               if (result.deny !== undefined) throw new Error(`${method} refused: ${result.deny}`)
               return result.value
+            }
+            if (method === 'prompt.submit') {
+              const { enqueueModPrompt } = await import('./promptQueue.js')
+              const { isModSessionStopped } = await import('./sessionState.js')
+              // Startup handlers can submit before their snapshot is published.
+              // A queued turn must see that complete snapshot and its tools.
+              if (!active.some(item => item.runtime === mod.runtime) && loading) await loading
+              if (!active.some(item => item.runtime === mod.runtime && allowed(item.plugin)))
+                return { drop: 'the plugin was unloaded before the prompt ran' }
+              if (isModSessionStopped()) return { drop: 'the session was stopped and nobody has sent input since' }
+              if (args.length !== 1) throw new Error('prompt.submit takes one argument object')
+              return enqueueModPrompt(args[0], { plugin: mod.plugin.name, owner: mod.runtime, hook: frame?.hook }, signal)
             }
             if (method === 'tool.call' || method === 'tool.check') {
               const { runModToolAPI } = await import('./toolApi.js')

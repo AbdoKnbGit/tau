@@ -313,6 +313,8 @@ export type QueuedCommand = {
   taskNotificationType?: 'local_agent'
   /** Stable submission identity, also used by explicitly recorded prompt history. */
   uuid?: UUID
+  /** Plugin submissions own an independent turn and are never injected mid-turn. */
+  modPrompt?: true
   orphanedPermission?: OrphanedPermission
   /** Raw pasted contents including images. Images are resized at execution time. */
   pastedContents?: Record<number, PastedContent>

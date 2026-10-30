@@ -1133,6 +1133,7 @@ export async function getClaudeCodeMcpConfigs(
         error.type === 'mcp-config-invalid' ||
         error.type === 'mcpb-download-failed' ||
         error.type === 'mcpb-extract-failed' ||
+        error.type === 'mcpb-runtime-missing' ||
         error.type === 'mcpb-invalid-manifest'
       ) {
         const errorMessage = `Plugin MCP loading error - ${error.type}: ${getPluginErrorMessage(error)}`

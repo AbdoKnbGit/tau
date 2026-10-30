@@ -235,7 +235,7 @@ export class QueryEngine {
 
   async *submitMessage(
     prompt: string | ContentBlockParam[],
-    options?: { uuid?: string; isMeta?: boolean },
+    options?: { uuid?: string; isMeta?: boolean; modPrompt?: boolean },
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const {
       cwd,
@@ -369,7 +369,8 @@ export class QueryEngine {
       // slash-command processing) keeps the no-op — nothing else calls
       // setMessages past that point.
       setMessages: fn => {
-        this.mutableMessages = fn(this.mutableMessages)
+        const next = fn(this.mutableMessages)
+        if (next !== this.mutableMessages) this.mutableMessages.splice(0, this.mutableMessages.length, ...next)
       },
       onChangeAPIKey: () => {},
       handleElicitation: this.config.handleElicitation,
@@ -454,6 +455,7 @@ export class QueryEngine {
       messages: this.mutableMessages,
       uuid: options?.uuid,
       isMeta: options?.isMeta,
+      modPrompt: options?.modPrompt,
       querySource: 'sdk',
     })
 
@@ -1256,6 +1258,7 @@ export async function* ask({
   prompt,
   promptUuid,
   isMeta,
+  modPrompt,
   cwd,
   tools,
   mcpClients,
@@ -1290,6 +1293,7 @@ export async function* ask({
   prompt: string | Array<ContentBlockParam>
   promptUuid?: string
   isMeta?: boolean
+  modPrompt?: boolean
   cwd: string
   tools: Tools
   verbose?: boolean
@@ -1367,6 +1371,7 @@ export async function* ask({
     yield* engine.submitMessage(prompt, {
       uuid: promptUuid,
       isMeta,
+      modPrompt,
     })
   } finally {
     setReadFileCache(engine.getReadFileState())

@@ -16,25 +16,59 @@ function fullyQualifiedPath(directory, platform) {
     : posix.isAbsolute(directory)
 }
 
+// Node's V8 delayed-task shutdown race is fixed in 24.20.0 and 26.7.0.
+// Node 23 and 25 ended before the fix was backported.
+// https://github.com/nodejs/node/pull/61999
+const WINDOWS_SHUTDOWN_FIXED_MINOR = new Map([[24, 20], [26, 7]])
+
+// When each release line stops getting security updates.
+// https://github.com/nodejs/Release
+const NODE_END_OF_LIFE = new Map([
+  [20, '2026-04-30'],
+  [22, '2027-04-30'],
+  [23, '2025-06-01'],
+  [24, '2028-04-30'],
+  [25, '2026-06-01'],
+  [26, '2029-04-30'],
+])
+
+const NODE_DOWNLOAD_URL = 'https://nodejs.org/en/download'
+
+const today = now => now.toISOString().slice(0, 10)
+const majorOf = version => Number(/^v?(\d+)\./.exec(version)?.[1])
+
+function recommendedNode(now) {
+  const line = [24, 26].find(major => today(now) <= NODE_END_OF_LIFE.get(major))
+  return line ? `Node.js ${line} LTS` : 'the current Node.js LTS'
+}
+
 export function getNodeRuntimeIssue(version, platform = process.platform) {
   const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version.trim())
   if (!match) return 'unsupported-version'
   const major = Number(match[1]), minor = Number(match[2])
   if (!((major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major >= 23))
     return 'require-esm'
-  // Node's V8 delayed-task shutdown race is fixed in 24.20.0 and 26.7.0.
-  // Node 23 and 25 ended before the fix was backported.
-  // https://github.com/nodejs/node/pull/61999
-  if (platform === 'win32' && major >= 23 &&
-    !((major === 24 && minor >= 20) || (major === 26 && minor >= 7) || major >= 27))
+  if (platform === 'win32' && major >= 23 && major < 27 &&
+    !(minor >= WINDOWS_SHUTDOWN_FIXED_MINOR.get(major)))
     return 'windows-shutdown'
   return null
 }
 
-export function nodeRuntimeMessage(version, issue) {
-  return issue === 'windows-shutdown'
-    ? ''
-    : `[tau] Tau requires Node.js 20.19+ or 22.12+ (require(esm) support); you are running ${version}. Upgrade Node.js, then retry.\n`
+export function nodeRuntimeMessage(version, issue, now = new Date()) {
+  if (issue === 'windows-shutdown') {
+    const major = majorOf(version)
+    const fixedMinor = WINDOWS_SHUTDOWN_FIXED_MINOR.get(major)
+    const target = fixedMinor === undefined ? recommendedNode(now) : `Node.js ${major}.${fixedMinor} or newer`
+    return `[tau] Warning: Node.js ${version} has a Windows bug that can crash Tau when it exits. Update to ${target}: ${NODE_DOWNLOAD_URL}\n`
+  }
+  return `[tau] Tau requires Node.js 20.19+ or 22.12+ (require(esm) support); you are running ${version}. Install ${recommendedNode(now)} from ${NODE_DOWNLOAD_URL}, then retry.\n`
+}
+
+/** Empty while the version's release line still gets security updates. */
+export function nodeEndOfLifeMessage(version, now = new Date()) {
+  const end = NODE_END_OF_LIFE.get(majorOf(version))
+  if (!end || today(now) <= end) return ''
+  return `[tau] Warning: Node.js ${version} stopped getting security updates on ${end}. Update to ${recommendedNode(now)}: ${NODE_DOWNLOAD_URL}\n`
 }
 
 export function managedNodeRuntimePath(env = process.env, platform = process.platform) {

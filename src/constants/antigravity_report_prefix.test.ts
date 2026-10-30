@@ -48,15 +48,40 @@ test('every other provider retains its existing report prefix', () => {
 
 test('Antigravity chat and unrelated side queries retain their existing prefix', () => {
   selectedProvider = 'antigravity'
-  for (const isNonInteractive of [false, true]) {
-    for (const hasAppendSystemPrompt of [false, true]) {
-      const options = { isNonInteractive, hasAppendSystemPrompt }
+  for (const options of [
+    { isNonInteractive: false, hasAppendSystemPrompt: false },
+    { isNonInteractive: false, hasAppendSystemPrompt: true },
+    { isNonInteractive: true, hasAppendSystemPrompt: true },
+  ]) {
+    expect(getCLISyspromptPrefix({
+      ...options, requestProvider: 'antigravity', querySource: 'repl_main_thread',
+    })).toBe(getCLISyspromptPrefix(options))
+    expect(getCLISyspromptPrefix({
+      ...options, requestProvider: 'antigravity',
+    })).toBe(getCLISyspromptPrefix(options))
+  }
+})
+
+const printOptions = { isNonInteractive: true, hasAppendSystemPrompt: false }
+const refusedIdentity = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+const tauIdentity = 'You are Tau, a multi-provider AI coding CLI.'
+
+test('Antigravity print mode sends the identity the interactive CLI sends', () => {
+  for (const provider of ['antigravity', 'openai'] as const) {
+    selectedProvider = provider
+    for (const querySource of ['sdk', undefined] as const) {
       expect(getCLISyspromptPrefix({
-        ...options, requestProvider: 'antigravity', querySource: 'repl_main_thread',
-      })).toBe(getCLISyspromptPrefix(options))
-      expect(getCLISyspromptPrefix({
-        ...options, requestProvider: 'antigravity',
-      })).toBe(getCLISyspromptPrefix(options))
+        ...printOptions, requestProvider: 'antigravity', querySource,
+      })).toBe(tauIdentity)
     }
+  }
+})
+
+test('print mode on every other provider keeps its identity', () => {
+  for (const provider of API_PROVIDERS.filter(value => value !== 'antigravity' && value !== 'vertex')) {
+    selectedProvider = provider
+    expect(getCLISyspromptPrefix({
+      ...printOptions, requestProvider: provider, querySource: 'sdk',
+    })).toBe(refusedIdentity)
   }
 })

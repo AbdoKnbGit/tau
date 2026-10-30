@@ -3,7 +3,7 @@
  *
  * Run: bun run src/utils/observableInput.test.ts
  */
-import { z as z3 } from 'zod'
+import { z as z3 } from 'zod/v3'
 import { z } from 'zod/v4'
 import { stripObservableBackfill } from './observableInput.js'
 
