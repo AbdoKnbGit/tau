@@ -29,6 +29,7 @@ jobs:
     name: ${{ matrix.os }} - Node ${{ matrix.node }}
     if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -168,7 +169,7 @@ jobs:
         run: node --test test/plugin-runtime-boundaries.test.mjs test/plugin-local-loading.test.mjs test/plugin-dependency-versions.test.mjs test/plugin-skill-compatibility.test.mjs test/plugin-reload-skills.test.mjs test/hook-engine-compatibility.test.mjs test/headless-hook-resume.test.mjs
 
       - name: Test MCPB bundles, provider SDKs, sign-in, tool schemas, proxy and CA fetch, telemetry exporters, and optional integrations
-        run: node --test test/plugin-mcpb-loading.test.mjs test/plugin-mcpb-cli.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/print-mode-requests.test.mjs test/resume-prompt-cache.test.mjs test/tool-schema-spelling.test.mjs test/undici-dispatcher-fetch.test.mjs test/telemetry-otlp-exporters.test.mjs test/optional-integrations.test.mjs
+        run: node --test test/plugin-mcpb-loading.test.mjs test/plugin-mcpb-cli.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/print-mode-requests.test.mjs test/provider-failure.test.mjs test/resume-prompt-cache.test.mjs test/tool-schema-spelling.test.mjs test/undici-dispatcher-fetch.test.mjs test/telemetry-otlp-exporters.test.mjs test/optional-integrations.test.mjs
 
       - name: Test skill prompt mods and real CLI requests
         # Exercise the built CLI and real mod workers on every OS in the matrix.
@@ -271,6 +272,7 @@ jobs:
   npm12-install-policy:
     name: Node 24 - npm 12 allow-scripts install
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -383,6 +385,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Windows without git-bash (PowerShell fallback)
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -456,6 +459,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Node 26 - proxy and custom CA fetch
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -473,6 +477,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Build with Bun (opt-in alternate path)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -513,6 +518,11 @@ jobs:
           bun run src/lanes/codex/reasoning.test.ts
           bun run src/lanes/codex/stream_retry.test.ts
           bun run src/lanes/codex/tool_schema_backstop.test.ts
+          bun run src/lanes/shared/provider_failure.test.ts
+          bun run src/services/api/transport_error.test.ts
+          bun run src/services/api/withRetry_provider_budget.test.ts
+          bun run src/utils/fallback/detect.test.ts
+          bun run src/utils/model/providerDefaults.test.ts
           bun run src/tools/EvalTool/bridge.test.ts
           bun run src/tools/EvalTool/registry.test.ts
           bun run src/utils/midTurnNotifications.test.ts

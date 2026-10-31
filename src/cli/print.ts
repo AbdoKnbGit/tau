@@ -63,6 +63,7 @@ import {
 import { externalMetadataToAppState } from 'src/state/onChangeAppState.js'
 import { getInMemoryErrors, logError, logMCPDebug } from 'src/utils/log.js'
 import {
+  writeToStderr,
   writeToStdout,
   registerProcessOutputErrorHandlers,
 } from 'src/utils/process.js'
@@ -200,7 +201,9 @@ import { getLastCacheSafeParams } from 'src/utils/forkedAgent.js'
 import { getAccountInformation } from 'src/utils/auth.js'
 import { OAuthService } from 'src/services/oauth/index.js'
 import { installOAuthTokens } from 'src/cli/handlers/auth.js'
-import { getAPIProvider } from 'src/utils/model/providers.js'
+import { getAPIProvider, PROVIDER_DISPLAY_NAMES } from 'src/utils/model/providers.js'
+import { categorizeRetryableAPIError } from 'src/services/api/errors.js'
+import { setProviderRetryListener } from 'src/services/api/providerRetryBudget.js'
 import type { HookCallbackMatcher } from 'src/types/hooks.js'
 import { AwsAuthStatusManager } from 'src/utils/awsAuthStatusManager.js'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
@@ -467,6 +470,20 @@ export function canBatchWith(
     next.mode === 'prompt' &&
     next.workload === head.workload &&
     next.isMeta === head.isMeta
+  )
+}
+
+/** On stderr, so a script's stdout stays only the answer. */
+function writeRetryNotice(
+  status: number | null,
+  attempt: number,
+  maxRetries: number,
+  delayMs: number,
+): void {
+  const provider = PROVIDER_DISPLAY_NAMES[getAPIProvider()]
+  const problem = status === null ? `${provider} did not respond` : `${provider} returned ${status}`
+  writeToStderr(
+    `${problem}. Retrying in ${Math.ceil(delayMs / 1000)}s (attempt ${attempt} of ${maxRetries}).\n`,
   )
 }
 
@@ -888,6 +905,26 @@ export async function runHeadless(
       ? createStreamlinedTransformer()
       : null
 
+  // A lane's own retries, and a third-party provider's, happen below the message
+  // stream. Without this a script sees nothing at all until the last one ends.
+  setProviderRetryListener(({ status, attempt, maxRetries, delayMs }) => {
+    if (transformToStreamlined || options.outputFormat !== 'stream-json' || !options.verbose) {
+      writeRetryNotice(status, attempt, maxRetries, delayMs)
+      return
+    }
+    void structuredIO.write({
+      type: 'system',
+      subtype: 'api_retry',
+      attempt,
+      max_retries: maxRetries,
+      retry_delay_ms: delayMs,
+      error_status: status,
+      error: categorizeRetryableAPIError({ status: status ?? undefined, message: '' }),
+      session_id: getSessionId(),
+      uuid: randomUUID(),
+    })
+  })
+
   headlessProfilerCheckpoint('before_runHeadlessStreaming')
   for await (const message of runHeadlessStreaming(
     structuredIO,
@@ -915,6 +952,13 @@ export async function runHeadless(
       }
     } else if (options.outputFormat === 'stream-json' && options.verbose) {
       await structuredIO.write(message)
+    } else if (message.type === 'system' && message.subtype === 'api_retry') {
+      writeRetryNotice(
+        message.error_status,
+        message.attempt,
+        message.max_retries,
+        message.retry_delay_ms,
+      )
     }
     // Should not be getting control messages or stream events in non-stream mode.
     // Also filter out streamlined types since they're only produced by the transformer.

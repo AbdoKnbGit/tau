@@ -725,6 +725,7 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
             return {
               messages: [userMessage, createCommandInputMessage(`<local-command-stderr>${String(e)}</local-command-stderr>`)],
               shouldQuery: false,
+              resultError: String(e),
               command
             };
           }
@@ -791,6 +792,7 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
                 content: `<local-command-stderr>${String(e)}</local-command-stderr>`
               })],
               shouldQuery: false,
+              resultError: String(e),
               command
             };
           }

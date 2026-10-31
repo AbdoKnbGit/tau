@@ -52,6 +52,7 @@ import {
   isAbortError,
   throwRetryableProviderHttpError,
 } from '../../services/api/transport_error.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 
 const KIRO_ENDPOINT = 'https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse'
 const KIRO_MODELS_ENDPOINT = 'https://codewhisperer.us-east-1.amazonaws.com'
@@ -1332,9 +1333,7 @@ async function _kiroBackoffDelay(
 }
 
 function* _emitErrorText(text: string): Generator<AnthropicStreamEvent> {
-  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
-  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
-  yield { type: 'content_block_stop', index: 0 }
+  yield* providerFailureEvents(0, text)
 }
 
 /**

@@ -107,11 +107,16 @@ Add one line to `scenarios` in `scenarios.mjs`:
 | `credential` | `'login'` or `'key'` |
 | `systemHas`, `systemLacks` | Text in the system prompt |
 | `subtype`, `isError` | Fields of the JSON result |
+| `stderr`, `notStderr` | Pattern for stderr, where retry notices go |
+| `retryLine` | stream-json has an `api_retry` line for a 429 |
+| `maxSeconds` | The run took no longer than this |
 | `cleanOutput` | No escape codes on stdout or stderr, and JSON parses as it is |
 
 On a scenario itself: `runs` runs the CLI several times in the same folder, `compare: 'same'` or `'different'`
 compares the start of the first and last run's requests, `continues: true` checks that history survives,
-`only: ['agy']` limits it to a route, `setup` adds project files, a sign-in or environment variables, `mcp: true`
+`survives: true` checks that a refused request's run leaves the request before it intact, `reject` makes the fake
+model refuse with a status, body and headers (`after` and `times` pick which requests), `only: ['agy']` or
+`except: ['agy']` limits it to some routes, `setup` adds project files, a sign-in or environment variables, `mcp: true`
 adds a small MCP server, and `soft: true` turns a failure into a warning. Paths can use `{workspace}` and
 `{outside}`. Offline runs remove terminal variables like `WT_SESSION`, so a scenario about terminals has to set
 them with `setup: { env }`, as `output-clean-json` does.

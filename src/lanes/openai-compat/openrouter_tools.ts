@@ -5,6 +5,7 @@ import { dropInvalidPlaceholderArguments } from '../../utils/placeholderArgument
 import { isOutputCapTruncation } from '../shared/truncation.js'
 import { restoreOpenRouterOptionalArguments } from '../../utils/model/openrouterStrictSchema.js'
 import { OpenRouterReasoningCollector } from './openrouter_reasoning.js'
+import { isTerminalProviderQuotaText } from '../../services/api/transport_error.js'
 
 /** Terminal protocol/loop failures must not trigger another generation fallback. */
 export class OpenRouterToolCallError extends Error {
@@ -70,10 +71,11 @@ export class OpenRouterUpstreamError extends OpenRouterToolCallError {
       `${provider ? ` Provider: ${clean(provider)}.` : ''}${generation ? ` Generation: ${clean(generation)}.` : ''}` +
       (pending.length ? ` The unfinished ${pending.join(', ')} call${pending.length > 1 ? 's were' : ' was'} discarded; no tool ran.`
         : ' No tool ran.')
-    const text = `${message} ${clean(metadata.raw)} ${clean(metadata.limit_source)}`
+    const text = `${message} ${clean(metadata.raw)} ${clean(metadata.limit_source)} ${clean(detail.type)}`
     this.status = context.status
     this.retryAfterMs = context.retryAfterMs ?? resetDelayMs(metadata.headers)
-    this.canRetryBeforeOutput = (!code || RETRYABLE_CODE.test(code)) && !DAILY_LIMIT.test(text)
+    this.canRetryBeforeOutput = (!code || RETRYABLE_CODE.test(code))
+      && !DAILY_LIMIT.test(text) && !isTerminalProviderQuotaText(text)
     this.capacity = this.canRetryBeforeOutput && (/^(429|503|529)$/.test(code) || CAPACITY.test(text))
   }
 }

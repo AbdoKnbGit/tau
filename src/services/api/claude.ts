@@ -20,6 +20,7 @@ import type {
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Stream } from '@anthropic-ai/sdk/streaming.mjs'
 import { OpenRouterToolCallError } from '../../lanes/openai-compat/openrouter_tools.js'
+import { isProviderFailureBlock } from '../../lanes/shared/provider_failure.js'
 import { randomUUID } from 'crypto'
 import {
   getAPIProvider,
@@ -2892,6 +2893,15 @@ async function* queryModel(
                   part.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               })
               throw new Error('Message not found')
+            }
+            if (isProviderFailureBlock(contentBlock)) {
+              const failure = createAssistantAPIErrorMessage({
+                content: contentBlock.text.trim(),
+                error: 'unknown',
+              })
+              newMessages.push(failure)
+              yield failure
+              break
             }
             const m: AssistantMessage = {
               message: {

@@ -295,3 +295,32 @@ export function isClineCatalogRetryDue(
   const doublings = Math.min(30, Math.max(0, failure.count - 1))
   return elapsed >= Math.min(capMs, baseMs * 2 ** doublings)
 }
+
+/** What the picker offers when the live catalog cannot be fetched. */
+export const CLINE_FALLBACK_MODELS: ModelInfo[] = [
+  { id: 'kwaipilot/kat-coder-pro', name: 'Kat Coder Pro' },
+  { id: 'minimax/minimax-m2.7', name: 'MiniMax M2.7' },
+  { id: 'minimax/minimax-m2.5', name: 'MiniMax M2.5' },
+  { id: 'arcee-ai/trinity-large-preview:free', name: 'Arcee Trinity Large Preview' },
+  { id: 'z-ai/glm-5', name: 'GLM-5' },
+  { id: 'anthropic/claude-opus-4.8', name: 'Claude Opus 4.8' },
+  { id: 'openai/gpt-5.5', name: 'GPT-5.5' },
+  { id: 'deepseek/deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+  { id: 'anthropic/claude-sonnet-4.6', name: 'Claude Sonnet 4.6' },
+  { id: 'anthropic/claude-opus-4.7', name: 'Claude Opus 4.7' },
+  { id: 'anthropic/claude-opus-4.6', name: 'Claude Opus 4.6' },
+  { id: 'openai/gpt-5.4', name: 'GPT-5.4' },
+  { id: 'openai/gpt-5.3-codex', name: 'GPT-5.3 Codex' },
+  { id: 'openai/gpt-5-codex', name: 'GPT-5 Codex' },
+  { id: 'google/gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview' },
+  { id: 'google/gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite Preview' },
+  { id: 'qwen/qwen3-coder:exacto', name: 'Qwen3 Coder Exacto' },
+  { id: 'qwen/qwen3-coder', name: 'Qwen3 Coder' },
+  { id: 'moonshotai/kimi-k2.6', name: 'Kimi K2.6' },
+  { id: 'moonshotai/kimi-k2:exacto', name: 'Kimi K2 Exacto' },
+  { id: 'moonshotai/kimi-k2', name: 'Kimi K2' },
+  { id: 'z-ai/glm-4.6:exacto', name: 'GLM 4.6 Exacto' },
+  { id: 'deepseek/deepseek-v3.1-terminus:exacto', name: 'DeepSeek V3.1 Terminus Exacto' },
+  { id: 'deepseek/deepseek-chat', name: 'DeepSeek Chat' },
+  { id: 'x-ai/grok-code-fast-1', name: 'Grok Code Fast 1' },
+]

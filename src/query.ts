@@ -125,7 +125,6 @@ import {
 import {
   getAssistantAPIErrorText,
   isFallbackEligibleAPIErrorMessage,
-  isFallbackEligibleLaneProviderErrorMessage,
   isFallbackEligibleThrownError,
   truncateFallbackErrorMessage,
 } from './utils/fallback/detect.js'
@@ -1120,8 +1119,7 @@ async function* queryLoop(
             if (
               fallbackAllowed &&
               message.type === 'assistant' &&
-              (isFallbackEligibleAPIErrorMessage(message) ||
-                isFallbackEligibleLaneProviderErrorMessage(message))
+              isFallbackEligibleAPIErrorMessage(message)
             ) {
               withheld = true
             }
@@ -1608,29 +1606,6 @@ async function* queryLoop(
       // prompt-too-long, auth failure, etc.). The model never produced a
       // real response — hooks evaluating it create a death spiral:
       // error → hook blocking → retry → error → …
-      if (
-        fallbackAllowed &&
-        lastMessage?.type === 'assistant' &&
-        isFallbackEligibleLaneProviderErrorMessage(lastMessage)
-      ) {
-        const errorText = getAssistantAPIErrorText(lastMessage)
-        const action = decideFallbackAction(errorText)
-        if (action.type === 'retry') {
-          yield* yieldMissingToolResultBlocks(
-            assistantMessages,
-            'Model fallback triggered',
-          )
-          yield createSystemMessage(action.systemMessage, 'warning')
-          state = buildFallbackRetryState()
-          continue
-        }
-        // type === 'none' - chain exhausted. The streaming loop withheld
-        // this lane error from the SDK; surface it now.
-        yield lastMessage
-        void executeStopFailureHooks(lastMessage, toolUseContext)
-        return { reason: 'completed' }
-      }
-
       if (lastMessage?.isApiErrorMessage) {
         // Configured /fallback chain: only provider API/auth/quota/status
         // failures route through fallback (see isFallbackEligibleAPIErrorMessage).

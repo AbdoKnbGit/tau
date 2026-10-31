@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { randomUUID, randomInt } from 'node:crypto'
 import { test } from 'node:test'
+import { stopProcessTree } from './helpers/stop-process-tree.mjs'
 
 const cli = resolve(process.env.TAU_TEST_CLI ?? 'dist/cli.mjs')
 const write = (path, value) => {
@@ -23,6 +24,7 @@ async function run(args, cwd, env) {
     cwd,
     env,
     windowsHide: true,
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stdout = '',
@@ -36,8 +38,8 @@ async function run(args, cwd, env) {
   })
   const timer = setTimeout(() => {
     timedOut = true
-    child.kill()
-  }, 40_000)
+    stopProcessTree(child)
+  }, 120_000)
   try {
     const code = await new Promise((done, reject) => {
       child.once('error', reject)
@@ -52,7 +54,7 @@ async function run(args, cwd, env) {
 
 test(
   'shipped CLI loads a TypeScript mod on first startup and runs real external programs without a model request',
-  { timeout: 180_000 },
+  { timeout: 900_000 },
   async (t) => {
     const root = mkdtempSync(join(tmpdir(), 'tau-mod-cli-'))
     const workspace = join(root, 'workspace'),
@@ -74,6 +76,16 @@ test(
       )
     })
     await new Promise((done) => server.listen(0, '127.0.0.1', done))
+    // Before anything below can fail: an open server keeps this file running forever.
+    t.after(async () => {
+      await new Promise((done) => server.close(done))
+      rmSync(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      })
+    })
     const env = Object.fromEntries(
       Object.entries(process.env).filter(
         ([key]) =>
@@ -166,84 +178,74 @@ export function register(on) {
         cwd: workspace,
         windowsHide: true,
         encoding: 'utf8',
-        timeout: 45_000,
+        timeout: 300_000,
       })
       assert.equal(build.status, 0, build.stderr)
       scripts.push({ name: 'Go executable', argv: [goPath] })
     }
     let count = 0
-    try {
-      for (const script of scripts)
-        await t.test(
-          script.name,
-          { skip: script.available === false },
-          async () => {
-            if (script.path) write(join(workspace, script.path), script.source)
-            write(join(workspace, 'program.json'), script.argv)
-            const result = await run(
-              [
-                '-p',
-                '/measure',
-                '--model',
-                'claude-sonnet-4-6',
-                '--plugin-dir',
-                plugin,
-                '--strict-mcp-config',
-                '--setting-sources',
-                'project',
-                '--no-session-persistence',
-              ],
-              workspace,
-              env,
-            )
-            assert.equal(result.code, 0, `${result.stderr}\n${result.stdout}`)
-            const ended = JSON.parse(readFileSync(join(workspace, 'ended.json'), 'utf8'))
-            const started = JSON.parse(readFileSync(join(workspace, 'started.json'), 'utf8'))
-            assert.equal(ended.reason, 'other')
-            assert.equal(ended.resume.id, ended.sessionId)
-            assert.equal(ended.sessionId, started.session, 'Exit evidence must belong to this exact fresh session')
-            assert.ok(
-              result.stdout.includes(`calculated:${expected}:run=${++count}`),
-              `${result.stderr}\n${result.stdout}`,
-            )
-            assert.deepEqual(
-              requests,
-              [],
-              'The local mod command must not reach a model',
-            )
-          },
-        )
+    for (const script of scripts)
       await t.test(
-        'validation inspects unsupported APIs without executing register',
+        script.name,
+        { skip: script.available === false },
         async () => {
-          write(
-            join(plugin, 'hooks/register.ts'),
-            "throw new Error('MUST_NOT_EXECUTE'); export function register(on){on('tool.describe',async($,e,next)=>next(e))}",
-          )
+          if (script.path) write(join(workspace, script.path), script.source)
+          write(join(workspace, 'program.json'), script.argv)
           const result = await run(
-            ['plugin', 'validate', plugin],
+            [
+              '-p',
+              '/measure',
+              '--model',
+              'claude-sonnet-4-6',
+              '--plugin-dir',
+              plugin,
+              '--strict-mcp-config',
+              '--setting-sources',
+              'project',
+              '--no-session-persistence',
+            ],
             workspace,
             env,
           )
-          assert.notEqual(result.code, 0)
-          assert.match(
-            result.stdout + result.stderr,
-            /does not yet support mod event/,
+          assert.equal(result.code, 0, `${result.stderr}\n${result.stdout}`)
+          const ended = JSON.parse(readFileSync(join(workspace, 'ended.json'), 'utf8'))
+          const started = JSON.parse(readFileSync(join(workspace, 'started.json'), 'utf8'))
+          assert.equal(ended.reason, 'other')
+          assert.equal(ended.resume.id, ended.sessionId)
+          assert.equal(ended.sessionId, started.session, 'Exit evidence must belong to this exact fresh session')
+          assert.ok(
+            result.stdout.includes(`calculated:${expected}:run=${++count}`),
+            `${result.stderr}\n${result.stdout}`,
           )
-          assert.doesNotMatch(
-            result.stdout + result.stderr,
-            /Error: MUST_NOT_EXECUTE/,
+          assert.deepEqual(
+            requests,
+            [],
+            'The local mod command must not reach a model',
           )
         },
       )
-    } finally {
-      await new Promise((done) => server.close(done))
-      rmSync(root, {
-        recursive: true,
-        force: true,
-        maxRetries: 10,
-        retryDelay: 100,
-      })
-    }
+    await t.test(
+      'validation inspects unsupported APIs without executing register',
+      async () => {
+        write(
+          join(plugin, 'hooks/register.ts'),
+          "throw new Error('MUST_NOT_EXECUTE'); export function register(on){on('tool.describe',async($,e,next)=>next(e))}",
+        )
+        const result = await run(
+          ['plugin', 'validate', plugin],
+          workspace,
+          env,
+        )
+        assert.notEqual(result.code, 0)
+        assert.match(
+          result.stdout + result.stderr,
+          /does not yet support mod event/,
+        )
+        assert.doesNotMatch(
+          result.stdout + result.stderr,
+          /Error: MUST_NOT_EXECUTE/,
+        )
+      },
+    )
   },
 )

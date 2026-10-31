@@ -12,7 +12,7 @@ const stubs: Array<[string, string[]]> = [
   ['../../utils/debug.js', ['logForDebugging']],
   ['../../utils/log.js', ['logError']],
   ['../../utils/messages.js', ['createSystemAPIErrorMessage']],
-  ['../../utils/model/providers.js', ['getAPIProvider', 'getAPIProviderForStatsig']],
+  ['../../utils/model/providers.js', ['getAPIProvider', 'getAPIProviderForStatsig', 'isThirdPartyProvider']],
   ['../../utils/model/contextWindows.js', ['recordProviderModelContextWindows']],
   ['../../utils/auth.js', ['clearApiKeyHelperCache', 'clearAwsCredentialsCache', 'clearGcpCredentialsCache', 'getClaudeAIOAuthTokens', 'handleOAuth401Error', 'isClaudeAISubscriber', 'isEnterpriseSubscriber']],
   ['../../utils/model/model.js', ['isNonCustomOpusModel']],

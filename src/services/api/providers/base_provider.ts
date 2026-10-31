@@ -42,6 +42,9 @@ export interface AnthropicContentBlock {
   // decoded. On the block, not in `input`, because native adaptation
   // rebuilds `input`. See services/mcp/decodeStatus.ts.
   _tau_decode_status?: { category: string; fragmentLength?: number }
+  // Set by a lane on text that reports a failed request rather than a reply.
+  // See lanes/shared/provider_failure.ts.
+  _tau_provider_failure?: true
 }
 
 export interface AnthropicMessage {

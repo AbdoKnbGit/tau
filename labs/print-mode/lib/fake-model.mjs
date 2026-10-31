@@ -9,6 +9,7 @@ const plan = JSON.parse(readFileSync(process.env.TAU_LAB_PLAN, 'utf8'))
 const recordFile = process.env.TAU_LAB_RECORD
 const usage = { input: 100, cached: 0, creation: 0, output: 5, ...plan.usage }
 let step = 0
+let mainRequests = 0
 // A real provider never reuses an id, not even after a resume, and Tau rejects a repeated tool id.
 let replyNumber = Date.now()
 
@@ -48,6 +49,15 @@ function anthropicReply(body, calls, text) {
   out.push(event({ type: 'message_delta', delta: { stop_reason: calls.length ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: usage.output } }))
   out.push(event({ type: 'message_stop' }))
   return out.join('')
+}
+
+// A route that asks for one finished message rather than a stream.
+function anthropicMessage(body, calls, text) {
+  const id = ++replyNumber
+  const content = calls.length
+    ? calls.map((call, index) => ({ type: 'tool_use', id: `toolu_lab_${id}_${index}`, name: call.name, input: call.args }))
+    : [{ type: 'text', text }]
+  return { id: `msg_lab_${id}`, type: 'message', role: 'assistant', model: body.model, content, stop_reason: calls.length ? 'tool_use' : 'end_turn', stop_sequence: null, usage: { input_tokens: usage.input, output_tokens: usage.output, cache_read_input_tokens: usage.cached, cache_creation_input_tokens: usage.creation } }
 }
 
 function geminiReply(body, calls, text) {
@@ -128,6 +138,15 @@ globalThis.fetch = async function fetch(input, init) {
     return json({ error: { code: 429, message: 'Resource has been exhausted (e.g. check quota).', status: 'RESOURCE_EXHAUSTED' } }, 429)
   }
 
+  // The provider refuses the request. `after` lets earlier requests through, `times` the later ones.
+  if (isMain && plan.reject) {
+    const { status, body: errorBody, headers, after = 0, times = Infinity } = plan.reject
+    const number = mainRequests++
+    if (number >= after && number < after + times) {
+      return new Response(JSON.stringify(errorBody), { status, headers: { 'content-type': 'application/json', ...headers } })
+    }
+  }
+
   const offered = format === 'other' ? [] : readRequest({ format, headers: {}, body: text }).tools
   const offeredNames = offered.map(tool => tool.name)
   const scripted = isMain ? (plan.steps?.[step++] ?? []) : []
@@ -137,6 +156,7 @@ globalThis.fetch = async function fetch(input, init) {
   })
   const answer = isMain ? (plan.finalText ?? 'LAB-DONE') : 'ok'
   if (format === 'gemini') return stream(geminiReply(body, calls, answer))
+  if (format === 'anthropic' && body.stream !== true) return json(anthropicMessage(body, calls, answer))
   if (format === 'anthropic') return stream(anthropicReply(body, calls, answer))
   if (format === 'chat') return stream(chatReply(body, calls, answer))
   if (format === 'responses') return stream(responsesReply(body, calls, answer))

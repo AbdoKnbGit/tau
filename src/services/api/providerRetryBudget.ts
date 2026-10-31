@@ -46,6 +46,27 @@ export function withProviderRetryState<T>(state: ProviderRetryState, operation: 
   return providerRetryState.run(state, operation)
 }
 
+export interface ProviderRetryNotice {
+  status: number | null
+  attempt: number
+  maxRetries: number
+  delayMs: number
+}
+
+let retryListener: ((notice: ProviderRetryNotice) => void) | undefined
+
+/** Print mode listens, so a script can see the wait. Interactive sessions do not. */
+export function setProviderRetryListener(
+  listener: (notice: ProviderRetryNotice) => void,
+): void {
+  retryListener = listener
+}
+
+/** A provider request is about to be sent again after this wait. */
+export function reportProviderRetry(notice: ProviderRetryNotice): void {
+  retryListener?.(notice)
+}
+
 /** Standalone native calls get their own allowance; outer retries reuse it. */
 export function getProviderRetryBudget(key: string, limit: number): ProviderRetryBudget {
   const state = providerRetryState.getStore()

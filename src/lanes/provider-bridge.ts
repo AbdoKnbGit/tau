@@ -41,7 +41,8 @@ import { prefetchMediaText } from './shared/media_extract.js'
 import { markFailedToolResults } from './shared/tool_error_text.js'
 import { decideImageSupport, prepareImageSupport } from './shared/vision_capability.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
-import { createRetryableConnectionError } from '../services/api/transport_error.js'
+import { createRetryableConnectionError, ProviderFailureError } from '../services/api/transport_error.js'
+import { isProviderFailureBlock } from './shared/provider_failure.js'
 import { isAntigravityModelId, isAntigravityGeminiModel } from '../services/api/providers/gemini_code_assist.js'
 import { getProviderSetupWindow, ProviderSetupTimeoutError } from '../services/api/providerRetryBudget.js'
 
@@ -533,6 +534,11 @@ async function assembleFinalMessage(
     b => b.type !== 'tool_use' || (b as any)._finalized === true,
   )
   for (const b of finalized) delete (b as any)._finalized
+
+  // A failure is not a response. Handed back as content, it would read as the
+  // model's answer to whatever asked: a session title, a summary, this turn.
+  const failure = finalized.find(isProviderFailureBlock)
+  if (failure) throw new ProviderFailureError(failure.text.trim())
 
   return {
     id: messageId,

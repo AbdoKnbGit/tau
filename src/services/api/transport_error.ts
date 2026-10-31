@@ -17,9 +17,12 @@ const RETRYABLE_NETWORK_CODES = new Set([
 ])
 
 const TERMINAL_QUOTA_PATTERN =
-  /quota (?:exhausted|exceeded)|exceeded (?:its|your) (?:usage |current )?quota|insufficient_quota|exhausted your capacity|quota will reset after \d+h|FreeUsageLimitError/i
+  /quota (?:exhausted|exceeded)|exceeded (?:its|your) (?:usage |current )?quota|insufficient_quota|exhausted your capacity|quota will reset after \d+h|FreeUsageLimitError|usage_limit_reached|usage_not_included/i
 
 export const MAX_TYPED_PROVIDER_RETRY_AFTER_MS = 32_000
+// A rate limit of a minute or two is worth waiting for. Past this, it is a limit
+// on the account, and the next request will not be the one that gets through.
+export const LONG_PROVIDER_COOLDOWN_MS = 5 * 60_000
 
 function getNetworkErrorCode(error: unknown): string | undefined {
   let current: unknown = error
@@ -47,6 +50,7 @@ export function getAPIUserAbortError(
 }
 
 export function isRetryableNetworkError(error: unknown): boolean {
+  if (error instanceof ProviderFailureError) return false
   if (error instanceof Error &&
     (error.name === 'OpenRouterToolCallError' || error.name === 'OpenRouterUpstreamError') &&
     (error as Error & { isRetryable?: unknown }).isRetryable === false) return false
@@ -88,6 +92,19 @@ export class ProviderHttpError extends Error {
   }
 }
 
+/**
+ * A request that failed for good. The message is what the user reads, as it
+ * stands, and no layer may send the request again.
+ */
+export class ProviderFailureError extends Error {
+  readonly isRetryable = false
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'ProviderFailureError'
+  }
+}
+
 export function getProviderHttpStatus(error: unknown): number | null {
   if (!(error instanceof Error)) return null
   const status = (error as Error & { status?: unknown }).status
@@ -114,12 +131,20 @@ export function isRetryableProviderError(error: unknown): boolean {
   return status !== null && isRetryableProviderHttpStatus(status)
 }
 
+/** Does this response body name a limit that waiting seconds cannot lift? */
+export function isTerminalProviderQuotaText(text: string): boolean {
+  return TERMINAL_QUOTA_PATTERN.test(text)
+}
+
 /**
  * Detect long-lived account/project quota exhaustion without overriding a
  * provider that exposes a more specific transient quota classification.
  */
 export function isTerminalProviderQuotaError(error: unknown): boolean {
-  if (!(error instanceof Error) || !TERMINAL_QUOTA_PATTERN.test(error.message)) {
+  if (!(error instanceof Error)) return false
+  // A lane's message can keep only the words. The code is in the raw body.
+  const body = (error as Error & { body?: unknown }).body
+  if (!isTerminalProviderQuotaText(error.message) && !(typeof body === 'string' && isTerminalProviderQuotaText(body))) {
     return false
   }
   const classified = (error as Error & { isRetryable?: unknown }).isRetryable
@@ -127,6 +152,17 @@ export function isTerminalProviderQuotaError(error: unknown): boolean {
   return !(
     classified === true && (kind === 'retryable-quota' || kind === 'transient')
   )
+}
+
+/** Has the provider named a cooldown too long for anyone to want it waited out here? */
+export function hasLongProviderCooldown(error: unknown): boolean {
+  const failure = error as { retryAfterMs?: unknown; headers?: { get?: unknown } } | null
+  const hint = typeof failure?.retryAfterMs === 'number'
+    ? failure.retryAfterMs
+    : typeof failure?.headers?.get === 'function'
+      ? parseRetryAfterMs((failure.headers as Headers).get('retry-after'))
+      : undefined
+  return (hint ?? 0) > LONG_PROVIDER_COOLDOWN_MS
 }
 
 /**
@@ -156,12 +192,27 @@ export function getBoundedProviderRetryAfterMs(
   return Math.min(retryAfterMs, maxMs)
 }
 
-/** Throw a retryable pre-response HTTP failure without creating an assistant turn. */
+/** Retry-After as milliseconds, from either its seconds or its date form. */
+export function parseRetryAfterMs(value: string | null | undefined): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (!Number.isNaN(seconds)) return Math.max(0, seconds * 1000)
+  const date = Date.parse(value)
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now())
+}
+
+/**
+ * Throw a retryable pre-response HTTP failure without creating an assistant
+ * turn. A limit no retry here would outlast is not retryable: the lane reports
+ * it on the first answer instead of waiting for nothing.
+ */
 export function throwRetryableProviderHttpError(
   provider: string,
   response: Pick<Response, 'status' | 'headers'>,
   body: string,
 ): void {
   if (!isRetryableProviderHttpStatus(response.status)) return
+  if (isTerminalProviderQuotaText(body)) return
+  if ((parseRetryAfterMs(response.headers?.get('retry-after')) ?? 0) > LONG_PROVIDER_COOLDOWN_MS) return
   throw new ProviderHttpError(provider, response.status, body, response.headers)
 }

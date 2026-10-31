@@ -129,12 +129,6 @@ function hasFallbackEligibleProviderText(text: string): boolean {
   )
 }
 
-function hasLaneProviderErrorPrefix(text: string): boolean {
-  return /^(?:openrouter|ollama|cline|kilo|kiro|iflow|kilocode|commandcode|deepseek|glm|groq|mistral|nim|copilot|generic)\s+API\s+error\s+\d{3}\b/i.test(
-    text.trim(),
-  )
-}
-
 function hasKnownLaneAccountLimitText(text: string): boolean {
   const normalized = text.trim()
   const compact = normalized.replace(/\s+/g, ' ')
@@ -166,28 +160,6 @@ function getAssistantErrorText(message: AssistantMessage): string {
 }
 
 /**
- * Native third-party lanes emit provider HTTP failures as ordinary assistant
- * text blocks, not createAssistantAPIErrorMessage(). Keep this narrow: only
- * lane-owned error prefixes and known account-limit messages may enter the
- * fallback path.
- */
-export function isFallbackEligibleLaneProviderErrorMessage(
-  message: AssistantMessage,
-): boolean {
-  if (!message || message.isApiErrorMessage === true) {
-    return false
-  }
-  const text = getAssistantErrorText(message)
-  if (!text) {
-    return false
-  }
-  if (hasLaneProviderErrorPrefix(text)) {
-    return hasFallbackEligibleProviderText(text)
-  }
-  return hasKnownLaneAccountLimitText(text)
-}
-
-/**
  * Should this assistant API error message trigger the configured fallback chain?
  */
 export function isFallbackEligibleAPIErrorMessage(
@@ -203,7 +175,7 @@ export function isFallbackEligibleAPIErrorMessage(
   }
   if (errorKind === 'unknown') {
     const text = getAssistantErrorText(message) || message.errorDetails || ''
-    return hasFallbackEligibleProviderText(text)
+    return hasFallbackEligibleProviderText(text) || hasKnownLaneAccountLimitText(text)
   }
   return false
 }

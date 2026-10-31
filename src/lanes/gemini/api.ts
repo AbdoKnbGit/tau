@@ -70,6 +70,8 @@ import {
 } from '../shared/antigravity_auth.js'
 import { parseGeminiApiSSE as parseGeminiApiSSEEvent } from './api_sse.js'
 import { markAntigravityRetryHandled, retryAntigravityRequest } from './antigravity_retry.js'
+import { reportProviderRetry } from '../../services/api/providerRetryBudget.js'
+import { hasLongProviderCooldown } from '../../services/api/transport_error.js'
 
 // Duplicated from services/api/errors.ts to avoid pulling in its
 // transitive import of utils/messages.ts (which has build-time-only
@@ -1510,6 +1512,7 @@ async function retryWithBackoff<T>(
       if (err?.name === 'AbortError' || signal?.aborted) throw err
 
       if (!isRetryableTransport(err) || attempt >= maxAttempts) throw err
+      if (hasLongProviderCooldown(err)) throw err
 
       // Server-specified Retry-After wins if present.
       const retryAfter = err instanceof GeminiApiError ? err.retryAfterMs : undefined
@@ -1522,6 +1525,12 @@ async function retryWithBackoff<T>(
         waitMs = Math.max(0, currentDelay + jitter)
       }
 
+      reportProviderRetry({
+        status: err instanceof GeminiApiError ? err.status : null,
+        attempt,
+        maxRetries: maxAttempts - 1,
+        delayMs: waitMs,
+      })
       await delayWithAbort(waitMs, signal)
       currentDelay = Math.min(maxDelay, currentDelay * 2)
     }

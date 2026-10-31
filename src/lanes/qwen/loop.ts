@@ -35,6 +35,7 @@ import {
 } from './tools.js'
 import { qwenApi, type QwenChatMessage, type QwenStreamChunk, type QwenTool } from './api.js'
 import { isMediaBlock } from '../shared/media_blocks.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import { renderMediaForTextLane } from '../shared/media_extract.js'
 import {
   createRetryableConnectionError,
@@ -326,17 +327,7 @@ export class QwenLane implements Lane {
       const errText = isPTL
         ? (err?.message ?? String(err))
         : `\n\nQwen API error: ${err?.message ?? String(err)}`
-      yield {
-        type: 'content_block_start',
-        index: blockIndex,
-        content_block: { type: 'text', text: '' },
-      }
-      yield {
-        type: 'content_block_delta',
-        index: blockIndex,
-        delta: { type: 'text_delta', text: errText },
-      }
-      yield { type: 'content_block_stop', index: blockIndex }
+      yield* providerFailureEvents(blockIndex, errText)
       yield {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn' },

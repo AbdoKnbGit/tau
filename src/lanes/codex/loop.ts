@@ -47,6 +47,7 @@ import {
   appendStrictParamsHint,
   CODEX_TOOL_USAGE_RULES,
 } from '../shared/mcp_bridge.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import { describeUnsendableMedia } from '../shared/media_blocks.js'
 import { statedWorkingDirectory } from '../shared/working_directory.js'
 import { toCodexToolParameters } from './tool_schema.js'
@@ -578,19 +579,15 @@ export class CodexLane implements Lane {
             const mst = emitMessageStart()
             if (mst) yield mst
           }
-          // Surface the error as a text block so the user sees why.
-          const idx = nextBlockIndex++
-          yield {
-            type: 'content_block_start',
-            index: idx,
-            content_block: { type: 'text', text: '' },
+          // Text already streamed closes first: the failure must be the last
+          // message of the turn, since that is what the turn's outcome reads.
+          for (const [, open] of openBlocks) {
+            if (open.kind !== 'tool_use') {
+              yield { type: 'content_block_stop', index: open.anthropicIndex }
+            }
           }
-          yield {
-            type: 'content_block_delta',
-            index: idx,
-            delta: { type: 'text_delta', text: `Codex API error: ${errMessage}` },
-          }
-          yield { type: 'content_block_stop', index: idx }
+          openBlocks.clear()
+          yield* providerFailureEvents(nextBlockIndex++, `Codex API error: ${errMessage}`)
           break
         }
       }
@@ -654,24 +651,13 @@ export class CodexLane implements Lane {
         const mst = emitMessageStart()
         if (mst) yield mst
       }
-      const idx = nextBlockIndex++
-      yield {
-        type: 'content_block_start',
-        index: idx,
-        content_block: { type: 'text', text: '' },
-      }
       // Prompt-too-long errors must surface unwrapped so reactive-compact
       // recognizes them via the "Prompt is too long" prefix.
       const isPTL = (err as { isPromptTooLong?: boolean } | null)?.isPromptTooLong === true
       const errText = isPTL
         ? (err?.message ?? String(err))
         : `Codex API error: ${err?.message ?? String(err)}`
-      yield {
-        type: 'content_block_delta',
-        index: idx,
-        delta: { type: 'text_delta', text: errText },
-      }
-      yield { type: 'content_block_stop', index: idx }
+      yield* providerFailureEvents(nextBlockIndex++, errText)
       yield {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn' },

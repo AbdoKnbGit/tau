@@ -17,12 +17,32 @@ const SCRIPT_RESULT = 'made-by-script.txt'
 const PROMPT_HOOK = "process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'LAB-HOOK-CONTEXT' } }))"
 const STOP_HOOK = "process.stdout.write(JSON.stringify({ continue: false, stopReason: 'LAB-STOP-HOOK' }))"
 const WINDOWS_TERMINAL = { SESSIONNAME: 'Console', WT_SESSION: '11111111-1111-4111-8111-111111111111' }
+const REFUSED = { status: 403, body: { error: { code: 403, message: 'LAB-REFUSED this account cannot use this model', type: 'permission_error', status: 'PERMISSION_DENIED' } } }
+const USAGE_LIMIT = { status: 429, body: { error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', resets_in_seconds: 8040 } } }
+const COOLDOWN = { status: 429, headers: { 'retry-after': '7200' }, body: { error: { message: 'LAB-COOLDOWN limit resets later', type: 'rate_limit_error' } } }
+const BRIEF_LIMIT = { status: 429, headers: { 'retry-after': '1' }, times: 1, body: { error: { message: 'LAB-BRIEF slow down', type: 'rate_limit_error' } } }
+const FAILED = { exit: 1, isError: true, notPrinted: /LAB-DONE/ }
+// Providers that decide about their own 429s: Anthropic waits out what the server says, and Google's
+// answer depends on fields only Google sends.
+const OWN_LIMIT_RULES = ['anthropic', 'agy', 'gemini']
 const RESUME_RUNS = [
   { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')) },
   { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT second question' },
 ]
 
 export const scenarios = [
+  // ── A provider refusing the request ──
+  { id: 'failure-refused', group: 'failure', title: 'A refused request exits 1 and reports is_error', reject: REFUSED, expect: { ...FAILED, cleanOutput: true } },
+  { id: 'failure-refused-text', group: 'failure', title: 'The same in plain text: the reason on stdout, exit 1', format: 'text', reject: REFUSED, expect: { exit: 1, printed: /\S/, notPrinted: /LAB-DONE/ } },
+  { id: 'failure-refused-stream', group: 'failure', title: 'The same in stream-json: the result line says is_error', format: 'stream-json', reject: REFUSED, expect: FAILED },
+  { id: 'failure-mid-turn', group: 'failure', title: 'A refusal after a tool ran still fails the run', steps: oneByOne(read('notes.txt')), reject: { ...REFUSED, after: 1 }, expect: FAILED },
+  { id: 'failure-usage-limit', group: 'failure', title: 'An account limit fails at once, with no waiting', except: OWN_LIMIT_RULES, reject: USAGE_LIMIT, expect: { ...FAILED, notStderr: /Retrying/, maxSeconds: 60 } },
+  { id: 'failure-usage-limit-words', group: 'failure', title: 'An OpenAI limit says when it resets, not raw JSON', only: ['openai'], reject: USAGE_LIMIT, expect: { ...FAILED, printed: /The usage limit has been reached\. Resets in 2h 14m\./, notStderr: /Retrying/, requests: 1 } },
+  { id: 'failure-cooldown', group: 'failure', title: 'A cooldown of hours fails at once, with no waiting', except: OWN_LIMIT_RULES, reject: COOLDOWN, expect: { ...FAILED, notStderr: /Retrying/, maxSeconds: 60 } },
+  { id: 'failure-brief-limit', group: 'failure', title: 'A brief limit is retried, says so on stderr, and stdout stays clean', only: ['anthropic', 'agy', 'openai'], reject: BRIEF_LIMIT, expect: { ...DONE, stderr: /Retrying in \d+s \(attempt 1 of \d+\)/, cleanOutput: true } },
+  { id: 'failure-brief-limit-stream', group: 'failure', title: 'stream-json reports that retry as an api_retry line', only: ['anthropic', 'openai'], format: 'stream-json', reject: BRIEF_LIMIT, expect: { ...DONE, retryLine: true } },
+  { id: 'failure-reply-quotes-error', group: 'failure', title: 'A real answer that only quotes a provider error is a success', except: ['kiro', 'commandcode'], finalText: 'kiro API error 429: quota exceeded', expect: { exit: 0, isError: false, printed: /kiro API error 429/ } },
+
   // ── Which tools the model is offered ──
   { id: 'tools-default', group: 'tools', title: 'No flag offers every built-in tool', expect: { ...DONE, offered: 'all' } },
   { id: 'tools-default-word', group: 'tools', title: '--tools default offers the same list', args: ['--tools', 'default'], expect: { ...DONE, offered: 'all' } },
@@ -152,6 +172,14 @@ export const scenarios = [
   { id: 'cache-tools-changes', group: 'cache', title: '--tools changes the prefix (expected: keep it the same between runs)', compare: 'different', runs: [{}, { args: ['--tools', 'Read,Grep'] }] },
   { id: 'cache-disallow-changes', group: 'cache', title: '--disallowedTools changes the prefix (expected)', compare: 'different', runs: [{}, { args: ['--disallowedTools', 'Write'] }] },
   { id: 'cache-append-changes', group: 'cache', title: '--append-system-prompt changes the prefix (expected)', compare: 'different', runs: [{}, { args: ['--append-system-prompt', 'Be brief.'] }] },
+  { id: 'cache-after-failure', group: 'cache', title: 'A refused request leaves nothing behind for the next one', survives: true, compare: 'same', runs: [
+    { persist: true, args: ['--session-id', SESSION], reject: REFUSED, expect: FAILED },
+    { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT second question', expect: { ...DONE, notSent: [/LAB-REFUSED/, /API error/i, /_tau_provider_failure/] } },
+  ] },
+  { id: 'cache-after-failure-mid-turn', group: 'cache', title: 'A refusal after a tool ran keeps the history byte for byte', survives: true, compare: 'same', runs: [
+    { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')), reject: { ...REFUSED, after: 1 }, expect: FAILED },
+    { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT second question', expect: { ...DONE, notSent: [/LAB-REFUSED/, /API error/i, /_tau_provider_failure/] } },
+  ] },
   { id: 'cache-resume-history', group: 'cache', title: '--resume sends the history it already sent, byte for byte', continues: true, runs: RESUME_RUNS },
   { id: 'cache-resume-prefix', group: 'cache', title: '--resume keeps tools, system prompt and settings', compare: 'same', runs: RESUME_RUNS },
   { id: 'cache-resume-reminder-once', group: 'cache', title: '--resume does not send the skills reminder a second time', runs: RESUME_RUNS, expect: { ...DONE, sentOnce: ['The following skills are available'] } },
@@ -181,6 +209,11 @@ export const scenarios = [
   { id: 'cache-resume-mention', group: 'cache', title: '--resume keeps a file you mentioned with @', continues: true, runs: [
     { persist: true, args: ['--session-id', SESSION], prompt: 'LAB-PROMPT look at @notes.txt' },
     { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT second question', expect: { ...DONE, sentOnce: ['Pineapple is the first word'] } },
+  ] },
+  { id: 'failure-during-compact', group: 'cache', title: 'A /compact the provider refuses keeps the whole conversation', runs: [
+    { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')) },
+    { persist: true, args: ['--resume', SESSION], prompt: '/compact', reject: REFUSED, expect: { exit: 1, isError: true, subtype: 'error_during_execution' } },
+    { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT after the failed compact', expect: { ...DONE, sentOnce: ['Pineapple is the first word'], notSent: [/LAB-REFUSED/, /_tau_provider_failure/] } },
   ] },
   { id: 'cache-resume-compact', group: 'cache', title: '/compact works on a resumed session, and it can be resumed again', runs: [
     { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')) },

@@ -66,6 +66,7 @@ import {
   appendStrictParamsHint,
   buildOpenAICompatToolUsageRules,
 } from '../shared/mcp_bridge.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../../tools/ToolSearchTool/constants.js'
 import {
   KILO_FALLBACK_MODELS,
@@ -754,9 +755,7 @@ function* emitErrorTurn(text: string): Generator<AnthropicStreamEvent, void> {
       usage: { input_tokens: 0, output_tokens: 0 },
     },
   }
-  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
-  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
-  yield { type: 'content_block_stop', index: 0 }
+  yield* providerFailureEvents(0, text)
   yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
   yield { type: 'message_stop' }
 }

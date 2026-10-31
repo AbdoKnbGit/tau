@@ -264,6 +264,7 @@ async function resolveStoredPastedContent(
 
   // If we have a hash reference, fetch from paste store
   if (stored.contentHash) {
+    await pendingPasteWrites.get(stored.contentHash)
     const content = await retrievePastedText(stored.contentHash)
     if (content) {
       return {
@@ -300,6 +301,9 @@ async function logEntryToHistoryEntry(entry: LogEntry): Promise<HistoryEntry> {
 }
 
 let pendingEntries: LogEntry[] = []
+// Paste files still being written. An entry names its paste the moment it is
+// added, so a reader right behind it has to wait or it finds no file yet.
+const pendingPasteWrites = new Map<string, Promise<void>>()
 let isWriting = false
 let currentFlushPromise: Promise<void> | null = null
 let cleanupRegistered = false
@@ -413,8 +417,11 @@ function addToPromptHistory(
           mediaType: content.mediaType,
           filename: content.filename,
         }
-        // Fire-and-forget disk write - don't block history entry creation
-        void storePastedText(hash, content.content)
+        // Disk write in the background - don't block history entry creation
+        const write = storePastedText(hash, content.content).finally(() => {
+          if (pendingPasteWrites.get(hash) === write) pendingPasteWrites.delete(hash)
+        })
+        pendingPasteWrites.set(hash, write)
       }
     }
   }
@@ -459,6 +466,7 @@ export function addToHistory(command: HistoryEntry | string, submissionId?: stri
       if (pendingEntries.length > 0) {
         await immediateFlushHistory()
       }
+      await Promise.all(pendingPasteWrites.values())
     })
   }
 

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { after, test } from 'node:test'
 import { pathToFileURL } from 'node:url'
+import { stopProcessTree } from './helpers/stop-process-tree.mjs'
 import { anthropicReply } from './mcp-instructions/anthropic-reply.mjs'
 
 const cli = resolve('dist/cli.mjs')
@@ -49,12 +50,12 @@ function freshFolder(provider, files = {}) {
 
 async function runPrint(place, env, prompt, args) {
   const child = spawn(process.execPath, [cli, '-p', prompt, '--strict-mcp-config', '--setting-sources', 'project', ...args], {
-    cwd: place.workspace, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: place.workspace, env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
   child.stdout.on('data', part => { output += part })
   child.stderr.on('data', part => { output += part })
-  const timer = setTimeout(() => child.kill(), 60_000)
+  const timer = setTimeout(() => stopProcessTree(child), 60_000)
   try {
     const code = await new Promise((done, reject) => { child.once('error', reject); child.once('close', done) })
     assert.equal(code, 0, output.slice(-600))

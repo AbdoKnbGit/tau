@@ -11,7 +11,11 @@ import { isAwsCredentialsProviderError } from 'src/utils/aws.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from 'src/utils/log.js'
 import { createSystemAPIErrorMessage } from 'src/utils/messages.js'
-import { getAPIProvider, getAPIProviderForStatsig } from 'src/utils/model/providers.js'
+import {
+  getAPIProvider,
+  getAPIProviderForStatsig,
+  isThirdPartyProvider,
+} from 'src/utils/model/providers.js'
 import { recordProviderModelContextWindows } from 'src/utils/model/contextWindows.js'
 import {
   clearApiKeyHelperCache,
@@ -38,6 +42,7 @@ import {
   getAPIUserAbortError,
   getBoundedProviderRetryAfterMs,
   getProviderHttpStatus,
+  hasLongProviderCooldown,
   isRetryableNetworkError,
   isRetryableProviderError,
   isRetryableProviderHttpStatus,
@@ -56,7 +61,11 @@ import {
 } from '../rateLimitMocking.js'
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
-import { withProviderRetryState, type ProviderRetryState } from './providerRetryBudget.js'
+import {
+  reportProviderRetry,
+  withProviderRetryState,
+  type ProviderRetryState,
+} from './providerRetryBudget.js'
 import { isAntigravityRetryHandled } from '../../lanes/gemini/antigravity_retry.js'
 
 const abortError = () => new APIUserAbortError()
@@ -442,6 +451,16 @@ export async function* withRetry<T>(
         }
       }
 
+      // Only Anthropic's own limits are waited out in full. On any other provider
+      // an account limit, or a cooldown of more than a few minutes, cannot be
+      // outlasted here, whichever client raised it.
+      if (
+        (!(error instanceof APIError) || isThirdPartyProvider(getAPIProvider())) &&
+        (isTerminalProviderQuotaError(error) || hasLongProviderCooldown(error))
+      ) {
+        throw new CannotRetryError(error, retryContext)
+      }
+
       // Only retry if the error indicates we should.
       // Third-party 429s get a much shorter fuse — the provider already
       // retried internally, so 2 more attempts here is plenty. Without this
@@ -613,6 +632,15 @@ export async function* withRetry<T>(
       } else {
         if (error instanceof APIError) {
           yield createSystemAPIErrorMessage(error, delayMs, attempt, maxRetries)
+        } else if (shouldRetry529(options.querySource)) {
+          // Only a source someone is waiting on: a background helper's retry
+          // says nothing about the answer they asked for.
+          reportProviderRetry({
+            status: getThirdPartyErrorStatus(error),
+            attempt,
+            maxRetries: thirdPartyMaxRetries,
+            delayMs,
+          })
         }
         await sleep(delayMs, options.signal, { abortError })
       }

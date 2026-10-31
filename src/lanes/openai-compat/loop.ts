@@ -67,6 +67,7 @@ import {
   freezeSessionVolatileText,
   volatileFreezeKey,
 } from '../shared/volatile_freeze.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import { isMediaBlock } from '../shared/media_blocks.js'
 import {
   InFlightToolCall,
@@ -1864,9 +1865,7 @@ function createProviderConnectionError(
 }
 
 function* emitErrorText(text: string): Generator<AnthropicStreamEvent> {
-  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
-  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
-  yield { type: 'content_block_stop', index: 0 }
+  yield* providerFailureEvents(0, text)
 }
 
 // The pinned qwen rows are forwarded as Anthropic-format messages, so image

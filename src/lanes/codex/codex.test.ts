@@ -5,6 +5,7 @@
  */
 
 import { CodexApiError, codexApi, FROZEN_VOLATILE_SESSION_LIMIT } from './api.js'
+import { withProviderRetryState } from '../../services/api/providerRetryBudget.js'
 import {
   buildCodexToolsFromRequest,
   codexLane,
@@ -639,6 +640,46 @@ async function main(): Promise<void> {
   await test('CodexApiError 429 is retryable, 400 is not', () => {
     assert(new CodexApiError(429, '').isRetryable, '429 should be retryable')
     assert(!new CodexApiError(400, '').isRetryable, '400 should NOT be retryable')
+  })
+  await test('An account limit is not retried and says when it resets', () => {
+    const limit = (fields: object) => new CodexApiError(429, JSON.stringify({
+      error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', ...fields },
+    }))
+    assert(!limit({}).isRetryable, 'waiting cannot lift an account limit')
+    assert(limit({ resets_in_seconds: 8040 }).message.endsWith(': The usage limit has been reached. Resets in 2h 14m.'),
+      limit({ resets_in_seconds: 8040 }).message)
+    assert(limit({ resets_in_seconds: 90 }).message.endsWith('. Resets in 2m.'), limit({ resets_in_seconds: 90 }).message)
+    assert(limit({ resets_at: Date.now() / 1000 + 3600 }).message.includes('. Resets in 1h 0m.'),
+      limit({ resets_at: Date.now() / 1000 + 3600 }).message)
+    assert(limit({}).message.endsWith(': The usage limit has been reached'), limit({}).message)
+    assert(!new CodexApiError(429, JSON.stringify({ error: { code: 'insufficient_quota', message: 'Out of credit.' } })).isRetryable,
+      'the older quota code is the same kind of limit')
+  })
+  await test('A brief cooldown is retried and one of hours is not', () => {
+    assert(new CodexApiError(429, '{}', 20_000).isRetryable, 'twenty seconds is worth waiting for')
+    assert(new CodexApiError(429, '{}', 120_000).isRetryable, 'two minutes is worth waiting for')
+    assert(!new CodexApiError(429, '{}', 7_200_000).isRetryable, 'two hours is not')
+  })
+  await test('Outer retries share one allowance instead of multiplying it', async () => {
+    const originalFetch = globalThis.fetch
+    let requests = 0
+    globalThis.fetch = (async () => {
+      requests++
+      return new Response('{"error":{"message":"slow down"}}', { status: 429, headers: { 'retry-after': '0.001' } })
+    }) as unknown as typeof fetch
+    try {
+      const failed = (): Promise<unknown> => codexApi.createResponse({ model: 'gpt-fixture', input: [] } as never).catch(error => error)
+      const state = new Map()
+      assert(await withProviderRetryState(state, failed) instanceof CodexApiError, 'first outer attempt should fail')
+      assert(requests === 5, `first outer attempt made ${requests} requests`)
+      assert(await withProviderRetryState(state, failed) instanceof CodexApiError, 'second outer attempt should fail')
+      assert(requests === 6, `second outer attempt made ${requests - 5} requests, not one`)
+      requests = 0
+      assert(await failed() instanceof CodexApiError, 'a separate call should fail')
+      assert(requests === 5, `a separate call made ${requests} requests`)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 
   await test('extractCodexUsageMetrics reads Responses cached tokens', () => {

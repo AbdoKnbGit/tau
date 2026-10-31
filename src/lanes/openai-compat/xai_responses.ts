@@ -57,6 +57,7 @@ import { resolveXaiRequestEffort } from '../../utils/model/xaiThinking.js'
 import type { CodexReasoningState } from '../codex/reasoning.js'
 import { toCodexToolParameters } from '../codex/tool_schema.js'
 import { appendStrictParamsHint, buildOpenAICompatToolUsageRules } from '../shared/mcp_bridge.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import { isMediaBlock } from '../shared/media_blocks.js'
 import { renderMediaForTextLane } from '../shared/media_extract.js'
 import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
@@ -756,9 +757,7 @@ export class XaiResponsesStream {
     // A call still streaming its arguments is dropped, never sent half-written.
     this.calls.clear()
     const index = this.nextIndex++
-    out.push({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
-    out.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text } })
-    out.push({ type: 'content_block_stop', index })
+    out.push(...providerFailureEvents(index, text))
     return out
   }
 

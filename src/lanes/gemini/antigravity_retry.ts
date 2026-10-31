@@ -1,5 +1,6 @@
 import {
   getProviderRetryBudget,
+  reportProviderRetry,
   type ProviderRetryBudget,
 } from '../../services/api/providerRetryBudget.js'
 
@@ -42,7 +43,7 @@ function wait(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-/** One initial attempt plus three silent retries, all owned by the native request. */
+/** One initial attempt plus three retries, all owned by the native request. */
 export async function retryAntigravityRequest<T>(
   operation: () => Promise<T>,
   model: string,
@@ -71,6 +72,13 @@ export async function retryAntigravityRequest<T>(
       const delay = hint != null
         ? Math.max(0, hint)
         : 500 * 2 ** retry * (0.8 + Math.random() * 0.4)
+      const status = (error as { status?: unknown } | null)?.status
+      reportProviderRetry({
+        status: typeof status === 'number' ? status : null,
+        attempt: retry + 1,
+        maxRetries: RETRIES,
+        delayMs: delay,
+      })
       await wait(delay, signal)
     }
   }

@@ -100,7 +100,10 @@ export function readRequest(record) {
     systemJson: JSON.stringify(stripCacheMarkers(messages.filter(message => message.role === 'system'))),
     systemText: messages.filter(message => message.role === 'system').map(message => textOf(message.content)).join('\n'),
     configJson: restOf(body, ['messages', 'tools']),
-    history: stripCacheMarkers(messages),
+    // The same string and one-block form as above, on a route that passes Anthropic's markers through.
+    history: stripCacheMarkers(messages).map(message => (Array.isArray(message.content) && message.content.length === 1 && message.content[0]?.type === 'text'
+      ? { ...message, content: message.content[0].text }
+      : message)),
     toolResults: messages.filter(message => message.role === 'tool').map(message => ({ text: textOf(message.content), isError: false })),
     sessionKey: body.prompt_cache_key ?? null,
     headers: record.headers,

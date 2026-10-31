@@ -77,7 +77,9 @@ tau -p "Name this project" --output-format json | jq -r .result
 (tau -p "Name this project" --output-format json | ConvertFrom-Json).result    # PowerShell
 ```
 
-The exit code is 0 when the run finished, even if a tool was refused, and 1 when it failed or reached `--max-turns`. On OpenAI, Copilot, Kiro and OpenCode, an error from the provider currently comes back as the answer text with exit code 0, so scripts on those should also check the text.
+The exit code is 0 when the run finished, even if a tool was refused, and 1 when it failed or reached `--max-turns`. An error from the provider counts as failed on every provider: exit code 1, `is_error` true, and the reason as the result.
+
+A limit that will not lift soon, like a used-up plan or a cooldown of hours, fails at once and says so. A short one is retried, and each wait prints one line on stderr, so stdout stays only the answer. With `stream-json` the same wait is an `api_retry` line.
 
 ## Continue a conversation
 

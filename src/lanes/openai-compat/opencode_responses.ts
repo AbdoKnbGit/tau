@@ -30,6 +30,7 @@ import type {
 import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
 import { toCodexToolParameters } from '../codex/tool_schema.js'
 import { isMediaBlock } from '../shared/media_blocks.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import { renderMediaForTextLane } from '../shared/media_extract.js'
 import type { NormalizedUsage } from '../types.js'
 import { isOpenAIReasoningModel } from './opencode_anthropic_route.js'
@@ -407,9 +408,7 @@ export class OpenCodeResponsesStream {
       else this.closeBlock(out, outputIndex)
     }
     const index = this.nextIndex++
-    out.push({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
-    out.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text } })
-    out.push({ type: 'content_block_stop', index })
+    out.push(...providerFailureEvents(index, text))
     return out
   }
 

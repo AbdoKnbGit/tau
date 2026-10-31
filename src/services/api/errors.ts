@@ -50,6 +50,7 @@ import {
 } from '../claudeAiLimits.js'
 import { shouldProcessRateLimits } from '../rateLimitMocking.js' // Used for /mock-limits command
 import { extractConnectionErrorDetails, formatAPIError } from './errorUtils.js'
+import { ProviderFailureError } from './transport_error.js'
 
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
 
@@ -457,6 +458,13 @@ export function getAssistantMessageFromError(
     messagesForAPI?: (UserMessage | AssistantMessage)[]
   },
 ): AssistantMessage {
+  if (error instanceof ProviderFailureError) {
+    return createAssistantAPIErrorMessage({
+      content: error.message,
+      error: 'unknown',
+    })
+  }
+
   // Check for SDK timeout errors
   if (
     error instanceof APIConnectionTimeoutError ||
@@ -1205,7 +1213,7 @@ export function classifyAPIError(error: unknown): string {
 }
 
 export function categorizeRetryableAPIError(
-  error: APIError,
+  error: Pick<APIError, 'status' | 'message'>,
 ): SDKAssistantMessageError {
   if (
     error.status === 529 ||

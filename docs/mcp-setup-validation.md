@@ -125,13 +125,12 @@ interpreter, dependency install, credential or arbitrary shell program works.
 Linux/macOS launch tests are wired into CI but were not executed on this Windows
 host. A model receiving instructions is not proof it will follow them every time.
 
-The adversarial Windows shim case passes when the launch suite runs directly
-with Node. Under Node 24.19.0's isolated `node --test` worker, the combination of
-an absolute `.cmd` path containing spaces and argv containing embedded quotes,
-an ampersand and a pipe timed out. Bare command lookup and individual argument
-cases passed. A standalone reproduction using only the installed MCP SDK showed
-the same failure: it is not caused by Tau's config parser or this patch. It has
-**not** been fixed here. The direct-run launch suite is intentional; rerunning
-it as `node --test test/mcp-setup-launch.test.mjs` reproduces this limitation on
-the tested host. Do not replace failed launches with a blanket shell rewrite or
-claim this investigation proves arbitrary Windows shell quoting safe.
+On Windows 11 build 26300, `cmd.exe` itself hangs on a `/c` line with 50 or more
+carets, before it starts anything: `cmd /d /s /c "echo ^a^a^a..."` reproduces it with
+no Tau, SDK or shim involved. `cross-spawn` writes 3 carets per quote and
+metacharacter for a shim in `node_modules/.bin`, so a server launched through one
+with about 8 or more arguments times out on that build. Other Windows builds are
+not affected, which is why it never showed in CI. The shim test keeps each argument
+group under the limit, so it covers the same characters on every build. Do not
+replace failed launches with a blanket shell rewrite or claim this investigation
+proves arbitrary Windows shell quoting safe.

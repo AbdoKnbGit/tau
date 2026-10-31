@@ -38,6 +38,7 @@ import { refreshClineOAuth } from '../../services/api/auth/oauth_services.js'
 import {
   buildOpenAICompatToolUsageRules,
 } from '../shared/mcp_bridge.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../../tools/ToolSearchTool/constants.js'
 import {
   createRetryableConnectionError,
@@ -73,6 +74,7 @@ import {
   normalizeClineToolCallArgumentEvents,
 } from './tool_arg_validation.js'
 import {
+  CLINE_FALLBACK_MODELS,
   buildClineCatalogIndex,
   buildClinePassModels,
   catalogContextWindow,
@@ -141,34 +143,6 @@ const CLINE_TOOL_ARG_REPAIR_ATTEMPTS = 2
 // The first send, plus one retry each after dropping strict tool schemas or
 // the prompt-cache markers, whichever the gateway objects to.
 const CLINE_SEND_ATTEMPTS = 3
-
-const CLINE_FALLBACK_MODELS: ModelInfo[] = [
-  { id: 'kwaipilot/kat-coder-pro', name: 'Kat Coder Pro' },
-  { id: 'minimax/minimax-m2.7', name: 'MiniMax M2.7' },
-  { id: 'minimax/minimax-m2.5', name: 'MiniMax M2.5' },
-  { id: 'arcee-ai/trinity-large-preview:free', name: 'Arcee Trinity Large Preview' },
-  { id: 'z-ai/glm-5', name: 'GLM-5' },
-  { id: 'anthropic/claude-opus-4.8', name: 'Claude Opus 4.8' },
-  { id: 'openai/gpt-5.5', name: 'GPT-5.5' },
-  { id: 'deepseek/deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
-  { id: 'anthropic/claude-sonnet-4.6', name: 'Claude Sonnet 4.6' },
-  { id: 'anthropic/claude-opus-4.7', name: 'Claude Opus 4.7' },
-  { id: 'anthropic/claude-opus-4.6', name: 'Claude Opus 4.6' },
-  { id: 'openai/gpt-5.4', name: 'GPT-5.4' },
-  { id: 'openai/gpt-5.3-codex', name: 'GPT-5.3 Codex' },
-  { id: 'openai/gpt-5-codex', name: 'GPT-5 Codex' },
-  { id: 'google/gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview' },
-  { id: 'google/gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite Preview' },
-  { id: 'qwen/qwen3-coder:exacto', name: 'Qwen3 Coder Exacto' },
-  { id: 'qwen/qwen3-coder', name: 'Qwen3 Coder' },
-  { id: 'moonshotai/kimi-k2.6', name: 'Kimi K2.6' },
-  { id: 'moonshotai/kimi-k2:exacto', name: 'Kimi K2 Exacto' },
-  { id: 'moonshotai/kimi-k2', name: 'Kimi K2' },
-  { id: 'z-ai/glm-4.6:exacto', name: 'GLM 4.6 Exacto' },
-  { id: 'deepseek/deepseek-v3.1-terminus:exacto', name: 'DeepSeek V3.1 Terminus Exacto' },
-  { id: 'deepseek/deepseek-chat', name: 'DeepSeek Chat' },
-  { id: 'x-ai/grok-code-fast-1', name: 'Grok Code Fast 1' },
-]
 
 const CLINE_FALLBACK_RECOMMENDED_MODEL_IDS = new Set([
   'minimax/minimax-m2.7',
@@ -1232,9 +1206,7 @@ function* emitErrorTurn(text: string): Generator<AnthropicStreamEvent, void> {
       usage: { input_tokens: 0, output_tokens: 0 },
     },
   }
-  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
-  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
-  yield { type: 'content_block_stop', index: 0 }
+  yield* providerFailureEvents(0, text)
   yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
   yield { type: 'message_stop' }
 }

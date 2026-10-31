@@ -101,6 +101,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 
 function spawnCli(args, cwd, env) {
   return new Promise(done => {
+    const started = Date.now()
     const child = spawn(process.execPath, [cli, ...args], { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
     running.add(child)
     let stdout = ''
@@ -108,7 +109,7 @@ function spawnCli(args, cwd, env) {
     child.stdout.on('data', part => { stdout += part })
     child.stderr.on('data', part => { stderr += part })
     const timer = setTimeout(() => { stopRun(child); running.delete(child); done({ exit: 'timeout', stdout, stderr }) }, options.real ? 150_000 : 90_000)
-    child.on('exit', exit => { clearTimeout(timer); running.delete(child); done({ exit, stdout, stderr }) })
+    child.on('exit', exit => { clearTimeout(timer); running.delete(child); done({ exit, stdout, stderr, seconds: (Date.now() - started) / 1000 }) })
   })
 }
 
@@ -118,7 +119,7 @@ async function runOffline(box, route, scenario, run, index, env) {
   const places = { ...box.places, mcpConfig: scenario.mcp ? writeMcpConfig(box) : '' }
   const planFile = join(box.root, `plan-${index}.json`)
   const recordFile = join(box.root, `record-${index}.jsonl`)
-  writeFileSync(planFile, JSON.stringify(fillIn({ steps: run.steps ?? [], finalText: 'LAB-DONE', usage: run.usage ?? scenario.usage, refuse: scenario.refuse }, places)))
+  writeFileSync(planFile, JSON.stringify(fillIn({ steps: run.steps ?? [], finalText: run.finalText ?? 'LAB-DONE', usage: run.usage ?? scenario.usage, refuse: scenario.refuse, reject: run.reject ?? scenario.reject }, places)))
   const format = run.format ?? 'json'
   const prompt = run.prompt ?? `${MARKER} follow the script`
   const session = run.persist ? [] : ['--no-session-persistence']
@@ -194,6 +195,10 @@ function checkExpectations(expect, run, box, baseline) {
   if (expect.notPrinted && expect.notPrinted.test(run.printed)) fail(`printed "${run.printed.slice(0, 160)}", expected no match for ${expect.notPrinted}`)
   if (expect.isError !== undefined && run.json?.is_error !== expect.isError) fail(`is_error ${run.json?.is_error}, expected ${expect.isError}`)
   if (expect.subtype && run.json?.subtype !== expect.subtype) fail(`subtype ${run.json?.subtype}, expected ${expect.subtype}`)
+  if (expect.stderr && !expect.stderr.test(run.stderr)) fail(`stderr "${run.stderr.slice(0, 200)}", expected to match ${expect.stderr}`)
+  if (expect.notStderr && expect.notStderr.test(run.stderr)) fail(`stderr "${run.stderr.slice(0, 200)}", expected no match for ${expect.notStderr}`)
+  if (expect.retryLine && !run.lines?.some(line => line.type === 'system' && line.subtype === 'api_retry' && line.error_status === 429)) fail('no api_retry line for the 429')
+  if (expect.maxSeconds !== undefined && run.seconds > expect.maxSeconds) fail(`took ${Math.round(run.seconds)}s, expected at most ${expect.maxSeconds}s`)
   if (expect.denied) {
     const [actual, wanted] = [deniedOf(run), [...expect.denied].sort()]
     if (actual.join() !== wanted.join()) fail(`refused [${actual}], expected [${wanted}]`)
@@ -269,6 +274,11 @@ async function runScenario(scenario, route, baseline) {
       report.reason = `only for ${scenario.only.join(', ')}`
       return report
     }
+    if (scenario.except?.includes(options.real ? 'real' : options.provider)) {
+      report.state = 'SKIP'
+      report.reason = `not for ${scenario.except.join(', ')}`
+      return report
+    }
     const env = !options.real ? offlineEnvironment(box, route, scenario.setup)
       : options.providerGiven ? realEnvironmentFor(box, route, options.model ?? route.model)
         : realEnvironment()
@@ -311,6 +321,19 @@ async function runScenario(scenario, route, baseline) {
           report.problems.push(`history message ${at} of ${before.history.length} changed after resuming, at byte ${byte}: "${x.slice(Math.max(0, byte - 60), byte + 120)}" became "${y.slice(Math.max(0, byte - 60), byte + 120)}"`)
         }
       }
+    }
+    // A refused request never reached the provider's cache, so what has to survive it is the request
+    // before it: all of that one must start the next run's request, byte for byte.
+    for (let i = 1; scenario.survives && i < results.length; i++) {
+      const answered = runs[i - 1].reject?.after ?? 0
+      const [before, after] = [results[i - 1].requests[answered - 1], results[i].requests[0]]
+      if (!after) { report.problems.push('a run made no model request'); continue }
+      if (!before) continue
+      const [x, y] = [JSON.stringify(before.history), JSON.stringify(after.history)]
+      let byte = 0
+      while (byte < x.length && x[byte] === y[byte]) byte++
+      // Only the bracket that closes the list may differ, because the new list goes on.
+      if (x.length - byte > 1) report.problems.push(`history changed after the failure, at byte ${byte} of ${x.length}: "${x.slice(Math.max(0, byte - 60), byte + 120)}" became "${y.slice(Math.max(0, byte - 60), byte + 120)}"`)
     }
     if (scenario.reportCache !== undefined) {
       const share = cacheShare(results.at(-1).json?.usage)
@@ -434,6 +457,7 @@ async function main() {
   if (!existsSync(cli)) { console.error(`CLI not found: ${cli}\nBuild it with: npm run build, or pass --cli <path>`); return 2 }
 
   const route = routeFor(options.provider)
+  let chosen = selected
   const started = Date.now()
   if (options.real) {
     if (options.providerGiven && route.provider === 'firstParty') {
@@ -454,29 +478,35 @@ async function main() {
     const box = createSandbox()
     const first = await runOffline(box, route, {}, {}, 0, offlineEnvironment(box, route))
     box.remove()
-    if (!first.requests[0]) {
+    // A refusal needs no reply from the fake model, so that group also runs on a format it cannot answer.
+    if (!first.requests[0] && first.otherFormat) chosen = selected.filter(scenario => scenario.group === 'failure')
+    if (!first.requests[0] && !chosen.length) {
       console.error(`\nCould not reach the fake model on this route, so nothing can be tested.\nOutput: ${stripAnsi(first.stdout + first.stderr).trim().slice(0, 400)}`)
       return 1
     }
-    baseline = namesOf(first.requests[0])
-    console.log(`Full tool list on this route: ${baseline.length} tools`)
+    if (first.requests[0]) {
+      baseline = namesOf(first.requests[0])
+      console.log(`Full tool list on this route: ${baseline.length} tools`)
+    } else if (chosen.length < selected.length) {
+      console.log(`The fake model cannot answer this route's format, so only the ${chosen.length} refusal scenarios run`)
+    }
   }
 
-  const reports = new Array(selected.length)
+  const reports = new Array(chosen.length)
   let next = 0
   let printedUpTo = 0
   let group
   const flush = () => {
-    while (printedUpTo < selected.length && reports[printedUpTo]) {
+    while (printedUpTo < chosen.length && reports[printedUpTo]) {
       const report = reports[printedUpTo++]
       if (report.group !== group) { group = report.group; console.log(`\n${group.toUpperCase()}`) }
       printRow(report)
     }
   }
   await Promise.all(Array.from({ length: Math.max(1, options.jobs) }, async () => {
-    while (next < selected.length) {
+    while (next < chosen.length) {
       const index = next++
-      reports[index] = await runScenario(selected[index], route, baseline)
+      reports[index] = await runScenario(chosen[index], route, baseline)
       flush()
     }
   }))

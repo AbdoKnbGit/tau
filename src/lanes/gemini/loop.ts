@@ -69,6 +69,7 @@ import {
   freezeSessionVolatileText,
   volatileFreezeKey,
 } from '../shared/volatile_freeze.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import {
   createRetryableConnectionError,
   isAbortError,
@@ -794,11 +795,6 @@ export class GeminiLane implements Lane {
         yield { type: 'content_block_stop', index: blockIndex }
         blockIndex++
       }
-      yield {
-        type: 'content_block_start',
-        index: blockIndex,
-        content_block: { type: 'text', text: '' },
-      }
       // Prompt-too-long errors must surface with the Claude-Code signal
       // prefix un-wrapped so query.ts reactive compact recognizes them
       // via isPromptTooLongMessage(msg). GeminiApiError.message already
@@ -829,12 +825,7 @@ export class GeminiLane implements Lane {
             : isQuotaOrCapacity
               ? buildQuotaErrorMessage(err, model)
               : `\n\nGemini API error (model: ${model}): ${err?.message ?? String(err)}`
-      yield {
-        type: 'content_block_delta',
-        index: blockIndex,
-        delta: { type: 'text_delta', text: errText },
-      }
-      yield { type: 'content_block_stop', index: blockIndex }
+      yield* providerFailureEvents(blockIndex, errText)
       yield {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn' },

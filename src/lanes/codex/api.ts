@@ -31,6 +31,12 @@
  * the fallback and the API-key/Azure path.
  */
 
+import { getProviderRetryBudget, reportProviderRetry } from '../../services/api/providerRetryBudget.js'
+import {
+  isTerminalProviderQuotaText,
+  LONG_PROVIDER_COOLDOWN_MS,
+  parseRetryAfterMs,
+} from '../../services/api/transport_error.js'
 import { CodexCacheDiagnostics, type CodexCacheCapture } from './cacheDiagnostics.js'
 import { CODEX_TURN_STATE_HEADER, CodexTurnStates } from './turnState.js'
 import {
@@ -163,6 +169,30 @@ export interface CodexUsage {
 // issue with utils/messages.ts).
 const CODEX_PROMPT_TOO_LONG_PREFIX = 'Prompt is too long'
 
+/**
+ * The account limit in words. The raw body is JSON, and the time it resets is
+ * the one thing the reader needs from it.
+ */
+function describeUsageLimit(body: string): string | null {
+  if (!isTerminalProviderQuotaText(body)) return null
+  let error: Record<string, unknown> | undefined
+  try {
+    error = JSON.parse(body)?.error
+  } catch {
+    return null
+  }
+  if (typeof error?.message !== 'string') return null
+  const resetsInSeconds = typeof error.resets_in_seconds === 'number'
+    ? error.resets_in_seconds
+    : typeof error.resets_at === 'number'
+      ? error.resets_at - Date.now() / 1000
+      : 0
+  if (resetsInSeconds <= 0) return error.message
+  const minutes = Math.ceil(resetsInSeconds / 60)
+  const wait = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`
+  return `${error.message.replace(/\.$/, '')}. Resets in ${wait}.`
+}
+
 export class CodexApiError extends Error {
   readonly isPromptTooLong: boolean
 
@@ -180,7 +210,7 @@ export class CodexApiError extends Error {
     const head = ptl
       ? `${CODEX_PROMPT_TOO_LONG_PREFIX} (Codex ${status})`
       : `OpenAI Responses API error ${status}`
-    super(`${head}: ${body.slice(0, 200)}`)
+    super(`${head}: ${(ptl ? null : describeUsageLimit(body)) ?? body.slice(0, 200)}`)
     this.name = 'CodexApiError'
     this.isPromptTooLong = ptl
   }
@@ -189,6 +219,10 @@ export class CodexApiError extends Error {
   get isAuth(): boolean { return this.status === 401 || this.status === 403 }
   get isRetryable(): boolean {
     if (this.status === 400) return false
+    // An account limit, or a cooldown of more than a few minutes, cannot be
+    // outlasted here. The answer is the same on the first request.
+    if (isTerminalProviderQuotaText(this.body)) return false
+    if ((this.retryAfterMs ?? 0) > LONG_PROVIDER_COOLDOWN_MS) return false
     return this.status === 429 || this.status === 499 || (this.status >= 500 && this.status < 600)
   }
 }
@@ -613,7 +647,7 @@ export class CodexApiClient {
               headers => turnState.captureHeaders(headers),
             )
           } catch (error) {
-            if (error instanceof CodexWebSocketHttpError) throw new CodexApiError(error.status, error.body, parseRetryAfter(error.retryAfter ?? null))
+            if (error instanceof CodexWebSocketHttpError) throw new CodexApiError(error.status, error.body, parseRetryAfterMs(error.retryAfter ?? null))
             throw error
           }
         }, { signal })
@@ -632,7 +666,7 @@ export class CodexApiClient {
             yield event as CodexStreamEvent
           }
         } catch (error) {
-          if (error instanceof CodexWebSocketHttpError) throw new CodexApiError(error.status, error.body, parseRetryAfter(error.retryAfter ?? null))
+          if (error instanceof CodexWebSocketHttpError) throw new CodexApiError(error.status, error.body, parseRetryAfterMs(error.retryAfter ?? null))
           throw error
         } finally {
           // The reader can stop at the first event; release the connection.
@@ -656,7 +690,7 @@ export class CodexApiClient {
         })
         if (!resp.ok) {
           const errText = await resp.text().catch(() => '')
-          const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'))
+          const retryAfterMs = parseRetryAfterMs(resp.headers.get('retry-after'))
           throw new CodexApiError(resp.status, errText, retryAfterMs)
         }
         if (!resp.body) throw new CodexApiError(0, 'No response body')
@@ -739,7 +773,7 @@ export class CodexApiClient {
         })
         if (!resp.ok) {
           const errText = await resp.text().catch(() => '')
-          const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'))
+          const retryAfterMs = parseRetryAfterMs(resp.headers.get('retry-after'))
           throw new CodexApiError(resp.status, errText, retryAfterMs)
         }
         const response = await resp.json()
@@ -834,15 +868,6 @@ function isRetryableTransport(error: unknown): boolean {
   return false
 }
 
-function parseRetryAfter(value: string | null): number | undefined {
-  if (!value) return undefined
-  const asSec = Number(value)
-  if (!isNaN(asSec)) return Math.max(0, asSec * 1000)
-  const asDate = Date.parse(value)
-  if (!isNaN(asDate)) return Math.max(0, asDate - Date.now())
-  return undefined
-}
-
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   opts: { signal?: AbortSignal } = {},
@@ -850,16 +875,19 @@ async function retryWithBackoff<T>(
   const { signal } = opts
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
 
-  let attempt = 0
+  // Outer retries reuse this allowance. A fresh one each time would multiply
+  // the requests, and the wait, by the outer retry count.
+  const maxRetries = DEFAULT_MAX_ATTEMPTS - 1
+  const budget = getProviderRetryBudget('codex-transport', maxRetries)
   let currentDelay = INITIAL_DELAY_MS
 
-  while (attempt < DEFAULT_MAX_ATTEMPTS) {
-    attempt++
+  for (;;) {
     try {
       return await fn()
     } catch (err: any) {
       if (err?.name === 'AbortError' || signal?.aborted) throw err
-      if (!isRetryableTransport(err) || attempt >= DEFAULT_MAX_ATTEMPTS) throw err
+      if (!isRetryableTransport(err) || budget.remaining <= 0) throw err
+      budget.remaining--
 
       const retryAfter = err instanceof CodexApiError ? err.retryAfterMs : undefined
       let waitMs: number
@@ -870,6 +898,12 @@ async function retryWithBackoff<T>(
         waitMs = Math.max(0, currentDelay + jitter)
       }
 
+      reportProviderRetry({
+        status: err instanceof CodexApiError ? err.status : null,
+        attempt: maxRetries - budget.remaining,
+        maxRetries,
+        delayMs: waitMs,
+      })
       await new Promise<void>((resolve, reject) => {
         const t = setTimeout(() => {
           signal?.removeEventListener('abort', onAbort)
@@ -885,7 +919,6 @@ async function retryWithBackoff<T>(
       currentDelay = Math.min(MAX_DELAY_MS, currentDelay * 2)
     }
   }
-  throw new Error('Retry attempts exhausted')
 }
 
 // ─── Singleton ───────────────────────────────────────────────────

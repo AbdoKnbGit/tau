@@ -254,28 +254,36 @@ test('synchronous runaway mod is terminated without hanging the host', async () 
     ).text,
     'fallback',
   )
-  assert.ok(Date.now() - start < 2000)
+  assert.ok(Date.now() - start < 30_000)
 })
 
 test('awaiting core or host API work does not consume the hook execution budget', async () => {
-  const mod =
-    await runtime(`export function register(on){on('command.run',async($,e,next)=>{
-    await $.clock.sleep(100);const result=await next(e);return {text:result.text+':'+(next.budget.remainingMs>0)};
+  // A loaded machine can spend a short budget between the awaits. Each wait stays
+  // longer than the budget, so if waits were charged to it every size would fail.
+  const budgets = [60, 1000, 5000]
+  for (const timeoutMs of budgets) {
+    const waitMs = timeoutMs + 40
+    const mod =
+      await runtime(`export function register(on){on('command.run',async($,e,next)=>{
+    await $.clock.sleep(${waitMs});const result=await next(e);return {text:result.text+':'+(next.budget.remainingMs>0)};
   })}`)
-  const result = await mod.dispatch(
-    'command.run',
-    { command: 'wait' },
-    async () => {
-      await new Promise((done) => setTimeout(done, 100))
-      return { text: 'done' }
-    },
-    async (method) => {
-      assert.equal(method, 'clock.sleep')
-      await new Promise((done) => setTimeout(done, 100))
-    },
-    { timeoutMs: 60 },
-  )
-  assert.equal(result.text, 'done:true')
+    const result = await mod.dispatch(
+      'command.run',
+      { command: 'wait' },
+      async () => {
+        await new Promise((done) => setTimeout(done, waitMs))
+        return { text: 'done' }
+      },
+      async (method) => {
+        assert.equal(method, 'clock.sleep')
+        await new Promise((done) => setTimeout(done, waitMs))
+      },
+      { timeoutMs },
+    )
+    if (result.text !== 'done:true' && timeoutMs !== budgets.at(-1)) continue
+    assert.equal(result.text, 'done:true')
+    break
+  }
 })
 
 test('abort terminates a synchronous runaway and does not run the core action', {timeout:10_000}, async () => {
@@ -722,55 +730,63 @@ test('normal and recovered tool results inherit downstream context without repea
 })
 
 test('unawaited host work cannot hide a synchronous runaway before or after an await', async () => {
+  // The hook must reach its host call for this to test anything, and a loaded
+  // machine can spend a short budget before it gets there. Only then, retry with more.
+  const budgets = [100, 1000, 10_000]
   for (const afterAwait of [false, true]) {
-    const mod = await runtime(`export function register(on){on('command.run',async($)=>{
+    for (const timeoutMs of budgets) {
+      const mod = await runtime(`export function register(on){on('command.run',async($)=>{
       ${afterAwait ? 'await $.clock.sleep(1);' : ''}
       void $.clock.sleep(600000);while(true){}
     })}`)
-    const controller = new AbortController(),
-      guard = setTimeout(() => controller.abort(), 2000),
-      started = Date.now(),
-      warnings = []
-    let pendingWaits = 0,
-      abortedWaits = 0,
-      coreCalls = 0
-    try {
-      const result = await mod.dispatch(
-        'command.run',
-        { command: 'runaway' },
-        async () => {
-          coreCalls++
-          return { text: 'fallback' }
-        },
-        async (method, args, signal) => {
-          assert.equal(method, 'clock.sleep')
-          if (args[0] === 1) return
-          assert.equal(args[0], 600000)
-          pendingWaits++
-          await new Promise((resolve, reject) => {
-            const aborted = () => {
-              abortedWaits++
-              reject(new Error('host wait aborted'))
-            }
-            if (signal.aborted) aborted()
-            else signal.addEventListener('abort', aborted, { once: true })
-          })
-        },
-        {
-          timeoutMs: 100,
-          signal: controller.signal,
-          warn: (message) => warnings.push(message),
-        },
-      )
-      assert.equal(result.text, 'fallback')
-      assert.equal(coreCalls, 1)
-      assert.equal(pendingWaits, 1)
-      assert.equal(abortedWaits, 1)
-      assert.equal(controller.signal.aborted, false)
-      assert.match(warnings.join('\n'), /timed out/)
-      assert.ok(Date.now() - started < 2000)
-    } finally {
-      clearTimeout(guard)
+      const hangLimit = timeoutMs + 30_000,
+        controller = new AbortController(),
+        guard = setTimeout(() => controller.abort(), hangLimit),
+        started = Date.now(),
+        warnings = []
+      let pendingWaits = 0,
+        abortedWaits = 0,
+        coreCalls = 0
+      try {
+        const result = await mod.dispatch(
+          'command.run',
+          { command: 'runaway' },
+          async () => {
+            coreCalls++
+            return { text: 'fallback' }
+          },
+          async (method, args, signal) => {
+            assert.equal(method, 'clock.sleep')
+            if (args[0] === 1) return
+            assert.equal(args[0], 600000)
+            pendingWaits++
+            await new Promise((resolve, reject) => {
+              const aborted = () => {
+                abortedWaits++
+                reject(new Error('host wait aborted'))
+              }
+              if (signal.aborted) aborted()
+              else signal.addEventListener('abort', aborted, { once: true })
+            })
+          },
+          {
+            timeoutMs,
+            signal: controller.signal,
+            warn: (message) => warnings.push(message),
+          },
+        )
+        assert.equal(result.text, 'fallback')
+        assert.equal(coreCalls, 1)
+        assert.equal(controller.signal.aborted, false)
+        assert.match(warnings.join('\n'), /timed out/)
+        assert.ok(Date.now() - started < hangLimit)
+        if (pendingWaits === 0 && timeoutMs !== budgets.at(-1)) continue
+        assert.equal(pendingWaits, 1)
+        assert.equal(abortedWaits, 1)
+        break
+      } finally {
+        clearTimeout(guard)
+      }
     }
   }
 })

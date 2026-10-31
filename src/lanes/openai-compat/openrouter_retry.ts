@@ -1,3 +1,4 @@
+import { reportProviderRetry } from '../../services/api/providerRetryBudget.js'
 import { setTimeout } from 'node:timers/promises'
 import type { AnthropicStreamEvent } from '../../services/api/providers/base_provider.js'
 import { OpenRouterToolCallError, OpenRouterUpstreamError } from './openrouter_tools.js'
@@ -169,7 +170,15 @@ export async function* retryOpenRouterStream<T>(
         if (reason) error.message += ` Recovery was not attempted: ${reason}.`
         throw error
       }
-      if (error.capacity) capacityWaits++
+      if (error.capacity) {
+        capacityWaits++
+        reportProviderRetry({
+          status: error.status ?? null,
+          attempt: capacityWaits,
+          maxRetries: capacityDelaysMs.length,
+          delayMs,
+        })
+      }
       recovery = !error.capacity
       // A capacity wait resends the previous request unchanged; only the
       // recovery after a cut-off tool call adds the explanation.

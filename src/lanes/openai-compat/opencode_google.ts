@@ -23,6 +23,7 @@ import type {
   ProviderTool,
 } from '../../services/api/providers/base_provider.js'
 import { isMediaBlock } from '../shared/media_blocks.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import { renderMediaForTextLane } from '../shared/media_extract.js'
 import type { NormalizedUsage } from '../types.js'
 import { OPENCODE_MAX_OUTPUT_TOKENS } from './opencode_responses.js'
@@ -353,9 +354,7 @@ export class OpenCodeGeminiStream {
     this.start(out)
     this.closeOpen(out)
     const index = this.nextIndex++
-    out.push({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
-    out.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text } })
-    out.push({ type: 'content_block_stop', index })
+    out.push(...providerFailureEvents(index, text))
     return out
   }
 

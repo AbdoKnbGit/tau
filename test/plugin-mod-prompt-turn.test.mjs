@@ -278,6 +278,17 @@ test('large pasted text creates its history identity synchronously before rewrit
   }
 })
 
+test('a large paste reads back whole right after it is added, while its file is still being written', async () => {
+  // Big enough that the write is nowhere near done when the read starts.
+  const pasted='large paste '.repeat(4_000_000), pastedContents={1:{id:1,type:'text',content:pasted}}
+  r.addToHistory({display:'read back [Pasted text #1]',pastedContents},randomUUID())
+  for await(const entry of r.getHistory()) {
+    assert.equal(entry.display,'read back [Pasted text #1]')
+    assert.equal(entry.pastedContents[1]?.content===pasted,true,'the paste came back whole')
+    break
+  }
+})
+
 test('compact, summary and prompt helper queries do not emit conversation lifecycle events', async () => {
   await mod(`on('turn.start',async($,e,next)=>{await $.fs.write('helper-events.txt','start');return next(e)});on('turn.complete',async($,e,next)=>{await $.fs.write('helper-events.txt','complete');return next(e)});`)
   for(const querySource of ['compact','tool_use_summary_generation','hook_prompt']) {

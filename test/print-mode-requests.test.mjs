@@ -1,6 +1,7 @@
 // What print mode really sends, through the built CLI. The sign-in cases read the credentials off the
 // wire. The Antigravity cases run against a stand-in that refuses the identity Google refuses.
 import assert from 'node:assert/strict'
+import { stopProcessTree } from './helpers/stop-process-tree.mjs'
 import { spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -50,13 +51,13 @@ function cleanEnv({ home, configDir }, extra) {
 
 async function runPrint(workspace, env, args) {
   const child = spawn(process.execPath, [cli, '-p', 'hello', '--strict-mcp-config', '--setting-sources', 'project', '--no-session-persistence', '--tools', 'Read', ...args], {
-    cwd: workspace, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: workspace, env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', part => { stdout += part })
   child.stderr.on('data', part => { stderr += part })
-  const timer = setTimeout(() => child.kill(), 60_000)
+  const timer = setTimeout(() => stopProcessTree(child), 60_000)
   try {
     const code = await new Promise((done, reject) => { child.once('error', reject); child.once('close', done) })
     return { code, stdout, stderr }

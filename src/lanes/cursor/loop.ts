@@ -52,6 +52,7 @@ import {
   resolveCursorToolCall,
 } from './tools.js'
 import { OPENAI_COMPAT_TOOL_USAGE_RULES } from '../shared/mcp_bridge.js'
+import { providerFailureEvents } from '../shared/provider_failure.js'
 import {
   createRetryableConnectionError,
   isAbortError,
@@ -1109,9 +1110,7 @@ function _parseCursorToolArgs(raw: string): Record<string, unknown> {
 }
 
 function* _emitErrorText(text: string): Generator<AnthropicStreamEvent> {
-  yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }
-  yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }
-  yield { type: 'content_block_stop', index: 0 }
+  yield* providerFailureEvents(0, text)
 }
 
 async function _openCursorHttpStream(opts: {

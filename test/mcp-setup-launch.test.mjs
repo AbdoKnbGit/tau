@@ -1,6 +1,4 @@
 // Run directly: node test/mcp-setup-launch.test.mjs (also used by CI).
-// See docs/mcp-setup-validation.md for the separately reproduced SDK/cmd
-// limitation in Node's isolated --test worker with combined shell metacharacters.
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -91,13 +89,22 @@ test('Windows PATH/PATHEXT resolves a generic command shim with spaces', { skip:
   // Match npm's shim contract: cross-spawn deliberately escapes these shims
   // twice because the endLocal/goto dispatch reparses the command.
   writeFileSync(join(bin, 'fixture-launch.cmd'), `@echo off\r\nsetlocal\r\nset "_prog=${process.execPath}"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "${fixture}" %*\r\n`)
-  const args = ['space here', '', 'quoted "value"', 'a&b', 'literal|pipe', 'unicode-你好', 'trailing\\']
+  // cmd.exe on Windows 11 build 26300 hangs on any line with 50 or more carets,
+  // before it starts anything. The double escaping a shim needs writes 3 per
+  // quote and metacharacter, so each group stays under that and still mixes them.
+  const groups = [
+    ['space here', '', 'quoted "value"'],
+    ['quoted "value"', 'a&b', 'literal|pipe'],
+    ['a&b', 'unicode-你好', 'trailing\\'],
+  ]
   const env = { PATH: `${bin};${process.env.PATH}`, PATHEXT: '.COM;.EXE;.BAT;.CMD' }
   for (const command of ['fixture-launch', join(bin, 'fixture-launch.cmd')]) {
-    const client = await connect(config({ command, args, env }))
-    const result = await inspect(client)
-    assert.deepEqual(result.args, args)
-    await client.cleanup()
+    for (const args of groups) {
+      const client = await connect(config({ command, args, env }))
+      const result = await inspect(client)
+      assert.deepEqual(result.args, args)
+      await client.cleanup()
+    }
   }
 })
 

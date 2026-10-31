@@ -1032,6 +1032,47 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
 }
 
 /**
+ * Default models for the providers whose model list lives with their lane
+ * rather than in PROVIDER_CONFIGS. Each id is a row of that list, so a session
+ * with no chosen model starts on a model the provider serves.
+ * src/utils/model/providerDefaults.test.ts holds them to those lists.
+ */
+const LANE_CATALOG_MODEL_SETS: Record<string, TierModelSet> = {
+  antigravity: {
+    opus: 'gemini-4-argon-high',
+    sonnet: 'gemini-3.8-flash-high',
+    haiku: 'gemini-3.8-flash-low',
+  },
+  cline: {
+    opus: 'kwaipilot/kat-coder-pro',
+    sonnet: 'kwaipilot/kat-coder-pro',
+    haiku: 'kwaipilot/kat-coder-pro',
+  },
+  cloudflare: {
+    opus: '@cf/moonshotai/kimi-k2.7-code',
+    sonnet: '@cf/moonshotai/kimi-k2.7-code',
+    haiku: '@cf/openai/gpt-oss-20b',
+  },
+  cursor: { opus: 'auto', sonnet: 'auto', haiku: 'auto' },
+  iflow: {
+    opus: 'qwen3-coder-plus',
+    sonnet: 'qwen3-coder-plus',
+    haiku: 'qwen3-coder-plus',
+  },
+  kilocode: {
+    opus: 'kilo-auto/free',
+    sonnet: 'kilo-auto/free',
+    haiku: 'kilo-auto/free',
+  },
+  kiro: { opus: 'auto', sonnet: 'auto', haiku: 'auto' },
+  ollama: {
+    opus: process.env.OLLAMA_MODEL_OPUS ?? 'llama3.3:latest',
+    sonnet: process.env.OLLAMA_MODEL_SONNET ?? 'llama3.1:latest',
+    haiku: process.env.OLLAMA_MODEL_HAIKU ?? 'llama3.2:latest',
+  },
+}
+
+/**
  * Resolves the effective model set for a third-party provider based on
  * the detected or configured tier.
  */
@@ -1039,7 +1080,8 @@ export function getProviderModelSet(provider: string): TierModelSet {
   const config = PROVIDER_CONFIGS[provider]
   if (!config) {
     // Fallback for unknown providers — use a generic OpenAI-compatible default
-    return { opus: 'gpt-5.4', sonnet: 'gpt-5.4', haiku: 'gpt-5.4-mini' }
+    return LANE_CATALOG_MODEL_SETS[provider]
+      ?? { opus: 'gpt-5.4', sonnet: 'gpt-5.4', haiku: 'gpt-5.4-mini' }
   }
   const tier = getProviderTier(provider)
   const modelSet = config.tiers[tier]
