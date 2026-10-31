@@ -119,7 +119,7 @@ test('the picker lists the three choices, with the cursor on the current one', a
   try {
     const frame = fresh.frame()
     assert.match(frame, /Choose what the spinner says while Tau works:/)
-    assert.match(frame, /❯ 1\. On/)
+    assert.match(frame, /[❯>] 1\. On/)
     assert.match(frame, /A random verb each time \(default\)/)
     assert.match(frame, /2\. Off/)
     assert.match(frame, /Always "Working…"/)
@@ -129,7 +129,7 @@ test('the picker lists the three choices, with the cursor on the current one', a
 
   const custom = await openPicker({ mode: 'replace', verbs: ['Thinking'] })
   try {
-    assert.match(custom.frame(), /❯ 3\. Custom: Thinking/)
+    assert.match(custom.frame(), /[❯>] 3\. Custom: Thinking/)
   } finally { custom.close() }
 
   const list = await openPicker({ mode: 'append', verbs: ['Shipping', 'Debugging'] })

@@ -121,11 +121,13 @@ async function* makeLogEntryReader(): AsyncGenerator<LogEntry> {
     return entry.removed ? undefined : entry
   }
 
-  // Start with entries that have yet to be flushed to disk
-  const pending = [...pendingEntries]
+  // Start with entries that have yet to reach the file. One written while this
+  // runs is also in the file below, where its id has already been seen.
+  const pending = [...flushingEntries, ...pendingEntries]
   for (let i = pending.length - 1; i >= 0; i--) {
     const entry = current(pending[i]!)
-    if (entry) yield entry
+    // removeLastFromHistory marks an entry this way once it has left pendingEntries.
+    if (entry && !skippedTimestamps.has(entry.timestamp)) yield entry
   }
 
   // Read from global history file (shared across all projects)
@@ -301,6 +303,9 @@ async function logEntryToHistoryEntry(entry: LogEntry): Promise<HistoryEntry> {
 }
 
 let pendingEntries: LogEntry[] = []
+// Entries on their way into the file. Readers still look here, or until the
+// write is done an entry would be in neither place and read back as missing.
+let flushingEntries: LogEntry[] = []
 // Paste files still being written. An entry names its paste the moment it is
 // added, so a reader right behind it has to wait or it finds no file yet.
 const pendingPasteWrites = new Map<string, Promise<void>>()
@@ -342,12 +347,14 @@ async function immediateFlushHistory(): Promise<void> {
     })
 
     const jsonLines = pendingEntries.map(entry => jsonStringify(entry) + '\n')
+    flushingEntries = pendingEntries
     pendingEntries = []
 
     await appendFile(historyPath, jsonLines.join(''), { mode: 0o600 })
   } catch (error) {
     logForDebugging(`Failed to write prompt history: ${error}`)
   } finally {
+    flushingEntries = []
     if (release) {
       await release()
     }

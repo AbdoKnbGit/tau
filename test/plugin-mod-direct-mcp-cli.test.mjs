@@ -142,10 +142,18 @@ test(
     assert.ok(Number.isInteger(descendant) && descendant > 0)
     controller.abort(new Error('fixture cancellation'))
     await stopped
-    assert.throws(
-      () => process.kill(descendant, 0),
-      error => error.code === 'ESRCH',
-    )
+    // A killed process stays visible for a moment, until the system has collected it.
+    const deadline = Date.now() + 10_000
+    for (;;) {
+      try {
+        process.kill(descendant, 0)
+      } catch (error) {
+        assert.equal(error.code, 'ESRCH')
+        break
+      }
+      assert.ok(Date.now() < deadline, 'the descendant is still running')
+      await new Promise(done => setTimeout(done, 50))
+    }
   },
 )
 

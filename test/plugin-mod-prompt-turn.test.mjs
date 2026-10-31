@@ -278,6 +278,19 @@ test('large pasted text creates its history identity synchronously before rewrit
   }
 })
 
+test('an entry stays readable while it is being written to the file', async () => {
+  await settleHistory()
+  for(let i=0;i<100;i++) {
+    const display=`visible ${i}`
+    r.addToHistory(display,randomUUID())
+    // One read on each turn of the event loop until the write is done, so that some land in the middle of it.
+    do {
+      for await(const entry of r.getHistory()) { assert.equal(entry.display,display); break }
+      await new Promise(resolve=>setImmediate(resolve))
+    } while(r.getHistoryControl().pending || r.getHistoryControl().isWriting)
+  }
+})
+
 test('a large paste reads back whole right after it is added, while its file is still being written', async () => {
   // Big enough that the write is nowhere near done when the read starts.
   const pasted='large paste '.repeat(4_000_000), pastedContents={1:{id:1,type:'text',content:pasted}}
