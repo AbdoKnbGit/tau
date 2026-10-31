@@ -9,7 +9,8 @@ const plan = JSON.parse(readFileSync(process.env.TAU_LAB_PLAN, 'utf8'))
 const recordFile = process.env.TAU_LAB_RECORD
 const usage = { input: 100, cached: 0, creation: 0, output: 5, ...plan.usage }
 let step = 0
-let replyNumber = 0
+// A real provider never reuses an id, not even after a resume, and Tau rejects a repeated tool id.
+let replyNumber = Date.now()
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 const stream = (text, type = 'text/event-stream') => new Response(text, { status: 200, headers: { 'content-type': type } })

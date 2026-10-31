@@ -244,10 +244,10 @@ test('a notification handed over mid-turn still closes the task for SDK consumer
   )
 })
 
-// A notification handed over mid-turn is an attachment; attachments are not
-// saved for external builds, so a resumed session lost it (and the history
-// the model had seen, i.e. its prompt cache). One delivered between turns is
-// a user message and was always saved.
+// An attachment the model saw has to be on disk, or a resumed session loses it
+// and the history the model had seen, i.e. its prompt cache. A notification
+// handed over mid-turn is one; one delivered between turns is a user message
+// and was always saved.
 test('a task notification handed over mid-turn is saved in the transcript', () => {
   const attachment = (commandMode, type = 'queued_command') => ({
     type: 'attachment',
@@ -255,10 +255,22 @@ test('a task notification handed over mid-turn is saved in the transcript', () =
     attachment: { type, prompt: '<task-notification/>', commandMode },
   })
   assert.equal(first.isLoggableMessage(attachment('task-notification')), true)
-  // Everything else keeps the external-build rule.
-  assert.equal(first.isLoggableMessage(attachment('prompt')), false)
-  assert.equal(first.isLoggableMessage(attachment(undefined, 'todo_reminder')), false)
+  assert.equal(first.isLoggableMessage(attachment('prompt')), true)
   assert.equal(first.isLoggableMessage({ type: 'user', uuid: 'u2', message: { role: 'user', content: 'hi' } }), true)
+})
+
+test('only attachments that reach the model are saved in the transcript', () => {
+  const saved = attachment => first.isLoggableMessage({ type: 'attachment', uuid: 'u1', attachment })
+  assert.equal(saved({ type: 'skill_listing', content: '- a skill', skillCount: 1, isInitial: true }), true)
+  assert.equal(saved({ type: 'hook_additional_context', content: ['context'], hookName: 'UserPromptSubmit', toolUseID: 't', hookEvent: 'UserPromptSubmit' }), true)
+  assert.equal(saved({ type: 'hook_stopped_continuation', message: 'stop', hookName: 'Stop', toolUseID: 't', hookEvent: 'Stop' }), true)
+  // These only draw the screen.
+  assert.equal(saved({ type: 'already_read_file', filename: 'a.txt' }), false)
+  assert.equal(saved({ type: 'hook_cancelled', hookName: 'Stop', toolUseID: 't', hookEvent: 'Stop' }), false)
+  assert.equal(saved({ type: 'hook_success', content: 'text', hookName: 'Stop', toolUseID: 't', hookEvent: 'Stop' }), false)
+  // Malformed, so the request builder cannot read it: never fail a transcript write over it.
+  assert.equal(saved({ type: 'todo_reminder' }), false)
+  assert.equal(saved(undefined), false)
 })
 
 test('a running task is still stopped, and its stop is recorded', async () => {

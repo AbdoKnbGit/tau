@@ -82,7 +82,11 @@ import { getBranch } from './git.js'
 import { gracefulShutdownSync, isShuttingDown } from './gracefulShutdown.js'
 import { parseJSONL } from './json.js'
 import { logError } from './log.js'
-import { extractTag, isCompactBoundaryMessage } from './messages.js'
+import {
+  extractTag,
+  isCompactBoundaryMessage,
+  normalizeAttachmentForAPI,
+} from './messages.js'
 import { sanitizePath } from './path.js'
 import {
   extractJsonStringField,
@@ -4571,32 +4575,33 @@ export async function loadAllSubagentTranscriptsFromDisk(): Promise<{
   return loadSubagentTranscripts(agentIds)
 }
 
+// Every write walks the whole history, so each attachment is only judged once.
+const attachmentReachesModel = new WeakMap<object, boolean>()
+
+function reachesModel(attachment: AttachmentMessage['attachment']): boolean {
+  const known = attachmentReachesModel.get(attachment)
+  if (known !== undefined) return known
+  try {
+    const reaches = normalizeAttachmentForAPI(attachment).length > 0
+    attachmentReachesModel.set(attachment, reaches)
+    return reaches
+  } catch {
+    // The request builder cannot read it, so it cannot have reached the model,
+    // and a bad entry must never stop the rest of the session being saved.
+    return false
+  }
+}
+
 // Exported so useLogMessages can sync-compute the last loggable uuid
 // without awaiting recordTranscript's return value (race-free hint tracking).
 export function isLoggableMessage(m: Message): boolean {
   if (m.type === 'progress') return false
-  // IMPORTANT: We deliberately filter out most attachments for non-ants because
-  // they have sensitive info for training that we don't want exposed to the public.
-  // When enabled, we allow hook_additional_context through since it contains
-  // user-configured hook output that is useful for session context on resume.
+  // A resumed session must rebuild the history the model saw, byte for byte, or
+  // its first request misses the prompt cache and re-bills the conversation.
+  // The code that builds the request decides what the model sees; the rest only
+  // draws the screen, and external builds keep that off disk.
   if (m.type === 'attachment' && getUserType() !== 'ant') {
-    if (
-      m.attachment.type === 'hook_additional_context' &&
-      isEnvTruthy(process.env.CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT)
-    ) {
-      return true
-    }
-    // A task notification handed to the model mid-turn is kept, as one
-    // delivered between turns (a user message) always was: a resumed session
-    // must rebuild the history the model saw, byte for byte, and still know
-    // the task ended.
-    if (
-      m.attachment.type === 'queued_command' &&
-      m.attachment.commandMode === 'task-notification'
-    ) {
-      return true
-    }
-    return false
+    return reachesModel(m.attachment)
   }
   return true
 }

@@ -77,7 +77,7 @@ tau -p "Name this project" --output-format json | jq -r .result
 (tau -p "Name this project" --output-format json | ConvertFrom-Json).result    # PowerShell
 ```
 
-The exit code is 0 when the run finished, even if a tool was refused, and 1 when it failed or reached `--max-turns`.
+The exit code is 0 when the run finished, even if a tool was refused, and 1 when it failed or reached `--max-turns`. On OpenAI, Copilot, Kiro and OpenCode, an error from the provider currently comes back as the answer text with exit code 0, so scripts on those should also check the text.
 
 ## Continue a conversation
 
@@ -93,6 +93,7 @@ Providers reuse their cache when a request starts with the same bytes as before.
 
 - Keep `--tools`, `--disallowedTools` and `--append-system-prompt` the same between runs. Changing them starts the cache again.
 - Change `--allowedTools`, `--permission-mode` and the output format freely. They do not affect the cache.
+- `-c` and `--resume` send the saved history byte for byte, so they keep the cache. A session started in normal Tau and resumed with `-p` starts a new one, because the two modes offer different tools.
 
 To check, run a task twice with `--output-format json` and compare `cache_read_input_tokens` with `input_tokens` in `usage`.
 

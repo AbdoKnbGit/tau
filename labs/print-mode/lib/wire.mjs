@@ -72,7 +72,11 @@ export function readRequest(record) {
   }
   const messages = Array.isArray(body.messages) ? body.messages : []
   if (format === 'anthropic') {
-    const stripped = stripCacheMarkers(messages)
+    // Tau gives the newest message a cache marker, which needs the block form, and takes it off next
+    // turn. The Messages API defines a string as one text block, so they are the same message.
+    const stripped = stripCacheMarkers(messages).map(message => (typeof message.content === 'string'
+      ? { ...message, content: [{ type: 'text', text: message.content }] }
+      : message))
     return {
       format, body,
       tools: (body.tools ?? []).map(tool => ({ name: tool.name, properties: tool.input_schema?.properties ?? {} })),

@@ -12,13 +12,11 @@ import type { Message } from '../../types/message.js'
 
 // ── Live conversations ──────────────────────────────────────────────────
 //
-// Sidechain transcripts do not keep attachment messages in external builds
-// (isLoggableMessage), yet the query loop folds attachment reminders into the
-// neighbouring tool_result. A history rebuilt from disk therefore differs from
-// what the agent actually sent, from the first attachment on. SendMessage
-// resumes run in the process that ran the agent, so keep each agent's live
-// conversation for that resume. The transcript remains the fallback (another
-// process, or an entry evicted by the cap).
+// SendMessage resumes run in the process that ran the agent, so keep each
+// agent's live conversation for that resume: it is exactly what the agent sent,
+// with nothing to read back. The transcript, which keeps everything that reached
+// the model (isLoggableMessage), remains the fallback (another process, or an
+// entry evicted by the cap).
 
 const MAX_LIVE_CONVERSATIONS = 16
 const liveConversations = new Map<string, Message[]>()

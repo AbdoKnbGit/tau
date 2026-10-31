@@ -168,7 +168,7 @@ jobs:
         run: node --test test/plugin-runtime-boundaries.test.mjs test/plugin-local-loading.test.mjs test/plugin-dependency-versions.test.mjs test/plugin-skill-compatibility.test.mjs test/plugin-reload-skills.test.mjs test/hook-engine-compatibility.test.mjs test/headless-hook-resume.test.mjs
 
       - name: Test MCPB bundles, provider SDKs, sign-in, tool schemas, proxy and CA fetch, telemetry exporters, and optional integrations
-        run: node --test test/plugin-mcpb-loading.test.mjs test/plugin-mcpb-cli.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/print-mode-requests.test.mjs test/tool-schema-spelling.test.mjs test/undici-dispatcher-fetch.test.mjs test/telemetry-otlp-exporters.test.mjs test/optional-integrations.test.mjs
+        run: node --test test/plugin-mcpb-loading.test.mjs test/plugin-mcpb-cli.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/print-mode-requests.test.mjs test/resume-prompt-cache.test.mjs test/tool-schema-spelling.test.mjs test/undici-dispatcher-fetch.test.mjs test/telemetry-otlp-exporters.test.mjs test/optional-integrations.test.mjs
 
       - name: Test skill prompt mods and real CLI requests
         # Exercise the built CLI and real mod workers on every OS in the matrix.

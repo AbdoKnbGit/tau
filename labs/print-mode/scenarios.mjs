@@ -14,6 +14,8 @@ const TAU_IDENTITY = 'You are Tau, a multi-provider AI coding CLI.'
 const SESSION = '11111111-2222-4333-8444-555555555555'
 const RUN_SCRIPT = 'node make-file.mjs'
 const SCRIPT_RESULT = 'made-by-script.txt'
+const PROMPT_HOOK = "process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'LAB-HOOK-CONTEXT' } }))"
+const STOP_HOOK = "process.stdout.write(JSON.stringify({ continue: false, stopReason: 'LAB-STOP-HOOK' }))"
 const WINDOWS_TERMINAL = { SESSIONNAME: 'Console', WT_SESSION: '11111111-1111-4111-8111-111111111111' }
 const RESUME_RUNS = [
   { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')) },
@@ -150,9 +152,41 @@ export const scenarios = [
   { id: 'cache-tools-changes', group: 'cache', title: '--tools changes the prefix (expected: keep it the same between runs)', compare: 'different', runs: [{}, { args: ['--tools', 'Read,Grep'] }] },
   { id: 'cache-disallow-changes', group: 'cache', title: '--disallowedTools changes the prefix (expected)', compare: 'different', runs: [{}, { args: ['--disallowedTools', 'Write'] }] },
   { id: 'cache-append-changes', group: 'cache', title: '--append-system-prompt changes the prefix (expected)', compare: 'different', runs: [{}, { args: ['--append-system-prompt', 'Be brief.'] }] },
-  { id: 'cache-resume-history', group: 'cache', title: 'KNOWN ISSUE: --resume moves the skills reminder, so old history no longer matches', soft: true, note: 'In the original run the skills reminder opens the first prompt. After --resume it is gone from there and sent again with the new prompt, so history stops matching at that message. The cost depends on the provider and your setup: on real Antigravity with real settings and plugins the first resumed request got 0% from cache (4 of 4 tries) and 88% with the reminder put back, while with clean settings it got 92%, and Command Code got 92%. Later turns are fine. Same on the last commit before this lab. This turns green when fixed.', continues: true, runs: RESUME_RUNS },
-  { id: 'cache-resume-prefix', group: 'cache', title: 'KNOWN ISSUE: --resume also changes the Anthropic billing line at the very start', soft: true, only: ['anthropic'], note: 'That line carries a fingerprint taken from the first message, which changes for the reason above. It comes before everything else, so on Anthropic the first resumed request misses the cache completely. Same on your last commit. This turns green when fixed.', compare: 'same', runs: RESUME_RUNS },
-  { id: 'cache-resume-tools', group: 'cache', title: '--resume keeps tools and system prompt on routes with no billing line', only: ['agy', 'mistral', 'deepseek', 'openrouter', 'openai'], compare: 'same', runs: RESUME_RUNS },
+  { id: 'cache-resume-history', group: 'cache', title: '--resume sends the history it already sent, byte for byte', continues: true, runs: RESUME_RUNS },
+  { id: 'cache-resume-prefix', group: 'cache', title: '--resume keeps tools, system prompt and settings', compare: 'same', runs: RESUME_RUNS },
+  { id: 'cache-resume-reminder-once', group: 'cache', title: '--resume does not send the skills reminder a second time', runs: RESUME_RUNS, expect: { ...DONE, sentOnce: ['The following skills are available'] } },
+  { id: 'cache-resume-twice', group: 'cache', title: 'Resuming twice stays byte for byte both times', continues: true, runs: [
+    { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')) },
+    { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT second question', steps: oneByOne(read('second.txt')) },
+    { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT third question' },
+  ] },
+  { id: 'cache-continue', group: 'cache', title: '-c sends the history it already sent, byte for byte', continues: true, runs: [
+    { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')) },
+    { persist: true, args: ['-c'], prompt: 'LAB-PROMPT second question' },
+  ] },
+  { id: 'cache-resume-refusal', group: 'cache', title: '--resume keeps a refused tool in the history', continues: true, runs: [
+    { persist: true, args: ['--session-id', SESSION], steps: oneByOne(write('made.txt'), read('notes.txt')) },
+    { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT second question' },
+  ] },
+  { id: 'cache-resume-nested-rules', group: 'cache', title: '--resume keeps folder rules that loaded mid-session', setup: { files: { 'sub/CLAUDE.md': 'LAB-NESTED-RULE applies here.\n', 'sub/file.txt': 'in a subfolder\n' } }, continues: true, runs: [
+    { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('sub/file.txt'), read('notes.txt')) },
+    { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT second question', expect: { ...DONE, sentOnce: ['LAB-NESTED-RULE applies here'] } },
+  ] },
+  { id: 'cache-resume-hook-context', group: 'cache', title: '--resume keeps context a hook added to a prompt', setup: { files: { 'prompt-hook.mjs': PROMPT_HOOK, '.claude/settings.json': { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node prompt-hook.mjs' }] }] } } } }, continues: true, runs: RESUME_RUNS },
+  { id: 'cache-resume-stop-hook', group: 'cache', title: 'A Stop hook that ended the turn does not read as an interruption', setup: { files: { 'stop-hook.mjs': STOP_HOOK, '.claude/settings.json': { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node stop-hook.mjs' }] }] } } } }, continues: true, runs: RESUME_RUNS, expect: { notSent: /Continue from where you left off/ } },
+  { id: 'cache-resume-fork', group: 'cache', title: '--fork-session keeps the same history in a new session', continues: true, runs: [
+    { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')) },
+    { persist: true, args: ['--resume', SESSION, '--fork-session'], prompt: 'LAB-PROMPT second question' },
+  ] },
+  { id: 'cache-resume-mention', group: 'cache', title: '--resume keeps a file you mentioned with @', continues: true, runs: [
+    { persist: true, args: ['--session-id', SESSION], prompt: 'LAB-PROMPT look at @notes.txt' },
+    { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT second question', expect: { ...DONE, sentOnce: ['Pineapple is the first word'] } },
+  ] },
+  { id: 'cache-resume-compact', group: 'cache', title: '/compact works on a resumed session, and it can be resumed again', runs: [
+    { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')) },
+    { persist: true, args: ['--resume', SESSION], prompt: '/compact', expect: { exit: 0 } },
+    { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT after compacting', expect: { ...DONE } },
+  ] },
   { id: 'cache-resume-next-turn', group: 'cache', title: 'After the first resumed request, the turns are stable again', runs: [
     { persist: true, args: ['--session-id', SESSION], steps: oneByOne(read('notes.txt')) },
     { persist: true, args: ['--resume', SESSION], prompt: 'LAB-PROMPT second question', steps: oneByOne(read('second.txt')), expect: { ...DONE, stable: true } },
@@ -193,7 +227,7 @@ export const realScenarios = [
   { id: 'real-protect-folder', group: 'real: tools', title: '"Read(secret/**)" protects that folder from the Read tool', prompt: 'Use only the Read tool to read secret/hidden.txt and answer with only its first word.', args: ['--tools', 'Read', '--disallowedTools', 'Read(secret/**)'], expect: { notPrinted: /papaya/i } },
   { id: 'real-cache-tools', group: 'real: cache', title: 'Two turns in one run: the second reuses the first', prompt: READ_BOTH, reportCache: 40, expect: { printed: /pineapple[\s\S]*mango/i } },
   { id: 'real-cache-runs', group: 'real: cache', title: 'The same prompt twice, 30 seconds apart: the second run reuses the first', reportCache: 50, runs: [{ prompt: READ_FIRST_WORD }, { prompt: READ_FIRST_WORD, pauseMs: 30_000 }] },
-  { id: 'real-cache-resume', group: 'real: cache', title: 'KNOWN ISSUE: the first request after --resume, 30 seconds later', reportCache: 50, runs: [
+  { id: 'real-cache-resume', group: 'real: cache', title: 'The first request after --resume, 30 seconds later', reportCache: 50, runs: [
     { persist: true, prompt: READ_FIRST_WORD, args: ['--session-id', SESSION] },
     { persist: true, prompt: 'Now answer with only the word done.', args: ['--resume', SESSION], pauseMs: 30_000 },
   ] },

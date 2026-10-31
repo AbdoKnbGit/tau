@@ -69,12 +69,9 @@ compares what was really sent:
   not change the start of the request.
 - **Expected changes** (`cache-tools-changes`, `cache-disallow-changes`, `cache-append-changes`): these flags do
   change it, so keep them the same between runs if you want cache hits.
-- **Known issue** (`cache-resume-history`, `cache-resume-prefix`, `real-cache-resume`): `--resume` moves the
-  skills reminder out of the first prompt. The cost depends on the provider and your setup. On real Antigravity
-  with real settings and plugins, the first resumed request got 0% from cache (4 of 4 tries) and 88% with the
-  reminder put back; changing the session ID made no difference. With clean settings it got 92%, and Command Code
-  got 92%. On Anthropic a fingerprint at the very start of the request changes too, which I could only check
-  offline. Later turns are fine. It shows as `WARN` where it costs you, and turns green when fixed.
+- **Across a resume** (`cache-resume-*`, `cache-continue`, `real-cache-resume`): `--resume` and `-c` send the
+  history that was already sent, byte for byte, including reminders, folder rules and hook context that reached the
+  model. Sessions saved before this was fixed do not have those on disk, so they still re-send them once.
 
 `--real` shows real numbers. A provider can take a while to store a new cache entry, so the real cache scenarios
 pause 30 seconds between runs. To check by hand, run this twice, a little apart, and compare
@@ -104,6 +101,7 @@ Add one line to `scenarios` in `scenarios.mjs`:
 | `saw`, `notSaw` | Pattern for what the tools returned to the model |
 | `exists`, `missing`, `contains` | Files, relative to the working folder |
 | `requests` | How many model requests were made |
+| `sentOnce`, `notSent` | Text that must appear exactly once, or not at all, in the first request |
 | `stable` | Tools, system and settings identical across turns, and history only grows |
 | `usage` | Exact numbers in the reported `usage` |
 | `credential` | `'login'` or `'key'` |

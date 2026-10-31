@@ -231,6 +231,12 @@ function checkExpectations(expect, run, box, baseline) {
   }
   for (const text of asList(expect.systemHas ?? [])) if (!run.requests[0]?.systemText.includes(text)) fail(`system prompt lacks "${text}"`)
   for (const text of asList(expect.systemLacks ?? [])) if (run.requests[0]?.systemText.includes(text)) fail(`system prompt has "${text}"`)
+  const firstBody = JSON.stringify(run.requests[0]?.body ?? {})
+  for (const phrase of asList(expect.sentOnce ?? [])) {
+    const times = firstBody.split(phrase).length - 1
+    if (times !== 1) fail(`"${phrase}" was sent ${times} times, expected once`)
+  }
+  for (const pattern of asList(expect.notSent ?? [])) if (pattern.test(firstBody)) fail(`the request contains ${pattern}`)
   if (expect.requests !== undefined && run.requests.length !== expect.requests) fail(`${run.requests.length} model requests, expected ${expect.requests}`)
   if (expect.usage) {
     for (const [key, value] of Object.entries(expect.usage)) if (run.json?.usage?.[key] !== value) fail(`usage.${key} is ${run.json?.usage?.[key]}, expected ${value}`)
@@ -293,8 +299,8 @@ async function runScenario(scenario, route, baseline) {
       else if (scenario.compare === 'same' && prefixOf(first) !== prefixOf(second)) report.problems.push(`the prefix changed between runs: ${firstDifference(first, second)}`)
       else if (scenario.compare === 'different' && prefixOf(first) === prefixOf(second)) report.problems.push('the prefix was expected to change between runs and did not')
     }
-    if (scenario.continues) {
-      const [before, after] = [results[0].requests.at(-1), results.at(-1).requests[0]]
+    for (let i = 1; scenario.continues && i < results.length; i++) {
+      const [before, after] = [results[i - 1].requests.at(-1), results[i].requests[0]]
       if (!before || !after) report.problems.push('a run made no model request')
       else {
         const at = before.history.findIndex((entry, n) => JSON.stringify(entry) !== JSON.stringify(after.history[n]))

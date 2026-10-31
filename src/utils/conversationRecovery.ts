@@ -267,11 +267,11 @@ export function deserializeMessagesWithInterruptDetection(
 
     // Append a synthetic assistant sentinel after the last user message so
     // the conversation is API-valid if no resume action is taken. Skip past
-    // trailing system/progress messages and insert right after the user
-    // message so removeInterruptedMessage's splice(idx, 2) removes the
+    // trailing system/progress/attachment messages and insert right after the
+    // user message so removeInterruptedMessage's splice(idx, 2) removes the
     // correct pair.
     const lastRelevantIdx = filteredMessages.findLastIndex(
-      m => m.type !== 'system' && m.type !== 'progress',
+      m => m.type !== 'system' && m.type !== 'progress' && m.type !== 'attachment',
     )
     if (
       lastRelevantIdx !== -1 &&
@@ -309,7 +309,9 @@ type InternalInterruptionState =
  *
  * System and progress messages are skipped when finding the last turn-relevant
  * message — they are bookkeeping artifacts that should not mask a genuine
- * interruption. Attachments are kept as part of the turn.
+ * interruption. Attachments are skipped too: they travel with a turn whether it
+ * finished or not, and a Stop hook can add one after the last answer, so the
+ * real message before them is what says how the turn ended.
  */
 function detectTurnInterruption(
   messages: NormalizedMessage[],
@@ -327,6 +329,7 @@ function detectTurnInterruption(
     m =>
       m.type !== 'system' &&
       m.type !== 'progress' &&
+      m.type !== 'attachment' &&
       !(m.type === 'assistant' && m.isApiErrorMessage),
   )
   const lastMessage =
@@ -363,12 +366,6 @@ function detectTurnInterruption(
     }
     // Plain text user prompt — CC hadn't started responding
     return { kind: 'interrupted_prompt', message: lastMessage }
-  }
-
-  if (lastMessage.type === 'attachment') {
-    // Attachments are part of the user turn — the user provided context but
-    // the assistant never responded.
-    return { kind: 'interrupted_turn' }
   }
 
   return { kind: 'none' }

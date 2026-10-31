@@ -20,6 +20,7 @@ globalThis.fetch = async function fetch(input, init) {
 
   const lines = JSON.parse(init.body).request.systemInstruction.parts.map(part => part.text).join('\n').split('\n')
   appendFileSync(process.env.TAU_TEST_FAKE_GOOGLE_RECORD, `${lines.find(line => line.startsWith('You are ')) ?? ''}\n`)
+  if (process.env.TAU_TEST_FAKE_GOOGLE_BODIES) appendFileSync(process.env.TAU_TEST_FAKE_GOOGLE_BODIES, `${init.body}\n`)
   if (lines.includes(refusedIdentity)) {
     return json({ error: { code: 429, message: 'Resource has been exhausted (e.g. check quota).', status: 'RESOURCE_EXHAUSTED' } }, 429)
   }

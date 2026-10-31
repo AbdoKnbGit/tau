@@ -92,6 +92,7 @@ export function offlineEnvironment(box, route, setup = {}) {
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_AUTOUPDATER: '1', TAU_SKIP_PREFLIGHT: '1',
     NODE_OPTIONS: `--import=${pathToFileURL(join(here, 'fake-model.mjs')).href}`,
     ...(isAnthropic && setup.key !== 'none' && { ANTHROPIC_API_KEY: FIXTURE_KEY }),
+    ...(route.provider === 'cloudflare' && { CLOUDFLARE_ACCOUNT_ID: 'lab-account', CLOUDFLARE_API_TOKEN: 'lab-fixture-cloudflare-token' }),
     ...setup.env,
   })
   return env
