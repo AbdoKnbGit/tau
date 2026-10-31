@@ -32,6 +32,10 @@ import {
 } from './model.js'
 import { has1mContext } from '../context.js'
 import { getGlobalConfig } from '../config.js'
+import {
+  antigravityPickerModelsForPlan,
+  getGeminiTier,
+} from '../../services/api/providers/gemini_code_assist.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -279,7 +283,33 @@ function getOpusPlanOption(): ModelOption {
 
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
+/**
+ * Antigravity routes only its own ids, so it lists the rows /models does, under
+ * the same plan rule. The generic lists hold Anthropic ids, which leave for the
+ * public Gemini API, and name models it does not run. A Claude login on this
+ * machine says nothing about Antigravity, so none of them apply, nor their
+ * subscriber wording for the default row.
+ */
+function getAntigravityOptions(): ModelOption[] {
+  return [
+    {
+      value: null,
+      label: 'Default (recommended)',
+      description: `Use the default model (currently ${renderDefaultModelSetting(getDefaultMainLoopModelSetting())})`,
+    },
+    ...antigravityPickerModelsForPlan(getGeminiTier('antigravity')).map(model => ({
+      value: model.id,
+      label: model.name,
+      description: model.tags?.includes('pro-ultra') ? `${model.id} · Pro/Ultra` : model.id,
+    })),
+  ]
+}
+
 function getModelOptionsBase(fastMode = false): ModelOption[] {
+  if (getAPIProvider() === 'antigravity') {
+    return getAntigravityOptions()
+  }
+
   if (process.env.USER_TYPE === 'ant') {
     // Build options from antModels config
     const antModelOptions: ModelOption[] = getAntModels().map(m => ({

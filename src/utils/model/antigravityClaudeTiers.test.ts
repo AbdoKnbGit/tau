@@ -133,12 +133,12 @@ test('/effort switches the level of a Claude 5.5 id and nothing else', () => {
   }
 })
 
-test('the picker offers each plan only the Claude models it can run', () => {
+test('every plan lists Claude 4.6, and only paid plans list Claude 5.5', () => {
   const ids = (tier: string | null) => antigravityPickerModelsForPlan(tier).map(m => m.id)
   for (const tier of ['g1-pro-tier', 'g1-ultra-tier']) {
     const paid = ids(tier)
     assert(LEVEL_IDS.every(id => paid.includes(id)), `${tier}: 5.5 rows missing`)
-    assert(!paid.includes('claude-sonnet-4-6') && !paid.includes('claude-opus-4-6-thinking'), `${tier}: 4.6 listed`)
+    assert(paid.includes('claude-sonnet-4-6') && paid.includes('claude-opus-4-6-thinking'), `${tier}: 4.6 missing`)
     assert(paid.includes('gemini-3.8-flash-high'), `${tier}: Gemini rows kept`)
   }
   const free = ids('free-tier')

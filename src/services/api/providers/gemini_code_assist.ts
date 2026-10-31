@@ -245,21 +245,16 @@ export const ANTIGRAVITY_PICKER_MODELS: readonly ModelInfo[] =
   ANTIGRAVITY_MODELS.filter(model => !isHiddenAntigravityPickerModel(model.id))
 
 /**
- * The picker's Claude rows for the account's plan. Paid Google AI Pro and
- * Ultra plans get Claude 5.5; their catalog no longer lists Claude 4.6. The
- * free plan gets Claude 4.6 only, since 5.5 answers it with 404. With the plan
- * still unknown (no project discovered yet) every row stays listed.
+ * The picker's rows for the account's plan. Every plan lists Claude 4.6. Only
+ * paid Google AI Pro and Ultra plans list Claude 5.5, which answers the free
+ * plan with 404. With the plan still unknown (no project discovered yet) every
+ * row stays listed.
  */
 export function antigravityPickerModelsForPlan(
   tier: string | null,
 ): readonly ModelInfo[] {
-  if (!tier) return ANTIGRAVITY_PICKER_MODELS
-  const paid = isPaidGeminiTier(tier)
-  return ANTIGRAVITY_PICKER_MODELS.filter(model => {
-    if (parseAntigravityClaudeTier(model.id)) return paid
-    if (model.id.includes('claude')) return !paid
-    return true
-  })
+  if (!tier || isPaidGeminiTier(tier)) return ANTIGRAVITY_PICKER_MODELS
+  return ANTIGRAVITY_PICKER_MODELS.filter(model => !parseAntigravityClaudeTier(model.id))
 }
 
 export const ANTIGRAVITY_MODEL_IDS = new Set([
