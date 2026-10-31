@@ -188,6 +188,9 @@ jobs:
       - name: Test hook process launching and failure isolation
         run: node --test test/hook-process-launch.test.mjs
 
+      - name: Test every file the steps above do not name
+        run: node test/run-unlisted-tests.mjs
+
       - name: Smoke test - version
         run: node dist/cli.mjs --version
 

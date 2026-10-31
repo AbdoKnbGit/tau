@@ -14,6 +14,7 @@ import { execFileSync } from 'node:child_process'
 import {
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readFileSync,
   rmSync,
   unlinkSync,
@@ -82,7 +83,8 @@ function conditionalFor(repoDir, target) {
 
 const created = []
 function repo(files) {
-  const dir = mkdtempSync(join(tmpdir(), 'tau-foreign-'))
+  // The real path: on macOS the temp folder sits behind a /var -> /private/var link, and the test cuts paths by length.
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'tau-foreign-')))
   mkdirSync(join(dir, '.git'), { recursive: true })
   mkdirSync(join(dir, '.cfg'), { recursive: true })
   for (const [name, content] of Object.entries(files)) {
@@ -265,7 +267,7 @@ test('foreign rules are project-scoped: a fake HOME copy is ignored', () => {
   // Every foreign source must resolve from the project walk only. A user's
   // ~/.cursor or ~/.clinerules is maintained for a different tool, and letting
   // it move tau's cached prompt prefix would be both surprising and expensive.
-  const home = mkdtempSync(join(tmpdir(), 'tau-fakehome-'))
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), 'tau-fakehome-')))
   for (const [p, c] of Object.entries({
     '.cursor/rules/home.mdc': '---\nalwaysApply: true\n---\nHOME-CURSOR\n',
     '.windsurf/rules/home.md': '---\ntrigger: always_on\n---\nHOME-WINDSURF\n',

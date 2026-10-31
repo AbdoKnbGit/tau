@@ -197,6 +197,11 @@ test('a batch file that starts tau in the background and leaves later does not s
   'ping -n 9 127.0.0.1 > nul',
 ])))
 
+test('a batch file that starts node.exe in the background and leaves later does not stop it', { skip: process.platform !== 'win32', timeout: 180_000 }, () => assertCarriesOn((run, output) => runBatch(run, [
+  `start "" /b "${process.execPath}" "${cli}" ${PRINT_ARGS.join(' ')} > "${output}" 2>&1`,
+  'ping -n 9 127.0.0.1 > nul',
+])))
+
 test('a batch file that starts node.exe in the background and leaves at once does not stop it', { skip: process.platform !== 'win32', timeout: 180_000 }, () => assertCarriesOn((run, output) => runBatch(run, [
   `start "" /b "${process.execPath}" "${cli}" ${PRINT_ARGS.join(' ')} > "${output}" 2>&1`,
 ])))

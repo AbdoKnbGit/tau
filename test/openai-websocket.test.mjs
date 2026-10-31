@@ -163,6 +163,29 @@ test('a spent plan over the socket fails on the first answer, says when it reset
   assert.ok(received.some(event => event.type === 'message_stop'), 'the turn still ends properly')
 })
 
+// The frames below are the ones in OpenAI's own client tests, codex-rs/codex-api/src/endpoint/responses_websocket.rs.
+test('the frame OpenAI\'s client tests use for a spent plan fails the same way', async () => {
+  seen.firstEvent = usageLimit({ plan_type: 'pro', resets_at: Math.floor(Date.now() / 1000) + 8040 })
+  seen.firstEvent.headers = { 'x-codex-primary-used-percent': '100.0', 'x-codex-primary-window-minutes': 15 }
+  const received = await sendAndCollect()
+  assert.equal(seen.socketRequests.length, 1)
+  const block = received.find(event => event.content_block?._tau_provider_failure === true)
+  assert.ok(block)
+  const text = received.filter(event => event.index === block.index && event.delta?.type === 'text_delta').map(event => event.delta.text).join('')
+  assert.match(text, /The usage limit has been reached\. Resets in 2h 1[34]m\./)
+})
+
+test('a spent plan with no message, which OpenAI\'s client allows, says what happened in words', async () => {
+  seen.firstEvent = { type: 'error', status: 429, error: { type: 'usage_limit_reached', plan_type: 'free', limit_window_minutes: 43200 } }
+  const received = await sendAndCollect()
+  assert.equal(seen.socketRequests.length, 1)
+  const block = received.find(event => event.content_block?._tau_provider_failure === true)
+  assert.ok(block)
+  const text = received.filter(event => event.index === block.index && event.delta?.type === 'text_delta').map(event => event.delta.text).join('')
+  assert.match(text, /usage limit reached/)
+  assert.doesNotMatch(text, /[{"]/, 'no raw JSON for a person to read')
+})
+
 test('the other code for a plan without this model is treated the same', async () => {
   seen.firstEvent = { type: 'error', status: 429, error: { type: 'usage_not_included', message: 'Your plan does not include this model' } }
   const received = await sendAndCollect()

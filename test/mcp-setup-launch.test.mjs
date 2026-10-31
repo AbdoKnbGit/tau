@@ -1,7 +1,7 @@
 // Run directly: node test/mcp-setup-launch.test.mjs (also used by CI).
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
@@ -11,7 +11,7 @@ process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
 process.env.DISABLE_TELEMETRY = '1'
 const r = await loadMcpRuntime({
   paths: ['src/services/mcp/config.ts', 'src/services/mcp/stdioLaunch.ts'],
-  exports: ['parseMcpConfig', 'resolveStdioLaunch', 'readNpmShim'],
+  exports: ['parseMcpConfig', 'resolveStdioLaunch'],
 })
 const fixture = resolve('test/fixtures/mcp-launch-server.mjs')
 let sequence = 0
@@ -19,7 +19,7 @@ const config = (extra = {}) => ({ type: 'stdio', command: process.execPath, args
 const clients = []
 test.after(async () => {
   await Promise.all(clients.map(c => c.cleanup()))
-  rmSync(root, { recursive: true, force: true })
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 })
 async function connect(server, name = `setup_${++sequence}`) {
   const client = await r.connectToServer(name, server)
@@ -90,7 +90,7 @@ test('Windows PATH/PATHEXT resolves a generic command shim with spaces', { skip:
   // twice because the endLocal/goto dispatch reparses the command.
   writeFileSync(join(bin, 'fixture-launch.cmd'), `@echo off\r\nsetlocal\r\nset "_prog=${process.execPath}"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "${fixture}" %*\r\n`)
   // The first group is short enough for cmd.exe. The last is too long for it on Windows 11 build 26300,
-  // which hangs on a line with 50 or more carets, so Tau has to start this shim's program without cmd.exe.
+  // which hangs on a line with 50 or more carets, so the line has to reach cmd.exe another way.
   const groups = [
     ['space here', '', 'quoted "value"'],
     ['space here', '', 'quoted "value"', 'a&b', 'literal|pipe', 'unicode-你好', 'trailing\\', 'nine', 'ten', '--eleven=12'],
@@ -111,23 +111,44 @@ test('Windows PATH/PATHEXT resolves a generic command shim with spaces', { skip:
   }
 })
 
-test('an npm shim is read for what it runs, and any other batch file is left alone', { skip: process.platform !== 'win32' }, () => {
-  const shimPath = 'C:\\project\\node_modules\\.bin\\server.cmd'
-  const npm = readFileSync(join(resolve('node_modules/.bin'), 'esbuild.cmd'), 'utf8')
-  const launch = r.readNpmShim(shimPath, npm)
-  assert.equal(launch.command, 'node')
-  assert.deepEqual(launch.args, ['C:\\project\\node_modules\\.bin\\..\\esbuild\\bin\\esbuild'])
-  assert.equal(r.readNpmShim(shimPath, '@echo off\r\nnode server.js %*\r\n'), null)
-  assert.equal(r.readNpmShim(shimPath, '@echo off\r\nset "_prog=node"\r\n"%_prog%" "%OTHER%\\x.js" %*\r\n'), null)
-  assert.equal(r.readNpmShim(shimPath, '@echo off\r\nset "_prog=C:\\missing\\node.exe"\r\n"%_prog%" "x.js" %*\r\n'), null)
+test('any other batch file takes as many arguments as it is given', { skip: process.platform !== 'win32' }, async () => {
+  const bin = join(root, 'plain tools')
+  mkdirSync(bin, { recursive: true })
+  // No npm shape to read here, and outside node_modules/.bin cross-spawn writes one caret, not three.
+  for (const name of ['fixture-plain.cmd', 'fixture-plain.bat']) {
+    writeFileSync(join(bin, name), `@"${process.execPath}" "${fixture}" %*\r\n`)
+  }
+  const many = Array.from({ length: 30 }, (_, i) => (i % 2 ? `with space ${i}` : `a&b|${i}`))
+  const env = { PATH: `${bin};${process.env.PATH}`, PATHEXT: '.COM;.EXE;.BAT;.CMD' }
+  for (const command of ['fixture-plain', join(bin, 'fixture-plain.cmd'), join(bin, 'fixture-plain.bat')]) {
+    for (const args of [['space here', 'a&b'], many]) {
+      const client = await connect(config({ command, args, env }))
+      assert.deepEqual((await inspect(client)).args, args)
+      await client.cleanup()
+    }
+  }
+})
+
+test('a line too long for cmd.exe reaches it through a variable that is emptied first', { skip: process.platform !== 'win32' }, () => {
+  const shim = join(root, 'plain tools', 'fixture-unit.cmd')
+  mkdirSync(join(root, 'plain tools'), { recursive: true })
+  writeFileSync(shim, '@echo off\r\n')
+  const env = { PATH: process.env.PATH, ComSpec: process.env.ComSpec }
+  const short = r.resolveStdioLaunch(shim, ['a'], env)
+  assert.deepEqual(short, { command: shim, args: ['a'], env })
+  const long = r.resolveStdioLaunch(shim, Array.from({ length: 30 }, () => 'a b'), env)
+  assert.match(long.command, /cmd\.exe$/i)
+  assert.deepEqual(long.args, ['/d', '/s', '/c', 'set', 'TAU_STDIO_LINE=&%TAU_STDIO_LINE%'])
+  assert.ok(long.env.TAU_STDIO_LINE.includes('fixture-unit'))
+  assert.equal(env.TAU_STDIO_LINE, undefined, 'the caller\'s env is not changed')
 })
 
 test('a short line, or a program that needs no cmd.exe, goes through unchanged', () => {
   const env = process.env
   const direct = r.resolveStdioLaunch(process.execPath, ['a', 'b'], env)
-  assert.deepEqual(direct, { command: process.execPath, args: ['a', 'b'] })
+  assert.deepEqual(direct, { command: process.execPath, args: ['a', 'b'], env })
   const missing = r.resolveStdioLaunch('tau-no-such-command', ['a'], env)
-  assert.deepEqual(missing, { command: 'tau-no-such-command', args: ['a'] })
+  assert.deepEqual(missing, { command: 'tau-no-such-command', args: ['a'], env })
 })
 
 test('POSIX executable scripts retain their interpreter and argv', { skip: process.platform === 'win32' }, async () => {

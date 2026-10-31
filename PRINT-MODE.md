@@ -81,7 +81,7 @@ The exit code is 0 when the run finished, even if a tool was refused, and 1 when
 
 A limit that will not lift soon, like a used-up plan or a cooldown of hours, fails at once and says so. A short one is retried, and each wait prints one line on stderr, so stdout stays only the answer. With `stream-json` the same wait is an `api_retry` line.
 
-To stop a run from a script, kill the process you started. On Windows that is often npm's `tau.cmd`, which does not pass the kill on, so the run looks for it and stops within a few seconds of it going.
+To stop a run from a script, kill the process you started. On Windows that is often npm's `tau.cmd`, which does not pass the kill on. A run whose output goes to a pipe looks for it and stops within a few seconds of it going. A run writing only to files or a console finishes on its own, because it cannot tell a kill from a batch file that left it running on purpose.
 
 ## Continue a conversation
 

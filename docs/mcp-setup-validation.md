@@ -130,9 +130,9 @@ carets, before it starts anything: `cmd /d /s /c "echo ^a^a^a..."` reproduces it
 no Tau, SDK or shim involved. `cross-spawn` writes 3 carets per quote and
 metacharacter for a shim in `node_modules/.bin`, so a server launched through one
 with about 8 or more arguments would time out on that build. Other Windows builds
-are not affected, which is why it never showed in CI. When a line is that long and
-the batch file is a plain npm shim, Tau starts the program the shim names directly,
-without `cmd.exe` (`src/services/mcp/stdioLaunch.ts`). Every shorter line, and any
-other batch file, goes through as before: a batch file Tau cannot read still hangs on
-that build. Do not replace failed launches with a blanket shell rewrite or claim this
-investigation proves arbitrary Windows shell quoting safe.
+are not affected, which is why it never showed in CI. When a line is that long, Tau
+gives it to `cmd.exe` through a variable, emptied before the server starts: the same
+line read that way does not hang, for any batch file
+(`src/services/mcp/stdioLaunch.ts`). Every shorter line goes through as before. Do not
+replace failed launches with a blanket shell rewrite or claim this investigation
+proves arbitrary Windows shell quoting safe.

@@ -181,16 +181,20 @@ function describeUsageLimit(body: string): string | null {
   } catch {
     return null
   }
-  if (typeof error?.message !== 'string') return null
+  // OpenAI's own client treats the message as optional, and the type then says what happened.
+  const message = typeof error?.message === 'string'
+    ? error.message
+    : typeof error?.type === 'string' ? error.type.replaceAll('_', ' ') : null
+  if (!message) return null
   const resetsInSeconds = typeof error.resets_in_seconds === 'number'
     ? error.resets_in_seconds
     : typeof error.resets_at === 'number'
       ? error.resets_at - Date.now() / 1000
       : 0
-  if (resetsInSeconds <= 0) return error.message
+  if (resetsInSeconds <= 0) return message
   const minutes = Math.ceil(resetsInSeconds / 60)
   const wait = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`
-  return `${error.message.replace(/\.$/, '')}. Resets in ${wait}.`
+  return `${message.replace(/\.$/, '')}. Resets in ${wait}.`
 }
 
 export class CodexApiError extends Error {
