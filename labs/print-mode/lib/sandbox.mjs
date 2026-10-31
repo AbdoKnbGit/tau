@@ -1,7 +1,7 @@
 // One throwaway folder per scenario. Offline runs also get their own home, settings and fake sign-ins, so
 // they can never read or change your real account. Real runs keep your real settings and only use a
 // throwaway working folder.
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -37,7 +37,8 @@ export function writeSampleProject(workspace) {
 }
 
 export function createSandbox() {
-  const root = mkdtempSync(join(tmpdir(), 'tau-lab-'))
+  // The long form: on Windows TEMP can be an 8.3 path, and Tau rightly asks before reading through one of those.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'tau-lab-')))
   const workspace = join(root, 'workspace')
   const outside = join(root, 'outside')
   writeSampleProject(workspace)

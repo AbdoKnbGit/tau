@@ -1072,6 +1072,10 @@ const LANE_CATALOG_MODEL_SETS: Record<string, TierModelSet> = {
   },
 }
 
+export function isLaneCatalogDefaultModel(provider: string, model: string): boolean {
+  return Object.values(LANE_CATALOG_MODEL_SETS[provider] ?? {}).includes(model)
+}
+
 /**
  * Resolves the effective model set for a third-party provider based on
  * the detected or configured tier.

@@ -118,6 +118,8 @@ if (bun) {
         // Bun counts a lone regional indicator with a selector as two cells,
         // which no real text contains; leave that quirk out.
         if (!pictograph.test(c) || regionalIndicator.test(c)) continue
+        // Reserved for future emoji: no character yet, so no agreed width and no real text.
+        if (!/\p{Assigned}/u.test(c)) continue
         for (const s of [c, c + cp(VS15), c + cp(VS16)]) {
           checked++
           const expected = bun.stringWidth(s, { ambiguousIsNarrow: true })

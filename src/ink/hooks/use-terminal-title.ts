@@ -23,7 +23,8 @@ export function useTerminalTitle(title: string | null): void {
     const clean = stripAnsi(title)
 
     if (process.platform === 'win32') {
-      process.title = clean
+      // Never empty: on a console with an empty title, Node 22 can crash as it starts.
+      if (clean) process.title = clean
     } else {
       writeRaw(osc(OSC.SET_TITLE_AND_ICON, clean))
     }

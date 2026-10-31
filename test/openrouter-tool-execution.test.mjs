@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, isAbsolute } from 'node:path'
 import { loadMcpRuntime, fixtureTool, executeBlock } from './helpers/mcp-built-runtime.mjs'
@@ -15,6 +15,10 @@ process.env.ENABLE_TOOL_SEARCH = 'true'
 process.env.TAU_NATIVE_LAZY_TOOLS = 'true'
 test.after(() => rmSync(testDirectory, { recursive: true, force: true }))
 
+// Two functions in the bundle are called listTasks, so take the one from the module this test is about.
+const builtTasksModule = readFileSync(process.env.TAU_MCP_TEST_BUNDLE ?? 'dist/tau.mjs', 'utf8').split('\n// src/utils/tasks.ts\n')[1]
+const listTasks = /\nasync function (listTasks\d*)\(/.exec(builtTasksModule)[1]
+
 const r = await loadMcpRuntime({
   paths: ['src/utils/api.ts', 'src/utils/toolSearchRequestFilter.ts',
     'src/tools/TaskCreateTool/TaskCreateTool.ts', 'src/tools/TaskUpdateTool/TaskUpdateTool.ts',
@@ -23,7 +27,7 @@ const r = await loadMcpRuntime({
     'src/services/api/providers/openrouter_provider.ts', 'src/lanes/shared/volatile_freeze.ts'],
   exports: ['toolToAPISchema', 'selectToolsForToolSearchRequest', 'TaskCreateTool', 'TaskUpdateTool',
     'FileWriteTool', 'FileEditTool', 'runWithForcedProvider', 'setSessionPowerMode',
-    'OpenRouterProvider', 'resetSessionVolatileFreeze', 'getTaskListId', 'getTask', 'listTasks', 'getTasksDir',
+    'OpenRouterProvider', 'resetSessionVolatileFreeze', 'getTaskListId', 'getTask', `listTasks: ${listTasks}`, 'getTasksDir',
     'getUsingYourToolsSection', 'normalizeMessagesForAPI'],
 })
 r.setSessionPowerMode('normal')

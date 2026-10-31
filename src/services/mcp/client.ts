@@ -12,6 +12,7 @@ import {
   type SSEClientTransportOptions,
 } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { resolveStdioLaunch } from './stdioLaunch.js'
 import {
   StreamableHTTPClientTransport,
   type StreamableHTTPClientTransportOptions,
@@ -1043,13 +1044,13 @@ export const connectToServer = memoize(
         const finalArgs = process.env.CLAUDE_CODE_SHELL_PREFIX
           ? [[serverRef.command, ...serverRef.args].join(' ')]
           : serverRef.args
+        const env = {
+          ...subprocessEnv(),
+          ...serverRef.env,
+        } as Record<string, string>
         transport = new StdioClientTransport({
-          command: finalCommand,
-          args: finalArgs,
-          env: {
-            ...subprocessEnv(),
-            ...serverRef.env,
-          } as Record<string, string>,
+          ...resolveStdioLaunch(finalCommand, finalArgs, env),
+          env,
           stderr: 'pipe', // prevents error output from the MCP server from printing to the UI
         })
       } else {

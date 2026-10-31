@@ -4,6 +4,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  realpathSync,
   rmSync,
   existsSync,
   symlinkSync,
@@ -15,7 +16,8 @@ import { execFileSync } from 'node:child_process'
 import { loadBuiltRuntime } from './helpers/ink-built-runtime.mjs'
 
 const original = process.cwd(),
-  root = mkdtempSync(join(tmpdir(), 'tau-mod-runtime-'))
+  // The real path, because the host reports real paths: TEMP can be an 8.3 short path on Windows.
+  root = realpathSync.native(mkdtempSync(join(tmpdir(), 'tau-mod-runtime-')))
 const project = join(root, 'project'),
   config = join(root, 'config'),
   managed = join(root, 'managed')

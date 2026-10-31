@@ -1,7 +1,7 @@
 // Run directly: node test/mcp-setup-launch.test.mjs (also used by CI).
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
@@ -10,8 +10,8 @@ const root = mkdtempSync(join(tmpdir(), 'tau-mcp-setup-'))
 process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
 process.env.DISABLE_TELEMETRY = '1'
 const r = await loadMcpRuntime({
-  paths: ['src/services/mcp/config.ts'],
-  exports: ['parseMcpConfig'],
+  paths: ['src/services/mcp/config.ts', 'src/services/mcp/stdioLaunch.ts'],
+  exports: ['parseMcpConfig', 'resolveStdioLaunch', 'readNpmShim'],
 })
 const fixture = resolve('test/fixtures/mcp-launch-server.mjs')
 let sequence = 0
@@ -89,16 +89,19 @@ test('Windows PATH/PATHEXT resolves a generic command shim with spaces', { skip:
   // Match npm's shim contract: cross-spawn deliberately escapes these shims
   // twice because the endLocal/goto dispatch reparses the command.
   writeFileSync(join(bin, 'fixture-launch.cmd'), `@echo off\r\nsetlocal\r\nset "_prog=${process.execPath}"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "${fixture}" %*\r\n`)
-  // cmd.exe on Windows 11 build 26300 hangs on any line with 50 or more carets,
-  // before it starts anything. The double escaping a shim needs writes 3 per
-  // quote and metacharacter, so each group stays under that and still mixes them.
+  // The first group is short enough for cmd.exe. The last is too long for it on Windows 11 build 26300,
+  // which hangs on a line with 50 or more carets, so Tau has to start this shim's program without cmd.exe.
   const groups = [
     ['space here', '', 'quoted "value"'],
-    ['quoted "value"', 'a&b', 'literal|pipe'],
-    ['a&b', 'unicode-你好', 'trailing\\'],
+    ['space here', '', 'quoted "value"', 'a&b', 'literal|pipe', 'unicode-你好', 'trailing\\', 'nine', 'ten', '--eleven=12'],
   ]
+  // What npm itself writes, with the program found relative to the shim.
+  copyFileSync(fixture, join(bin, '..', '..', 'fixture-server.mjs'))
+  writeFileSync(join(bin, 'fixture-npm.cmd'), ['@ECHO off', 'GOTO start', ':find_dp0', 'SET dp0=%~dp0', 'EXIT /b', ':start', 'SETLOCAL', 'CALL :find_dp0', '',
+    'IF EXIST "%dp0%\\node.exe" (', '  SET "_prog=%dp0%\\node.exe"', ') ELSE (', '  SET "_prog=node"', '  SET PATHEXT=%PATHEXT:;.JS;=;%', ')', '',
+    'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\..\\..\\fixture-server.mjs" %*', ''].join('\r\n'))
   const env = { PATH: `${bin};${process.env.PATH}`, PATHEXT: '.COM;.EXE;.BAT;.CMD' }
-  for (const command of ['fixture-launch', join(bin, 'fixture-launch.cmd')]) {
+  for (const command of ['fixture-launch', join(bin, 'fixture-launch.cmd'), 'fixture-npm', join(bin, 'fixture-npm.cmd')]) {
     for (const args of groups) {
       const client = await connect(config({ command, args, env }))
       const result = await inspect(client)
@@ -106,6 +109,25 @@ test('Windows PATH/PATHEXT resolves a generic command shim with spaces', { skip:
       await client.cleanup()
     }
   }
+})
+
+test('an npm shim is read for what it runs, and any other batch file is left alone', { skip: process.platform !== 'win32' }, () => {
+  const shimPath = 'C:\\project\\node_modules\\.bin\\server.cmd'
+  const npm = readFileSync(join(resolve('node_modules/.bin'), 'esbuild.cmd'), 'utf8')
+  const launch = r.readNpmShim(shimPath, npm)
+  assert.equal(launch.command, 'node')
+  assert.deepEqual(launch.args, ['C:\\project\\node_modules\\.bin\\..\\esbuild\\bin\\esbuild'])
+  assert.equal(r.readNpmShim(shimPath, '@echo off\r\nnode server.js %*\r\n'), null)
+  assert.equal(r.readNpmShim(shimPath, '@echo off\r\nset "_prog=node"\r\n"%_prog%" "%OTHER%\\x.js" %*\r\n'), null)
+  assert.equal(r.readNpmShim(shimPath, '@echo off\r\nset "_prog=C:\\missing\\node.exe"\r\n"%_prog%" "x.js" %*\r\n'), null)
+})
+
+test('a short line, or a program that needs no cmd.exe, goes through unchanged', () => {
+  const env = process.env
+  const direct = r.resolveStdioLaunch(process.execPath, ['a', 'b'], env)
+  assert.deepEqual(direct, { command: process.execPath, args: ['a', 'b'] })
+  const missing = r.resolveStdioLaunch('tau-no-such-command', ['a'], env)
+  assert.deepEqual(missing, { command: 'tau-no-such-command', args: ['a'] })
 })
 
 test('POSIX executable scripts retain their interpreter and argv', { skip: process.platform === 'win32' }, async () => {

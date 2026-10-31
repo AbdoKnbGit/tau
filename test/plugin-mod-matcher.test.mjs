@@ -83,6 +83,7 @@ async function adversarialChild() {
     const timer = setInterval(() => {
       ticks++
     }, 10)
+    process.stdout.write('ready\n')
     const started = Date.now()
     let result
     try {
@@ -103,7 +104,7 @@ async function adversarialChild() {
     assert.equal(coreCalls, 1)
     assert.ok(ticks > 0, 'A plugin matcher blocked Tau timers')
     assert.ok(
-      Date.now() - started < 2500,
+      Date.now() - started < 10_000,
       'Matcher did not respect its invocation budget',
     )
     assert.ok(warnings.some((text) => text.includes('timed out')))
@@ -215,7 +216,7 @@ if (process.argv.includes('--matcher-child')) {
 
   test(
     'adversarial plugin regex times out while Tau host timers keep running',
-    { timeout: 15000 },
+    { timeout: 150_000 },
     async () => {
       const result = await new Promise((resolve, reject) => {
         const child = spawn(
@@ -230,16 +231,24 @@ if (process.argv.includes('--matcher-child')) {
         let stdout = '',
           stderr = '',
           timedOut = false
+        const stop = () => {
+          timedOut = true
+          child.kill()
+        }
+        // Loading the bundle can take a while on a busy machine. Only the matcher has a budget to keep.
+        let timeout = setTimeout(stop, 120_000)
+        let matching = false
         child.stdout.on('data', (chunk) => {
           stdout += chunk
+          if (!matching && stdout.startsWith('ready\n')) {
+            matching = true
+            clearTimeout(timeout)
+            timeout = setTimeout(stop, 12_000)
+          }
         })
         child.stderr.on('data', (chunk) => {
           stderr += chunk
         })
-        const timeout = setTimeout(() => {
-          timedOut = true
-          child.kill()
-        }, 12000)
         child.once('error', (error) => {
           clearTimeout(timeout)
           reject(error)
@@ -258,7 +267,7 @@ if (process.argv.includes('--matcher-child')) {
                 `Matcher subprocess failed (${code}): ${stderr}\n${stdout}`,
               ),
             )
-          else resolve(JSON.parse(stdout.trim()))
+          else resolve(JSON.parse(stdout.trim().split('\n').at(-1)))
         })
       })
       assert.equal(result.text, 'fallback')

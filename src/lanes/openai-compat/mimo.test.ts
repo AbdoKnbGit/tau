@@ -183,7 +183,7 @@ test('an explicit medium still outranks the caller budget', () => {
 
 test('with no pick, the caller thinking budget applies', () => {
   assert(!hasExplicitMimoEffort('mimo-v2.5-pro'), 'nothing stored')
-  const body = shape('mimo-v2.5-pro', { isReasoning: true, reasoningEffort: 'low' })
+  const body = shape('mimo-v2.5-pro', { isReasoning: true, effortValue: 'low' })
   eq(body.reasoning_effort, 'low', 'budget fills in')
 })
 

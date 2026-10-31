@@ -44,6 +44,11 @@ try {
   unlinkSync(auditPath)
 }
 
+// The deadline timers here must not hold a real process open, so they do not count as work to wait for.
+// This process has no other work, and on Linux and macOS it would end in the middle of a wait.
+const keepAlive = setInterval(() => {}, 1000)
+test.after(() => clearInterval(keepAlive))
+
 let uid = 0
 const nextId = prefix => `${prefix}-${++uid}`
 

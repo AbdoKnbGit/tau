@@ -81,6 +81,8 @@ The exit code is 0 when the run finished, even if a tool was refused, and 1 when
 
 A limit that will not lift soon, like a used-up plan or a cooldown of hours, fails at once and says so. A short one is retried, and each wait prints one line on stderr, so stdout stays only the answer. With `stream-json` the same wait is an `api_retry` line.
 
+To stop a run from a script, kill the process you started. On Windows that is often npm's `tau.cmd`, which does not pass the kill on, so the run looks for it and stops within a few seconds of it going.
+
 ## Continue a conversation
 
 ```
@@ -107,7 +109,7 @@ If `ANTHROPIC_API_KEY` is set, `-p` uses that key rather than your subscription,
 
 | Flag | What it does |
 |---|---|
-| `--model <id>` | Use another model for this run |
+| `--model <id>` | Use another model for this run. With none chosen, a provider that no longer serves Tau's built-in default uses what it lists, a free model when there is one |
 | `--max-turns <n>` | Stop after n model turns |
 | `--append-system-prompt "Be brief."` | Add to the system prompt |
 | `--system-prompt "..."` | Replace the system prompt |

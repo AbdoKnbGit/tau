@@ -6,19 +6,21 @@
 //   then: node <outDir>/build-derived.mjs   (cwd = <repoDir>)
 import { mkdirSync, readFileSync, symlinkSync, existsSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const [repoDir, outDirArg] = process.argv.slice(2)
 if (!repoDir || !outDirArg) throw new Error('usage: derive-build.mjs <repoDir> <outDir>')
 const outDir = resolve(outDirArg)
 mkdirSync(outDir, { recursive: true })
 
-let src = readFileSync(join(repoDir, 'build.mjs'), 'utf8')
+let src = readFileSync(join(repoDir, 'build.mjs'), 'utf8').replaceAll('\r\n', '\n')
 const swap = (from, to) => {
   if (!src.includes(from)) throw new Error(`anchor not found: ${from}`)
   src = src.split(from).join(to)
 }
 const out = p => JSON.stringify(join(outDir, p).replaceAll('\\', '/'))
 
+swap(`'./build-shim.mjs'`, JSON.stringify(pathToFileURL(resolve(repoDir, 'build-shim.mjs')).href))
 swap(`resolve(process.cwd(), 'dist/shim.js')`, out('shim.js'))
 swap(`if (!existsSync('./dist')) {\n  mkdirSync('./dist')\n}`, `mkdirSync(${JSON.stringify(outDir.replaceAll('\\', '/'))}, { recursive: true })`)
 swap(`outfile: './dist/tau.mjs',`, `outfile: ${out('tau.mjs')},`)

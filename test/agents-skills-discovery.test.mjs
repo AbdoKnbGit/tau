@@ -99,8 +99,9 @@ function write(root, files) {
 
 /** A throwaway root with home/, config/ and a repo/ that has a .git folder. */
 function makeRoot(files = {}) {
-  // Real path: on macOS the temp folder sits behind a /var -> /private/var link.
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'tau-agents-skills-')))
+  // Real path: on macOS the temp folder sits behind a /var -> /private/var link, and on Windows it can be
+  // an 8.3 short path, which Tau rightly asks about before any edit.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'tau-agents-skills-')))
   created.push(root)
   for (const dir of ['home', 'config', join('repo', '.git')]) {
     mkdirSync(join(root, dir), { recursive: true })

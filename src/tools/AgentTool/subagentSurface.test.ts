@@ -105,7 +105,7 @@ test('`name` reaches the wire — it is not filtered as a swarm field', bundle =
 
 test('one-shot agent types are derived from the definitions', bundle => {
   present(bundle, 'oneShot: true', 'built-in one-shot agents must declare themselves')
-  present(bundle, 'oneShot) types.add(', 'the derivation must ship')
+  if (!/oneShot\) types\d*\.add\(/.test(bundle)) throw new Error('the derivation must ship')
   absent(
     bundle,
     'Set(["Explore","Plan"])',
@@ -132,10 +132,10 @@ test('per-spawn provider routing is validated, not gated on team mode', bundle =
 })
 
 test('the Agent tool prompt carries the parallel-work contract', bundle => {
-  present(bundle, 'Settle shared contracts up front', 'contract rule must ship')
+  present(bundle, 'Settle shared contracts yourself', 'contract rule must ship')
   present(bundle, 'Give each agent disjoint files', 'file-ownership rule must ship')
-  present(bundle, '**Target**', 'the Target/Change/Acceptance shape must ship')
-  present(bundle, '**Acceptance**', 'the Target/Change/Acceptance shape must ship')
+  present(bundle, '**Target:**', 'the Target/Change/Acceptance shape must ship')
+  present(bundle, '**Acceptance:**', 'the Target/Change/Acceptance shape must ship')
 })
 
 // Markdown backticks are re-escaped inside the bundle's own template
@@ -145,7 +145,7 @@ test('the Agent tool prompt tells the model to name and reuse its spawns', bundl
   present(bundle, '(one or two words, lowercase)', 'naming guidance must ship')
   present(
     bundle,
-    'Prefer continuing an existing agent over spawning a fresh one',
+    'For follow-ups, prefer',
     'continuation-over-respawn guidance must ship',
   )
 })

@@ -13,7 +13,7 @@ const write = (path, data) => {
   writeFileSync(path, typeof data === 'string' ? data : JSON.stringify(data))
 }
 
-test('real CLI helper rewrites and drops prompts, preserves cache prefixes and reports final streaming usage', { timeout: 100_000 }, async () => {
+test('real CLI helper rewrites and drops prompts, preserves cache prefixes and reports final streaming usage', { timeout: 400_000 }, async () => {
   const cli = resolve('dist/cli.mjs'), root = mkdtempSync(join(tmpdir(), 'tau-prompt-turn-cli-'))
   const project = join(root, 'workspace'), config = join(root, 'config'), plugin = join(root, 'plugin')
   mkdirSync(project)
@@ -70,7 +70,8 @@ export function register(on){
       '--dangerously-skip-permissions', '--max-turns', '3'], { cwd: project, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
     child.stdout.on('data', part => { stdout += part }); child.stderr.on('data', part => { stderr += part })
-    const timer = setTimeout(() => child.kill(), 30_000)
+    // Only guards against a hang: the CLI first loads the whole bundle, slow on a busy machine.
+    const timer = setTimeout(() => child.kill(), 120_000)
     try {
       const code = await new Promise((done, reject) => { child.once('error', reject); child.once('close', done) })
       return { code, stdout, stderr }

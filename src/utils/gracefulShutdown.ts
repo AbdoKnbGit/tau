@@ -124,7 +124,9 @@ function cleanupTerminalModes(): void {
     // title changes, don't clear their existing title on exit either.
     if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE)) {
       if (process.platform === 'win32') {
-        process.title = ''
+        // Never empty: on a console with an empty title, Node 22 can crash as it
+        // starts, which would hit whatever runs on this console next.
+        process.title = 'tau'
       } else {
         writeSync(1, CLEAR_TERMINAL_TITLE)
       }

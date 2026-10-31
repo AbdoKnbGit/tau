@@ -78,7 +78,7 @@ export function fixtureTool(overrides = {}) {
 export function fixtureContext(tools, overrides = {}) {
   return {
     abortController: new AbortController(),
-    options: { tools, mcpClients: [], isNonInteractiveSession: true, agentDefinitions: { activeAgents: [] } },
+    options: { tools, mcpClients: [], isNonInteractiveSession: true, agentDefinitions: { activeAgents: [] }, mainLoopModel: 'fixture-model' },
     messages: [],
     getAppState: () => ({ mcp: { clients: [], tools }, sessionHooks: new Map(),
       toolPermissionContext: { mode: 'default', alwaysAllowRules: {}, alwaysDenyRules: {}, alwaysAskRules: {} } }),

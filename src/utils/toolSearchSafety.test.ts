@@ -135,6 +135,8 @@ test('MCP catalog ignores server-controlled searchHint entirely', () => {
 })
 
 test('first-party two-turn shape requires ToolSearch and emits pure references', () => {
+  // The real normalizer below reads settings, which are closed outside the CLI's startup unless this is set.
+  process.env.NODE_ENV = 'test'
   const directCallHistory = [{
     type: 'assistant',
     message: {

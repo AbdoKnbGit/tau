@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import type { AnthropicStreamEvent } from '../../services/api/providers/base_provider.js'
 import { ProviderFailureError, isRetryableNetworkError } from '../../services/api/transport_error.js'
+import { isFallbackEligibleAPIErrorMessage } from '../../utils/fallback/detect.js'
 import { LaneBackedProvider } from '../provider-bridge.js'
 import type { Lane } from '../types.js'
 import { isProviderFailureBlock, providerFailureEvents } from './provider_failure.js'
@@ -62,5 +63,23 @@ assert.equal(answer.content[0]?.text, 'kiro API error 403: quoted by the model')
 const failure = new ProviderFailureError('kiro API error 500: fetch failed')
 assert.equal(failure.isRetryable, false)
 assert.equal(isRetryableNetworkError(failure), false)
+
+// A configured /fallback chain goes by the flag, on any provider, and never by the words alone.
+const failureMessage = (value: string, isApiErrorMessage = true) => ({
+  isApiErrorMessage,
+  error: 'unknown',
+  message: { content: [{ type: 'text', text: value }] },
+}) as never
+assert.equal(isFallbackEligibleAPIErrorMessage(failureMessage(
+  'Codex API error: OpenAI Responses API error 429: The usage limit has been reached. Resets in 2h 14m.',
+)), true)
+assert.equal(isFallbackEligibleAPIErrorMessage(failureMessage(
+  'glm API error 429: BigModel balance is insufficient or no resource package is available.',
+)), true)
+assert.equal(isFallbackEligibleAPIErrorMessage(failureMessage(
+  'Cursor rejected the request: named Claude models are not available on the free plan',
+)), true)
+assert.equal(isFallbackEligibleAPIErrorMessage(failureMessage('kiro API error 429: quota exceeded', false)), false,
+  'a reply that quotes an error is a reply')
 
 console.log('provider failure checks passed')

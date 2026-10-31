@@ -48,7 +48,7 @@ const events = id => [
 ]
 
 // One local server for both transports. `refuse` answers upgrades with 426.
-const seen = { connections: [], socketRequests: [], httpRequests: [], refuse: false, turnState: false }
+const seen = { connections: [], socketRequests: [], httpRequests: [], refuse: false, turnState: false, firstEvent: null, firstEventTimes: Infinity }
 const server = createServer((req, res) => {
   let raw = ''
   req.on('data', chunk => { raw += chunk })
@@ -70,6 +70,10 @@ server.on('upgrade', (req, socket, head) => {
     seen.connections.push(req.headers)
     ws.on('message', data => {
       seen.socketRequests.push(JSON.parse(data.toString()))
+      if (seen.firstEvent && seen.socketRequests.length <= seen.firstEventTimes) {
+        ws.send(JSON.stringify(seen.firstEvent))
+        return
+      }
       if (seen.turnState) ws.send(JSON.stringify({ type: 'response.metadata', headers: { 'x-codex-turn-state': 'routing-fixture' } }))
       for (const event of events(`resp-ws-${seen.socketRequests.length}`)) ws.send(JSON.stringify(event))
     })
@@ -97,10 +101,28 @@ test.beforeEach(() => {
   seen.httpRequests.length = 0
   seen.refuse = false
   seen.turnState = false
+  seen.firstEvent = null
+  seen.firstEventTimes = Infinity
   r.codexApi.clearChain()
   r.resetReadiness()
   r.installNativeLaneReadinessResolver(r.providerUsesNativeLane)
 })
+
+// What a ChatGPT plan answers once its usage is spent, as seen on a real account: this type and message.
+const usageLimit = fields => ({ type: 'error', status: 429, error: {
+  type: 'usage_limit_reached', message: 'The usage limit has been reached', ...fields,
+} })
+
+async function sendAndCollect(sessionId = 'conversation-fixture') {
+  const shim = r.createProviderShim('openai', 'repl_main_thread')
+  const response = await shim.beta.messages.create({
+    model: 'gpt-5.6-luna', messages: [{ role: 'user', content: 'hello' }],
+    system: 'Fixture instructions', tools: [], max_tokens: 64, sessionId, stream: true,
+  })
+  const received = []
+  for await (const event of response) received.push(event)
+  return received
+}
 
 async function send(sessionId = 'conversation-fixture', overrides = {}) {
   const shim = r.createProviderShim('openai', 'repl_main_thread')
@@ -126,6 +148,33 @@ test('a ChatGPT login streams every request of a conversation over one kept sock
   assert.equal(headers.authorization, 'Bearer oauth-fixture')
   assert.equal(headers.originator, 'codex_cli_rs')
   assert.equal(headers.session_id, 'conversation-fixture')
+})
+
+test('a spent plan over the socket fails on the first answer, says when it resets, and is marked as a failure', async () => {
+  seen.firstEvent = usageLimit({ resets_in_seconds: 8040 })
+  const started = Date.now()
+  const received = await sendAndCollect()
+  assert.equal(seen.socketRequests.length, 1, 'a limit that will not lift must not be asked again')
+  assert.ok(Date.now() - started < 5_000, 'no waiting')
+  const block = received.find(event => event.content_block?._tau_provider_failure === true)
+  assert.ok(block, 'the failure has to be told apart from the model\'s own text')
+  const text = received.filter(event => event.index === block.index && event.delta?.type === 'text_delta').map(event => event.delta.text).join('')
+  assert.match(text, /The usage limit has been reached\. Resets in 2h 14m\./)
+  assert.ok(received.some(event => event.type === 'message_stop'), 'the turn still ends properly')
+})
+
+test('the other code for a plan without this model is treated the same', async () => {
+  seen.firstEvent = { type: 'error', status: 429, error: { type: 'usage_not_included', message: 'Your plan does not include this model' } }
+  const received = await sendAndCollect()
+  assert.equal(seen.socketRequests.length, 1)
+  assert.ok(received.some(event => event.content_block?._tau_provider_failure === true))
+})
+
+test('a short rate limit over the socket is still retried', async () => {
+  seen.firstEvent = { type: 'error', status: 429, headers: { 'retry-after': '0.01' }, error: { type: 'rate_limit_exceeded', message: 'Slow down' } }
+  seen.firstEventTimes = 1
+  await send()
+  assert.equal(seen.socketRequests.length, 2, 'refused once, then answered')
 })
 
 test('the provider bridge carries turn identity without sending it as a request field', async () => {

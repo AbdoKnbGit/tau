@@ -83,7 +83,7 @@ test('exact plugin identities remain isolated when their legacy directory names 
 
 test(
   'simultaneous Tau processes keep every independent store update',
-  { timeout: 40_000 },
+  { timeout: 150_000 },
   async () => {
     const childPath = join(root, 'writer.mjs')
     writeFileSync(
@@ -107,10 +107,11 @@ process.disconnect();`,
         stderr += data
       })
       const done = new Promise((resolveResult, reject) => {
+        // Only guards against a hang: each writer first loads the whole bundle, slow on a busy machine.
         const timeout = setTimeout(() => {
           child.kill()
           reject(new Error('Store writer timed out'))
-        }, 30_000)
+        }, 120_000)
         child.once('error', (error) => {
           clearTimeout(timeout)
           reject(error)

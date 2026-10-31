@@ -43,6 +43,7 @@ import { decideImageSupport, prepareImageSupport } from './shared/vision_capabil
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { createRetryableConnectionError, ProviderFailureError } from '../services/api/transport_error.js'
 import { isProviderFailureBlock } from './shared/provider_failure.js'
+import { servedDefaultModel } from './shared/served_default.js'
 import { isAntigravityModelId, isAntigravityGeminiModel } from '../services/api/providers/gemini_code_assist.js'
 import { getProviderSetupWindow, ProviderSetupTimeoutError } from '../services/api/providerRetryBudget.js'
 
@@ -232,7 +233,7 @@ export class LaneBackedProvider implements BaseProvider {
       )
     }
 
-    const resolvedModel = lane.resolveModel(params.model)
+    const resolvedModel = await servedDefaultModel(lane, providerHint, lane.resolveModel(params.model))
     const explicitSessionId =
       typeof params.sessionId === 'string' && params.sessionId.trim().length > 0
         ? params.sessionId
@@ -392,7 +393,7 @@ export class LaneBackedProvider implements BaseProvider {
   async create(params: ProviderRequestParams): Promise<AnthropicMessage> {
     // Non-streaming path: drain the stream and build the final message.
     const streamResult = await this.stream({ ...params, stream: false })
-    return assembleFinalMessage(streamResult, this.lane.resolveModel(params.model))
+    return assembleFinalMessage(streamResult, await servedDefaultModel(this.lane, this.providerHint, this.lane.resolveModel(params.model)))
   }
 
   async listModels(): Promise<ModelInfo[]> {

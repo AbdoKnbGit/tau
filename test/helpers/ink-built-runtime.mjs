@@ -96,6 +96,9 @@ export async function mount(runtime, element, { columns = 80, rows = 24 } = {}) 
     reconciler.flushSyncWork()
     await new Promise(setImmediate)
     reconciler.flushSyncWork()
+    // Key handlers attach in effects, so without this a row can be on screen while a key sent to it does
+    // nothing yet. Bounded, because an effect can start another render.
+    for (let i = 0; i < 10 && reconciler.flushPassiveEffects(); i++) reconciler.flushSyncWork()
     assert.deepEqual(errors, [], 'rendering must not throw')
   }
 

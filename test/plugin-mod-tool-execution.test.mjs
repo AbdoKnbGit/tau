@@ -36,6 +36,10 @@ Object.assign(process.env, {
   ),
 })
 process.chdir(project)
+// A waiting mod's worker must not hold a real process open, so it does not count as work to wait for.
+// This process has no other work, and on Linux and macOS it would end in the middle of a wait.
+const keepAlive = setInterval(() => {}, 1000)
+after(() => clearInterval(keepAlive))
 const r = await loadMcpRuntime({
   paths: [
     'src/utils/plugins/mods/manager.ts',

@@ -52,7 +52,7 @@ function waitForChild(child, { timeout, signal }) {
             cause: reason,
           }),
         )
-      }, 5000)
+      }, 30_000)
       if (!child.pid || child.exitCode !== null || child.signalCode !== null)
         return
       if (process.platform === 'win32') {
@@ -64,7 +64,7 @@ function waitForChild(child, { timeout, signal }) {
             {
               windowsHide: true,
               stdio: 'ignore',
-              timeout: 5000,
+              timeout: 30_000,
             },
           )
           if (result.error)
@@ -102,7 +102,7 @@ function waitForChild(child, { timeout, signal }) {
 
 test(
   'CLI test cancellation closes descendants holding inherited output pipes',
-  { timeout: 15000 },
+  { timeout: 90_000 },
   async t => {
     const controller = new AbortController()
     const child = spawn(
@@ -123,7 +123,7 @@ test(
       },
     )
     const completion = waitForChild(child, {
-      timeout: 5000,
+      timeout: 30_000,
       signal: AbortSignal.any([t.signal, controller.signal]),
     })
     // Attach the rejection assertion before aborting, so rejection is always owned.

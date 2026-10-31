@@ -4,19 +4,22 @@
  * Run: bun run src/utils/modelPricingCatalog.test.ts
  */
 
+import { mock } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
+import * as os from 'os'
 import { join } from 'path'
 import type { CatalogTable } from './modelPricingCatalog.js'
 
 // The table lives under <home>/.config/claude-code, and a refresh re-reads it
 // from there when the copy in memory is outdated. Point home at an empty
 // directory so this machine's own table cannot decide these results; set
-// before the module resolves the path.
-const home = mkdtempSync(join(tmpdir(), 'tau-model-prices-'))
+// before the module resolves the path. Bun's homedir() on Linux and macOS does
+// not follow a HOME changed from inside the script, so it is replaced as well.
+const home = mkdtempSync(join(os.tmpdir(), 'tau-model-prices-'))
 const previousHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
 process.env.HOME = home
 process.env.USERPROFILE = home
+mock.module('os', () => ({ ...os, homedir: () => home }))
 
 const {
   deriveTable,

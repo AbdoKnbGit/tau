@@ -85,8 +85,8 @@ async function main(): Promise<void> {
   test('openai-compat supports deepseek-chat', () => {
     assert(openaiCompatLane.supportsModel('deepseek-chat'), 'deepseek-chat not supported')
   })
-  test('openai-compat supports qwen3-coder-plus', () => {
-    assert(openaiCompatLane.supportsModel('qwen3-coder-plus'), 'qwen3-coder-plus not supported')
+  test('openai-compat does NOT claim qwen-* on its own', () => {
+    assert(!openaiCompatLane.supportsModel('qwen3-coder-plus'), 'qwen ids belong to the Qwen lane unless a provider routes them')
   })
   test('openai-compat does NOT claim claude-*', () => {
     assert(!openaiCompatLane.supportsModel('claude-opus-4-6'), 'compat lane should not claim claude models')

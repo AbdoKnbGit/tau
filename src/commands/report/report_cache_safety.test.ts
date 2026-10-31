@@ -65,6 +65,9 @@ const BIG_PROMPT_CHARS = 120_000
 async function main(): Promise<void> {
   console.log('report cache safety:')
 
+  // Off by default. What a report must not disturb only exists with it on.
+  process.env.TAU_ANTIGRAVITY_NO_PACING = '0'
+
   // ── 1. Prefix padding ──────────────────────────────────────────
   //
   // The pad exists to lift a small prompt over the implicit-cache minimum.

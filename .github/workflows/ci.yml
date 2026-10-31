@@ -169,7 +169,7 @@ jobs:
         run: node --test test/plugin-runtime-boundaries.test.mjs test/plugin-local-loading.test.mjs test/plugin-dependency-versions.test.mjs test/plugin-skill-compatibility.test.mjs test/plugin-reload-skills.test.mjs test/hook-engine-compatibility.test.mjs test/headless-hook-resume.test.mjs
 
       - name: Test MCPB bundles, provider SDKs, sign-in, tool schemas, proxy and CA fetch, telemetry exporters, and optional integrations
-        run: node --test test/plugin-mcpb-loading.test.mjs test/plugin-mcpb-cli.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/print-mode-requests.test.mjs test/provider-failure.test.mjs test/resume-prompt-cache.test.mjs test/tool-schema-spelling.test.mjs test/undici-dispatcher-fetch.test.mjs test/telemetry-otlp-exporters.test.mjs test/optional-integrations.test.mjs
+        run: node --test test/plugin-mcpb-loading.test.mjs test/plugin-mcpb-cli.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/print-mode-requests.test.mjs test/provider-failure.test.mjs test/print-killed-wrapper.test.mjs test/console-title.test.mjs test/openrouter-tool-execution.test.mjs test/resume-prompt-cache.test.mjs test/tool-schema-spelling.test.mjs test/undici-dispatcher-fetch.test.mjs test/telemetry-otlp-exporters.test.mjs test/optional-integrations.test.mjs
 
       - name: Test skill prompt mods and real CLI requests
         # Exercise the built CLI and real mod workers on every OS in the matrix.
@@ -519,12 +519,17 @@ jobs:
           bun run src/lanes/codex/stream_retry.test.ts
           bun run src/lanes/codex/tool_schema_backstop.test.ts
           bun run src/lanes/shared/provider_failure.test.ts
+          bun run src/lanes/shared/served_default.test.ts
           bun run src/services/api/transport_error.test.ts
           bun run src/services/api/withRetry_provider_budget.test.ts
-          bun run src/utils/fallback/detect.test.ts
           bun run src/utils/model/providerDefaults.test.ts
           bun run src/tools/EvalTool/bridge.test.ts
           bun run src/tools/EvalTool/registry.test.ts
           bun run src/utils/midTurnNotifications.test.ts
       - run: npm run build:bun
       - run: node dist/cli.mjs --version
+      # A few of these read the bundle, so they get the one that ships.
+      - name: Test every source unit test
+        run: |
+          npm run build
+          node test/run-source-tests.mjs

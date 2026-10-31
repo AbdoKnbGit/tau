@@ -49,7 +49,9 @@ async function assertLiveModelCatalogBypassesCache(
   const oldFetch = globalThis.fetch
   let calls = 0
   try {
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      // A home with no saved catalog also asks models.dev once. Only the provider's own list counts here.
+      if (!String(input instanceof Request ? input.url : input).startsWith(baseUrl)) return new Response('{}', { status: 200 })
       const id = ids[Math.min(calls, ids.length - 1)]
       calls += 1
       return new Response(JSON.stringify({

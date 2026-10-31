@@ -337,6 +337,7 @@ test('guidance compression stays within its budget without charging schemas', as
   // Small headroom for platform and attribution variants. Before: ~8,207.
   // A first pass reached 4,955 by dropping 35 of the 193 covered points;
   // restoring them, plus two git rules 076bb45f dropped, costs ~5,847
-  // (Windows rendering).
-  assert.ok(tokens <= 5_950, `${tokens} estimated prompt tokens exceeds 5,950`)
+  // (Windows rendering). Linux and macOS render ~6,160.
+  const budget = process.platform === 'win32' ? 5_950 : 6_250
+  assert.ok(tokens <= budget, `${tokens} estimated prompt tokens exceeds ${budget}`)
 })

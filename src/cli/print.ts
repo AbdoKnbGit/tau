@@ -204,6 +204,7 @@ import { installOAuthTokens } from 'src/cli/handlers/auth.js'
 import { getAPIProvider, PROVIDER_DISPLAY_NAMES } from 'src/utils/model/providers.js'
 import { categorizeRetryableAPIError } from 'src/services/api/errors.js'
 import { setProviderRetryListener } from 'src/services/api/providerRetryBudget.js'
+import { watchForKilledWrapper } from 'src/utils/wrapperWatch.js'
 import type { HookCallbackMatcher } from 'src/types/hooks.js'
 import { AwsAuthStatusManager } from 'src/utils/awsAuthStatusManager.js'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
@@ -878,6 +879,7 @@ export async function runHeadless(
 
   // Install errors handlers to gracefully handle broken pipes (e.g., when parent process dies)
   registerProcessOutputErrorHandlers()
+  watchForKilledWrapper(() => void gracefulShutdown(143))
 
   headlessProfilerCheckpoint('after_loadInitialMessages')
 

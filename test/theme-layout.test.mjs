@@ -19,6 +19,8 @@ await build({
   packages: 'external',
   platform: 'node',
   format: 'esm',
+  // What build.mjs targets: the source uses `using`, which Node 20 and 22 cannot parse as written.
+  target: 'node20',
   define: { 'process.env.NODE_ENV': '"test"', 'process.env.USER_TYPE': '"external"' },
   external: ['../../utils/systemThemeWatcher.js'],
   plugins: [{
