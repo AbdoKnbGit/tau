@@ -3,17 +3,21 @@ import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import figures from 'figures';
 import * as React from 'react';
 import { COMMAND_MESSAGE_TAG } from '../../constants/xml.js';
-import { Box, Text } from '../../ink.js';
+import { Text } from '../../ink.js';
 import { extractTag } from '../../utils/messages.js';
+import { getFoldedCommandArgs } from '../../utils/pastedPromptDisplay.js';
+import { PROMPT_FRAME_COLOR, UserPromptFrame } from './UserPromptFrame.js';
 type Props = {
   addMargin: boolean;
   param: TextBlockParam;
+  foldedText?: string;
 };
 export function UserCommandMessage(t0) {
   const $ = _c(19);
   const {
     addMargin,
-    param: t1
+    param: t1,
+    foldedText
   } = t0;
   const {
     text
@@ -35,16 +39,16 @@ export function UserCommandMessage(t0) {
   } else {
     t3 = $[3];
   }
-  const args = t3;
+  const args = getFoldedCommandArgs(foldedText) ?? t3;
   const isSkillFormat = extractTag(text, "skill-format") === "true";
   if (!commandMessage) {
     return null;
   }
   if (isSkillFormat) {
-    const t4 = addMargin ? 1 : 0;
+    const t4 = addMargin;
     let t5;
     if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
-      t5 = <Text color="subtle">{figures.pointer} </Text>;
+      t5 = <Text color={PROMPT_FRAME_COLOR}>{figures.pointer} </Text>;
       $[4] = t5;
     } else {
       t5 = $[4];
@@ -59,7 +63,7 @@ export function UserCommandMessage(t0) {
     }
     let t7;
     if ($[7] !== t4 || $[8] !== t6) {
-      t7 = <Box flexDirection="column" marginTop={t4} backgroundColor="userMessageBackground" paddingRight={1}>{t6}</Box>;
+      t7 = <UserPromptFrame addMargin={t4} plainBackgroundColor="userMessageBackground">{t6}</UserPromptFrame>;
       $[7] = t4;
       $[8] = t6;
       $[9] = t7;
@@ -78,10 +82,10 @@ export function UserCommandMessage(t0) {
     t4 = $[12];
   }
   const content = `/${t4.join(" ")}`;
-  const t5 = addMargin ? 1 : 0;
+  const t5 = addMargin;
   let t6;
   if ($[13] === Symbol.for("react.memo_cache_sentinel")) {
-    t6 = <Text color="subtle">{figures.pointer} </Text>;
+    t6 = <Text color={PROMPT_FRAME_COLOR}>{figures.pointer} </Text>;
     $[13] = t6;
   } else {
     t6 = $[13];
@@ -96,7 +100,7 @@ export function UserCommandMessage(t0) {
   }
   let t8;
   if ($[16] !== t5 || $[17] !== t7) {
-    t8 = <Box flexDirection="column" marginTop={t5} backgroundColor="userMessageBackground" paddingRight={1}>{t7}</Box>;
+    t8 = <UserPromptFrame addMargin={t5} plainBackgroundColor="userMessageBackground">{t7}</UserPromptFrame>;
     $[16] = t5;
     $[17] = t7;
     $[18] = t8;

@@ -247,7 +247,7 @@ export function AttachmentMessage({
           <UserTextMessage addMargin={addMargin} param={{
             text,
             type: 'text'
-          }} verbose={verbose} isTranscriptMode={isTranscriptMode} />
+          }} verbose={verbose} isTranscriptMode={isTranscriptMode} pastedDisplayText={attachment.pastedDisplayText} />
           {hasImages && attachment.imagePasteIds?.map(id => <UserImageMessage key={id} imageId={id} />)}
         </Box>;
       }

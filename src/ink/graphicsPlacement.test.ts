@@ -280,6 +280,116 @@ test('main-screen placements use logical viewport coordinates', () => {
   assert(offscreen.includes('XXXXXXXX'), 'and erases its old visible pixels')
 })
 
+// --- Fullscreen clipping ------------------------------------------------------
+
+/** A graphic inside a scroll box whose visible rows are clipY..clipY+clipRows. */
+function placeInScrollBox(id: string, y: number, clipY: number, clipRows: number) {
+  const scrollBox = { style: { overflowY: 'scroll' }, parentNode: undefined } as unknown as DOMElement
+  nodeCache.set(scrollBox, { x: 0, y: clipY, width: 60, height: clipRows })
+  const node = place(id, 4, y)
+  node.parentNode = scrollBox
+  return { node, scrollBox }
+}
+
+test('fullscreen: an image cut by its scroll box stays off the footer', () => {
+  // Rows 0-19 scroll and the footer starts at 20. An image reaching past row 20 is
+  // still inside the terminal window, so only the scroll box can say it does not fit.
+  reset()
+  const { screen, stylePool } = makeScreen('X')
+  const { node } = placeInScrollBox('a', 18, 0, 20)
+  assert(!build(screen, stylePool).includes(PAYLOAD), 'withheld while it would cover the footer')
+
+  nodeCache.set(node, { x: 4, y: 16, width: 8, height: 4 })
+  assert(build(screen, stylePool).includes(PAYLOAD), 'drawn once it fits exactly')
+
+  // Scrolling it back across the edge takes the pixels down.
+  nodeCache.set(node, { x: 4, y: 17, width: 8, height: 4 })
+  const out = build(screen, stylePool)
+  assert(!out.includes(PAYLOAD), 'withheld again')
+  assert(out.includes('XXXXXXXX'), 'and the cells under it are repainted')
+})
+
+test('fullscreen: an image cut at the top of its scroll box is withheld too', () => {
+  reset()
+  const { screen, stylePool } = makeScreen('X')
+  const { node } = placeInScrollBox('a', 1, 2, 20)
+  assert(!build(screen, stylePool).includes(PAYLOAD), 'row above the box belongs to the header')
+  nodeCache.set(node, { x: 4, y: 2, width: 8, height: 4 })
+  assert(build(screen, stylePool).includes(PAYLOAD), 'drawn when whole')
+})
+
+test('fullscreen: a scroll never shrinks an image', () => {
+  // Reporting a row limit here would leave it smaller after scrolling back.
+  reset()
+  const { screen, stylePool } = makeScreen('X')
+  placeInScrollBox('a', 18, 0, 20)
+  build(screen, stylePool)
+  assertEqual(getPlacementRowLimit('a'), undefined, 'no limit from a passing clip')
+})
+
+test('fullscreen: a floating box keeps its rows until it goes away', () => {
+  reset()
+  const { screen, stylePool } = makeScreen('X')
+  place('a', 4, 6)
+  const pill = { x: 2, y: 8, width: 30, height: 1 }
+  const withOverlay = (overlays: { x: number; y: number; width: number; height: number }[]) =>
+    buildGraphicsSequence({
+      cursor: { x: 0, y: 0 },
+      viewportTop: 0,
+      viewportRows: 40,
+      viewportColumns: 60,
+      damage: undefined,
+      cell: CELL,
+      screen,
+      stylePool,
+      overlays,
+    })
+  assert(!withOverlay([pill]).includes(PAYLOAD), 'withheld under the pill')
+  assert(withOverlay([]).includes(PAYLOAD), 'drawn when the pill leaves')
+  const out = withOverlay([{ x: 30, y: 8, width: 10, height: 1 }])
+  assert(!out.includes(PAYLOAD), 'no re-send for an overlay beside it')
+  assert(!out.includes('XXXXXXXX'), 'and no erase either')
+})
+
+test('fullscreen: an image inside a floating box is not hidden by that box', () => {
+  reset()
+  const { screen, stylePool } = makeScreen('X')
+  const floating = { style: { position: 'absolute' }, parentNode: undefined } as unknown as DOMElement
+  const node = place('a', 4, 6)
+  node.parentNode = floating
+  const out = buildGraphicsSequence({
+    cursor: { x: 0, y: 0 },
+    viewportTop: 0,
+    viewportRows: 40,
+    viewportColumns: 60,
+    damage: undefined,
+    cell: CELL,
+    screen,
+    stylePool,
+    overlays: [{ x: 0, y: 0, width: 60, height: 20 }],
+  })
+  assert(out.includes(PAYLOAD), 'drawn in its own overlay')
+})
+
+test('main screen ignores clips and overlays: nothing there changes', () => {
+  reset()
+  const { screen, stylePool } = makeScreen('X')
+  placeInScrollBox('a', 18, 0, 20)
+  const out = buildGraphicsSequence({
+    cursor: { x: 0, y: 30 },
+    viewportTop: 0,
+    viewportRows: 40,
+    viewportColumns: 60,
+    damage: undefined,
+    cell: CELL,
+    screen,
+    stylePool,
+    scrollback: true,
+    overlays: [{ x: 0, y: 18, width: 60, height: 1 }],
+  })
+  assert(out.includes(PAYLOAD), 'drawn as before')
+})
+
 test('a box smaller than the encode withholds the draw', () => {
   // A fixed-size payload in a shrunken box spills pixels outside the rectangle
   // every erase is computed from — an unclearable ghost. Withhold instead.

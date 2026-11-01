@@ -1125,8 +1125,21 @@ function layoutNode(
           sameFloat(cIn[o + 4]!, ownerWidth) &&
           sameFloat(cIn[o + 5]!, ownerHeight)
         ) {
-          layout.width = node._cOut![i * 2]!
-          layout.height = node._cOut![i * 2 + 1]!
+          const cachedWidth = node._cOut![i * 2]!
+          const cachedHeight = node._cOut![i * 2 + 1]!
+          // Measuring writes entries too, and a hit returns before the children
+          // are placed, so a layout call can only reuse a size its children were
+          // last placed for. After a resize the measure pass has just cached the
+          // new width: taking that here left a diagram on top of text that now
+          // wraps to more rows.
+          if (
+            performLayout &&
+            (cachedWidth !== node._lOutW || cachedHeight !== node._lOutH)
+          ) {
+            break
+          }
+          layout.width = cachedWidth
+          layout.height = cachedHeight
           _yogaCacheHits++
           return
         }

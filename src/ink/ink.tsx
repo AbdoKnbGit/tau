@@ -27,7 +27,7 @@ import { optimize } from './optimizer.js';
 import Output from './output.js';
 import type { ParsedKey } from './parse-keypress.js';
 import reconciler, { dispatcher, getLastCommitMs, getLastYogaMs, isDebugRepaintsEnabled, recordYogaMs, resetProfileCounters } from './reconciler.js';
-import renderNodeToOutput, { consumeFollowScroll, didLayoutShift } from './render-node-to-output.js';
+import renderNodeToOutput, { consumeFollowScroll, didLayoutShift, getFrameAbsoluteRects } from './render-node-to-output.js';
 import { isNoColorRequested } from './no-color.js';
 import { applyPositionedHighlight, type MatchPosition, scanPositions } from './render-to-screen.js';
 import createRenderer, { type Renderer } from './renderer.js';
@@ -747,6 +747,7 @@ export default class Ink {
         damage: frame.screen.damage,
         cell: getCellPixelSize(),
         scrollback: !this.altScreenActive,
+        overlays: getFrameAbsoluteRects(),
         // Erasing a moved graphic means rewriting the cells it used to cover,
         // read from the frame that is being written right now.
         screen: frame.screen,

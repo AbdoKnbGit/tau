@@ -7,6 +7,7 @@ describe('native syntax highlighting', () => {
     expect(getNativeHighlightStyle('dark')).toBe('github-dark')
     expect(getNativeHighlightStyle('catppuccin-macchiato')).toBeNull()
     expect(getNativeHighlightStyle('light')).toBeNull()
+    expect(getNativeHighlightStyle('lucent-orng')).toBeNull()
   })
 
   test('trims trailing blanks, including blanks wrapped in escape codes', () => {

@@ -42,7 +42,7 @@ await build({
   }],
 })
 const { createSession, getTheme } = await import(pathToFileURL(join(outputDirectory, 'fixture.mjs')).href)
-const themes = ['dark', 'catppuccin-macchiato', 'light']
+const themes = ['dark', 'catppuccin-macchiato', 'light', 'lucent-orng']
 
 test('theme canvases retain natural short transcript and picker heights', () => {
   for (const theme of themes) {

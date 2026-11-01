@@ -2372,6 +2372,12 @@ function getInitialPasteId(messages: Message[]): number {
           if (id > maxId) maxId = id;
         }
       }
+      // A folded prompt keeps its references beside the content, which has the full text.
+      if (message.pastedDisplayText) {
+        for (const ref of parseReferences(message.pastedDisplayText)) {
+          if (ref.id > maxId) maxId = ref.id;
+        }
+      }
       // Check text paste references in message content
       if (Array.isArray(message.message.content)) {
         for (const block of message.message.content) {

@@ -15,6 +15,7 @@ import { UserCommandMessage } from './UserCommandMessage.js';
 import { UserLocalCommandOutputMessage } from './UserLocalCommandOutputMessage.js';
 import { UserMemoryInputMessage } from './UserMemoryInputMessage.js';
 import { UserPlanMessage } from './UserPlanMessage.js';
+import { useFoldedPrompt } from './UserPromptFrame.js';
 import { UserPromptMessage } from './UserPromptMessage.js';
 import { UserResourceUpdateMessage } from './UserResourceUpdateMessage.js';
 import { UserTeammateMessage } from './UserTeammateMessage.js';
@@ -25,17 +26,21 @@ type Props = {
   planContent?: string;
   isTranscriptMode?: boolean;
   timestamp?: string;
+  /** The prompt as the prompt bar showed it, for display only. See pastedPromptDisplay.ts. */
+  pastedDisplayText?: string;
 };
 export function UserTextMessage(t0) {
-  const $ = _c(49);
+  const $ = _c(51);
   const {
     addMargin,
     param,
     verbose,
     planContent,
     isTranscriptMode,
-    timestamp
+    timestamp,
+    pastedDisplayText
   } = t0;
+  const foldedText = useFoldedPrompt(pastedDisplayText, isTranscriptMode);
   if (param.text.trim() === NO_CONTENT_MESSAGE) {
     return null;
   }
@@ -128,10 +133,11 @@ export function UserTextMessage(t0) {
   }
   if (param.text.includes(`<${COMMAND_MESSAGE_TAG}>`)) {
     let t1;
-    if ($[16] !== addMargin || $[17] !== param) {
-      t1 = <UserCommandMessage addMargin={addMargin} param={param} />;
+    if ($[16] !== addMargin || $[17] !== param || $[50] !== foldedText) {
+      t1 = <UserCommandMessage addMargin={addMargin} param={param} foldedText={foldedText} />;
       $[16] = addMargin;
       $[17] = param;
+      $[50] = foldedText;
       $[18] = t1;
     } else {
       t1 = $[18];
@@ -260,12 +266,13 @@ export function UserTextMessage(t0) {
     }
   }
   let t1;
-  if ($[44] !== addMargin || $[45] !== isTranscriptMode || $[46] !== param || $[47] !== timestamp) {
-    t1 = <UserPromptMessage addMargin={addMargin} param={param} isTranscriptMode={isTranscriptMode} timestamp={timestamp} />;
+  if ($[44] !== addMargin || $[45] !== isTranscriptMode || $[46] !== param || $[47] !== timestamp || $[49] !== foldedText) {
+    t1 = <UserPromptMessage addMargin={addMargin} param={param} isTranscriptMode={isTranscriptMode} timestamp={timestamp} foldedText={foldedText} />;
     $[44] = addMargin;
     $[45] = isTranscriptMode;
     $[46] = param;
     $[47] = timestamp;
+    $[49] = foldedText;
     $[48] = t1;
   } else {
     t1 = $[48];

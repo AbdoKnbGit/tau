@@ -1,8 +1,9 @@
 import { c as _c } from "react/compiler-runtime";
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
-import { Box, Text } from '../../ink.js';
+import { Text } from '../../ink.js';
 import { extractTag } from '../../utils/messages.js';
+import { UserPromptFrame } from './UserPromptFrame.js';
 type Props = {
   addMargin: boolean;
   param: TextBlockParam;
@@ -28,7 +29,7 @@ export function UserBashInputMessage(t0) {
   if (!input) {
     return null;
   }
-  const t3 = addMargin ? 1 : 0;
+  const t3 = addMargin;
   let t4;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
     t4 = <Text color="bashBorder">! </Text>;
@@ -46,7 +47,7 @@ export function UserBashInputMessage(t0) {
   }
   let t6;
   if ($[5] !== t3 || $[6] !== t5) {
-    t6 = <Box flexDirection="row" marginTop={t3} backgroundColor="bashMessageBackgroundColor" paddingRight={1}>{t4}{t5}</Box>;
+    t6 = <UserPromptFrame addMargin={t3} flexDirection="row" borderColor="bashBorder" plainBackgroundColor="bashMessageBackgroundColor">{t4}{t5}</UserPromptFrame>;
     $[5] = t3;
     $[6] = t5;
     $[7] = t6;

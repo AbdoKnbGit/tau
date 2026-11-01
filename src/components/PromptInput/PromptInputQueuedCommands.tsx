@@ -9,6 +9,7 @@ import { useCommandQueue } from '../../hooks/useCommandQueue.js';
 import type { QueuedCommand } from '../../types/textInputTypes.js';
 import { isQueuedCommandVisible } from '../../utils/messageQueueManager.js';
 import { createUserMessage, EMPTY_LOOKUPS, normalizeMessages } from '../../utils/messages.js';
+import { getPastedPromptDisplay } from '../../utils/pastedPromptDisplay.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { Message } from '../Message.js';
 const EMPTY_SET = new Set<string>();
@@ -98,7 +99,8 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
       // [Image #N] placeholders are inline in the text value (inserted at
       // paste time), so the queue preview shows them without stub blocks.
       return createUserMessage({
-        content
+        content,
+        pastedDisplayText: cmd.mode === 'bash' ? undefined : getPastedPromptDisplay(cmd.preExpansionValue, cmd.value)
       });
     }));
   }, [queuedCommands]);

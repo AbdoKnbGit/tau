@@ -202,6 +202,7 @@ import {
   getUserMessageText,
   isThinkingMessage,
 } from './messages.js'
+import { getPastedPromptDisplay } from './pastedPromptDisplay.js'
 import { isHumanTurn } from './messagePredicates.js'
 import { isEnvTruthy, getClaudeConfigHomeDir } from './envUtils.js'
 import { feature } from 'bun:bundle'
@@ -566,6 +567,8 @@ export type Attachment =
       prompt: string | Array<ContentBlockParam>
       source_uuid?: UUID
       imagePasteIds?: number[]
+      /** The prompt as the prompt bar showed it, for display only. See pastedPromptDisplay.ts. */
+      pastedDisplayText?: string
       /** Original queue mode — 'prompt' for user messages, 'task-notification' for system events */
       commandMode?: string
       /** Provenance carried from QueuedCommand so mid-turn drains preserve it */
@@ -1146,6 +1149,7 @@ export async function getQueuedCommandAttachments(
         prompt,
         source_uuid: _.uuid,
         imagePasteIds: getImagePasteIds(_.pastedContents),
+        pastedDisplayText: getPastedPromptDisplay(_.preExpansionValue, _.value),
         commandMode: _.mode,
         origin: _.origin,
         isMeta: _.isMeta,

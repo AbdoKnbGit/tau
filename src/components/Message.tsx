@@ -355,7 +355,7 @@ function MessageImpl(t0) {
   }
 }
 function UserMessage(t0) {
-  const $ = _c(20);
+  const $ = _c(21);
   const {
     message,
     addMargin,
@@ -376,8 +376,9 @@ function UserMessage(t0) {
     case "text":
       {
         let t1;
-        if ($[0] !== addMargin || $[1] !== isTranscriptMode || $[2] !== message.planContent || $[3] !== message.timestamp || $[4] !== param || $[5] !== verbose) {
-          t1 = <UserTextMessage addMargin={addMargin} param={param} verbose={verbose} planContent={message.planContent} isTranscriptMode={isTranscriptMode} timestamp={message.timestamp} />;
+        if ($[0] !== addMargin || $[1] !== isTranscriptMode || $[2] !== message.planContent || $[3] !== message.timestamp || $[4] !== param || $[5] !== verbose || $[20] !== message.pastedDisplayText) {
+          t1 = <UserTextMessage addMargin={addMargin} param={param} verbose={verbose} planContent={message.planContent} isTranscriptMode={isTranscriptMode} timestamp={message.timestamp} pastedDisplayText={message.pastedDisplayText} />;
+          $[20] = message.pastedDisplayText;
           $[0] = addMargin;
           $[1] = isTranscriptMode;
           $[2] = message.planContent;

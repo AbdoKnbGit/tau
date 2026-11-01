@@ -70,6 +70,10 @@ import { hasModEvent } from '../plugins/mods/manager.js'
 import { replaceSubmittedPromptText, submittedPromptText, submitModPrompt } from '../plugins/mods/lifecycle.js'
 import { getQueuedModPrompt, prepareQueuedModPrompt, dropQueuedModPrompt, bindQueuedModPrompt } from '../plugins/mods/promptQueue.js'
 import { resumeModSessionOnUserInput } from '../plugins/mods/sessionState.js'
+import {
+  foldPastedCommandArgs,
+  getPastedPromptDisplay,
+} from '../pastedPromptDisplay.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext & {
   /** Context from submission hooks, also delivered to a directly forked skill. */
   userPromptHookMessages?: AttachmentMessage[]
@@ -198,7 +202,9 @@ async function processUserInputImpl({
   // Skip for isMeta (system-generated prompts like scheduled tasks) — those
   // should run invisibly.
   if (mode === 'prompt' && inputString !== null && !isMeta) {
-    setUserInputOnProcessing?.(inputString)
+    setUserInputOnProcessing?.(
+      getPastedPromptDisplay(preExpansionInput, inputString) ?? inputString,
+    )
   }
 
   queryCheckpoint('query_process_user_input_base_start')
@@ -769,7 +775,13 @@ async function processUserInputBase(
       isAlreadyProcessing,
       canUseTool,
     )
-    return addImageMetadataMessage(slashResult, imageMetadataTexts)
+    return addImageMetadataMessage(
+      foldPastedCommandArgs(
+        slashResult,
+        getPastedPromptDisplay(preExpansionInput, inputString),
+      ),
+      imageMetadataTexts,
+    )
   }
 
   // Log agent mention queries for analysis
@@ -806,6 +818,7 @@ async function processUserInputBase(
       permissionMode,
       isMeta,
       context.promptId,
+      getPastedPromptDisplay(preExpansionInput, normalizedInput),
     ),
     imageMetadataTexts,
   )

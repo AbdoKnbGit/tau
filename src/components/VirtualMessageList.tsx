@@ -144,19 +144,22 @@ function stickyPromptText(msg: RenderableMessage): string | null {
 }
 function computeStickyPromptText(msg: RenderableMessage): string | null {
   let raw: string | null = null;
+  let folded: string | undefined;
   if (msg.type === 'user') {
     if (msg.isMeta || msg.isVisibleInTranscriptOnly) return null;
     const block = msg.message.content[0];
     if (block?.type !== 'text') return null;
     raw = block.text;
+    folded = msg.pastedDisplayText;
   } else if (msg.type === 'attachment' && msg.attachment.type === 'queued_command' && msg.attachment.commandMode !== 'task-notification' && !msg.attachment.isMeta) {
     const p = msg.attachment.prompt;
     raw = typeof p === 'string' ? p : p.flatMap(b => b.type === 'text' ? [b.text] : []).join('\n');
+    folded = msg.attachment.pastedDisplayText;
   }
   if (raw === null) return null;
   const t = stripSystemReminders(raw);
   if (t.startsWith('<') || t === '') return null;
-  return t;
+  return folded ?? t;
 }
 
 /**
@@ -948,13 +951,13 @@ function StickyTracker({
       const t = stickyPromptText(messages[i]!);
       if (t === null) continue;
       // The prompt's wrapping Box top is above target (that's why it's in
-      // the [0, firstVisible) range), but its ❯ is at top+1 (marginTop=1).
-      // If the ❯ is at-or-below target, it's VISIBLE at viewport top —
-      // showing the same text in the header would duplicate it. Happens
-      // in the 1-row gap between Box top scrolling past and ❯ scrolling
+      // the [0, firstVisible) range), but its ❯ is at top+2 (marginTop=1 plus
+      // the frame's top row). If the ❯ is at-or-below target, it's VISIBLE at
+      // viewport top — showing the same text in the header would duplicate
+      // it. Happens in the gap between Box top scrolling past and ❯ scrolling
       // past. Skip to the next-older prompt (its ❯ is definitely above).
       const top = getItemTop(i);
-      if (top >= 0 && top + 1 >= target) continue;
+      if (top >= 0 && top + 2 >= target) continue;
       idx = i;
       text = t;
       break;
@@ -1035,7 +1038,8 @@ function StickyTracker({
         // render-node-to-output reads el.yogaNode.getComputedTop() at
         // paint time (same Yoga pass as scrollHeight). No staleness from
         // the throttled render — the ref is stable, the position read is
-        // deferred. offset=1 = UserPromptMessage marginTop.
+        // deferred. offset=1 = UserPromptMessage marginTop, which leaves the
+        // frame's top row at the viewport top.
         const el = getItemElement(capturedIdx);
         if (el) {
           scrollRef.current?.scrollToElement(el, 1);

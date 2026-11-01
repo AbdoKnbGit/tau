@@ -155,7 +155,7 @@ export function ThemePicker({
             <Text color="text">Your prompt stays readable </Text>
             <Text color="text" inverse> </Text>
           </Box>
-          <Text dimColor>Transparent input · silver, bronze, and gold mode accents</Text>
+          <Text dimColor>Transparent input · bronze accents in cheap mode, gold in full</Text>
           <Box
             flexDirection="column"
             borderTop

@@ -867,6 +867,40 @@ function repaintRect(
  * Every emission is bracketed in DECSC/DECRC, so the caller's own positioning
  * is unaffected. Returns an empty string when there is nothing to do.
  */
+/**
+ * On the alt screen a row inside the window can still belong to something else:
+ * the footer below a scroll box, or a floating box such as the jump pill. Text
+ * clips, but pixels sit on top of the cells and would hide them. Such a graphic is
+ * taken down while its block render, which clips like any text, stands in for it.
+ *
+ * Not for the main screen, which has neither: its transcript is never clipped.
+ */
+function isClippedOrCovered(
+  node: DOMElement,
+  rect: CellRect,
+  overlays: readonly Rectangle[],
+): boolean {
+  let insideOverlay = false
+  for (let parent = node.parentNode; parent; parent = parent.parentNode) {
+    if (parent.style.position === 'absolute') insideOverlay = true
+    const overflowY = parent.style.overflowY ?? parent.style.overflow
+    if (overflowY !== 'hidden' && overflowY !== 'scroll') continue
+    const clip = nodeCache.get(parent)
+    if (clip && (rect.y < clip.y || rect.y + rect.rows > clip.y + clip.height)) {
+      return true
+    }
+  }
+  // A graphic inside a floating box belongs on top of it.
+  if (insideOverlay) return false
+  return overlays.some(
+    overlay =>
+      rect.x < overlay.x + overlay.width &&
+      overlay.x < rect.x + rect.columns &&
+      rect.y < overlay.y + overlay.height &&
+      overlay.y < rect.y + rect.rows,
+  )
+}
+
 export function buildGraphicsSequence(options: {
   cursor: { x: number; y: number }
   /** Logical row at the top of the physical terminal viewport. */
@@ -884,6 +918,8 @@ export function buildGraphicsSequence(options: {
    * by writing its rows again — see {@link takeGraphicsReprintRequest}.
    */
   scrollback?: boolean
+  /** Floating boxes in this frame, such as the jump pill. See {@link isClippedOrCovered}. */
+  overlays?: readonly Rectangle[]
 }): string {
   if (placements.size === 0 && lastDrawn.size === 0) return ''
   const {
@@ -896,6 +932,7 @@ export function buildGraphicsSequence(options: {
     screen,
     stylePool,
     scrollback = false,
+    overlays = [],
   } = options
 
   let body = ''
@@ -1077,6 +1114,14 @@ export function buildGraphicsSequence(options: {
     }
 
     const previous = lastDrawn.get(id)
+
+    // Comes before the overflow report below: this is a scroll, or an overlay
+    // passing by, and neither should leave the image smaller for good.
+    if (!scrollback && isClippedOrCovered(placement.node, target, overlays)) {
+      trace.push(`skip ${id}: rows ${target.y}-${target.y + target.rows} clipped or covered`)
+      erase(id)
+      continue
+    }
 
     // The cursor cannot address rows outside the viewport, so a box that is
     // partly scrolled away would draw at the wrong origin.

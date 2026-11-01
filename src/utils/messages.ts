@@ -486,6 +486,7 @@ export function createUserMessage({
   sourceToolAssistantUUID,
   permissionMode,
   origin,
+  pastedDisplayText,
 }: {
   content: string | ContentBlockParam[]
   isMeta?: true
@@ -512,6 +513,9 @@ export function createUserMessage({
   }
   // Provenance of this message. undefined = human (keyboard).
   origin?: MessageOrigin
+  // What the transcript shows when pasted text was folded. Never sent to the
+  // model: requests read message.content only. See pastedPromptDisplay.ts.
+  pastedDisplayText?: string
 }): UserMessage {
   const m: UserMessage = {
     type: 'user',
@@ -532,6 +536,7 @@ export function createUserMessage({
     sourceToolAssistantUUID,
     permissionMode,
     origin,
+    ...(pastedDisplayText ? { pastedDisplayText } : {}),
   }
   return m
 }
@@ -827,6 +832,8 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
               timestamp: message.timestamp,
               imagePasteIds: imageId !== undefined ? [imageId] : undefined,
               origin: message.origin,
+              pastedDisplayText:
+                _.type === 'text' ? message.pastedDisplayText : undefined,
             }),
             uuid: isNewChain ? deriveUUID(message.uuid, index) : message.uuid,
             ...(_.type === 'tool_result' ? hookClassifierMetadata([message], _.tool_use_id) : {}),

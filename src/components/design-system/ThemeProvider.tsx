@@ -9,7 +9,7 @@ import { initializePowerModeTheme, isPowerModeThemeTransitionActive, subscribePo
 import { getPowerModeFromSettings } from '../../utils/powerMode.js';
 import { getInitialSettings } from '../../utils/settings/settings.js';
 import { getSystemThemeName, type SystemTheme } from '../../utils/systemTheme.js';
-import { getTheme, normalizeThemeSetting, type ThemeName, type ThemeSetting } from '../../utils/theme.js';
+import { getTheme, normalizeThemeSetting, themeKeepsTerminalBackdrop, type ThemeName, type ThemeSetting } from '../../utils/theme.js';
 type ThemeContextValue = {
   /** The saved user preference. May be 'auto'. */
   themeSetting: ThemeSetting;
@@ -165,7 +165,7 @@ export function ThemeProvider({
   // Color the content without constraining its layout. A viewport-sized height
   // here squeezes long transcripts and desynchronizes inline image placement.
   // AlternateScreen owns viewport sizing; main-screen content grows naturally.
-  const backgroundColor = currentTheme === 'dark' ? undefined : getTheme(currentTheme).background as Color;
+  const backgroundColor = themeKeepsTerminalBackdrop(currentTheme) ? undefined : getTheme(currentTheme).canvas as Color;
   return <ThemeContext.Provider value={value}>
     <Box flexDirection="column" width="100%" flexShrink={0} backgroundColor={backgroundColor}>{children}</Box>
   </ThemeContext.Provider>;

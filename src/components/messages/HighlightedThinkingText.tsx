@@ -7,6 +7,7 @@ import { Box, Text } from '../../ink.js';
 import { formatBriefTimestamp } from '../../utils/formatBriefTimestamp.js';
 import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../utils/thinking.js';
 import { MessageActionsSelectedContext } from '../messageActions.js';
+import { PROMPT_FRAME_COLOR } from './UserPromptFrame.js';
 type Props = {
   text: string;
   useBriefLayout?: boolean;
@@ -21,7 +22,7 @@ export function HighlightedThinkingText(t0) {
   } = t0;
   const isQueued = useQueuedMessage()?.isQueued ?? false;
   const isSelected = useContext(MessageActionsSelectedContext);
-  const pointerColor = isSelected ? "suggestion" : "subtle";
+  const pointerColor = isSelected ? "suggestion" : isQueued ? "subtle" : PROMPT_FRAME_COLOR;
   if (useBriefLayout) {
     let t1;
     if ($[0] !== timestamp) {

@@ -323,8 +323,18 @@ const LIGHT_WORDMARKS: Record<PowerMode, WordmarkPalette> = {
   },
 }
 
+/** Lucent Orng in normal mode. Cheap and full keep their bronze and gold. */
+const WORDMARK_LUCENT_ORNG: WordmarkPalette = {
+  bodyLeft: { r: 158, g: 62, b: 28 },
+  bodyRight: { r: 255, g: 170, b: 130 },
+  shadow: { r: 44, g: 22, b: 14 },
+  primary: { r: 255, g: 200, b: 170 },
+  peak: { r: 255, g: 247, b: 241 },
+}
+
 function wordmarkFor(mode: PowerMode, theme?: ThemeName): WordmarkPalette {
   if (theme === 'light') return LIGHT_WORDMARKS[mode]
+  if (theme === 'lucent-orng' && mode === 'normal') return WORDMARK_LUCENT_ORNG
   if (mode === 'cheap') return WORDMARK_BRONZE
   if (mode === 'full') return WORDMARK_GOLD
   return WORDMARK_NORMAL

@@ -3,10 +3,12 @@ import figures from 'figures';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
 import { ModalContext } from '../context/modalContext.js';
+import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { PromptOverlayProvider, usePromptOverlay, usePromptOverlayDialog } from '../context/promptOverlayContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import instances from '../ink/instances.js';
+import { stringWidth } from '../ink/stringWidth.js';
 import { Box, Text, useAnimationFrame } from '../ink.js';
 import type { Message } from '../types/message.js';
 import { openBrowser, openPath } from '../utils/browser.js';
@@ -516,11 +518,12 @@ function BottomSlot(t0: {
   }, [lift, targetLift, targetWidth, width, time]);
 
   return <Box ref={ref} flexDirection="column" flexShrink={0} width="100%">
-      <Box flexDirection="column" width="100%" maxHeight="50%">
+      {/* Half the screen, in rows: this box sits in one sized by its content, so a percentage would mean half of that and crush the prompt. */}
+      <Box flexDirection="column" width="100%" maxHeight={Math.max(1, Math.floor(rows / 2))}>
         {suggestionsOverlay}
         {dialogOverlay}
         <Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden" alignItems={width < columns ? "center" : undefined}>
-          <Box flexDirection="column" width={width}>
+          <Box flexDirection="column" flexShrink={0} width={width}>
             {bottom}
           </Box>
         </Box>
@@ -551,52 +554,30 @@ function _temp2(url) {
   }
 }
 function _temp() {}
-function NewMessagesPill(t0) {
-  const $ = _c(10);
-  const {
-    count,
-    onClick
-  } = t0;
+// Cells the pill adds around its label: a space on each side and the arrow.
+const PILL_CHROME_WIDTH = 4;
+function NewMessagesPill({
+  count,
+  onClick
+}: {
+  count: number;
+  onClick?: () => void;
+}): React.ReactNode {
   const [hover, setHover] = useState(false);
-  let t1;
-  let t2;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = () => setHover(true);
-    t2 = () => setHover(false);
-    $[0] = t1;
-    $[1] = t2;
-  } else {
-    t1 = $[0];
-    t2 = $[1];
-  }
-  const t3 = hover ? "userMessageBackgroundHover" : "userMessageBackground";
-  let t4;
-  if ($[2] !== count) {
-    t4 = count > 0 ? `${count} new ${plural(count, "message")}` : "Jump to bottom";
-    $[2] = count;
-    $[3] = t4;
-  } else {
-    t4 = $[3];
-  }
-  let t5;
-  if ($[4] !== t3 || $[5] !== t4) {
-    t5 = <Text backgroundColor={t3} dimColor={true}>{" "}{t4}{" "}{figures.arrowDown}{" "}</Text>;
-    $[4] = t3;
-    $[5] = t4;
-    $[6] = t5;
-  } else {
-    t5 = $[6];
-  }
-  let t6;
-  if ($[7] !== onClick || $[8] !== t5) {
-    t6 = <Box position="absolute" bottom={0} left={0} right={0} justifyContent="center"><Box onClick={onClick} onMouseEnter={t1} onMouseLeave={t2}>{t5}</Box></Box>;
-    $[7] = onClick;
-    $[8] = t5;
-    $[9] = t6;
-  } else {
-    t6 = $[9];
-  }
-  return t6;
+  const {
+    columns
+  } = useTerminalSize();
+  // Empty when scroll:bottom has been unbound: the pill then promises no key.
+  const shortcut = useShortcutDisplay('scroll:bottom', 'Scroll', '');
+  const label = count > 0 ? `${count} new ${plural(count, 'message')}` : 'Jump to bottom';
+  const withShortcut = shortcut ? `${label} (${shortcut})` : label;
+  // One row at any width, since it floats over the transcript: the hint goes first.
+  const text = stringWidth(withShortcut) + PILL_CHROME_WIDTH <= columns ? withShortcut : label;
+  return <Box position="absolute" bottom={0} left={0} right={0} justifyContent="center">
+      <Box onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+        <Text backgroundColor={hover ? 'brand' : 'selectionBg'} color={hover ? 'inverseText' : 'text'} wrap="truncate">{' '}{text}{' '}{figures.arrowDown}{' '}</Text>
+      </Box>
+    </Box>;
 }
 
 // Context breadcrumb: when scrolled up into history, pin the current
@@ -632,7 +613,7 @@ function StickyPromptHeader(t0) {
   }
   let t4;
   if ($[2] !== text) {
-    t4 = <Text color="subtle" wrap="truncate-end">{figures.pointer} {text}</Text>;
+    t4 = <Text color="inactive" wrap="truncate-end">{figures.pointer} {text}</Text>;
     $[2] = text;
     $[3] = t4;
   } else {

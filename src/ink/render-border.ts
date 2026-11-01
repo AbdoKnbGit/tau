@@ -226,6 +226,17 @@ const renderBorder = (
     if (bottomBorder) {
       output.write(x, y + height - 1, applyTextStyles(bottomBorder, { backgroundColor }))
     }
+
+    if (node.style.noSelectBorder) {
+      const paddingLeft = node.style.paddingLeft ?? node.style.paddingX ?? node.style.padding ?? 0
+      const paddingRight = node.style.paddingRight ?? node.style.paddingX ?? node.style.padding ?? 0
+      if (showTopBorder) output.noSelect({ x, y, width, height: 1 })
+      if (showBottomBorder) output.noSelect({ x, y: y + height - 1, width, height: 1 })
+      if (showLeftBorder) output.noSelect({ x, y, width: 1 + paddingLeft, height })
+      if (showRightBorder) {
+        output.noSelect({ x: x + width - 1 - paddingRight, y, width: 1 + paddingRight, height })
+      }
+    }
   }
 }
 

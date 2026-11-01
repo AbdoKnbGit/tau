@@ -195,6 +195,7 @@ type Theme = {
 
 function defaultSyntaxThemeName(themeName: string): string {
   if (themeName === 'catppuccin-macchiato') return 'Catppuccin Macchiato'
+  if (themeName === 'lucent-orng') return 'Lucent Orng'
   if (themeName.includes('ansi')) return 'ansi'
   if (themeName.includes('dark')) return 'Monokai Extended'
   return 'GitHub'
@@ -285,6 +286,34 @@ const MACCHIATO_SCOPES: Record<string, Color> = {
   subst: rgb(202, 211, 245),
 }
 
+// Lucent Orng scopes: the syntax colors of opencode's dark variant.
+const LUCENT_ORNG_SCOPES: Record<string, Color> = {
+  keyword: rgb(236, 91, 43),
+  _storage: rgb(236, 91, 43),
+  built_in: rgb(224, 108, 117),
+  type: rgb(229, 192, 123),
+  literal: rgb(255, 247, 241),
+  number: rgb(255, 247, 241),
+  string: rgb(107, 161, 230),
+  title: rgb(238, 121, 72),
+  'title.function': rgb(238, 121, 72),
+  'title.class': rgb(229, 192, 123),
+  'title.class.inherited': rgb(229, 192, 123),
+  params: rgb(238, 238, 238),
+  comment: rgb(128, 128, 128),
+  meta: rgb(128, 128, 128),
+  attr: rgb(86, 182, 194),
+  attribute: rgb(86, 182, 194),
+  variable: rgb(224, 108, 117),
+  'variable.language': rgb(224, 108, 117),
+  property: rgb(86, 182, 194),
+  operator: rgb(86, 182, 194),
+  punctuation: rgb(238, 238, 238),
+  symbol: rgb(255, 247, 241),
+  regexp: rgb(107, 161, 230),
+  subst: rgb(238, 238, 238),
+}
+
 // Keywords that syntect scopes as storage.type rather than keyword.control.
 // highlight.js lumps these under "keyword"; we re-split so const/function/etc.
 // get the cyan storage color instead of pink.
@@ -341,6 +370,24 @@ function buildTheme(themeName: string, mode: ColorMode): Theme {
       // context lines do not reveal the terminal's black backdrop.
       background: rgb(36, 39, 58),
       scopes: MACCHIATO_SCOPES,
+    }
+  }
+  if (themeName === 'lucent-orng') {
+    return {
+      addLine: rgb(24, 40, 60),
+      addWord: rgb(42, 72, 110),
+      addDecoration: rgb(107, 161, 230),
+      deleteLine: rgb(60, 26, 34),
+      deleteWord: rgb(108, 42, 56),
+      deleteDecoration: rgb(226, 106, 117),
+      modifyLine: rgb(62, 44, 30),
+      modifyWord: rgb(98, 64, 38),
+      modifyDecoration: rgb(238, 121, 72),
+      modifyEnabled: true,
+      foreground: rgb(238, 238, 238),
+      // Lucent paints no canvas, so rows keep the terminal's own background.
+      background: DEFAULT_BG,
+      scopes: LUCENT_ORNG_SCOPES,
     }
   }
   const isDark = themeName.includes('dark')

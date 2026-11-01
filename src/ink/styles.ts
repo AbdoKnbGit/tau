@@ -401,6 +401,13 @@ export type Styles = {
    * doesn't pick up leading whitespace from middle rows.
    */
   readonly noSelect?: boolean | 'from-left-edge'
+
+  /**
+   * Keep this box's border, and the padding beside it, out of fullscreen text
+   * selection while its contents stay selectable. Copying a framed text then
+   * gives the text, not a column of box-drawing characters.
+   */
+  readonly noSelectBorder?: boolean
 }
 
 const applyPositionStyles = (node: LayoutNode, style: Styles): void => {

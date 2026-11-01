@@ -8,6 +8,7 @@ import type { KeybindingContextName } from '../keybindings/types.js';
 import { AppStateProvider } from '../state/AppState.js';
 import type { Tools } from '../Tool.js';
 import type { Message } from '../types/message.js';
+import { PlainTranscriptContext } from '../components/messages/UserPromptFrame.js';
 import { renderToAnsiString } from './staticRender.js';
 
 /**
@@ -70,7 +71,9 @@ export async function streamRenderedMessages(messages: Message[], tools: Tools, 
   const renderChunk = (range: readonly [number, number]) => renderToAnsiString(<AppStateProvider>
         <StaticKeybindingProvider>
           <MermaidDiagramsContext.Provider value={drawDiagrams}>
+            <PlainTranscriptContext.Provider value={!drawDiagrams}>
             <Messages messages={messages} tools={tools} commands={[]} verbose={verbose} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={new Set()} isMessageSelectorVisible={false} conversationId="export" screen="prompt" streamingToolUses={[]} showAllInTranscript={true} isLoading={false} renderRange={range} />
+            </PlainTranscriptContext.Provider>
           </MermaidDiagramsContext.Provider>
         </StaticKeybindingProvider>
       </AppStateProvider>, columns);

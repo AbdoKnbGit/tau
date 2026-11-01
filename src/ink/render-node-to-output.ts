@@ -63,6 +63,11 @@ export function resetScrollHint(): void {
   absoluteRectsCur = []
 }
 
+/** Rects of position:absolute nodes in the frame just rendered. */
+export function getFrameAbsoluteRects(): readonly Rectangle[] {
+  return absoluteRectsCur
+}
+
 export function getScrollHint(): ScrollHint | null {
   return scrollHint
 }

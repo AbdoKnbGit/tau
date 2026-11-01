@@ -33,6 +33,8 @@ export function processTextPrompt(
   isMeta?: boolean,
   // Set when the prompt's hooks already ran under an id reserved for it.
   reservedPromptId?: string,
+  // The prompt as the prompt bar showed it, for display only.
+  pastedDisplayText?: string,
 ): {
   messages: (UserMessage | AttachmentMessage | SystemMessage)[]
   shouldQuery: boolean
@@ -97,6 +99,7 @@ export function processTextPrompt(
       imagePasteIds: imagePasteIds.length > 0 ? imagePasteIds : undefined,
       permissionMode,
       isMeta: isMeta || undefined,
+      pastedDisplayText,
     })
 
     return {
@@ -114,6 +117,7 @@ export function processTextPrompt(
     uuid,
     permissionMode,
     isMeta: isMeta || undefined,
+    pastedDisplayText,
   })
 
   return {

@@ -22,7 +22,14 @@ export type Theme = {
   subtle: string
   suggestion: string
   remember: string
+  /**
+   * Accent for background tasks: footer pills, task dialogs, status labels.
+   * Text is painted with it, so it must stay readable on `canvas`. It is NOT
+   * the color behind the text; a theme that sets the two equal hides its pills.
+   */
   background: string
+  /** What the theme paints behind everything, see themeKeepsTerminalBackdrop. */
+  canvas: string
   // Semantic colors
   success: string
   error: string
@@ -110,7 +117,7 @@ export type Theme = {
   brandBright: string
 }
 
-export const THEME_NAMES = ['dark', 'catppuccin-macchiato', 'light'] as const
+export const THEME_NAMES = ['dark', 'catppuccin-macchiato', 'light', 'lucent-orng'] as const
 
 /** A renderable theme. Always resolvable to a concrete color palette. */
 export type ThemeName = (typeof THEME_NAMES)[number]
@@ -148,6 +155,7 @@ const darkTheme: Theme = {
   suggestion: 'rgb(130,220,255)', // Electric sky blue
   remember: 'rgb(200,150,255)', // Electric lavender
   background: 'rgb(120,220,200)', // Neon mint
+  canvas: 'rgb(22,22,25)',
   success: 'rgb(80,240,160)', // Neon green
   error: 'rgb(255,80,140)', // Hot pink
   warning: 'rgb(255,200,60)', // Neon amber
@@ -250,7 +258,8 @@ const tauDarkTheme: Theme = {
   subtle: 'rgb(48,48,54)',
   suggestion: 'rgb(162,162,170)',
   remember: 'rgb(180,180,186)',
-  background: 'rgb(22,22,25)',
+  background: 'rgb(132,190,184)',
+  canvas: 'rgb(22,22,25)',
   success: 'rgb(138,176,116)',
   error: 'rgb(232,120,120)',
   warning: 'rgb(224,180,120)',
@@ -318,12 +327,13 @@ const tauDarkTheme: Theme = {
 }
 
 
-/** Labels shared by /theme and /config. Only three palettes are offered. */
+/** Labels shared by /theme and /config. */
 export const THEME_LABELS: Record<ThemeSetting, string> = {
   auto: 'Auto (match terminal)',
   dark: 'Tau dark',
   'catppuccin-macchiato': 'Catppuccin Macchiato',
   light: 'Tau white',
+  'lucent-orng': 'Lucent Orng',
 }
 
 /** Retired settings still load safely, without appearing in the picker. */
@@ -358,7 +368,8 @@ const lightTheme: Theme = {
   subtle: 'rgb(151,154,163)',
   suggestion: 'rgb(66,99,145)',
   remember: 'rgb(109,80,146)',
-  background: 'rgb(250,249,246)',
+  background: 'rgb(38,113,112)',
+  canvas: 'rgb(250,249,246)',
   success: 'rgb(49,111,75)',
   error: 'rgb(170,57,72)',
   warning: 'rgb(139,103,30)',
@@ -451,7 +462,8 @@ const macchiatoTheme: Theme = {
   subtle: 'rgb(110,115,141)',
   suggestion: 'rgb(138,173,244)',
   remember: 'rgb(198,160,246)',
-  background: 'rgb(36,39,58)',
+  background: 'rgb(139,213,202)',
+  canvas: 'rgb(36,39,58)',
   success: 'rgb(166,218,149)',
   error: 'rgb(237,135,150)',
   warning: 'rgb(238,212,159)',
@@ -520,6 +532,110 @@ const macchiatoTheme: Theme = {
   brandBright: 'rgb(218,223,236)',
 }
 
+/**
+ * Lucent Orng, the dark variant of opencode's theme of that name. "Lucent" means
+ * the terminal's own background shows through, so it paints no canvas, and the
+ * warm panel color only backs small surfaces. `canvas` is what contrast is
+ * measured against. Text is light, so it wants a dark terminal, as Tau dark does.
+ */
+const lucentOrngTheme: Theme = {
+  ...tauDarkTheme,
+  autoAccept: 'rgb(238,121,72)',
+  bashBorder: 'rgb(86,182,194)',
+  claude: 'rgb(236,91,43)',
+  claudeShimmer: 'rgb(255,158,118)',
+  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(107,161,230)',
+  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(160,196,240)',
+  // Also the color of inline code, which the reference draws in its blue.
+  permission: 'rgb(107,161,230)',
+  permissionShimmer: 'rgb(160,196,240)',
+  planMode: 'rgb(86,182,194)',
+  ide: 'rgb(86,182,194)',
+  promptBorder: 'rgb(236,91,43)',
+  promptBorderShimmer: 'rgb(238,121,72)',
+  text: 'rgb(238,238,238)',
+  inverseText: 'rgb(10,10,10)',
+  inactive: 'rgb(140,140,140)',
+  inactiveShimmer: 'rgb(176,176,176)',
+  subtle: 'rgb(110,110,110)',
+  suggestion: 'rgb(238,121,72)',
+  remember: 'rgb(229,192,123)',
+  background: 'rgb(86,182,194)',
+  canvas: 'rgb(10,10,10)',
+  success: 'rgb(107,161,230)',
+  error: 'rgb(224,108,117)',
+  warning: 'rgb(236,91,43)',
+  warningShimmer: 'rgb(255,158,118)',
+  merged: 'rgb(238,121,72)',
+  diffAdded: 'rgb(24,40,60)',
+  diffRemoved: 'rgb(60,26,34)',
+  diffAddedDimmed: 'rgb(26,34,44)',
+  diffRemovedDimmed: 'rgb(44,30,34)',
+  diffAddedWord: 'rgb(42,72,110)',
+  diffRemovedWord: 'rgb(108,42,56)',
+  diffModified: 'rgb(62,44,30)',
+  diffModifiedDimmed: 'rgb(50,40,32)',
+  diffModifiedWord: 'rgb(98,64,38)',
+  red_FOR_SUBAGENTS_ONLY: 'rgb(224,108,117)',
+  blue_FOR_SUBAGENTS_ONLY: 'rgb(107,161,230)',
+  green_FOR_SUBAGENTS_ONLY: 'rgb(152,195,121)',
+  yellow_FOR_SUBAGENTS_ONLY: 'rgb(229,192,123)',
+  purple_FOR_SUBAGENTS_ONLY: 'rgb(198,120,221)',
+  orange_FOR_SUBAGENTS_ONLY: 'rgb(236,91,43)',
+  pink_FOR_SUBAGENTS_ONLY: 'rgb(232,130,170)',
+  cyan_FOR_SUBAGENTS_ONLY: 'rgb(86,182,194)',
+  professionalBlue: 'rgb(107,161,230)',
+  chromeYellow: 'rgb(229,192,123)',
+  clawd_body: 'rgb(236,91,43)',
+  clawd_background: 'rgb(10,10,10)',
+  userMessageBackground: 'rgb(42,26,21)',
+  userMessageBackgroundHover: 'rgb(60,38,30)',
+  messageActionsBackground: 'rgb(60,38,30)',
+  selectionBg: 'rgb(96,46,26)',
+  bashMessageBackgroundColor: 'rgb(36,26,24)',
+  memoryBackgroundColor: 'rgb(42,30,26)',
+  rate_limit_fill: 'rgb(236,91,43)',
+  rate_limit_empty: 'rgb(60,60,60)',
+  fastMode: 'rgb(238,121,72)',
+  fastModeShimmer: 'rgb(255,168,132)',
+  briefLabelYou: 'rgb(86,182,194)',
+  briefLabelClaude: 'rgb(236,91,43)',
+  rainbow_red: 'rgb(224,108,117)',
+  rainbow_orange: 'rgb(236,91,43)',
+  rainbow_yellow: 'rgb(229,192,123)',
+  rainbow_green: 'rgb(152,195,121)',
+  rainbow_blue: 'rgb(107,161,230)',
+  rainbow_indigo: 'rgb(130,140,220)',
+  rainbow_violet: 'rgb(198,120,221)',
+  rainbow_red_shimmer: 'rgb(240,160,166)',
+  rainbow_orange_shimmer: 'rgb(255,158,118)',
+  rainbow_yellow_shimmer: 'rgb(244,220,170)',
+  rainbow_green_shimmer: 'rgb(190,220,168)',
+  rainbow_blue_shimmer: 'rgb(160,196,240)',
+  rainbow_indigo_shimmer: 'rgb(174,182,238)',
+  rainbow_violet_shimmer: 'rgb(222,170,236)',
+  primary: 'rgb(236,91,43)',
+  secondary: 'rgb(238,121,72)',
+  accent: 'rgb(255,247,241)',
+  // Markdown headings take this slot, and the reference draws them in orange.
+  info: 'rgb(236,91,43)',
+  textMuted: 'rgb(140,140,140)',
+  border: 'rgb(236,91,43)',
+  borderActive: 'rgb(238,121,72)',
+  borderSubtle: 'rgb(60,60,60)',
+  backgroundPanel: 'rgb(42,26,21)',
+  backgroundElement: 'rgb(42,26,21)',
+  backgroundMenu: 'rgb(29,20,17)',
+  brand: 'rgb(236,91,43)',
+  brandDim: 'rgb(158,68,38)',
+  brandBright: 'rgb(238,121,72)',
+}
+
+/** True when a theme leaves the terminal's background alone instead of painting `canvas`. */
+export function themeKeepsTerminalBackdrop(themeName: ThemeName): boolean {
+  return themeName === 'dark' || themeName === 'lucent-orng'
+}
+
 function getBaseTheme(themeName: ThemeName): Theme {
   switch (themeName) {
     case 'dark':
@@ -528,6 +644,8 @@ function getBaseTheme(themeName: ThemeName): Theme {
       return lightTheme
     case 'catppuccin-macchiato':
       return macchiatoTheme
+    case 'lucent-orng':
+      return lucentOrngTheme
     default:
       return tauDarkTheme
   }
