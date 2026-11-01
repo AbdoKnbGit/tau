@@ -116,7 +116,7 @@
           "optional": true
         }
       },
-      "version": "0.92.44"
+      "version": "0.92.45"
     },
     "node_modules/@abdoknbgit/tau-voice-darwin-arm64": {
       "cpu": [
@@ -6488,5 +6488,5 @@
     }
   },
   "requires": true,
-  "version": "0.92.44"
+  "version": "0.92.45"
 }
