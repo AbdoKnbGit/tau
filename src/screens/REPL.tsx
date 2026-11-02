@@ -24,7 +24,7 @@ import { CostThresholdDialog } from '../components/CostThresholdDialog.js';
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState, useCallback, useDeferredValue, useLayoutEffect, type RefObject } from 'react';
-import { bindModSession, markModSessionStopped } from '../utils/plugins/mods/sessionState.js';
+import { bindModSession, markModSessionStopped, preserveModCompactionScrollback } from '../utils/plugins/mods/sessionState.js';
 import { useNotifications } from '../context/notifications.js';
 import { settingsChangeDetector } from '../utils/settings/changeDetector.js';
 import { sendNotification } from '../services/notifier.js';
@@ -1241,13 +1241,6 @@ export function REPL({
   modSessionModelRef.current = mainLoopModel;
   const modSessionToolsRef = useRef(tools);
   modSessionToolsRef.current = tools;
-  useLayoutEffect(() => bindModSession({
-    getMessages: () => messagesRef.current,
-    getModel: () => getFreshOpenAIGptMainLoopModel(modSessionModelRef.current, store.getState(), modSessionModelRef.current),
-    getTools: () => modSessionToolsRef.current,
-    setMessages: next => { messagesRef.current = next; rawSetMessages(next); },
-    isBusy: () => queryGuard.isActive,
-  }), [store, queryGuard]);
   // Stores the willowMode variant that was shown (or false if no hint shown).
   // Captured at hint_shown time so hint_converted telemetry reports the same
   // variant — the GrowthBook value shouldn't change mid-session, but reading
@@ -2698,6 +2691,25 @@ export function REPL({
       }
     };
   }, [commands, combinedInitialTools, mainThreadAgentDefinition, debug, initialMcpClients, ideInstallationStatus, dynamicMcpConfig, theme, allowedAgentTypes, store, mainLoopModel, setAppState, reverify, addNotification, setMessages, onChangeDynamicMcpConfig, resume, requestPrompt, disabled, customSystemPrompt, appendSystemPrompt, setConversationId]);
+  const modContextRef = useRef(getToolUseContext);
+  modContextRef.current = getToolUseContext;
+  useLayoutEffect(() => bindModSession({
+    getMessages: () => messagesRef.current,
+    getModel: () => getFreshOpenAIGptMainLoopModel(modSessionModelRef.current, store.getState(), modSessionModelRef.current),
+    getTools: () => modSessionToolsRef.current,
+    getCompactContext: () => modContextRef.current(messagesRef.current, [], new AbortController(), modSessionModelRef.current),
+    setMessages,
+    commitCompaction: next => {
+      if (!isFullscreenEnvEnabled()) {
+        setMessages(next);
+        return;
+      }
+      setMessages(old => preserveModCompactionScrollback(getMessagesAfterCompactBoundary(old, { includeSnipped: true }), next));
+      setConversationId(randomUUID());
+      if (feature('PROACTIVE') || feature('KAIROS')) proactiveModule?.setContextBlocked(false);
+    },
+    isBusy: () => queryGuard.isActive,
+  }), [store, queryGuard, setMessages]);
 
   // Session backgrounding (Ctrl+B to background/foreground)
   const handleBackgroundQuery = useCallback(() => {

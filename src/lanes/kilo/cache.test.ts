@@ -46,7 +46,8 @@ function main(): void {
     applyKiloCacheBreakpoints(messages)
 
     assert(hasTrailingCacheControl(messages[0]!), 'system breakpoint missing')
-    assert(typeof messages[1]!.content === 'string', 'old user turn should not be promoted')
+    assert(Array.isArray(messages[1]!.content) && messages[1]!.content[0]?.text === 'first user turn', 'old user turn keeps text-part encoding')
+    assert(!hasTrailingCacheControl(messages[1]!), 'old user turn has no rolling breakpoint')
     assert(hasTrailingCacheControl(messages[3]!), 'second-to-last user breakpoint missing')
     assert(hasTrailingCacheControl(messages[5]!), 'last user breakpoint missing')
   })

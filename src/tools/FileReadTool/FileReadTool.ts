@@ -454,7 +454,7 @@ export const FileReadTool = buildTool({
     const previous = context.readFileState.get(filePath)
     if (previous)
       context.readFileState.set(filePath, {
-        ...previous, hiddenRead: true, seenRanges: undefined, seenNotebook: undefined, lastRangeStub: undefined,
+        ...previous, hiddenRead: true, isPartialView: true, seenRanges: undefined, seenNotebook: undefined, lastRangeStub: undefined,
       })
   },
   strict: true,
@@ -1201,6 +1201,7 @@ async function callInner(
       timestamp: Math.floor(stats.mtimeMs),
       offset,
       limit,
+      ...(readHidden && previous?.isPartialView && { isPartialView: true }),
       ...(rangeDedup && context.toolUseId !== undefined ? {
         seenNotebook: {
           toolUseId: context.toolUseId,
@@ -1639,10 +1640,10 @@ async function callInner(
       readFileState.set(fullFilePath, { ...previous!, timestamp: Math.floor(mtimeMs) })
     return { data: { type: 'file_unchanged', file: { filePath: file_path } } }
   }
-  const sourceMapsOmitted = view.omitted || (
-    previous?.sourceMapsOmitted === true &&
-    !(lineOffset === 0 && lineCount === totalLines)
-  )
+  const coversWholeFile = lineOffset === 0 && lineCount === totalLines
+  const sourceMapsOmitted = view.omitted || (previous?.sourceMapsOmitted === true && !coversWholeFile)
+  // A window or an internal read cannot reveal the rest of a partial view.
+  const keepPartialView = previous?.isPartialView && (!coversWholeFile || readHidden)
 
   // Lines an earlier Read result in this conversation already shows unchanged
   // are named instead of sent again (rangeDedup.ts). The read state is set
@@ -1664,6 +1665,7 @@ async function callInner(
       offset,
       limit,
       sourceMapsIncluded: includeSourceMaps,
+      ...(keepPartialView && { isPartialView: true }),
       ...(sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
       seenRanges: previous?.seenRanges,
       lastRangeStub: { start: lines.start, end: lines.end },
@@ -1703,6 +1705,7 @@ async function callInner(
     offset,
     limit,
     sourceMapsIncluded: includeSourceMaps,
+    ...(keepPartialView && { isPartialView: true }),
     ...(sourceMapsOmitted ? { sourceMapsOmitted: true } : {}),
     ...(seenRanges ? { seenRanges } : {}),
     ...(readHidden ? { hiddenRead: true as const } : {}),

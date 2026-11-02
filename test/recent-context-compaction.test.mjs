@@ -71,6 +71,7 @@ function setup({
     logEvent: noop,
     logError: noop,
     logForDebugging: noop,
+    hasModEvent: () => false,
     logPermissionContextForAnts: noop,
     getInvokedSkillsForAgent: () => new Map(),
     getFeatureValue_CACHED_MAY_BE_STALE: (_key, fallback) => fallback,
@@ -473,5 +474,33 @@ test('automatic opt-in reaches the engine only for main conversations', async ()
         String(source),
       )
     }
+  }
+})
+
+test('a pass-through automatic hook budgets retained history with accepted completion context', async () => {
+  const hook = { type: 'attachment', uuid: 'large-completion-context', attachment: { content: 'completion context '.repeat(300) } }
+  for (const hooks of [[], [hook]]) {
+    const native = setup({ threshold: 1000, hooks })
+    const expected = await native.run()
+    const staged = setup({ threshold: 1000, hooks })
+    class Handles {
+      expose(messages) { return { messages, rows: messages.map(message => ({ role: 'user', text: message.uuid, toolUses: [] })) } }
+      restore(_rows, view) { return view.messages }
+      result(value) { return value }
+      checkInput() {}
+    }
+    Object.assign(staged.deps, {
+      CompactMessageHandles: Handles,
+      inToolContext: async (_context, _permission, fn) => fn(),
+      dispatchModEvent: async (_event, input, next) => next(input),
+      cloneFileStateCache: cache => Object.assign(new Map(cache), { dump() { return [...this] } }),
+    })
+    staged.context.readFileState.load = () => {}
+    const mod = load('src/services/compact/modAutoCompact.ts', staged.deps)
+    const { compactionResult: actual } = await mod.runModAutoCompact(staged.messages, staged.context, staged.params, staged.info, true)
+    assert.deepEqual(Array.from(actual.messagesToKeep ?? [], message => message.uuid), Array.from(expected.messagesToKeep ?? [], message => message.uuid), 'accepted hook context must affect the retention budget exactly as on the native path')
+    assert.equal(JSON.stringify(staged.compact.buildPostCompactMessages(actual).map(message => message.message?.content ?? message.attachment)), JSON.stringify(native.compact.buildPostCompactMessages(expected).map(message => message.message?.content ?? message.attachment)), 'post-compact provider content must match the native path')
+    assert.equal(staged.events.session.length, 1, 'completion hooks run only once after acceptance')
+    assert.equal(staged.events.requests.length, 1, 'budget finalization cannot send another summary request')
   }
 })

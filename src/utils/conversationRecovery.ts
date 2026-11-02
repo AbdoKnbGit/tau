@@ -267,9 +267,9 @@ export function deserializeMessagesWithInterruptDetection(
 
     // Append a synthetic assistant sentinel after the last user message so
     // the conversation is API-valid if no resume action is taken. Skip past
-    // trailing system/progress/attachment messages and insert right after the
-    // user message so removeInterruptedMessage's splice(idx, 2) removes the
-    // correct pair.
+    // trailing system/progress messages. Trailing attachments stay ahead of it:
+    // the next write chains new rows from the sentinel, so any attachment behind
+    // it would leave the chain and vanish on the following resume.
     const lastRelevantIdx = filteredMessages.findLastIndex(
       m => m.type !== 'system' && m.type !== 'progress' && m.type !== 'attachment',
     )
@@ -277,8 +277,9 @@ export function deserializeMessagesWithInterruptDetection(
       lastRelevantIdx !== -1 &&
       filteredMessages[lastRelevantIdx]!.type === 'user'
     ) {
+      const lastAttachmentIdx = filteredMessages.findLastIndex(m => m.type === 'attachment')
       filteredMessages.splice(
-        lastRelevantIdx + 1,
+        Math.max(lastRelevantIdx, lastAttachmentIdx) + 1,
         0,
         createAssistantMessage({
           content: NO_RESPONSE_REQUESTED,

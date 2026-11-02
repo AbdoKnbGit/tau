@@ -318,7 +318,7 @@ export const NotebookEditTool = buildTool({
     // Read tool would), so the next edit uses real cell ids instead of
     // repeating into a loop.
     const readTimestamp = toolUseContext.readFileState.get(fullPath)
-    if (!readTimestamp) {
+    if (!readTimestamp || readTimestamp.isPartialView) {
       let shown: string | undefined
       try {
         const cells = await readNotebook(fullPath)
@@ -330,7 +330,7 @@ export const NotebookEditTool = buildTool({
             timestamp: getFileModificationTime(fullPath),
           },
           'Edit again with a cell_id from its current cells below (outputs are not shown)',
-          { display: notebookCellsAsText(cells) },
+          { display: notebookCellsAsText(cells), partialView: readTimestamp?.isPartialView },
         )
       } catch {
         // Missing or unparsable: fall back to asking for a Read.

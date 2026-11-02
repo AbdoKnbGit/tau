@@ -418,6 +418,13 @@ export function getSnippetForTwoFileDiff(
   return `${kept}\n\n... [${remaining} lines truncated] ...`
 }
 
+/** Whether getSnippetForTwoFileDiff had to cut the change short. */
+export function isTruncatedDiffSnippet(snippet: string): boolean {
+  return /\n\n\.\.\. \[\d+ lines truncated\] \.\.\.$/.test(snippet)
+}
+
+export const CHANGES_NOT_SHOWN = '[Changes not shown. Read the file before relying on its contents.]'
+
 const CONTEXT_LINES = 4
 
 /**

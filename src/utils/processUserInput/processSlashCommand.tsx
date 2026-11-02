@@ -709,7 +709,8 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
               return {
                 messages: buildPostCompactMessages(compactionResultWithSlashMessages),
                 shouldQuery: false,
-                command
+                command,
+                resultText: result.compactionResult.modFallbackMessage
               };
             }
 

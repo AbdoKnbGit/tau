@@ -6,6 +6,7 @@ export const MOD_EVENTS = new Set([
   ...MOD_API_EVENTS,
   'session.start',
   'session.end',
+  'session.compact',
   'command.run',
   'prompt.submit',
   'skill.prompt',
@@ -23,6 +24,7 @@ export const MOD_EVENTS = new Set([
 ])
 export const MOD_METHODS = new Set([
   ...MOD_API_EVENTS,
+  'session.compact',
   'prompt.submit',
   'session.cwd',
   'session.root',

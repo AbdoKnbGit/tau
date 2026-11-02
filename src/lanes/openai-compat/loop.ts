@@ -3216,11 +3216,11 @@ function applyLastOnlyCacheBreakpoints(
     }
   }
 
-  // OpenRouter: every user/tool message goes as parts, not only the two that
+  // OpenRouter/KiloCode: every user/tool message goes as parts, not only the two that
   // carry a marker. Promoted only while marked, a message went back to a plain
   // string once the markers moved on, and the request no longer extended the
   // previous one byte for byte.
-  if (provider === 'openrouter') {
+  if (provider === 'openrouter' || provider === 'kilocode') {
     for (const m of messages) {
       if ((m.role === 'user' || m.role === 'tool') && typeof m.content === 'string') {
         m.content = [{ type: 'text', text: m.content.length > 0 ? m.content : ' ' }]

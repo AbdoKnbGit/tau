@@ -24,11 +24,11 @@ const r = await loadMcpRuntime({
     'src/tools/TaskCreateTool/TaskCreateTool.ts', 'src/tools/TaskUpdateTool/TaskUpdateTool.ts',
     'src/tools/FileWriteTool/FileWriteTool.ts', 'src/tools/FileEditTool/FileEditTool.ts',
     'src/utils/forcedProvider.ts', 'src/utils/powerMode.ts',
-    'src/services/api/providers/openrouter_provider.ts', 'src/lanes/shared/volatile_freeze.ts'],
+    'src/services/api/providers/openrouter_provider.ts', 'src/lanes/shared/volatile_freeze.ts', 'src/lanes/kilo/cache.ts'],
   exports: ['toolToAPISchema', 'selectToolsForToolSearchRequest', 'TaskCreateTool', 'TaskUpdateTool',
     'FileWriteTool', 'FileEditTool', 'runWithForcedProvider', 'setSessionPowerMode',
     'OpenRouterProvider', 'resetSessionVolatileFreeze', 'getTaskListId', 'getTask', `listTasks: ${listTasks}`, 'getTasksDir',
-    'getUsingYourToolsSection', 'normalizeMessagesForAPI'],
+    'getUsingYourToolsSection', 'normalizeMessagesForAPI', 'applyKiloCacheBreakpoints'],
 })
 r.setSessionPowerMode('normal')
 const model = 'example/model'
@@ -315,3 +315,62 @@ for (const route of ['native', 'legacy']) {
     assert.deepEqual(await r.listTasks(r.getTaskListId()), before)
   })
 }
+
+test('kilocode extends request prefixes byte for byte when Claude cache markers move',async()=>{
+  const lane=new r.OpenAICompatLane(),requests=[]
+  lane.registerProvider('kilocode','stub-key','http://127.0.0.1:1')
+  const oldFetch=globalThis.fetch
+  globalThis.fetch=async(_url,init)=>{
+    requests.push(JSON.parse(init.body))
+    return new Response('data: '+JSON.stringify({choices:[{index:0,delta:{content:'ok'},finish_reason:null}]})+'\n\n'+
+      'data: '+JSON.stringify({choices:[{index:0,delta:{},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:2,total_tokens:12}})+'\n\n'+'data: [DONE]\n\n',
+      {headers:{'content-type':'text/event-stream'}})
+  }
+  const history=[{role:'user',content:'run three commands'}]
+  const send=async()=>{for await(const _ of lane.streamAsProvider({model:'anthropic/claude-sonnet-4.6',
+    messages:structuredClone(history),system:'Stable instructions',tools:[],max_tokens:64,
+    signal:new AbortController().signal,providerHint:'kilocode',sessionId:'kilocode-prefix-regression'})) {}}
+  try {
+    await send()
+    for(const id of ['call_1','call_2','call_3']) {
+      history.push({role:'assistant',content:[{type:'tool_use',id,name:'Bash',input:{command:'echo '+id}}]},
+        {role:'user',content:[{type:'tool_result',tool_use_id:id,content:'output of '+id}]})
+      await send()
+    }
+    const ids=['call_4','call_5','call_6']
+    history.push({role:'assistant',content:ids.map(id=>({type:'tool_use',id,name:'Bash',input:{command:'echo '+id}}))},
+      {role:'user',content:[...ids.map(id=>({type:'tool_result',tool_use_id:id,content:'output of '+id})),
+        {type:'text',text:'reminder next to results'}]})
+    await send()
+    history.push({role:'assistant',content:'done'},{role:'user',content:'thanks'})
+    await send()
+    const wire=body=>body.messages.map(m=>JSON.stringify(m,(key,value)=>key==='cache_control'?undefined:value))
+    for(let i=1;i<requests.length;i++) {
+      const before=wire(requests[i-1]),after=wire(requests[i])
+      assert.ok(after.length>before.length)
+      assert.deepEqual(after.slice(0,before.length),before,'kilocode must not change old user/tool string-versus-parts encoding')
+    }
+  } finally {globalThis.fetch=oldFetch;lane.unregisterProvider('kilocode')}
+})
+
+test('the native Kilo route keeps user encoding when its cache breakpoints roll', () => {
+  const history = [{ role: 'system', content: 'stable instructions' }, { role: 'user', content: 'first request' }]
+  const requests = []
+  const send = () => { const messages = structuredClone(history); r.applyKiloCacheBreakpoints(messages); requests.push(messages) }
+  send()
+  history.push({ role: 'assistant', content: 'first reply' }, { role: 'user', content: 'second request' })
+  send()
+  history.push({ role: 'assistant', content: null, tool_calls: [{ id: 'native-call', type: 'function', function: { name: 'Read', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'native-call', content: 'native tool receipt' }, { role: 'user', content: 'third request' })
+  send()
+  history.push({ role: 'assistant', content: 'third reply' }, { role: 'user', content: 'fourth request' })
+  send()
+  const wire = messages => messages.map(message => JSON.stringify(message, (key, value) => key === 'cache_control' ? undefined : value))
+  for (let index = 1; index < requests.length; index++) {
+    const before = wire(requests[index - 1]), after = wire(requests[index])
+    assert.deepEqual(after.slice(0, before.length), before, 'native Kilo must not demote old user text parts when a marker moves')
+  }
+  const last = requests.at(-1)
+  assert.equal(last.find(message => message.role === 'tool').content, 'native tool receipt', 'tool strings stay stable without receiving cache markers')
+  assert.equal(last.filter(message => message.role === 'user' && message.content.some(part => part.cache_control)).length, 2, 'only the last two user messages get markers')
+})

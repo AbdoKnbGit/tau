@@ -37,7 +37,9 @@ import {
 export type ModDispatchOptions = {
   origin?: { plugin: string; tier: string }
   skip?: { runtime: ModRuntime; hook: number }
+  validateInput?: (input: ModRecord) => void
   validateResult?: (result: ModRecord) => void
+  onWarning?: (text: string) => void
 }
 
 type ActiveMod = {
@@ -90,6 +92,9 @@ export function hasModEvent(event: string): boolean {
 export function takeModLogs(): string[] {
   return logs.splice(0)
 }
+export function logModCompactionFallback(text: string): void {
+  logs.push(text)
+}
 export function getModWarnings(): string[] {
   return [...warnings]
 }
@@ -135,6 +140,10 @@ function dispatchModSnapshot(
               }
             : undefined,
           async () => {
+            if (method === 'session.compact') {
+              const { compactModSession } = await import('./compactApi.js')
+              return compactModSession(args, signal, frame, mod.plugin.name)
+            }
             if (MOD_API_EVENTS.has(method)) {
               const isMcp = method === 'mcp.call' || method === 'mcp.connect'
               const mcp = isMcp ? await import('./mcpApi.js') : undefined
@@ -174,11 +183,12 @@ function dispatchModSnapshot(
         ),
       {
         signal,
-        warn,
+        warn: text => { warn(text); options.onWarning?.(text) },
         origin: options.origin,
         skipHook:
           options.skip?.runtime === mod.runtime ? options.skip.hook : undefined,
         validateResult: options.validateResult,
+        validateInput: options.validateInput,
       },
     )
   }
@@ -282,7 +292,7 @@ export async function stopPluginMods(): Promise<void> {
 }
 
 /** Called at session start or explicit reload, never by catalog discovery. */
-export async function startPluginMods(reload = false): Promise<void> {
+export async function startPluginMods(reload = false, startupSessionId?: string): Promise<void> {
   if (loading) {
     await loading
     if (!reload) return
@@ -354,6 +364,7 @@ export async function startPluginMods(reload = false): Promise<void> {
             host: createModHost({
               id: plugin.source,
               name: plugin.name,
+              startupSessionId,
               commands,
               reserved,
               tools,

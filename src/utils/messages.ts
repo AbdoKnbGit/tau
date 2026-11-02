@@ -2027,6 +2027,7 @@ export function normalizeMessagesForAPI(
   tools: Tools = [],
   options: { provider?: APIProvider; model?: string } = {},
 ): (UserMessage | AssistantMessage)[] {
+  messages = stripThinkingFromRetainedTurns(messages, options.model)
   const preserveOpenRouterReasoning = getAPIProvider() === 'openrouter'
   // The Codex lane and the xAI and Meta Responses routes replay encrypted
   // reasoning from this state, each only to the model that produced it.
@@ -5385,6 +5386,39 @@ export function filterOrphanedThinkingOnlyMessages(
     })
     return true
   }).messages
+}
+
+/**
+ * Compaction adds back the rows it keeps, and fullscreen holds the earlier copies
+ * for scrollback. Row keys are UUIDs, so display each row once, where it now is.
+ * Display only: the list itself stays append-only for the transcript writer.
+ */
+export function withoutRepeatedRows<T extends { uuid: string }>(messages: T[]): T[] {
+  if (new Set(messages.map(message => message.uuid)).size === messages.length) return messages
+  const lastIndex = new Map(messages.map((message, index) => [message.uuid, index]))
+  return messages.filter((message, index) => lastIndex.get(message.uuid) === index)
+}
+
+// These models bind a thinking block to the conversation prefix that produced it.
+const THINKING_BOUND_TO_CONVERSATION =
+  /(?:fable|mythos)[-.]5[-.]1|(?:opus|sonnet|haiku)[-.]5[-.]5/i
+
+/**
+ * A summary changes the prefix that produced retained thinking. These models
+ * reject that replay, so strip only the outbound copy of affected kept turns.
+ * Partial 'from' keeps its original prefix and must retain its thinking.
+ */
+function stripThinkingFromRetainedTurns(messages: Message[], model: string | undefined): Message[] {
+  if (!model || !THINKING_BOUND_TO_CONVERSATION.test(model)) return messages
+  const boundary = messages.findLast(isCompactBoundaryMessage)
+  if (!boundary) return messages
+  const segment = boundary.compactMetadata?.preservedSegment
+  if (!segment || (segment.anchorUuid === boundary.uuid && !segment.messageUuids)) return messages
+  const head = messages.findIndex(message => message.uuid === segment.headUuid)
+  const tail = messages.findIndex(message => message.uuid === segment.tailUuid)
+  const retained = new Set<string>(segment.messageUuids ??
+    (head >= 0 && tail >= head ? messages.slice(head, tail + 1).map(message => message.uuid) : []))
+  return messages.map(message => retained.has(message.uuid) ? stripSignatureBlocks([message])[0]! : message)
 }
 
 /**

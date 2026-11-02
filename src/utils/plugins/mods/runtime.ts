@@ -9,6 +9,13 @@ import type { ModCallFrame } from './toolContext.js'
 import { isModTurnAbort } from './sessionState.js'
 
 export type ModRecord = Record<string, any>
+const mutableEventFields: Record<string, ReadonlySet<string>> = {
+  'prompt.submit': new Set(['text', 'context']),
+  'skill.prompt': new Set(['text', 'frontmatter']),
+  'session.compact': new Set(['instructions', 'messages']),
+  'turn.start': new Set(),
+  'turn.complete': new Set(),
+}
 export type ModHook = { event: string; matcher?: ModRecord; hasCatch: boolean }
 export type ModHost = (
   method: string,
@@ -325,6 +332,7 @@ export class ModRuntime {
       origin?: { plugin: string; tier: string }
       skipHook?: number
       validateResult?: (result: ModRecord) => void
+      validateInput?: (input: ModRecord) => void
       warn?: (message: string) => void
     } = {},
   ): Promise<unknown> {
@@ -351,9 +359,9 @@ export class ModRuntime {
         if (recovering && called) return called
         if (MOD_API_EVENTS.has(event) && called)
           return Promise.reject(new Error('next() has already been called'))
-        if (event === 'prompt.submit' || event === 'skill.prompt' || event === 'turn.start' || event === 'turn.complete') {
+        const mutable = Object.hasOwn(mutableEventFields, event) ? mutableEventFields[event] : undefined
+        if (mutable) {
           if (called) return Promise.reject(new Error('next() has already been called'))
-          const mutable = event === 'prompt.submit' ? new Set(['text', 'context']) : event === 'skill.prompt' ? new Set(['text', 'frontmatter']) : new Set<string>()
           for (const key of new Set([...Object.keys(current), ...Object.keys(rewritten)])) {
             if (!mutable.has(key) && rewritten[key] !== undefined && JSON.stringify(rewritten[key]) !== JSON.stringify(current[key]))
               return Promise.reject(new Error(`${event} cannot rewrite ${key}`))
@@ -399,6 +407,7 @@ export class ModRuntime {
             else rewritten[key] = current[key]
           }
         }
+        options.validateInput?.(rewritten)
         return (called = run(position + 1, rewritten).catch(error => {
           downstreamFailure = error
           throw error

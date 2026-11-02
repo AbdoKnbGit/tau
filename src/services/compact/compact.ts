@@ -303,6 +303,7 @@ export function truncateHeadForPTLRetry(
 export const ERROR_MESSAGE_PROMPT_TOO_LONG =
   'Conversation too long. Press esc twice to go up a few messages and try again.'
 export const ERROR_MESSAGE_USER_ABORT = 'API Error: Request was aborted.'
+export class CompactionBlockedError extends Error {}
 export const ERROR_MESSAGE_INCOMPLETE_RESPONSE =
   'Compaction interrupted · This may be due to network issues — please try again.'
 
@@ -313,6 +314,7 @@ export interface CompactionResult {
   hookResults: HookResultMessage[]
   messagesToKeep?: Message[]
   userDisplayMessage?: string
+  modFallbackMessage?: string
   preCompactTokenCount?: number
   postCompactTokenCount?: number
   truePostCompactTokenCount?: number
@@ -407,6 +409,7 @@ export async function compactConversation(
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
   preserveRecentContext: boolean = false,
+  preparation?: { preCompact: Awaited<ReturnType<typeof executePreCompactHooks>>; deferCommit?: true; summary?: string; finalizeRecentContext?: (hooks: Message[]) => void },
 ): Promise<CompactionResult> {
   try {
     if (messages.length === 0) {
@@ -425,13 +428,14 @@ export async function compactConversation(
 
     // Execute PreCompact hooks
     context.setSDKStatus?.('compacting')
-    const hookResult = await executePreCompactHooks(
+    const hookResult = preparation?.preCompact ?? await executePreCompactHooks(
       {
         trigger: isAutoCompact ? 'auto' : 'manual',
         customInstructions: customInstructions ?? null,
       },
       context.abortController.signal,
     )
+    if (hookResult.blockedReason) throw new CompactionBlockedError(hookResult.blockedReason)
     customInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,
@@ -506,6 +510,7 @@ export async function compactConversation(
       }
     }
 
+    context.abortController.signal.throwIfAborted()
     if (!summary) {
       logForDebugging(
         `Compact failed: no summary text in response. Response: ${jsonStringify(summaryResponse)}`,
@@ -533,6 +538,7 @@ export async function compactConversation(
       throw new Error(summary)
     }
 
+    if (preparation?.deferCommit) preparation.summary = summary
     // Store the current file state before clearing
     const preCompactReadFileState = cacheToObject(context.readFileState)
 
@@ -608,8 +614,9 @@ export async function compactConversation(
       hookType: 'session_start',
     })
     // Execute SessionStart hooks after successful compaction
-    const hookMessages = await processSessionStartHooks('compact', {
+    const hookMessages = preparation?.deferCommit ? [] : await processSessionStartHooks('compact', {
       model: context.options.mainLoopModel,
+      signal: context.abortController.signal,
     })
 
     // Create the compact boundary marker and summary messages before the
@@ -643,7 +650,13 @@ export async function compactConversation(
     ]
 
     let messagesToKeep: Message[] | undefined
-    if (isAutoCompact && preserveRecentContext && recompactionInfo) {
+    const originalBoundary = boundaryMarker
+    const originalSummary = summaryMessages[0]!
+    const retainRecentContext = (hookMessages: Message[]) => {
+      boundaryMarker = originalBoundary
+      summaryMessages[0] = originalSummary
+      messagesToKeep = undefined
+      if (!isAutoCompact || !preserveRecentContext || !recompactionInfo) return
       try {
         // Keep the existing summary request (including its full cached prefix)
         // unchanged. Since it covers the entire conversation, retaining less
@@ -723,6 +736,7 @@ export async function compactConversation(
         logError(error)
       }
     }
+    retainRecentContext(hookMessages)
 
     // Previously "postCompactTokenCount" — renamed because this is the
     // compact API call's total usage (input_tokens ≈ preCompactTokenCount),
@@ -796,33 +810,14 @@ export async function compactConversation(
       })(),
     })
 
-    // Reset cache read baseline so the post-compact drop isn't flagged as a break
-    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-      notifyCompaction(
-        context.options.querySource ?? 'compact',
-        context.agentId,
-      )
-    }
-    markPostCompaction()
-
-    // Re-append session metadata (custom title, tag) so it stays within
-    // the 16KB tail window that readLiteMetadata reads for --resume display.
-    // Without this, enough post-compaction messages push the metadata entry
-    // out of the window, causing --resume to show the auto-generated title
-    // instead of the user-set session name.
-    reAppendSessionMetadata()
-
-    // Write a reduced transcript segment for the pre-compaction messages
-    // (assistant mode only). Fire-and-forget — errors are logged internally.
-    if (feature('KAIROS')) {
-      void sessionTranscriptModule?.writeSessionTranscriptSegment(messages)
-    }
+    // A mod may veto or replace this candidate on the way back up the chain.
+    if (!preparation?.deferCommit) markFullCompactionCommitted(context, messages)
 
     context.onCompactProgress?.({
       type: 'hooks_start',
       hookType: 'post_compact',
     })
-    const postCompactHookResult = await executePostCompactHooks(
+    const postCompactHookResult = preparation?.deferCommit ? {} : await executePostCompactHooks(
       {
         trigger: isAutoCompact ? 'auto' : 'manual',
         compactSummary: summary,
@@ -837,7 +832,7 @@ export async function compactConversation(
       .filter(Boolean)
       .join('\n')
 
-    return {
+    const result: CompactionResult = {
       boundaryMarker,
       summaryMessages,
       ...(messagesToKeep ? { messagesToKeep } : {}),
@@ -849,6 +844,16 @@ export async function compactConversation(
       truePostCompactTokenCount,
       compactionUsage,
     }
+    if (preparation?.deferCommit && isAutoCompact && preserveRecentContext && recompactionInfo) {
+      // Accepted completion context must use the native retention budget.
+      preparation.finalizeRecentContext = hooks => {
+        if (!hooks.length) return
+        retainRecentContext(hooks)
+        result.boundaryMarker = boundaryMarker
+        result.messagesToKeep = messagesToKeep
+      }
+    }
+    return result
   } catch (error) {
     // Only show the error notification for manual /compact.
     // Auto-compact failures are retried on the next turn and the
@@ -864,6 +869,15 @@ export async function compactConversation(
     context.onCompactProgress?.({ type: 'compact_end' })
     context.setSDKStatus?.(null)
   }
+}
+
+export function markFullCompactionCommitted(context: ToolUseContext, messages: Message[]): void {
+  if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+    notifyCompaction(context.options.querySource ?? 'compact', context.agentId)
+  }
+  markPostCompaction()
+  reAppendSessionMetadata()
+  if (feature('KAIROS')) void sessionTranscriptModule?.writeSessionTranscriptSegment(messages)
 }
 
 /**
@@ -927,6 +941,7 @@ export async function partialCompactConversation(
       context.abortController.signal,
     )
 
+    if (hookResult.blockedReason) throw new Error(hookResult.blockedReason)
     // Merge hook instructions with user feedback
     let customInstructions: string | undefined
     if (hookResult.newCustomInstructions && userFeedback) {
@@ -1216,9 +1231,10 @@ export async function partialCompactConversation(
 
 function addErrorNotificationIfNeeded(
   error: unknown,
-  context: Pick<ToolUseContext, 'addNotification'>,
+  context: Pick<ToolUseContext, 'addNotification' | 'abortController'>,
 ) {
   if (
+    !context.abortController.signal.aborted &&
     !hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT) &&
     !hasExactErrorMessage(error, ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
   ) {
@@ -1381,6 +1397,7 @@ async function streamCompactSummary({
     }
 
     // Regular streaming path (fallback when cache sharing fails or is disabled)
+    context.abortController.signal.throwIfAborted()
     const retryEnabled = getFeatureValue_CACHED_MAY_BE_STALE(
       'tengu_compact_streaming_retry',
       false,

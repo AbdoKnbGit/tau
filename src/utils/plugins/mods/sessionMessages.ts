@@ -113,11 +113,23 @@ export function projectModSessionMessages(messages: readonly Message[], options?
     })))
   }
 
+  return projectConversationRows(retained, retained.slice(-MAX_MESSAGES))
+}
+
+/** Compaction must address the full retained conversation, including rows
+ * older than the bounded read-only session.messages() window. */
+export function compactConversationRows(messages: readonly Message[]) {
+  const retained = activeConversation(messages)
+  const rows = projectConversationRows(retained, retained)
+  return retained.map((message, i) => ({ message, row: rows[i]! }))
+}
+
+function projectConversationRows(retained: ConversationMessage[], window: ConversationMessage[]): ModSessionMessage[] {
   const outcomes = new Map<string, ModToolResultSummary>()
   for (const message of retained) {
     for (const result of resultSummaries(message)) outcomes.set(result.tool_use_id, result)
   }
-  const rows = retained.slice(-MAX_MESSAGES).map(message => {
+  const rows = window.map(message => {
     const toolResults = resultSummaries(message)
     const toolUses: ModToolUseSummary[] = message.type !== 'assistant' ? [] : blocksOf(message)
       .filter(block => block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string')

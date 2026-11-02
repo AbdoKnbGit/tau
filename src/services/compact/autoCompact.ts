@@ -17,6 +17,8 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { logError } from '../../utils/log.js'
+import { hasModEvent } from '../../utils/plugins/mods/manager.js'
+import { runModAutoCompact } from './modAutoCompact.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
@@ -25,6 +27,7 @@ import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.
 import {
   type CompactionResult,
   compactConversation,
+  CompactionBlockedError,
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
 } from './compact.js'
@@ -185,6 +188,12 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
+// Conversations that declined compaction this turn. A synchronous subagent can
+// share its parent's signal, so each one keeps its own answer.
+const skippedTurns = new WeakMap<AbortSignal, Set<string | undefined>>()
+function markTurnSkipped(signal: AbortSignal, agentId: string | undefined): void {
+  skippedTurns.set(signal, (skippedTurns.get(signal) ?? new Set()).add(agentId))
+}
 
 /**
  * Token count at which automatic compaction fires for `model`.
@@ -363,7 +372,10 @@ export async function autoCompactIfNeeded(
   wasCompacted: boolean
   compactionResult?: CompactionResult
   consecutiveFailures?: number
+  skipReason?: string
 }> {
+  const signal = toolUseContext.abortController.signal
+  if (signal.aborted || skippedTurns.get(signal)?.has(toolUseContext.agentId)) return { wasCompacted: false }
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
     return { wasCompacted: false }
   }
@@ -396,6 +408,21 @@ export async function autoCompactIfNeeded(
     previousCompactTurnId: tracking?.turnId,
     autoCompactThreshold: getAutoCompactThreshold(model),
     querySource,
+  }
+
+  if (hasModEvent('session.compact') && (querySource === 'sdk' || querySource?.startsWith('repl_main_thread') || querySource?.startsWith('agent:'))) {
+    try {
+      const outcome = await runModAutoCompact(messages, toolUseContext, cacheSafeParams, recompactionInfo,
+        (querySource === 'sdk' || querySource?.startsWith('repl_main_thread') === true) && isRecentContextPreservationEnabled())
+      if ('skip' in outcome) { markTurnSkipped(signal, toolUseContext.agentId); return { wasCompacted: false, skipReason: outcome.skip } }
+      setLastSummarizedMessageId(undefined)
+      runPostCompactCleanup(querySource, toolUseContext.agentId)
+      return { wasCompacted: true, compactionResult: outcome.compactionResult, consecutiveFailures: 0 }
+    } catch (error) {
+      if (signal.aborted) return { wasCompacted: false }
+      logError(error)
+      return { wasCompacted: false, consecutiveFailures: (tracking?.consecutiveFailures ?? 0) + 1 }
+    }
   }
 
   // EXPERIMENT: Try session memory compaction first
@@ -451,6 +478,11 @@ export async function autoCompactIfNeeded(
       consecutiveFailures: 0,
     }
   } catch (error) {
+    if (signal.aborted) return { wasCompacted: false }
+    if (error instanceof CompactionBlockedError) {
+      markTurnSkipped(signal, toolUseContext.agentId)
+      return { wasCompacted: false, skipReason: error.message }
+    }
     if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
       logError(error)
     }

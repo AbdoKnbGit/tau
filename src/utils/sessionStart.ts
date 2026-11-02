@@ -21,6 +21,7 @@ type SessionStartHooksOptions = {
   forceSyncExecution?: boolean
   messages?: readonly Message[]
   sessionTitle?: string
+  signal?: AbortSignal
 }
 
 // Set by processSessionStartHooks when a hook emits initialUserMessage;
@@ -47,6 +48,7 @@ export async function processSessionStartHooks(
     forceSyncExecution,
     messages = [],
     sessionTitle,
+    signal,
   }: SessionStartHooksOptions = {},
 ): Promise<HookResultMessage[]> {
   // --bare skips all hooks. executeHooks already early-returns under --bare
@@ -55,6 +57,7 @@ export async function processSessionStartHooks(
   if (isBareMode()) {
     return []
   }
+  signal?.throwIfAborted()
   const hookMessages: HookResultMessage[] = []
   const additionalContexts: string[] = []
   const allWatchPaths: string[] = []
@@ -136,11 +139,13 @@ export async function processSessionStartHooks(
   }
 
   // Execute SessionStart hooks, ignoring blocking errors
+  signal?.throwIfAborted()
   // Startup hooks precede the renderer/headless loop. Expose the startup
   // transcript until its live owner takes over; the queue survives that handoff.
   if (!getModSessionBinding()) bindModSession({ getMessages: () => messages, getModel: () => model ?? getMainLoopModel() })
   const { startPluginMods } = await import('./plugins/mods/manager.js')
-  await startPluginMods().catch(error => logError(error))
+  // Resume hooks run before the transcript owner switches to its saved ID.
+  await startPluginMods(false, source === 'resume' ? sessionId : undefined).catch(error => logError(error))
   // Use the provided agentType or fall back to the one stored in bootstrap state
   const resolvedAgentType = agentType ?? getMainThreadAgentType()
   for await (const hookResult of executeSessionStartHooks(
@@ -148,7 +153,7 @@ export async function processSessionStartHooks(
     sessionId,
     resolvedAgentType,
     model,
-    undefined,
+    signal,
     undefined,
     forceSyncExecution,
     {
@@ -156,6 +161,7 @@ export async function processSessionStartHooks(
       ...(sessionTitle !== undefined ? { session_title: sessionTitle } : {}),
     },
   )) {
+    signal?.throwIfAborted()
     if (hookResult.sessionTitle && (source === 'startup' || source === 'resume' || source === 'fork')) {
       await applyHookSessionTitle(hookResult.sessionTitle, undefined, sessionId)
     }
@@ -177,6 +183,7 @@ export async function processSessionStartHooks(
     }
   }
 
+  signal?.throwIfAborted()
   if (allWatchPaths.length > 0) {
     updateWatchPaths(allWatchPaths)
   }

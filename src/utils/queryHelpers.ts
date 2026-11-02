@@ -10,6 +10,7 @@ import { runTools } from '../services/tools/toolOrchestration.js'
 import { findToolByName, type Tool, type Tools } from '../Tool.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
+import { CHANGES_NOT_SHOWN, isTruncatedDiffSnippet } from '../tools/FileEditTool/utils.js'
 import type { Input as FileReadInput } from '../tools/FileReadTool/FileReadTool.js'
 import {
   FILE_READ_TOOL_NAME,
@@ -414,11 +415,27 @@ export function extractReadFilesFromMessages(
 
   // Second pass: find corresponding tool results and extract content
   for (const message of messages) {
+    // Older transcripts also carry the displayed snippet. A partial notice
+    // cannot grant more access when replayed than when it was displayed.
+    if (message.type === 'attachment' && message.attachment.type === 'edited_text_file') {
+      const { filename, snippet } = message.attachment
+      if (snippet === CHANGES_NOT_SHOWN || isTruncatedDiffSnippet(snippet)) {
+        const path = expandPath(filename, cwd)
+        const previous = cache.get(path)
+        if (previous) cache.set(path, { ...previous, isPartialView: true })
+      }
+    }
     if (message.type === 'user' && Array.isArray(message.message.content)) {
       for (const content of message.message.content) {
-        if (content.type === 'tool_result' && content.tool_use_id) {
+        if (content.type === 'tool_result' && content.tool_use_id && !content.is_error) {
           // Handle Read tool results
           const readFilePath = fileReadToolUseIds.get(content.tool_use_id)
+          if (readFilePath && 'toolResultReplaced' in message && message.toolResultReplaced === true) {
+            // The replacement may have any shape. Never use it as disk contents.
+            const previous = cache.get(readFilePath)
+            if (previous) cache.set(readFilePath, { ...previous, isPartialView: true })
+            continue
+          }
           if (
             readFilePath &&
             typeof content.content === 'string' &&
@@ -470,20 +487,24 @@ export function extractReadFilesFromMessages(
           // result (only a snippet). Read from disk now, using actual mtime
           // so getChangedFiles's mtime check passes on the next turn.
           //
-          // Callers seed the cache once at process start (print.ts --resume,
-          // Cowork cold-restart per turn), so disk content at extraction time
-          // IS the post-edit state. No dedup: processing every Edit preserves
-          // last-wins semantics when Read/Write interleave (Edit→Read→Edit).
+          // The disk snapshot is useful for diffs, but the Edit only showed
+          // a snippet. Keep any existing visibility restriction. A change
+          // made after the recorded Edit also needs a fresh Read before Write.
           const editFilePath = fileEditToolUseIds.get(content.tool_use_id)
-          if (editFilePath && content.is_error !== true) {
+          if (editFilePath && message.timestamp) {
             try {
               const { content: diskContent } =
                 readFileSyncWithMetadata(editFilePath)
+              const previous = cache.get(editFilePath)
+              const timestamp = getFileModificationTime(editFilePath)
+              const recordedAt = Date.parse(message.timestamp)
+              const hadFullView = previous && !previous.isPartialView && timestamp <= recordedAt
               cache.set(editFilePath, {
                 content: diskContent,
-                timestamp: getFileModificationTime(editFilePath),
+                timestamp,
                 offset: undefined,
                 limit: undefined,
+                ...(!hadFullView && { isPartialView: true }),
               })
             } catch (e: unknown) {
               if (!isFsInaccessible(e)) {

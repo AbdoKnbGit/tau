@@ -358,10 +358,9 @@ export const FileEditTool = buildTool({
     }
 
     // The model has seen only a partial view (a skeleton, or content injected
-    // with parts removed): seed a full read-state from disk and proceed. Safety
-    // is still enforced by the old_string match below — a region the model
-    // never saw fails with "String to replace not found", never a silent
-    // clobber.
+    // with parts removed): refresh the disk snapshot for the exact match below,
+    // but keep the partial-view flag. This check does not expose the full file
+    // or authorize a later Write to replace unseen contents.
     if (readTimestamp.isPartialView) {
       const seeded = {
         content: fileContent,
@@ -454,6 +453,10 @@ export const FileEditTool = buildTool({
       let recoveryHint: string
       if (file.length <= 2000) {
         recoveryHint = `\n${differenceSummary(mismatch, old_string)}Current file content:\n${file}`
+        // Unlike a successful Edit or a windowed hint, this refusal shows it all.
+        if (readTimestamp.isPartialView) {
+          toolUseContext.readFileState.set(fullFilePath, { ...readTimestamp, isPartialView: false })
+        }
       } else {
         recoveryHint = mismatch
           ? retryHintFromMismatch(mismatch, old_string)
@@ -900,10 +903,12 @@ export const FileEditTool = buildTool({
  * the text is unchanged (FileReadTool/rangeDedup.ts compares it).
  */
 function carriedReadState(previous: FileState | undefined): {
+  isPartialView?: true
   sourceMapsOmitted?: true
   seenRanges?: FileState['seenRanges']
 } {
   return {
+    ...(previous?.isPartialView ? { isPartialView: true as const } : {}),
     ...(previous?.sourceMapsOmitted ? { sourceMapsOmitted: true as const } : {}),
     ...(previous?.seenRanges ? { seenRanges: previous.seenRanges } : {}),
   }
@@ -1023,12 +1028,12 @@ function staleReadRefusal(
     return undefined
   }
   context.readFileState.set(fullFilePath, {
+    ...carriedReadState(previous),
     content: current,
     timestamp,
     offset: undefined,
     limit: undefined,
-    ...(whole ? {} : { isPartialView: true }),
-    ...carriedReadState(previous),
+    isPartialView: !whole,
   })
   recordFileRead(fullFilePath, context.agentId)
   noteFileRead(fullFilePath)

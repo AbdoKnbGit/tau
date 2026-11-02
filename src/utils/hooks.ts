@@ -4541,6 +4541,7 @@ export async function executePreCompactHooks(
 ): Promise<{
   newCustomInstructions?: string
   userDisplayMessage?: string
+  blockedReason?: string
 }> {
   const hookInput: PreCompactHookInput = {
     ...createBaseHookInput(undefined),
@@ -4561,6 +4562,8 @@ export async function executePreCompactHooks(
   }
 
   // Extract custom instructions from successful hooks with non-empty output
+  const veto = results.find(result => result.blocked)
+  if (veto) return { blockedReason: veto.blockingReason || veto.output.trim() || 'Compaction blocked by PreCompact' }
   const successfulOutputs = results
     .filter(result => result.succeeded && result.output.trim().length > 0)
     .map(result => result.output.trim())

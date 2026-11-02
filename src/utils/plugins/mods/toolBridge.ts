@@ -245,6 +245,7 @@ export async function runModToolCall(
       Object.assign(message, {
         hookClassifierContext: originalResult.hookClassifierContext,
       })
+    if (tool.onResultReplaced) Object.assign(message, { toolResultReplaced: true })
     // Preserve side effects on host context when a mod replaces an executed
     // tool's answer. Only its tool_result is replaced; hook/progress evidence stays.
     updates = (prior?.updates ?? last?.updates ?? []).filter(

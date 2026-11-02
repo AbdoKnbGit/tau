@@ -23,12 +23,7 @@ export function applyKiloCacheBreakpoints(messages: OpenAIMessage[]): void {
 
   const stampUserMessage = (m: OpenAIMessage): void => {
     if (m.role !== 'user') return
-    if (typeof m.content === 'string') {
-      const text = m.content
-      m.content = [
-        { type: 'text', text: text.length > 0 ? text : ' ', cache_control: { type: 'ephemeral' } },
-      ]
-    } else if (Array.isArray(m.content) && m.content.length > 0) {
+    if (Array.isArray(m.content) && m.content.length > 0) {
       stamp(m.content)
     }
   }
@@ -42,6 +37,13 @@ export function applyKiloCacheBreakpoints(messages: OpenAIMessage[]): void {
       }
     } else if (Array.isArray(sys.content)) {
       stamp(sys.content)
+    }
+  }
+
+  // Moving a marker must not change an older user message's wire encoding.
+  for (const message of messages) {
+    if (message.role === 'user' && typeof message.content === 'string') {
+      message.content = [{ type: 'text', text: message.content || ' ' }]
     }
   }
 

@@ -24,6 +24,7 @@ import type { LocalCommandCall } from '../../types/command.js'
 import type { Message } from '../../types/message.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
 import { executePreCompactHooks } from '../../utils/hooks.js'
+import { hasModEvent } from '../../utils/plugins/mods/manager.js'
 import { logError } from '../../utils/log.js'
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js'
 import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck.js'
@@ -53,9 +54,28 @@ export const call: LocalCommandCall = async (args, context) => {
   const customInstructions = args.trim()
 
   try {
+    if (!context.agentId && hasModEvent('session.compact')) {
+      const { runCompactTransaction } = await import('../../utils/plugins/mods/compactApi.js')
+      const { inToolContext } = await import('../../utils/plugins/mods/lifecycle.js')
+      const outcome = await inToolContext(context, context.canUseTool, () =>
+        runCompactTransaction(context, customInstructions || undefined, abortController.signal, 'manual'),
+      )
+      if (!outcome.result) return { type: 'text', value: outcome.receipt.skip }
+      return {
+        type: 'compact',
+        compactionResult: outcome.result,
+        displayText: buildDisplayText(context, outcome.result.userDisplayMessage),
+      }
+    }
+    const preCompact = await executePreCompactHooks(
+      { trigger: 'manual', customInstructions: customInstructions || null },
+      abortController.signal,
+    )
+    abortController.signal.throwIfAborted()
+    if (preCompact.blockedReason) return { type: 'text', value: preCompact.blockedReason }
     // Try session memory compaction first if no custom instructions
     // (session memory compaction doesn't support custom instructions)
-    if (!customInstructions) {
+    if (!customInstructions && !preCompact.newCustomInstructions) {
       const sessionMemoryResult = await trySessionMemoryCompaction(
         messages,
         context.agentId,
@@ -78,7 +98,7 @@ export const call: LocalCommandCall = async (args, context) => {
         return {
           type: 'compact',
           compactionResult: sessionMemoryResult,
-          displayText: buildDisplayText(context),
+          displayText: buildDisplayText(context, preCompact.userDisplayMessage),
         }
       }
     }
@@ -91,6 +111,7 @@ export const call: LocalCommandCall = async (args, context) => {
         context,
         customInstructions,
         reactiveCompact,
+        preCompact,
       )
     }
 
@@ -106,6 +127,9 @@ export const call: LocalCommandCall = async (args, context) => {
       false,
       customInstructions,
       false,
+      undefined,
+      false,
+      { preCompact },
     )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
@@ -142,6 +166,7 @@ async function compactViaReactive(
   context: ToolUseContext,
   customInstructions: string,
   reactive: NonNullable<typeof reactiveCompact>,
+  hookResult: Awaited<ReturnType<typeof executePreCompactHooks>>,
 ): Promise<{
   type: 'compact'
   compactionResult: CompactionResult
@@ -154,16 +179,7 @@ async function compactViaReactive(
   context.setSDKStatus?.('compacting')
 
   try {
-    // Hooks and cache-param build are independent — run concurrently.
-    // getCacheSharingParams walks all tools to build the system prompt;
-    // pre-compact hooks spawn subprocesses. Neither depends on the other.
-    const [hookResult, cacheSafeParams] = await Promise.all([
-      executePreCompactHooks(
-        { trigger: 'manual', customInstructions: customInstructions || null },
-        context.abortController.signal,
-      ),
-      getCacheSharingParams(context, messages),
-    ])
+    const cacheSafeParams = await getCacheSharingParams(context, messages)
     const mergedInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,
@@ -250,7 +266,7 @@ function buildDisplayText(
   return chalk.dim('Compacted ' + dimmed.join('\n'))
 }
 
-async function getCacheSharingParams(
+export async function getCacheSharingParams(
   context: ToolUseContext,
   forkContextMessages: Message[],
 ): Promise<{

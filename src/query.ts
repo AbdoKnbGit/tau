@@ -594,7 +594,7 @@ async function* queryLoop(
     )
 
     queryCheckpoint('query_autocompact_start')
-    const { compactionResult, consecutiveFailures } = await deps.autocompact(
+    const { compactionResult, consecutiveFailures, skipReason } = await deps.autocompact(
       messagesForQuery,
       toolUseContext,
       {
@@ -609,6 +609,8 @@ async function* queryLoop(
       snipTokensFreed,
     )
     queryCheckpoint('query_autocompact_end')
+
+    if (skipReason) yield createSystemMessage(`Automatic compaction skipped: ${skipReason}`, 'warning')
 
     if (compactionResult) {
       const {

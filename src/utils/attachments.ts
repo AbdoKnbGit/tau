@@ -65,7 +65,7 @@ import {
 import { randomUUID, type UUID } from 'crypto'
 import { getInitialSettings, getSettings_DEPRECATED } from './settings/settings.js'
 import { getPowerModeFromSettings, type PowerMode } from './powerMode.js'
-import { getSnippetForTwoFileDiff } from 'src/tools/FileEditTool/utils.js'
+import { CHANGES_NOT_SHOWN, getSnippetForTwoFileDiff, isTruncatedDiffSnippet } from 'src/tools/FileEditTool/utils.js'
 import type {
   ContentBlockParam,
   ImageBlockParam,
@@ -2221,6 +2221,10 @@ async function processMcpResourceAttachments(
   ) as Attachment[]
 }
 
+// Diff text one round of change notices may carry. A branch switch can change
+// every file the model has read; files past this get a line without their diff.
+const CHANGED_FILES_MAX_DIFF_CHARS = 32 * 1024
+
 export async function getChangedFiles(
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
@@ -2233,8 +2237,9 @@ export async function getChangedFiles(
       const fileState = toolUseContext.readFileState.get(filePath)
       if (!fileState) return null
 
-      // TODO: Implement offset/limit support for changed files
-      if (fileState.offset !== undefined || fileState.limit !== undefined) {
+      // Read records a whole-file read with offset 1, and 0 starts at the same
+      // line; ranged reads cannot anchor a full diff.
+      if ((fileState.offset ?? 1) > 1 || fileState.limit !== undefined) {
         return null
       }
 
@@ -2248,6 +2253,12 @@ export async function getChangedFiles(
       try {
         const mtime = await getFileModificationTimeAsync(normalizedPath)
         if (mtime <= fileState.timestamp) {
+          return null
+        }
+
+        // A notebook has no diff to show. Its stale read state is what makes
+        // NotebookEdit and Write ask for a real Read of the new cells.
+        if (normalizedPath.toLowerCase().endsWith('.ipynb')) {
           return null
         }
 
@@ -2272,22 +2283,24 @@ export async function getChangedFiles(
           ...toolUseContext,
           readResultHidden: true,
         })
-        // Extract only the changed section
         if (result.data.type === 'text') {
-          const snippet = getSnippetForTwoFileDiff(
-            fileState.content,
-            result.data.file.content,
-          )
-
-          // File was touched but not modified
-          if (snippet === '') {
+          // File was touched but not modified. Compare the stored text: the
+          // result hides inline source maps. What the model knows still holds,
+          // so its read state, unchanged-Read stubs included, stays valid.
+          const current = toolUseContext.readFileState.get(filePath)
+          if (current?.content === fileState.content) {
+            toolUseContext.readFileState.set(filePath, {
+              ...fileState,
+              timestamp: current.timestamp,
+            })
             return null
           }
 
           return {
-            type: 'edited_text_file' as const,
+            filePath,
             filename: normalizedPath,
-            snippet,
+            previous: fileState,
+            text: result.data.file.content,
           }
         }
 
@@ -2309,7 +2322,7 @@ export async function getChangedFiles(
           }
         }
 
-        // notebook / pdf / parts — no diff representation; explicitly
+        // pdf / parts — no diff representation; explicitly
         // null so the map callback has no implicit-undefined path.
         return null
       } catch (err) {
@@ -2327,7 +2340,41 @@ export async function getChangedFiles(
       }
     }),
   )
-  return results.filter(result => result != null) as Attachment[]
+
+  // Diffs run one at a time so the budget also bounds their CPU: a rewrite of
+  // every file stops diffing after a few instead of blocking on all of them.
+  const attachments: Attachment[] = []
+  let diffChars = 0
+  for (const result of results) {
+    if (!result) continue
+    if ('type' in result) {
+      attachments.push(result)
+      continue
+    }
+    let snippet = ''
+    if (diffChars < CHANGED_FILES_MAX_DIFF_CHARS) {
+      try {
+        snippet = getSnippetForTwoFileDiff(result.previous.content, result.text)
+      } catch (error) {
+        logError(error)
+      }
+      diffChars += snippet.length
+    }
+    // The model has not seen the whole file. Write must ask for a real Read;
+    // Edit stays safe because its old_string has to match the file on disk.
+    if (result.previous.isPartialView || !snippet || isTruncatedDiffSnippet(snippet)) {
+      const current = toolUseContext.readFileState.get(result.filePath)
+      if (current) {
+        toolUseContext.readFileState.set(result.filePath, { ...current, isPartialView: true })
+      }
+    }
+    attachments.push({
+      type: 'edited_text_file',
+      filename: result.filename,
+      snippet: snippet || CHANGES_NOT_SHOWN,
+    })
+  }
+  return attachments
 }
 
 /**

@@ -1590,6 +1590,14 @@ export type TeamInfo = {
 //  - Compaction (useLogMessages): new CB/summary appear FIRST, then recorded
 //    messagesToKeep → not a prefix → not tracked → CB gets parentUuid=null
 //    (correct: truncates --continue chain at compact boundary).
+//
+// One exception: a new message INSIDE the boundary's ordered preservedSegment
+// (a mod's replacement can mix new rows with retained ones). The loader relinks
+// the segment in order but re-parents only the anchor's other children, so a
+// later message chained from that new row would cut off the retained rows after
+// it on resume. Once one is new, the segment's recorded rows after it are
+// tracked too. Parents then follow array position alone, so racing writers
+// (the mod API and useLogMessages) agree on them.
 export async function recordTranscript(
   messages: Message[],
   teamInfo?: TeamInfo,
@@ -1599,19 +1607,37 @@ export async function recordTranscript(
   const cleanedMessages = cleanMessagesForLogging(messages, allMessages)
   const sessionId = getSessionId() as UUID
   const messageSet = await getSessionMessages(sessionId)
-  const newMessages: typeof cleanedMessages = []
+  let newMessages: typeof cleanedMessages = []
   let startingParentUuid: UUID | undefined = startingParentUuidHint
   let seenNewMessage = false
+  let orderedSegment: ReadonlySet<string> | undefined
+  let seenNewInSegment = false
   for (const m of cleanedMessages) {
+    if (isCompactBoundaryMessage(m)) {
+      orderedSegment = new Set(m.compactMetadata?.preservedSegment?.messageUuids)
+      seenNewInSegment = false
+    }
     if (messageSet.has(m.uuid as UUID)) {
       // Only track skipped messages that form a prefix. After compaction,
       // messagesToKeep appear AFTER new CB/summary, so this skips them.
-      if (!seenNewMessage && isChainParticipant(m)) {
+      const tracked = !seenNewMessage || (seenNewInSegment && orderedSegment?.has(m.uuid))
+      if (tracked && isChainParticipant(m)) {
+        if (newMessages.length > 0) {
+          await getProject().insertMessageChain(
+            newMessages,
+            false,
+            undefined,
+            startingParentUuid,
+            teamInfo,
+          )
+          newMessages = []
+        }
         startingParentUuid = m.uuid as UUID
       }
     } else {
       newMessages.push(m)
       seenNewMessage = true
+      if (orderedSegment?.has(m.uuid)) seenNewInSegment = true
     }
   }
   if (newMessages.length > 0) {
@@ -2290,6 +2316,54 @@ function findLatestMessage<T extends { timestamp: string }>(
 }
 
 /**
+ * A preserved segment relinks older rows after its newer boundary and summary, so
+ * the newest row can sit in the middle of the chain. Follow the conversation from
+ * it to the end. Elsewhere children are written after their parents and it stays put.
+ */
+function walkToConversationEnd(
+  messages: Map<UUID, TranscriptMessage>,
+  start: TranscriptMessage,
+): TranscriptMessage {
+  const children = new Map<UUID, { row: TranscriptMessage; order: number }[]>()
+  let order = 0
+  for (const message of messages.values()) {
+    if (message.isSidechain || !message.parentUuid) continue
+    const child = { row: message, order: order++ }
+    const siblings = children.get(message.parentUuid)
+    if (siblings) siblings.push(child)
+    else children.set(message.parentUuid, [child])
+  }
+  const seen = new Set<UUID>([start.uuid])
+  let end = start
+  while (children.has(end.uuid)) {
+    // A retained attachment or system row can connect two conversation rows.
+    // Select among the next conversation rows, preserving the on-disk tie break.
+    const pending = [...children.get(end.uuid)!]
+    let next: TranscriptMessage | undefined
+    let bestTime = -Infinity
+    let bestOrder = -1
+    while (pending.length) {
+      const { row, order } = pending.pop()!
+      if (seen.has(row.uuid)) continue
+      seen.add(row.uuid)
+      if (row.type !== 'user' && row.type !== 'assistant') {
+        for (const child of children.get(row.uuid) ?? []) pending.push(child)
+        continue
+      }
+      const time = Date.parse(row.timestamp)
+      if (!next || time > bestTime || (time === bestTime && order > bestOrder)) {
+        next = row
+        bestTime = time
+        bestOrder = order
+      }
+    }
+    if (!next) break
+    end = next
+  }
+  return end
+}
+
+/**
  * Builds a conversation chain from a leaf message to root
  * @param messages Map of all messages
  * @param leafMessage The leaf message to start from
@@ -2319,7 +2393,35 @@ export function buildConversationChain(
       : undefined
   }
   transcript.reverse()
-  return recoverOrphanedParallelToolResults(messages, transcript, seen)
+  const recovered = recoverOrphanedParallelToolResults(messages, transcript, seen)
+  if (leafMessage.isSidechain || (leafMessage.type !== 'user' && leafMessage.type !== 'assistant')) return recovered
+  // Leaves stay user/assistant for session lists; resume also needs the live
+  // attachment tail. A later conversation row abandons that older tail.
+  let lastConversation: UUID | undefined
+  const attachments = new Map<UUID, TranscriptMessage>()
+  let tail: TranscriptMessage | undefined
+  for (const message of messages.values()) {
+    if (message.isSidechain) continue
+    if (message.type === 'user' || message.type === 'assistant') {
+      // A compact summary can be physically newer than the retained leaf and
+      // its attachments, while already being an ancestor in the resumed chain.
+      if (tail && seen.has(message.uuid)) continue
+      lastConversation = message.uuid
+      attachments.clear()
+      tail = undefined
+    } else if (message.type === 'attachment' && lastConversation && seen.has(lastConversation) &&
+      (message.parentUuid === leafMessage.uuid || (message.parentUuid && attachments.has(message.parentUuid)))) {
+      attachments.set(message.uuid, message)
+      tail = message
+    }
+  }
+  const trailing: TranscriptMessage[] = []
+  while (tail && !seen.has(tail.uuid)) {
+    seen.add(tail.uuid)
+    trailing.push(tail)
+    tail = tail.parentUuid ? attachments.get(tail.parentUuid) : undefined
+  }
+  return [...recovered, ...trailing.reverse()]
 }
 
 /**
@@ -4126,8 +4228,9 @@ export async function getLastSessionLog(
   }
 
   // Find the most recent non-sidechain message
-  const lastMessage = findLatestMessage(messages.values(), m => !m.isSidechain)
-  if (!lastMessage) return null
+  const latestMessage = findLatestMessage(messages.values(), m => !m.isSidechain)
+  if (!latestMessage) return null
+  const lastMessage = walkToConversationEnd(messages, latestMessage)
 
   // Build the transcript chain from the last message
   const transcript = buildConversationChain(messages, lastMessage)

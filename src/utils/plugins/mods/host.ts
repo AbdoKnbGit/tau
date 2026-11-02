@@ -40,6 +40,7 @@ export type ModCommandSpec = {
 export type ModHostContext = {
   id: string
   name: string
+  startupSessionId?: string
   commands: Map<string, ModCommandSpec>
   reserved: Set<string>
   commandsChanged(): Promise<void>
@@ -271,7 +272,7 @@ export function createModHost(context: ModHostContext): ModHost {
     if (typeof key !== 'string') throw new Error('Store key must be a string')
     return key
   }
-  return async (method, args, signal) => {
+  return async (method, args, signal, frame) => {
     signal.throwIfAborted()
     const [first, second] = args
     switch (method) {
@@ -280,7 +281,7 @@ export function createModHost(context: ModHostContext): ModHost {
       case 'session.root':
         return getProjectRoot()
       case 'session.id':
-        return getSessionId()
+        return frame?.event === 'session.start' ? context.startupSessionId ?? getSessionId() : getSessionId()
       case 'session.model':
         return readModSessionModel()
       case 'session.turns':

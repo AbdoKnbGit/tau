@@ -4990,10 +4990,12 @@ export function removeInterruptedMessage(
   interruptedUserMessage: NormalizedUserMessage,
 ): void {
   const idx = messages.findIndex(m => m.uuid === interruptedUserMessage.uuid)
-  if (idx !== -1) {
-    // Remove the user message and the sentinel that immediately follows it.
-    // splice safely handles the case where idx is the last element.
-    messages.splice(idx, 2)
+  if (idx === -1) return
+  // Remove the user message, its sentinel, and the attachments between them:
+  // submitting the prompt again builds those attachments again.
+  const sentinelIdx = messages.findIndex((m, i) => i > idx && m.type === 'assistant')
+  for (let i = sentinelIdx === -1 ? idx : sentinelIdx; i >= idx; i--) {
+    if (i === idx || i === sentinelIdx || messages[i]!.type === 'attachment') messages.splice(i, 1)
   }
 }
 

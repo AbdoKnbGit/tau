@@ -30,6 +30,9 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
   // Guard against stale async .then() overwriting a fresher sync update when
   // an incremental render fires before the compaction .then() resolves.
   const callSeqRef = useRef(0)
+  // Only the compaction write knows which row later messages chain from. Saving
+  // it takes one flush per row, so a fast reply can arrive while it is running.
+  const pendingCompactionWriteRef = useRef<Promise<UUID | null> | undefined>(undefined)
 
   useEffect(() => {
     if (ignore) return
@@ -66,17 +69,27 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
 
     // Fire and forget - we don't want to block the UI.
     const seq = ++callSeqRef.current
-    void recordTranscript(
-      slice,
-      isAgentSwarmsEnabled()
-        ? {
-            teamName: teamContext?.teamName,
-            agentName: teamContext?.selfAgentName,
-          }
-        : {},
-      parentHint,
-      messages,
-    ).then(lastRecordedUuid => {
+    const write = (hint: UUID | undefined) =>
+      recordTranscript(
+        slice,
+        isAgentSwarmsEnabled()
+          ? {
+              teamName: teamContext?.teamName,
+              agentName: teamContext?.selfAgentName,
+            }
+          : {},
+        hint,
+        messages,
+      )
+    // Rows that arrive during a compaction write wait for it: until it finishes,
+    // the row they chain from is unknown, and the old one is behind the boundary.
+    const pending = pendingCompactionWriteRef.current
+    const written = pending
+      ? pending.then(recorded =>
+          write(isIncremental ? (parentHint ?? recorded ?? undefined) : undefined),
+        )
+      : write(parentHint)
+    void written.then(lastRecordedUuid => {
       // For compaction/full array case (!isIncremental): use the async return
       // value. After compaction, messagesToKeep in the array are skipped
       // (already in transcript), so the sync loop would find a wrong UUID.
@@ -87,6 +100,19 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
         lastParentUuidRef.current = lastRecordedUuid
       }
     })
+    if (!isIncremental && !wasFirstRender && !isSameHeadShrink) {
+      lastParentUuidRef.current = undefined
+      const compaction: Promise<UUID | null> = written
+        .catch(() => null)
+        .then(recorded => {
+          lastParentUuidRef.current ??= recorded ?? undefined
+          if (pendingCompactionWriteRef.current === compaction) {
+            pendingCompactionWriteRef.current = undefined
+          }
+          return recorded
+        })
+      pendingCompactionWriteRef.current = compaction
+    }
 
     // Sync-walk safe for: incremental (pure new-tail slice), first-render
     // (no messagesToKeep interleaving), and same-head shrink. Shrink is the

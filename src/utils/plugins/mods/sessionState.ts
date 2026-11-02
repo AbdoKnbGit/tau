@@ -1,7 +1,7 @@
 import type { Message } from '../../../types/message.js'
 import { countModSessionTurns, projectModSessionMessages } from './sessionMessages.js'
 import { dropAllQueuedModPrompts } from './promptQueue.js'
-import type { Tools } from '../../../Tool.js'
+import type { Tools, ToolUseContext } from '../../../Tool.js'
 import cloneDeep from 'lodash-es/cloneDeep.js'
 
 /** These callbacks belong to the session, not the hook that happens to call it. */
@@ -9,7 +9,9 @@ export type ModSessionBinding = {
   getMessages(): readonly Message[]
   getModel(): string
   getTools?(): Tools
+  getCompactContext?(): ToolUseContext
   setMessages?(messages: Message[]): void
+  commitCompaction?(messages: Message[]): void
   getAgentMessages?(agentId: string): readonly Message[] | undefined | Promise<readonly Message[] | undefined>
   isBusy?(): boolean
 }
@@ -21,15 +23,23 @@ export type ModMainTurn = {
 
 export const MOD_SESSION_STOPPED = 'the session was stopped and nobody has sent input since'
 
+export function preserveModCompactionScrollback(previousInterval: Message[], next: Message[]): Message[] {
+  const retained = new Set(next.map(message => message.uuid))
+  // Kept native rows must appear only once in the fullscreen UUID-keyed list.
+  return [...previousInterval.filter(message => !retained.has(message.uuid)), ...next]
+}
+
 let session: { binding: ModSessionBinding; owner: symbol } | undefined
 let mainTurn: (ModMainTurn & { owner: symbol; detach(): void; modAbort: boolean }) | undefined
 let stopped = false
+let pendingCompact: AbortController | undefined
 const agentConversations = new Map<string, { owner: symbol; getMessages(): readonly Message[] }>()
 const apiAbortedSignals = new WeakSet<AbortSignal>()
 export const isModTurnAbort = (signal: AbortSignal | undefined): boolean => !!signal && apiAbortedSignals.has(signal)
 
 /** An old React cleanup or completed headless session cannot detach a newer one. */
 export function bindModSession(binding: ModSessionBinding): () => void {
+  pendingCompact?.abort(new Error('The session changed during compaction'))
   const owner = Symbol('mod session')
   mainTurn?.detach()
   mainTurn = undefined
@@ -38,6 +48,7 @@ export function bindModSession(binding: ModSessionBinding): () => void {
   session = { binding, owner }
   return () => {
     if (session?.owner !== owner) return
+    pendingCompact?.abort(new Error('The session ended during compaction'))
     session = undefined
     mainTurn?.detach()
     mainTurn = undefined
@@ -141,6 +152,7 @@ export function resumeModSessionOnUserInput(): void {
 }
 
 export function markModSessionStopped(): void {
+  pendingCompact?.abort(new Error('Compaction cancelled'))
   stopped = true
   dropAllQueuedModPrompts()
 }
@@ -148,6 +160,7 @@ export function markModSessionStopped(): void {
 /** Track every main turn even when nobody subscribes to turn.start. */
 export function beginModMainTurn(turnId: string, abortController: AbortController): () => void {
   if (mainTurn) throw new Error(`Main turn ${mainTurn.turnId} is already running`)
+  pendingCompact?.abort(new Error('A turn started during compaction'))
   const owner = Symbol('mod main turn')
   const onAbort = () => {
     if (mainTurn?.owner !== owner || mainTurn.modAbort || abortController.signal.reason === 'background') return
@@ -161,6 +174,13 @@ export function beginModMainTurn(turnId: string, abortController: AbortControlle
     detach()
     if (mainTurn?.owner === owner) mainTurn = undefined
   }
+}
+
+export function reserveModCompaction(controller: AbortController): () => void {
+  if (mainTurn) throw new Error('Cannot compact while a turn is running')
+  if (pendingCompact && !pendingCompact.signal.aborted) throw new Error('A compaction is already in progress')
+  pendingCompact = controller
+  return () => { if (pendingCompact === controller) pendingCompact = undefined }
 }
 
 export function abortModMainTurn(input: unknown): void {

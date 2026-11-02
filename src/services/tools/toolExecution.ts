@@ -2368,7 +2368,8 @@ async function checkPermissionsAndCallTool(
               : toolUseResult,
           mcpMeta: toolUseContext.agentId ? undefined : mcpMeta,
           sourceToolAssistantUUID: assistantMessage.uuid,
-        }), hookClassifierContext ? { hookClassifierContext } : {}),
+        }), hookClassifierContext ? { hookClassifierContext } : {},
+          toolOutputReplaced && tool.onResultReplaced ? { toolResultReplaced: true } : {}),
         contextModifier: toolContextModifier
           ? {
               toolUseID: toolUseID,

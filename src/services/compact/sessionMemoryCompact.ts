@@ -515,6 +515,7 @@ export async function trySessionMemoryCompaction(
   messages: Message[],
   agentId?: AgentId,
   autoCompactThreshold?: number,
+  preparation?: { deferHooks: true },
 ): Promise<CompactionResult | null> {
   if (!shouldUseSessionMemoryCompaction()) {
     return null
@@ -581,7 +582,7 @@ export async function trySessionMemoryCompaction(
       .filter(m => !isCompactBoundaryMessage(m))
 
     // Run session start hooks to restore CLAUDE.md and other context
-    const hookResults = await processSessionStartHooks('compact', {
+    const hookResults = preparation?.deferHooks ? [] : await processSessionStartHooks('compact', {
       model: getMainLoopModel(),
     })
 
