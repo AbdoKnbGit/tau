@@ -10,6 +10,7 @@ import {test} from 'node:test'
 import {fileURLToPath} from 'node:url'
 import {promisify} from 'node:util'
 import {anthropicReply} from './mcp-instructions/anthropic-reply.mjs'
+import {replStartupReady} from './helpers/repl-startup.mjs'
 
 const execute=promisify(execFile)
 const PTY_MISSING=77
@@ -74,15 +75,11 @@ async function checkIdentity(surface) {
         if(surface==='print') {
           await execute(process.execPath,[cli,'-p','/startup-identity',...selection,...common],{cwd:project,env:{...env,CI:'true'},timeout:60000,windowsHide:true})
         } else {
-          let raw='',exited=false,trusted=false
+          let raw='',exited=false
           term=pty.spawn(process.execPath,[cli,...selection,...common],{name:'xterm-256color',cols:130,rows:45,cwd:project,env})
           term.onData(value=>{raw+=value});term.onExit(()=>{exited=true})
-          await waitFor(()=>{
-            if(!trusted&&raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g,'').replace(/\s+/g,'').includes('Yes,Itrustthisfolder')) {
-              trusted=true;term.write('\r')
-            }
-            return existsSync(startup)&&/Anthropic|Claude Sonnet/.test(raw)
-          },'resumed REPL').catch(error=>{
+          const ready = replStartupReady(term)
+          await waitFor(()=>ready(raw)&&existsSync(startup),'resumed REPL').catch(error=>{
             throw new Error(error.message+'; screen='+raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g,'').slice(-2200))
           })
           await pause(2500);term.write('/startup-identity');await pause(350);term.write('\r')

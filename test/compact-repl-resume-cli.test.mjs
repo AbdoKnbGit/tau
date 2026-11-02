@@ -13,13 +13,13 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { anthropicReply } from './mcp-instructions/anthropic-reply.mjs'
+import { replStartupReady } from './helpers/repl-startup.mjs'
 
 const execute = promisify(execFile)
 const PTY_MISSING = 77
 const cli = resolve(process.env.PROBE_CLI ?? 'dist/cli.mjs')
 const pause = ms => new Promise(done => setTimeout(done, ms))
 const write = (path, value) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value)) }
-const plain = raw => raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
 async function waitFor(check, label, ms = 60_000) {
   const end = Date.now() + ms
   while (Date.now() < end) { if (check()) return; await pause(100) }
@@ -89,15 +89,13 @@ async function checkResume(pty, mode) {
   const answers = () => rows().filter(row => row.type === 'assistant' && row.message.content.some(block => block.type === 'text' && block.text === 'answer')).length
   let term
   try {
-    let raw = '', exited = false, trusted = false
+    let raw = '', exited = false
     term = pty.spawn(process.execPath, [cli, '--session-id', session, ...common], { name: 'xterm-256color', cols: 130, rows: 45, cwd: project, env })
     term.onData(value => { raw += value })
     term.onExit(() => { exited = true })
     const submit = async text => { term.write(text); await pause(350); term.write('\r') }
-    await waitFor(() => {
-      if (!trusted && plain(raw).replace(/\s+/g, '').includes('Yes,Itrustthisfolder')) { trusted = true; term.write('\r') }
-      return /Anthropic|Claude Sonnet/.test(raw)
-    }, 'REPL')
+    const ready = replStartupReady(term)
+    await waitFor(() => ready(raw), 'REPL')
     await pause(2500)
     await submit('first question')
     await waitFor(() => answers() >= 1, 'first answer')
