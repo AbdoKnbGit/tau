@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createServer } from 'node:http'
@@ -54,7 +55,11 @@ async function command(args, environment = {}) {
     child.on('close', code => { clearTimeout(timeout); resolve({ code, stdout, stderr }) })
   })
 }
-after(async () => { await r.cleanupSessionPluginArchives(); process.chdir(cwd); rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }) })
+after(async () => {
+  await r.cleanupSessionPluginArchives()
+  process.chdir(cwd)
+  await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+})
 
 test('ZIP sessions load valid siblings, reject traversal, and preserve prior extractions across edits', async () => {
   const zip = join(root, 'plugin.zip'), invalid = join(root, 'invalid.zip')
