@@ -207,7 +207,8 @@ async function logEventTo1PAsync(
 }
 
 /**
- * Log a 1st-party event for internal analytics.
+ * Log a 1st-party event for internal analytics. Await the result before
+ * flushing if the flush must include this event's asynchronous enrichment.
  * Events are batched and exported to /api/event_logging/batch
  *
  * @param eventName - Name of the event (e.g., 'tengu_api_query')
@@ -216,7 +217,7 @@ async function logEventTo1PAsync(
 export function logEventTo1P(
   eventName: string,
   metadata: Record<string, number | boolean | undefined> = {},
-): void {
+): Promise<void> | undefined {
   if (!is1PEventLoggingEnabled()) {
     return
   }
@@ -225,8 +226,7 @@ export function logEventTo1P(
     return
   }
 
-  // Fire and forget - don't block on metadata enrichment
-  void logEventTo1PAsync(firstPartyEventLogger, eventName, metadata)
+  return logEventTo1PAsync(firstPartyEventLogger, eventName, metadata)
 }
 
 /**
