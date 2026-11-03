@@ -54,7 +54,7 @@ function sampleFlow(name = "login"): Flow {
     steps: [
       { action: "navigate", url: "http://127.0.0.1:8080/login" },
       { action: "fill", target: { text: "Email", tag: "input" }, value: "a@b.test" },
-      { action: "fill", target: { label: "Password", tag: "input" }, value: "secret" },
+      { action: "fill", target: { label: "Project", tag: "input" }, value: "Tau" },
       { action: "click", target: { text: "Sign in", tag: "button" } },
       { action: "wait", selector: "[data-testid=dashboard]" },
     ],

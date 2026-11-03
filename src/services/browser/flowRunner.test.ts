@@ -170,7 +170,7 @@ async function main(): Promise<void> {
       "press",
     );
     assert(
-      buildStepFromAction({ action: "type", text: "hello", submit: true }, undefined)
+      buildStepFromAction({ action: "type", text: "hello", submit: true }, undefined, undefined, { type: "text" })
         ?.submit === true,
       "type with submit",
     );

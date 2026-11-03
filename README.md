@@ -153,6 +153,8 @@ Tau would rather show you than bury you in text. For everyday tasks it reaches f
 
 Tau can do in a browser what you can do: inspect your frontend design, check your email, compare prices, book you a flight. It uses a real Chrome window with real clicks and typing, and it reads the page console and network too, so errors in the app you are building come straight back to it.
 
+The Browser tool can also enter cross-origin iframes and replay saved flows with runtime parameters. Sensitive input is excluded from recordings. See [browser frames and flows](docs/browser-frames-and-flows.md) for usage and limits.
+
 <p align="center">
   <img src="docs/Browser-frontend.PNG" alt="Tau testing the filters and sorting of a local shop page" width="640">
 </p>

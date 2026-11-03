@@ -13,9 +13,16 @@
  */
 
 import { targetFromElement, type FlowStep } from "./flows.js";
+import {
+  containsFlowSecret,
+  isPreparedFlowStep,
+  isSensitiveFlowField,
+  validateFlowStep,
+  type FlowFieldMetadata,
+} from "./flowSafety.js";
 
 /** The element shape the observation cache hands back. */
-export interface ObservedElementLike {
+export interface ObservedElementLike extends FlowFieldMetadata {
   id: number;
   text?: string;
   aria?: string;
@@ -52,6 +59,7 @@ export interface FlowSessionLike {
   reload(hard: boolean, signal?: AbortSignal): Promise<void>;
   goBack(signal?: AbortSignal): Promise<void>;
   goForward(signal?: AbortSignal): Promise<void>;
+  switchFrame?(ref?: number, signal?: AbortSignal): Promise<ActionOutcomeLike>;
   observe(
     signal?: AbortSignal,
   ): Promise<{ observation: { interactive_elements: ObservedElementLike[] } }>;
@@ -86,7 +94,17 @@ export const RECORDABLE_ACTIONS: ReadonlySet<string> = new Set([
   "reload",
   "back",
   "forward",
+  "frame",
 ]);
+
+/** Printable key presses can carry a credential one character at a time. */
+function printablePress(key: string | undefined): boolean {
+  if (!key) return false;
+  const parts = key.split("+").map(part => part.trim()).filter(Boolean);
+  if (parts.some(part => /^(?:ctrl|control|alt|option|meta|cmd|command|win)$/i.test(part))) return false;
+  const main = parts.filter(part => !/^shift$/i.test(part));
+  return main.length === 1 && (Array.from(main[0]!).length === 1 || /^space$/i.test(main[0]!));
+}
 
 /**
  * Turns a successful action into a step that can run again later. A ref is an
@@ -99,9 +117,24 @@ export function buildStepFromAction(
   element: ObservedElementLike | undefined,
   /** The observation the ref came from, so a repeated label keeps its ordinal. */
   siblings?: ObservedElementLike[],
+  /** The focused input BEFORE a type action. Never includes its value. */
+  focusedField?: FlowFieldMetadata,
 ): FlowStep | null {
   if (!RECORDABLE_ACTIONS.has(input.action)) return null;
   const action = input.action as FlowStep["action"];
+  if (action === "press" && printablePress(input.key) && (!focusedField || isSensitiveFlowField(focusedField))) {
+    return { action, unreplayable: "sensitive input was excluded from the recording" };
+  }
+  if (action === "type" && !focusedField) {
+    return { action, unreplayable: "the focused field could not be inspected before typing" };
+  }
+  const field = action === "type" ? focusedField : element;
+  if (
+    ((action === "fill" || action === "type") && isSensitiveFlowField(field)) ||
+    [input.value, input.text, input.url].some(value => typeof value === "string" && containsFlowSecret(value))
+  ) {
+    return { action, unreplayable: "sensitive input was excluded from the recording" };
+  }
   if (input.ref !== undefined) {
     if (!element) {
       return {
@@ -199,14 +232,21 @@ export async function replayStep(
   step: FlowStep,
   signal?: AbortSignal,
 ): Promise<ReplayOutcome> {
+  const prepared = isPreparedFlowStep(step);
+  const problem = validateFlowStep(step, prepared);
+  if (problem) return { ok: false, error: problem };
+  if (!prepared && [step.value, step.text].some(value => value?.includes("{{") || value?.includes("}}"))) {
+    return { ok: false, error: "Flow parameters must be resolved by complete replay preflight first." };
+  }
   if (step.unreplayable) {
-    return { ok: false, error: `recorded as unreplayable: ${step.unreplayable}` };
+    return { ok: false, error: "recorded as unreplayable; re-record this step" };
   }
   const fail = (outcome: ActionOutcomeLike): ReplayOutcome => ({
     ok: false,
     error: outcome.error ?? outcome.reason ?? "the action did not succeed",
   });
-  switch (step.action) {
+  try {
+    switch (step.action) {
     case "navigate": {
       if (!step.url) return { ok: false, error: "the step has no url" };
       await session.navigate(step.url, signal);
@@ -228,11 +268,11 @@ export async function replayStep(
       const resolved = await resolveRecordedTarget(session, step, signal);
       if ("error" in resolved) return { ok: false, error: resolved.error };
       const outcome = await session.fill(resolved.ref, step.value ?? "", signal);
-      return outcome.ok ? { ok: true } : fail(outcome);
+      return outcome.ok ? { ok: true } : { ok: false, error: "the fill action did not succeed" };
     }
     case "type": {
       const outcome = await session.typeText(step.text ?? "", step.submit ?? false, signal);
-      return outcome.ok ? { ok: true } : fail(outcome);
+      return outcome.ok ? { ok: true } : { ok: false, error: "the type action did not succeed" };
     }
     case "press": {
       const outcome = await session.press(step.key ?? "Enter", signal);
@@ -273,7 +313,23 @@ export async function replayStep(
     case "forward":
       await session.goForward(signal);
       return { ok: true };
+    case "frame": {
+      if (!session.switchFrame) return { ok: false, error: "this browser session cannot replay frame changes" };
+      let ref: number | undefined;
+      if (step.target) {
+        const resolved = await resolveRecordedTarget(session, step, signal);
+        if ("error" in resolved) return { ok: false, error: resolved.error };
+        ref = resolved.ref;
+      }
+      const outcome = await session.switchFrame(ref, signal);
+      return outcome.ok ? { ok: true } : fail(outcome);
+    }
     default:
       return { ok: false, error: `no replay support for "${step.action}"` };
+    }
+  } catch {
+    // Browser/backend errors can include typed values. The caller still knows
+    // which step failed without persisting or printing those values.
+    return { ok: false, error: "the browser action failed while replaying this step" };
   }
 }

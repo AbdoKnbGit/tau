@@ -26,6 +26,18 @@ import {
   writeFileSync,
 } from "fs";
 import { join } from "path";
+import {
+  cloneFlow,
+  flowFieldEntries,
+  flowPlaceholders,
+  markPreparedFlowStep,
+  replaceFlowPlaceholders,
+  validateFlowStep,
+  validateStoredFlow,
+  validWebUrl,
+} from "./flowSafety.js";
+
+export type { FlowFieldMetadata } from "./flowSafety.js";
 
 export const FLOW_FORMAT_VERSION = 1;
 
@@ -59,7 +71,8 @@ export interface FlowStep {
     | "wait"
     | "reload"
     | "back"
-    | "forward";
+    | "forward"
+    | "frame";
   target?: FlowTarget;
   url?: string;
   value?: string;
@@ -82,6 +95,8 @@ export interface Flow {
   createdAt: string;
   startUrl?: string;
   steps: FlowStep[];
+  /** Names only; runtime values are never part of the saved template. */
+  parameters?: string[];
 }
 
 export interface FlowSummary {
@@ -133,7 +148,9 @@ function flowPath(cwd: string, safeName: string): string {
 
 export function saveFlow(cwd: string, flow: Flow): string {
   const safeName = sanitizeFlowName(flow.name);
-  if (!safeName) throw new Error(`"${flow.name}" is not a usable flow name.`);
+  if (!safeName) throw new Error("The flow name is not usable.");
+  const problem = validateStoredFlow(flow);
+  if (problem) throw new Error(problem);
   const directory = flowsDir(cwd);
   mkdirSync(directory, { recursive: true });
   const target = flowPath(cwd, safeName);
@@ -161,13 +178,16 @@ export function loadFlow(cwd: string, name: string): Flow | { error: string } {
     }
     if (parsed.version !== FLOW_FORMAT_VERSION) {
       return {
-        error: `Flow "${safeName}" was written in format v${parsed.version}; this build reads v${FLOW_FORMAT_VERSION}.`,
+        error: typeof parsed.version === "number" && Number.isSafeInteger(parsed.version)
+          ? `Flow "${safeName}" was written in format v${parsed.version}; this build reads v${FLOW_FORMAT_VERSION}.`
+          : "The flow has an invalid format version.",
       };
     }
-    return parsed;
+    const problem = validateStoredFlow(parsed);
+    return problem ? { error: problem } : parsed;
   } catch (error: unknown) {
     return {
-      error: `Flow "${safeName}" could not be parsed: ${error instanceof Error ? error.message : String(error)}`,
+      error: `Flow "${safeName}" could not be parsed.`,
     };
   }
 }
@@ -187,6 +207,11 @@ export function listFlows(cwd: string): FlowSummary[] {
     const name = entry.slice(0, -".json".length);
     try {
       const parsed = JSON.parse(readFileSync(join(directory, entry), "utf8")) as Flow;
+      const problem = validateStoredFlow(parsed);
+      if (problem) {
+        summaries.push({ name, steps: 0, createdAt: "", problem: "unsafe or invalid flow" });
+        continue;
+      }
       summaries.push({
         name,
         steps: Array.isArray(parsed.steps) ? parsed.steps.length : 0,
@@ -198,6 +223,110 @@ export function listFlows(cwd: string): FlowSummary[] {
     }
   }
   return summaries.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Replace exact whole fill/type values; no substring or URL rewriting. */
+export function parameterizeFlow(
+  flow: Flow,
+  fields: Record<string, string>,
+): Flow | { error: string } {
+  const problem = validateStoredFlow(flow);
+  if (problem) return { error: problem };
+  const entries = flowFieldEntries(fields);
+  if ("error" in entries) return entries;
+  const result = cloneFlow(flow);
+  const declared = new Set(result.parameters ?? []);
+  const usedValues = new Set<string>();
+  for (const [name, value] of entries) {
+    if (declared.has(name) || usedValues.has(value) || value.includes("{{") || value.includes("}}")) {
+      return { error: "Flow parameters must have distinct names and whole literal values." };
+    }
+    let found = false;
+    for (const step of result.steps) {
+      const key = step.action === "fill" ? "value" : step.action === "type" ? "text" : undefined;
+      if (key && step[key] === value) {
+        step[key] = `{{${name}}}`;
+        found = true;
+      }
+    }
+    if (!found) return { error: "A flow field did not match any whole recorded fill or type value." };
+    usedValues.add(value);
+    declared.add(name);
+  }
+  if (declared.size) result.parameters = [...declared];
+  const resultProblem = validateStoredFlow(result);
+  return resultProblem ? { error: resultProblem } : result;
+}
+
+export type PreparedFlowReplay =
+  | { ok: true; steps: FlowStep[] }
+  | { ok: false; error: string };
+
+export interface FlowReplayValidators {
+  /** Use the browser's existing pure key parser; no duplicate key vocabulary. */
+  validateKey?: (key: string) => boolean;
+  /** Use the browser's existing URL/path normalizer before scheme validation. */
+  normalizeUrl?: (url: string) => string;
+}
+
+/** Validate every template and value before the caller opens or touches a browser. */
+export function prepareFlowReplay(
+  flow: Flow,
+  values: Record<string, string> = {},
+  validators: FlowReplayValidators = {},
+): PreparedFlowReplay {
+  const problem = validateStoredFlow(flow);
+  if (problem) return { ok: false, error: problem };
+  const entries = flowFieldEntries(values);
+  if ("error" in entries) return { ok: false, error: entries.error };
+  const supplied = new Map(entries);
+  const declared = new Set(flow.parameters ?? []);
+  if (entries.some(([name]) => !declared.has(name))) return { ok: false, error: "Runtime fields include a parameter this flow does not declare." };
+  if ([...declared].some(name => !supplied.has(name))) return { ok: false, error: "A required flow parameter is missing; supply every declared field before replay." };
+  const steps = cloneFlow(flow).steps;
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index]!;
+    const fail = (error: string): PreparedFlowReplay => ({ ok: false, error: `Step ${index + 1}: ${error}` });
+    if (step.unreplayable) return fail("this recorded step cannot be replayed; re-record the flow.");
+    const label = step.target?.text || step.target?.label;
+    if ((step.action === "click" || step.action === "fill") && !label?.trim()) return fail("the step has no target label.");
+    if (step.action === "frame" && step.target && !label?.trim()) return fail("the frame step has no target label.");
+    if (step.action === "navigate") {
+      if (!step.url) return fail("the step has no valid navigation URL.");
+      try {
+        step.url = validators.normalizeUrl ? validators.normalizeUrl(step.url) : step.url;
+      } catch {
+        return fail("the navigation URL could not be normalized.");
+      }
+      if (!validWebUrl(step.url)) return fail("the step has no valid navigation URL.");
+    }
+    if (step.action === "fill" && step.value === undefined) return fail("the fill step has no value.");
+    if (step.action === "type" && step.text === undefined) return fail("the type step has no text.");
+    if (step.action === "press") {
+      if (step.key !== undefined && !step.key.trim()) return fail("the press step has no key.");
+      try {
+        if (validators.validateKey && !validators.validateKey(step.key ?? "Enter")) return fail("the press step has an unsupported key.");
+      } catch {
+        return fail("the press step has an invalid key.");
+      }
+    }
+    if (step.action === "scroll") {
+      if (step.direction !== undefined && !["up", "down", "left", "right", "top", "bottom"].includes(step.direction)) return fail("the scroll step has an invalid direction.");
+      if (step.amount !== undefined && (!Number.isInteger(step.amount) || step.amount < 1 || step.amount > 20_000)) return fail("the scroll step has an invalid amount.");
+    }
+    if (step.action === "wait" && step.ms !== undefined && (!Number.isInteger(step.ms) || step.ms > 30_000)) return fail("the wait step has an invalid duration.");
+    for (const key of ["value", "text"] as const) {
+      if (typeof step[key] !== "string" || (step.action !== "fill" && step.action !== "type")) continue;
+      const names = flowPlaceholders(step[key]!);
+      if ("error" in names) return fail(names.error);
+      step[key] = replaceFlowPlaceholders(step[key]!, supplied);
+      if (step[key]!.length > 32_768) return fail("the resolved input is too long.");
+    }
+    const resolvedProblem = validateFlowStep(step, true);
+    if (resolvedProblem) return fail(resolvedProblem);
+    markPreparedFlowStep(step);
+  }
+  return { ok: true, steps };
 }
 
 export function deleteFlow(cwd: string, name: string): boolean {
@@ -257,6 +386,7 @@ export function targetFromElement(
 
 /** Human-readable one-liner for a step, used by save/list/run output. */
 export function describeStep(step: FlowStep): string {
+  if (validateFlowStep(step, true)) return "unsafe or invalid step (contents omitted)";
   const ordinal = step.target?.nth ? ` #${step.target.nth}` : "";
   const target = step.target?.text
     ? `"${step.target.text}"${ordinal}`
@@ -271,9 +401,11 @@ export function describeStep(step: FlowStep): string {
     case "click":
       return `click ${target}`;
     case "fill":
-      return `fill ${target} = ${JSON.stringify(step.value ?? "")}`;
+      return `fill ${target} (value supplied)`;
     case "type":
-      return `type ${JSON.stringify(step.text ?? "")}${step.submit ? " + Enter" : ""}`;
+      return `type (text supplied)${step.submit ? " + Enter" : ""}`;
+    case "frame":
+      return step.target ? `enter frame ${target}` : "return to the top frame";
     case "press":
       return `press ${step.key ?? ""}`;
     case "scroll":
@@ -299,10 +431,13 @@ export function describeStep(step: FlowStep): string {
 
 /** Renders a saved flow for the model, flagging steps that will not replay. */
 export function formatFlow(flow: Flow): string {
+  const problem = validateStoredFlow(flow);
+  if (problem) return `Flow cannot be displayed: ${problem}`;
   const lines = [
     `Flow "${flow.name}" · ${flow.steps.length} step(s) · recorded ${flow.createdAt}`,
   ];
   if (flow.startUrl) lines.push(`Starts at ${flow.startUrl}`);
+  if (flow.parameters?.length) lines.push(`Parameters: ${flow.parameters.join(", ")}`);
   flow.steps.forEach((step, index) => {
     lines.push(
       `  ${index + 1}. ${describeStep(step)}${step.unreplayable ? `  ⚠ ${step.unreplayable}` : ""}`,

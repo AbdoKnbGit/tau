@@ -5,6 +5,8 @@ import { pathToFileURL } from "url";
 
 import { isEnvTruthy } from "../../utils/envUtils.js";
 import { CdpClient } from "./cdp.js";
+import { FrameRouter, type FrameScope } from "./frames.js";
+import { isSensitiveFlowField, type FlowFieldMetadata } from "./flowSafety.js";
 import {
   getBrowserProfileDir,
   launchBrowser,
@@ -620,6 +622,8 @@ class BrowserSessionService {
   private activeTargetId?: string;
   private cachedElements = new Map<number, InteractiveElement>();
   private cachedElementsTargetId?: string;
+  private cachedElementsFrameId?: string;
+  private frames?: FrameRouter;
   private lastKnownUrl?: string;
   /**
    * Ref ids come from session-wide, non-overlapping blocks. This keeps ids
@@ -666,6 +670,7 @@ class BrowserSessionService {
   /** Rolling record of replayable steps, oldest dropped first. */
   private recordedSteps: FlowStep[] = [];
   private recordingStartUrl?: string;
+  private recordingStartsInFrame = false;
   /** Advisory per-tab ownership, so concurrent agents do not steal each other's tab. */
   private tabOwners = new Map<string, { agentId: string; label: string }>();
   /** Serializes actions so two agents cannot interleave inside one action. */
@@ -840,9 +845,16 @@ class BrowserSessionService {
   recordStep(step: FlowStep): void {
     if (this.recordedSteps.length === 0) {
       this.recordingStartUrl = this.lastKnownUrl;
+      if (this.recordingStartsInFrame && !(step.action === "frame" && !step.target)) {
+        this.recordedSteps.push({ action: "frame", unreplayable: "recording began inside an iframe; return to the page and record its frame entry" });
+      }
+      this.recordingStartsInFrame = false;
     }
     this.recordedSteps.push(step);
-    if (this.recordedSteps.length > 300) this.recordedSteps.shift();
+    if (this.recordedSteps.length > 300) {
+      this.recordedSteps.shift();
+      this.recordedSteps[0] = { action: "frame", unreplayable: "recording exceeded 300 steps; clear it and record a shorter flow" };
+    }
   }
 
   recordedFlow(): { steps: FlowStep[]; startUrl?: string } {
@@ -855,6 +867,16 @@ class BrowserSessionService {
   clearRecording(): void {
     this.recordedSteps = [];
     this.recordingStartUrl = undefined;
+    this.recordingStartsInFrame = !!this.frames?.selected(this.activeTargetId ?? "");
+  }
+
+  /** Recorded frame entries are resolved from a consistent top-document scope. */
+  prepareFlowScope(): void {
+    if (this.activeTargetId) this.frames?.top(this.activeTargetId);
+    this.cachedElements.clear();
+    this.cachedElementsFrameId = undefined;
+    this.lastRead = undefined;
+    this.coordClicks = [];
   }
 
   /**
@@ -887,7 +909,7 @@ class BrowserSessionService {
   }
 
   getCachedElement(ref: number): InteractiveElement | undefined {
-    if (this.cachedElementsTargetId !== this.activeTargetId) return undefined;
+    if (this.cachedElementsTargetId !== this.activeTargetId || this.cachedElementsFrameId !== this.frames?.selected(this.activeTargetId ?? "")) return undefined;
     return this.cachedElements.get(ref);
   }
 
@@ -897,7 +919,7 @@ class BrowserSessionService {
    * elements that were on screen with it.
    */
   getCachedElements(): InteractiveElement[] {
-    if (this.cachedElementsTargetId !== this.activeTargetId) return [];
+    if (this.cachedElementsTargetId !== this.activeTargetId || this.cachedElementsFrameId !== this.frames?.selected(this.activeTargetId ?? "")) return [];
     return [...this.cachedElements.values()];
   }
 
@@ -1175,6 +1197,7 @@ class BrowserSessionService {
       );
     }
     await client.send("Target.closeTarget", { targetId: tab.targetId });
+    this.frames?.forget(tab.targetId);
     const staleSession = this.sessions.get(tab.targetId);
     if (staleSession) this.sessionToTarget.delete(staleSession);
     this.sessions.delete(tab.targetId);
@@ -1263,6 +1286,12 @@ class BrowserSessionService {
     if (!raw || !Array.isArray(raw.interactive_elements)) {
       throw new Error("Could not observe the page (no DOM available yet).");
     }
+    for (const element of raw.interactive_elements) {
+      if (isSensitiveFlowField(element)) {
+        element.sensitive = true;
+        delete element.value;
+      }
+    }
     raw.interactive_elements = prunePayloadElements(raw.interactive_elements);
     await this.callPageTools<PageActionResult>(
       "setObservedIds(" +
@@ -1275,6 +1304,7 @@ class BrowserSessionService {
       raw.interactive_elements.map((el) => [el.id, el]),
     );
     this.cachedElementsTargetId = this.activeTargetId;
+    this.cachedElementsFrameId = this.frames?.selected(this.activeTargetId ?? "");
     this.lastKnownUrl = raw.url;
 
     const warnings: string[] = [];
@@ -1282,11 +1312,65 @@ class BrowserSessionService {
     if (blocker) warnings.push(blocker.hint);
     if (raw.crossFrames) {
       warnings.push(
-        `${raw.crossFrames} cross-origin iframe(s) on this page are invisible to observe/read. If what you need is inside one, take a screenshot to see it; a coordinate click into it is allowed after that.`,
+        `${raw.crossFrames} cross-origin iframe(s): use frame with an iframe ref to read and act inside it; frame without ref returns to the page.`,
       );
     }
     warnings.push(...this.drainSessionNotes());
     return { observation: raw, warnings };
+  }
+
+  /** Enter an observed iframe; omission always returns to the top document. */
+  async switchFrame(ref?: number, signal?: AbortSignal): Promise<BrowserActionOutcome> {
+    const client = this.requireClient();
+    await this.getActiveSession();
+    const targetId = this.activeTargetId!;
+    if (!this.frames) return { ok: false, reason: "frame_unreachable", error: "Frame routing is unavailable.", warnings: [] };
+    if (signal?.aborted) throw signal.reason ?? new Error("Aborted");
+    if (ref === undefined) {
+      this.frames.top(targetId);
+    } else {
+      const gate = await this.callPageTools<PageActionResult>(`frameInfo(${Number(ref)})`);
+      if (!gate.success) return this.pageActionFailureOutcome(gate, "Cannot enter that iframe.", signal);
+      const scope = await this.activeRuntime();
+      const object = await client.send<{ result?: { objectId?: string } }>("Runtime.evaluate", {
+        expression: `window.__tauPageTools.byRef(${Number(ref)}).el`,
+        returnByValue: false,
+        ...(scope.contextId !== undefined ? { contextId: scope.contextId } : {}),
+      }, scope.sessionId);
+      const objectId = object.result?.objectId;
+      if (!objectId) return this.pageActionFailureOutcome({ success: false, reason: "stale_ref" }, "The iframe disappeared; observe again.", signal);
+      try {
+        const { node } = await client.send<{ node: { frameId?: string } }>("DOM.describeNode", { objectId }, scope.sessionId);
+        if (!node.frameId) throw new Error("frame_unreachable: this element has no loaded frame.");
+        await this.frames.enter(targetId, node.frameId);
+      } catch (error) {
+        return { ok: false, reason: "frame_unreachable", error: error instanceof Error ? error.message : "Cannot enter that iframe.", warnings: [] };
+      } finally {
+        await client.send("Runtime.releaseObject", { objectId }, scope.sessionId).catch(() => undefined);
+      }
+    }
+    this.cachedElements.clear();
+    this.lastRead = undefined;
+    this.coordClicks = [];
+    const { observation, warnings } = await this.observe(signal);
+    return { ok: true, detail: { frame: ref === undefined ? "top" : "entered" }, observation, warnings };
+  }
+
+  /** Only field metadata is captured; a failed probe must never record raw typing. */
+  async focusedFlowField(): Promise<FlowFieldMetadata | undefined> {
+    try {
+      return await this.callPageTools<FlowFieldMetadata>("focusedFieldMetadata()");
+    } catch {
+      return { sensitive: true };
+    }
+  }
+
+  async flowFieldForRef(ref: number): Promise<FlowFieldMetadata> {
+    try {
+      return await this.callPageTools<FlowFieldMetadata>(`fieldMetadataOfRef(${Number(ref)})`);
+    } catch {
+      return { sensitive: true };
+    }
   }
 
   async click(
@@ -1508,6 +1592,9 @@ class BrowserSessionService {
     key: string,
     signal?: AbortSignal,
   ): Promise<BrowserActionOutcome> {
+    if (this.frames?.selected(this.activeTargetId ?? "") && !(await this.evaluate<boolean>("document.hasFocus()"))) {
+      return { ok: false, reason: "not_editable", error: "The selected iframe does not have keyboard focus. Click an element in that frame before pressing a key.", warnings: [] };
+    }
     const parsed = parseChord(key);
     if ("error" in parsed) {
       return {
@@ -1753,13 +1840,14 @@ class BrowserSessionService {
       );
     }
     const client = this.requireClient();
-    const sessionId = await this.getActiveSession();
+    const scope = await this.activeRuntime();
+    const sessionId = scope.sessionId;
     await client.send("DOM.enable", {}, sessionId).catch(() => undefined);
     const evaluated = await client.send<{
       result?: { objectId?: string };
     }>(
       "Runtime.evaluate",
-      { expression: "window.__tauUploadInput", returnByValue: false },
+      { expression: "window.__tauUploadInput", returnByValue: false, ...(scope.contextId !== undefined ? { contextId: scope.contextId } : {}) },
       sessionId,
     );
     const objectId = evaluated.result?.objectId;
@@ -2345,6 +2433,15 @@ class BrowserSessionService {
           );
         }
         const r = rect.info as { x: number; y: number; w: number; h: number };
+        if (this.frames?.selected(this.activeTargetId!)) {
+          const a = await this.frames.point(this.activeTargetId!, r.x, r.y, false);
+          const b = await this.frames.point(this.activeTargetId!, r.x + r.w, r.y + r.h, false);
+          const { cssLayoutViewport } = await client.send<{ cssLayoutViewport: { pageX: number; pageY: number } }>("Page.getLayoutMetrics", {}, sessionId);
+          r.x = a.x + cssLayoutViewport.pageX;
+          r.y = a.y + cssLayoutViewport.pageY;
+          r.w = b.x - a.x;
+          r.h = b.y - a.y;
+        }
         params.clip = {
           x: r.x,
           y: r.y,
@@ -2496,12 +2593,18 @@ class BrowserSessionService {
   ): Promise<{ tx: number; ty: number }> {
     const client = this.requireClient();
     const sessionId = await this.getActiveSession();
-    const tx = Math.round(x + rnd(-2, 2));
-    const ty = Math.round(y + rnd(-2, 2));
+    const check = this.frames && this.activeTargetId ? this.frames.guard(this.activeTargetId) : () => {};
+    const localX = x + rnd(-2, 2), localY = y + rnd(-2, 2);
+    const point = this.frames && this.activeTargetId
+      ? await this.frames.point(this.activeTargetId, localX, localY)
+      : { x: localX, y: localY };
+    const tx = Math.round(point.x);
+    const ty = Math.round(point.y);
     const sx = Math.max(0, Math.round(tx - rnd(40, 90)));
     const sy = Math.max(0, Math.round(ty - rnd(25, 60)));
     const steps = 4 + Math.floor(rnd(0, 3));
     for (let i = 1; i <= steps; i++) {
+      check();
       const t = i / steps;
       const e = t * t * (3 - 2 * t);
       await client.send(
@@ -2527,8 +2630,10 @@ class BrowserSessionService {
   ): Promise<void> {
     const client = this.requireClient();
     const sessionId = await this.getActiveSession();
+    const check = this.frames && this.activeTargetId ? this.frames.guard(this.activeTargetId) : () => {};
     const { tx, ty } = await this.moveMouse(x, y, signal);
     for (let c = 1; c <= clickCount; c++) {
+      check();
       await client.send(
         "Input.dispatchMouseEvent",
         {
@@ -2541,19 +2646,22 @@ class BrowserSessionService {
         },
         sessionId,
       );
-      await sleep(rnd(60, 130), signal);
-      await client.send(
-        "Input.dispatchMouseEvent",
-        {
-          type: "mouseReleased",
-          x: tx,
-          y: ty,
-          button: "left",
-          clickCount: c,
-          buttons: 0,
-        },
-        sessionId,
-      );
+      try {
+        await sleep(rnd(60, 130), signal);
+      } finally {
+        await client.send(
+          "Input.dispatchMouseEvent",
+          {
+            type: "mouseReleased",
+            x: tx,
+            y: ty,
+            button: "left",
+            clickCount: c,
+            buttons: 0,
+          },
+          sessionId,
+        );
+      }
       if (c < clickCount) await sleep(rnd(40, 90), signal);
     }
   }
@@ -2572,7 +2680,12 @@ class BrowserSessionService {
   ): Promise<void> {
     const client = this.requireClient();
     const sessionId = await this.getActiveSession();
+    const check = this.frames && this.activeTargetId ? this.frames.guard(this.activeTargetId) : () => {};
     const from = await this.moveMouse(x1, y1, signal);
+    const to = this.frames && this.activeTargetId
+      ? await this.frames.point(this.activeTargetId, x2, y2)
+      : { x: x2, y: y2 };
+    check();
     await client.send(
       "Input.dispatchMouseEvent",
       {
@@ -2585,36 +2698,35 @@ class BrowserSessionService {
       },
       sessionId,
     );
-    await sleep(rnd(80, 150), signal);
-    const steps = 8 + Math.floor(rnd(0, 4));
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const e = t * t * (3 - 2 * t);
+    let lastX = from.tx, lastY = from.ty;
+    try {
+      await sleep(rnd(80, 150), signal);
+      const steps = 8 + Math.floor(rnd(0, 4));
+      for (let i = 1; i <= steps; i++) {
+        check();
+        const t = i / steps;
+        const e = t * t * (3 - 2 * t);
+        lastX = Math.round(from.tx + (to.x - from.tx) * e);
+        lastY = Math.round(from.ty + (to.y - from.ty) * e);
+        await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: lastX, y: lastY, buttons: 1 }, sessionId);
+        await sleep(rnd(12, 28), signal);
+      }
+      await sleep(rnd(80, 160), signal);
+      check();
+    } finally {
       await client.send(
         "Input.dispatchMouseEvent",
         {
-          type: "mouseMoved",
-          x: Math.round(from.tx + (x2 - from.tx) * e),
-          y: Math.round(from.ty + (y2 - from.ty) * e),
-          buttons: 1,
+          type: "mouseReleased",
+          x: lastX,
+          y: lastY,
+          button: "left",
+          clickCount: 1,
+          buttons: 0,
         },
         sessionId,
       );
-      await sleep(rnd(12, 28), signal);
     }
-    await sleep(rnd(80, 160), signal);
-    await client.send(
-      "Input.dispatchMouseEvent",
-      {
-        type: "mouseReleased",
-        x: Math.round(x2),
-        y: Math.round(y2),
-        button: "left",
-        clickCount: 1,
-        buttons: 0,
-      },
-      sessionId,
-    );
   }
 
   private async dispatchKey(normalizedKey: string): Promise<void> {
@@ -2664,6 +2776,9 @@ class BrowserSessionService {
     invocation: string,
     options?: { awaitPromise?: boolean; timeoutMs?: number },
   ): Promise<T> {
+    if (this.activeTargetId && /^(?:prepare|fill|scrollTo|rectOfRef|frameInfo)/.test(invocation)) {
+      await this.frames?.reveal(this.activeTargetId);
+    }
     const pageConfig = JSON.stringify({ sessionKey: this.refRegistryKey });
     return this.evaluate<T>(
       "window.__tauPageConfig = " +
@@ -2681,7 +2796,7 @@ class BrowserSessionService {
     options?: { awaitPromise?: boolean; timeoutMs?: number },
   ): Promise<T> {
     const client = this.requireClient();
-    const sessionId = await this.getActiveSession();
+    const scope = await this.activeRuntime();
     const evaluated = await client.send<EvaluateResult>(
       "Runtime.evaluate",
       {
@@ -2689,8 +2804,9 @@ class BrowserSessionService {
         returnByValue: true,
         awaitPromise: options?.awaitPromise ?? false,
         userGesture: true,
+        ...(scope.contextId !== undefined ? { contextId: scope.contextId } : {}),
       },
-      sessionId,
+      scope.sessionId,
       options?.timeoutMs ?? 30_000,
     );
     if (evaluated.exceptionDetails) {
@@ -2701,6 +2817,11 @@ class BrowserSessionService {
       throw new Error(description.split("\n")[0]);
     }
     return evaluated.result?.value as T;
+  }
+
+  private async activeRuntime(): Promise<FrameScope> {
+    const sessionId = await this.getActiveSession();
+    return this.frames?.runtime(this.activeTargetId!, sessionId) ?? { sessionId };
   }
 
   private requireClient(): CdpClient {
@@ -2763,6 +2884,7 @@ class BrowserSessionService {
       );
       this.sessions.set(targetId, sessionId);
       this.sessionToTarget.set(sessionId, targetId);
+      this.frames?.registerTop(targetId, sessionId);
       await client.send("Page.enable", {}, sessionId).catch(() => undefined);
       await client.send("Runtime.enable", {}, sessionId).catch(() => undefined);
       await this.installTabActivityTracker(targetId, sessionId);
@@ -3002,6 +3124,7 @@ class BrowserSessionService {
   private installClientHooks(): void {
     const client = this.client;
     if (!client) return;
+    this.frames = new FrameRouter(client);
     client.on(
       "Target.targetCreated",
       (params: { targetInfo?: TargetInfo }) => {
@@ -3020,6 +3143,7 @@ class BrowserSessionService {
           this.sessionPromises.delete(targetId);
           this.fullyPreparedTargets.delete(targetId);
           this.activityTargets.delete(targetId);
+          this.frames?.forget(targetId);
         }
       }
     });
@@ -3324,6 +3448,8 @@ class BrowserSessionService {
     this.activeTargetId = undefined;
     this.cachedElements.clear();
     this.cachedElementsTargetId = undefined;
+    this.cachedElementsFrameId = undefined;
+    this.frames = undefined;
     // A reconnect to an existing Chrome page must reject any registry injected
     // by an earlier BrowserSession. The global id allocator intentionally does
     // not rewind, so old numeric refs cannot be recycled within this process.

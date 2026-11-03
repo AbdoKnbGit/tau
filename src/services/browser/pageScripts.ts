@@ -35,6 +35,11 @@ export interface InteractiveElement {
   placeholder?: string;
   aria?: string;
   value?: string;
+  /** Recording metadata; contents are never included here. */
+  type?: string;
+  name?: string;
+  autocomplete?: string;
+  sensitive?: boolean;
   pressed?: boolean;
   checked?: boolean;
   disabled?: boolean;
@@ -240,6 +245,7 @@ export const ELEMENT_INFO_JS = `
     if (node.nodeType !== 1) return '';
     var tag = String(node.tagName || '').toUpperCase();
     if (TAU_UNNAMED_TAGS[tag]) return '';
+    if (node.isContentEditable || (node.getAttribute && /^(textbox|searchbox)$/.test(node.getAttribute('role') || ''))) return '';
     if (depth > 0 && node.getAttribute && node.getAttribute('aria-hidden') === 'true') return '';
     var out = '';
     var kids = node.childNodes || [];
@@ -274,7 +280,8 @@ export const ELEMENT_INFO_JS = `
   }
   function tauIsField(el) {
     var tag = String(el.tagName || '').toUpperCase();
-    return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
+    var role = el.getAttribute ? el.getAttribute('role') : '';
+    return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || el.isContentEditable === true || role === 'textbox' || role === 'searchbox';
   }
   function tauFieldName(el) {
     var attr = function (name) { return el.getAttribute ? el.getAttribute(name) : null; };
@@ -295,7 +302,7 @@ export const ELEMENT_INFO_JS = `
       return option ? (tauCollapse(option.label || option.text) || String(option.value || '')) : undefined;
     }
     if (tag === 'TEXTAREA') return typeof el.value === 'string' ? el.value : undefined;
-    if (tag !== 'INPUT') return undefined;
+    if (tag !== 'INPUT') return el.isContentEditable || (el.getAttribute && el.getAttribute('role') === 'textbox') ? (el.innerText || el.textContent || '') : undefined;
     var type = String(el.type || '').toLowerCase();
     if (type === 'password' || type === 'checkbox' || type === 'radio' || type === 'button' || type === 'submit' || type === 'reset' || type === 'image' || type === 'hidden') return undefined;
     return typeof el.value === 'string' ? el.value : undefined;
@@ -331,7 +338,7 @@ ${ELEMENT_INFO_JS}
   const config = window.__tauObserveConfig || {};
   const sessionKey = String(config.sessionKey || '');
   const blockBase = Number.isSafeInteger(config.base) && config.base >= 0 ? config.base : 0;
-  const selector = 'a,button,input,textarea,select,summary,[contenteditable="true"],[role=textbox],[role=searchbox],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=combobox],[role=option],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=tab],[role=treeitem],[role=slider],[role=spinbutton],[tabindex]:not([tabindex="-1"])';
+  const selector = 'iframe,frame,a,button,input,textarea,select,summary,[contenteditable="true"],[role=textbox],[role=searchbox],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=combobox],[role=option],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=tab],[role=treeitem],[role=slider],[role=spinbutton],[tabindex]:not([tabindex="-1"])';
   const elements = [];
   let crossFrames = 0;
   let localCursor = 0;
@@ -410,7 +417,7 @@ ${ELEMENT_INFO_JS}
       text = tauFieldName(el);
     } else {
       const innerText = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-      text = innerText || ariaLabel || tauLabelledBy(el) || el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('placeholder') || el.value || closeIconLabel(el, r) || '';
+      text = innerText || ariaLabel || tauLabelledBy(el) || el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('placeholder') || el.getAttribute('name') || (el.tagName === 'IFRAME' || el.tagName === 'FRAME' ? 'Embedded frame' : el.value) || closeIconLabel(el, r) || '';
     }
     const pressed = el.getAttribute('aria-pressed');
     const checked = el.matches('input[type=checkbox],input[type=radio]') ? String(el.checked) : el.getAttribute('aria-checked');
@@ -429,6 +436,9 @@ ${ELEMENT_INFO_JS}
       placeholder: el.getAttribute('placeholder') || undefined,
       aria: ariaLabel ? ariaLabel.slice(0, 80) : undefined,
       value: typeof shown === 'string' ? shown.slice(0, 60) : undefined,
+      type: field ? String(el.type || '').toLowerCase() : undefined,
+      name: field ? [el.getAttribute('name'), el.id].filter(Boolean).join(' ') || undefined : undefined,
+      autocomplete: field ? el.getAttribute('autocomplete') || undefined : undefined,
       pressed: pressed === 'true' ? true : (pressed === 'false' ? false : undefined),
       checked: checked === 'true' ? true : (checked === 'false' ? false : undefined),
       disabled: (el.disabled === true || el.getAttribute('aria-disabled') === 'true') ? true : undefined,
@@ -673,6 +683,7 @@ export const READ_HELPERS_JS = `
  * `fallbackClick` is the synthetic-event fallback when real input fails.
  */
 export const PAGE_TOOLS_SCRIPT = `
+${ELEMENT_INFO_JS}
 window.__tauPageState = window.__tauPageState || {};
 window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
   version: 2,
@@ -700,6 +711,7 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     return /(?:^|[\\s:_-])(close|dismiss|times|xmark|cross|lucide-x)(?:$|[\\s:_-])/.test(hint);
   },
   label(el) {
+    if (tauIsField(el)) return tauFieldName(el);
     const explicit = (el.innerText || el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || el.value || '').replace(/\\s+/g, ' ').trim();
     if (explicit) return explicit;
     if (String(el.tagName || '').toUpperCase() === 'BUTTON' && this.closeIconHint(el)) return 'Close';
@@ -1080,6 +1092,13 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     state.lastObservedIds = Array.from(ids || []).map(Number).filter(id => Number.isSafeInteger(id) && state.idToElement.has(id));
     return { success: true, info: { count: state.lastObservedIds.length } };
   },
+  frameInfo(ref) {
+    const got = this.byRef(ref);
+    if (!got.el) return { success: false, reason: 'stale_ref', staleKind: this.staleKind(got), error: 'The iframe ref is stale; observe again.' };
+    if (!/^(IFRAME|FRAME)$/.test(got.el.tagName)) return { success: false, reason: 'invalid_target', error: 'frame requires an iframe ref.' };
+    this.scrollTo(got.el);
+    return { success: true };
+  },
   staleKind(got) {
     if (got && got.error === 'none_observed') return 'registry_missing';
     if (got && got.error === 'no_such_ref') return 'unknown_ref';
@@ -1361,6 +1380,7 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     return { success: true, info: { ref: Number(ref), tag: 'select', selected: match.label || match.text || match.value } };
   },
   focusedInfo() {
+    if (!document.hasFocus()) return { editable: false };
     const el = this.editableTarget(this.deepActive());
     if (!el) return { editable: false };
     return { editable: true, tag: el.tagName.toLowerCase(), label: this.label(el).slice(0, 80), valueBefore: this.fieldValue(el).length };
@@ -1369,6 +1389,18 @@ window.__tauPageTools = Object.assign(window.__tauPageTools || {}, {
     const el = this.editableTarget(this.deepActive());
     if (!el) return { length: 0 };
     return { length: this.fieldValue(el).length };
+  },
+  focusedFieldMetadata() {
+    if (!document.hasFocus()) return { sensitive: true };
+    const el = this.editableTarget(this.deepActive());
+    if (!el) return { sensitive: true };
+    return { type: String(el.type || '').toLowerCase(), name: el.getAttribute('name') || '', id: el.id || '', autocomplete: el.getAttribute('autocomplete') || '', aria: el.getAttribute('aria-label') || '', text: tauFieldName(el).slice(0,120), placeholder: el.getAttribute('placeholder') || '' };
+  },
+  fieldMetadataOfRef(ref) {
+    const got = this.byRef(ref);
+    const el = got.el && this.editableTarget(got.el);
+    if (!el) return { sensitive: true };
+    return { type: String(el.type || '').toLowerCase(), name: [el.getAttribute('name'),el.id].filter(Boolean).join(' '), autocomplete: el.getAttribute('autocomplete') || '', aria: el.getAttribute('aria-label') || '', text: tauFieldName(el).slice(0,120), placeholder: el.getAttribute('placeholder') || '' };
   },
   scrollPage(direction, amount) {
     const n = Number(amount || 650);

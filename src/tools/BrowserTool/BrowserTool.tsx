@@ -20,6 +20,7 @@ import {
 import {
   getBrowserSession,
   normalizeUrlForNavigation,
+  parseChord,
   type BrowserActionOutcome,
   type TabInfo,
 } from '../../services/browser/browserSession.js'
@@ -32,6 +33,8 @@ import {
   formatFlow,
   listFlows,
   loadFlow,
+  parameterizeFlow,
+  prepareFlowReplay,
   saveFlow,
   type Flow,
   FLOW_FORMAT_VERSION,
@@ -41,6 +44,7 @@ import {
   replayStep,
   type ObservedElementLike,
 } from '../../services/browser/flowRunner.js'
+import { isSensitiveFlowField, type FlowFieldMetadata } from '../../services/browser/flowSafety.js'
 import { runSurfaceLadder } from '../../services/browser/surfaceLadder.js'
 import { formatVisionReceipt } from '../../services/browser/imageMeta.js'
 import { formatMeasure } from '../../services/browser/measure.js'
@@ -76,6 +80,7 @@ RULES
 READ / SEE
 - get { url, surface?, maxChars? }: read a page the cheap way; use it instead of open+navigate+read for anything you only need to READ. HTTP first; Chromium only when the bytes prove it is needed (empty SPA shell, bot wall, 403/429, timeout). The reply names the rung: rung=http, or rung=chromium with the escalation reason. surface:"http"|"chromium" forces one.
 - observe: URL, title, scroll state and elements as @N tag "text" [role]; fields are named by their label. States: checked/unchecked, expanded/collapsed, selected, current page, pressed/not pressed, required, invalid, disabled. Same-origin iframe elements are marked [iframe] and work like any ref.
+- frame {ref?}: enter iframe; omit ref for top.
 - read { selector?, maxChars?, offset? }: rendered markdown with [text](url) links; defaults to the main content; selector scopes it (e.g. "#docs"). Long pages report their total length: page on with the offset each reply gives. Pages end at a sentence or paragraph. If the page shifted, the reply re-finds your place; if your text is gone it says stale_read instead of stitching two versions.
 - measure: what actually painted: viewport, background/text colors by area, fonts that fell back, WCAG contrast failures with real ratios, broken/oversized images, overflow, running animations, landmark boxes. Check a UI with it instead of inventing.
 - extract { fields, container?, limit? }: e.g. { "container":"article.product", "fields":{ "name":".title", "price":".price", "link":"a@href" } }. Every value comes with the selector that produced it; warnings flag selectors matching nothing or several elements, the same value in every row (the selector escaped the row), and login/redirect/wishlist links posing as item URLs. An unmatched container returns the page's actual repeating structures. Nothing outside that table came from the page. Never fill missing data from memory.
@@ -106,7 +111,7 @@ NAVIGATE / ACT
 
 WATCH / FLOWS
 - watch { conditions:[...] } registers; with no conditions it checks them. console.error|console.warn|console.any|request.failed take an optional :substring; also selector.appears:CSS, selector.gone:CSS, text.appears:TEXT, url.matches:SUBSTRING. Register once and keep working: new console errors and failed requests reach you in later calls' warnings, with no console read each turn. Page conditions are evaluated when you call watch.
-- Successful navigate/click/fill/type/press/scroll/wait/dismiss actions are recorded automatically, by label rather than @ref. flow { mode:"save", name:"login" } writes .tau/flows/<name>.json; { mode:"run", name } replays them with no further calls and stops at the first step that no longer matches, naming it (the cheapest UI regression test: that step is what changed). Other modes: list; delete with name; clear drops the recording to start fresh.
+- Actions record by label. flow {mode:"save",name,fields?} saves .tau/flows/<name>.json; fields maps parameter names to whole recorded fill/type values. {mode:"run",name,fields?} supplies parameters, preflights all steps, then names the first mismatched step (regression test). Other modes: list, delete with name, clear recording.
 
 WARNINGS / RECOVERY
 Automatic behaviors (read the warnings; do not fight them): JS alert/confirm/prompt are auto-accepted, text reported; downloads land in a known folder ("Download finished: name → path"); observe dismisses consent banners; hidden lazy content is nudged awake. If the user focuses or uses another tab, the tool follows it and reports the handoff.
@@ -124,6 +129,7 @@ const ACTIONS = [
   'get',
   'navigate',
   'observe',
+  'frame',
   'read',
   'pick',
   'measure',
@@ -173,7 +179,7 @@ const inputSchema = lazySchema(() =>
       .min(0)
       .optional()
       .describe(
-        'Element ref @N from the latest observation. For click, fill, hover, drag (source), upload, scroll, screenshot.',
+        'Element ref @N from the latest observation. For frame, click, fill, hover, drag (source), upload, scroll, screenshot.',
       ),
     text: z
       .string()
@@ -343,7 +349,7 @@ const inputSchema = lazySchema(() =>
       .record(z.string(), z.string())
       .optional()
       .describe(
-        'For extract: { columnName: "selector" }. Add "@attr" to read an attribute instead of text ("a@href", "@data-id"); "." means the row element itself.',
+        'For extract: {column:"selector"}; "a@href" reads attributes, "." the row. For flow save: {parameter:recordedValue}; run: {parameter:value}.',
       ),
     conditions: z
       .array(z.string())
@@ -648,6 +654,8 @@ function summarize(input: Partial<Input>): string {
       return `Get ${input.url ?? ''}`
     case 'observe':
       return 'Observe page'
+    case 'frame':
+      return input.ref === undefined ? 'Return to top frame' : `Enter frame @${input.ref}`
     case 'pick':
       return input.text
         ? `Your turn in the browser: ${input.text.slice(0, 60)}`
@@ -762,10 +770,28 @@ async function runGet(
   }
 }
 
+interface PreparedFlowReplay {
+  flow: Flow
+  steps: Flow['steps']
+}
+
+/** Validate the entire replay before any browser commands or startup. */
+function prepareSavedFlowReplay(input: Input): PreparedFlowReplay | { error: string } {
+  const flow = loadFlow(getCwd(), input.name!)
+  if ('error' in flow) return flow
+  if (flow.steps.length === 0) return { error: `Flow "${flow.name}" has no steps.` }
+  const prepared = prepareFlowReplay(flow, input.fields, {
+    validateKey: key => !('error' in parseChord(key)),
+    normalizeUrl: url => normalizeUrlForNavigation(url, existsSync),
+  })
+  return prepared.ok ? { flow, steps: prepared.steps } : { error: prepared.error }
+}
+
 /** save / run / list / delete / clear over project-local `.tau/flows`. */
 async function runFlow(
   input: Input,
   context: ToolUseContext,
+  preparedReplay?: PreparedFlowReplay,
 ): Promise<BrowserOutput> {
   const session = getBrowserSession()
   const signal = context.abortController.signal
@@ -821,13 +847,15 @@ async function runFlow(
         'Nothing has been recorded yet. Drive the browser first (navigate, click, fill, …), then save.',
       )
     }
-    const flow: Flow = {
+    const recordedFlow: Flow = {
       version: FLOW_FORMAT_VERSION,
       name: input.name!,
       createdAt: new Date().toISOString(),
       ...(recorded.startUrl ? { startUrl: recorded.startUrl } : {}),
       steps: recorded.steps,
     }
+    const flow = input.fields ? parameterizeFlow(recordedFlow, input.fields) : recordedFlow
+    if ('error' in flow) return errorOutput('flow', flow.error)
     let savedPath: string
     try {
       savedPath = saveFlow(cwd, flow)
@@ -847,29 +875,15 @@ async function runFlow(
     }
   }
 
-  const loaded = loadFlow(cwd, input.name!)
-  if ('error' in loaded) return errorOutput('flow', loaded.error)
-  if (loaded.steps.length === 0) {
-    return errorOutput('flow', `Flow "${loaded.name}" has no steps.`)
-  }
+  if (!preparedReplay) return errorOutput('flow', 'Flow replay was not prepared.', 'flow_unreplayable')
+  const loaded = preparedReplay.flow
   if (!session.isRunning()) {
     await session.ensureStarted({ signal })
   }
+  session.prepareFlowScope()
   const trace: string[] = []
-  for (const [index, step] of loaded.steps.entries()) {
-    const position = `step ${index + 1}/${loaded.steps.length} (${describeStep(step)})`
-    if (step.unreplayable) {
-      trace.push(`  ✗ ${position} — recorded as unreplayable: ${step.unreplayable}`)
-      return {
-        action: 'flow',
-        ok: false,
-        message: `Flow "${loaded.name}" stopped at ${position}.`,
-        reason: 'flow_unreplayable',
-        url: session.getLastKnownUrl(),
-        detailText: trace.join('\n'),
-        warnings: session.drainSessionNotes(),
-      }
-    }
+  for (const [index, step] of preparedReplay.steps.entries()) {
+    const position = `step ${index + 1}/${loaded.steps.length} (${describeStep(loaded.steps[index]!)})`
     const outcome = await replayStep(session, step, signal)
     if (!outcome.ok) {
       trace.push(`  ✗ ${position} — ${outcome.error}`)
@@ -901,6 +915,7 @@ async function runFlow(
 async function runActionInner(
   input: Input,
   context: ToolUseContext,
+  preparedReplay?: PreparedFlowReplay,
 ): Promise<BrowserOutput> {
   const session = getBrowserSession()
   const signal = context.abortController.signal
@@ -910,6 +925,9 @@ async function runActionInner(
   if (input.action === 'observe' || input.action === 'screenshot') {
     session.resetCoordinateGuard()
   }
+
+  // Local flow management needs no browser; replay was preflighted by runAction.
+  if (input.action === 'flow') return runFlow(input, context, preparedReplay)
 
   // Every action except open needs a running browser; start it lazily with a
   // clear message rather than failing, so a stray first call self-heals.
@@ -958,6 +976,9 @@ async function runActionInner(
     case 'observe': {
       const { observation, warnings } = await session.observe(signal)
       return outcomeToOutput('observe', { ok: true, observation, warnings })
+    }
+    case 'frame': {
+      return outcomeToOutput('frame', await session.switchFrame(input.ref, signal))
     }
     case 'read': {
       const result = await session.readPage({
@@ -1086,8 +1107,6 @@ async function runActionInner(
         warnings: session.drainSessionNotes(),
       }
     }
-    case 'flow':
-      return runFlow(input, context)
     case 'click': {
       const outcome = await session.click(
         {
@@ -1322,8 +1341,9 @@ function recordActionAsStep(
   input: Input,
   element: ObservedElementLike | undefined,
   siblings: ObservedElementLike[],
+  focusedField?: FlowFieldMetadata,
 ): void {
-  const step = buildStepFromAction(input, element, siblings)
+  const step = buildStepFromAction(input, element, siblings, focusedField)
   if (step) getBrowserSession().recordStep(step)
 }
 
@@ -1354,13 +1374,20 @@ async function runAction(
   input: Input,
   context: ToolUseContext,
 ): Promise<BrowserOutput> {
+  const preparedReplay =
+    input.action === 'flow' && input.mode === 'run'
+      ? prepareSavedFlowReplay(input)
+      : undefined
+  if (preparedReplay && 'error' in preparedReplay) {
+    return errorOutput('flow', preparedReplay.error, 'flow_unreplayable')
+  }
   const session = getBrowserSession()
   // Closing tears down the page the receipt would sample; there is nothing
   // left to prove and nothing left to race with.
   if (input.action === 'close') return runActionInner(input, context)
 
   const ownershipWarnings: string[] = []
-  if (session.isRunning() && isMutatingAction(input.action)) {
+  if (session.isRunning() && (isMutatingAction(input.action) || input.action === 'frame')) {
     const previousOwner = session.claimActiveTab(currentAgent())
     if (previousOwner) {
       ownershipWarnings.push(
@@ -1368,17 +1395,36 @@ async function runAction(
       )
     }
   }
-  // Resolve the ref to a durable label BEFORE acting: the trailing observe
-  // rebuilds the element cache, and a step recorded afterwards can point at a
-  // different element.
-  const targetElement =
-    input.ref !== undefined ? session.getCachedElement(input.ref) : undefined
-  // The label is only unambiguous relative to what else was on screen.
-  const targetSiblings = input.ref !== undefined ? session.getCachedElements() : []
+  let targetElement: ObservedElementLike | undefined
+  let targetSiblings: ObservedElementLike[] = []
+  let initiallyRunning = false
+  let focusedField: FlowFieldMetadata | undefined
 
   const { result, effect } = await session.withEffect(
     input.action,
-    () => runActionInner(input, context),
+    async () => {
+      // Capture after preceding queued actions, before this action's trailing observe.
+      initiallyRunning = session.isRunning()
+      targetElement = input.ref !== undefined ? session.getCachedElement(input.ref) : undefined
+      targetSiblings = input.ref !== undefined ? session.getCachedElements() : []
+      if (input.action === 'fill' && input.ref !== undefined && initiallyRunning) {
+        const freshField = await session.flowFieldForRef(input.ref)
+        if (targetElement) {
+          const previous = targetElement
+          targetElement = { ...previous, sensitive: isSensitiveFlowField(previous) || isSensitiveFlowField(freshField) }
+          targetSiblings = targetSiblings.map(element => element.id === previous.id ? targetElement! : element)
+        }
+      }
+      // Inspect the field inside the action queue, before typing can change focus.
+      if ((input.action === 'type' || input.action === 'press') && session.isRunning()) {
+        focusedField = await session.focusedFlowField()
+      }
+      const output = await runActionInner(input, context, preparedReplay)
+      if (output.ok && (initiallyRunning || input.action === 'navigate')) {
+        recordActionAsStep(input, targetElement, targetSiblings, focusedField)
+      }
+      return output
+    },
     {
       producedValue: output =>
         output.action === 'eval'
@@ -1389,7 +1435,6 @@ async function runAction(
       ...(input.ref !== undefined ? { targetRef: input.ref } : {}),
     },
   )
-  if (result.ok) recordActionAsStep(input, targetElement, targetSiblings)
   // Target state is context, not proof of why no change was sampled.
   const noEffectNotes: string[] = []
   if (effect.noop && input.ref !== undefined) {
@@ -1454,6 +1499,26 @@ function toTextContent(output: BrowserOutput): string {
     lines.push('', 'Interactive elements (use @N as ref):', output.elementsText)
   }
   return lines.join('\n')
+}
+
+/** Runtime flow inputs may be echoed by a page or an error; never return them. */
+function redactFlowReplayOutput(input: Input, output: BrowserOutput): BrowserOutput {
+  if (input.action !== 'flow' || input.mode !== 'run' || !input.fields) return output
+  const values = [...new Set(Object.values(input.fields).filter(Boolean).flatMap(value => {
+    try {
+      return [value, encodeURIComponent(value), new URLSearchParams({ q: value }).toString().slice(2)]
+    } catch {
+      return [value] // Lone UTF-16 surrogates cannot be URI-encoded.
+    }
+  }))].sort((a, b) => b.length - a.length)
+  if (!values.length) return output
+  const pattern = new RegExp(values.map(value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g')
+  const redact = (text: string) => text.replace(pattern, '[parameter]')
+  const redacted = { ...output, warnings: output.warnings.map(redact) }
+  for (const key of ['message', 'url', 'title', 'elementsText', 'detailText', 'receipt'] as const) {
+    if (typeof output[key] === 'string') redacted[key] = redact(output[key]!)
+  }
+  return redacted
 }
 
 export const BrowserTool = buildTool({
@@ -1596,13 +1661,13 @@ export const BrowserTool = buildTool({
   async call(input, context) {
     try {
       const data = await runAction(input, context)
-      return { data }
+      return { data: redactFlowReplayOutput(input, data) }
     } catch (error) {
       if (context.abortController.signal.aborted) {
         return { data: errorOutput(input.action, 'Browser action was interrupted.') }
       }
       const message = error instanceof Error ? error.message : String(error)
-      return { data: errorOutput(input.action, message) }
+      return { data: redactFlowReplayOutput(input, errorOutput(input.action, message)) }
     }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
