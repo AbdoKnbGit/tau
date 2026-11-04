@@ -310,7 +310,7 @@ export async function glob(
     )
     const ignoreArgs = await getGrepIgnoreArgs(
       searchDir,
-      await getRipgrepMajorVersion(),
+      await getRipgrepMajorVersion(abortSignal),
       abortSignal,
     )
     allPaths = await listNotIgnored(

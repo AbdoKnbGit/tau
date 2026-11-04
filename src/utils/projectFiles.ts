@@ -43,7 +43,7 @@ async function walkArgs(root: string, walk: ProjectWalk): Promise<string[]> {
   args.push(
     ...(await getGrepIgnoreArgs(
       root,
-      await getRipgrepMajorVersion(),
+      await getRipgrepMajorVersion(walk.signal),
       walk.signal,
     )),
   )

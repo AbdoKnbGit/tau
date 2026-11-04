@@ -335,7 +335,7 @@ export const GrepTool = buildTool({
       ? ['--no-ignore']
       : await getGrepIgnoreArgs(
           absolutePath,
-          await getRipgrepMajorVersion(),
+          await getRipgrepMajorVersion(abortController.signal),
           abortController.signal,
         )))
 

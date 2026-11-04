@@ -8,9 +8,10 @@ import { logEvent } from 'src/services/analytics/index.js'
 import { fileURLToPath } from 'url'
 import { isInBundledMode } from './bundledMode.js'
 import { logForDebugging } from './debug.js'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
+import { CACHE_PATHS } from './cachePaths.js'
 import { isEnvDefinedFalsy } from './envUtils.js'
-import { execFileNoThrow } from './execFileNoThrow.js'
+import { execFileNoThrow, execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { findExecutable } from './findExecutable.js'
 import { logError } from './log.js'
 import { getPlatform } from './platform.js'
@@ -39,7 +40,7 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
   // Try system ripgrep if user explicitly wants it
   if (userWantsSystemRipgrep) {
     const { cmd: systemPath } = findExecutable('rg', [])
-    if (systemPath !== 'rg') {
+    if (systemPath !== 'rg' && isUsableRipgrep(systemPath)) {
       // SECURITY: Use command name 'rg' instead of systemPath to prevent PATH hijacking
       return { mode: 'system', command: 'rg', args: [] }
     }
@@ -56,7 +57,8 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
-  // Check if the vendored binary exists (present in dev/native builds, absent in npm installs)
+  // Both install-time and recovered binaries are selected for the host running
+  // Node. WSL reports linux even when this package was installed on Windows.
   const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
   const command =
     process.platform === 'win32'
@@ -74,6 +76,15 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     logForDebugging(
       `Vendored ripgrep cannot run on this host; falling back to system rg (${command})`,
     )
+  }
+
+  const recoveredCommand = path.resolve(
+    CACHE_PATHS.ripgrep(),
+    `${process.arch}-${process.platform}`,
+    process.platform === 'win32' ? 'rg.exe' : 'rg',
+  )
+  if (isUsableRipgrep(recoveredCommand)) {
+    return { mode: 'builtin', command: recoveredCommand, args: [] }
   }
 
   // Vendored binary not found (npm install without bundled vendor/) — fall back to system rg.
@@ -268,7 +279,7 @@ async function ripGrepFileCount(
   target: string,
   abortSignal: AbortSignal,
 ): Promise<number> {
-  await codesignRipgrepIfNecessary()
+  await ensureRipgrepReady(abortSignal)
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
 
   return new Promise<number>((resolve, reject) => {
@@ -318,7 +329,7 @@ export async function ripGrepStream(
   abortSignal: AbortSignal,
   onLines: (lines: string[]) => void,
 ): Promise<void> {
-  await codesignRipgrepIfNecessary()
+  await ensureRipgrepReady(abortSignal)
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
 
   return new Promise<void>((resolve, reject) => {
@@ -403,13 +414,6 @@ export async function ripGrep(
     globsRelativeToTarget?: boolean
   } = {},
 ): Promise<string[]> {
-  await codesignRipgrepIfNecessary()
-
-  // Test ripgrep on first use and cache the result (fire and forget)
-  void testRipgrepOnFirstUse().catch(error => {
-    logError(error)
-  })
-
   const cwd = globsRelativeToTarget
     ? await searchableDirectory(target)
     : undefined
@@ -542,16 +546,29 @@ function ripGrepLines(
       resolve(lines)
     }
 
-    ripGrepRaw(
-      args,
-      target,
-      abortSignal,
-      (error, stdout, stderr) => {
-        handleResult(error, stdout, stderr, false)
-      },
-      false,
-      cwd,
-    )
+    void ensureRipgrepReady(abortSignal).then(() => {
+      ripGrepRaw(
+        args,
+        target,
+        abortSignal,
+        (error, stdout, stderr) => {
+          handleResult(error, stdout, stderr, false)
+        },
+        false,
+        cwd,
+      )
+    }).catch(error => {
+      if (!abortSignal.aborted) {
+        reject(error)
+        return
+      }
+      // Preserve the process wrapper's cancellation contract even when the
+      // caller stops waiting before an rg process can be launched.
+      const canceled = Object.assign(new Error('The operation was aborted', { cause: error }), {
+        name: 'AbortError', code: 'ABORT_ERR',
+      })
+      handleResult(canceled, '', '', false)
+    })
   })
 }
 
@@ -620,13 +637,80 @@ let ripgrepStatus: {
   majorVersion: number | null
   lastTested: number
   config: RipgrepConfig
+  error?: unknown
 } | null = null
 
 /** Share the existing one-time probe; never add Grep-only flags to shared args. */
-export async function getRipgrepMajorVersion(): Promise<number | null> {
-  await codesignRipgrepIfNecessary()
-  await testRipgrepOnFirstUse()
+export async function getRipgrepMajorVersion(signal?: AbortSignal): Promise<number | null> {
+  await ensureRipgrepReady(signal)
   return ripgrepStatus?.majorVersion ?? null
+}
+
+/**
+ * One shared first-use check/repair. A canceled search stops waiting promptly
+ * without killing a repair needed by another caller. Failed repairs stay
+ * cached for this session so UI searches cannot launch a download loop.
+ */
+export async function ensureRipgrepReady(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
+  if (ripgrepStatus?.working) return
+  const ready = testRipgrepOnFirstUse()
+  if (signal) {
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason)
+      signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) onAbort()
+      void ready.then(resolve, reject).finally(() => {
+        signal.removeEventListener('abort', onAbort)
+      })
+    })
+    signal.throwIfAborted()
+  } else {
+    await ready
+  }
+  if (!ripgrepStatus?.working) {
+    const environment = getPlatform() === 'wsl'
+      ? 'inside WSL using Linux Node/npm'
+      : 'using Node/npm for your operating system'
+    throw new Error(
+      `Tau search is unavailable: no working ripgrep for ${process.platform}/${process.arch}. ` +
+      'Automatic recovery could not make search ready. Check your connection and directory permissions, ' +
+      `then restart Tau to retry, or repair ${environment}: npx -y @abdoknbgit/tau-installer@latest`,
+      { cause: ripgrepStatus?.error },
+    )
+  }
+}
+
+async function repairRipgrep(): Promise<void> {
+  // Anchor recovery to our own module/package, never the user's working
+  // directory. Support both dist/tau.mjs and src/utils/ripgrep.ts layouts.
+  const script = [path.resolve(__dirname, '..'), path.resolve(__dirname, '../..')]
+    .filter(root => {
+      try {
+        return JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).name === '@abdoknbgit/tau'
+      } catch {
+        return false
+      }
+    })
+    .map(root => path.join(root, 'scripts', 'postinstall.mjs'))
+    .find(candidate => existsSync(candidate))
+  if (!script) throw new Error('The Tau ripgrep installer is missing; reinstall Tau.')
+
+  const result = await execFileNoThrowWithCwd(
+    process.execPath,
+    [script, '--ripgrep-only', '--ripgrep-vendor-dir', CACHE_PATHS.ripgrep()],
+    {
+      timeout: 75_000,
+      killTreeOnTimeout: true,
+      maxBuffer: 64 * 1024,
+      stdin: 'ignore',
+      shell: false,
+      preserveOutputOnError: true,
+    },
+  )
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || result.error || 'Automatic ripgrep installation failed.')
+  }
 }
 
 /**
@@ -646,52 +730,59 @@ export function getRipgrepStatus(): {
   }
 }
 
-/**
- * Test ripgrep availability on first use and cache the result
- */
-const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
-  // Already tested
-  if (ripgrepStatus !== null) {
-    return
+/** Probe without telemetry so a repair can recheck the selected executable. */
+async function probeRipgrep(config: RipgrepConfig): Promise<{ code: number; stdout: string }> {
+  if (!config.argv0) {
+    return execFileNoThrow(config.command, [...config.args, '--version'], { timeout: 5000 })
   }
 
-  const config = getRipgrepConfig()
+  // Only Bun embeds ripgrep.
+  // eslint-disable-next-line custom-rules/require-bun-typeof-guard
+  const proc = Bun.spawn([config.command, ...config.args, '--version'], {
+    argv0: config.argv0,
+    stderr: 'ignore',
+    stdout: 'pipe',
+  })
+  const timeout = setTimeout(() => {
+    try { proc.kill() } catch { /* already exited */ }
+  }, 5000)
+  try {
+    // Bun's ReadableStream has .text() at runtime, but TS types don't reflect it.
+    const [stdout, code] = await Promise.all([
+      (proc.stdout as unknown as Blob).text(),
+      proc.exited,
+    ])
+    return { code, stdout }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+/** Test and, only when necessary, recover ripgrep once per session. */
+const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
+  let config = getRipgrepConfig()
 
   try {
-    let test: { code: number; stdout: string }
-
-    // For embedded ripgrep, use Bun.spawn with argv0
-    if (config.argv0) {
-      // Only Bun embeds ripgrep.
-      // eslint-disable-next-line custom-rules/require-bun-typeof-guard
-      const proc = Bun.spawn([config.command, ...config.args, '--version'], {
-        argv0: config.argv0,
-        stderr: 'ignore',
-        stdout: 'pipe',
-      })
-
-      // Grep now awaits this probe. Bound embedded mode just like standalone rg.
-      const timeout = setTimeout(() => {
-        try { proc.kill() } catch { /* already exited */ }
-      }, 5000)
+    await codesignRipgrepIfNecessary()
+    let test = await probeRipgrep(config)
+    if (!(test.code === 0 && test.stdout.startsWith('ripgrep ')) && config.mode !== 'embedded') {
+      let repairError: unknown
       try {
-        // Bun's ReadableStream has .text() at runtime, but TS types don't reflect it
-        const [stdout, code] = await Promise.all([
-          (proc.stdout as unknown as Blob).text(),
-          proc.exited,
-        ])
-        test = { code, stdout }
-      } finally {
-        clearTimeout(timeout)
+        await repairRipgrep()
+      } catch (error) {
+        repairError = error
+        logForDebugging(`Automatic ripgrep recovery failed: ${error}`)
       }
-    } else {
-      test = await execFileNoThrow(
-        config.command,
-        [...config.args, '--version'],
-        {
-          timeout: 5000,
-        },
-      )
+      // Recheck even after failure: another Tau process or installer may have
+      // supplied a usable binary while this attempt was in flight.
+      getRipgrepConfig.cache.clear()
+      alreadyDoneSignCheck = false
+      config = getRipgrepConfig()
+      await codesignRipgrepIfNecessary()
+      test = await probeRipgrep(config)
+      if (!(test.code === 0 && test.stdout.startsWith('ripgrep '))) {
+        throw repairError ?? new Error('The recovered ripgrep binary could not run.')
+      }
     }
 
     const working =
@@ -719,8 +810,11 @@ const testRipgrepOnFirstUse = memoize(async (): Promise<void> => {
       majorVersion: null,
       lastTested: Date.now(),
       config,
+      error,
     }
-    logError(error)
+    // Recovery is silent unless search ultimately fails. Keep the underlying
+    // installer reason available for diagnostics without an extra UI warning.
+    logForDebugging(`Ripgrep unavailable after first-use check: ${error}`)
   }
 })
 

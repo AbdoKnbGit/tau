@@ -88,6 +88,24 @@ test('new ARM64 musl installs use the matching archive and normal runtime direct
   assertClean(f);
 });
 
+test('runtime recovery installs into its own platform cache without changing the package binaries', async t => {
+  const f = fixture(t, { platform: 'linux', arch: 'x64' });
+  const windowsBinary = join(f.root, 'dist', 'vendor', 'ripgrep', 'x64-win32', 'rg.exe');
+  mkdirSync(dirname(windowsBinary), { recursive: true });
+  writeFileSync(windowsBinary, 'working Windows binary');
+  const vendorRoot = join(f.root, 'user cache', 'ripgrep');
+
+  await installRipgrep({ ...f.options, vendorRoot });
+
+  assert.equal(readFileSync(join(vendorRoot, 'x64-linux', 'rg'), 'utf8'), `ripgrep ${RG_VERSION}\n`);
+  assert.equal(readFileSync(windowsBinary, 'utf8'), 'working Windows binary');
+  assert.equal(existsSync(f.binary), false, 'package Linux directory is not modified');
+  assert.equal(existsSync(join(f.root, '.tau-lifecycle-complete.json')), false);
+  assert.deepEqual(f.calls.map(call => call[0]), ['download', 'verify', 'extract', 'promote']);
+  assert.equal(existsSync(dirname(f.calls[0][2])), false, 'download is cleaned up');
+  assert.deepEqual(readdirSync(vendorRoot), ['x64-linux'], 'no staging directories remain');
+});
+
 for (const failure of ['download', 'checksum', 'extraction', 'version', 'promotion']) {
   test(`failed ${failure} keeps the working older binary and removes staging files`, async t => {
     const f = fixture(t, { version: '14.1.1' });
@@ -198,4 +216,36 @@ test('imports are inert and --ripgrep-only cannot trigger unrelated lifecycles',
     assert.equal(run.status, 0, run.error?.message ?? run.stderr);
     assert.equal(existsSync(join(f.root, '.tau-lifecycle-complete.json')), false);
   }
+});
+
+test('--ripgrep-only accepts an absolute user cache and rejects missing or relative destinations', t => {
+  const f = fixture(t);
+  const scripts = join(f.root, 'scripts');
+  mkdirSync(scripts);
+  const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const installer = join(scripts, 'postinstall.mjs');
+  copyFileSync(join(repositoryRoot, 'scripts', 'postinstall.mjs'), installer);
+  const vendorRoot = join(f.root, 'user cache', 'ripgrep');
+  const release = resolveRipgrepRelease();
+  const expected = join(vendorRoot, release.dir, release.binary);
+  writeFileSync(join(scripts, 'platform-support.mjs'), `
+    export const getRipgrepVersion = command => {
+      if (command !== ${JSON.stringify(expected)}) throw new Error('Unexpected destination: ' + command);
+      return '${RG_VERSION}';
+    };
+    export const isLinuxArm64Musl = () => ${release.target.includes('musl') && process.arch === 'arm64'};
+    export const resolveWindowsSystemExecutable = () => null;
+  `);
+  writeFileSync(join(scripts, 'verify-deps.mjs'), 'throw new Error("Unrelated lifecycle must not run");');
+  const run = args => spawnSync(process.execPath, [installer, '--ripgrep-only', ...args], {
+    cwd: f.root, encoding: 'utf8', timeout: 10_000, windowsHide: true,
+  });
+  const success = run(['--ripgrep-vendor-dir', vendorRoot]);
+  assert.equal(success.status, 0, success.error?.message ?? success.stderr);
+  for (const args of [['--ripgrep-vendor-dir'], ['--ripgrep-vendor-dir', 'relative/cache']]) {
+    const failure = run(args);
+    assert.equal(failure.status, 1, failure.error?.message ?? failure.stderr);
+    assert.match(failure.stderr, /requires an absolute directory/);
+  }
+  assert.equal(existsSync(join(f.root, '.tau-lifecycle-complete.json')), false);
 });

@@ -23,6 +23,9 @@ function getProjectDir(cwd: string): string {
 }
 
 export const CACHE_PATHS = {
+  // Recovered search binaries are shared across projects, with a separate
+  // architecture/platform subdirectory supplied by the ripgrep installer.
+  ripgrep: () => join(paths.cache, 'ripgrep'),
   baseLogs: () => join(paths.cache, getProjectDir(getFsImplementation().cwd())),
   errors: () =>
     join(paths.cache, getProjectDir(getFsImplementation().cwd()), 'errors'),

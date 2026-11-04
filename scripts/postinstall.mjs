@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, mkdtempSync, createWriteStream, createReadStream, readdirSync, readFileSync, renameSync, rmSync, copyFileSync, realpathSync } from 'fs';
 import { chmod } from 'fs/promises';
 import { createHash } from 'node:crypto';
-import { resolve, dirname, join, basename } from 'path';
+import { resolve, dirname, join, basename, isAbsolute } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { spawnSync } from 'child_process';
 import https from 'https';
@@ -72,6 +72,7 @@ export function resolveRipgrepRelease({ platform = process.platform, arch = proc
 /** Install only ripgrep; also used by --ripgrep-only without other lifecycles. */
 export async function installRipgrep({
   root = packageRoot,
+  vendorRoot = join(root, 'dist', 'vendor', 'ripgrep'),
   platform = process.platform,
   arch = process.arch,
   getReport,
@@ -94,7 +95,7 @@ export async function installRipgrep({
     );
   }
 
-  const destDir = join(root, 'dist', 'vendor', 'ripgrep', info.dir);
+  const destDir = join(vendorRoot, info.dir);
   const destBinary = join(destDir, info.binary);
   const version = info.version;
   // An older executable can still be usable; that must not suppress upgrades.
@@ -468,8 +469,18 @@ async function checkBundledVoice() {
 }
 
 if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
-  const operation = process.argv.includes('--ripgrep-only') ? installRipgrep : runPostinstall;
-  operation().catch(error => {
+  const operation = process.argv.includes('--ripgrep-only') ? () => {
+    // First-use recovery uses the same verified installer in a writable user
+    // cache, without modifying a shared/root-owned Tau package or its marker.
+    const index = process.argv.indexOf('--ripgrep-vendor-dir');
+    if (index === -1) return installRipgrep();
+    const vendorRoot = process.argv[index + 1];
+    if (!vendorRoot || !isAbsolute(vendorRoot)) {
+      throw new Error('--ripgrep-vendor-dir requires an absolute directory');
+    }
+    return installRipgrep({ vendorRoot });
+  } : runPostinstall;
+  Promise.resolve().then(operation).catch(error => {
     console.error(`[tau] postinstall failed: ${error?.message ?? error}`);
     process.exitCode = 1;
   });
