@@ -86,6 +86,8 @@ function explain(fallback: MermaidFallback): string {
         : `${fallback.name} diagrams are not supported`
     case 'unreadable':
       return 'it has a mermaid syntax error'
+    case 'unsupported-syntax':
+      return 'its chart uses syntax the terminal does not support'
     case 'characters':
       return 'its labels use characters the terminal cannot line up'
   }

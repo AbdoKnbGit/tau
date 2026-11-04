@@ -119,7 +119,7 @@ jobs:
         run: node --test test/bash-cwd-persistence.test.mjs
 
       - name: Test worktree bases, Git isolation, and config cancellation
-        run: node --test test/worktree-base.test.mjs test/config-escape.test.mjs
+        run: node --test test/worktree-base.test.mjs test/config-escape.test.mjs test/prompt-suggestions-layout.test.mjs test/fullscreen-scroll-rendering.test.mjs
 
       - name: Test source-map reads and cache stability
         run: node --test test/file-read-source-maps.test.mjs test/file-read-range-dedup.test.mjs test/core-tool-contracts.test.mjs test/tool-result-budget.test.mjs
@@ -145,7 +145,7 @@ jobs:
           node test/mcp-setup-launch.test.mjs
 
       - name: Test Mermaid rendering and rewind
-        run: node --test test/mermaid-rendering.test.mjs
+        run: node --test test/mermaid-rendering.test.mjs test/mermaid-launch.test.mjs test/clipboard-text.test.mjs
 
       - name: Test terminal math, streaming, and Markdown compatibility
         run: node --test test/terminal-math.test.mjs test/latex-rendering.test.mjs test/markdown-list-items.test.mjs

@@ -496,8 +496,6 @@ function startSixelWorker(): SixelWorker | null {
     )
     return null
   }
-  // Never a reason to keep the process alive.
-  worker.unref()
   const state: SixelWorker = { worker, jobs: new Map(), idle: null }
   const lost = (): void => {
     if (state.idle !== null) clearTimeout(state.idle)
@@ -533,6 +531,9 @@ function startSixelWorker(): SixelWorker | null {
 }
 
 function armWorkerIdle(state: SixelWorker): void {
+  // Adding the message listener refs the worker port in Node. Once the
+  // final encode is delivered, its idle lifetime must not delay CLI exit.
+  state.worker.unref()
   if (state.idle !== null) clearTimeout(state.idle)
   state.idle = unrefTimer(() => {
     state.idle = null
@@ -556,6 +557,7 @@ function encodeOnWorker(
   }
   const id = nextSixelJob++
   return new Promise(resolve => {
+    state.worker.ref()
     state.jobs.set(id, resolve)
     try {
       // Copied, not transferred: if the worker is lost with this frame in
@@ -563,6 +565,7 @@ function encodeOnWorker(
       state.worker.postMessage({ id, rgba, width, height })
     } catch {
       state.jobs.delete(id)
+      if (state.jobs.size === 0) armWorkerIdle(state)
       resolve(undefined)
     }
   })

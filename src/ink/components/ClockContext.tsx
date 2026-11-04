@@ -24,10 +24,7 @@ export function createClock(tickIntervalMs: number): Clock {
   function updateInterval(): void {
     const anyKeepAlive = [...subscribers.values()].some(Boolean);
     if (anyKeepAlive) {
-      if (interval) {
-        clearInterval(interval);
-        interval = null;
-      }
+      if (interval) return;
       if (startTime === 0) {
         startTime = Date.now();
       }
@@ -62,6 +59,8 @@ export function createClock(tickIntervalMs: number): Clock {
     setTickInterval(ms) {
       if (ms === currentTickIntervalMs) return;
       currentTickIntervalMs = ms;
+      if (interval) clearInterval(interval);
+      interval = null;
       updateInterval();
     }
   };

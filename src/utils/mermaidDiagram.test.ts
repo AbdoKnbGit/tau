@@ -91,7 +91,7 @@ describe('getMermaidArt', () => {
 
   test('leaves unsupported types and blank input undrawn', () => {
     for (const source of [
-      'pie\n  "Dogs" : 4',
+      'journey\n  title A',
       'gantt\n  title A',
       'mindmap\n  root((x))',
       '',
@@ -179,6 +179,15 @@ describe('getMermaidArt', () => {
     expect(lines(art!).join('\n')).toContain('caf' + text(0xe9))
   })
 
+  test('keeps writing systems with uncertain widths available as source instead of erasing their words', () => {
+    for (const label of ['طلب', 'अनुरोध', 'Cafe\u0325']) {
+      const source = flow(label)
+      const drawing = fitMermaidArt(source, 100)
+      if (drawing.art) expect(lines(drawing.art).join('\n')).toContain(label.normalize('NFC'))
+      else expect(drawing.fallback.kind).toBe('characters')
+    }
+  })
+
   test('never draws invisible or control characters', () => {
     for (const label of [
       'tab' + text(0x9) + 'here',
@@ -216,8 +225,8 @@ describe('getMermaidArt', () => {
   test('caches results, including sources it cannot draw', () => {
     const drawable = 'flowchart TD\n  Cache1 --> Cache2'
     expect(getMermaidArt(drawable)).toBe(getMermaidArt(drawable))
-    expect(getMermaidArt('pie\n  "cache" : 1')).toBeNull()
-    expect(getMermaidArt('pie\n  "cache" : 1')).toBeNull()
+    expect(getMermaidArt('pie\n  "cache" : -1')).toBeNull()
+    expect(getMermaidArt('pie\n  "cache" : -1')).toBeNull()
   })
 
   test('never throws on malformed input', () => {
@@ -402,6 +411,7 @@ describe('fitMermaidArt', () => {
   test('turns a too-wide left-to-right flowchart top-down', () => {
     expect(getMermaidArt(chain)!.width).toBeGreaterThan(120)
     const fit = fitMermaidArt(chain, 120)
+    expect(fitMermaidArt('---\ntitle: Flow\n---\n' + chain, 120).art).toBe(fit.art)
     expect(fit.art).not.toBeNull()
     expect(fit.art).toBe(getMermaidArt(chain.replace('flowchart LR', 'flowchart TD')))
     expect(fit.art!.width).toBeLessThanOrEqual(120 - MERMAID_WIDTH_MARGIN)
@@ -450,7 +460,7 @@ describe('fitMermaidArt', () => {
       const fit = fitMermaidArt(source, 200)
       return fit.art === null ? fit.fallback.kind : 'drawn'
     }
-    expect(reason('pie\n  "Dogs" : 4')).toBe('unsupported')
+    expect(reason('mindmap\n  root((Dogs))')).toBe('unsupported')
     expect(reason('flowchart TD\n  %% nothing yet')).toBe('unreadable')
     expect(reason(flow('done ' + text(0x2705)))).toBe('drawn')
     expect(reason('sequenceDiagram\n  Note over A,B: ' + 'n'.repeat(5000))).toBe('too-large')
@@ -494,6 +504,7 @@ describe('describeMermaidFallback', () => {
       { kind: 'too-large' },
       { kind: 'unsupported', name: null },
       { kind: 'unreadable' },
+      { kind: 'unsupported-syntax' },
       { kind: 'characters' },
     ] as const) {
       const line = describeMermaidFallback(fallback)

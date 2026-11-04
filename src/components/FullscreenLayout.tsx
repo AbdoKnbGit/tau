@@ -7,9 +7,10 @@ import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { PromptOverlayProvider, usePromptOverlay, usePromptOverlayDialog } from '../context/promptOverlayContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js';
+import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js';
 import instances from '../ink/instances.js';
 import { stringWidth } from '../ink/stringWidth.js';
-import { Box, Text, useAnimationFrame } from '../ink.js';
+import { Box, Text } from '../ink.js';
 import type { Message } from '../types/message.js';
 import { openBrowser, openPath } from '../utils/browser.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
@@ -48,8 +49,7 @@ type Props = {
    *  ScrollBox AND bottom slot. Provides ModalContext so Pane/Dialog inside
    *  skip their own frame. Fullscreen only; inline after overlay otherwise. */
   modal?: ReactNode;
-  /** Ref passed via ModalContext so Tabs (or any scroll-owning descendant)
-   *  can attach it to their own ScrollBox for tall content. */
+  /** Command panel viewport, shared with its scroll keys and tab reset. */
   modalScrollRef?: React.RefObject<ScrollBoxHandle | null>;
   /** Ref to the scroll box for keyboard scrolling. RefObject (not Ref) so
    *  pillVisible's useSyncExternalStore can subscribe to scroll changes. */
@@ -68,6 +68,10 @@ type Props = {
   onPillClick?: () => void;
   /** Lift and center the bottom slot for the fresh-session prompt. */
   centerBottom?: boolean;
+  /** Reset viewport state when the conversation is replaced or cleared. */
+  transcriptKey?: string;
+  /** Dialogs need the available screen, rather than the input's height cap. */
+  expandedBottom?: boolean;
 };
 
 /**
@@ -265,14 +269,13 @@ export function computeUnseenDivider(messages: readonly Message[], dividerIndex:
  * Outside fullscreen mode, renders content sequentially so the existing
  * main-screen scrollback rendering works unchanged.
  *
- * Fullscreen mode defaults on for ants (CLAUDE_CODE_NO_FLICKER=0 to opt out)
- * and off for external users (CLAUDE_CODE_NO_FLICKER=1 to opt in).
+ * Interactive terminals use the scrollable layout by default.
  * The <AlternateScreen> wrapper
  * (alt buffer + mouse tracking + height constraint) lives at REPL's root
  * so nothing can accidentally render outside it.
  */
 export function FullscreenLayout(t0) {
-  const $ = _c(47);
+  const $ = _c(48);
   const {
     scrollable,
     bottom,
@@ -296,6 +299,7 @@ export function FullscreenLayout(t0) {
     columns
   } = useTerminalSize();
   const [stickyPrompt, setStickyPrompt] = useState(null);
+  useLayoutEffect(() => setStickyPrompt(null), [t0.transcriptKey]);
   let t4;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t4 = {
@@ -306,15 +310,7 @@ export function FullscreenLayout(t0) {
     t4 = $[0];
   }
   const chromeCtx = t4;
-  let t5;
-  if ($[1] !== scrollRef) {
-    t5 = listener => scrollRef?.current?.subscribe(listener) ?? _temp;
-    $[1] = scrollRef;
-    $[2] = t5;
-  } else {
-    t5 = $[2];
-  }
-  const subscribe = t5;
+  const subscribe = useCallback((listener: () => void) => scrollRef?.current?.subscribe(listener) ?? _temp, [scrollRef, t0.transcriptKey]);
   let t6;
   if ($[3] !== dividerYRef || $[4] !== scrollRef) {
     t6 = () => {
@@ -362,13 +358,14 @@ export function FullscreenLayout(t0) {
       t10 = $[10];
     }
     let t11;
-    if ($[11] !== overlay || $[12] !== scrollRef || $[13] !== t10 || $[14] !== t9) {
-      t11 = <ScrollBox ref={scrollRef} flexGrow={1} flexDirection="column" paddingTop={t9} stickyScroll={true}>{t10}{overlay}</ScrollBox>;
+    if ($[11] !== overlay || $[12] !== scrollRef || $[13] !== t10 || $[14] !== t9 || $[47] !== t0.transcriptKey) {
+      t11 = <ScrollBox key={t0.transcriptKey} ref={scrollRef} flexGrow={1} flexDirection="column" paddingTop={t9} stickyScroll={true}>{t10}{overlay}</ScrollBox>;
       $[11] = overlay;
       $[12] = scrollRef;
       $[13] = t10;
       $[14] = t9;
       $[15] = t11;
+      $[47] = t0.transcriptKey;
     } else {
       t11 = $[15];
     }
@@ -403,25 +400,14 @@ export function FullscreenLayout(t0) {
     } else {
       t14 = $[28];
     }
-    let t15;
-    let t16;
-    if ($[29] === Symbol.for("react.memo_cache_sentinel")) {
-      t15 = <SuggestionsOverlay />;
-      t16 = <DialogOverlay />;
-      $[29] = t15;
-      $[30] = t16;
-    } else {
-      t15 = $[29];
-      t16 = $[30];
-    }
-    const t17 = <BottomSlot bottom={bottom} centered={centerBottom} columns={columns} rows={terminalRows} suggestionsOverlay={t15} dialogOverlay={t16} />;
+    const t17 = <BottomSlot bottom={bottom} centered={centerBottom} columns={columns} rows={terminalRows} expanded={t0.expandedBottom} />;
     let t18;
     if ($[33] !== columns || $[34] !== modal || $[35] !== modalScrollRef || $[36] !== terminalRows) {
+      const modalSize = { rows: Math.max(1, terminalRows - MODAL_TRANSCRIPT_PEEK - 1), columns: Math.max(1, columns - 4) };
       t18 = modal != null && <ModalContext value={{
-        rows: terminalRows - MODAL_TRANSCRIPT_PEEK - 1,
-        columns: columns - 4,
+        ...modalSize,
         scrollRef: modalScrollRef ?? null
-      }}><Box position="absolute" bottom={0} left={0} right={0} maxHeight={terminalRows - MODAL_TRANSCRIPT_PEEK} flexDirection="column" overflow="hidden" opaque={true}><Box flexShrink={0}><Text color="permission">{"\u2594".repeat(columns)}</Text></Box><Box flexDirection="column" paddingX={2} flexShrink={0} overflow="hidden">{modal}</Box></Box></ModalContext>;
+      }}><Box position="absolute" bottom={0} left={0} right={0} maxHeight={modalSize.rows + 1} flexDirection="column" overflow="hidden" opaque={true}><Box flexShrink={0}><Text color="permission">{"\u2594".repeat(columns)}</Text></Box><Box flexDirection="column" paddingX={2} flexShrink={1} minHeight={0}><ScrollBox ref={modalScrollRef} flexDirection="column" maxHeight={modalSize.rows} followOnGrow={false}><TerminalSizeContext.Provider value={modalSize}>{modal}</TerminalSizeContext.Provider></ScrollBox></Box></Box></ModalContext>;
       $[33] = columns;
       $[34] = modal;
       $[35] = modalScrollRef;
@@ -466,7 +452,6 @@ export function FullscreenLayout(t0) {
 const CENTERED_BOTTOM_WIDTH_RATIO = 0.78;
 const CENTERED_BOTTOM_MIN_WIDTH = 72;
 const CENTERED_BOTTOM_LIFT_RATIO = 0.4;
-const CENTERED_BOTTOM_FRAME_MS = 36;
 function getCenteredBottomWidth(columns: number): number {
   if (columns < CENTERED_BOTTOM_MIN_WIDTH + 8) return columns;
   return Math.min(columns - 4, Math.max(CENTERED_BOTTOM_MIN_WIDTH, Math.floor(columns * CENTERED_BOTTOM_WIDTH_RATIO)));
@@ -480,55 +465,33 @@ function BottomSlot(t0: {
   centered: boolean;
   columns: number;
   rows: number;
-  suggestionsOverlay: ReactNode;
-  dialogOverlay: ReactNode;
+  expanded?: boolean;
 }): React.ReactNode {
   const {
     bottom,
     centered,
     columns,
     rows,
-    suggestionsOverlay,
-    dialogOverlay
-} = t0;
-  const targetLift = getCenteredBottomLift(rows, centered);
-  const targetWidth = centered ? getCenteredBottomWidth(columns) : columns;
-  const [lift, setLift] = useState(targetLift);
-  const [width, setWidth] = useState(targetWidth);
-  const [ref, time] = useAnimationFrame(lift !== targetLift || width !== targetWidth ? CENTERED_BOTTOM_FRAME_MS : null);
-  useEffect(() => {
-    if (lift === targetLift && width === targetWidth) return;
-
-    setLift(current => {
-      const delta = targetLift - current;
-      if (delta === 0) return current;
-
-      const step = Math.max(1, Math.ceil(Math.abs(delta) * 0.36));
-      const next = current + Math.sign(delta) * step;
-      return Math.sign(targetLift - next) !== Math.sign(delta) ? targetLift : next;
-    });
-    setWidth(current => {
-      const delta = targetWidth - current;
-      if (delta === 0) return current;
-
-      const step = Math.max(1, Math.ceil(Math.abs(delta) * 0.32));
-      const next = current + Math.sign(delta) * step;
-      return Math.sign(targetWidth - next) !== Math.sign(delta) ? targetWidth : next;
-    });
-  }, [lift, targetLift, targetWidth, width, time]);
-
-  return <Box ref={ref} flexDirection="column" flexShrink={0} width="100%">
+    expanded,
+  } = t0;
+  const lift = getCenteredBottomLift(rows, centered);
+  const frameWidth = centered ? getCenteredBottomWidth(columns) : columns;
+  const promptCap = Math.max(1, expanded ? rows - MODAL_TRANSCRIPT_PEEK : Math.floor(rows / 2));
+  const rowsBelow = lift || Math.max(0, rows - promptCap - 1);
+  const dialogSize = useMemo(() => ({ rows: promptCap, columns: frameWidth }), [promptCap, frameWidth]);
+  return <Box flexDirection="column" flexShrink={0} width="100%">
       {/* Half the screen, in rows: this box sits in one sized by its content, so a percentage would mean half of that and crush the prompt. */}
-      <Box flexDirection="column" width="100%" maxHeight={Math.max(1, Math.floor(rows / 2))}>
-        {suggestionsOverlay}
-        {dialogOverlay}
-        <Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden" alignItems={width < columns ? "center" : undefined}>
-          <Box flexDirection="column" flexShrink={0} width={width}>
-            {bottom}
+      <Box flexDirection="column" width="100%" maxHeight={promptCap}>
+        <DialogOverlay />
+        <Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden" alignItems="center">
+          <Box flexDirection="column" flexShrink={0} width={frameWidth}>
+            {expanded ? <TerminalSizeContext.Provider value={dialogSize}>{bottom}</TerminalSizeContext.Provider> : bottom}
           </Box>
         </Box>
       </Box>
-      {lift > 0 ? <Box height={lift} flexShrink={0} /> : null}
+      <Box height={lift || undefined} width={frameWidth} alignSelf="center" flexDirection="column" flexShrink={0} overflow="hidden">
+        {rowsBelow > 0 && <SuggestionsOverlay width={frameWidth} rowsBelow={rowsBelow} />}
+      </Box>
     </Box>;
 }
 function _temp3() {
@@ -632,31 +595,18 @@ function StickyPromptHeader(t0) {
   return t5;
 }
 
-// Slash-command suggestion overlay — see promptOverlayContext.tsx for why
-// it's portaled. Scroll-smear from floating over the DECSTBM region is
-// repaired at the Ink layer (absoluteRectsPrev in render-node-to-output.ts).
-// The renderer clamps negative y to 0 for absolute elements (see
-// render-node-to-output.ts), so the top rows (best matches) stay visible
-// even when the overlay extends above the viewport. We omit minHeight and
-// flex-end here: they would create empty padding rows that shift visible
-// items down into the prompt area when the list has fewer items than max.
-function SuggestionsOverlay() {
-  const $ = _c(4);
+// Keep the menu out of the clipped input so typing or resizing cannot hide the
+// selected command. In a fresh session it uses the existing space below the input.
+function SuggestionsOverlay({ width, rowsBelow }: { width: number; rowsBelow: number }) {
   const data = usePromptOverlay();
-  if (!data || data.suggestions.length === 0) {
-    return null;
-  }
-  let t0;
-  if ($[0] !== data.maxColumnWidth || $[1] !== data.selectedSuggestion || $[2] !== data.suggestions) {
-    t0 = <Box position="absolute" bottom="100%" left={0} right={0} paddingX={2} paddingTop={1} flexDirection="column" opaque={true}><PromptInputFooterSuggestions suggestions={data.suggestions} selectedSuggestion={data.selectedSuggestion} maxColumnWidth={data.maxColumnWidth} overlay={true} /></Box>;
-    $[0] = data.maxColumnWidth;
-    $[1] = data.selectedSuggestion;
-    $[2] = data.suggestions;
-    $[3] = t0;
-  } else {
-    t0 = $[3];
-  }
-  return t0;
+  const { rows } = useTerminalSize();
+  const menuSize = useMemo(() => ({ columns: width, rows }), [width, rows]);
+  if (!data?.suggestions.length) return null;
+  return <Box width={width} paddingX={2} flexDirection="column">
+    <TerminalSizeContext.Provider value={menuSize}>
+      <PromptInputFooterSuggestions {...data} overlay={true} availableRows={rowsBelow} />
+    </TerminalSizeContext.Provider>
+  </Box>;
 }
 
 // Dialog portaled from PromptInput (AutoModeOptInDialog) — same clip-escape

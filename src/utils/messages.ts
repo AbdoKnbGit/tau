@@ -35,7 +35,7 @@ import { companionIntroText } from '../buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
 import { OUTPUT_STYLE_CONFIG } from '../constants/outputStyles.js'
 import {
-  getMermaidDiagramsReminder,
+  legacyMermaidDiagramsReminder,
   getMermaidNotDrawnReminder,
 } from './mermaidDiagramsReminder.js'
 import { isAutoMemoryEnabled } from '../memdir/paths.js'
@@ -4422,7 +4422,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'mermaid_diagrams': {
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: getMermaidDiagramsReminder(attachment.enabled),
+          content: attachment.guidance ?? legacyMermaidDiagramsReminder(attachment.enabled),
           isMeta: true,
         }),
       ])
@@ -4430,7 +4430,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'mermaid_not_drawn': {
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: getMermaidNotDrawnReminder(attachment.reasons),
+          content: attachment.guidance ?? getMermaidNotDrawnReminder(attachment.reasons),
           isMeta: true,
         }),
       ])

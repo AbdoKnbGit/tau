@@ -624,6 +624,7 @@ type GraphicsSharp = {
     height: number,
     options?: { fit?: string },
   ) => GraphicsSharp
+  extract: (region: { left: number; top: number; width: number; height: number }) => GraphicsSharp
   ensureAlpha: () => GraphicsSharp
   raw: () => GraphicsSharp
   png: () => GraphicsSharp
@@ -707,6 +708,41 @@ export type GraphicsOverlay = {
   cellHeight: number
 }
 
+/** Encode a contiguous strip at the exact scale of its full-size preview. */
+export async function encodeGraphicsRows(
+  imageData: Buffer,
+  box: Pick<GraphicsOverlay, 'columns' | 'rows' | 'cellWidth' | 'cellHeight' | 'protocol'>,
+  firstRow: number,
+  rows: number,
+  imageId: number | undefined,
+  encodeSixel: typeof encodeSixelGraphics,
+): Promise<string | null> {
+  if (!Number.isInteger(firstRow) || !Number.isInteger(rows) || firstRow < 0 || rows < 1 ||
+      firstRow + rows > box.rows || box.protocol === 'none') return null
+  const processor = await getImageProcessor()
+  const width = box.columns * box.cellWidth
+  const height = rows * box.cellHeight
+  let pipeline = (processor(imageData) as unknown as GraphicsSharp)
+    .resize(width, box.rows * box.cellHeight, { fit: 'fill' })
+  if (rows !== box.rows) {
+    if (!pipelineSupports(pipeline, 'extract')) return null
+    pipeline = pipeline.extract({ left: 0, top: firstRow * box.cellHeight, width, height })
+  }
+  if (box.protocol === 'sixel') {
+    if (!pipelineSupports(pipeline, 'raw')) return null
+    const result = await pipeline.raw().toBuffer({ resolveWithObject: true })
+    if (!('data' in result) || result.info.width !== width || result.info.height !== height) return null
+    const rgba = widenToRgba(result.data, width, height, result.info.channels)
+    return rgba && encodeSixel(rgba, width, height)
+  }
+  if (!pipelineSupports(pipeline, 'png')) return null
+  const png = await pipeline.png().toBuffer()
+  if ('data' in png) return null
+  return box.protocol === 'kitty'
+    ? encodeKittyGraphics(png.toString('base64'), box.columns, rows, imageId)
+    : encodeITerm2Graphics(png.toString('base64'), box.columns, rows)
+}
+
 /** Encodes started and not yet finished; see {@link graphicsEncodeQuietFor}. */
 let graphicsEncodesInFlight = 0
 let lastGraphicsEncodeEndedAt = 0
@@ -750,6 +786,7 @@ export async function renderGraphicsOverlay(
    * mistaken for a different image; see `allocateKittyImageId`.
    */
   imageId?: number,
+  encodeSixel: typeof encodeSixelGraphics = encodeSixelGraphics,
 ): Promise<GraphicsOverlay | null> {
   // Every path out of here falls back to block glyphs, and for a long time all
   // of them were silent — which is why "it just renders blurry" took so many
@@ -809,65 +846,10 @@ export async function renderGraphicsOverlay(
     const pixelWidth = columns * cell.width
     const pixelHeight = rows * cell.height
 
-    if (protocol === 'sixel') {
-      const pipeline = processor(imageData) as unknown as GraphicsSharp
-      if (!pipelineSupports(pipeline, 'raw')) {
-        logForDebugging('terminalGraphics: processor cannot produce raw pixels')
-        return null
-      }
-      const result = await pipeline
-        .resize(pixelWidth, pixelHeight, { fit: 'fill' })
-        .raw()
-        .toBuffer({ resolveWithObject: true })
-      if (!('data' in result)) return null
-      const rgba = widenToRgba(
-        result.data,
-        result.info.width,
-        result.info.height,
-        result.info.channels,
-      )
-      if (rgba === null) {
-        logForDebugging(
-          `terminalGraphics: unexpected channel count ${result.info.channels}`,
-        )
-        return null
-      }
-      const sequence = await encodeSixelGraphics(
-        rgba,
-        result.info.width,
-        result.info.height,
-      )
-      if (!sequence) return null
-      return {
-        sequence,
-        protocol,
-        columns,
-        rows,
-        pixelWidth,
-        pixelHeight,
-        cellWidth: cell.width,
-        cellHeight: cell.height,
-      }
-    }
-
-    const pipeline = processor(imageData) as unknown as GraphicsSharp
-    if (!pipelineSupports(pipeline, 'png')) return null
-    const encoded = await pipeline
-      .resize(pixelWidth, pixelHeight, { fit: 'fill' })
-      .png()
-      .toBuffer()
-    if ('data' in encoded) return null
-    const base64 = encoded.toString('base64')
-    // Kitty images are addressable by id, so give this one its own and hand
-    // back the matching delete. Without an id the terminal assigns its own,
-    // nothing can refer to the image afterwards, and every redraw stacks
-    // another placement that no erase can reach — the accumulating ghost.
-    const kittyImageId =
-      protocol === 'kitty' ? (imageId ?? allocateKittyImageId()) : undefined
-    const sequence =
-      protocol === 'kitty'
-        ? encodeKittyGraphics(base64, columns, rows, kittyImageId)
-        : encodeITerm2Graphics(base64, columns, rows)
+    const kittyImageId = protocol === 'kitty' ? (imageId ?? allocateKittyImageId()) : undefined
+    const box = { columns, rows, cellWidth: cell.width, cellHeight: cell.height, protocol }
+    const sequence = await encodeGraphicsRows(imageData, box, 0, rows, kittyImageId, encodeSixel)
+    if (!sequence) return null
     return {
       sequence,
       ...(kittyImageId !== undefined && {

@@ -27,7 +27,7 @@ import { optimize } from './optimizer.js';
 import Output from './output.js';
 import type { ParsedKey } from './parse-keypress.js';
 import reconciler, { dispatcher, getLastCommitMs, getLastYogaMs, isDebugRepaintsEnabled, recordYogaMs, resetProfileCounters } from './reconciler.js';
-import renderNodeToOutput, { consumeFollowScroll, didLayoutShift, getFrameAbsoluteRects } from './render-node-to-output.js';
+import renderNodeToOutput, { consumeFollowScroll, didLayoutShift, didScrollWithGraphics, getFrameAbsoluteRects } from './render-node-to-output.js';
 import { isNoColorRequested } from './no-color.js';
 import { applyPositionedHighlight, type MatchPosition, scanPositions } from './render-to-screen.js';
 import createRenderer, { type Renderer } from './renderer.js';
@@ -63,6 +63,7 @@ const ERASE_THEN_HOME_PATCH = Object.freeze({
 // until requests and image encodes have been quiet this long — a batch, or
 // every image re-encoding after a resize — but never longer than the cap.
 const GRAPHICS_REPRINT_QUIET_MS = 150;
+const GRAPHICS_SCROLL_SETTLE_MS = 100;
 const GRAPHICS_REPRINT_MAX_WAIT_MS = 3000;
 
 // Cached per-Ink-instance, invalidated on resize. frame.cursor.y for
@@ -109,6 +110,12 @@ export default class Ink {
   private backFrame: Frame;
   private lastPoolResetTime = performance.now();
   private drainTimer: ReturnType<typeof setTimeout> | null = null;
+  private graphicsScrollTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private cancelGraphicsScrollTimer(): void {
+    if (this.graphicsScrollTimer !== null) clearTimeout(this.graphicsScrollTimer);
+    this.graphicsScrollTimer = null;
+  }
   /** Pending reprint for inline images that can only be drawn with their rows. */
   private graphicsReprintTimer: ReturnType<typeof setTimeout> | null = null;
   /** When the pending reprint was first, and most recently, asked for. */
@@ -707,6 +714,16 @@ export default class Ink {
     // cursor parking below so the declared position still wins. The helper
     // brackets each payload in DECSC/DECRC, leaving the cursor at frame.cursor.
     if (hasGraphicsPlacements()) {
+      // The cells underneath an image already contain its text-mode preview.
+      // Let those cells scroll. Send the full pixel payload once at rest, even
+      // when the user releases the wheel and nothing else triggers a frame.
+      if (this.altScreenActive && didScrollWithGraphics()) {
+        this.cancelGraphicsScrollTimer();
+        this.graphicsScrollTimer = setTimeout(() => {
+          this.graphicsScrollTimer = null;
+          this.scheduleRender();
+        }, GRAPHICS_SCROLL_SETTLE_MS);
+      }
       // A screen clear drops the pixels but not the origins, so the helper's
       // "did anything move" test would wrongly conclude there is nothing to do.
       if (optimized.some(patch => patch.type === 'clearTerminal')) {
@@ -747,6 +764,7 @@ export default class Ink {
         damage: frame.screen.damage,
         cell: getCellPixelSize(),
         scrollback: !this.altScreenActive,
+        suspendPixels: this.altScreenActive && this.graphicsScrollTimer !== null,
         overlays: getFrameAbsoluteRects(),
         // Erasing a moved graphic means rewriting the cells it used to cover,
         // read from the frame that is being written right now.
@@ -880,7 +898,7 @@ export default class Ink {
     // quarter interval (~250fps, setTimeout practical floor) for max scroll
     // speed. Regular renders stay at FRAME_INTERVAL_MS via the throttle.
     if (frame.scrollDrainPending) {
-      this.drainTimer = setTimeout(() => this.onRender(), FRAME_INTERVAL_MS >> 2);
+      this.drainTimer = setTimeout(() => this.onRender(), this.graphicsScrollTimer !== null ? FRAME_INTERVAL_MS : FRAME_INTERVAL_MS >> 2);
     }
     const yogaMs = getLastYogaMs();
     const commitMs = getLastCommitMs();
@@ -1016,6 +1034,7 @@ export default class Ink {
    * a full redraw with no stale diff state.
    */
   setAltScreenActive(active: boolean, mouseTracking = false): void {
+    if (!active) this.cancelGraphicsScrollTimer();
     if (this.altScreenActive === active) return;
     this.altScreenActive = active;
     this.altScreenMouseTracking = active && mouseTracking;
@@ -1087,6 +1106,7 @@ export default class Ink {
    * as restoring the saved cursor position — clobbering the resume hint.
    */
   detachForShutdown(): void {
+    this.cancelGraphicsScrollTimer();
     this.isUnmounted = true;
     // Cancel any pending throttled render so it doesn't fire between
     // cleanupTerminalModes() and process.exit() and write to main screen.
@@ -1626,6 +1646,7 @@ export default class Ink {
     this.onRender();
     this.unsubscribeExit();
     clearGraphicsHost(this.graphicsHost);
+    this.cancelGraphicsScrollTimer();
     if (typeof this.restoreConsole === 'function') {
       this.restoreConsole();
     }

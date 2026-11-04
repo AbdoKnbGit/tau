@@ -13,6 +13,7 @@
  */
 import { diagramKind, render, type Span } from 'grok-mermaid'
 import { stringWidth } from '../ink/stringWidth.js'
+import { mermaidChartColumns, mermaidChartKind, renderMermaidChart } from './mermaidCharts.js'
 
 // grok-mermaid lays out sequence-diagram text in quadratic time: one
 // 50,000-character note took 8.4 s, while the slowest sequence diagram within
@@ -71,6 +72,7 @@ export type MermaidFallback =
   | { kind: 'too-large' }
   | { kind: 'unsupported'; name: string | null }
   | { kind: 'unreadable' }
+  | { kind: 'unsupported-syntax' }
   | { kind: 'characters' }
   | { kind: 'too-wide'; columnsNeeded: number; columns: number }
 
@@ -101,7 +103,7 @@ export function mermaidArtFits(art: MermaidArt, columns: number): boolean {
  * top-down swap). Otherwise the reason it is not drawn.
  */
 export function fitMermaidArt(source: string, columns: number): MermaidDrawing {
-  const drawn = drawCached(source)
+  const drawn = drawCached(source, columns)
   if (drawn.art === null || mermaidArtFits(drawn.art, columns)) return drawn
   const turnedSource = turnFlowchart(source)
   const turned = turnedSource === null ? null : drawCached(turnedSource)
@@ -130,6 +132,8 @@ export function describeMermaidFallback(fallback: MermaidFallback): string {
         : `mermaid · not drawn: ${fallback.name} diagrams can't be drawn in the terminal`
     case 'unreadable':
       return 'mermaid · not drawn: the diagram has a syntax error'
+    case 'unsupported-syntax':
+      return 'mermaid · not drawn: this chart uses syntax the terminal does not support'
     case 'characters':
       return "mermaid · not drawn: its labels use characters the terminal can't line up"
   }
@@ -143,10 +147,9 @@ export function describeMermaidOmissions(omitted: number): string {
 }
 
 /**
- * The source as it is drawn: front matter dropped, then every character whose
- * width is uncertain (emoji, combining marks left after NFC composition,
- * controls) removed together with one space after it, so a label written as
- * an emoji and a word is drawn as the word. Tabs become spaces.
+ * Decorator emoji are removed with one following space. Keep letters, numbers
+ * and linguistic marks intact so the output check can fall back to source if
+ * the engine cannot align the label. Tabs become spaces.
  */
 export function prepareMermaidSource(source: string): string {
   let out = ''
@@ -157,7 +160,7 @@ export function prepareMermaidSource(source: string): string {
       out += ch
     } else if (code === 0x20 || code === 0x09) {
       if (!dropSpace) out += ' '
-    } else if (isWidthSafeCode(code)) {
+    } else if (isWidthSafeCode(code) || (/[\p{L}\p{N}\p{M}]/u.test(ch) && !/\p{Variation_Selector}|\u20e3/u.test(ch))) {
       out += ch
     } else {
       dropSpace = true
@@ -264,7 +267,7 @@ export function normalizeMermaidFences(markdown: string): string {
 // Turning LR/RL into TD, and TD/TB/BT (or no direction) into LR, keeps every
 // node and edge and only changes which way the layout runs.
 function turnFlowchart(source: string): string | null {
-  const lines = source.split('\n')
+  const lines = stripFrontMatter(source).split('\n')
   const header = lines.findIndex(line => {
     const trimmed = line.trim()
     return trimmed !== '' && !trimmed.startsWith('%%')
@@ -332,21 +335,36 @@ function diagramName(source: string): string | null {
   return null
 }
 
-function drawCached(source: string): MermaidDrawing {
+function drawCached(source: string, columns = 80): MermaidDrawing {
   if (!withinCaps(source)) return { art: null, fallback: { kind: 'too-large' } }
-  const hit = cache.get(source)
+  const chart = mermaidChartKind(stripFrontMatter(source))
+  const chartWidth = mermaidChartColumns(columns - MERMAID_WIDTH_MARGIN)
+  const key = chart ? `chart\0${chartWidth}\0${source}` : `diagram\0${source}`
+  const hit = cache.get(key)
   if (hit !== undefined) {
-    cache.delete(source)
-    cache.set(source, hit)
+    cache.delete(key)
+    cache.set(key, hit)
     return hit
   }
-  const drawing = draw(source)
+  const drawing = chart ? drawChart(source, chartWidth) : draw(source)
   if (cache.size >= CACHE_LIMIT) {
     const oldest = cache.keys().next().value
     if (oldest !== undefined) cache.delete(oldest)
   }
-  cache.set(source, drawing)
+  cache.set(key, drawing)
   return drawing
+}
+
+function drawChart(source: string, columns: number): MermaidDrawing {
+  const drawing = renderMermaidChart(stripFrontMatter(source).normalize('NFC'), columns)
+  if ('error' in drawing) return { art: null, fallback: { kind: drawing.error } }
+  let width = 0
+  for (const row of drawing.rows) {
+    const text = row.map(piece => piece.text).join('')
+    if (!isWidthSafe(text)) return { art: null, fallback: { kind: 'characters' } }
+    width = Math.max(width, stringWidth(text))
+  }
+  return { art: { rows: drawing.rows, width, omitted: 0 } }
 }
 
 function draw(source: string): MermaidDrawing {
@@ -369,8 +387,7 @@ function draw(source: string): MermaidDrawing {
     let width = 0
     for (const row of drawn.styled) {
       const text = row.map(span => span.text).join('')
-      // The source was cleaned above, so this only catches a glyph of
-      // grok-mermaid's own that tau measures differently.
+      // Preserve meaningful label characters in source when art can't align them.
       if (!isWidthSafe(text)) return { art: null, fallback: { kind: 'characters' } }
       width = Math.max(width, stringWidth(text))
     }

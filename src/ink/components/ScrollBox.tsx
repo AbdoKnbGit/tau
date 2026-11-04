@@ -67,6 +67,10 @@ export type ScrollBoxProps = Except<Styles, 'textWrap' | 'overflow' | 'overflowX
    * grows. Unset manually via scrollTo/scrollBy to break the stickiness.
    */
   stickyScroll?: boolean;
+  /** Automatically follow growth from the bottom. Command lists opt out so
+   * loading results or changing tabs keeps their beginning visible. An
+   * explicit scrollToBottom still works. Defaults to true. */
+  followOnGrow?: boolean;
 };
 
 /**
@@ -83,6 +87,7 @@ function ScrollBox({
   children,
   ref,
   stickyScroll,
+  followOnGrow,
   ...style
 }: PropsWithChildren<ScrollBoxProps>): React.ReactNode {
   const domRef = useRef<DOMElement>(null);
@@ -225,7 +230,7 @@ function ScrollBox({
     ...style,
     overflowX: 'scroll',
     overflowY: 'scroll'
-  }} {...stickyScroll ? {
+  }} followOnGrow={followOnGrow} {...stickyScroll ? {
     stickyScroll: true
   } : {}}>
       <Box flexDirection="column" flexGrow={1} flexShrink={0} width="100%">

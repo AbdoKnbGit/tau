@@ -318,6 +318,47 @@ test('fullscreen: an image cut at the top of its scroll box is withheld too', ()
   assert(build(screen, stylePool).includes(PAYLOAD), 'drawn when whole')
 })
 
+test('fullscreen draws a cropped poster strip at either scroll edge and above a floating control', () => {
+  reset()
+  const { screen, stylePool } = makeScreen()
+  const { node } = placeInScrollBox('a', 0, 2, 20)
+  const requested: string[] = []
+  setGraphicsPlacement('a', {
+    node, sequence: PAYLOAD, rows: 8, columns: 8, cellWidth: CELL.width, cellHeight: CELL.height,
+    visibleRows: (first, count) => {
+      const strip = `CROP-${first}-${count}`
+      requested.push(strip)
+      return strip
+    },
+  })
+  nodeCache.set(node, { x: 4, y: 0, width: 8, height: 8 })
+  const top = build(screen, stylePool)
+  assert(top.includes('CROP-2-6') && !top.includes(PAYLOAD), 'top edge retains sharp visible rows')
+  nodeCache.set(node, { x: 4, y: 18, width: 8, height: 8 })
+  assert(build(screen, stylePool).includes('CROP-0-4'), 'bottom edge clips to the scroll box')
+  nodeCache.set(node, { x: 4, y: 5, width: 8, height: 8 })
+  const pill = buildGraphicsSequence({ cursor: { x: 0, y: 0 }, viewportTop: 0, viewportRows: 40,
+    viewportColumns: 60, damage: undefined, cell: CELL, screen, stylePool,
+    overlays: [{ x: 2, y: 11, width: 20, height: 1 }] })
+  assert(pill.includes('CROP-0-6'), 'a floating control is kept clear')
+  assert(build(screen, stylePool).includes(PAYLOAD), 'the full graphic returns when unobstructed')
+})
+
+test('a narrower clipping ancestor cannot let image pixels spill into a sibling', () => {
+  reset()
+  const { screen, stylePool } = makeScreen()
+  const { node } = placeInScrollBox('a', 4, 0, 20)
+  const panel = { style: { overflowX: 'hidden' } } as DOMElement
+  node.parentNode!.parentNode = panel
+  nodeCache.set(panel, { x: 2, y: 0, width: 12, height: 20 })
+  assert(build(screen, stylePool).includes(PAYLOAD), 'fits initially')
+  nodeCache.set(panel, { x: 2, y: 0, width: 7, height: 20 })
+  const narrow = build(screen, stylePool)
+  assert(!narrow.includes(PAYLOAD) && narrow.includes('XXXXXXXX'), 'narrow panel exposes only cell preview')
+  nodeCache.set(panel, { x: 2, y: 0, width: 12, height: 20 })
+  assert(build(screen, stylePool).includes(PAYLOAD), 'widening restores the graphic')
+})
+
 test('fullscreen: a scroll never shrinks an image', () => {
   // Reporting a row limit here would leave it smaller after scrolling back.
   reset()
@@ -598,6 +639,36 @@ test('unmounting deletes by id as well as repainting', () => {
   setGraphicsPlacement('a', null)
   const out = build(screen, stylePool)
   assert(out.includes(DELETE), 'a removed placement still deletes its image')
+})
+
+test('two images moving into each other\'s old rows clear both old placements before drawing either', () => {
+  reset()
+  const { screen, stylePool } = makeScreen()
+  const a = place('a', 4, 5, 8, 4, 'delete-first')
+  const b = place('b', 4, 9, 8, 4, 'delete-second')
+  build(screen, stylePool)
+  nodeCache.set(a, { x: 4, y: 9, width: 8, height: 4 })
+  nodeCache.set(b, { x: 4, y: 13, width: 8, height: 4 })
+  const output = build(screen, stylePool)
+  assertEqual(output.split(PAYLOAD).length - 1, 2, 'both images drew')
+  assert(output.includes('delete-second') && output.indexOf('delete-second') < output.indexOf(PAYLOAD), 'the later image cannot erase the earlier redraw')
+})
+
+test('scroll frames reveal the cell preview once and resume the current image at rest', () => {
+  reset()
+  const { screen, stylePool } = makeScreen()
+  const node = place('a', 4, 8)
+  build(screen, stylePool)
+  const moving = () => buildGraphicsSequence({
+    cursor: { x: 0, y: 0 }, viewportTop: 0, viewportRows: 40, viewportColumns: 60,
+    damage: undefined, cell: CELL, screen, stylePool, suspendPixels: true,
+  })
+  const first = moving()
+  assert(first.includes('XXXXXXXX') && !first.includes(PAYLOAD), 'erase old pixels and reveal cells')
+  nodeCache.set(node, { x: 4, y: 3, width: 8, height: 4 })
+  assertEqual(moving(), '', 'no repeat erase or large payload during the scroll')
+  assert(build(screen, stylePool).includes(PAYLOAD), 'draw the settled position')
+  assertEqual(build(screen, stylePool), '', 'idle frames remain quiet')
 })
 
 test('a sixel placement emits no delete, having no protocol for one', () => {

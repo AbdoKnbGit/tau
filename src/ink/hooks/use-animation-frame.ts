@@ -15,6 +15,8 @@ import { useTerminalViewport } from './use-terminal-viewport.js'
  * when a number is passed again.
  *
  * @param intervalMs - How often to update, or null to pause
+ * @param watchVisibility - Keep watching while hidden, so a silent request's
+ * spinner can resume after scrolling back without another provider event.
  * @returns [ref, time] - Ref to attach to element, elapsed time in ms
  *
  * @example
@@ -29,6 +31,7 @@ import { useTerminalViewport } from './use-terminal-viewport.js'
  */
 export function useAnimationFrame(
   intervalMs: number | null = 16,
+  watchVisibility = false,
 ): [ref: (element: DOMElement | null) => void, time: number] {
   const clock = useContext(ClockContext)
   const [viewportRef, { isVisible }, isVisibleNow, isFullyVisibleNow] =
@@ -36,7 +39,10 @@ export function useAnimationFrame(
   const [time, setTime] = useState(() => clock?.now() ?? 0)
   const [, renderAgain] = useReducer((n: number) => n + 1, 0)
 
-  const active = isVisible && intervalMs !== null
+  // A pending request can receive no React updates for several seconds.
+  // Keep its clock subscription across scrolling so it can wake itself when
+  // visible again. Hidden frames do not update React state.
+  const active = (watchVisibility || isVisible) && intervalMs !== null
 
   useEffect(() => {
     if (!clock || !active) return
@@ -56,7 +62,7 @@ export function useAnimationFrame(
         // time; once a render sees that, this subscription ends.
         if (isFullyVisibleNow()) {
           setTime(now)
-        } else if (!isVisibleNow()) {
+        } else if (!watchVisibility && !isVisibleNow()) {
           renderAgain()
         }
       }
@@ -64,7 +70,7 @@ export function useAnimationFrame(
 
     // keepAlive: true — visible animations drive the clock
     return clock.subscribe(onChange, true)
-  }, [clock, intervalMs, active, isVisibleNow, isFullyVisibleNow])
+  }, [clock, intervalMs, active, isVisibleNow, isFullyVisibleNow, watchVisibility])
 
   return [viewportRef, time]
 }

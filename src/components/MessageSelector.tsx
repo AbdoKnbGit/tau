@@ -58,6 +58,18 @@ export function MessageSelector({
   const fileHistory = useAppState(s => s.fileHistory);
   const [error, setError] = useState<string | undefined>(undefined);
   const isFileHistoryEnabled = fileHistoryEnabled();
+  const { rows, columns } = useTerminalSize();
+  const instruction = isFileHistoryEnabled
+    ? 'Restore the code and/or conversation to the point before…'
+    : 'Restore and fork the conversation to the point before…';
+  // Keep the original spacing when it fits. Short terminals use compact rows
+  // so the selected message, its metadata, and the exit hint remain visible.
+  const textWidth = Math.max(1, columns - 2);
+  const fixedRows = 2 + Math.ceil(instruction.length / textWidth) + Math.ceil('Enter to continue · Esc to exit'.length / textWidth);
+  const spaced = rows >= fixedRows + 3 + (isFileHistoryEnabled ? 3 : 2);
+  const chromeRows = fixedRows + (spaced ? 3 : 0);
+  const optionRows = (isFileHistoryEnabled ? 2 : 1) + (spaced ? 1 : 0);
+  const visibleMessages = Math.max(1, Math.min(MAX_VISIBLE_MESSAGES, Math.floor((rows - chromeRows) / optionRows)));
 
   // Add current prompt as a virtual message
   const currentUUID = useMemo(randomUUID, []);
@@ -70,7 +82,7 @@ export function MessageSelector({
   const [selectedIndex, setSelectedIndex] = useState(messageOptions.length - 1);
 
   // Orient the selected message as the middle of the visible options
-  const firstVisibleIndex = Math.max(0, Math.min(selectedIndex - Math.floor(MAX_VISIBLE_MESSAGES / 2), messageOptions.length - MAX_VISIBLE_MESSAGES));
+  const firstVisibleIndex = Math.max(0, Math.min(selectedIndex - Math.floor(visibleMessages / 2), messageOptions.length - visibleMessages));
   const hasMessagesToSelect = messageOptions.length > 1;
   const [messageToRestore, setMessageToRestore] = useState<UserMessage | undefined>(preselectedMessage);
   const [diffStatsForRestore, setDiffStatsForRestore] = useState<DiffStats | undefined>(undefined);
@@ -321,7 +333,7 @@ export function MessageSelector({
   const showPickList = !error && !messageToRestore && !preselectedMessage && hasMessagesToSelect;
   return <Box flexDirection="column" width="100%">
       <Divider color="suggestion" />
-      <Box flexDirection="column" marginX={1} gap={1}>
+      <Box flexDirection="column" marginX={1} gap={spaced ? 1 : 0}>
         <Text bold color="suggestion">
           Rewind
         </Text>
@@ -363,14 +375,14 @@ export function MessageSelector({
                 Restore and fork the conversation to the point before…
               </Text>}
             <Box width="100%" flexDirection="column">
-              {messageOptions.slice(firstVisibleIndex, firstVisibleIndex + MAX_VISIBLE_MESSAGES).map((msg, visibleOptionIndex) => {
+              {messageOptions.slice(firstVisibleIndex, firstVisibleIndex + visibleMessages).map((msg, visibleOptionIndex) => {
             const optionIndex = firstVisibleIndex + visibleOptionIndex;
             const isSelected = optionIndex === selectedIndex;
             const isCurrent = msg.uuid === currentUUID;
             const metadataLoaded = optionIndex in fileHistoryMetadata;
             const metadata = fileHistoryMetadata[optionIndex];
             const numFilesChanged = metadata?.filesChanged && metadata.filesChanged.length;
-            return <Box key={msg.uuid} height={isFileHistoryEnabled ? 3 : 2} overflow="hidden" width="100%" flexDirection="row">
+            return <Box key={msg.uuid} height={optionRows} overflow="hidden" width="100%" flexDirection="row">
                       <Box width={2} minWidth={2}>
                         {isSelected ? <Text color="permission" bold>
                             {figures.pointer}{' '}

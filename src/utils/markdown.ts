@@ -12,6 +12,7 @@ import { stripPromptXMLTags } from './messages.js'
 import type { ThemeName } from './theme.js'
 import { lexTerminalMarkdown, type TerminalMathToken } from './terminalMarkdown.js'
 import { renderTerminalMath } from './terminalMath.js'
+import { footnoteMarker, type FootnoteDefinition, type FootnoteList, type FootnoteReference } from './terminalFootnotes.js'
 
 // Use \n unconditionally — os.EOL is \r\n on Windows, and the extra \r
 // breaks the character-to-segment mapping in applyStylesToWrappedText,
@@ -38,6 +39,20 @@ export function formatToken(
   highlight: CliHighlight | null = null,
 ): string {
   switch (token.type) {
+    case 'terminalFootnote': {
+      const note = token as FootnoteReference
+      return note.number === undefined ? note.raw : color('inactive', theme)(footnoteMarker(note.number))
+    }
+    case 'terminalFootnoteDefinition': {
+      const note = token as FootnoteDefinition
+      return note.used ? '' : note.raw
+    }
+    case 'terminalFootnoteList': {
+      const notes = token as FootnoteList
+      return EOL + notes.entries.map(note =>
+        `${footnoteMarker(note.number)} ${note.tokens.map(child => formatToken(child, theme, 0, null, null, highlight)).join('')}`,
+      ).join(EOL) + EOL
+    }
     case 'terminalMath':
     case 'terminalMathBlock': {
       const math = token as TerminalMathToken
@@ -51,18 +66,31 @@ export function formatToken(
       return token.type === 'terminalMathBlock' ? visible.trimEnd() + EOL : visible
     }
     case 'blockquote': {
-      const inner = (token.tokens ?? [])
+      let children = token.tokens ?? []
+      const first = children[0]
+      const firstInline = first?.type === 'paragraph' ? first.tokens?.[0] : undefined
+      const alert = firstInline?.type === 'text'
+        ? /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:[ \t]*\n|[ \t]+|$)/.exec(firstInline.text)
+        : null
+      if (alert && first?.type === 'paragraph' && firstInline?.type === 'text') {
+        children = [{ ...first, tokens: [{ ...firstInline, text: firstInline.text.slice(alert[0].length) }, ...first.tokens.slice(1)] }, ...children.slice(1)]
+      }
+      const inner = children
         .map(_ => formatToken(_, theme, 0, null, null, highlight))
         .join('')
       // Prefix each line with a dim vertical bar. Keep text italic but at
       // normal brightness — chalk.dim is nearly invisible on dark themes.
       const bar = chalk.dim(BLOCKQUOTE_BAR)
-      return inner
+      const body = inner
         .split(EOL)
         .map(line =>
           stripAnsi(line).trim() ? `${bar} ${chalk.italic(line)}` : line,
         )
         .join(EOL)
+      if (!alert) return body
+      const alertColors = { NOTE: 'info', TIP: 'success', IMPORTANT: 'permission', WARNING: 'warning', CAUTION: 'error' } as const
+      const label = alert[1] as keyof typeof alertColors
+      return chalk.bold(color(alertColors[label], theme)(label)) + EOL + body
     }
     case 'code': {
       // In-process syntax highlighting (highlight.js via the color-diff port).
@@ -173,12 +201,12 @@ export function formatToken(
           formatToken(_, theme, listDepth + 1, orderedListNumber, token, highlight),
         )
         .join('')
-      if (!body) return ''
+      if (!body) return token.task ? (token.checked ? '[x]' : '[ ]') + EOL : ''
       // The marker goes on the item's first line only. Later lines (a
       // paragraph's continuation lines, code blocks, nested lists, text after
       // a code block) are indented under the item's text instead of repeating
       // the marker or starting at column 0.
-      const marker = `${orderedListNumber === null ? '-' : getListNumber(listDepth + 1, orderedListNumber) + '.'} `
+      const marker = `${token.task ? token.checked ? '[x]' : '[ ]' : orderedListNumber === null ? '-' : getListNumber(listDepth + 1, orderedListNumber) + '.'} `
       const indent = ' '.repeat(marker.length)
       return body
         .split(EOL)

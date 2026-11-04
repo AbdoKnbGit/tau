@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -33,9 +34,11 @@ writeJson(join(cacheDir, 'install-counts-cache.json'), {
   version: 1, fetchedAt: new Date().toISOString(), counts: [],
 })
 process.chdir(project)
-after(() => {
+after(async () => {
   process.chdir(repo)
-  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+  // Let pending plugin-cache writes and handle closures finish between retries.
+  // Synchronous retries block those callbacks and can keep Windows paths busy.
+  await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
 })
 const runtime = await loadBuiltRuntime({
   paths: ['src/commands/plugin/PluginSettings.tsx', 'src/utils/plugins/pluginLoader.ts',

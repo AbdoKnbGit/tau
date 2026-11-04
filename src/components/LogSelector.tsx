@@ -4,6 +4,7 @@ import figures from 'figures';
 import Fuse from 'fuse.js';
 import React from 'react';
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js';
+import { useIsInsideModal } from '../context/modalContext.js';
 import { useExitOnCtrlCDWithKeybindings } from '../hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useSearchInput } from '../hooks/useSearchInput.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
@@ -139,6 +140,9 @@ function buildLogMetadata(log: LogOption, options?: {
   const baseMetadata = formatLogMetadata(log);
   const projectSuffix = showProjectPath && log.projectPath ? ` · ${log.projectPath}` : '';
   return childPadding + baseMetadata + projectSuffix;
+}
+function ResumeDivider() {
+  return useIsInsideModal() ? null : <Box flexShrink={0}><Divider color="suggestion" /></Box>;
 }
 export function LogSelector(t0) {
   const $ = _c(247);
@@ -1249,7 +1253,7 @@ export function LogSelector(t0) {
   const t57 = maxHeight - 1;
   let t58;
   if ($[164] === Symbol.for("react.memo_cache_sentinel")) {
-    t58 = <Box flexShrink={0}><Divider color="suggestion" /></Box>;
+    t58 = <ResumeDivider />;
     $[164] = t58;
   } else {
     t58 = $[164];

@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle';
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { copyFile, stat as fsStat, truncate as fsTruncate, link, open as fsOpen } from 'fs/promises';
 import path from 'path';
+import { parse as parseShellWords } from 'shell-quote';
 import * as React from 'react';
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js';
 import type { AppState } from 'src/state/AppState.js';
@@ -103,6 +104,70 @@ const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set(['echo', 'printf', 'true', 'false
 // Commands that typically produce no stdout on success
 const BASH_SILENT_COMMANDS = new Set(['mv', 'cp', 'rm', 'mkdir', 'rmdir', 'chmod', 'chown', 'chgrp', 'touch', 'ln', 'cd', 'export', 'unset', 'wait']);
 
+// This is only a presentation guard. Permission decisions retain their own validation.
+function hasReadDisplaySideEffects(command: string): boolean {
+  let quote: "'" | '"' | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote === "'") {
+      if (ch === "'") quote = undefined;
+      continue;
+    }
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (ch === "'" && quote === undefined) {
+      quote = "'";
+      continue;
+    }
+    if (ch === '"') {
+      quote = quote === '"' ? undefined : '"';
+      continue;
+    }
+    if (ch === '`' || (ch === '$' && /[({A-Za-z_0-9@*#?$!\-'\"]/.test(command[i + 1] ?? ''))) return true;
+    if (quote === undefined && (ch === '<' || ch === '>')) return true;
+    if (quote === undefined && ch === '#' && (i === 0 || /[\s;|&()]/.test(command[i - 1]!))) {
+      const newline = command.indexOf('\n', i);
+      if (newline < 0) break;
+      i = newline;
+    }
+  }
+  return quote !== undefined;
+}
+
+function hasMutatingReadDisplayArgs(part: string): boolean {
+  if (!/^(?:find|sort|rg|file|awk|uniq)(?:\s|$)/.test(part.trim())) return false;
+  let words: string[];
+  try {
+    const parsed = parseShellWords(part, name => `$${name}`);
+    if (parsed.some(word => typeof word !== 'string' && !('op' in word && word.op === 'glob'))) return true;
+    words = parsed.map(word => typeof word === 'string' ? word : (word as { pattern: string }).pattern);
+  } catch {
+    return true;
+  }
+  const [name, ...args] = words;
+  const optionEnd = args.indexOf('--');
+  const options = optionEnd < 0 ? args : args.slice(0, optionEnd);
+  if (name === 'find') return args.some(arg => /^-(?:delete|exec|execdir|ok|okdir|fprint0?|fprintf|fls)$/.test(arg));
+  if (name === 'sort') return options.some(arg => /^--(?:output|compress-program)(?:=|$)|^-[^-]*o/.test(arg));
+  if (name === 'rg') return options.some(arg => /^--(?:pre|hostname-bin)(?:=|$)/.test(arg));
+  if (name === 'file') return options.some(arg => /^--compile(?:=|$)|^-[^-]*C/.test(arg));
+  if (name === 'awk') return options.some(arg => /^--(?:file|include|exec|load)(?:=|$)|^-(?:f|i|E|l)/.test(arg)) || /\bsystem\s*\(|\bgetline\b|@(?:include|load)|[|>]/.test(args.join(' '));
+  if (name === 'uniq') {
+    let operands = 0;
+    let endOptions = false;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!;
+      if (!endOptions && arg === '--') { endOptions = true; continue; }
+      if (!endOptions && /^-(?:f|s|w)$|^--(?:skip-fields|skip-chars|check-chars)$/.test(arg)) { i++; continue; }
+      if (!endOptions && arg.startsWith('-') && arg !== '-') continue;
+      if (++operands > 1) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Checks if a bash command is a search or read operation.
  * Used to determine if the command should be collapsed in the UI.
@@ -120,6 +185,7 @@ export function isSearchOrReadBashCommand(command: string): {
   isRead: boolean;
   isList: boolean;
 } {
+  if (hasReadDisplaySideEffects(command)) return { isSearch: false, isRead: false, isList: false };
   let partsWithOperators: string[];
   try {
     partsWithOperators = splitCommandWithOperators(command);
@@ -143,19 +209,11 @@ export function isSearchOrReadBashCommand(command: string): {
   let hasRead = false;
   let hasList = false;
   let hasNonNeutralCommand = false;
-  let skipNextAsRedirectTarget = false;
   for (const part of partsWithOperators) {
-    if (skipNextAsRedirectTarget) {
-      skipNextAsRedirectTarget = false;
-      continue;
-    }
-    if (part === '>' || part === '>>' || part === '>&') {
-      skipNextAsRedirectTarget = true;
-      continue;
-    }
     if (part === '||' || part === '&&' || part === '|' || part === ';') {
       continue;
     }
+    if (hasMutatingReadDisplayArgs(part)) return { isSearch: false, isRead: false, isList: false };
     const baseCommand = part.trim().split(/\s+/)[0];
     if (!baseCommand) {
       continue;

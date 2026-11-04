@@ -314,7 +314,9 @@ export function useVirtualScroll(
   let start: number
   let end: number
 
-  if (frozenRange) {
+  // Resizing may coincide with a completed reply. A pinned view must mount
+  // the new tail now even if the previous width's measured range is frozen.
+  if (frozenRange && (!isSticky || frozenRange[1] === n)) {
     // Column just changed. Keep the pre-resize range to avoid mount churn.
     // Clamp to n in case messages were removed (/clear, compaction).
     ;[start, end] = frozenRange
@@ -465,7 +467,7 @@ export function useVirtualScroll(
     const prev = prevRangeRef.current
     const scrollVelocity =
       Math.abs(scrollTop - lastScrollTopRef.current) + Math.abs(pendingDelta)
-    if (prev && scrollVelocity > viewportH * 2) {
+    if (!isSticky && prev && scrollVelocity > viewportH * 2) {
       const [pS, pE] = prev
       if (start < pS - SLIDE_STEP) start = pS - SLIDE_STEP
       if (end > pE + SLIDE_STEP) end = pE + SLIDE_STEP
@@ -544,7 +546,7 @@ export function useVirtualScroll(
     // clampMin → setClampBounds yanks scrollTop down → scrollback vanishes.
     // Position-based: keep whichever end the viewport is closer to.
     const mid = (offsets[effStart]! + offsets[effEnd]!) / 2
-    if (scrollTop - listOriginRef.current < mid) {
+    if (!isSticky && scrollTop - listOriginRef.current < mid) {
       effEnd = effStart + MAX_MOUNTED_ITEMS
     } else {
       effStart = effEnd - MAX_MOUNTED_ITEMS

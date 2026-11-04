@@ -17,7 +17,7 @@
  *   getSyntaxTheme always returns the default for the given Claude theme.
  */
 
-import { diffArrays } from 'diff'
+import { boundedWordDiff, tokenizeWordsForDiff as tokenize } from '../../utils/wordDiffBudget.js'
 import type * as hljsNamespace from 'highlight.js'
 import { basename, extname } from 'path'
 
@@ -703,34 +703,6 @@ type Range = { start: number; end: number }
 
 const CHANGE_THRESHOLD = 0.4
 
-// Tokenize into word runs, whitespace runs, and single punctuation chars —
-// matches the Rust tokenize() which mirrors diffWordsWithSpace's splitting.
-function tokenize(text: string): string[] {
-  const tokens: string[] = []
-  let i = 0
-  while (i < text.length) {
-    const ch = text[i]!
-    if (/[\p{L}\p{N}_]/u.test(ch)) {
-      let j = i + 1
-      while (j < text.length && /[\p{L}\p{N}_]/u.test(text[j]!)) j++
-      tokens.push(text.slice(i, j))
-      i = j
-    } else if (/\s/.test(ch)) {
-      let j = i + 1
-      while (j < text.length && /\s/.test(text[j]!)) j++
-      tokens.push(text.slice(i, j))
-      i = j
-    } else {
-      // advance one codepoint (handle surrogate pairs)
-      const cp = text.codePointAt(i)!
-      const len = cp > 0xffff ? 2 : 1
-      tokens.push(text.slice(i, i + len))
-      i += len
-    }
-  }
-  return tokens
-}
-
 function findAdjacentPairs(markers: Marker[]): [number, number][] {
   const pairs: [number, number][] = []
   let i = 0
@@ -760,9 +732,8 @@ function findAdjacentPairs(markers: Marker[]): [number, number][] {
 }
 
 function wordDiffStrings(oldStr: string, newStr: string): [Range[], Range[]] {
-  const oldTokens = tokenize(oldStr)
-  const newTokens = tokenize(newStr)
-  const ops = diffArrays(oldTokens, newTokens)
+  const ops = boundedWordDiff(oldStr, newStr)
+  if (ops === null) return [[], []]
 
   const totalLen = oldStr.length + newStr.length
   let changedLen = 0
@@ -772,7 +743,7 @@ function wordDiffStrings(oldStr: string, newStr: string): [Range[], Range[]] {
   let newOff = 0
 
   for (const op of ops) {
-    const len = op.value.reduce((s, t) => s + t.length, 0)
+    const len = op.value.length
     if (op.removed) {
       changedLen += len
       oldRanges.push({ start: oldOff, end: oldOff + len })

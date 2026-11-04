@@ -5,6 +5,7 @@
 import { Buffer } from 'buffer'
 import { env } from '../../utils/env.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
+import { windowsClipboardTextCommand } from '../../utils/windowsClipboardText.js'
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
 
@@ -129,13 +130,17 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
  * Local (no SSH_CONNECTION): also shell out to a native clipboard utility.
  * OSC 52 and tmux -w both depend on terminal settings — iTerm2 disables
  * OSC 52 by default, VS Code shows a permission prompt on first use. Native
- * utilities (pbcopy/wl-copy/xclip/xsel/clip.exe) always work locally. Over
+ * utilities (pbcopy/wl-copy/xclip/xsel/Windows Unicode clipboard) run locally. Over
  * SSH these would write to the remote clipboard — OSC 52 is the right path there.
  *
  * Returns the sequence for the caller to write to stdout (raw OSC 52
  * outside tmux, DCS-wrapped inside).
  */
 export async function setClipboard(text: string): Promise<string> {
+  return (await copyClipboardText(text)).sequence
+}
+
+export async function copyClipboardText(text: string): Promise<{ sequence: string; path: ClipboardPath }> {
   const b64 = Buffer.from(text, 'utf8').toString('base64')
   const raw = osc(OSC.CLIPBOARD, 'c', b64)
 
@@ -146,76 +151,61 @@ export async function setClipboard(text: string): Promise<string> {
   // (https://anthropic.slack.com/archives/C07VBSHV7EV/p1773943921788829).
   // Gated on SSH_CONNECTION (not SSH_TTY) since tmux panes inherit SSH_TTY
   // forever but SSH_CONNECTION is in tmux's default update-environment and
-  // clears on local attach. Fire-and-forget.
-  if (!process.env['SSH_CONNECTION']) copyNative(text)
-
-  const tmuxBufferLoaded = await tmuxLoadBuffer(text)
+  // clears on local attach. Wait asynchronously for the outcome to report it.
+  const [nativeCopied, tmuxBufferLoaded] = await Promise.all([
+    !process.env['SSH_CONNECTION'] && copyNative(text),
+    tmuxLoadBuffer(text),
+  ])
 
   // Inner OSC uses BEL directly (not osc()) — ST's ESC would need doubling
   // too, and BEL works everywhere for OSC 52.
-  if (tmuxBufferLoaded) return tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`)
-  return raw
+  return {
+    sequence: tmuxBufferLoaded ? tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`) : raw,
+    path: nativeCopied ? 'native' : tmuxBufferLoaded ? 'tmux-buffer' : 'osc52',
+  }
 }
 
-// Linux clipboard tool: undefined = not yet probed, null = none available.
-// Probe order: wl-copy (Wayland) → xclip (X11) → xsel (X11 fallback).
-// Cached after first attempt so repeated mouse-ups skip the probe chain.
-let linuxCopy: 'wl-copy' | 'xclip' | 'xsel' | null | undefined
+const linuxCommands = [
+  { file: 'wl-copy', args: ['--type', 'text/plain;charset=utf-8'] },
+  { file: 'xclip', args: ['-selection', 'clipboard', '-target', 'UTF8_STRING'] },
+  { file: 'xsel', args: ['--clipboard', '--input'] },
+]
+let linuxCopy: typeof linuxCommands[number] | undefined
 
 /**
  * Shell out to a native clipboard utility as a safety net for OSC 52.
  * Only called when not in an SSH session (over SSH, these would write to
  * the remote machine's clipboard — OSC 52 is the right path there).
- * Fire-and-forget: failures are silent since OSC 52 may have succeeded.
+ * Failures are silent since OSC 52 may have succeeded.
  */
-function copyNative(text: string): void {
+async function copyNative(text: string): Promise<boolean> {
   const opts = { input: text, useCwd: false, timeout: 2000 }
   switch (process.platform) {
-    case 'darwin':
-      void execFileNoThrow('pbcopy', [], opts)
-      return
-    case 'linux': {
-      if (linuxCopy === null) return
-      if (linuxCopy === 'wl-copy') {
-        void execFileNoThrow('wl-copy', [], opts)
-        return
-      }
-      if (linuxCopy === 'xclip') {
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
-        return
-      }
-      if (linuxCopy === 'xsel') {
-        void execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
-        return
-      }
-      // First call: probe wl-copy (Wayland) then xclip/xsel (X11), cache winner.
-      void execFileNoThrow('wl-copy', [], opts).then(r => {
-        if (r.code === 0) {
-          linuxCopy = 'wl-copy'
-          return
-        }
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts).then(
-          r2 => {
-            if (r2.code === 0) {
-              linuxCopy = 'xclip'
-              return
-            }
-            void execFileNoThrow('xsel', ['--clipboard', '--input'], opts).then(
-              r3 => {
-                linuxCopy = r3.code === 0 ? 'xsel' : null
-              },
-            )
-          },
-        )
-      })
-      return
+    case 'darwin': {
+      const result = await execFileNoThrow('pbcopy', [], { ...opts, env: { LC_ALL: 'en_US.UTF-8' } })
+      return result.code === 0
     }
-    case 'win32':
-      // clip.exe is always available on Windows. Unicode handling is
-      // imperfect (system locale encoding) but good enough for a fallback.
-      void execFileNoThrow('clip', [], opts)
-      return
+    case 'linux': {
+      const preferred = linuxCopy
+      const commands = preferred ? [preferred, ...linuxCommands.filter(command => command !== preferred)] : linuxCommands
+      for (const command of commands) {
+        // The background clipboard owner may keep inherited stdout/stderr open
+        // until another app copies. Its lifetime must not hold up this action.
+        if ((await execFileNoThrow(command.file, command.args, { ...opts, discardOutput: true })).code === 0) {
+          linuxCopy = command
+          return true
+        }
+      }
+      linuxCopy = undefined
+      return false
+    }
+    case 'win32': {
+      const command = windowsClipboardTextCommand(text)
+      const result = await execFileNoThrow(command.file, command.args, { ...opts, input: command.input })
+      return result.code === 0
+    }
   }
+  return false
 }
 
 /** @internal test-only */

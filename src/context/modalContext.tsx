@@ -13,9 +13,8 @@ import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
  *   area is smaller than the terminal (rows minus transcript peek minus
  *   divider), so components that cap their visible option count from
  *   `useTerminalSize().rows` would overflow without this context.
- * - Reset scroll on tab switch — Tabs keys its ScrollBox by
- *   `selectedTabIndex`, remounting on tab switch so scrollTop resets to 0
- *   without scrollTo() timing games.
+ * - Reset scroll on tab switch — the panel owns one ScrollBox, also used
+ *   by commands without tabs. Tabs resets that viewport when switching.
  *
  * null = not inside the modal slot.
  */

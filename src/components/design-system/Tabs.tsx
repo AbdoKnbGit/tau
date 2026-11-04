@@ -2,7 +2,6 @@ import { c as _c } from "react/compiler-runtime";
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useIsInsideModal, useModalScrollRef } from '../../context/modalContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import ScrollBox from '../../ink/components/ScrollBox.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, Text } from '../../ink.js';
@@ -92,6 +91,9 @@ export function Tabs(t0) {
   const controlledTabIndex = isControlled ? tabs.findIndex(tab_0 => tab_0[0] === controlledSelectedTab) : -1;
   const selectedTabIndex = isControlled ? controlledTabIndex !== -1 ? controlledTabIndex : 0 : internalSelectedTab;
   const modalScrollRef = useModalScrollRef();
+  useEffect(() => {
+    modalScrollRef?.current?.scrollTo(0);
+  }, [modalScrollRef, selectedTabIndex]);
   const [headerFocused, setHeaderFocused] = useState(initialHeaderFocused);
   let t3;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
@@ -207,7 +209,7 @@ export function Tabs(t0) {
     })}{spacerWidth > 0 && <Text>{" ".repeat(spacerWidth)}</Text>}</Box>;
   let t17;
   if ($[11] !== children || $[12] !== contentHeight || $[13] !== contentWidth || $[14] !== hidden || $[15] !== modalScrollRef || $[16] !== selectedTabIndex) {
-    t17 = modalScrollRef ? <Box width={contentWidth} marginTop={hidden ? 0 : 1} flexShrink={0}><ScrollBox key={selectedTabIndex} ref={modalScrollRef} flexDirection="column" flexShrink={0}>{children}</ScrollBox></Box> : <Box width={contentWidth} marginTop={hidden ? 0 : 1} height={contentHeight} overflowY={contentHeight !== undefined ? "hidden" : undefined}>{children}</Box>;
+    t17 = modalScrollRef ? <Box key={selectedTabIndex} width={contentWidth} marginTop={hidden ? 0 : 1} flexShrink={0}>{children}</Box> : <Box width={contentWidth} marginTop={hidden ? 0 : 1} height={contentHeight} overflowY={contentHeight !== undefined ? "hidden" : undefined}>{children}</Box>;
     $[11] = children;
     $[12] = contentHeight;
     $[13] = contentWidth;

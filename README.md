@@ -143,7 +143,9 @@ CSV files are only one example. The same goes for counting and ranking things ac
 
 ### Diagrams in the terminal
 
-Tau would rather show you than bury you in text. For everyday tasks it reaches for a diagram first, like a flow, an architecture or a sequence of calls, drawn right in your terminal next to a short explanation. It works with any provider, and the diagrams stay in your session like the rest of the output. If you prefer plain text, turn them off in `/config`, then **Draw diagrams**.
+Tau draws Mermaid in terminal replies by default. Ask for a flowchart, sequence, state, class or ER diagram, a bar or line chart, proportions, or a simple Gantt schedule. In a normal interactive session, choose **Show source** to inspect a diagram. **Copy diagram source** keeps the original Mermaid and **Copy diagram art** copies the drawing at its current width. When a diagram cannot fit or uses unsupported syntax, Tau explains why and keeps the source available. To show Mermaid as plain code instead, turn off **Draw diagrams** in `/config`.
+
+When a reply extends beyond the screen, scroll up to see **Jump to bottom**. Click it or press **Ctrl+End** to return to the latest output.
 
 <p align="center">
   <img src="docs/Diagram.PNG" alt="A diagram of a backend drawn in the terminal" width="720">

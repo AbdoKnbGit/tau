@@ -160,7 +160,7 @@ import {
   getKairosActive,
   getIsInteractive,
 } from '../bootstrap/state.js'
-import { getMermaidDiagramsChange } from './mermaidDiagramsReminder.js'
+import { getMermaidDiagramsChange, getMermaidDiagramsReminder, getMermaidNotDrawnReminder } from './mermaidDiagramsReminder.js'
 import { getUndrawnMermaidReasons } from './mermaidDiagramFeedback.js'
 import type { QuerySource } from '../constants/querySource.js'
 import { getAPIProvider } from './model/providers.js'
@@ -738,11 +738,14 @@ export type Attachment =
       type: 'mermaid_diagrams'
       /** The "Draw diagrams" state being announced to the model. */
       enabled: boolean
+      /** Freeze the text sent on this turn, including across upgrades/resume. */
+      guidance?: string
     }
   | {
       type: 'mermaid_not_drawn'
       /** Why diagrams in the latest reply were not drawn, for the model. */
       reasons: string[]
+      guidance?: string
     }
   | {
       type: 'companion_intro'
@@ -1005,7 +1008,7 @@ export async function getAttachments(
           )
           return change === null
             ? []
-            : [{ type: 'mermaid_diagrams' as const, enabled: change }]
+            : [{ type: 'mermaid_diagrams' as const, enabled: change, guidance: getMermaidDiagramsReminder(change) }]
         }),
         maybe('mermaid_not_drawn', async () => {
           // Tells the model when a diagram in its latest reply could not be
@@ -1022,7 +1025,7 @@ export async function getAttachments(
           )
           return reasons.length === 0
             ? []
-            : [{ type: 'mermaid_not_drawn' as const, reasons }]
+            : [{ type: 'mermaid_not_drawn' as const, reasons, guidance: getMermaidNotDrawnReminder(reasons) }]
         }),
         maybe('diagnostics', async () =>
           getDiagnosticAttachments(toolUseContext),

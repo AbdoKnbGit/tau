@@ -4869,7 +4869,7 @@ export function REPL({
   const toolJsxCentered = isFullscreenEnvEnabled() && toolJSX?.isLocalJSXCommand === true;
   const centeredModal: React.ReactNode = toolJsxCentered ? toolJSX!.jsx : null;
   const hasVisibleConversationStarted = messages.some(message => message.type === 'assistant' || message.type === 'user' && !message.isMeta && !message.isVisibleInTranscriptOnly) || displayedMessages.some(message => message.type === 'assistant' || message.type === 'user' && !message.isMeta && !message.isVisibleInTranscriptOnly);
-  const centerFreshPrompt = isFullscreenEnvEnabled() && !viewedAgentTask && submitCount === 0 && !hasVisibleConversationStarted && !toolJSX?.isLocalJSXCommand && !focusedInputDialog;
+  const centerFreshPrompt = isFullscreenEnvEnabled() && !viewedAgentTask && !isLoading && !userInputOnProcessing && !hasVisibleConversationStarted && !toolJSX?.isLocalJSXCommand && !focusedInputDialog;
 
   // <AlternateScreen> at the root: everything below is inside its
   // <Box height={rows}>. Handlers/contexts are zero-height so ScrollBox's
@@ -4885,15 +4885,15 @@ export function REPL({
           ctrl+c-with-selection copies instead of cancelling the active task.
           Its raw useInput handler only stops propagation when a selection
           exists — without one, ctrl+c falls through to CancelRequestHandler.
-          PgUp/PgDn/wheel always scroll the transcript behind the modal —
-          the modal's inner ScrollBox is not keyboard-driven. onScroll
+          PgUp/PgDn/wheel scroll the active command panel when it is open.
+          onScroll
           stays suppressed while a modal is showing so scroll doesn't
           stamp divider/pill state. */}
-      <ScrollKeybindingHandler scrollRef={scrollRef} isActive={isFullscreenEnvEnabled() && (centeredModal != null || !focusedInputDialog || focusedInputDialog === 'tool-permission')} onScroll={centeredModal || toolPermissionOverlay || viewedAgentTask ? undefined : composedOnScroll} />
+      <ScrollKeybindingHandler scrollRef={centeredModal ? modalScrollRef : scrollRef} isActive={isFullscreenEnvEnabled() && (centeredModal != null || !focusedInputDialog || focusedInputDialog === 'tool-permission')} onScroll={centeredModal || toolPermissionOverlay || viewedAgentTask ? undefined : composedOnScroll} />
       {feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? <MessageActionsKeybindings handlers={messageActionHandlers} isActive={cursor !== null} /> : null}
       <CancelRequestHandler {...cancelRequestProps} />
       <MCPConnectionManager key={remountKey} dynamicMcpConfig={dynamicMcpConfig} isStrictMcpConfig={strictMcpConfig}>
-        <FullscreenLayout scrollRef={scrollRef} overlay={toolPermissionOverlay} bottomFloat={bottomFloat} modal={centeredModal} modalScrollRef={modalScrollRef} dividerYRef={dividerYRef} hidePill={!!viewedAgentTask} hideSticky={!!viewedTeammateTask} centerBottom={centerFreshPrompt} newMessageCount={unseenDivider?.count ?? 0} onPillClick={() => {
+        <FullscreenLayout transcriptKey={conversationId} expandedBottom={!!focusedInputDialog && focusedInputDialog !== 'tool-permission' || showBashesDialog} scrollRef={scrollRef} overlay={toolPermissionOverlay} bottomFloat={bottomFloat} modal={centeredModal} modalScrollRef={modalScrollRef} dividerYRef={dividerYRef} hidePill={!!viewedAgentTask} hideSticky={!!viewedTeammateTask} centerBottom={centerFreshPrompt} newMessageCount={unseenDivider?.count ?? 0} onPillClick={() => {
         setCursor(null);
         jumpToNew(scrollRef.current);
       }} scrollable={<>

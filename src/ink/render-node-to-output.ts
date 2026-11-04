@@ -2,6 +2,7 @@ import indentString from 'indent-string'
 import { applyTextStyles } from './colorize.js'
 import type { DOMElement } from './dom.js'
 import getMaxWidth from './get-max-width.js'
+import { hasGraphicsPlacements } from './graphicsPlacement.js'
 import type { Rectangle } from './layout/geometry.js'
 import { LayoutDisplay, LayoutEdge, type LayoutNode } from './layout/node.js'
 import { nodeCache, pendingClears } from './node-cache.js'
@@ -48,6 +49,7 @@ export function didLayoutShift(): boolean {
 // content moved up (scrollTop increased, CSI n S).
 export type ScrollHint = { top: number; bottom: number; delta: number }
 let scrollHint: ScrollHint | null = null
+let graphicsViewportMoved = false
 
 // Rects of position:absolute nodes from the PREVIOUS frame, used by
 // ScrollBox's blit+shift third-pass repair (see usage site). Recorded at
@@ -59,6 +61,7 @@ let absoluteRectsCur: Rectangle[] = []
 
 export function resetScrollHint(): void {
   scrollHint = null
+  graphicsViewportMoved = false
   absoluteRectsPrev = absoluteRectsCur
   absoluteRectsCur = []
 }
@@ -70,6 +73,10 @@ export function getFrameAbsoluteRects(): readonly Rectangle[] {
 
 export function getScrollHint(): ScrollHint | null {
   return scrollHint
+}
+
+export function didScrollWithGraphics(): boolean {
+  return graphicsViewportMoved
 }
 
 // The ScrollBox DOM node (if any) with pendingScrollDelta left after this
@@ -768,7 +775,7 @@ function renderNodeToOutput(
         // because the user was at bottom.
         const grew = scrollHeight >= prevScrollHeight
         const atBottom =
-          sticky || (grew && scrollTopBeforeFollow >= prevMaxScroll)
+          sticky || (node.attributes['followOnGrow'] !== false && grew && scrollTopBeforeFollow >= prevMaxScroll)
         if (atBottom && (node.pendingScrollDelta ?? 0) >= 0) {
           node.scrollTop = maxScroll
           node.pendingScrollDelta = undefined
@@ -875,7 +882,13 @@ function renderNodeToOutput(
             const delta = contentCached.y - contentY
             const regionTop = Math.floor(y + contentYoga.getComputedTop())
             const regionBottom = regionTop + innerHeight - 1
-            if (
+            // The text-only shift leaves cached descendant positions at their
+            // old rows. Pixel placements need fresh coordinates and clipping,
+            // including when the terminal cannot move pixels with DECSTBM.
+            if (hasGraphicsPlacements()) {
+              graphicsViewportMoved = true
+              layoutShifted = true
+            } else if (
               cached?.y === y &&
               cached.height === height &&
               innerHeight > 0 &&

@@ -26,6 +26,7 @@ import { Box, RawAnsi, Text } from '../ink.js'
 import type { GraphicsOverlay } from '../utils/terminalGraphics.js'
 import {
   allocateKittyImageId,
+  encodeGraphicsRows,
   getCellPixelSize,
   getGraphicsGeneration,
   hasMeasuredCellSize,
@@ -41,6 +42,7 @@ import {
   AnimationPlayer,
   animatedCellLimit,
   encodeITerm2Animation,
+  encodeSixelFrame,
   findAnimation,
   planFrames,
 } from '../utils/terminalAnimation.js'
@@ -141,7 +143,7 @@ export function InlineImage({
     settings.inlineImagesAnimated !== false &&
     settings.prefersReducedMotion !== true
   const [image, setImage] = useState<RenderedImage | null>(null)
-  const [overlay, setOverlay] = useState<GraphicsOverlay | null>(null)
+  const [overlay, setOverlay] = useState<(GraphicsOverlay & { posterBase64: string }) | null>(null)
   // What the overlay is the first frame of, when there is something to play.
   const [animation, setAnimation] = useState<{
     data: Buffer
@@ -290,6 +292,10 @@ export function InlineImage({
                   : Math.min(effectiveRowBudget, frameLimit.rows),
                 undefined,
                 kittyImageId.current!,
+                // Still images and GIF posters can cost more to quantize
+                // than animation frames. Use the same worker and skip jobs
+                // whose decode finished after a resize or unmount.
+                async (rgba, width, height) => active ? encodeSixelFrame(rgba, width, height) : null,
               )
         if (!active) return
         if (
@@ -341,7 +347,7 @@ export function InlineImage({
           if (!active) return
           renderPending.current = false
           setImage(rendered)
-          setOverlay(rendered ? overlay : null)
+          setOverlay(rendered && overlay ? { ...overlay, posterBase64: base64 } : null)
           setAnimation(rendered && playable ? animated : null)
           setWithheld(rendered !== null && (unsettled || outdated))
         })
@@ -433,8 +439,33 @@ export function InlineImage({
     // Use the geometry captured by the encoder rather than reading it again
     // here. Zoom can land between encode and commit; relabelling an old-sized
     // payload with the new cell size would defeat the placement guard.
+    // One outstanding job and one strip per mounted image. A different scroll
+    // position is checked on the next paint; a stale result cannot place itself.
+    let active = true
+    let pending = false
+    let cachedFirst = -1
+    let cachedRows = 0
+    let cachedStrip: string | null = null
+    const poster = overlay
+    function visibleRows(first: number, rows: number): string | null {
+      if (pending) return null
+      if (first === cachedFirst && rows === cachedRows) return cachedStrip
+      cachedFirst = first
+      cachedRows = rows
+      cachedStrip = null
+      pending = true
+      void encodeGraphicsRows(Buffer.from(poster.posterBase64, 'base64'), poster, first, rows,
+        kittyImageId.current!, async (rgba, width, height) => active ? encodeSixelFrame(rgba, width, height) : null)
+        .then(sequence => { cachedStrip = sequence }, () => { cachedStrip = null })
+        .finally(() => {
+          pending = false
+          if (active) requestGraphicsFrame()
+        })
+      return null
+    }
     setGraphicsPlacement(id, {
       node,
+      visibleRows,
       sequence: overlay.sequence,
       // The encode every frame of an animation belongs to. For a still it is
       // the payload itself, which is what an identity left unset means anyway.
@@ -446,6 +477,7 @@ export function InlineImage({
       cellHeight: overlay.cellHeight,
     })
     return () => {
+      active = false
       setGraphicsPlacement(id, null)
     }
   }, [overlay])

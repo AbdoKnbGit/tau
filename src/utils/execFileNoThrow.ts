@@ -38,6 +38,7 @@ type ExecFileOptions = {
   env?: NodeJS.ProcessEnv
   stdin?: 'ignore' | 'inherit' | 'pipe'
   input?: string
+  discardOutput?: boolean
 }
 
 export function execFileNoThrow(
@@ -57,6 +58,7 @@ export function execFileNoThrow(
     env: options.env,
     stdin: options.stdin,
     input: options.input,
+    discardOutput: options.discardOutput,
   })
 }
 
@@ -70,6 +72,7 @@ type ExecFileWithCwdOptions = {
   shell?: boolean | string | undefined
   stdin?: 'ignore' | 'inherit' | 'pipe'
   input?: string
+  discardOutput?: boolean
   /** Kill the full descendant tree on Windows when timeout elapses. */
   killTreeOnTimeout?: boolean
 }
@@ -118,6 +121,7 @@ export function execFileNoThrowWithCwd(
     shell,
     stdin: finalStdin,
     input: finalInput,
+    discardOutput,
     killTreeOnTimeout = false,
   }: ExecFileWithCwdOptions = {
     timeout: 10 * SECONDS_IN_MINUTE * MS_IN_SECOND,
@@ -143,6 +147,7 @@ export function execFileNoThrowWithCwd(
       detached: useTreeTimeout && process.platform !== 'win32',
       stdin: finalStdin,
       input: finalInput,
+      ...(discardOutput && { stdout: 'ignore' as const, stderr: 'ignore' as const }),
       reject: false, // Don't throw on non-zero exit codes
     })
 
@@ -228,8 +233,8 @@ export function execFileNoThrowWithCwd(
           }
         } else {
           void resolve({
-            stdout: result.stdout,
-            stderr: result.stderr,
+            stdout: result.stdout ?? '',
+            stderr: result.stderr ?? '',
             code: 0,
           })
         }

@@ -228,3 +228,30 @@ test('the code picker and always-copy preference receive the same filtered selec
     tau.saveGlobalConfig(config => ({ ...config, copyFullResponse: false }))
   }
 })
+
+test('tables add source and safe spreadsheet choices to the existing picker', async () => {
+  const source = '| Name | Value |\n|---|---|\n| **東京** | =1+1 |\n'
+  tau.saveGlobalConfig(config => ({ ...config, copyFullResponse: false }))
+  const result = await copy([assistant(source)])
+  assert.ok(result.element)
+  assert.equal(result.element.props.fullText, source)
+  assert.deepEqual(result.element.props.codeBlocks, [])
+  // The command uses the same prompt-tag stripping as its existing code
+  // picker; that helper trims only the surrounding answer whitespace here.
+  assert.equal(result.element.props.tables[0].markdown, source.trim())
+  assert.equal(result.element.props.tables[0].tsv, "Name\tValue\n東京\t'=1+1")
+  assert.equal(result.element.props.tables[0].neutralizedCells, 1)
+  assert.deepEqual(clipboard, [])
+})
+
+test('always-copy-full preference preserves the exact answer even with tables', async () => {
+  const source = '| h |\n|---|\n| =1+1 |\n'
+  tau.saveGlobalConfig(config => ({ ...config, copyFullResponse: true }))
+  try {
+    const result = await copy([assistant(source)])
+    assert.equal(result.element, null)
+    assert.deepEqual(clipboard, [source])
+  } finally {
+    tau.saveGlobalConfig(config => ({ ...config, copyFullResponse: false }))
+  }
+})

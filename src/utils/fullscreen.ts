@@ -105,11 +105,15 @@ export function _resetTmuxControlModeProbeForTesting(): void {
 }
 
 /**
- * Runtime env-var check only. Ants default to on (CLAUDE_CODE_NO_FLICKER=0
- * to opt out); external users default to off (CLAUDE_CODE_NO_FLICKER=1 to
- * opt in).
+ * Normal interactive terminals get the scrollable view with mouse controls.
+ * A redirected output stream must never receive alternate-screen sequences.
  */
 export function isFullscreenEnvEnabled(): boolean {
+  if (!getIsInteractive() || !process.stdout.isTTY || process.env.TERM === 'dumb') return false
+  // The Windows launcher's last-resort shim also marks redirected streams
+  // as TTYs. Those streams cannot reliably deliver mouse input or restore
+  // the alternate screen. The normal ConPTY and winpty paths use real TTYs.
+  if ((process as NodeJS.Process & { __claudexPatchedTTY?: boolean }).__claudexPatchedTTY) return false
   // Explicit user opt-out always wins.
   if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_NO_FLICKER)) return false
   // Explicit opt-in overrides auto-detection (escape hatch).
@@ -125,7 +129,7 @@ export function isFullscreenEnvEnabled(): boolean {
     }
     return false
   }
-  return process.env.USER_TYPE === 'ant'
+  return true
 }
 
 /**

@@ -5,6 +5,7 @@ import {
 } from '@alcalzone/ansi-tokenize'
 import type { DOMElement } from './dom.js'
 import type { Rectangle } from './layout/geometry.js'
+import { LayoutEdge } from './layout/node.js'
 import { nodeCache } from './node-cache.js'
 import { cellAt, CellWidth, type Screen, type StylePool } from './screen.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -76,6 +77,8 @@ export type GraphicsPlacement = {
    * with. See {@link swapGraphicsFrame}.
    */
   readonly identity?: string
+  /** Ready-to-draw poster strip, or null while it is being encoded. */
+  readonly visibleRows?: (firstRow: number, rows: number) => string | null
   /**
    * Protocol-native removal, where one exists (Kitty's `a=d`).
    *
@@ -875,30 +878,50 @@ function repaintRect(
  *
  * Not for the main screen, which has neither: its transcript is never clipped.
  */
-function isClippedOrCovered(
+function visibleGraphicRows(
   node: DOMElement,
   rect: CellRect,
   overlays: readonly Rectangle[],
-): boolean {
+  top: number,
+  bottom: number,
+): { first: number; count: number } | null {
   let insideOverlay = false
+  top = Math.max(top, rect.y)
+  bottom = Math.min(bottom, rect.y + rect.rows)
   for (let parent = node.parentNode; parent; parent = parent.parentNode) {
     if (parent.style.position === 'absolute') insideOverlay = true
+    const overflowX = parent.style.overflowX ?? parent.style.overflow
     const overflowY = parent.style.overflowY ?? parent.style.overflow
-    if (overflowY !== 'hidden' && overflowY !== 'scroll') continue
+    const clipX = overflowX === 'hidden' || overflowX === 'scroll'
+    const clipY = overflowY === 'hidden' || overflowY === 'scroll'
+    if (!clipX && !clipY) continue
     const clip = nodeCache.get(parent)
-    if (clip && (rect.y < clip.y || rect.y + rect.rows > clip.y + clip.height)) {
-      return true
+    if (!clip) continue
+    const yoga = parent.yogaNode
+    if (clipX) {
+      const left = clip.x + (yoga?.getComputedBorder(LayoutEdge.Left) ?? 0)
+      const right = clip.x + clip.width - (yoga?.getComputedBorder(LayoutEdge.Right) ?? 0)
+      if (rect.x < left || rect.x + rect.columns > right) return null
+    }
+    if (clipY) {
+      top = Math.max(top, clip.y + (yoga?.getComputedBorder(LayoutEdge.Top) ?? 0))
+      bottom = Math.min(bottom, clip.y + clip.height - (yoga?.getComputedBorder(LayoutEdge.Bottom) ?? 0))
     }
   }
-  // A graphic inside a floating box belongs on top of it.
-  if (insideOverlay) return false
-  return overlays.some(
-    overlay =>
-      rect.x < overlay.x + overlay.width &&
-      overlay.x < rect.x + rect.columns &&
-      rect.y < overlay.y + overlay.height &&
-      overlay.y < rect.y + rect.rows,
-  )
+  // Keep the larger contiguous strip when a floating control covers rows.
+  // Its own cells and any remaining fragment retain the normal text preview.
+  if (!insideOverlay) {
+    for (const overlay of overlays) {
+      const end = overlay.y + overlay.height
+      if (overlay.x >= rect.x + rect.columns || overlay.x + overlay.width <= rect.x ||
+          end <= top || overlay.y >= bottom) continue
+      if (overlay.y - top >= bottom - end) bottom = overlay.y
+      else top = end
+    }
+  }
+  const first = Math.ceil(top - rect.y)
+  const count = Math.floor(bottom - rect.y) - first
+  return count > 0 ? { first, count } : null
 }
 
 export function buildGraphicsSequence(options: {
@@ -918,7 +941,9 @@ export function buildGraphicsSequence(options: {
    * by writing its rows again — see {@link takeGraphicsReprintRequest}.
    */
   scrollback?: boolean
-  /** Floating boxes in this frame, such as the jump pill. See {@link isClippedOrCovered}. */
+  /** Show the cell preview while a fullscreen scroll is in motion. */
+  suspendPixels?: boolean
+  /** Floating boxes in this frame, such as the jump pill. See {@link visibleGraphicRows}. */
   overlays?: readonly Rectangle[]
 }): string {
   if (placements.size === 0 && lastDrawn.size === 0) return ''
@@ -935,7 +960,8 @@ export function buildGraphicsSequence(options: {
     overlays = [],
   } = options
 
-  let body = ''
+  let erases = ''
+  let draws = ''
   const viewportBottom = viewportTop + viewportRows
   /** Per-frame trace, emitted only when debug logging is on. */
   const trace: string[] = []
@@ -949,9 +975,8 @@ export function buildGraphicsSequence(options: {
    * scroll the viewport. Keeping each erase/draw in its own DECSC/DECRC pair
    * also prevents one repaint's text cursor from offsetting the next draw.
    */
-  const fromFrameCursor = (sequence: string): void => {
-    if (sequence !== '') body += SAVE_CURSOR + sequence + RESTORE_CURSOR
-  }
+  const fromFrameCursor = (sequence: string): string =>
+    sequence === '' ? '' : SAVE_CURSOR + sequence + RESTORE_CURSOR
 
   /**
    * Repaint one rectangle's cells, clipped to the addressable window.
@@ -961,7 +986,7 @@ export function buildGraphicsSequence(options: {
    * below zero — clip rather than moving above the viewport, where a terminal
    * clamps the cursor and repaints the wrong row.
    */
-  const repaintClipped = (rect: CellRect): void => {
+  const repaintClipped = (rect: CellRect): string => {
     const left = Math.max(0, rect.x)
     const top = Math.max(viewportTop, rect.y)
     const right = Math.min(viewportColumns, screen.width, rect.x + rect.columns)
@@ -970,8 +995,8 @@ export function buildGraphicsSequence(options: {
     // screen; clipping them away left pixels that no later frame could reach.
     // `repaintRect` blanks a row the frame no longer has cells for.
     const bottom = Math.min(viewportBottom, rect.y + rect.rows)
-    if (left >= right || top >= bottom) return
-    fromFrameCursor(
+    if (left >= right || top >= bottom) return ''
+    return fromFrameCursor(
       repaintRect(
         screen,
         stylePool,
@@ -1053,17 +1078,18 @@ export function buildGraphicsSequence(options: {
     // that overflowed its box, and a rectangle clipped away at the viewport
     // edge. The repaint still runs, since it is the only erase sixel has and
     // costs a rectangle of text either way.
-    if (previous.eraseSequence) fromFrameCursor(previous.eraseSequence)
-    repaintClipped(previous)
+    if (previous.eraseSequence) erases += fromFrameCursor(previous.eraseSequence)
+    erases += repaintClipped(previous)
     if (scrolledY !== previous.y) {
-      repaintClipped({ ...previous, y: scrolledY })
+      erases += repaintClipped({ ...previous, y: scrolledY })
     }
   }
 
   // Placements removed since the last frame still have pixels on screen.
   for (const id of [...lastDrawn.keys()]) {
-    if (!placements.has(id)) erase(id)
+    if (options.suspendPixels || !placements.has(id)) erase(id)
   }
+  if (options.suspendPixels) return erases
 
   for (const [id, placement] of placements) {
     const rect = nodeCache.get(placement.node)
@@ -1117,14 +1143,27 @@ export function buildGraphicsSequence(options: {
 
     // Comes before the overflow report below: this is a scroll, or an overlay
     // passing by, and neither should leave the image smaller for good.
-    if (!scrollback && isClippedOrCovered(placement.node, target, overlays)) {
-      trace.push(`skip ${id}: rows ${target.y}-${target.y + target.rows} clipped or covered`)
-      erase(id)
-      continue
+    if (!scrollback) {
+      const visible = visibleGraphicRows(placement.node, target, overlays,
+        placement.visibleRows ? viewportTop : -Infinity, placement.visibleRows ? viewportBottom : Infinity)
+      if (!visible) {
+        erase(id)
+        continue
+      }
+      if (visible.count < target.rows) {
+        const fits = target.x >= 0 && target.x + target.columns <= viewportColumns &&
+          placement.cellWidth === cell.width && placement.cellHeight === cell.height
+        const strip = fits ? placement.visibleRows?.(visible.first, visible.count) : null
+        if (!strip) {
+          erase(id)
+          continue
+        }
+        target.y += visible.first
+        target.rows = visible.count
+        target.sequence = strip
+      }
     }
 
-    // The cursor cannot address rows outside the viewport, so a box that is
-    // partly scrolled away would draw at the wrong origin.
     if (
       target.y < viewportTop ||
       target.x < 0 ||
@@ -1224,7 +1263,7 @@ export function buildGraphicsSequence(options: {
     const nextFrame =
       previous !== undefined &&
       !reencoded &&
-      previous.sequence !== placement.sequence
+      previous.sequence !== target.sequence
     // An untouched image is still on screen, and re-sending a payload that can
     // run to hundreds of kilobytes would stall the write. `damage` narrows this
     // cheaply — it bounds everything written this frame, so no overlap is a
@@ -1246,11 +1285,11 @@ export function buildGraphicsSequence(options: {
       // that is loose about replacing an id from stacking placements. The two
       // cell repaints a move does would only flash the block render through,
       // once per frame.
-      if (previous!.eraseSequence) fromFrameCursor(previous!.eraseSequence)
-      fromFrameCursor(
+      if (previous!.eraseSequence) erases += fromFrameCursor(previous!.eraseSequence)
+      draws += fromFrameCursor(
         cursorMove(0, target.y - cursor.y) +
           cursorTo(target.x + 1) +
-          placement.sequence,
+          target.sequence,
       )
       trace.push(
         `frame ${id} at ${target.x},${target.y} vt=${viewportTop} ` +
@@ -1272,13 +1311,13 @@ export function buildGraphicsSequence(options: {
     // while its pixels stayed. Repainting the cells about to be covered removes
     // whatever drifted in, without needing to know how it got there. It is only
     // a rectangle of text, and it is immediately overdrawn.
-    repaintClipped(target)
+    draws += repaintClipped(target)
 
     // Row relative to the anchor, column absolute — see `repaintRect`.
-    fromFrameCursor(
+    draws += fromFrameCursor(
       cursorMove(0, target.y - cursor.y) +
         cursorTo(target.x + 1) +
-        placement.sequence,
+        target.sequence,
     )
     trace.push(
       `draw ${id} at ${target.x},${target.y} vt=${viewportTop} ` +
@@ -1300,5 +1339,7 @@ export function buildGraphicsSequence(options: {
       `graphics: ${placements.size} placement(s) — ${trace.join(' | ')}`,
     )
   }
-  return body
+  // All old rectangles must be cleared before any new pixels are painted:
+  // after scrolling, the next image may occupy another image's old rows.
+  return erases + draws
 }

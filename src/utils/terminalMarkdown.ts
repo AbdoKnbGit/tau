@@ -1,5 +1,6 @@
 import { Marked, type Token, type Tokens, type TokenizerExtension } from 'marked'
 import { MAX_MATH_SOURCE } from './terminalMath.js'
+import { footnoteExtensions, resolveTerminalFootnotes } from './terminalFootnotes.js'
 
 export type TerminalMathToken = Tokens.Generic & {
   type: 'terminalMath' | 'terminalMathBlock'
@@ -128,11 +129,12 @@ const terminalMarked = new Marked({
   // Preserve Tau's existing approximation notation (~100), without changing
   // strikethrough handling in HTML exports.
   tokenizer: { del() { return undefined } },
-  extensions: [inlineMath, blockMath],
+  extensions: [inlineMath, blockMath, ...footnoteExtensions],
 })
 
-export function lexTerminalMarkdown(content: string): Token[] {
-  return terminalMarked.lexer(content)
+export function lexTerminalMarkdown(content: string, resolveFootnotes = true): Token[] {
+  const tokens = terminalMarked.lexer(content)
+  return resolveFootnotes ? resolveTerminalFootnotes(tokens) : tokens
 }
 
 function hasPendingMath(token: Token): boolean {
@@ -149,7 +151,7 @@ function hasPendingMath(token: Token): boolean {
 /** Shared with the streaming component; test every prefix against this path. */
 export function stableMarkdownPrefix(content: string, previous: string): string {
   if (!content.startsWith(previous)) previous = ''
-  const tokens = lexTerminalMarkdown(content.slice(previous.length))
+  const tokens = lexTerminalMarkdown(content.slice(previous.length), false)
   let last = tokens.length - 1
   while (last >= 0 && tokens[last]!.type === 'space') last--
   let advance = 0

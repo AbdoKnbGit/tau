@@ -1,10 +1,11 @@
 import { c as _c } from "react/compiler-runtime";
-import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
+import type { StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import { useMemo } from 'react';
 import type { ThemeName } from 'src/utils/theme.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, NoSelect, Text, useTheme, wrapText } from '../../ink.js';
+import { boundedWordDiff } from '../../utils/wordDiffBudget.js';
 
 /*
  * StructuredDiffFallback Component: Word-Level Diff Highlighting Example
@@ -224,13 +225,8 @@ export function processAdjacentLines(lineObjects: LineObject[]): LineObject[] {
 }
 
 // Calculate word-level diffs between two text strings
-export function calculateWordDiffs(oldText: string, newText: string): DiffPart[] {
-  // Use diffWordsWithSpace instead of diffWords to preserve whitespace
-  // This ensures spaces between tokens like > and { are preserved
-  const result = diffWordsWithSpace(oldText, newText, {
-    ignoreCase: false
-  });
-  return result;
+export function calculateWordDiffs(oldText: string, newText: string): DiffPart[] | null {
+  return boundedWordDiff(oldText, newText);
 }
 
 // Process word-level diffs with manual wrapping support
@@ -242,18 +238,19 @@ function generateWordDiffElements(item: DiffLine, width: number, maxWidth: numbe
     matchedLine,
     originalCode
   } = item;
-  if (!wordDiff || !matchedLine) {
+  if (!wordDiff || !matchedLine || dim) {
     return null; // This function only handles word-level diff rendering
   }
   const removedLineText = type === 'remove' ? originalCode : matchedLine.originalCode;
   const addedLineText = type === 'remove' ? matchedLine.originalCode : originalCode;
   const wordDiffs = calculateWordDiffs(removedLineText, addedLineText);
+  if (wordDiffs === null) return null;
 
   // Check if we should use word-level diffing
   const totalLength = removedLineText.length + addedLineText.length;
   const changedLength = wordDiffs.filter(part => part.added || part.removed).reduce((sum, part) => sum + part.value.length, 0);
   const changeRatio = changedLength / totalLength;
-  if (changeRatio > CHANGE_THRESHOLD || dim) {
+  if (changeRatio > CHANGE_THRESHOLD) {
     return null; // Fall back to standard rendering for major changes
   }
 

@@ -17,7 +17,7 @@ const wide =
     { length: 8 },
     (_, i) => `  N${i}[Step number ${i} of it] --> N${i + 1}[Step number ${i + 1} of it]`,
   ).join('\n')
-const pie = 'pie\n  "a" : 1'
+const pie = 'mindmap\n  root((a))'
 
 describe('getUndrawnMermaidReasons', () => {
   test('says nothing when every diagram was drawn', () => {
@@ -38,7 +38,7 @@ describe('getUndrawnMermaidReasons', () => {
 
   test('reads across tool calls and meta messages in the same turn', () => {
     const history = [human(), reply(block(pie)), toolResult, meta, reply('Done.')]
-    expect(getUndrawnMermaidReasons(history, 120)).toEqual(['pie diagrams are not supported'])
+    expect(getUndrawnMermaidReasons(history, 120)).toEqual(['mindmap diagrams are not supported'])
   })
 
   test('is sent once: stops at the note already sent', () => {

@@ -2,7 +2,9 @@ import type { Span } from 'grok-mermaid'
 import type { Tokens } from 'marked'
 import React from 'react'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
-import { Ansi, Box, Text, useTheme } from '../ink.js'
+import { Box, NoSelect, Text } from '../ink.js'
+import { stripVTControlCharacters } from 'node:util'
+import { markdownCodePreview } from '../utils/markdownCodePreview.js'
 import {
   describeMermaidFallback,
   describeMermaidOmissions,
@@ -10,7 +12,7 @@ import {
 } from '../utils/mermaidDiagram.js'
 import type { Theme } from '../utils/theme.js'
 import { CtrlOToExpand } from './CtrlOToExpand.js'
-import { highlightCode } from './StructuredDiff/colorDiff.js'
+import { CopyAction, MarkdownButton } from './MarkdownCopyAction.js'
 
 /**
  * Lets a render tree keep mermaid blocks as source. /export and the transcript
@@ -30,37 +32,35 @@ type Props = {
   token: Tokens.Code
   /** Show the source of a block that is not drawn, as the ctrl+o view does. */
   showSource: boolean
+  interactive?: boolean
 }
 
-/** The block exactly as a code fence renders without diagrams. */
 function MermaidSource({ token }: { token: Tokens.Code }): React.ReactNode {
-  const [theme] = useTheme()
-  return <Ansi>{highlightCode(token.text, token.lang || null, theme)}</Ansi>
+  const { columns } = useTerminalSize()
+  const preview = React.useMemo(() => markdownCodePreview(token.text, true, columns), [token.text, columns])
+  const visible = stripVTControlCharacters(preview.text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/gu, '')
+  return <Box flexDirection="column">
+    <Text>{visible}</Text>
+    {preview.hidden && <Text dimColor>Source preview truncated</Text>}
+  </Box>
 }
 
-function MermaidArtOrReason({ token, showSource }: Props): React.ReactNode {
+function MermaidArtOrReason({ token, showSource, interactive }: Props): React.ReactNode {
   const { columns } = useTerminalSize()
+  const [peek, setPeek] = React.useState(false)
   const drawing = fitMermaidArt(token.text, columns)
-  if (drawing.art === null) {
-    const reason = describeMermaidFallback(drawing.fallback)
-    // One line in the normal view; the ctrl+o view shows the source.
-    if (!showSource) {
-      return (
-        <Text dimColor>
-          {reason} <CtrlOToExpand />
-        </Text>
-      )
-    }
-    return (
-      <Box flexDirection="column">
-        <MermaidSource token={token} />
-        <Text dimColor>{reason}</Text>
-      </Box>
-    )
-  }
+  const art = drawing.art
+  const sourceVisible = (interactive && peek) || (showSource && !art)
   return (
     <Box flexDirection="column">
-      {drawing.art.rows.map((row, i) => (
+      {interactive && <NoSelect fromLeftEdge><Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+        <MarkdownButton label={peek ? (art ? 'Show diagram' : 'Hide source') : 'Show source'} onAction={() => setPeek(open => !open)} />
+        <CopyAction label="Copy diagram source" text={() => token.text} />
+        {art && <CopyAction label="Copy diagram art" text={() => art.rows.map(row => row.map(span => span.text).join('')).join('\n')} />}
+      </Box></NoSelect>}
+      {sourceVisible && <MermaidSource token={token} />}
+      {!art && <Text dimColor>{describeMermaidFallback(drawing.fallback)}{!sourceVisible && <> <CtrlOToExpand /></>}</Text>}
+      {!sourceVisible && art?.rows.map((row, i) => (
         // truncate-end: if a resize race leaves a row too wide, it is clipped
         // instead of wrapping into the next one.
         <Text key={i} wrap="truncate-end">
@@ -78,8 +78,8 @@ function MermaidArtOrReason({ token, showSource }: Props): React.ReactNode {
               })}
         </Text>
       ))}
-      {drawing.art.omitted > 0 && (
-        <Text dimColor>{describeMermaidOmissions(drawing.art.omitted)}</Text>
+      {!sourceVisible && art && art.omitted > 0 && (
+        <Text dimColor>{describeMermaidOmissions(art.omitted)}</Text>
       )}
     </Box>
   )
@@ -116,10 +116,10 @@ class MermaidDiagramBoundary extends React.Component<
  * at the current terminal width, otherwise the reason it is not drawn.
  */
 export const MermaidDiagram = React.memo(
-  function MermaidDiagram({ token, showSource }: Props): React.ReactNode {
+  function MermaidDiagram(props: Props): React.ReactNode {
     return (
-      <MermaidDiagramBoundary token={token}>
-        <MermaidArtOrReason token={token} showSource={showSource} />
+      <MermaidDiagramBoundary token={props.token}>
+        <MermaidArtOrReason {...props} />
       </MermaidDiagramBoundary>
     )
   },
@@ -128,5 +128,6 @@ export const MermaidDiagram = React.memo(
   (prev, next) =>
     prev.token.text === next.token.text &&
     prev.token.lang === next.token.lang &&
+    prev.interactive === next.interactive &&
     prev.showSource === next.showSource,
 )

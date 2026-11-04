@@ -26,13 +26,18 @@ const auditPath = join(dirname(distPath), `.mermaid-rendering-${process.pid}.mjs
 writeFileSync(auditPath, bundle.replace(entry, '\n') + `
 export function mermaidTestRuntime() {
   init_exportRenderer(); init_Markdown(); init_AppState(); init_store();
+  const copied = [];
+  copyClipboardText = async text => { copied.push(text); return {sequence: '', path: 'native'}; };
+  let nativeHighlights = 0;
+  highlightCodeWithNative = () => { nativeHighlights++; return null; };
   return { Markdown, StreamingMarkdown, Messages: ${messagesComponent}, StaticKeybindingProvider,
+    applyMarkdown, PlainTranscriptContext, copied, nativeHighlights: () => nativeHighlights,
     AppStoreContext, createStore, getDefaultAppState, createAssistantMessage,
     createUserMessage, TerminalSizeContext, TerminalWriteProvider,
-    MermaidDiagramsContext, fitMermaidArt, getCliHighlightPromise,
+    MermaidDiagramsContext, fitMermaidArt, getCliHighlightPromise, normalizeAttachmentForAPI,
     createNode, FocusManager, reconciler: reconciler_default,
     StylePool, CharPool, HyperlinkPool, createScreen, cellAt, Output,
-    renderNodeToOutput, resetLayoutShifted };
+    renderNodeToOutput, resetLayoutShifted, dispatchClick };
 }
 `)
 let runtime
@@ -68,15 +73,16 @@ function createSession() {
   const links = new runtime.HyperlinkPool()
   const initial = runtime.getDefaultAppState()
   const store = runtime.createStore({ ...initial, settings: {
-    ...initial.settings, syntaxHighlightingDisabled: true, mermaidDiagrams: true,
+    ...initial.settings, syntaxHighlightingDisabled: true,
   } })
 
-  async function render(element, { columns = 80, diagrams = true } = {}) {
+  async function render(element, { columns = 80, diagrams = true, plain = false } = {}) {
     const tree = h(runtime.TerminalSizeContext.Provider, { value: { columns, rows: 24 } },
       h(runtime.TerminalWriteProvider, { value: noop },
         h(runtime.AppStoreContext.Provider, { value: store },
           h(runtime.StaticKeybindingProvider, null,
-            h(runtime.MermaidDiagramsContext.Provider, { value: diagrams }, element)))))
+            h(runtime.MermaidDiagramsContext.Provider, { value: diagrams },
+              h(runtime.PlainTranscriptContext.Provider, { value: plain }, element))))))
     reconciler.updateContainerSync(tree, container, null, noop)
     reconciler.flushSyncWork()
     // Flush passive effects and any resolved highlighting suspense work.
@@ -97,6 +103,29 @@ function createSession() {
 
   return {
     render,
+    async click(frame, label) {
+      const rows = frame.split('\n')
+      const y = rows.findIndex(row => row.includes('[' + label + ']'))
+      assert.ok(y >= 0, 'visible button ' + label)
+      assert.ok(runtime.dispatchClick(root, rows[y].indexOf('[' + label + ']') + 1, y), 'mouse hit ' + label)
+      await new Promise(setImmediate)
+      reconciler.flushSyncWork()
+    },
+    async activate(label, keyboard = false) {
+      const textOf = node => node.nodeName === '#text' ? node.nodeValue : (node.childNodes ?? []).map(textOf).join('')
+      const pending = [root]
+      let target
+      while (pending.length) {
+        const node = pending.pop()
+        if (node._eventHandlers?.onClick && textOf(node).includes(`[${label}]`)) { target = node; break }
+        pending.push(...(node.childNodes ?? []))
+      }
+      assert.ok(target, `button ${label} must exist`)
+      if (keyboard) target._eventHandlers.onKeyDown({ key: 'return', preventDefault() {} })
+      else target._eventHandlers.onClick({})
+      await new Promise(setImmediate)
+      reconciler.flushSyncWork()
+    },
     settings(patch) {
       store.setState(prev => ({ ...prev, settings: { ...prev.settings, ...patch } }))
     },
@@ -197,4 +226,148 @@ test('streaming, completed replies and highlighting remounts agree on finished d
       assertDiagram(await session.render(h(runtime.Markdown, { mermaid: true, key }, text)))
     }
   } finally { session.close() }
+})
+
+test('reply checkboxes and alert labels preserve semantics across supported palettes', () => {
+  for (const theme of ['dark', 'light', 'dark-daltonized', 'light-daltonized']) {
+    const checklist = runtime.applyMarkdown('- [x] Done\n- [ ] Pending', theme)
+    assert.match(checklist, /\[x\] Done/)
+    assert.match(checklist, /\[ \] Pending/)
+    for (const kind of ['NOTE', 'TIP', 'IMPORTANT', 'WARNING', 'CAUTION']) {
+      const alert = runtime.applyMarkdown(`> [!${kind}]\n> Keep **a backup**.`, theme)
+      assert.match(alert, new RegExp(kind))
+      assert.match(alert, /a backup/)
+      assert.doesNotMatch(alert, /\[!|\*\*/)
+    }
+    assert.match(runtime.applyMarkdown('~~unchanged~~ and ~100', theme), /~~unchanged~~ and ~100/)
+  }
+})
+
+test('streaming, completion, export and remount isolate footnote resolution', async () => {
+  const session = createSession()
+  const text = 'A claim[^a].\n\n[^a]: Supporting detail.\n'
+  try {
+    assert.match(await session.render(h(runtime.StreamingMarkdown, null, text)), /\[\^a\]/)
+    const complete = h(runtime.Markdown, { interactive: true }, text)
+    const frame = await session.render(complete)
+    assert.match(frame, /claim¹/)
+    assert.match(frame, /¹ Supporting detail/)
+    assert.doesNotMatch(frame, /\[\^a\]/)
+    assert.match(await session.render(complete, { plain: true }), /\[\^a\]/)
+    assert.doesNotMatch(await session.render(complete), /\[\^a\]/)
+    assert.match(await session.render(h(runtime.Markdown, { resolveFootnotes: false }, text)), /\[\^a\]/)
+    assert.doesNotMatch(await session.render(h(runtime.Markdown, { key: 'new' }, text)), /\[\^a\]/)
+  } finally { session.close() }
+})
+
+test('code controls expand, copy complete source and resize without native helper work', async () => {
+  const session = createSession()
+  const code = Array.from({ length: 35 }, (_, i) => `const line${i} = ${i};`).join('\n')
+  const text = `${fence.slice(0, 0)}\x60\x60\x60typescript\n${code}\n\x60\x60\x60`
+  const element = h(runtime.Markdown, { interactive: true }, text)
+  try {
+    session.settings({ syntaxHighlightingDisabled: false })
+    await runtime.getCliHighlightPromise()
+    const initial = await session.render(element, { columns: 100 })
+    assert.match(initial, /typescript/)
+    assert.match(initial, /Copy code/)
+    assert.doesNotMatch(initial, /line34/)
+    await session.activate('Expand', true)
+    assert.match(await session.render(element, { columns: 100 }), /line34/)
+    const narrow = await session.render(element, { columns: 24 })
+    assert.ok(narrow.split('\n').length < 600)
+    assert.match(await session.render(element, { columns: 100 }), /line34/)
+    await session.activate('Copy code')
+    assert.equal(runtime.copied.at(-1), code)
+    assert.equal(runtime.nativeHighlights(), 0)
+    const exported = await session.render(element, { plain: true })
+    assert.match(exported, /line34/)
+    assert.doesNotMatch(exported, /Copy code|Show less|typescript ·/)
+  } finally { session.close() }
+})
+
+test('long single-line code has a bounded narrow preview and complete copy source', async () => {
+  const session = createSession()
+  const code = 'x'.repeat(60000)
+  const element = h(runtime.Markdown, { interactive: true }, `\x60\x60\x60unknown\n${code}\n\x60\x60\x60`)
+  try {
+    session.settings({ syntaxHighlightingDisabled: false })
+    await runtime.getCliHighlightPromise()
+    const frame = await session.render(element, { columns: 8 })
+    assert.ok(frame.split('\n').length < 700, `bounded rows: ${frame.split('\n').length}`)
+    await session.activate('Copy code')
+    assert.equal(runtime.copied.at(-1), code)
+  } finally { session.close() }
+})
+
+test('inline table TSV preserves footnotes and leaves plain export free of controls', async () => {
+  const session = createSession()
+  const text = '| h |\n|---|\n| value[^a] |\n\n[^a]: Note\n'
+  const element = h(runtime.Markdown, { interactive: true }, text)
+  try {
+    assert.match(await session.render(element), /Copy safe TSV/)
+    await session.activate('Copy safe TSV')
+    assert.equal(runtime.copied.at(-1), 'h\nvalue[^a]')
+    assert.doesNotMatch(await session.render(element, { plain: true }), /Copy safe TSV|Copy table/)
+  } finally { session.close() }
+})
+
+test('new Mermaid charts render in replies and survive narrow/wide cache transitions', async () => {
+  const session = createSession()
+  const examples = [
+    'xychart-beta\n x-axis [A, B]\n bar [2, 4]',
+    'xychart-beta\n x-axis [A, B]\n line [2, 4]',
+    'pie\n "A" : 2\n "B" : 4',
+    'gantt\n dateFormat YYYY-MM-DD\n Build :a, 2026-01-01, 2d',
+  ]
+  try {
+    for (const source of examples) {
+      const element = h(runtime.Markdown, { mermaid: true }, `\x60\x60\x60mermaid\n${source}\n\x60\x60\x60`)
+      assert.doesNotMatch(await session.render(element, { columns: 100 }), /not drawn/)
+      await session.render(element, { columns: 15 })
+      assert.doesNotMatch(await session.render(element, { columns: 100 }), /not drawn/)
+      assert.match(await session.render(element, { diagrams: false }), new RegExp(source.split('\n')[0]))
+    }
+  } finally { session.close() }
+})
+
+test('diagram controls respond at their screen coordinates and preserve original source', async () => {
+  const session = createSession()
+  const original = 'flowchart TD\n  A[🚀 Café] --> B[東京]'
+  const markdown = source => h(runtime.Markdown, { mermaid: true, interactive: true }, '\x60\x60\x60mermaid\n' + source + '\n\x60\x60\x60')
+  const element = markdown(original)
+  const render = (view = element) => session.render(view, { columns: 100 })
+  try {
+    const frame = await render()
+    assert.match(frame, /┌─/)
+    await session.click(frame, 'Copy diagram art')
+    assert.equal(runtime.copied.at(-1), runtime.fitMermaidArt(original, 100).art.rows.map(row => row.map(span => span.text).join('')).join('\n'))
+    await session.click(await render(), 'Show source')
+    assert.match(await render(), /A\[🚀 Café\] --> B\[東京\]/)
+    await session.click(await render(), 'Copy diagram source')
+    assert.equal(runtime.copied.at(-1), original)
+    await session.click(await render(), 'Show diagram')
+    assert.match(await render(), /┌─/)
+    const invalid = markdown('pie\n "Bad" : -3')
+    const fallback = await render(invalid)
+    assert.match(fallback, /not drawn/)
+    assert.doesNotMatch(fallback, /Copy diagram art|Hide source/)
+    await session.click(fallback, 'Show source')
+    assert.match(await render(invalid), /"Bad" : -3/)
+    session.settings({ mermaidDiagrams: false })
+    assert.doesNotMatch(await render(), /Copy diagram|Show source|┌─/)
+  } finally { session.close() }
+})
+
+test('resumed diagram attachments replay the saved guidance and support older unversioned records', () => {
+  const text = attachment => runtime.normalizeAttachmentForAPI(attachment)[0].message.content
+  for (const record of [
+    { type: 'mermaid_diagrams', enabled: true },
+    { type: 'mermaid_not_drawn', reasons: ['the graph was too wide'] },
+  ]) {
+    const frozen = Object.freeze({ ...record, guidance: 'Guidance from a previous session' })
+    assert.equal(text(frozen), '<system-reminder>\nGuidance from a previous session\n</system-reminder>')
+    assert.match(text(record), /# Diagrams/)
+    assert.doesNotMatch(text(record), /Choose flowchart TD/)
+  }
 })
