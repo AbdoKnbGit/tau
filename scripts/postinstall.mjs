@@ -11,7 +11,7 @@
  * and first-launch code will retry any missed Ollama pulls.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, createWriteStream, createReadStream, readdirSync, renameSync, rmSync, copyFileSync, realpathSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, createWriteStream, createReadStream, readdirSync, readFileSync, renameSync, rmSync, copyFileSync, realpathSync } from 'fs';
 import { chmod } from 'fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve, dirname, join, basename } from 'path';
@@ -392,6 +392,20 @@ async function runPostinstall() {
   await installRipgrep();
 
   await verifyDependencyTree();
+  // New installs and updates exercise the actual native decoder. A shared
+  // Windows/WSL tree is recovered in the user's OS-specific cache, never by
+  // reinstalling/pruning Tau's existing node_modules.
+  const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
+  if (manifest.dependencies?.sharp) {
+    try {
+      const { ensureImageRuntime } = await import('./image-runtime.mjs');
+      const image = await ensureImageRuntime(packageRoot);
+      if (image.ok) console.log('[tau] Image decoder ready for this OS and Node runtime.');
+      else console.log(`[tau] Image previews unavailable: ${image.reason}. The next launch can retry; the rest of Tau is ready.`);
+    } catch {
+      console.log('[tau] Image decoder verification unavailable; the first image read will retry.');
+    }
+  }
   // Users never compile Rust or download a speech model: the addon arrives
   // prebuilt. Trimmed or partial trees (repair fixtures, vendored subsets) may
   // not carry the voice helper at all, which is not an install failure.

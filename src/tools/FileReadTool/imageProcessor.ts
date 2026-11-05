@@ -1,4 +1,11 @@
 import type { Buffer } from 'buffer'
+import { createRequire } from 'node:module'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  ensureImageRuntime,
+  findImagePackageRoot,
+} from '../../../scripts/image-runtime.mjs'
 import { isInBundledMode } from '../../utils/bundledMode.js'
 
 export type SharpInstance = {
@@ -31,39 +38,68 @@ type SharpCreatorOptions = {
 
 type SharpCreator = (options: SharpCreatorOptions) => SharpInstance
 
-let imageProcessorModule: { default: SharpFunction } | null = null
-let imageCreatorModule: { default: SharpCreator } | null = null
+const imageRequire = createRequire(import.meta.url)
+let imageProcessorPromise: Promise<SharpFunction> | null = null
+let sharpPromise: Promise<SharpFunction> | null = null
+let imageFailureHint: string | null = null
+
+export function getImageProcessorFailureHint(): string | null {
+  return imageFailureHint
+}
+
+/**
+ * Verification and repair happen in asynchronous child processes. Sharing the
+ * promise covers image reads, pasted images and creators arriving together;
+ * a failed repair is attempted only once in this process, never per image.
+ */
+function getSharp(): Promise<SharpFunction> {
+  sharpPromise ??= (async () => {
+    const launcherRoot = (
+      globalThis as typeof globalThis & { __TAU_PACKAGE_ROOT__?: unknown }
+    ).__TAU_PACKAGE_ROOT__
+    const packageRoot =
+      typeof launcherRoot === 'string'
+        ? launcherRoot
+        : findImagePackageRoot(dirname(fileURLToPath(import.meta.url)))
+    if (!packageRoot) {
+      throw new Error('Image decoding is unavailable: Tau package location could not be resolved')
+    }
+    const runtime = await ensureImageRuntime(packageRoot)
+    if (!runtime.ok) {
+      throw new Error(`Image decoding is unavailable: ${runtime.reason}`)
+    }
+    // A failed ESM import remains cached. The verified CJS entry is loaded
+    // only after recovery, and an isolated cache entry has a distinct path.
+    const sharp = unwrapDefault(
+      imageRequire(runtime.modulePath) as MaybeDefault<SharpFunction>,
+    )
+    if (typeof sharp !== 'function') {
+      throw new Error('Image decoding is unavailable: the image processor is invalid')
+    }
+    return sharp
+  })().catch(error => {
+    imageFailureHint = 'Image preview unavailable; restart Tau to retry automatic image setup.'
+    throw error
+  })
+  return sharpPromise
+}
 
 export async function getImageProcessor(): Promise<SharpFunction> {
-  if (imageProcessorModule) {
-    return imageProcessorModule.default
-  }
-
-  if (isInBundledMode()) {
-    // Try to load the native image processor first
-    try {
-      // Use the native image processor module
-      const imageProcessor = await import('image-processor-napi')
-      const sharp = imageProcessor.sharp || imageProcessor.default
-      imageProcessorModule = { default: sharp }
-      return sharp
-    } catch {
-      // Fall back to sharp if native module is not available
-      // biome-ignore lint/suspicious/noConsole: intentional warning
-      console.warn(
-        'Native image processor not available, falling back to sharp',
-      )
+  imageProcessorPromise ??= (async () => {
+    if (isInBundledMode()) {
+      // Keep the existing standalone-binary processor when it is available.
+      try {
+        const imageProcessor = await import('image-processor-napi')
+        const sharp = imageProcessor.sharp || imageProcessor.default
+        if (typeof sharp === 'function') return sharp
+      } catch {
+        // Normal npm builds and standalone builds without this optional
+        // module use the same verified Sharp runtime below.
+      }
     }
-  }
-
-  // Use sharp for non-bundled builds or as fallback.
-  // Single structural cast: our SharpFunction is a subset of sharp's actual type surface.
-  const imported = (await import(
-    'sharp'
-  )) as unknown as MaybeDefault<SharpFunction>
-  const sharp = unwrapDefault(imported)
-  imageProcessorModule = { default: sharp }
-  return sharp
+    return getSharp()
+  })()
+  return imageProcessorPromise
 }
 
 /**
@@ -72,16 +108,7 @@ export async function getImageProcessor(): Promise<SharpFunction> {
  * so this always uses sharp directly.
  */
 export async function getImageCreator(): Promise<SharpCreator> {
-  if (imageCreatorModule) {
-    return imageCreatorModule.default
-  }
-
-  const imported = (await import(
-    'sharp'
-  )) as unknown as MaybeDefault<SharpCreator>
-  const sharp = unwrapDefault(imported)
-  imageCreatorModule = { default: sharp }
-  return sharp
+  return (await getSharp()) as unknown as SharpCreator
 }
 
 // Dynamic import shape varies by module interop mode — ESM yields { default: fn }, CJS yields fn directly.

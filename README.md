@@ -252,6 +252,12 @@ Tau gets better the more you use it. After a substantial task, or on demand via 
 New worktrees start from your current commit by default, including unpushed commits.
 Use `/config` to choose the remote's freshly fetched default branch instead. [Configuration and examples](docs/worktree-base.md).
 
+### Inline image setup
+
+Installs and updates verify the image decoder with a real PNG decode. If native image dependencies are missing or incompatible, Tau recovers the matching decoder in a separate user cache. The first image read also checks it, including when a Windows installation is opened through WSL. Recovery preserves the shared installation and needs no environment variables.
+
+Windows, macOS and Linux use separate runtime caches, with glibc and musl kept distinct. Recovery requires network access if the matching decoder is missing; offline or unsupported systems keep Tau usable and show an image-preview explanation. Pixel rendering still depends on the terminal's image protocol support.
+
 ### Latex native rendering
 
 LaTeX renders automatically as compact Unicode across all providers in replies, thinking, plans, agent messages, tables, and previews.

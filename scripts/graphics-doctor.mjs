@@ -21,6 +21,10 @@
 import fs from 'node:fs'
 import process from 'node:process'
 import tty from 'node:tty'
+import { createRequire } from 'node:module'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { ensureImageRuntime, findImagePackageRoot } from './image-runtime.mjs'
 
 /**
  * A handle on the controlling terminal, even when stdio is redirected.
@@ -256,7 +260,10 @@ OUT.write(`\n${bold('3. Encoders')}\n`)
 
 let sharp = null
 try {
-  const mod = await import('sharp')
+  // Diagnostics inspect the same recovered runtime as Tau without downloading.
+  const runtime = await ensureImageRuntime(findImagePackageRoot(dirname(fileURLToPath(import.meta.url))), { repair: false })
+  if (!runtime.ok) throw new Error(runtime.reason)
+  const mod = createRequire(import.meta.url)(runtime.modulePath)
   sharp = typeof mod === 'function' ? mod : mod.default
   line('sharp', `${sharp.versions?.sharp ?? '?'} (libvips ${sharp.versions?.vips ?? '?'})`, true)
 } catch (e) {

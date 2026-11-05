@@ -23,6 +23,7 @@ import {
   swapGraphicsFrame,
 } from '../ink/graphicsPlacement.js'
 import { Box, RawAnsi, Text } from '../ink.js'
+import { getImageProcessorFailureHint } from '../tools/FileReadTool/imageProcessor.js'
 import type { GraphicsOverlay } from '../utils/terminalGraphics.js'
 import {
   allocateKittyImageId,
@@ -143,6 +144,7 @@ export function InlineImage({
     settings.inlineImagesAnimated !== false &&
     settings.prefersReducedMotion !== true
   const [image, setImage] = useState<RenderedImage | null>(null)
+  const [imageFailure, setImageFailure] = useState<string | null>(null)
   const [overlay, setOverlay] = useState<(GraphicsOverlay & { posterBase64: string }) | null>(null)
   // What the overlay is the first frame of, when there is something to play.
   const [animation, setAnimation] = useState<{
@@ -217,6 +219,7 @@ export function InlineImage({
       // what erases the pixels. Doing it here rather than by returning early
       // from render keeps the hook order stable.
       setImage(null)
+      setImageFailure(null)
       setOverlay(null)
       setAnimation(null)
       setWithheld(false)
@@ -347,6 +350,7 @@ export function InlineImage({
           if (!active) return
           renderPending.current = false
           setImage(rendered)
+          setImageFailure(rendered ? null : getImageProcessorFailureHint())
           setOverlay(rendered && overlay ? { ...overlay, posterBase64: base64 } : null)
           setAnimation(rendered && playable ? animated : null)
           setWithheld(rendered !== null && (unsettled || outdated))
@@ -358,6 +362,7 @@ export function InlineImage({
         renderPending.current = false
         endImageRender(token)
         setImage(null)
+        setImageFailure(getImageProcessorFailureHint())
         setOverlay(null)
         setAnimation(null)
         setWithheld(false)
@@ -539,7 +544,10 @@ export function InlineImage({
     }
   }, [overlay, animation, animationsEnabled])
 
-  if (!imagesEnabled || !image) return children
+  if (!imagesEnabled) return children
+  if (!image) return imageFailure ? (
+    <Box flexDirection="column">{children}<Text dimColor>{imageFailure}</Text></Box>
+  ) : children
 
   return (
     <Box flexDirection="column">
