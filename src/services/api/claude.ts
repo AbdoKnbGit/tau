@@ -100,8 +100,16 @@ import {
   asSystemPrompt,
   type SystemPrompt,
 } from '../../utils/systemPromptType.js'
-import { tokenCountFromLastAPIResponse } from '../../utils/tokens.js'
+import {
+  getAssistantMessageContentLength,
+  tokenCountFromLastAPIResponse,
+} from '../../utils/tokens.js'
 import { getDynamicConfig_BLOCKS_ON_INIT } from '../analytics/growthbook.js'
+import {
+  isLocalSpeedProvider,
+  recordLocalSpeedSample,
+  takeLocalServerTimings,
+} from '../localSpeed/localSpeedStats.js'
 import {
   currentLimits,
   extractQuotaStatusFromError,
@@ -2006,6 +2014,12 @@ async function* queryModel(
   let start = Date.now()
   let attemptNumber = 0
   const attemptStartTimes: number[] = []
+  // Generation speed for /statistics, on Ollama and LM Studio only. These
+  // timestamps never reach the request.
+  const timeLocalSpeed = isLocalSpeedProvider(requestProvider)
+  let localSpeedAttemptStart = 0
+  let localSpeedFirstContent: number | null = null
+  let localSpeedStreamEnd: number | null = null
   let stream: Stream<BetaRawMessageStreamEvent> | undefined = undefined
   let streamRequestId: string | null | undefined = undefined
   let clientRequestId: string | undefined = undefined
@@ -2381,6 +2395,11 @@ async function* queryModel(
           isFastModeRequest = context.fastMode ?? false
           start = Date.now()
           attemptStartTimes.push(start)
+          if (timeLocalSpeed) {
+            localSpeedAttemptStart = performance.now()
+            localSpeedFirstContent = null
+            localSpeedStreamEnd = null
+          }
           // Client has been created by withRetry's getClient() call. This fires
           // once per attempt; on retries the client is usually cached (withRetry
           // only calls getClient() again after auth errors), so the delta from
@@ -2608,6 +2627,17 @@ async function* queryModel(
         // into the transcript, UI or public SDK stream.
         if (streamProvider === 'openrouter' && (part as { type: string }).type === 'openrouter_progress') continue
         receivedProviderEventThisAttempt = true
+        // The first streamed content of any kind starts the generation window.
+        // message_start is no marker: the compat lane can stream thinking
+        // before it.
+        if (
+          timeLocalSpeed &&
+          localSpeedFirstContent === null &&
+          (part.type === 'content_block_start' ||
+            part.type === 'content_block_delta')
+        ) {
+          localSpeedFirstContent = performance.now()
+        }
         const now = Date.now()
 
         // Detect and log streaming stalls (only after first event to avoid counting TTFB)
@@ -3085,6 +3115,7 @@ async function* queryModel(
           break
         }
       }
+      if (timeLocalSpeed) localSpeedStreamEnd = performance.now()
       // Clear the idle timeout watchdog now that the stream loop has exited
       clearStreamIdleTimers()
 
@@ -3683,6 +3714,27 @@ async function* queryModel(
   // limit) until getToolPermissionContext() resolves.
   const logMessageCount = messagesForAPI.length
   const logMessageTokens = tokenCountFromLastAPIResponse(messagesForAPI)
+  if (timeLocalSpeed) {
+    try {
+      recordLocalSpeedSample({
+        provider: requestProvider,
+        model: options.model,
+        querySource: options.querySource,
+        attemptStartMs: localSpeedAttemptStart,
+        firstContentMs: localSpeedFirstContent,
+        endMs: localSpeedStreamEnd,
+        reportedOutputTokens: usage.output_tokens,
+        generatedChars: newMessages.reduce(
+          (sum, message) => sum + getAssistantMessageContentLength(message),
+          0,
+        ),
+        nonStreaming: didFallBackToNonStreaming,
+        serverTimings: takeLocalServerTimings(partialMessage),
+      })
+    } catch {
+      // The speed figures are a display extra and must never reach the reply.
+    }
+  }
   void options.getToolPermissionContext().then(permissionContext => {
     logAPISuccessAndDuration({
       model:

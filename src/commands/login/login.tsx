@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import * as React from 'react'
 import { useEffect, useState } from 'react'
 import { resetCostState } from '../../bootstrap/state.js'
+import { resetLocalSpeedStats } from '../../services/localSpeed/localSpeedStats.js'
 import {
   clearTrustedDeviceToken,
   enrollTrustedDevice,
@@ -61,6 +62,7 @@ import {
 
 function runPostLoginRefresh(context: LocalJSXCommandContext) {
   resetCostState()
+  resetLocalSpeedStats()
   void refreshRemoteManagedSettings()
   void refreshPolicyLimits()
   resetUserCache()

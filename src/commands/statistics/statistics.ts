@@ -5,6 +5,10 @@ import { isAbsolute, join, relative, sep } from 'path'
 import { getSessionId, getOriginalCwd } from '../../bootstrap/state.js'
 import { getModelUsage } from '../../cost-tracker.js'
 import {
+  formatLocalSpeedLines,
+  getLocalSpeedRows,
+} from '../../services/localSpeed/localSpeedStats.js'
+import {
   AGENT_TOOL_NAME,
   LEGACY_AGENT_TOOL_NAME,
 } from '../../tools/AgentTool/constants.js'
@@ -138,6 +142,16 @@ function formatStatistics({
     for (const [model, usage] of modelEntries) {
       lines.push(detailLine(modelUsageLine(model, usage)))
     }
+  }
+
+  // Ollama and LM Studio only. Without local replies this adds nothing, so
+  // every other provider's output is unchanged.
+  const localSpeedLines = formatLocalSpeedLines(getLocalSpeedRows())
+  if (localSpeedLines.length > 0) {
+    lines.push(
+      metricLine('Local speed', ['this run']),
+      ...localSpeedLines.map(detailLine),
+    )
   }
 
   const toolEntries = [...toolStats.byName.entries()].sort(([a], [b]) =>

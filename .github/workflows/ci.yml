@@ -177,6 +177,10 @@ jobs:
       - name: Test MCPB bundles, provider SDKs, sign-in, tool schemas, proxy and CA fetch, telemetry exporters, and optional integrations
         run: node --test test/plugin-mcpb-loading.test.mjs test/plugin-mcpb-cli.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/print-mode-requests.test.mjs test/provider-failure.test.mjs test/print-killed-wrapper.test.mjs test/console-title.test.mjs test/openrouter-tool-execution.test.mjs test/resume-prompt-cache.test.mjs test/tool-schema-spelling.test.mjs test/undici-dispatcher-fetch.test.mjs test/telemetry-otlp-exporters.test.mjs test/optional-integrations.test.mjs
 
+      - name: Test local model speed statistics through the built CLI
+        # A fake Ollama and LM Studio server stands in for the models.
+        run: node --test test/local-model-speed.test.mjs
+
       - name: Test skill prompt mods and real CLI requests
         # Exercise the built CLI and real mod workers on every OS in the matrix.
         run: node --test test/plugin-mod-skill-prompt.test.mjs test/plugin-mod-skill-prompt-cli.test.mjs

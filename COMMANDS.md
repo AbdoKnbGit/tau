@@ -61,7 +61,7 @@ List the files Tau counts as read in this session: files the model opened, @-men
 Show provider usage live as you work.
 
 **`/statistics`**
-Show activity and tool-call details for the current session.
+Show activity and tool-call details for the current session. With Ollama or LM Studio models it also shows their generation speed and how long the first token took.
 
 **`/report`**
 Write a readable report of the session as Markdown, PDF or HTML.

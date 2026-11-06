@@ -18,6 +18,11 @@
 
 import { APIConnectionError } from '@anthropic-ai/sdk'
 import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
+import {
+  noteLocalServerTimings,
+  ollamaServerTimings,
+  type LocalServerTimings,
+} from '../../services/localSpeed/localSpeedStats.js'
 import type {
   AnthropicStreamEvent,
   ModelInfo,
@@ -3401,11 +3406,15 @@ async function* streamOllamaNative(
   const toolCallBuffers: Array<{ id: string; name: string; args: string; anthropicIndex: number }> = []
   let emittedAnyToolUse = false
   let outputCapTruncated = false
+  // Ollama's own generation figures for /statistics, passed to claude.ts
+  // under the message object below. Nothing here changes what is streamed.
+  let startMessage: object | undefined
+  let serverTimings: LocalServerTimings | undefined
 
   const emitMessageStart = (): AnthropicStreamEvent | undefined => {
     if (messageStartEmitted) return undefined
     messageStartEmitted = true
-    return {
+    const event: AnthropicStreamEvent = {
       type: 'message_start',
       message: {
         id: messageId,
@@ -3418,6 +3427,8 @@ async function* streamOllamaNative(
         usage: { input_tokens: 0, output_tokens: 0 },
       },
     }
+    if (event.type === 'message_start') startMessage = event.message
+    return event
   }
 
   let response: Response
@@ -3476,6 +3487,7 @@ async function* streamOllamaNative(
         // Ollama reports why it stopped on the terminal chunk: "stop",
         // "length" (num_predict reached), "load".
         if (isDone && isOutputCapTruncation(chunk.done_reason)) outputCapTruncated = true
+        if (isDone) serverTimings = ollamaServerTimings(chunk)
 
         if (typeof chunk.prompt_eval_count === 'number') inputTokens = chunk.prompt_eval_count
         if (typeof chunk.eval_count === 'number') outputTokens = chunk.eval_count
@@ -3581,6 +3593,7 @@ async function* streamOllamaNative(
     truncated: outputCapTruncated,
     hadToolUse: emittedAnyToolUse,
   })
+  noteLocalServerTimings(startMessage, serverTimings)
   yield {
     type: 'message_delta',
     delta: { stop_reason: stopReason },

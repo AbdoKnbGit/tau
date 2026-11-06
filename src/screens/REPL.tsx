@@ -85,6 +85,7 @@ import { getSystemContext, getUserContext } from '../context.js';
 import { getMemoryFiles } from '../utils/claudemd.js';
 import { startBackgroundHousekeeping } from '../utils/backgroundHousekeeping.js';
 import { getTotalCost, saveCurrentSessionCosts, resetCostState, getStoredSessionCosts } from '../cost-tracker.js';
+import { resetLocalSpeedStats } from '../services/localSpeed/localSpeedStats.js';
 import { useCostSummary } from '../costHook.js';
 import { useFpsMetrics } from '../context/fpsMetrics.js';
 import { useAfterFirstRender } from '../hooks/useAfterFirstRender.js';
@@ -1931,6 +1932,7 @@ export function REPL({
 
       // Reset cost state for clean slate before restoring target session
       resetCostState();
+      resetLocalSpeedStats();
 
       // Switch session (id + project dir atomically). fullPath may point to
       // a different project (cross-worktree, /branch); null derives from
