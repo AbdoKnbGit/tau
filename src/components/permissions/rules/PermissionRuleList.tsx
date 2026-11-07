@@ -101,19 +101,19 @@ function PermissionModeTab({
   const options = useMemo(() => {
     const labelForMode = (mode: PermissionMode, label: string) => currentMode === mode ? <Text>{label} <Text dimColor>(active)</Text></Text> : label;
     return [{
-      label: labelForMode('default', 'Default'),
+      label: labelForMode('default', permissionModeTitle('default')),
       value: 'default',
       description: 'Ask before unsafe tools.'
     }, {
-      label: labelForMode('acceptEdits', 'Accept edits'),
+      label: labelForMode('acceptEdits', permissionModeTitle('acceptEdits')),
       value: 'acceptEdits',
       description: 'Auto-accept file edits, keep asking for commands.'
     }, {
-      label: labelForMode('plan', 'Plan mode'),
+      label: labelForMode('plan', permissionModeTitle('plan')),
       value: 'plan',
       description: 'Plan only, do not run tools.'
     }, {
-      label: labelForMode('bypassPermissions', 'Dangerously skip permissions'),
+      label: labelForMode('bypassPermissions', permissionModeTitle('bypassPermissions')),
       value: 'bypassPermissions',
       description: bypassPermissionsDisabled ? 'Disabled by settings or policy.' : 'Tau will stop asking before running tools.',
       disabled: bypassPermissionsDisabled
@@ -128,7 +128,7 @@ function PermissionModeTab({
       if (enableBypassPermissionsModeForSession({
         setAppState
       })) {
-        onModeChange('Dangerously skipping permissions activated for this session');
+        onModeChange(`Permission mode set to ${permissionModeTitle('bypassPermissions')}`);
       } else {
         onModeChange('Bypass Permissions mode is disabled by settings or policy');
       }

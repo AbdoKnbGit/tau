@@ -6,6 +6,7 @@ import type {
 import {
   hasPermissionsToUseToolInner,
   createPermissionRequestMessage,
+  isPlanModeWithBypass,
 } from '../../permissions/permissions.js'
 import { permissionRuleValueToString } from '../../permissions/permissionRuleParser.js'
 import {
@@ -81,9 +82,13 @@ async function evaluate(
   ) {
     protectedDecision = baseline
   }
+  // Plan mode asks before anything that may change state. With bypass on it
+  // has already answered: allowed, or refused for a file edit (a deny, which
+  // the check above keeps protected).
   if (
     context.getAppState().toolPermissionContext.mode === 'plan' &&
-    !readonly
+    !readonly &&
+    !isPlanModeWithBypass(context.getAppState().toolPermissionContext)
   ) {
     protectedDecision =
       baseline.behavior === 'deny'

@@ -10,7 +10,7 @@ import {
   GLOBAL_CLAUDE_FOLDER_PERMISSION_PATTERN,
 } from '../../../tools/FileEditTool/constants.js'
 import { env } from '../../../utils/env.js'
-import { enableBypassPermissionsModeForSession } from '../../../utils/permissions/bypassPermissionsMode.js'
+import { enableBypassPermissionsFromPrompt } from '../../../utils/permissions/bypassPermissionsMode.js'
 import { generateSuggestions } from '../../../utils/permissions/filesystem.js'
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
 import {
@@ -151,7 +151,7 @@ function handleBypassPermissions(params: PermissionHandlerParams): void {
     languageName,
   } = params
 
-  if (!enableBypassPermissionsModeForSession(toolUseContext)) {
+  if (!enableBypassPermissionsFromPrompt(toolUseContext)) {
     onDone()
     onReject()
     toolUseConfirm.onReject(

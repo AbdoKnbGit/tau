@@ -134,8 +134,10 @@ const getCoordinatorUserContext: (mcpClients: ReadonlyArray<{
 } = feature('COORDINATOR_MODE') ? require('../coordinator/coordinatorMode.js').getCoordinatorUserContext : () => ({});
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import useCanUseTool from '../hooks/useCanUseTool.js';
+import { resolveToolPermissionContextUpdate } from '../hooks/toolPermission/PermissionContext.js';
 import type { ToolPermissionContext, Tool } from '../Tool.js';
-import { applyPermissionUpdate, applyPermissionUpdates, persistPermissionUpdate } from '../utils/permissions/PermissionUpdate.js';
+import { applyApprovedPermissionUpdates, applyPermissionUpdate, persistPermissionUpdate } from '../utils/permissions/PermissionUpdate.js';
+import { syncSessionBypassWithPlanExit } from '../utils/permissions/bypassPermissionsMode.js';
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
 import { stripDangerousPermissionsForAutoMode } from '../utils/permissions/permissionSetup.js';
 import { getScratchpadDir, isScratchpadEnabled } from '../utils/permissions/filesystem.js';
@@ -2500,21 +2502,17 @@ export function REPL({
       gracefulShutdownSync(1, 'other');
     });
   }
-  const setToolPermissionContext = useCallback((context: ToolPermissionContext, options?: {
+  const setToolPermissionContext = useCallback((contextOrUpdate: ToolPermissionContext | ((current: ToolPermissionContext) => ToolPermissionContext), options?: {
     preserveMode?: boolean;
   }) => {
+    // An updater gets the store's current context, so a prompt answered for a
+    // sub-agent changes the session's permissions, not the sub-agent's copy.
+    // preserveMode is only passed by workers whose transformed mode must not
+    // leak into the coordinator; user-initiated mode changes (e.g. "allow all
+    // edits") are applied as given.
     setAppState(prev => ({
       ...prev,
-      toolPermissionContext: {
-        ...context,
-        // Preserve the coordinator's mode only when explicitly requested.
-        // Workers' getAppState() returns a transformed context with mode
-        // 'acceptEdits' that must not leak into the coordinator's actual
-        // state via permission-rule updates — those call sites pass
-        // { preserveMode: true }. User-initiated mode changes (e.g.,
-        // selecting "allow all edits") must NOT be overridden.
-        mode: options?.preserveMode ? prev.toolPermissionContext.mode : context.mode
-      }
+      toolPermissionContext: resolveToolPermissionContextUpdate(prev.toolPermissionContext, contextOrUpdate, options)
     }));
 
     // When permission context changes, recheck all queued items
@@ -3305,7 +3303,9 @@ export function REPL({
       const shouldStorePlanForVerification = initialMsg.message.planContent && "external" === 'ant' && isEnvTruthy(undefined);
       setAppState(prev => {
         // Build and apply permission updates (mode + allowedPrompts rules)
-        let updatedToolPermissionContext = initialMsg.mode ? applyPermissionUpdates(prev.toolPermissionContext, buildPermissionUpdates(initialMsg.mode, initialMsg.allowedPrompts)) : prev.toolPermissionContext;
+        let updatedToolPermissionContext = initialMsg.mode ? applyApprovedPermissionUpdates(prev.toolPermissionContext, buildPermissionUpdates(initialMsg.mode, initialMsg.allowedPrompts)) : prev.toolPermissionContext;
+        // Approved into a mode that asks: bypass ends with the plan.
+        syncSessionBypassWithPlanExit(prev.toolPermissionContext, updatedToolPermissionContext);
         // For auto, override the mode (buildPermissionUpdates maps
         // it to 'default' via toExternalPermissionMode) and strip dangerous rules
         if (feature('TRANSCRIPT_CLASSIFIER') && initialMsg.mode === 'auto') {

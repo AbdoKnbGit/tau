@@ -117,6 +117,7 @@ import { getModeFromInput, getModeSwitchFromInput, getValueFromInput, isHiddenBa
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT, Notifications } from './Notifications.js';
 import PromptInputFooter from './PromptInputFooter.js';
 import type { SuggestionItem } from './PromptInputFooterSuggestions.js';
+import { PromptInputFrame, promptTextColumns } from './PromptInputFrame.js';
 import { PromptInputModeIndicator } from './PromptInputModeIndicator.js';
 import { PromptInputQueuedCommands } from './PromptInputQueuedCommands.js';
 import { PromptInputStashNotice } from './PromptInputStashNotice.js';
@@ -2022,7 +2023,7 @@ function PromptInput({
   } = useTerminalSize();
   const promptFrameColumns = isCenteredPrompt && columns >= 80 ? Math.min(columns - 4, Math.max(72, Math.floor(columns * 0.78))) : columns;
   const promptContentColumns = promptFrameColumns - companionReservedColumns(promptFrameColumns, companionSpeaking);
-  const textInputColumns = promptContentColumns - 3;
+  const textInputColumns = promptTextColumns(promptContentColumns, swarmBanner ? 'banner' : 'framed');
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
@@ -2323,14 +2324,9 @@ function PromptInput({
           <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
         </> : <>
           {/* The input inherits the canvas; only the cursor and border stand out. */}
-          <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" width="100%">
-            <Box flexDirection="row" flexGrow={1} flexShrink={1} paddingX={1} onClick={handleInputClick}>
-              <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
-              <Box flexGrow={1} flexShrink={1}>
-                {textInputElement}
-              </Box>
-            </Box>
-          </Box>
+          <PromptInputFrame borderColor={getBorderColor()} mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} onTextClick={handleInputClick}>
+            {textInputElement}
+          </PromptInputFrame>
         </>}
       <PromptInputFooter apiKeyStatus={apiKeyStatus} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} hiddenBashInput={mode === 'bash' && isHiddenBashInput(displayedValue)} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={input.length > 0} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} bridgeSelected={bridgeSelected} tmuxSelected={tmuxSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
       <PromptInputStatusBar messages={messages} columns={promptContentColumns} />

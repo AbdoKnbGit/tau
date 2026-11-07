@@ -3,20 +3,24 @@ import React, { useCallback, useMemo } from 'react';
 import { getOriginalCwd } from '../../bootstrap/state.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { sanitizeToolNameForAnalytics } from '../../services/analytics/metadata.js';
+import { useAppState } from '../../state/AppState.js';
 import { env } from '../../utils/env.js';
-import { enableBypassPermissionsModeForSession } from '../../utils/permissions/bypassPermissionsMode.js';
-import { isBypassPermissionsModeDisabled } from '../../utils/permissions/permissionSetup.js';
+import { enableBypassPermissionsFromPrompt } from '../../utils/permissions/bypassPermissionsMode.js';
 import { shouldShowAlwaysAllowOptions } from '../../utils/permissions/permissionsLoader.js';
 import { truncateToLines } from '../../utils/stringUtils.js';
 import { logUnaryEvent } from '../../utils/unaryLogging.js';
+import { getBypassPermissionsOption } from './bypassPermissionsOption.js';
 import { type UnaryEvent, usePermissionRequestLogging } from './hooks.js';
 import { PermissionDialog } from './PermissionDialog.js';
 import { PermissionPrompt, type PermissionPromptOption, type ToolAnalyticsContext } from './PermissionPrompt.js';
 import type { PermissionRequestProps } from './PermissionRequest.js';
 import { PermissionRuleExplanation } from './PermissionRuleExplanation.js';
 type FallbackOptionValue = 'yes' | 'yes-dont-ask-again' | 'yes-bypass-permissions' | 'no';
+function _selectSessionMode(s) {
+  return s.toolPermissionContext.mode;
+}
 export function FallbackPermissionRequest(t0) {
-  const $ = _c(58);
+  const $ = _c(59);
   const {
     toolUseConfirm,
     toolUseContext,
@@ -25,6 +29,7 @@ export function FallbackPermissionRequest(t0) {
     workerBadge
   } = t0;
   const [theme] = useTheme();
+  const sessionMode = useAppState(_selectSessionMode);
   let originalUserFacingName;
   let t1;
   if ($[0] !== toolUseConfirm.input || $[1] !== toolUseConfirm.tool) {
@@ -103,7 +108,7 @@ export function FallbackPermissionRequest(t0) {
                 platform: env.platform
               }
             });
-            if (!enableBypassPermissionsModeForSession(toolUseContext)) {
+            if (!enableBypassPermissionsFromPrompt(toolUseContext)) {
               toolUseConfirm.onReject('Bypass Permissions mode is disabled by settings or policy.');
               onReject();
               onDone();
@@ -192,7 +197,7 @@ export function FallbackPermissionRequest(t0) {
     t7 = $[15];
   }
   let result;
-  if ($[16] !== userFacingName) {
+  if ($[16] !== userFacingName || $[58] !== sessionMode) {
     result = [t7];
     if (showAlwaysAllowOptions) {
       const t8 = <Text bold={true}>{userFacingName}</Text>;
@@ -216,12 +221,9 @@ export function FallbackPermissionRequest(t0) {
       }
       result.push(t10);
     }
-    const bypassPermissionsDisabled = isBypassPermissionsModeDisabled();
     result.push({
-      label: 'Yes, dangerously skip permissions for this session',
-      value: 'yes-bypass-permissions',
-      description: bypassPermissionsDisabled ? 'Disabled by settings or policy.' : 'Tau will stop asking before running tools.',
-      disabled: bypassPermissionsDisabled
+      ...getBypassPermissionsOption(sessionMode),
+      value: 'yes-bypass-permissions'
     });
     let t8;
     if ($[21] === Symbol.for("react.memo_cache_sentinel")) {
@@ -239,6 +241,7 @@ export function FallbackPermissionRequest(t0) {
     result.push(t8);
     $[16] = userFacingName;
     $[17] = result;
+    $[58] = sessionMode;
   } else {
     result = $[17];
   }

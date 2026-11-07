@@ -32,11 +32,12 @@ import {
 } from '../../utils/messages.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import {
-  applyPermissionUpdates,
+  applyApprovedPermissionUpdates,
   persistPermissionUpdates,
   supportsPersistence,
 } from '../../utils/permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js'
+import { syncSessionBypassWithPlanExit } from '../../utils/permissions/bypassPermissionsMode.js'
 import {
   logPermissionDecision,
   type PermissionDecisionArgs,
@@ -58,6 +59,34 @@ type PermissionQueueOps = {
   push(item: ToolUseConfirm): void
   remove(toolUseID: string): void
   update(toolUseID: string, patch: Partial<ToolUseConfirm>): void
+}
+
+/**
+ * Updates the session's permission context. Given a function, it receives the
+ * context as it is when the update lands, so a change applies to the latest
+ * state rather than to a copy someone read earlier.
+ */
+export type SetToolPermissionContext = (
+  update:
+    | ToolPermissionContext
+    | ((current: ToolPermissionContext) => ToolPermissionContext),
+) => void
+
+/**
+ * The context a setToolPermissionContext call leaves in the store. With
+ * preserveMode the store keeps its mode: workers pass a transformed copy whose
+ * mode must not leak into the coordinator's state.
+ */
+export function resolveToolPermissionContextUpdate(
+  current: ToolPermissionContext,
+  update: Parameters<SetToolPermissionContext>[0],
+  options?: { preserveMode?: boolean },
+): ToolPermissionContext {
+  const next = typeof update === 'function' ? update(current) : update
+  return {
+    ...next,
+    mode: options?.preserveMode ? current.mode : next.mode,
+  }
 }
 
 type ResolveOnce<T> = {
@@ -99,7 +128,7 @@ function createPermissionContext(
   toolUseContext: ToolUseContext,
   assistantMessage: AssistantMessage,
   toolUseID: string,
-  setToolPermissionContext: (context: ToolPermissionContext) => void,
+  setToolPermissionContext: SetToolPermissionContext,
   queueOps?: PermissionQueueOps,
 ) {
   const messageId = assistantMessage.message.id
@@ -139,10 +168,16 @@ function createPermissionContext(
     async persistPermissions(updates: PermissionUpdate[]) {
       if (updates.length === 0) return false
       persistPermissionUpdates(updates)
-      const appState = toolUseContext.getAppState()
-      setToolPermissionContext(
-        applyPermissionUpdates(appState.toolPermissionContext, updates),
-      )
+      // Apply to the session's permissions as they are now, not to the asking
+      // agent's view of them: a sub-agent sees a derived copy (its own mode,
+      // tool rules scoped to it, prompt flags), and writing that copy back
+      // would replace the session's state with it.
+      setToolPermissionContext(current => {
+        const next = applyApprovedPermissionUpdates(current, updates)
+        // A plan approved into a mode that asks ends bypass too.
+        syncSessionBypassWithPlanExit(current, next)
+        return next
+      })
       return updates.some(update => supportsPersistence(update.destination))
     },
     resolveIfAborted(resolve: (decision: PermissionDecision) => void) {

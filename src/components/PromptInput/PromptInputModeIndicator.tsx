@@ -2,11 +2,20 @@ import { c as _c } from "react/compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
 import { Box, Text } from 'src/ink.js';
+import { stringWidth } from 'src/ink/stringWidth.js';
 import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
 import type { PromptInputMode } from 'src/types/textInputTypes.js';
 import { getTeammateColor } from 'src/utils/teammate.js';
 import type { Theme } from 'src/utils/theme.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
+
+// A no-break space keeps each marker glued to the input that follows it.
+const NO_BREAK_SPACE = String.fromCodePoint(0xa0);
+/** What the indicator draws before the input: the prompt glyph, or "!" in bash mode. */
+export const PROMPT_POINTER = `${figures.pointer}${NO_BREAK_SPACE}`;
+export const BASH_PROMPT_MARKER = `!${NO_BREAK_SPACE}`;
+/** Columns the indicator takes before the input text, whichever marker it shows. */
+export const PROMPT_INDICATOR_COLUMNS = Math.max(stringWidth(PROMPT_POINTER), stringWidth(BASH_PROMPT_MARKER));
 type Props = {
   mode: PromptInputMode;
   isLoading: boolean;
@@ -51,7 +60,7 @@ function PromptChar(t0) {
   const color = teammateColor ?? "brand";
   let t1;
   if ($[0] !== color || $[1] !== isLoading) {
-    t1 = <Text color={color} dimColor={isLoading}>{figures.pointer} </Text>;
+    t1 = <Text color={color} dimColor={isLoading}>{PROMPT_POINTER}</Text>;
     $[0] = color;
     $[1] = isLoading;
     $[2] = t1;
@@ -79,7 +88,7 @@ export function PromptInputModeIndicator(t0) {
   const viewedTeammateThemeColor = viewingAgentColor ? AGENT_COLOR_TO_THEME_COLOR[viewingAgentColor] : undefined;
   let t2;
   if ($[1] !== isLoading || $[2] !== mode || $[3] !== viewedTeammateThemeColor || $[4] !== viewingAgentName) {
-    t2 = <Box alignItems="flex-start" alignSelf="flex-start" flexWrap="nowrap" justifyContent="flex-start">{viewingAgentName ? <PromptChar isLoading={isLoading} themeColor={viewedTeammateThemeColor} /> : mode === "bash" ? <Text color="bashBorder" dimColor={isLoading}>! </Text> : <PromptChar isLoading={isLoading} themeColor={isAgentSwarmsEnabled() ? teammateColor : undefined} />}</Box>;
+    t2 = <Box alignItems="flex-start" alignSelf="flex-start" flexWrap="nowrap" justifyContent="flex-start">{viewingAgentName ? <PromptChar isLoading={isLoading} themeColor={viewedTeammateThemeColor} /> : mode === "bash" ? <Text color="bashBorder" dimColor={isLoading}>{BASH_PROMPT_MARKER}</Text> : <PromptChar isLoading={isLoading} themeColor={isAgentSwarmsEnabled() ? teammateColor : undefined} />}</Box>;
     $[1] = isLoading;
     $[2] = mode;
     $[3] = viewedTeammateThemeColor;

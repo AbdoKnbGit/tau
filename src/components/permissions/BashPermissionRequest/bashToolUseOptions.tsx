@@ -1,11 +1,12 @@
 import { BASH_TOOL_NAME } from '../../../tools/BashTool/toolName.js';
 import { extractOutputRedirections } from '../../../utils/bash/commands.js';
 import { isClassifierPermissionsEnabled } from '../../../utils/permissions/bashClassifier.js';
+import type { PermissionMode } from '../../../utils/permissions/PermissionMode.js';
 import type { PermissionDecisionReason } from '../../../utils/permissions/PermissionResult.js';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
-import { isBypassPermissionsModeDisabled } from '../../../utils/permissions/permissionSetup.js';
 import { shouldShowAlwaysAllowOptions } from '../../../utils/permissions/permissionsLoader.js';
 import type { OptionWithDescription } from '../../CustomSelect/select.js';
+import { getBypassPermissionsOption } from '../bypassPermissionsOption.js';
 import { generateShellSuggestionsLabel } from '../shellPermissionHelpers.js';
 export type BashToolUseOption = 'yes' | 'yes-apply-suggestions' | 'yes-prefix-edited' | 'yes-classifier-reviewed' | 'yes-bypass-permissions' | 'no';
 
@@ -41,7 +42,8 @@ export function bashToolUseOptions({
   yesInputMode = false,
   noInputMode = false,
   editablePrefix,
-  onEditablePrefixChange
+  onEditablePrefixChange,
+  sessionMode
 }: {
   suggestions?: PermissionUpdate[];
   decisionReason?: PermissionDecisionReason;
@@ -58,6 +60,8 @@ export function bashToolUseOptions({
   editablePrefix?: string;
   /** Callback when the user edits the prefix value. */
   onEditablePrefixChange?: (value: string) => void;
+  /** The session's permission mode, which the bypass option's text depends on. */
+  sessionMode?: PermissionMode;
 }): OptionWithDescription<BashToolUseOption>[] {
   const options: OptionWithDescription<BashToolUseOption>[] = [];
   if (yesInputMode) {
@@ -128,12 +132,9 @@ export function bashToolUseOptions({
       });
     }
   }
-  const bypassPermissionsDisabled = isBypassPermissionsModeDisabled();
   options.push({
-    label: 'Yes, dangerously skip permissions for this session',
-    value: 'yes-bypass-permissions',
-    description: bypassPermissionsDisabled ? 'Disabled by settings or policy.' : 'Tau will stop asking before running tools.',
-    disabled: bypassPermissionsDisabled
+    ...getBypassPermissionsOption(sessionMode),
+    value: 'yes-bypass-permissions'
   });
   if (noInputMode) {
     options.push({

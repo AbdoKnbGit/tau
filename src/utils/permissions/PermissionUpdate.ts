@@ -205,6 +205,28 @@ export function applyPermissionUpdates(
   return updatedContext
 }
 
+/**
+ * Applies permission changes someone approved (at a prompt, a plan approval,
+ * or through a PermissionRequest hook) to the session's own permission
+ * context. A change that leaves plan mode also drops prePlanMode: it only
+ * means something while a plan is open, and left behind it would be read as
+ * the mode to return to when a later plan ends.
+ */
+export function applyApprovedPermissionUpdates(
+  context: ToolPermissionContext,
+  updates: PermissionUpdate[],
+): ToolPermissionContext {
+  const updatedContext = applyPermissionUpdates(context, updates)
+  if (
+    context.mode === 'plan' &&
+    updatedContext.mode !== 'plan' &&
+    updatedContext.prePlanMode !== undefined
+  ) {
+    return { ...updatedContext, prePlanMode: undefined }
+  }
+  return updatedContext
+}
+
 export function supportsPersistence(
   destination: PermissionUpdateDestination,
 ): destination is EditableSettingSource {

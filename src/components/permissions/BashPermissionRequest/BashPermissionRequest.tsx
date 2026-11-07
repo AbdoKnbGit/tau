@@ -15,7 +15,7 @@ import { parseSedEditCommand } from '../../../tools/BashTool/sedEditParser.js';
 import { shouldUseSandbox } from '../../../tools/BashTool/shouldUseSandbox.js';
 import { getCompoundCommandPrefixesStatic } from '../../../utils/bash/prefix.js';
 import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../utils/permissions/bashClassifier.js';
-import { enableBypassPermissionsModeForSession } from '../../../utils/permissions/bypassPermissionsMode.js';
+import { enableBypassPermissionsFromPrompt } from '../../../utils/permissions/bypassPermissionsMode.js';
 import { extractRules } from '../../../utils/permissions/PermissionUpdate.js';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
 import { SandboxManager } from '../../../utils/sandbox/sandbox-adapter.js';
@@ -299,8 +299,9 @@ function BashPermissionRequestInner({
     yesInputMode,
     noInputMode,
     editablePrefix,
-    onEditablePrefixChange
-  }), [toolUseConfirm, classifierDescription, initialClassifierDescriptionEmpty, existingAllowDescriptions, yesInputMode, noInputMode, editablePrefix, onEditablePrefixChange]);
+    onEditablePrefixChange,
+    sessionMode: toolPermissionContext.mode
+  }), [toolUseConfirm, classifierDescription, initialClassifierDescriptionEmpty, existingAllowDescriptions, yesInputMode, noInputMode, editablePrefix, onEditablePrefixChange, toolPermissionContext.mode]);
 
   // Toggle permission debug info with keybinding
   const handleToggleDebug = useCallback(() => {
@@ -384,7 +385,7 @@ function BashPermissionRequestInner({
     }
     if (value_0 === 'yes-bypass-permissions') {
       logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept');
-      if (!enableBypassPermissionsModeForSession(toolUseContext)) {
+      if (!enableBypassPermissionsFromPrompt(toolUseContext)) {
         handleReject('Bypass Permissions mode is disabled by settings or policy.');
         return;
       }

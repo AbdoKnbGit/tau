@@ -1327,6 +1327,13 @@ async function getPlanModeAttachments(
 async function getPlanModeExitAttachment(
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
+  // The note is for the agent that ran the plan. A sub-agent still working
+  // when plan mode ends would otherwise take it first, be told it can now make
+  // edits, and leave the main agent never hearing that planning ended.
+  if (toolUseContext.agentId) {
+    return []
+  }
+
   // Only trigger if the flag is set (we just exited plan mode)
   if (!needsPlanModeExitAttachment()) {
     return []

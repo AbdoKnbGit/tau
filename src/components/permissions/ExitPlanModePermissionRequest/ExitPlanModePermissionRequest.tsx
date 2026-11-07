@@ -25,7 +25,8 @@ import { getMainLoopModel, getRuntimeMainLoopModel } from '../../../utils/model/
 import { createPromptRuleContent, isClassifierPermissionsEnabled, PROMPT_PREFIX } from '../../../utils/permissions/bashClassifier.js';
 import { type PermissionMode, toExternalPermissionMode } from '../../../utils/permissions/PermissionMode.js';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
-import { isAutoModeGateEnabled, restoreDangerousPermissions, stripDangerousPermissionsForAutoMode } from '../../../utils/permissions/permissionSetup.js';
+import { isAutoModeGateEnabled, isBypassPermissionsModeDisabled, restoreDangerousPermissions, stripDangerousPermissionsForAutoMode } from '../../../utils/permissions/permissionSetup.js';
+import { isBypassPermissionsOnForSession } from '../../../utils/permissions/bypassPermissionsMode.js';
 import { getPewterLedgerVariant, isPlanModeInterviewPhaseEnabled } from '../../../utils/planModeV2.js';
 import { getPlan, getPlanFilePath } from '../../../utils/plans.js';
 import { editFileInEditor, editPromptInEditor } from '../../../utils/promptEditor.js';
@@ -578,9 +579,13 @@ export function ExitPlanModePermissionRequest({
         setHasExitedPlanMode(true);
         setNeedsPlanModeExitAttachment(true);
         onDone();
+        // Nothing was planned, so no mode was chosen: a session with bypass on
+        // goes back to bypass mode (any other mode would end bypass, see
+        // syncSessionBypassWithPlanExit); otherwise to the default mode.
+        const exitMode = !isBypassPermissionsModeDisabled() && isBypassPermissionsOnForSession(toolPermissionContext.mode) ? 'bypassPermissions' : 'default';
         toolUseConfirm.onAllow({}, [{
           type: 'setMode',
-          mode: 'default',
+          mode: exitMode,
           destination: 'session'
         }]);
       } else {

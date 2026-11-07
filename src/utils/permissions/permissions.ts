@@ -28,10 +28,7 @@ import {
 } from '../settings/constants.js'
 import { getInitialSettings } from '../settings/settings.js'
 import { plural } from '../stringUtils.js'
-import {
-  permissionModeTitle,
-  type PermissionMode,
-} from './PermissionMode.js'
+import { permissionModeTitle } from './PermissionMode.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -123,27 +120,35 @@ const PERMISSION_RULE_SOURCES = [
   'session',
 ] as const satisfies readonly PermissionRuleSource[]
 
+// Bypass is on for the whole session (from the command line, Shift+Tab, a
+// prompt, /permissions or the bypass command), or the turn comes from
+// WhatsApp, where nobody is at the terminal to answer a prompt.
+function isSessionBypassOn(): boolean {
+  return isWhatsAppDrivenTurn() || getSessionBypassPermissionsMode()
+}
+
+/**
+ * Plan mode in a session with bypass on. The two work together instead of one
+ * switching the other off: bypass means nothing asks, plan mode means nothing
+ * changes before the plan is approved. So every prompt is answered for the
+ * user: yes for anything that does not change a file, no for a file edit
+ * (refusePlanModeFileEdit). The plan approval and the agent's questions to the
+ * user are still shown. Without bypass, plan mode asks as before.
+ */
+export function isPlanModeWithBypass(
+  toolPermissionContext: ToolPermissionContext,
+): boolean {
+  return toolPermissionContext.mode === 'plan' && isSessionBypassOn()
+}
+
 function shouldBypassPermissionPrompts(
   toolPermissionContext: ToolPermissionContext,
 ): boolean {
-  // Plan mode is read-only by definition and must keep that protection even
-  // when the session was launched with --dangerously-skip-permissions, when
-  // bypass was toggled on for the session, or when bypass is otherwise
-  // available. Returning false here routes plan-mode tool calls to the normal
-  // mode check, which denies writes, allows read-only tools without prompting,
-  // and keeps the ExitPlanMode approve/deny/edit dialog intact. Without this
-  // guard the session bypass flag short-circuits to 'allow', letting the agent
-  // edit during planning and auto-skipping plan approval — plan mode and
-  // bypass "overlap" and the plan flow desyncs (ExitPlanMode then errors with
-  // "not in plan mode"). Plan and bypass are mutually exclusive: bypass
-  // resumes automatically once plan mode is exited and the mode restores.
   if (toolPermissionContext.mode === 'plan') {
-    return false
+    return isPlanModeWithBypass(toolPermissionContext)
   }
   return (
-    isWhatsAppDrivenTurn() ||
-    getSessionBypassPermissionsMode() ||
-    toolPermissionContext.mode === 'bypassPermissions'
+    isSessionBypassOn() || toolPermissionContext.mode === 'bypassPermissions'
   )
 }
 
@@ -153,19 +158,53 @@ export function shouldAutoAnswerUserQuestions(
   toolPermissionContext: ToolPermissionContext,
 ): boolean {
   return (
+    // Questions asked while planning are always shown, even with bypass on:
+    // a plan built on guessed answers is the thing plan mode exists to avoid.
+    toolPermissionContext.mode !== 'plan' &&
     shouldBypassPermissionPrompts(toolPermissionContext) &&
     getInitialSettings().askQuestionsInBypassMode !== true &&
     !isSelfLearningEnabled()
   )
 }
 
-function getBypassDecisionMode(
+/** What the agent is told when plan mode with bypass refuses a file edit. */
+export const PLAN_MODE_FILE_EDIT_REFUSAL =
+  'Plan mode is on, so files stay unchanged until the user approves the plan. Put this change in the plan instead, and do not make it another way (for example with a shell command) before the plan is approved.'
+
+// A file edit names its file (getPath) and is not read-only for this input.
+function isFileEditUse(tool: Tool, input: Record<string, unknown>): boolean {
+  if (typeof tool.getPath !== 'function') return false
+  try {
+    return tool.isReadOnly(parseToolInputForPermissions(tool, input)) !== true
+  } catch {
+    return true
+  }
+}
+
+/**
+ * In plan mode with bypass on, the prompt bypass would have answered "yes" to
+ * is answered "no" when it is a file edit. `wouldAsk` says whether plan mode
+ * without bypass would have shown a prompt here; edits it already allows (the
+ * plan file, the user's own allow rules, a hook's approval) stay allowed.
+ */
+function refusePlanModeFileEdit(
+  tool: Tool,
+  input: Record<string, unknown>,
   toolPermissionContext: ToolPermissionContext,
-): PermissionMode {
-  return toolPermissionContext.mode === 'bypassPermissions' ||
-    toolPermissionContext.mode === 'plan'
-    ? toolPermissionContext.mode
-    : 'bypassPermissions'
+  wouldAsk: boolean,
+): PermissionDenyDecision | null {
+  if (
+    !wouldAsk ||
+    !isPlanModeWithBypass(toolPermissionContext) ||
+    !isFileEditUse(tool, input)
+  ) {
+    return null
+  }
+  return {
+    behavior: 'deny',
+    message: PLAN_MODE_FILE_EDIT_REFUSAL,
+    decisionReason: { type: 'mode', mode: 'plan' },
+  }
 }
 
 export function permissionRuleSourceDisplayString(
@@ -1246,8 +1285,31 @@ export async function checkRuleBasedPermissions(
     return toolPermissionResult
   }
 
+  // Plan mode with bypass answers the prompts skipped above for the user, and
+  // a file edit gets "no" even though a hook approved it.
+  const planRefusal = refusePlanModeFileEdit(
+    tool,
+    input,
+    context.getAppState().toolPermissionContext,
+    Boolean(askRule) || isRuleOrSafetyAsk(toolPermissionResult),
+  )
+  if (planRefusal) {
+    return planRefusal
+  }
+
   // No rule-based objection
   return null
+}
+
+// An ask that prompts even over a hook's or a rule's approval: a
+// content-specific ask rule (1f) or a safety check (1g).
+function isRuleOrSafetyAsk(result: PermissionResult | undefined): boolean {
+  return (
+    result?.behavior === 'ask' &&
+    (result.decisionReason?.type === 'safetyCheck' ||
+      (result.decisionReason?.type === 'rule' &&
+        result.decisionReason.rule.ruleBehavior === 'ask'))
+  )
 }
 
 export async function hasPermissionsToUseToolInner(
@@ -1371,12 +1433,27 @@ export async function hasPermissionsToUseToolInner(
   // IMPORTANT: Call getAppState() to get the latest value
   appState = context.getAppState()
   if (shouldBypassPermissionPrompts(appState.toolPermissionContext)) {
+    // Plan mode with bypass: a file edit that plan mode would have asked about
+    // (1b, 1f/1g, or the tool's own ask, unless 2b's rule allows the tool) is
+    // refused rather than let through.
+    const planRefusal = refusePlanModeFileEdit(
+      tool,
+      input,
+      appState.toolPermissionContext,
+      Boolean(askRule) ||
+        isRuleOrSafetyAsk(toolPermissionResult) ||
+        (toolPermissionResult.behavior !== 'allow' &&
+          !toolAlwaysAllowedRule(appState.toolPermissionContext, tool)),
+    )
+    if (planRefusal) {
+      return planRefusal
+    }
     return {
       behavior: 'allow',
       updatedInput: getUpdatedInputOrFallback(toolPermissionResult, input),
       decisionReason: {
         type: 'mode',
-        mode: getBypassDecisionMode(appState.toolPermissionContext),
+        mode: 'bypassPermissions',
       },
     }
   }

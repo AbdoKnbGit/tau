@@ -125,6 +125,8 @@ export async function mount(runtime, element, { columns = 80, rows = 24 } = {}) 
   await settle()
 
   return {
+    /** The Ink root node, for hit tests such as the bundle's dispatchClick. */
+    root,
     store,
     frame,
     /** Sends raw terminal input, parsed and dispatched the way App does. */

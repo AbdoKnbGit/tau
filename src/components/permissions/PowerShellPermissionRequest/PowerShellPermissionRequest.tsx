@@ -4,10 +4,11 @@ import { useKeybinding } from '../../../keybindings/useKeybinding.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js';
+import { useAppState } from '../../../state/AppState.js';
 import { getDestructiveCommandWarning } from '../../../tools/PowerShellTool/destructiveCommandWarning.js';
 import { PowerShellTool } from '../../../tools/PowerShellTool/PowerShellTool.js';
 import { isAllowlistedCommand } from '../../../tools/PowerShellTool/readOnlyValidation.js';
-import { enableBypassPermissionsModeForSession } from '../../../utils/permissions/bypassPermissionsMode.js';
+import { enableBypassPermissionsFromPrompt } from '../../../utils/permissions/bypassPermissionsMode.js';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
 import { getCompoundCommandPrefixesStatic } from '../../../utils/powershell/staticPrefix.js';
 import { Select } from '../../CustomSelect/select.js';
@@ -33,6 +34,7 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
     description
   } = PowerShellTool.inputSchema.parse(toolUseConfirm.input);
   const [theme] = useTheme();
+  const sessionMode = useAppState(s => s.toolPermissionContext.mode);
   const explainerState = usePermissionExplainerUI({
     toolName: toolUseConfirm.tool.name,
     toolInput: toolUseConfirm.input,
@@ -105,8 +107,9 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
     yesInputMode,
     noInputMode,
     editablePrefix,
-    onEditablePrefixChange
-  }), [toolUseConfirm, yesInputMode, noInputMode, editablePrefix, onEditablePrefixChange]);
+    onEditablePrefixChange,
+    sessionMode
+  }), [toolUseConfirm, yesInputMode, noInputMode, editablePrefix, onEditablePrefixChange, sessionMode]);
 
   // Toggle permission debug info with keybinding
   const handleToggleDebug = useCallback(() => {
@@ -151,7 +154,7 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
     }
     if (value === 'yes-bypass-permissions') {
       logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept');
-      if (!enableBypassPermissionsModeForSession(toolUseContext)) {
+      if (!enableBypassPermissionsFromPrompt(toolUseContext)) {
         handleReject('Bypass Permissions mode is disabled by settings or policy.');
         return;
       }

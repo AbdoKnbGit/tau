@@ -1,8 +1,9 @@
 import { POWERSHELL_TOOL_NAME } from '../../../tools/PowerShellTool/toolName.js';
+import type { PermissionMode } from '../../../utils/permissions/PermissionMode.js';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
-import { isBypassPermissionsModeDisabled } from '../../../utils/permissions/permissionSetup.js';
 import { shouldShowAlwaysAllowOptions } from '../../../utils/permissions/permissionsLoader.js';
 import type { OptionWithDescription } from '../../CustomSelect/select.js';
+import { getBypassPermissionsOption } from '../bypassPermissionsOption.js';
 import { generateShellSuggestionsLabel } from '../shellPermissionHelpers.js';
 export type PowerShellToolUseOption = 'yes' | 'yes-apply-suggestions' | 'yes-prefix-edited' | 'yes-bypass-permissions' | 'no';
 export function powershellToolUseOptions({
@@ -12,7 +13,8 @@ export function powershellToolUseOptions({
   yesInputMode = false,
   noInputMode = false,
   editablePrefix,
-  onEditablePrefixChange
+  onEditablePrefixChange,
+  sessionMode
 }: {
   suggestions?: PermissionUpdate[];
   onRejectFeedbackChange: (value: string) => void;
@@ -21,6 +23,8 @@ export function powershellToolUseOptions({
   noInputMode?: boolean;
   editablePrefix?: string;
   onEditablePrefixChange?: (value: string) => void;
+  /** The session's permission mode, which the bypass option's text depends on. */
+  sessionMode?: PermissionMode;
 }): OptionWithDescription<PowerShellToolUseOption>[] {
   const options: OptionWithDescription<PowerShellToolUseOption>[] = [];
   if (yesInputMode) {
@@ -72,12 +76,9 @@ export function powershellToolUseOptions({
       }
     }
   }
-  const bypassPermissionsDisabled = isBypassPermissionsModeDisabled();
   options.push({
-    label: 'Yes, dangerously skip permissions for this session',
-    value: 'yes-bypass-permissions',
-    description: bypassPermissionsDisabled ? 'Disabled by settings or policy.' : 'Tau will stop asking before running tools.',
-    disabled: bypassPermissionsDisabled
+    ...getBypassPermissionsOption(sessionMode),
+    value: 'yes-bypass-permissions'
   });
   if (noInputMode) {
     options.push({

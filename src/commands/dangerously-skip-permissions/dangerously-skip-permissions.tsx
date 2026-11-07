@@ -10,6 +10,10 @@ import { Box, Text } from '../../ink.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { LocalJSXCommandContext } from '../../commands.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
+import {
+  disableBypassPermissionsInPlanMode,
+  isBypassPermissionsOnForSession,
+} from '../../utils/permissions/bypassPermissionsMode.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { applyPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js'
 import {
@@ -26,7 +30,7 @@ type DialogChoice = 'cancel' | 'enable'
 function parseAction(args: string, currentMode: PermissionMode): Action | null {
   switch (args) {
     case '':
-      return currentMode === 'bypassPermissions' ? 'off' : 'on'
+      return isBypassPermissionsOnForSession(currentMode) ? 'off' : 'on'
     case 'on':
     case 'enable':
     case 'enabled':
@@ -52,7 +56,7 @@ function parseAction(args: string, currentMode: PermissionMode): Action | null {
 }
 
 function modeLabel(mode: PermissionMode): string {
-  return mode === 'bypassPermissions'
+  return isBypassPermissionsOnForSession(mode)
     ? chalk.green('ON')
     : chalk.red('OFF')
 }
@@ -69,7 +73,12 @@ function getStatusMessage(context: LocalJSXCommandContext): string {
   ]
 
   if (
-    toolPermissionContext.mode !== 'bypassPermissions' &&
+    toolPermissionContext.mode === 'plan' &&
+    isBypassPermissionsOnForSession(toolPermissionContext.mode)
+  ) {
+    lines.push(chalk.dim('Plan mode stays on; edits wait for plan approval.'))
+  } else if (
+    !isBypassPermissionsOnForSession(toolPermissionContext.mode) &&
     toolPermissionContext.isBypassPermissionsModeAvailable
   ) {
     lines.push(
@@ -171,6 +180,12 @@ function enableBypassPermissions(context: LocalJSXCommandContext): string {
 
 function disableBypassPermissions(context: LocalJSXCommandContext): string {
   const { toolPermissionContext } = context.getAppState()
+
+  if (toolPermissionContext.mode === 'plan') {
+    disableBypassPermissionsInPlanMode(context)
+    return `Bypass Permissions mode: ${chalk.red('OFF')} ${chalk.dim('(plan mode stays on)')}`
+  }
+
   setSessionBypassPermissionsMode(false)
 
   if (toolPermissionContext.mode !== 'bypassPermissions') {
