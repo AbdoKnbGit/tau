@@ -1424,6 +1424,12 @@ export default class Ink {
     return hasSelection(this.selection);
   }
 
+  /** The selected text as a copy would take it, or '' with none; copies
+   * nothing (for a reader such as a mod's $.ui.selection). */
+  readSelectionText(): string {
+    return hasSelection(this.selection) ? getSelectedText(this.selection, this.frontFrame.screen) : '';
+  }
+
   /**
    * Subscribe to selection state changes. Fires whenever the selection
    * is started, updated, cleared, or copied. Returns an unsubscribe fn.

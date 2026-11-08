@@ -1,10 +1,10 @@
 import { createHash } from 'crypto'
 import { readFile, realpath } from 'fs/promises'
-import { dirname, extname, resolve } from 'path'
+import { dirname, extname, relative, resolve, sep } from 'path'
 import ts from 'typescript'
 import { isWithinDirectory } from '../pluginFiles.js'
 
-import { MOD_EVENTS, MOD_METHODS } from './contracts.js'
+import { CORE_NOUNS, MOD_METHODS, modEventPatternError } from './contracts.js'
 const EXTENSIONS = [
   '.js',
   '.mjs',
@@ -21,7 +21,97 @@ export type CompiledMod = {
   files: Record<string, { code: string; imports: Record<string, string> }>
   events: string[]
   calls: string[]
+  /** The variable names its `$.env.get` / `$.env.set` calls spell. */
+  env?: { reads: string[]; writes: string[] }
+  /** The named values its `$.state` calls (and the library's `read` and
+   * `update`) refer to by literal, each `{ plugin, key }`. */
+  state?: { reads: StateName[]; writes: StateName[] }
+  /** Its `Client` modules: the path under the plugin's folder a drawing
+   * names, and the compiled file that path runs (in `files`). */
+  clients?: Record<string, string>
   digest: string
+}
+type StateName = { plugin: string; key: string }
+
+/** The values the claude-code library exports: the `$.state` helpers.
+ * `read` and `update` take a hook's `$` as their first argument. */
+const LIBRARY_VALUES = new Set(['atom', 'derive', 'memberOf', 'read', 'update'])
+const STATE_TAKERS = new Set(['read', 'update'])
+
+/** The local names a file binds the library's `read`/`update` to, and its
+ * namespace imports of the library. */
+function libraryBindings(ast: ts.SourceFile): { takers: ts.Identifier[]; namespaces: ts.Identifier[]; values: Map<string, string> } {
+  const takers: ts.Identifier[] = [], namespaces: ts.Identifier[] = []
+  const values = new Map<string, string>()
+  for (const statement of ast.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) ||
+        statement.moduleSpecifier.text !== 'claude-code' || statement.importClause?.isTypeOnly) continue
+    const bindings = statement.importClause?.namedBindings
+    if (bindings && ts.isNamespaceImport(bindings)) namespaces.push(bindings.name)
+    else if (bindings && ts.isNamedImports(bindings))
+      for (const item of bindings.elements) {
+        if (item.isTypeOnly) continue
+        const name = (item.propertyName ?? item.name).text
+        values.set(item.name.text, name)
+        if (STATE_TAKERS.has(name)) takers.push(item.name)
+      }
+  }
+  return { takers, namespaces, values }
+}
+
+const sortedNames = (names: Map<string, StateName>): StateName[] =>
+  [...names.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, name]) => name)
+
+/**
+ * The `{ plugin, key }` values an argument of a `$.state` call names, read
+ * from literals in this file: a reference written in place, a top-level
+ * constant holding one, an atom or a family member made from one, or a
+ * derived value over such sources. Anything computed names nothing.
+ */
+function stateNameReader(ast: ts.SourceFile, library: Map<string, string>) {
+  const constants = new Map<string, ts.Expression>()
+  for (const statement of ast.statements)
+    if (ts.isVariableStatement(statement) && statement.declarationList.flags & ts.NodeFlags.Const)
+      for (const declaration of statement.declarationList.declarations)
+        if (ts.isIdentifier(declaration.name) && declaration.initializer)
+          constants.set(declaration.name.text, declaration.initializer)
+  const unwrap = (node: ts.Expression): ts.Expression => {
+    while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node) ||
+        ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node))
+      node = node.expression
+    return node
+  }
+  const text = (literal: ts.ObjectLiteralExpression, name: string): string | undefined => {
+    for (const property of literal.properties)
+      if (ts.isPropertyAssignment(property) && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+          property.name.text === name) {
+        const value = unwrap(property.initializer)
+        return ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) ? value.text : undefined
+      }
+    return undefined
+  }
+  const names = (expression: ts.Expression, depth: number): StateName[] => {
+    if (depth > 16) return []
+    const node = unwrap(expression)
+    if (ts.isObjectLiteralExpression(node)) {
+      const plugin = text(node, 'plugin'), key = text(node, 'key')
+      return plugin && key ? [{ plugin, key }] : []
+    }
+    if (ts.isIdentifier(node)) {
+      const value = constants.get(node.text)
+      return value ? names(value, depth + 1) : []
+    }
+    if (ts.isPropertyAccessExpression(node) && node.name.text === 'ref') return names(node.expression, depth + 1)
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const helper = library.get(node.expression.text)
+      const [first] = node.arguments
+      if ((helper === 'atom' || helper === 'memberOf') && first) return names(first, depth + 1)
+      if (helper === 'derive' && first && ts.isArrayLiteralExpression(unwrap(first)))
+        return (unwrap(first) as ts.ArrayLiteralExpression).elements.flatMap(item => names(item, depth + 1))
+    }
+    return []
+  }
+  return (expression: ts.Expression) => names(expression, 0)
 }
 
 /** Keep source inspection bounded without recursive JavaScript traversal. */
@@ -105,7 +195,8 @@ function modAPIHelpers(
         !parameter.dotDotDotToken,
     ),
   )
-  if (!candidates.length)
+  const library = libraryBindings(ast)
+  if (!candidates.length && !library.takers.length && !library.namespaces.length)
     return { accepts: (_node: ts.Identifier) => false, checkWrites() {} }
   // No type checking or dependency loading is needed; the binder supplies
   // declaration identity for this one already-parsed file.
@@ -146,11 +237,23 @@ function modAPIHelpers(
     }
   }
   const passed = new Set<ts.Symbol>()
+  const takers = new Set(library.takers.map(name => checker.getSymbolAtLocation(name)).filter(Boolean))
+  const namespaces = new Set(library.namespaces.map(name => checker.getSymbolAtLocation(name)).filter(Boolean))
   return {
     accepts(node: ts.Identifier): boolean {
       const call = node.parent
-      if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression))
-        return false
+      if (!ts.isCallExpression(call)) return false
+      // The library's read($, source) and update($, target, fn) call
+      // $.state on the $ they are handed, as the hook itself would.
+      if (call.arguments[0] === node) {
+        const callee = call.expression
+        if (ts.isIdentifier(callee) && takers.has(checker.getSymbolAtLocation(callee)))
+          return true
+        if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) &&
+            STATE_TAKERS.has(callee.name.text) && namespaces.has(checker.getSymbolAtLocation(callee.expression)))
+          return true
+      }
+      if (!ts.isIdentifier(call.expression)) return false
       const symbol = checker.getSymbolAtLocation(call.expression)
       const helper = symbol && helpers.get(symbol)
       const argumentIndex = call.arguments.indexOf(node)
@@ -245,6 +348,12 @@ export async function compileMod(
 ): Promise<CompiledMod> {
   const canonicalRoot = await realpath(root)
   const files: CompiledMod['files'] = Object.create(null)
+  const envReads = new Set<string>(), envWrites = new Set<string>()
+  const clients: Record<string, string> = Object.create(null)
+  const stateReads = new Map<string, StateName>(), stateWrites = new Map<string, StateName>()
+  const noteState = (into: Map<string, StateName>, names: StateName[]) => {
+    for (const name of names) into.set(JSON.stringify([name.plugin, name.key]), name)
+  }
   const events = new Set<string>(),
     calls = new Set<string>()
   const hash = createHash('sha256')
@@ -286,13 +395,9 @@ export async function compileMod(
     }
     const nodes = modNodes(ast, fail)
     const helpers = modAPIHelpers(ast, nodes, fail)
+    const library = libraryBindings(ast)
+    const stateNames = stateNameReader(ast, library.values)
     const visit = (node: ts.Node) => {
-      if (
-        ts.isJsxElement(node) ||
-        ts.isJsxSelfClosingElement(node) ||
-        ts.isJsxFragment(node)
-      )
-        fail(node, 'Tau does not yet support mod UI/JSX rendering')
       if (ts.isImportEqualsDeclaration(node))
         fail(node, 'Mods use ES imports, not import=require')
       if (
@@ -313,13 +418,17 @@ export async function compileMod(
           ts.isImportDeclaration(node) &&
           !node.importClause?.isTypeOnly
         ) {
-          const bindings = node.importClause?.namedBindings
-          if (
-            !bindings ||
-            !ts.isNamedImports(bindings) ||
-            bindings.elements.some((item) => !item.isTypeOnly)
-          )
-            fail(node, 'Only type imports from claude-code are supported')
+          // Its types, and the $.state helpers as values.
+          const clause = node.importClause
+          if (clause?.name)
+            fail(node, 'claude-code has no default export; import its values by name')
+          const bindings = clause?.namedBindings
+          if (bindings && ts.isNamedImports(bindings))
+            for (const item of bindings.elements) {
+              const name = (item.propertyName ?? item.name).text
+              if (!item.isTypeOnly && !LIBRARY_VALUES.has(name))
+                fail(item, `claude-code has no value ${name} in Tau; its values are atom, derive, memberOf, read and update`)
+            }
         }
         // Type imports do not need to exist at runtime.
         if (
@@ -344,8 +453,8 @@ export async function compileMod(
           if (!event || !ts.isStringLiteral(event))
             fail(node, 'The event passed to on() must be a string literal')
           const name = (event as ts.StringLiteral).text
-          if (!MOD_EVENTS.has(name))
-            fail(node, `Tau does not yet support mod event "${name}"`)
+          const refusal = modEventPatternError(name)
+          if (refusal) fail(node, refusal)
           events.add(name)
         }
         if (
@@ -354,10 +463,34 @@ export async function compileMod(
           ts.isIdentifier(node.expression.expression.expression) &&
           node.expression.expression.expression.text === '$'
         ) {
-          const method = `${node.expression.expression.name.text}.${node.expression.name.text}`
-          if (!MOD_METHODS.has(method))
+          const noun = node.expression.expression.name.text
+          const method = `${noun}.${node.expression.name.text}`
+          // A noun of Claude Code's own: its method must be one Tau serves. Any
+          // other noun is one a mod adds at engine.create, checked after the fold.
+          if (!MOD_METHODS.has(method) && CORE_NOUNS.has(noun))
             fail(node, `Tau does not yet support mod API $.${method}`)
           calls.add(method)
+          const name = node.arguments[0]
+          if ((method === 'env.get' || method === 'env.set') && name && ts.isStringLiteral(name))
+            (method === 'env.get' ? envReads : envWrites).add(name.text)
+          if ((method === 'state.get' || method === 'state.set') && name)
+            noteState(method === 'state.get' ? stateReads : stateWrites, stateNames(name))
+        }
+        // The library's read and update make $.state calls of their own.
+        const taker = ts.isIdentifier(node.expression)
+          ? library.values.get(node.expression.text)
+          : ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression) &&
+              library.namespaces.some(item => item.text === (node.expression as ts.PropertyAccessExpression).expression.getText(ast))
+            ? node.expression.name.text
+            : undefined
+        if (taker === 'read' || taker === 'update') {
+          calls.add('state.get')
+          if (taker === 'update') calls.add('state.set')
+          const source = node.arguments[1]
+          if (source) {
+            noteState(stateReads, stateNames(source))
+            if (taker === 'update') noteState(stateWrites, stateNames(source))
+          }
         }
       }
       if (ts.isIdentifier(node) && node.text === '$') {
@@ -389,6 +522,34 @@ export async function compileMod(
           )
       }
     }
+    // A Client's module: a string literal path, relative to this file, to a
+    // file of the plugin. It is compiled here and the literal rewritten to
+    // the path under the plugin's folder the drawing carries.
+    const clientPaths: Array<{ start: number; end: number; specifier: string; node: ts.Node }> = []
+    const clientLiteral = (holder: ts.Node, value: ts.Node | undefined) => {
+      let literal = value
+      if (literal && ts.isJsxExpression(literal)) literal = literal.expression
+      if (!literal || !(ts.isStringLiteral(literal) || ts.isNoSubstitutionTemplateLiteral(literal)))
+        fail(holder, `A Client's module is a string literal path relative to this file, like module="./spinner.tsx"`)
+      const text = (literal as ts.StringLiteral).text
+      if (!text.startsWith('./') && !text.startsWith('../'))
+        fail(holder, `A Client's module is a path relative to this file: ${text}`)
+      clientPaths.push({ start: literal!.getStart(ast), end: literal!.end, specifier: text, node: holder })
+    }
+    for (const node of nodes) {
+      if ((ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) && ts.isIdentifier(node.tagName) && node.tagName.text === 'Client') {
+        const attribute = node.attributes.properties.find(
+          (item): item is ts.JsxAttribute => ts.isJsxAttribute(item) && ts.isIdentifier(item.name) && item.name.text === 'module')
+        if (attribute) clientLiteral(attribute, attribute.initializer)
+      }
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'h' &&
+          node.arguments[0] && ts.isIdentifier(node.arguments[0]) && node.arguments[0].text === 'Client' &&
+          node.arguments[1] && ts.isObjectLiteralExpression(node.arguments[1])) {
+        const property = node.arguments[1].properties.find(
+          (item): item is ts.PropertyAssignment => ts.isPropertyAssignment(item) && (ts.isIdentifier(item.name) || ts.isStringLiteral(item.name)) && item.name.text === 'module')
+        if (property) clientLiteral(property, property.initializer)
+      }
+    }
     for (const node of nodes) visit(node)
     helpers.checkWrites()
     for (const specifier of specifiers) {
@@ -416,7 +577,21 @@ export async function compileMod(
       if (!target) throw new Error(`Mod import not found: ${requested}`)
       imports[specifier] = await load(target)
     }
-    const compiled = ts.transpileModule(source, {
+    let emitted = source
+    for (const client of [...clientPaths].sort((a, b) => b.start - a.start)) {
+      let target: string
+      try {
+        target = await realpath(resolve(dirname(canonical), client.specifier))
+      } catch {
+        fail(client.node, `A Client's module names no file: ${client.specifier}`)
+      }
+      if (!isWithinDirectory(canonicalRoot, target!))
+        fail(client.node, `A Client's module is outside the plugin: ${client.specifier}`)
+      const path = relative(canonicalRoot, target!).split(sep).join('/')
+      clients[path] = await load(target!)
+      emitted = emitted.slice(0, client.start) + JSON.stringify(path) + emitted.slice(client.end)
+    }
+    const compiled = ts.transpileModule(emitted, {
       fileName: canonical,
       reportDiagnostics: true,
       compilerOptions: {
@@ -444,6 +619,11 @@ export async function compileMod(
     files,
     events: [...events],
     calls: [...calls],
+    ...(envReads.size || envWrites.size ? { env: { reads: [...envReads].sort(), writes: [...envWrites].sort() } } : {}),
+    ...(stateReads.size || stateWrites.size
+      ? { state: { reads: sortedNames(stateReads), writes: sortedNames(stateWrites) } }
+      : {}),
+    ...(Object.keys(clients).length ? { clients: { ...clients } } : {}),
     digest: hash.digest('hex'),
   }
 }

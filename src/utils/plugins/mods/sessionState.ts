@@ -14,6 +14,41 @@ export type ModSessionBinding = {
   commitCompaction?(messages: Message[]): void
   getAgentMessages?(agentId: string): readonly Message[] | undefined | Promise<readonly Message[] | undefined>
   isBusy?(): boolean
+  /** Draws one plugin line as its own transcript row, which the model never reads. */
+  appendNotice?(text: string): void
+  /** The prompt box as it stands; absent where the session draws none. */
+  readPrompt?(): { text: string; cursor: number }
+  /** Puts text in the prompt box as the draft; false under a dialog. */
+  fillPrompt?(text: string, mode: 'replace' | 'append' | 'insert'): boolean
+  /** Shows text as the prompt box's dim suggestion; false while it holds text. */
+  suggestPrompt?(text: string): boolean
+  /** The session's app state (its tasks, for `$.agent.list`). */
+  getAppState?(): unknown
+  /** Whether a pane may take the keyboard now: the prompt holds it over an
+   * empty composer, idle, with no dialog up. */
+  canGiveKeyboard?(): boolean
+  /** What the person last selected with the mouse, as $.ui.selection answers. */
+  readSelection?(): { text: string; requestId?: string } | undefined
+  /** A few seconds' toast for a plugin; a newer one replaces its older one. */
+  toast?(plugin: string, text: string, timeoutMs?: number): void
+  /** A terminal notification on the user's channel: the method that sent it,
+   * or `disabled`, `no_method_available`, `none`, `error`. */
+  notify?(text: string, title: string): Promise<string>
+}
+
+const idleWork: Array<() => void> = []
+/** Runs `work` now when no main turn is running, else once the turn ends. */
+export function runWhenModTurnIdle(work: () => void): void {
+  if (!mainTurn) {
+    work()
+    return
+  }
+  idleWork.push(work)
+}
+function runIdleWork(): void {
+  for (const work of idleWork.splice(0)) {
+    try { work() } catch { /* each queued row settles its own caller */ }
+  }
 }
 
 export type ModMainTurn = {
@@ -31,6 +66,47 @@ export function preserveModCompactionScrollback(previousInterval: Message[], nex
 
 let session: { binding: ModSessionBinding; owner: symbol } | undefined
 let mainTurn: (ModMainTurn & { owner: symbol; detach(): void; modAbort: boolean }) | undefined
+const heldLogs: string[] = []
+
+function flushModLogs(): void {
+  const notice = session?.binding.appendNotice
+  if (notice) for (const text of heldLogs.splice(0)) notice(text)
+}
+
+/**
+ * A `$.ui.log` line. Where a session draws a transcript it becomes a row of
+ * its own at once, in logging order. Elsewhere (print mode, before the REPL
+ * binds) it waits for the next hook, tool or command output that drains it.
+ */
+export function emitModLog(text: string): void {
+  if (!session?.binding.appendNotice) {
+    heldLogs.push(text)
+    return
+  }
+  flushModLogs()
+  session.binding.appendNotice(text)
+}
+
+export function takeModLogs(): string[] {
+  return heldLogs.splice(0)
+}
+
+/** Toasts sent before a session draws (from session.start): the newest of
+ * each plugin, shown once one does. */
+const heldToasts: Array<{ plugin: string; text: string; timeoutMs?: number }> = []
+
+/** A `$.ui.toast`, shown by the session that draws, or held for it. */
+export function toastFromMod(plugin: string, text: string, timeoutMs?: number): void {
+  const toast = session?.binding.toast
+  if (toast) {
+    toast(plugin, text, timeoutMs)
+    return
+  }
+  const at = heldToasts.findIndex(item => item.plugin === plugin)
+  if (at >= 0) heldToasts.splice(at, 1)
+  heldToasts.push({ plugin, text, ...(timeoutMs !== undefined ? { timeoutMs } : {}) })
+  if (heldToasts.length > 8) heldToasts.shift()
+}
 let stopped = false
 let pendingCompact: AbortController | undefined
 const agentConversations = new Map<string, { owner: symbol; getMessages(): readonly Message[] }>()
@@ -46,12 +122,24 @@ export function bindModSession(binding: ModSessionBinding): () => void {
   stopped = false
   agentConversations.clear()
   session = { binding, owner }
+  // Rows queued for the previous session's turn settle now (refused).
+  runIdleWork()
+  // Lines logged while mods started (before a transcript existed) show once
+  // the session's first rows are in place.
+  if (binding.appendNotice && heldLogs.length)
+    setTimeout(() => { if (session?.owner === owner) flushModLogs() }, 0)
+  if (binding.toast && heldToasts.length)
+    setTimeout(() => {
+      if (session?.owner !== owner) return
+      for (const { plugin, text, timeoutMs } of heldToasts.splice(0)) binding.toast!(plugin, text, timeoutMs)
+    }, 0)
   return () => {
     if (session?.owner !== owner) return
     pendingCompact?.abort(new Error('The session ended during compaction'))
     session = undefined
     mainTurn?.detach()
     mainTurn = undefined
+    runIdleWork()
     stopped = false
     agentConversations.clear()
     dropAllQueuedModPrompts('the session ended before the prompt ran')
@@ -172,7 +260,10 @@ export function beginModMainTurn(turnId: string, abortController: AbortControlle
   if (abortController.signal.aborted) onAbort()
   return () => {
     detach()
-    if (mainTurn?.owner === owner) mainTurn = undefined
+    if (mainTurn?.owner === owner) {
+      mainTurn = undefined
+      runIdleWork()
+    }
   }
 }
 

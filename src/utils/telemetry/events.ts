@@ -67,9 +67,22 @@ export async function logOTelEvent(
     }
   }
 
+  // Mods hooked on telemetry.log ({ to: 'collector' }) see each record
+  // first: a hook may rewrite what it carries, or refuse it. A chain that
+  // fails sends nothing rather than what a hook meant to change.
+  let sent: Attributes | undefined = attributes
+  try {
+    const { dispatchModCollectorRecord } = await import('../plugins/mods/manager.js')
+    sent = (await dispatchModCollectorRecord(eventName, attributes)) as Attributes | undefined
+  } catch (error) {
+    logForDebugging(`[3P telemetry] Event dropped (mod telemetry.log hooks failed): ${eventName}: ${String(error)}`, { level: 'warn' })
+    return
+  }
+  if (!sent) return
+
   // Emit log record as an event
   eventLogger.emit({
     body: `claude_code.${eventName}`,
-    attributes,
+    attributes: sent,
   })
 }

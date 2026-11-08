@@ -30,6 +30,8 @@ import { getAgentModel, getSubagentSettingTarget } from '../../utils/model/agent
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
 import { filterDeniedAgents, getDenyRuleForAgent } from '../../utils/permissions/permissions.js';
+import { hasModEvent } from '../../utils/plugins/mods/manager.js';
+import { withModAgents } from '../../utils/plugins/mods/actionsApi.js';
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js';
 import { readAgentMetadata, writeAgentMetadata } from '../../utils/sessionStorage.js';
 import { sleep } from '../../utils/sleep.js';
@@ -202,7 +204,7 @@ export const AgentTool = buildTool({
     }
 
     // Filter agents: first by MCP requirements, then by permission rules
-    const agentsWithMcpRequirementsMet = filterAgentsByMcpRequirements(agents, mcpServersWithTools);
+    const agentsWithMcpRequirementsMet = filterAgentsByMcpRequirements(withModAgents(agents), mcpServersWithTools);
     const filteredAgents = filterDeniedAgents(agentsWithMcpRequirementsMet, toolPermissionContext, AGENT_TOOL_NAME);
 
     // Use inline env check instead of coordinatorModule to avoid circular
@@ -298,7 +300,7 @@ export const AgentTool = buildTool({
       selectedAgent = FORK_AGENT;
     } else {
       // Filter agents to exclude those denied via Agent(AgentName) syntax
-      const allAgents = toolUseContext.options.agentDefinitions.activeAgents;
+      const allAgents = withModAgents(toolUseContext.options.agentDefinitions.activeAgents);
       const {
         allowedAgentTypes
       } = toolUseContext.options.agentDefinitions;
@@ -324,7 +326,24 @@ export const AgentTool = buildTool({
       : rawProviderParam === undefined && effectiveProvider === 'mistral'
         ? rawModelIdParam?.trim() || undefined
         : undefined;
-    const model = isCoordinatorMode() ? undefined : modelIdParam ?? modelEnumParam;
+    let model = isCoordinatorMode() ? undefined : modelIdParam ?? modelEnumParam;
+
+    // Mods see every subagent and teammate about to start: one may refuse it
+    // or choose its model. Nothing runs when no mod hooks the event.
+    if (hasModEvent('agent.spawn')) {
+      const { dispatchModAgentSpawn } = await import('../../utils/plugins/mods/manager.js');
+      const answer = await dispatchModAgentSpawn({
+        prompt,
+        description,
+        subagentType: selectedAgent.agentType,
+        ...(model !== undefined ? { model } : {}),
+        ...(name ? { name } : {}),
+        ...(cwd ? { cwd } : {}),
+        ...(team_name ? { isTeammate: true } : {})
+      }, toolUseContext.abortController.signal);
+      if (typeof answer.deny === 'string') throw new Error(`A plugin declined this agent: ${answer.deny}`);
+      if (typeof answer.model === 'string' && answer.model !== 'inherit' && answer.model !== model) model = answer.model;
+    }
 
     // Capture for type narrowing — `let selectedAgent` prevents TS from
     // narrowing property types across the if-else assignment above.

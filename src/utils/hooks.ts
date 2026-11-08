@@ -2235,19 +2235,39 @@ export async function* executeHooks({
 
   if (!skipMods && hookTier !== 'managed' && hasModEvent(`classic.${hookEvent}`)) {
     const { dispatchModEvent, takeModLogs } = await import('./plugins/mods/manager.js')
-    const { toClassicResult, fromClassicResult } = await import('./plugins/mods/classic.js')
-    const collected: AggregatedHookResult[] = []
-    const result = await dispatchModEvent(`classic.${hookEvent}`, hookInput, async rewritten => {
-      // Identity fields belong to the host even when a mod rewrites event data.
-      const nextInput = { ...rewritten, hook_event_name: hookEvent, session_id: hookInput.session_id, cwd: hookInput.cwd, transcript_path: hookInput.transcript_path } as HookInput
+    const classic = await import('./plugins/mods/classic.js')
+    const run = (input: HookInput, tier: 'managed' | 'unmanaged') =>
+      executeHooks({ hookInput: input, toolUseID, matchQuery, signal, timeoutMs, toolUseContext, getAppState, messages, forceSyncExecution, requestPrompt, toolInputSummary, skipMods: true, hookTier: tier })
+    // Claude Code's chain: managed settings hooks, then mods, then the other
+    // settings hooks as core. A managed block ends it above every mod. A
+    // caller that already ran the managed tier passes 'unmanaged'.
+    const managed: AggregatedHookResult[] = []
+    if (hookTier === undefined) {
+      for await (const item of run(hookInput, 'managed')) managed.push(item)
+      if (managed.some(classic.endsClassicChain)) {
+        yield* managed
+        return
+      }
+    }
+    const runs: AggregatedHookResult[][] = []
+    let coreResult: Record<string, unknown> | undefined
+    const result = await dispatchModEvent(`classic.${hookEvent}`, classic.classicModInput(hookEvent, hookInput), async rewritten => {
       const results: AggregatedHookResult[] = []
-      for await (const item of executeHooks({ hookInput: nextInput, toolUseID, matchQuery, signal, timeoutMs, toolUseContext, getAppState, messages, forceSyncExecution, requestPrompt, toolInputSummary, skipMods: true, hookTier })) results.push(item)
-      collected.push(...results)
-      return toClassicResult(results)
-    }, signal)
-    for (const item of collected) if (item.message) yield { message: item.message }
+      for await (const item of run(classic.classicCoreInput(hookEvent, rewritten, hookInput) as HookInput, 'unmanaged')) results.push(item)
+      runs.push(results)
+      return (coreResult = classic.toClassicResult(hookEvent, results))
+    }, signal) as Record<string, unknown>
+    yield* managed
+    const last = runs.at(-1)
+    for (const item of runs.slice(0, last ? -1 : undefined).flat()) if (item.message) yield { message: item.message }
+    if (last && JSON.stringify(result) === JSON.stringify(coreResult)) {
+      // Passed through unchanged: the hooks' own results, every field kept.
+      yield* last
+    } else {
+      for (const item of last ?? []) if (item.message) yield { message: item.message }
+      yield classic.fromClassicResult(hookEvent, result, runs.flat())
+    }
     for (const text of takeModLogs()) yield { message: createAttachmentMessage({ type: 'hook_system_message', content: text, hookName: `classic.${hookEvent}`, toolUseID, hookEvent }) }
-    yield fromClassicResult(result as Record<string, unknown>)
     return
   }
 
@@ -3451,12 +3471,20 @@ export async function executeHooksOutsideREPL({
   matchQuery,
   signal,
   timeoutMs = defaultHookTimeoutMs(hookInput.hook_event_name),
+  skipMods = false,
+  hookTier,
+  modOptions,
 }: {
   getAppState?: () => AppState
   hookInput: HookInput
   matchQuery?: string
   signal?: AbortSignal
   timeoutMs?: number
+  skipMods?: boolean
+  hookTier?: 'managed' | 'unmanaged'
+  /** For an event a mod's own call raised: its hook is skipped, its plugin
+   * named as the origin. */
+  modOptions?: import('./plugins/mods/manager.js').ModDispatchOptions
 }): Promise<HookOutsideReplResult[]> {
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return []
@@ -3480,15 +3508,36 @@ export async function executeHooksOutsideREPL({
     return []
   }
 
+  if (!skipMods && hookTier !== 'managed' && hasModEvent(`classic.${hookEvent}`)) {
+    const { dispatchModEvent } = await import('./plugins/mods/manager.js')
+    const classic = await import('./plugins/mods/classic.js')
+    const run = (input: HookInput, tier: 'managed' | 'unmanaged') =>
+      executeHooksOutsideREPL({ getAppState, hookInput: input, matchQuery, signal, timeoutMs, skipMods: true, hookTier: tier })
+    // Managed settings hooks first: their block ends the chain above every mod.
+    const managed = hookTier === undefined ? await run(hookInput, 'managed') : []
+    if (managed.some(result => result.blocked)) return managed
+    let ran: HookOutsideReplResult[] | undefined
+    let coreResult: Record<string, unknown> | undefined
+    const result = await dispatchModEvent(`classic.${hookEvent}`, classic.classicModInput(hookEvent, hookInput), async rewritten => {
+      ran = await run(classic.classicCoreInput(hookEvent, rewritten, hookInput) as HookInput, 'unmanaged')
+      return (coreResult = classic.outsideToClassic(hookEvent, ran))
+    }, signal, modOptions) as Record<string, unknown>
+    if (ran && JSON.stringify(result) === JSON.stringify(coreResult)) return [...managed, ...ran]
+    return [...managed, ...classic.outsideFromClassic(hookEvent, result, ran ?? [])]
+  }
+
   const appState = getAppState ? getAppState() : undefined
   // Use main session ID for outside-REPL hooks
   const sessionId = getSessionId()
-  const matchingHooks = await getMatchingHooks(
+  const allMatchingHooks = await getMatchingHooks(
     appState,
     sessionId,
     hookEvent,
     hookInput,
   )
+  const matchingHooks = hookTier
+    ? allMatchingHooks.filter(hook => hookTier === 'managed' ? hook.managed : !hook.managed)
+    : allMatchingHooks
   if (matchingHooks.length === 0) {
     return []
   }
@@ -4692,19 +4741,28 @@ export async function executeSessionEndHooks(
     reason,
   }
 
-  const { signal: endSignal, cleanup } = createCombinedAbortSignal(signal, { timeoutMs })
-  let results: HookOutsideReplResult[]
+  // Settings SessionEnd hooks run first (mods see them as classic.SessionEnd).
+  // The mods' session.end hooks then share a budget of their own, counted
+  // from when those finish, and the mods unload whatever happened before.
+  let results: HookOutsideReplResult[] = []
   try {
-    const { endPluginMods } = await import('./plugins/mods/manager.js')
-    await endPluginMods(reason, endSignal).catch(error => logForDebugging(`Mod session.end failed: ${String(error)}`, { level: 'warn' }))
-    results = await executeHooksOutsideREPL({
-      getAppState,
-      hookInput,
-      matchQuery: reason,
-      signal: endSignal,
-      timeoutMs: getSessionEndHookDefaultTimeoutMs(),
-    })
-  } finally { cleanup() }
+    const { signal: endSignal, cleanup } = createCombinedAbortSignal(signal, { timeoutMs })
+    try {
+      results = await executeHooksOutsideREPL({
+        getAppState,
+        hookInput,
+        matchQuery: reason,
+        signal: endSignal,
+        timeoutMs: getSessionEndHookDefaultTimeoutMs(),
+      })
+    } finally { cleanup() }
+  } finally {
+    const { signal: modSignal, cleanup } = createCombinedAbortSignal(signal, { timeoutMs })
+    try {
+      const { endPluginMods } = await import('./plugins/mods/manager.js')
+      await endPluginMods(reason, modSignal).catch(error => logForDebugging(`Mod session.end failed: ${String(error)}`, { level: 'warn' }))
+    } finally { cleanup() }
+  }
 
   // During shutdown, Ink is unmounted so we can write directly to stderr
   for (const result of results) {
@@ -4895,6 +4953,7 @@ export type InstructionsMemoryType = 'User' | 'Project' | 'Local' | 'Managed'
  * derived hooks (structured output enforcement etc.) are internal and not checked.
  */
 export function hasInstructionsLoadedHook(): boolean {
+  if (hasModEvent('classic.InstructionsLoaded')) return true
   const snapshotHooks = getHooksConfigFromSnapshot()?.['InstructionsLoaded']
   if (snapshotHooks && snapshotHooks.length > 0) return true
   const registeredHooks = getRegisteredHooks()?.['InstructionsLoaded']
@@ -5553,6 +5612,29 @@ export async function executeWorktreeCreateHook(
 }
 
 /**
+ * The worktree a WorktreeCreate hook or mod made, or null to create a git
+ * worktree as an unhooked session would. Settings hooks behave as in
+ * executeWorktreeCreateHook (their failure throws); a `classic.WorktreeCreate`
+ * mod with no settings hook beneath it answers a path or leaves it to git.
+ */
+export async function resolveWorktreeCreateHook(
+  name: string,
+): Promise<{ worktreePath: string } | null> {
+  if (hasWorktreeCreateHook()) return executeWorktreeCreateHook(name)
+  if (!hasModEvent('classic.WorktreeCreate')) return null
+  const results = await executeHooksOutsideREPL({
+    hookInput: {
+      ...createBaseHookInput(undefined),
+      hook_event_name: 'WorktreeCreate' as const,
+      name,
+    },
+    timeoutMs: TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  })
+  const created = results.find(r => r.succeeded && r.output.trim())
+  return created ? { worktreePath: created.output.trim() } : null
+}
+
+/**
  * Execute WorktreeRemove hooks if configured.
  * Returns true if hooks were configured and ran, false if no hooks are configured.
  *
@@ -5566,7 +5648,7 @@ export async function executeWorktreeRemoveHook(
   const registeredHooks = getRegisteredHooks()?.['WorktreeRemove']
   const hasSnapshotHooks = snapshotHooks && snapshotHooks.length > 0
   const hasRegisteredHooks = registeredHooks && registeredHooks.length > 0
-  if (!hasSnapshotHooks && !hasRegisteredHooks) {
+  if (!hasSnapshotHooks && !hasRegisteredHooks && !hasModEvent('classic.WorktreeRemove')) {
     return false
   }
 

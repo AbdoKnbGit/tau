@@ -267,7 +267,7 @@ test('awaiting core or host API work does not consume the hook execution budget'
     const waitMs = timeoutMs + 40
     const mod =
       await runtime(`export function register(on){on('command.run',async($,e,next)=>{
-    await $.clock.sleep(${waitMs});const result=await next(e);return {text:result.text+':'+(next.budget.remainingMs>0)};
+    await $.store.get('slow');const result=await next(e);return {text:result.text+':'+(next.budget.remainingMs>0)};
   })}`)
     const result = await mod.dispatch(
       'command.run',
@@ -277,7 +277,7 @@ test('awaiting core or host API work does not consume the hook execution budget'
         return { text: 'done' }
       },
       async (method) => {
-        assert.equal(method, 'clock.sleep')
+        assert.equal(method, 'store.get')
         await new Promise((done) => setTimeout(done, waitMs))
       },
       { timeoutMs },
@@ -286,6 +286,21 @@ test('awaiting core or host API work does not consume the hook execution budget'
     assert.equal(result.text, 'done:true')
     break
   }
+})
+
+test('a hook\'s own $.clock.sleep counts against its budget, and a timed-out hook leaves its module loaded', async () => {
+  const mod = await runtime(`export function register(on){
+    on('command.run',{command:'sleepy'},async($,e,next)=>{await $.clock.sleep(400);return {text:'slept through'}}).catch(async($,e,next)=>({text:'caught '+next.error.kind+' '+next.budget.ms}));
+    on('command.run',{command:'quick'},async()=>({text:'still loaded'}));
+  }`)
+  const sleeping = async (method, args) => {
+    assert.equal(method, 'clock.sleep')
+    await new Promise((done) => setTimeout(done, args[0]))
+  }
+  const slept = await mod.dispatch('command.run', { command: 'sleepy' }, async () => ({ text: 'core' }), sleeping, { timeoutMs: 100 })
+  assert.equal(slept.text, 'caught timeout 1000')
+  const quick = await mod.dispatch('command.run', { command: 'quick' }, async () => ({ text: 'core' }), host)
+  assert.equal(quick.text, 'still loaded')
 })
 
 test('abort terminates a synchronous runaway and does not run the core action', {timeout:10_000}, async () => {
@@ -391,7 +406,7 @@ test('static validation rejects unsupported APIs and imports without evaluating 
       /does not yet support mod event/,
     ],
     [
-      "export function register(on){on('command.run', async ($)=>$.ui.open({}))}",
+      "export function register(on){on('command.run', async ($)=>$.ui.frobnicate({}))}",
       /does not yet support mod API/,
     ],
     [

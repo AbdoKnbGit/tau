@@ -389,19 +389,28 @@ export async function resolveHookPermissionDecision(
     const { resolveModToolPermissionDecision } = await import('../../utils/plugins/mods/permissions.js')
     const { getModToolContext, withModToolContext } = await import('../../utils/plugins/mods/toolContext.js')
     const { settleToolPermissionDecision } = await import('../../utils/permissions/permissions.js')
-    const nextInput = hookPermissionResult?.behavior !== 'deny' && hookPermissionResult && 'updatedInput' in hookPermissionResult
-      ? hookPermissionResult.updatedInput ?? input : input
-    const checked = await withModToolContext({
-      ...getModToolContext(), toolUseContext, assistantMessage, canUseTool,
-    }, () => resolveModToolPermissionDecision(tool, nextInput, toolUseContext, { hookPermissionResult, toolUseID }))
-    const settled = await settleToolPermissionDecision(tool, nextInput, toolUseContext, assistantMessage, toolUseID, checked)
-    if (settled.behavior === 'deny') return { decision: settled, input: nextInput }
-    // Use the normal frontend/SDK permission callback for unresolved asks and
-    // required host callbacks. forceDecision avoids a second mod dispatch.
-    const decision = settled.behavior === 'ask' || toolUseContext.requireCanUseTool
-      ? await canUseTool(tool, nextInput, toolUseContext, assistantMessage, toolUseID, settled)
-      : settled
-    return { decision, input: nextInput }
+    const { closeModToolCall, openModToolCall } = await import('../../utils/plugins/mods/uiState.js')
+    // The call is open from its check until it is decided: a tool.check hook
+    // may put a line ($.ui.notice) under the dialog that follows, and the
+    // line goes with the decision.
+    openModToolCall(toolUseID)
+    try {
+      const nextInput = hookPermissionResult?.behavior !== 'deny' && hookPermissionResult && 'updatedInput' in hookPermissionResult
+        ? hookPermissionResult.updatedInput ?? input : input
+      const checked = await withModToolContext({
+        ...getModToolContext(), toolUseContext, assistantMessage, canUseTool,
+      }, () => resolveModToolPermissionDecision(tool, nextInput, toolUseContext, { hookPermissionResult, toolUseID }))
+      const settled = await settleToolPermissionDecision(tool, nextInput, toolUseContext, assistantMessage, toolUseID, checked)
+      if (settled.behavior === 'deny') return { decision: settled, input: nextInput }
+      // Use the normal frontend/SDK permission callback for unresolved asks and
+      // required host callbacks. forceDecision avoids a second mod dispatch.
+      const decision = settled.behavior === 'ask' || toolUseContext.requireCanUseTool
+        ? await canUseTool(tool, nextInput, toolUseContext, assistantMessage, toolUseID, settled)
+        : settled
+      return { decision, input: nextInput }
+    } finally {
+      closeModToolCall(toolUseID)
+    }
   }
   const requiresInteraction = tool.requiresUserInteraction?.()
   const requireCanUseTool = toolUseContext.requireCanUseTool

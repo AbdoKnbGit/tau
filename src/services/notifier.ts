@@ -35,6 +35,18 @@ export async function sendNotification(
   })
 }
 
+/**
+ * Sends one notification the way the user's preferredNotifChannel says,
+ * without running Notification hooks, and answers how it went: the method
+ * that wrote it, `disabled`, `no_method_available`, `none` or `error`.
+ */
+export async function deliverNotification(
+  notif: NotificationOptions,
+  terminal: TerminalNotification,
+): Promise<string> {
+  return sendToChannel(getGlobalConfig().preferredNotifChannel, notif, terminal)
+}
+
 const DEFAULT_TITLE = 'Tau'
 
 async function sendToChannel(

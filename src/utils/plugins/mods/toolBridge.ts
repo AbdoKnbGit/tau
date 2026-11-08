@@ -127,28 +127,37 @@ export async function runModToolCall(
       }
     }
   }
-  let answer = (await withModToolContext(
-    {
-      ...getModToolContext(),
-      toolUseContext: context,
-      assistantMessage: assistant,
-      canUseTool,
-      contextModifiers: modifiers,
-    },
-    () =>
-      dispatchModEvent(
-        'tool.call',
-        {
-          ...options.input,
-          tool: tool.name,
-          tool_use_id: toolUseID,
-          ...(context.agentId ? { agentId: context.agentId } : {}),
-        },
-        invokeCore,
-        context.abortController.signal,
-        { ...options.dispatchOptions, validateResult: validate },
-      ),
-  )) as ModRecord
+  let answer: ModRecord
+  try {
+    answer = (await withModToolContext(
+      {
+        ...getModToolContext(),
+        toolUseContext: context,
+        assistantMessage: assistant,
+        canUseTool,
+        contextModifiers: modifiers,
+      },
+      () =>
+        dispatchModEvent(
+          'tool.call',
+          {
+            ...options.input,
+            tool: tool.name,
+            tool_use_id: toolUseID,
+            ...(context.agentId ? { agentId: context.agentId } : {}),
+          },
+          invokeCore,
+          context.abortController.signal,
+          { ...options.dispatchOptions, validateResult: validate },
+        ),
+    )) as ModRecord
+  } catch (error) {
+    // The turn was interrupted after the engine ran the call (Esc at its
+    // permission dialog, say): the engine's own result stands (the person's
+    // rejection), not the abort of the hooks waiting around it.
+    if (context.abortController.signal.aborted && last) return [...last.updates]
+    throw error
+  }
   const prior =
     typeof answer.ref === 'number' ? retained.get(answer.ref) : undefined
   const managedMessages: MessageUpdateLazy[] = []

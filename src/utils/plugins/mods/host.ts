@@ -30,6 +30,7 @@ import { resolveWindowsTaskkillPath } from '../../execFileNoThrow.js'
 import type { ModHost, ModRecord } from './runtime.js'
 import type { ModToolRegistry, ModToolInfo } from './tools.js'
 import { abortModMainTurn, readModSessionMessages, readModSessionModel, readModSessionTurns } from './sessionState.js'
+import { MOD_API_VERSION } from './contracts.js'
 
 export type ModCommandSpec = {
   name: string
@@ -139,6 +140,31 @@ async function useStore<T>(
   }
 }
 
+/** Stops a mod's child and everything it started: a POSIX process group, or
+ * the Windows tree enumerated by taskkill /T before the wrapper itself dies. */
+export async function killModProcessTree(child: { pid?: number; kill(signal?: NodeJS.Signals | number): unknown }): Promise<void> {
+  if (child.pid) {
+    if (process.platform === 'win32') {
+      const taskkill = resolveWindowsTaskkillPath()
+      if (taskkill) {
+        // Finish tree enumeration before killing the wrapper itself;
+        // killing cmd.exe first can orphan its descendants.
+        await execa(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
+          reject: false,
+          timeout: 10_000,
+          stdin: 'ignore', stdout: 'ignore', stderr: 'ignore',
+          detached: true,
+          cleanup: false,
+          windowsHide: true,
+        }).catch(() => {})
+      }
+    } else {
+      try { process.kill(-child.pid, 'SIGKILL') } catch {}
+    }
+  }
+  try { child.kill('SIGKILL') } catch {}
+}
+
 /** External programs are argv calls, never interpolated into a shell command. */
 export function runModProcess(
   argv: string[],
@@ -184,32 +210,7 @@ export function runModProcess(
     canceled = false,
     maxBuffer = false,
     stopping: Promise<void> | undefined
-  const stop = () => {
-    if (stopping) return stopping
-    stopping = (async () => {
-      if (child.pid) {
-        if (process.platform === 'win32') {
-          const taskkill = resolveWindowsTaskkillPath()
-          if (taskkill) {
-            // Finish tree enumeration before killing the wrapper itself;
-            // killing cmd.exe first can orphan its descendants.
-            await execa(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
-              reject: false,
-              timeout: 10_000,
-              stdin: 'ignore', stdout: 'ignore', stderr: 'ignore',
-              detached: true,
-              cleanup: false,
-              windowsHide: true,
-            }).catch(() => {})
-          }
-        } else {
-          try { process.kill(-child.pid, 'SIGKILL') } catch {}
-        }
-      }
-      try { child.kill('SIGKILL') } catch {}
-    })()
-    return stopping
-  }
+  const stop = () => (stopping ??= killModProcessTree(child))
   const stdout: Buffer[] = [], stderr: Buffer[] = []
   const collect = (chunks: Buffer[]) => {
     let bytes = 0
@@ -290,6 +291,16 @@ export function createModHost(context: ModHostContext): ModHost {
         return readModSessionMessages(first, signal)
       case 'turn.abort':
         return abortModMainTurn(first)
+      case 'session.version':
+        // A mod written for Claude Code gates on the engine's version: the
+        // release whose mods contract Tau implements answers, so its check
+        // holds here; Tau's own release rides along as `tau`.
+        return {
+          version: MOD_API_VERSION,
+          base: MOD_API_VERSION,
+          ...(MACRO.BUILD_TIME ? { builtAt: MACRO.BUILD_TIME } : {}),
+          tau: MACRO.VERSION,
+        }
       case 'session.surfaces':
         return getIsInteractive() ? ['terminal'] : []
       case 'session.surface':
@@ -417,14 +428,22 @@ export function createModHost(context: ModHostContext): ModHost {
         )
       case 'fs.stat': {
         const path = filePath(first),
-          link = await lstat(path),
-          info = await stat(path)
+          link = await lstat(path)
+        // A symbolic link that leads nowhere is `other`, described by the link
+        // itself, and has no realPath for a guard to trust.
+        const info = await stat(path).catch((error) => {
+          if (link.isSymbolicLink() && ['ENOENT', 'ELOOP', 'ENOTDIR'].includes(error?.code)) return undefined
+          throw error
+        })
+        const real = second?.resolve && info
+          ? await realpath(path).catch(() => undefined)
+          : undefined
         return {
-          kind: info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other',
-          size: info.size,
-          mtimeMs: info.mtimeMs,
+          kind: !info ? 'other' : info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other',
+          size: (info ?? link).size,
+          mtimeMs: (info ?? link).mtimeMs,
           isLink: link.isSymbolicLink(),
-          ...(second?.resolve ? { realPath: await realpath(path) } : {}),
+          ...(real !== undefined ? { realPath: real } : {}),
         }
       }
       case 'store.get':
@@ -479,10 +498,49 @@ export function createModHost(context: ModHostContext): ModHost {
           }, first)
           signal.addEventListener('abort', abort, { once: true })
         })
+      // One period of a plugin timer. The wait never keeps a finished -p run
+      // alive; a reload or unload cancels it with the module's lifetime.
+      case 'clock.after':
+      case 'clock.every':
+        return new Promise<void>((done, reject) => {
+          if (
+            typeof first !== 'number' ||
+            !Number.isFinite(first) ||
+            first < (method === 'clock.every' ? 1 : 0) ||
+            first > 2_147_483_647
+          ) {
+            reject(new Error(`Invalid ${method} delay`))
+            return
+          }
+          const abort = () => {
+            clearTimeout(timer)
+            reject(new Error('Mod timer cancelled'))
+          }
+          const timer = setTimeout(() => {
+            signal.removeEventListener('abort', abort)
+            done()
+          }, first)
+          timer.unref()
+          signal.addEventListener('abort', abort, { once: true })
+        })
       case 'process.run':
         return runModProcess(first, second, signal)
       case 'env.get':
         return process.env[String(first)]
+      case 'env.set': {
+        if (
+          typeof first !== 'string' ||
+          !first ||
+          first.includes('=') ||
+          first.includes('\0')
+        )
+          throw new Error('env.set requires a variable name')
+        if (second === undefined) delete process.env[first]
+        else if (typeof second !== 'string' || second.includes('\0'))
+          throw new Error('env.set value must be text')
+        else process.env[first] = second
+        return
+      }
       case 'settings.read': {
         const sources = {
           user: 'userSettings',

@@ -765,19 +765,87 @@ export function buildCheapStaticPromptSections(
   ].filter((section): section is string => section !== null)
 }
 
+/** One section of a system prompt as `prompt.compose` names it: `shared`
+ * text sits before the cache boundary, `session` text after it. */
+export type PromptComposeSection = { id: string; text: string; scope: 'shared' | 'session' }
+
+/** The engine's own composition of a system prompt: the entries it sends,
+ * and the same text as named sections, with the facts it was composed on. */
+export type RenderedSystemPrompt = {
+  entries: string[]
+  sections: PromptComposeSection[]
+  traits: string[]
+  boundary: boolean
+  outputStyle: { name: string; isKeepingCodingInstructions: boolean } | null
+}
+
+/**
+ * The system prompt for one render: the engine's composition, then the
+ * mods' `prompt.compose` hooks, which may drop, replace, reorder or add
+ * sections. With no hook it is the engine's own array, untouched.
+ */
 export async function getSystemPrompt(
   tools: Tools,
   model: string,
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
 ): Promise<string[]> {
+  return (await composeSystemPrompt(tools, model, additionalWorkingDirectories, mcpClients)).entries
+}
+
+/**
+ * `getSystemPrompt` with its sections. `dry` composes for nobody to send
+ * (a mod's `$.prompt.compose`): no section the session caches is read or
+ * written; `facts` are what that call asked for.
+ */
+export async function composeSystemPrompt(
+  tools: Tools,
+  model: string,
+  additionalWorkingDirectories?: string[],
+  mcpClients?: MCPServerConnection[],
+  options: {
+    dry?: boolean
+    facts?: Record<string, unknown>
+    signal?: AbortSignal
+    dispatch?: Record<string, unknown>
+    always?: boolean
+  } = {},
+): Promise<{ entries: string[]; sections: PromptComposeSection[] }> {
+  const rendered = await renderSystemPrompt(tools, model, additionalWorkingDirectories, mcpClients, options.dry === true)
+  const { composeWithMods } = await import('../utils/plugins/mods/promptCompose.js')
+  return composeWithMods(rendered, {
+    tools,
+    model,
+    boundaryMarker: SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    // Other facts than the session's are composed for nobody: no cache.
+    rerender: (wanted, otherModel) => renderSystemPrompt(wanted, otherModel, additionalWorkingDirectories, mcpClients, true),
+    ...options,
+  })
+}
+
+async function renderSystemPrompt(
+  tools: Tools,
+  model: string,
+  additionalWorkingDirectories: string[] | undefined,
+  mcpClients: MCPServerConnection[] | undefined,
+  dry: boolean,
+): Promise<RenderedSystemPrompt> {
   const enabledTools = new Set(tools.map(_ => _.name))
+  const print = getIsNonInteractiveSession() ? ['print'] : []
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
-    return [
+    const entries = [
       `You are Tau, a multi-provider AI coding CLI.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
       TOOL_EFFICIENCY_SECTION,
       FINAL_RESPONSE_STYLE,
     ].filter((section): section is string => section !== null)
+    // The one-line prompt is one section, `bare`.
+    return {
+      entries,
+      sections: [{ id: 'bare', text: entries.filter(Boolean).join('\n\n'), scope: 'session' }],
+      traits: ['bare', ...print],
+      boundary: false,
+      outputStyle: null,
+    }
   }
 
   const cwd = getCwd()
@@ -796,26 +864,34 @@ export async function getSystemPrompt(
     proactiveModule?.isProactiveActive()
   ) {
     logForDebugging(`[SystemPrompt] path=simple-proactive`)
-    return [
-      `\nYou are an autonomous agent. Use the available tools to do useful work.
+    const named: Array<[string, string | null]> = [
+      ['autonomous', `\nYou are an autonomous agent. Use the available tools to do useful work.
 
-${CYBER_RISK_INSTRUCTION}`,
-      TOOL_EFFICIENCY_SECTION,
-      FINAL_RESPONSE_STYLE,
-      getSystemRemindersSection(),
-      await loadMemoryPrompt({ compact: isCheapMode }),
-      envInfo,
-      getLanguageSection(settings.language),
+${CYBER_RISK_INSTRUCTION}`],
+      ['tool_efficiency', TOOL_EFFICIENCY_SECTION],
+      ['final_response_style', FINAL_RESPONSE_STYLE],
+      ['system_reminders', getSystemRemindersSection()],
+      ['memory', await loadMemoryPrompt({ compact: isCheapMode })],
+      ['env_info', envInfo],
+      ['language', getLanguageSection(settings.language)],
       // When delta enabled, instructions are announced via persisted
       // mcp_instructions_delta attachments (attachments.ts) instead.
-      isMcpInstructionsDeltaEnabled()
+      ['mcp_instructions', isMcpInstructionsDeltaEnabled()
         ? null // Cheap mode has no MCP tools.
-        : getMcpInstructionsSection(mcpClients),
-      getScratchpadInstructions(),
-      getFunctionResultClearingSection(model),
-      SUMMARIZE_TOOL_RESULTS_SECTION,
-      getProactiveSection(),
-    ].filter(s => s !== null)
+        : getMcpInstructionsSection(mcpClients)],
+      ['scratchpad', getScratchpadInstructions()],
+      ['frc', getFunctionResultClearingSection(model)],
+      ['summarize_tool_results', SUMMARIZE_TOOL_RESULTS_SECTION],
+      ['proactive', getProactiveSection()],
+    ]
+    const kept = named.filter((item): item is [string, string] => item[1] !== null)
+    return {
+      entries: kept.map(([, text]) => text),
+      sections: kept.filter(([, text]) => text).map(([id, text]) => ({ id, text, scope: 'session' as const })),
+      traits: [...(isCheapMode ? ['lean'] : []), ...print, ...(skillToolCommands.length ? ['skills'] : [])],
+      boundary: false,
+      outputStyle: outputStyleOf(outputStyleConfig),
+    }
   }
 
   const dynamicSections = [
@@ -893,40 +969,72 @@ ${CYBER_RISK_INSTRUCTION}`,
   ]
 
   const resolvedDynamicSections =
-    await resolveSystemPromptSections(dynamicSections)
+    await resolveSystemPromptSections(dynamicSections, { dry })
 
-  return [
+  const keepsCodingInstructions =
+    outputStyleConfig === null ||
+    outputStyleConfig.keepCodingInstructions === true
+  const cheapStatic = isCheapMode
+    ? buildCheapStaticPromptSections(
+        enabledTools,
+        outputStyleConfig?.name,
+        keepsCodingInstructions,
+      )
+    : []
+  // The static sections by the ids prompt.compose names them.
+  const staticNamed: Array<[string, string | null]> = isCheapMode
+    ? [['lean_body', cheapStatic.filter(Boolean).join('\n\n') || null]]
+    : [
+        ['intro', getSimpleIntroSection(outputStyleConfig)],
+        ['system', getSimpleSystemSection()],
+        ['doing_tasks', keepsCodingInstructions ? getSimpleDoingTasksSection() : null],
+        ['actions', getActionsSection()],
+        ['tools', getUsingYourToolsSection(enabledTools, model)],
+        ['tool_efficiency', TOOL_EFFICIENCY_SECTION],
+        ['cheap_tools', getCheapModeToolsSection()],
+        ['tone', getSimpleToneAndStyleSection()],
+        ['output_efficiency', getOutputEfficiencySection()],
+      ]
+  const boundary = shouldEmitSystemPromptBoundary()
+  const entries = [
     // --- Static content (cacheable) ---
-    ...(isCheapMode
-      ? buildCheapStaticPromptSections(
-          enabledTools,
-          outputStyleConfig?.name,
-          outputStyleConfig === null ||
-            outputStyleConfig.keepCodingInstructions === true,
-        )
-      : [
-          getSimpleIntroSection(outputStyleConfig),
-          getSimpleSystemSection(),
-          outputStyleConfig === null ||
-          outputStyleConfig.keepCodingInstructions === true
-            ? getSimpleDoingTasksSection()
-            : null,
-          getActionsSection(),
-          getUsingYourToolsSection(enabledTools, model),
-          TOOL_EFFICIENCY_SECTION,
-          getCheapModeToolsSection(),
-          getSimpleToneAndStyleSection(),
-          getOutputEfficiencySection(),
-        ]),
+    ...(isCheapMode ? cheapStatic : staticNamed.map(([, text]) => text)),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===
     // Separates cacheable static content (above) from per-turn dynamic content
     // (below). Emitted for first-party global-scope caching AND for the native
     // lanes that split on it (Gemini/Antigravity/OpenRouter) so their volatile
     // context stays out of the cached prefix. See shouldEmitSystemPromptBoundary.
-    ...(shouldEmitSystemPromptBoundary() ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),
+    ...(boundary ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),
     // --- Dynamic content (registry-managed) ---
     ...resolvedDynamicSections,
-  ].filter(s => s !== null)
+  ].filter((s): s is string => s !== null)
+  // A section's id is its registry name, without the mode it was computed in.
+  const dynamicNamed = dynamicSections.map(
+    (section, index): [string, string | null] => [
+      section.name.replace(/_(cheap|simple)$/, ''),
+      resolvedDynamicSections[index] ?? null,
+    ],
+  )
+  const sectionsOf = (named: Array<[string, string | null]>, scope: PromptComposeSection['scope']) =>
+    named
+      .filter((item): item is [string, string] => !!item[1])
+      .map(([id, text]) => ({ id, text, scope }))
+  return {
+    entries,
+    sections: [...sectionsOf(staticNamed, 'shared'), ...sectionsOf(dynamicNamed, 'session')],
+    traits: [...(isCheapMode ? ['lean'] : []), ...print, ...(skillToolCommands.length ? ['skills'] : [])],
+    boundary,
+    outputStyle: outputStyleOf(outputStyleConfig),
+  }
+}
+
+/** What the person chose in place of the default way of answering. */
+function outputStyleOf(
+  config: Awaited<ReturnType<typeof getOutputStyleConfig>>,
+): RenderedSystemPrompt['outputStyle'] {
+  return config
+    ? { name: config.name, isKeepingCodingInstructions: config.keepCodingInstructions === true }
+    : null
 }
 
 function getMcpInstructions(mcpClients: MCPServerConnection[]): string | null {

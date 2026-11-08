@@ -25,6 +25,11 @@ import { IdleReturnDialog } from '../components/IdleReturnDialog.js';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState, useCallback, useDeferredValue, useLayoutEffect, type RefObject } from 'react';
 import { bindModSession, markModSessionStopped, preserveModCompactionScrollback } from '../utils/plugins/mods/sessionState.js';
+import { createModNoticeMessage } from '../utils/plugins/mods/lifecycle.js';
+import { ModDock, ModFocusedPane, ModKeys, ModPromptSurface, ModStatusLines, modDockColumns, useModDocked, useModPaneFocused, useModToastHold } from '../components/mods/ModSurface.js';
+import { isModToastHold } from '../utils/plugins/mods/uiState.js';
+import inkInstances from '../ink/instances.js';
+import { deliverNotification } from '../services/notifier.js';
 import { useNotifications } from '../context/notifications.js';
 import { settingsChangeDetector } from '../utils/settings/changeDetector.js';
 import { sendNotification } from '../services/notifier.js';
@@ -2693,6 +2698,53 @@ export function REPL({
   }, [commands, combinedInitialTools, mainThreadAgentDefinition, debug, initialMcpClients, ideInstallationStatus, dynamicMcpConfig, theme, allowedAgentTypes, store, mainLoopModel, setAppState, reverify, addNotification, setMessages, onChangeDynamicMcpConfig, resume, requestPrompt, disabled, customSystemPrompt, appendSystemPrompt, setConversationId]);
   const modContextRef = useRef(getToolUseContext);
   modContextRef.current = getToolUseContext;
+  // The prompt box as mods read and fill it; refs, so the session binding
+  // never re-binds (and resets its turn tracking) when these change.
+  const modSetInputRef = useRef(setInputValue);
+  modSetInputRef.current = setInputValue;
+  const modDialogRef = useRef(focusedInputDialog);
+  modDialogRef.current = focusedInputDialog;
+  const modNotificationsRef = useRef(addNotification);
+  modNotificationsRef.current = addNotification;
+  const modTerminalRef = useRef(terminal);
+  modTerminalRef.current = terminal;
+  // A mod's pane that holds the keyboard takes the prompt's place.
+  const modPaneFocused = useModPaneFocused();
+  // In a wide fullscreen terminal the shown pane docks beside the transcript.
+  const modDocked = useModDocked();
+  // Toasts a pane opened with holdToasts kept back, shown once it is not.
+  const modToastHold = useModToastHold();
+  const modHeldToastsRef = useRef<Array<{ plugin: string; text: string; timeoutMs?: number }>>([]);
+  const deliverModToastRef = useRef((plugin: string, text: string, timeoutMs?: number) => {
+    // A toast shows at once, as Claude Code's does, ahead of queued notices;
+    // it waits only behind one of the engine's own immediate ones.
+    const current = store.getState().notifications.current;
+    const yields = current?.priority === 'immediate' && !current.key.startsWith('mod-toast:');
+    modNotificationsRef.current({
+      key: `mod-toast:${plugin}`,
+      text: `${plugin}: ${text}`,
+      priority: yields ? 'high' : 'immediate',
+      timeoutMs: timeoutMs ?? 4000,
+      // A mod's newer toast takes the place of its older one.
+      fold: (_older, newer) => newer
+    });
+  });
+  useEffect(() => {
+    if (modToastHold) return;
+    for (const held of modHeldToastsRef.current.splice(0)) deliverModToastRef.current(held.plugin, held.text, held.timeoutMs);
+  }, [modToastHold]);
+  // What the person last selected with the mouse, for $.ui.selection: kept
+  // past the key or click that takes the highlight down, until their next
+  // prompt or command.
+  const modSelectionRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const ink = inkInstances.get(process.stdout);
+    if (!ink) return;
+    return ink.subscribeToSelectionChange(() => {
+      const text = ink.readSelectionText();
+      if (text) modSelectionRef.current = text;
+    });
+  }, []);
   useLayoutEffect(() => bindModSession({
     getMessages: () => messagesRef.current,
     getModel: () => getFreshOpenAIGptMainLoopModel(modSessionModelRef.current, store.getState(), modSessionModelRef.current),
@@ -2709,6 +2761,51 @@ export function REPL({
       if (feature('PROACTIVE') || feature('KAIROS')) proactiveModule?.setContextBlocked(false);
     },
     isBusy: () => queryGuard.isActive,
+    appendNotice: text => setMessages(prev => [...prev, createModNoticeMessage(text)]),
+    readPrompt: () => ({
+      text: inputValueRef.current,
+      cursor: insertTextRef.current?.cursorOffset ?? inputValueRef.current.length
+    }),
+    fillPrompt: (text, mode) => {
+      if (modDialogRef.current) return false;
+      const current = inputValueRef.current;
+      const cursor = Math.min(insertTextRef.current?.cursorOffset ?? current.length, current.length);
+      modSetInputRef.current(mode === 'append' ? current + text : mode === 'insert' ? current.slice(0, cursor) + text + current.slice(cursor) : text);
+      return true;
+    },
+    suggestPrompt: text => {
+      if (inputValueRef.current || queryGuard.isActive || modDialogRef.current) return false;
+      store.setState(prev => ({
+        ...prev,
+        promptSuggestion: {
+          text,
+          promptId: 'user_intent',
+          shownAt: Date.now(),
+          acceptedAt: 0,
+          generationRequestId: null
+        }
+      }));
+      return true;
+    },
+    getAppState: () => store.getState(),
+    toast: (plugin, text, timeoutMs) => {
+      if (isModToastHold()) {
+        const held = modHeldToastsRef.current;
+        const at = held.findIndex(item => item.plugin === plugin);
+        if (at >= 0) held.splice(at, 1);
+        held.push({ plugin, text, timeoutMs });
+        return;
+      }
+      deliverModToastRef.current(plugin, text, timeoutMs);
+    },
+    // A pane's focus is granted over an empty prompt with no dialog up.
+    canGiveKeyboard: () => !inputValueRef.current && !modDialogRef.current,
+    notify: (text, title) => deliverNotification({
+      message: text,
+      title,
+      notificationType: 'plugin_notification'
+    }, modTerminalRef.current),
+    readSelection: () => modSelectionRef.current === undefined ? undefined : { text: modSelectionRef.current }
   }), [store, queryGuard, setMessages]);
 
   // Session backgrounding (Ctrl+B to background/foreground)
@@ -3390,6 +3487,7 @@ export function REPL({
     voiceMode?: boolean;
     uuid?: UUID;
   }) => {
+    modSelectionRef.current = undefined;
     if (options?.voiceMode && activeRemote.isRemoteMode) {
       throw new Error('Voice delegation requires a local Tau agent session.');
     }
@@ -4895,7 +4993,7 @@ export function REPL({
       {feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? <MessageActionsKeybindings handlers={messageActionHandlers} isActive={cursor !== null} /> : null}
       <CancelRequestHandler {...cancelRequestProps} />
       <MCPConnectionManager key={remountKey} dynamicMcpConfig={dynamicMcpConfig} isStrictMcpConfig={strictMcpConfig}>
-        <FullscreenLayout transcriptKey={conversationId} expandedBottom={!!focusedInputDialog && focusedInputDialog !== 'tool-permission' || showBashesDialog} scrollRef={scrollRef} overlay={toolPermissionOverlay} bottomFloat={bottomFloat} modal={centeredModal} modalScrollRef={modalScrollRef} dividerYRef={dividerYRef} hidePill={!!viewedAgentTask} hideSticky={!!viewedTeammateTask} centerBottom={centerFreshPrompt} newMessageCount={unseenDivider?.count ?? 0} onPillClick={() => {
+        <FullscreenLayout dock={modDocked ? <ModDock /> : undefined} dockColumns={modDocked ? modDockColumns(transcriptCols) : 0} transcriptKey={conversationId} expandedBottom={!!focusedInputDialog && focusedInputDialog !== 'tool-permission' || showBashesDialog} scrollRef={scrollRef} overlay={toolPermissionOverlay} bottomFloat={bottomFloat} modal={centeredModal} modalScrollRef={modalScrollRef} dividerYRef={dividerYRef} hidePill={!!viewedAgentTask} hideSticky={!!viewedTeammateTask} centerBottom={centerFreshPrompt} newMessageCount={unseenDivider?.count ?? 0} onPillClick={() => {
         setCursor(null);
         jumpToNew(scrollRef.current);
       }} scrollable={<>
@@ -5226,9 +5324,15 @@ export function REPL({
             }).then(appendStdout).catch(logError);
           }} /> : null}
 
+                <ModKeys canFocus={() => !inputValueRef.current && !focusedInputDialog} />
                 {mrRender()}
 
-                {!toolJSX?.shouldHidePromptInput && !focusedInputDialog && !isExiting && !disabled && !cursor && <>
+                {!toolJSX?.shouldHidePromptInput && !focusedInputDialog && !isExiting && !disabled && !cursor && modPaneFocused && <>
+                      <ModPromptSurface isWorking={isLoading} promptEmpty={!inputValue} />
+                      <ModFocusedPane />
+                      <ModStatusLines />
+                    </>}
+                {!toolJSX?.shouldHidePromptInput && !focusedInputDialog && !isExiting && !disabled && !cursor && !modPaneFocused && <>
                       {autoRunIssueReason && <AutoRunIssueNotification onRun={handleAutoRunIssue} onCancel={handleCancelAutoRunIssue} reason={getAutoRunIssueReasonText(autoRunIssueReason)} />}
                       {postCompactSurvey.state !== 'closed' ? <FeedbackSurvey state={postCompactSurvey.state} lastResponse={postCompactSurvey.lastResponse} handleSelect={postCompactSurvey.handleSelect} inputValue={inputValue} setInputValue={setInputValue} onRequestFeedback={handleSurveyRequestFeedback} /> : memorySurvey.state !== 'closed' ? <FeedbackSurvey state={memorySurvey.state} lastResponse={memorySurvey.lastResponse} handleSelect={memorySurvey.handleSelect} handleTranscriptSelect={memorySurvey.handleTranscriptSelect} inputValue={inputValue} setInputValue={setInputValue} onRequestFeedback={handleSurveyRequestFeedback} message="How well did Tau use its memory? (optional)" /> : <FeedbackSurvey state={feedbackSurvey.state} lastResponse={feedbackSurvey.lastResponse} handleSelect={feedbackSurvey.handleSelect} handleTranscriptSelect={feedbackSurvey.handleTranscriptSelect} inputValue={inputValue} setInputValue={setInputValue} onRequestFeedback={didAutoRunIssueRef.current ? undefined : handleSurveyRequestFeedback} />}
                       {/* Frustration-triggered transcript sharing prompt */}
@@ -5238,10 +5342,12 @@ export function REPL({
                       {showIssueFlagBanner && <IssueFlagBanner />}
                       {}
                       {heyModeAvailable ? <LiveVoiceIndicator /> : null}
+                      <ModPromptSurface isWorking={isLoading} promptEmpty={!inputValue} />
                       <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={!!hasSuppressedDialogs} isLocalJSXCommandActive={isShowingLocalJSXCommand} isCenteredPrompt={centerFreshPrompt} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={
             // Works during isLoading — edit cancels first; uuid selection survives appends.
             feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? enterMessageActions : undefined} mcpClients={mcpClients} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onSubmit={onSubmit} onAgentSubmit={onAgentSubmit} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={isHelpOpen} setHelpOpen={setIsHelpOpen} insertTextRef={heyModeAvailable ? insertTextRef : undefined} />
                       <SessionBackgroundHint onBackgroundSession={handleBackgroundSession} isLoading={isLoading} />
+                      <ModStatusLines />
                     </>}
                 {cursor &&
           // inputValue is REPL state; typed text survives the round-trip.

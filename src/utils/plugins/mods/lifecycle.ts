@@ -14,6 +14,12 @@ import type { ModDispatchOptions } from './manager.js'
 
 type TurnMessage = Message | RequestStartEvent | StreamEvent | TombstoneMessage | ToolUseSummaryMessage
 
+/** A plugin's own line in the transcript: drawn dim with a dot in every view
+ * (other info rows show only in verbose mode) and never sent to the model. */
+export function createModNoticeMessage(text: string) {
+  return { ...createSystemMessage(text, 'info'), modNotice: true as const }
+}
+
 /** All top-level SDK text is submitted; attachments keep their order and identity. */
 export function submittedPromptText(input: string | ContentBlockParam[]): string {
   return typeof input === 'string' ? input : input.filter(block => block.type === 'text').map(block => block.text).join('\n')
@@ -47,6 +53,21 @@ export async function submitModPrompt(event: ModRecord, context: ToolUseContext,
   return entered ?? (result.drop !== undefined ? result : { drop: 'the prompt was handled without entering the session' })
 }
 
+/** The turn each query's model requests belong to, by the abort controller
+ * of its tool context and its loop (a sync subagent shares its parent's
+ * controller): the turn's id and the next request's index there. */
+type TurnSteps = { turnId: string; next: number; context: ToolUseContext; canUseTool: CanUseToolFn }
+const turnSteps = new WeakMap<AbortController, Map<string, TurnSteps>>()
+
+/** The next model request of the turn a query runs (turn.step's `turnId`
+ * and `index`), or undefined outside a turn the lifecycle observes. */
+export function takeModTurnStep(controller: AbortController, agentId?: string):
+  { turnId: string; index: number; context: ToolUseContext; canUseTool: CanUseToolFn } | undefined {
+  const turn = turnSteps.get(controller)?.get(agentId ?? '')
+  if (!turn) return undefined
+  return { turnId: turn.turnId, index: turn.next++, context: turn.context, canUseTool: turn.canUseTool }
+}
+
 /** Observe the complete shared query, rather than individual model requests. */
 export async function* withModTurnLifecycle<T>(
   source: AsyncGenerator<TurnMessage, T>,
@@ -57,6 +78,9 @@ export async function* withModTurnLifecycle<T>(
   // handles its aborted controller without emitting a new lifecycle pair.
   if (context.abortController.signal.aborted) return yield* source
   const turnId = randomUUID()
+  let loops = turnSteps.get(context.abortController)
+  if (!loops) turnSteps.set(context.abortController, (loops = new Map()))
+  loops.set(context.agentId ?? '', { turnId, next: 0, context, canUseTool })
   const endTurn = !context.agentId ? beginModMainTurn(turnId, context.abortController) : undefined
   const agentMessages = context.agentId ? [...context.messages] : undefined
   const endAgent = context.agentId ? bindModAgentConversation(context.agentId, () => agentMessages!) : undefined
@@ -125,6 +149,7 @@ export async function* withModTurnLifecycle<T>(
     try {
       if (!done) await source.return(undefined as T)
     } finally {
+      turnSteps.get(context.abortController)?.delete(context.agentId ?? '')
       endTurn?.()
       if (hasModEvent('turn.complete')) {
         let usage: Record<string, number> | null = null
@@ -155,6 +180,6 @@ export async function* withModTurnLifecycle<T>(
     }
   }
   // Informational messages are presentation only and are excluded from API history.
-  if (completeText) yield createSystemMessage(completeText, 'info')
+  if (completeText) yield createModNoticeMessage(completeText)
   return terminal!
 }

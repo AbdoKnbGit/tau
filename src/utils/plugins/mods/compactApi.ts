@@ -21,7 +21,7 @@ import { tokenCountWithEstimation } from '../../tokens.js'
 import { extractDiscoveredToolNames } from '../../toolSearch.js'
 import { isEnvTruthy } from '../../envUtils.js'
 import { CompactMessageHandles, compactFallbackText } from './compactMessages.js'
-import { dispatchModEvent, hasModEvent, logModCompactionFallback } from './manager.js'
+import { dispatchModEvent, hasModEvent, logModCompactionFallback, modChainSeat } from './manager.js'
 import { getModMainTurn, getModSessionBinding, isModSessionBusy, reserveModCompaction } from './sessionState.js'
 import { getModToolContext, type ModCallFrame } from './toolContext.js'
 
@@ -115,7 +115,7 @@ export async function runCompactTransaction(
         } }),
       }
     }, controller.signal, {
-      skip: frame, ...(plugin && { origin: { plugin, tier: 'user' } }),
+      skip: frame, ...(plugin && { origin: modChainSeat(plugin).origin }),
       validateInput: event => handles.checkInput(event),
       validateResult: result => { handles.result(result) },
       onWarning: text => warnings.push(text),

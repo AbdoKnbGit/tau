@@ -62,6 +62,12 @@ export const KEYBINDING_CONTEXT_DESCRIPTIONS: Record<
  * All valid keybinding action identifiers.
  */
 export const KEYBINDING_ACTIONS = [
+  // Mods' panes and the band above the prompt (Global context)
+  'modPane:focus',
+  'modPane:close',
+  'modPane:grow',
+  'modPane:shrink',
+  'abovePrompt:toggle',
   // App-level actions (Global context)
   'app:interrupt',
   'app:exit',

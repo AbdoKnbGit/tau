@@ -35,9 +35,8 @@ import {
   gitExe,
 } from './git.js'
 import {
-  executeWorktreeCreateHook,
   executeWorktreeRemoveHook,
-  hasWorktreeCreateHook,
+  resolveWorktreeCreateHook,
 } from './hooks.js'
 import { containsPathTraversal } from './path.js'
 import { getPlatform } from './platform.js'
@@ -828,8 +827,8 @@ export async function createWorktreeForSession(
   const originalCwd = getCwd()
 
   // Try hook-based worktree creation first (allows user-configured VCS)
-  if (hasWorktreeCreateHook()) {
-    const hookResult = await executeWorktreeCreateHook(slug)
+  const hookResult = await resolveWorktreeCreateHook(slug)
+  if (hookResult) {
     logForDebugging(
       `Created hook-based worktree at: ${hookResult.worktreePath}`,
     )
@@ -1033,20 +1032,20 @@ export async function createAgentWorktree(slug: string): Promise<{
   const cwd = getCwd()
 
   // Try hook-based worktree creation first (allows user-configured VCS)
-  if (hasWorktreeCreateHook()) {
-    try {
-      const hookResult = await executeWorktreeCreateHook(slug)
+  try {
+    const hookResult = await resolveWorktreeCreateHook(slug)
+    if (hookResult) {
       logForDebugging(
         `Created hook-based agent worktree at: ${hookResult.worktreePath}`,
       )
 
       return { worktreePath: hookResult.worktreePath, hookBased: true }
-    } catch (error) {
-      logForDebugging(
-        `Hook-based agent worktree failed, falling back: ${errorMessage(error)}`,
-        { level: 'warn' },
-      )
     }
+  } catch (error) {
+    logForDebugging(
+      `Hook-based agent worktree failed, falling back: ${errorMessage(error)}`,
+      { level: 'warn' },
+    )
   }
 
   // Fall back to git worktree
@@ -1434,16 +1433,17 @@ export async function execIntoTmuxWorktree(args: string[]): Promise<{
   // (anthropics/claude-code#39281). Git path below runs only when no hook.
   let worktreeDir: string
   let repoName: string
-  if (hasWorktreeCreateHook()) {
-    try {
-      const hookResult = await executeWorktreeCreateHook(worktreeName)
-      worktreeDir = hookResult.worktreePath
-    } catch (error) {
-      return {
-        handled: false,
-        error: `Error: ${errorMessage(error)}`,
-      }
+  let hookResult: { worktreePath: string } | null
+  try {
+    hookResult = await resolveWorktreeCreateHook(worktreeName)
+  } catch (error) {
+    return {
+      handled: false,
+      error: `Error: ${errorMessage(error)}`,
     }
+  }
+  if (hookResult) {
+    worktreeDir = hookResult.worktreePath
     repoName = basename(findCanonicalGitRoot(getCwd()) ?? getCwd())
     // biome-ignore lint/suspicious/noConsole: intentional console output
     console.log(`Using worktree via hook: ${worktreeDir}`)

@@ -11,6 +11,9 @@ export type ModCallFrame = {
   hook: number
   event: string
   plugin?: string
+  /** A `ui.render` hook's call: the site it draws, and the one moment its
+   * `$.state` reads see (a read subscribes the site). */
+  render?: { site: string; moment: Map<string, { value: unknown; version: number }> }
 }
 export type ModToolContext = {
   toolUseContext: ToolUseContext
@@ -20,9 +23,14 @@ export type ModToolContext = {
   depth?: number
   dispatchOptions?: ModDispatchOptions
   contextModifiers?: Array<(context: ToolUseContext) => ToolUseContext>
+  /** Takes `$.ui.log` lines of work whose output prints after it (a slash
+   * command), so they lead that output instead of landing above its input. */
+  log?: (text: string) => void
 }
 const storage = new AsyncLocalStorage<ModToolContext>()
 export const getModToolContext = () => storage.getStore()
+/** Runs work that belongs to no tool invocation, whatever context started it. */
+export const exitModToolContext = <T>(action: () => T): T => storage.exit(action)
 
 /** Apply callbacks once locally, then propagate only their state changes to
  * the executor's parent context without repeating their side effects. */

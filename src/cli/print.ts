@@ -1234,6 +1234,7 @@ function runHeadlessStreaming(
     getTools: () => buildAllTools(getAppState()),
     setMessages: next => { mutableMessages.splice(0, mutableMessages.length, ...next) },
     isBusy: () => running,
+    getAppState: () => getAppState(),
   })
   registerCleanup(releaseModSession)
   // ask() is a one-turn convenience wrapper and creates a QueryEngine for

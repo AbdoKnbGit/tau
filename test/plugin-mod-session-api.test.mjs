@@ -138,7 +138,8 @@ test('session API middleware can refuse without reading the core transcript', as
     `on('session.start',async($,e,next)=>{await $.command.register({name:'denied-transcript',description:'Try transcript'});return next(e)});
      on('command.run',async($,e,next)=>{if(e.command!=='denied-transcript')return next(e);try {await $.session.messages();return {text:'unexpected'}}catch(error){return {text:String(error)}}});`,
   ])
-  assert.match((await command('denied-transcript')).value, /session.messages refused: Transcript access denied by policy/)
+  // Claude Code's refusal reads `<calling mod>: $.<method>: <reason>`.
+  assert.match((await command('denied-transcript')).value, /: \$\.session\.messages: Transcript access denied by policy/)
   assert.equal(reads, 0)
   assert.deepEqual(r.getModWarnings(), [])
 })

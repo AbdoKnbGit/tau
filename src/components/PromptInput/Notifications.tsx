@@ -1,4 +1,5 @@
 import { c as _c } from "react/compiler-runtime";
+import { useModToastHold } from '../mods/ModSurface.js';
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
@@ -50,7 +51,7 @@ type Props = {
   isNarrow?: boolean;
 };
 export function Notifications(t0) {
-  const $ = _c(34);
+  const $ = _c(35);
   const {
     apiKeyStatus,
     autoUpdaterResult,
@@ -92,6 +93,8 @@ export function Notifications(t0) {
     status: ideStatus
   } = useIdeConnectionStatus(mcpClients);
   const notifications = useAppState(_temp);
+  // A mod's pane shown with holdToasts: notices wait until it is not.
+  const modHold = useModToastHold();
   const {
     addNotification,
     removeNotification
@@ -172,8 +175,10 @@ export function Notifications(t0) {
   const t11 = isNarrow ? "flex-start" : "flex-end";
   const t12 = isInOverageMode ?? false;
   let t13;
-  if ($[15] !== apiKeyStatus || $[16] !== autoUpdaterResult || $[17] !== debug || $[18] !== ideSelection || $[19] !== isAutoUpdating || $[20] !== isShowingCompactMessage || $[21] !== mainLoopModel || $[22] !== mcpClients || $[23] !== notifications || $[24] !== onAutoUpdaterResult || $[25] !== onChangeIsUpdating || $[26] !== shouldShowAutoUpdater || $[27] !== t12 || $[28] !== tokenUsage || $[29] !== verbose) {
-    t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} isInOverageMode={t12} isTeamOrEnterprise={isTeamOrEnterprise} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} />;
+  // A mod's toast hold is a prop of the content, and one of the memo's inputs.
+  if ($[15] !== apiKeyStatus || $[16] !== autoUpdaterResult || $[17] !== debug || $[18] !== ideSelection || $[19] !== isAutoUpdating || $[20] !== isShowingCompactMessage || $[21] !== mainLoopModel || $[22] !== mcpClients || $[23] !== notifications || $[24] !== onAutoUpdaterResult || $[25] !== onChangeIsUpdating || $[26] !== shouldShowAutoUpdater || $[27] !== t12 || $[28] !== tokenUsage || $[29] !== verbose || $[34] !== modHold) {
+    $[34] = modHold;
+    t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} isInOverageMode={t12} isTeamOrEnterprise={isTeamOrEnterprise} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} modHold={modHold} />;
     $[15] = apiKeyStatus;
     $[16] = autoUpdaterResult;
     $[17] = debug;
@@ -226,7 +231,8 @@ function NotificationContent({
   isAutoUpdating,
   isShowingCompactMessage,
   onAutoUpdaterResult,
-  onChangeIsUpdating
+  onChangeIsUpdating,
+  modHold = false
 }: {
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];
@@ -247,6 +253,8 @@ function NotificationContent({
   isShowingCompactMessage: boolean;
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void;
   onChangeIsUpdating: (isUpdating: boolean) => void;
+  /** A mod's pane shown with holdToasts: the notice waits until it is not. */
+  modHold?: boolean;
 }): ReactNode {
   // Poll apiKeyHelper inflight state to show slow-helper notice.
   // Gated on configuration — most users never set apiKeyHelper, so the
@@ -268,7 +276,7 @@ function NotificationContent({
 
   return <>
       <IdeStatusIndicator ideSelection={ideSelection} mcpClients={mcpClients} />
-      {notifications.current && ('jsx' in notifications.current ? <Text wrap="truncate" key={notifications.current.key}>
+      {!modHold && notifications.current && ('jsx' in notifications.current ? <Text wrap="truncate" key={notifications.current.key}>
             {notifications.current.jsx}
           </Text> : <Text color={notifications.current.color} dimColor={!notifications.current.color} wrap="truncate">
             {notifications.current.text}

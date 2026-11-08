@@ -41,11 +41,15 @@ export function DANGEROUS_uncachedSystemPromptSection(
 }
 
 /**
- * Resolve all system prompt sections, returning prompt strings.
+ * Resolve all system prompt sections, returning prompt strings. `dry`
+ * computes every section afresh and caches none: a prompt composed for
+ * nobody to send (a mod's `$.prompt.compose`) leaves the session's alone.
  */
 export async function resolveSystemPromptSections(
   sections: SystemPromptSection[],
+  options?: { dry?: boolean },
 ): Promise<(string | null)[]> {
+  if (options?.dry) return Promise.all(sections.map(async s => (await s.compute()) ?? null))
   const cache = getSystemPromptSectionCache()
 
   return Promise.all(

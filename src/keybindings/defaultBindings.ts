@@ -42,6 +42,15 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
   {
     context: 'Global',
     bindings: {
+      // A mod's pane or the band takes the keyboard, closes, resizes; the
+      // band collapses to one row and back.
+      'ctrl+x tab': 'modPane:focus',
+      'ctrl+x x': 'modPane:close',
+      'ctrl+x left': 'modPane:grow',
+      'ctrl+x up': 'modPane:grow',
+      'ctrl+x right': 'modPane:shrink',
+      'ctrl+x down': 'modPane:shrink',
+      'ctrl+x ctrl+a': 'abovePrompt:toggle',
       // ctrl+c and ctrl+d use special time-based double-press handling.
       // They ARE defined here so the resolver can find them, but they
       // CANNOT be rebound by users - validation in reservedShortcuts.ts

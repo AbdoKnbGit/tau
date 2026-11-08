@@ -8,7 +8,8 @@ import {
   readModToolSnapshot,
   withModToolContext,
 } from './toolContext.js'
-import type { ModDispatchOptions } from './manager.js'
+import { modChainSeat, type ModDispatchOptions } from './manager.js'
+import { markModToolCall } from './uiState.js'
 import { queryModToolPermission } from './permissions.js'
 import { checkMcpArguments } from '../../../services/mcp/contractValidation.js'
 import { filterToolsByDenyRules } from '../../../tools.js'
@@ -63,11 +64,14 @@ export async function runModToolAPI(
   const tool = findToolByName(tools, value.tool)
   if (!tool || !tool.isEnabled())
     throw new Error(`Tool is not available: ${value.tool}`)
+  // A call from a hook skips that hook; one from the mod's code outside its
+  // hooks skips every hook of the mod (re-entry).
+  const seat = modChainSeat(plugin)
   const dispatchOptions: ModDispatchOptions = {
-    origin: { plugin, tier: 'user' },
+    origin: seat.origin,
     ...(bound.frame
       ? { skip: { runtime: bound.frame.runtime, hook: bound.frame.hook } }
-      : {}),
+      : seat.runtime ? { skipRuntime: seat.runtime } : {}),
   }
   const controller = new AbortController()
   const abort = () => controller.abort()
@@ -106,6 +110,8 @@ export async function runModToolAPI(
     } = value
     const input = validateInput(tool, args)
     const id = 'mod_' + randomUUID()
+    // A dialog this call opens takes $.ui.notice lines from this plugin only.
+    const unmark = markModToolCall(id, plugin)
     const assistant = createAssistantMessage({
       content: [{ type: 'tool_use', id, name: tool.name, input }],
     })
@@ -128,7 +134,7 @@ export async function runModToolAPI(
           collected.push(update)
         return collected
       },
-    )
+    ).finally(unmark)
     for (const update of updates) {
       if (update.contextModifier) {
         const patch = applyModContextModifier(

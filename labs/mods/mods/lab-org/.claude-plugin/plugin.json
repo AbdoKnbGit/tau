@@ -1,0 +1,5 @@
+{
+  "name": "lab-org",
+  "version": "1.0.0",
+  "description": "Mod lab, organization tier (prependPlugins): guards, judges, adds $.labkit, reads the chain, sees telemetry"
+}

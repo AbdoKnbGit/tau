@@ -7,6 +7,7 @@ import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { withMessageDisplay } from './utils/hooks/messageDisplay.js'
 import { withModTurnLifecycle } from './utils/plugins/mods/lifecycle.js'
 import { hasModEvent } from './utils/plugins/mods/manager.js'
+import { streamModTurnStep } from './utils/plugins/mods/turnStep.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import {
   calculateTokenWarningState,
@@ -280,6 +281,18 @@ type State = {
   // Why the previous iteration continued. Undefined on first iteration.
   // Lets tests assert recovery paths fired without inspecting message contents.
   transition: Continue | undefined
+}
+
+/** A model request, through the mods' `turn.step` hooks when one is loaded;
+ * otherwise exactly the request. */
+function streamModelRequest<C extends (params: any) => AsyncGenerator<any, any, any>>(
+  callModel: C,
+  controller: AbortController,
+  params: Parameters<C>[0],
+): ReturnType<C> {
+  return (hasModEvent('turn.step')
+    ? streamModTurnStep(params, callModel, controller)
+    : callModel(params)) as ReturnType<C>
 }
 
 export async function* query(
@@ -950,7 +963,7 @@ async function* queryLoop(
         try {
           let streamingFallbackOccured = false
           queryCheckpoint('query_api_streaming_start')
-          for await (const message of deps.callModel({
+          for await (const message of streamModelRequest(deps.callModel, toolUseContext.abortController, {
             messages: prependUserContext(messagesForQuery, userContext),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,

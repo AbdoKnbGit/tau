@@ -181,7 +181,7 @@ test('validated helpers cannot be reassigned through direct or destructuring wri
 
 test('helper bodies undergo the same API checks and cannot recover the API through arguments', async () => {
   for (const [source, expected] of [
-    [`function helper($) { return $.ui.open({}) }; ${hook('helper($)')}`, /does not yet support mod API \$\.ui\.open/],
+    [`function helper($) { return $.ui.frobnicate({}) }; ${hook('helper($)')}`, /does not yet support mod API \$\.ui\.frobnicate/],
     [`function helper($) { const store = $.store; return store.get('hidden') }; ${hook('helper($)')}`, /cannot be aliased/],
     [`function helper($) { return arguments[0].store.get('hidden') }; ${hook('helper($)')}`, /not arguments/],
     [`function helper($) { return (() => arguments[0].store.get('hidden'))() }; ${hook('helper($)')}`, /not arguments/],

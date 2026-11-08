@@ -203,7 +203,8 @@ export function SystemTextMessage(t0) {
     return t6;
   }
   const isStopHookSummary = message.subtype === "stop_hook_summary";
-  if (!isStopHookSummary && !verbose && message.level === "info") {
+  // A plugin's own line (`$.ui.log`, a turn.complete text) shows in every view.
+  if (!isStopHookSummary && !verbose && message.level === "info" && message.modNotice !== true) {
     return null;
   }
   if (message.subtype === "api_error") {
@@ -236,7 +237,7 @@ export function SystemTextMessage(t0) {
   if (typeof content !== "string") {
     return null;
   }
-  const t1 = message.level !== "info";
+  const t1 = message.level !== "info" || message.modNotice === true;
   const t2 = message.level === "warning" ? "warning" : undefined;
   const t3 = message.level === "info";
   let t4;

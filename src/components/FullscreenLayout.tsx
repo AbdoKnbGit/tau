@@ -417,8 +417,18 @@ export function FullscreenLayout(t0) {
       t18 = $[37];
     }
     let t19;
-    if ($[38] !== t14 || $[39] !== t17 || $[40] !== t18) {
-      t19 = <PromptOverlayProvider>{t14}{t17}{t18}</PromptOverlayProvider>;
+    // A mod's pane docked beside the transcript, which draws narrower for it.
+    // Both widths are fixed: wide transcript content must not squeeze the dock.
+    const dock = t0.dock;
+    const transcriptWidth = Math.max(20, columns - (t0.dockColumns ?? 0));
+    const main = dock != null ? <Box flexGrow={1} flexDirection="row" overflow="hidden">
+        <Box flexDirection="column" flexGrow={0} flexShrink={0} width={transcriptWidth} overflow="hidden">
+          <TerminalSizeContext.Provider value={{ columns: transcriptWidth, rows: terminalRows }}>{t14}</TerminalSizeContext.Provider>
+        </Box>
+        <Box flexShrink={0} width={Math.max(0, columns - transcriptWidth)} overflow="hidden">{dock}</Box>
+      </Box> : t14;
+    if ($[38] !== t14 || $[39] !== t17 || $[40] !== t18 || dock != null) {
+      t19 = <PromptOverlayProvider>{main}{t17}{t18}</PromptOverlayProvider>;
       $[38] = t14;
       $[39] = t17;
       $[40] = t18;
