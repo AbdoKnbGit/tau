@@ -8,7 +8,7 @@
 import { convertEffortValueToLevel, getEffortEnvOverride, type EffortValue } from '../effortValue.js'
 import { getSessionSettingsCache } from '../settings/settingsCache.js'
 
-export type OpenAIReasoningLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type OpenAIReasoningLevel = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 const STANDARD_REASONING_LEVELS: readonly OpenAIReasoningLevel[] = [
   'low',
@@ -26,7 +26,13 @@ const MAX_REASONING_LEVELS: readonly OpenAIReasoningLevel[] = [
   'max',
 ]
 
+const TERRA_REASONING_LEVELS: readonly OpenAIReasoningLevel[] = [
+  'none',
+  ...MAX_REASONING_LEVELS,
+]
+
 const REASONING_LABELS: Record<OpenAIReasoningLevel, string> = {
+  none:   'None',
   low:    'Low',
   medium: 'Medium',
   high:   'High',
@@ -49,8 +55,8 @@ export function getOpenAIReasoningLevel(
 function clampReasoningLevel(level: OpenAIReasoningLevel, modelId?: string): OpenAIReasoningLevel {
   if (!modelId) return level
   const levels = getAllReasoningLevels(modelId)
-  const requested = MAX_REASONING_LEVELS.indexOf(level)
-  return [...levels].reverse().find(candidate => MAX_REASONING_LEVELS.indexOf(candidate) <= requested)
+  const requested = TERRA_REASONING_LEVELS.indexOf(level)
+  return [...levels].reverse().find(candidate => TERRA_REASONING_LEVELS.indexOf(candidate) <= requested)
     ?? levels[0]!
 }
 
@@ -130,6 +136,9 @@ export function getReasoningLabel(level: OpenAIReasoningLevel): string {
 export function getAllReasoningLevels(modelId?: string): readonly OpenAIReasoningLevel[] {
   if (!modelId) return EXTENDED_REASONING_LEVELS
   const normalized = normalizeModelId(modelId)
+  // Verified against OpenAI's model page and models.dev (2026-11-10).
+  // Keep this scoped: sibling models have different supported effort subsets.
+  if (/^gpt-6\.1-terra(?:$|-\d{4}-\d{2}-\d{2}$)/.test(normalized)) return TERRA_REASONING_LEVELS
   if (/^gpt-5-pro(?:$|-)/.test(normalized)) return ['high']
   if (modelSupportsMaxReasoning(modelId)) return MAX_REASONING_LEVELS
   const version = gptVersion(modelId)

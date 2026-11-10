@@ -63,6 +63,7 @@ const PAYLOAD = {
   openai: {
     models: {
       'gpt-6.1-sol': { limit: { context: 1_050_000, input: 922_000, output: 128_000 } },
+      'gpt-6.1-terra': { limit: { context: 1_050_000, input: 922_000, output: 128_000 } },
       'gpt-5.5': { limit: { context: 1_050_000, input: 922_000, output: 128_000 } },
     },
   },
@@ -97,6 +98,31 @@ test('GPT-6.1 Sol stays within the input limit after /models records its total w
     for (const model of ['gpt-6.1-sol', 'openai/gpt-6.1-sol', 'gpt-6.1-sol-xhigh']) {
       assert(getProviderCatalogContextWindow(model, 'openai') === 922_000,
         `expected 922K input ceiling for ${model}`)
+    }
+  }
+})
+
+test('GPT-6.1 Terra has its input ceiling with a missing or stale catalog', () => {
+  for (const catalog of [{}, { openai: { models: { 'gpt-6.1-sol': PAYLOAD.openai.models['gpt-6.1-sol'] } } }]) {
+    useCatalogue(catalog)
+    assert(getProviderCatalogContextWindow('gpt-6.1-terra', 'openai') === 922_000,
+      'expected the 922K Terra input ceiling before the catalog refreshes')
+    assert(getProviderCatalogContextWindow('gpt-6.1-terra', 'openrouter') === undefined,
+      'Terra OpenAI fallback must not change another host')
+    assert(getProviderCatalogContextWindow('gpt-6.1-terra-preview', 'openai') === undefined,
+      'an unknown Terra variant must not inherit the pinned window')
+  }
+})
+
+test('GPT-6.1 Terra keeps output headroom after the picker records its total window', () => {
+  recordProviderModelContextWindows('openai', [
+    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', contextWindow: 1_050_000 },
+  ])
+  for (const catalog of [{}, PAYLOAD]) {
+    useCatalogue(catalog)
+    for (const model of ['gpt-6.1-terra', 'openai/gpt-6.1-terra', 'gpt-6.1-terra-xhigh', 'gpt-6.1-terra::effort=max']) {
+      assert(getProviderCatalogContextWindow(model, 'openai') === 922_000,
+        `expected 922K Terra input ceiling for ${model}`)
     }
   }
 })

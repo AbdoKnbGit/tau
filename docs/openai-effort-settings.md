@@ -8,12 +8,18 @@ The issue's description of the native fallback was incomplete: the Codex lane co
 
 ## Behavior
 
-- Persist `low`, `medium`, `high`, `xhigh` and `max` for every user. Load them through the existing merged settings cascade.
+- Persist `none`, `low`, `medium`, `high`, `xhigh` and `max` for every user. Load them through the existing merged settings cascade. `none` explicitly disables reasoning on supported OpenAI models; it is distinct from auto/unset and clamps to the lowest supported effort on other models.
 - Resolve environment overrides first, then request-scoped choices (including CLI, picker and agent state), then the session/settings fallback. Explicit auto/unset omits the effort field and lets the server choose its default.
 - Use the same effort resolver for native Codex, legacy OpenAI Chat Completions/Responses, and the displayed level. Anthropic thinking budgets no longer select a separate OpenAI effort.
 - Clamp unsupported levels when creating a request without modifying the saved preference. Capability rules are shared with the picker and normalize OpenAI prefixes and model versions. The API supports different effort subsets for different models; see [OpenAI's reasoning guide](https://developers.openai.com/api/docs/guides/reasoning), [GPT-5](https://developers.openai.com/api/docs/models/gpt-5), and [GPT-5.2 Pro](https://developers.openai.com/api/docs/models/gpt-5.2-pro).
 - Keep picker previews local until selected. A canceled picker cannot change another request. Surf agents carry their effort in their own request state rather than changing the parent's global preference.
 - Load settings at request time for standalone transports. This avoids an initialization cycle through the provider subclasses.
+
+### GPT-6.1 Terra
+
+The OpenAI lane lists `gpt-6.1-terra` with a 1,050,000-token context window, a 922,000-token input ceiling, and 128,000 tokens reserved for output. The input ceiling is available before any model catalog has been downloaded. Reasoning options are `none`, `low`, `medium` (server default), `high`, `xhigh`, and `max`, including the picker, `/effort`, `--effort`, and request-scoped agent settings. Tool calls use Responses with both API-key and ChatGPT authentication. These values were checked on 2026-11-10 against [models.dev](https://models.dev/api.json) and the [official model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra).
+
+Terra regression tests cover HTTP and WebSocket cache affinity, stable prompt/tool bytes, persisted encrypted reasoning, and model-switch isolation. They intercept transports locally and do not establish a live backend cache-hit rate.
 
 ## Cache and portability
 

@@ -1,9 +1,12 @@
 // Shared effort values and environment parsing. No provider or settings dependencies.
-import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
+import type { EffortLevel as SDKEffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
-export type { EffortLevel }
+// `none` is an explicit OpenAI reasoning setting, distinct from auto/unset.
+// Provider resolvers clamp it before sending to models that require reasoning.
+export type EffortLevel = SDKEffortLevel | 'none'
 
 export const EFFORT_LEVELS = [
+  'none',
   'low',
   'medium',
   'high',

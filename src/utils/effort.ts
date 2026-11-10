@@ -146,7 +146,7 @@ export function modelSupportsUltracodeEffort(model: string): boolean {
 export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
-  if (value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max') {
+  if (value === 'none' || value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max') {
     return value
   }
   if (
@@ -206,6 +206,9 @@ export function resolveAppliedEffort(
   }
   const resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+  // Anthropic effort has no `none`. A saved OpenAI choice must remain valid
+  // when switching providers; OpenAI resolves its own model-specific levels.
+  if (resolved === 'none') return 'low'
   // 'ultracode' only takes effect on first-party Opus 4.8. On every other model
   // it degrades to the strongest effort that model does support, so a sticky
   // 'ultracode' selection never leaks an invalid value onto another model/provider.
@@ -298,6 +301,8 @@ export function getEffortSuffix(
  */
 export function getEffortLevelDescription(level: EffortLevel): string {
   switch (level) {
+    case 'none':
+      return 'No reasoning on supported OpenAI models'
     case 'low':
       return 'Quick, straightforward implementation with minimal overhead'
     case 'medium':

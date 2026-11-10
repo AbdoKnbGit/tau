@@ -294,6 +294,7 @@ import {
   EFFORT_LEVELS,
   resolveAppliedEffort,
 } from 'src/utils/effort.js'
+import { getAllReasoningLevels, modelSupportsReasoning } from 'src/utils/model/openaiReasoning.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
@@ -1310,7 +1311,8 @@ function runHeadlessStreaming(
       modelId === 'default'
         ? getDefaultMainLoopModel()
         : parseUserSpecifiedModel(modelId)
-    const hasEffort = modelSupportsEffort(resolvedModel)
+    const openaiReasoning = getAPIProvider() === 'openai' && modelSupportsReasoning(resolvedModel)
+    const hasEffort = openaiReasoning || modelSupportsEffort(resolvedModel)
     const hasAdaptiveThinking = modelSupportsAdaptiveThinking(resolvedModel)
     const hasFastMode = isFastModeSupportedByModel(option.value)
     const hasAutoMode = modelSupportsAutoMode(resolvedModel)
@@ -1320,8 +1322,9 @@ function runHeadlessStreaming(
       description: option.description,
       ...(hasEffort && {
         supportsEffort: true,
-        supportedEffortLevels: EFFORT_LEVELS.filter(
+        supportedEffortLevels: openaiReasoning ? [...getAllReasoningLevels(resolvedModel)] : EFFORT_LEVELS.filter(
           l =>
+            l !== 'none' &&
             (l !== 'xhigh' || modelSupportsXHighEffort(resolvedModel)) &&
             (l !== 'max' || modelSupportsMaxEffort(resolvedModel)) &&
             (l !== 'ultracode' || modelSupportsUltracodeEffort(resolvedModel)),

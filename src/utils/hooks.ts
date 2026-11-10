@@ -143,6 +143,7 @@ import {
 import { getScratchpadDir, isScratchpadEnabled } from './permissions/filesystem.js'
 import { getCanonicalName, parseUserSpecifiedModel } from './model/model.js'
 import { resolveAppliedEffort } from './effort.js'
+import { resolveOpenAIReasoningEffort } from './model/openaiReasoning.js'
 import { getProviderEffort } from './model/providerEffort.js'
 import { getAPIProvider } from './model/providers.js'
 import { logForDebugging } from './debug.js'
@@ -2275,11 +2276,14 @@ export async function* executeHooks({
   const appState = readAppState?.()
   if (toolUseContext && appState) {
     const model = toolUseContext.options.mainLoopModel
-    const providerEffort = getProviderEffort(getAPIProvider(), model, appState.effortValue)
-    const level = providerEffort?.supported
+    const provider = getAPIProvider()
+    const providerEffort = getProviderEffort(provider, model, appState.effortValue)
+    const level = provider === 'openai'
+      ? resolveOpenAIReasoningEffort(model, appState.effortValue ?? null)
+      : providerEffort?.supported
       ? providerEffort.value
       : resolveAppliedEffort(model, appState.effortValue)
-    if (typeof level === 'string' && ['low', 'medium', 'high', 'xhigh', 'max'].includes(level)) {
+    if (typeof level === 'string' && ['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(level)) {
       hookInput = { ...hookInput, effort: { level } } as HookInput
     }
   }

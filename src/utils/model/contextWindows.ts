@@ -53,9 +53,10 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
     ),
   ),
   // GPT-6 on the OpenAI (Codex) provider, per models.dev (2026-09-26;
-  // GPT-6.1 Sol added 2026-10-12). Input ceilings are applied separately below.
+  // GPT-6.1 Terra checked 2026-11-10). Input ceilings are applied separately below.
   openai: {
     'gpt-6.1-sol': OPENAI_LONG_CONTEXT_WINDOW,
+    'gpt-6.1-terra': OPENAI_LONG_CONTEXT_WINDOW,
     'gpt-6-sol': OPENAI_LONG_CONTEXT_WINDOW,
     'gpt-6-luna': OPENAI_LONG_CONTEXT_WINDOW,
     'gpt-6-astra': OPENAI_LONG_CONTEXT_WINDOW,
@@ -526,11 +527,12 @@ function capToPromptCeiling(
   if (ANTHROPIC_NATIVE_PROVIDERS.has(provider)) {
     return window
   }
-  // GPT-6.1 Sol: models.dev's OpenAI row (2026-10-12). Keep its input
-  // ceiling even before the catalog is cached, including after /models
+  // GPT-6.1 Sol and Terra: models.dev's OpenAI rows (Terra checked 2026-11-10).
+  // Keep their input ceiling even before the catalog is cached, after /models
   // records the larger total window. Other hosts retain their own limits.
   const ceiling = lookupCatalogPromptCeiling(provider, candidates)
-    ?? (provider === 'openai' && candidates.includes('gpt-6.1-sol') ? 922_000 : undefined)
+    ?? (provider === 'openai' && candidates.some(candidate =>
+      candidate === 'gpt-6.1-sol' || candidate === 'gpt-6.1-terra') ? 922_000 : undefined)
   return ceiling !== undefined && ceiling < window ? ceiling : window
 }
 

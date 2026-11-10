@@ -32,6 +32,13 @@ const r = await loadMcpRuntime({
     'setOpenAIReasoningLevel', 'getNextOpenAIReasoningLevel', 'getAllReasoningLevels',
     'modelSupportsReasoning', 'resolveReasoning', 'OpenAIProvider',
     'createProviderShim', 'commitModelSelection',
+    `resolveNonOpenAIEffortFixture: (model, effort) => {
+      const originalProvider = getAPIProvider;
+      try {
+        getAPIProvider = () => 'firstParty';
+        return resolveAppliedEffort(model, effort);
+      } finally { getAPIProvider = originalProvider; }
+    }`,
     `resolveSurfFixture: target => {
       const originalConfig = getGlobalConfig;
       const originalEnabled = isSurfEnabled;
@@ -296,11 +303,76 @@ test('GPT-6.1 Sol reads and sends every supported effort without a downgrade', a
   assert.equal((await sendNative({ model: 'gpt-6.1-sol', effortValue: 'xhigh' })).body.reasoning.effort, 'xhigh')
 })
 
-for (const model of ['gpt-6-luna', 'gpt-6.1-sol']) {
+test('GPT-6.1 Terra persists, displays and sends all six reasoning levels', async () => {
+  const terraLevels = ['none', ...levels]
+  for (const model of ['gpt-6.1-terra', 'openai/gpt-6.1-terra', 'GPT-6.1-TERRA', 'gpt-6.1-terra-2026-10-26']) {
+    assert.deepEqual(r.getAllReasoningLevels(model), terraLevels)
+  }
+  for (const level of terraLevels) {
+    assert.equal(r.SettingsSchema().parse({ effortLevel: level }).effortLevel, level)
+    assert.equal(r.toPersistableEffort(level), level)
+    const result = r.executeEffort(level)
+    assert.equal(result.effortUpdate?.value, level, result.message)
+    assert.equal(r.updateSettingsForSource('userSettings', { alwaysThinkingEnabled: false }).error, null)
+    r.resetSettingsCache()
+    assert.equal(r.getInitialEffortSetting(), level)
+    assert.equal(JSON.parse(readFileSync(settingsPath, 'utf8')).effortLevel, level)
+    assert.equal(r.getDisplayedEffortLevel('gpt-6.1-terra', level), level)
+    assert.match(r.showCurrentEffort(level, 'gpt-6.1-terra').message, new RegExp(`Current effort level: ${level}`))
+    for (const stream of [false, true]) {
+      for (const send of [sendNative, sendLegacy]) {
+        const { body, url } = await send({ model: 'gpt-6.1-terra', stream })
+        assert.match(url, /\/responses$/)
+        assert.equal(body.model, 'gpt-6.1-terra')
+        assert.equal(body.reasoning.effort, level)
+        assert.equal(body.service_tier, undefined)
+      }
+    }
+  }
+})
+
+test('Terra API-key tool calls use Responses for streaming and non-streaming', async () => {
+  for (const stream of [false, true]) {
+    const { body, url } = await sendLegacy({ model: 'gpt-6.1-terra', responses: false, stream, effortValue: 'none' })
+    assert.equal(url, 'https://api.openai.com/v1/responses')
+    assert.equal(body.reasoning.effort, 'none')
+    assert.ok(body.tools.some(tool => tool.type === 'function'))
+    assert.equal(body.prompt_cache_key, 'effort-session')
+    assert.equal(body.store, false)
+  }
+})
+
+test('Terra none remains distinct from auto and clamps safely when switching models', async () => {
+  configure('none')
+  assert.equal(r.parseEffortValue('NONE'), 'none')
+  assert.equal(r.getOpenAIReasoningLevel('gpt-6.1-terra'), 'none')
+  assert.equal(r.getOpenAIReasoningLevel('gpt-6.1-sol'), 'low')
+  assert.equal(r.getOpenAIReasoningLevel('gpt-5-pro'), 'high')
+  assert.equal(r.getOpenAIReasoningLevel('gpt-6.1-terra-pro'), 'low')
+  assert.equal(r.getOpenAIReasoningLevel('gpt-6.1-terra'), 'none', 'clamping cannot overwrite the preference')
+  assert.equal(r.resolveNonOpenAIEffortFixture('claude-sonnet-4-6', 'none'), 'low')
+  assert.equal(r.getNextOpenAIReasoningLevel('right', 'gpt-6.1-terra', 'max'), 'none')
+  assert.equal(r.getNextOpenAIReasoningLevel('left', 'gpt-6.1-terra', 'none'), 'max')
+  assert.equal(r.getNextOpenAIReasoningLevel('right', 'gpt-6.1-sol', 'max'), 'low')
+  process.env.CLAUDE_CODE_EFFORT_LEVEL = 'NONE'
+  for (const send of [sendNative, sendLegacy]) {
+    assert.equal((await send({ model: 'gpt-6.1-terra', effortValue: 'max' })).body.reasoning.effort, 'none')
+  }
+  delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+  r.executeEffort('auto')
+  assert.equal(r.getInitialEffortSetting(), undefined)
+  assert.equal(r.getOpenAIReasoningLevel('gpt-6.1-terra'), 'medium')
+  for (const send of [sendNative, sendLegacy]) {
+    assert.equal((await send({ model: 'gpt-6.1-terra', effortValue: null })).body.reasoning?.effort, undefined)
+  }
+})
+
+for (const model of ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra']) {
   test(`${model}: effort changes preserve prompt bytes, tool order, session affinity and store policy`, async () => {
     for (const send of [sendNative, sendLegacy]) {
-      const first = (await send({ model, effortValue: 'low' })).body
-      const repeated = (await send({ model, effortValue: 'low' })).body
+      const effortValue = model === 'gpt-6.1-terra' ? 'none' : 'low'
+      const first = (await send({ model, effortValue })).body
+      const repeated = (await send({ model, effortValue })).body
       assert.deepEqual(repeated, first)
       const changed = (await send({ model, effortValue: 'max' })).body
       assert.equal(changed.reasoning.effort, 'max')

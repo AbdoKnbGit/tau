@@ -7,7 +7,7 @@ const ITEM_TYPES = new Set([
   'message', 'function_call', 'function_call_output', 'custom_tool_call',
   'custom_tool_call_output', 'reasoning', 'item_reference', 'configuration_update',
 ])
-const EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 
 type ItemDigest = { hash: string; type: string }
 type ConfigDigests = { instructions: string; tools: string; reasoning: string; options: string }

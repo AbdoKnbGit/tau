@@ -45,7 +45,7 @@ const server = createServer((req, res) => {
   req.on('data', chunk => chunks.push(chunk))
   req.on('end', () => {
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-    seen.push({ transport: 'http', body })
+    seen.push({ transport: 'http', headers: req.headers, body })
     res.writeHead(200, { 'Content-Type': 'text/event-stream' })
     const outgoing = events(body)
     if (drop && seen.length <= drop.count) {
@@ -57,11 +57,11 @@ const server = createServer((req, res) => {
   })
 })
 const sockets = new WebSocketServer({ server })
-sockets.on('connection', socket => {
+sockets.on('connection', (socket, req) => {
   socketConnections++
   socket.on('message', bytes => {
     const body = JSON.parse(bytes.toString())
-    seen.push({ transport: 'websocket', body })
+    seen.push({ transport: 'websocket', headers: req.headers, body })
     const outgoing = events(body)
     if (drop && seen.length <= drop.count) {
       for (const event of outgoing.slice(0, drop.cutAt)) socket.send(JSON.stringify(event))
@@ -85,7 +85,7 @@ test.after(async () => {
 })
 
 for (const transport of ['http', 'websocket']) {
-  for (const model of ['gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-terra']) {
+  for (const model of ['gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-terra', 'gpt-6.1-terra']) {
     test(`${model} persists and replays reasoning over ${transport}`, async () => {
       r.codexApi.clearChain()
       seen.length = 0
@@ -95,10 +95,13 @@ for (const transport of ['http', 'websocket']) {
       lane.configure({ baseUrl, apiKey: transport === 'http' ? 'api-key-fixture' : '',
         chatgptAccessToken: transport === 'websocket' ? 'oauth-fixture' : '' })
       const messages = [{ role: 'user', content: 'Inspect fixture.txt.' }]
+      const sessionId = `fixture-${transport}-${model}`
+      const prefix = 'Fixture instructions. '.repeat(30)
+      let system = `${prefix}\n<env>\nDate: first\n</env>`
       const send = requestModel => r.assembleFinalMessage(lane.streamAsProvider({
-        model: requestModel, messages, system: 'Fixture instructions', tools: [{ name: 'Read',
+        model: requestModel, messages, system, tools: [{ name: 'Read',
           description: 'Read a file.', input_schema: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } }],
-        max_tokens: 100, effortValue: null, sessionId: `fixture-${transport}-${model}`,
+        max_tokens: 100, effortValue: null, sessionId,
         signal: new AbortController().signal,
       }), requestModel)
       const answer = await send(model)
@@ -111,8 +114,21 @@ for (const transport of ['http', 'websocket']) {
       // JSON is the persisted transcript boundary: no in-memory object identity survives.
       messages.push(JSON.parse(JSON.stringify({ role: 'assistant', content: answer.content })),
         { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: 'fixture contents' }] })
+      system = `${prefix}\n<env>\nDate: second\n</env>`
       await send(model)
       assert.ok(seen.every(row => row.transport === transport))
+      for (const { body, headers } of seen) {
+        assert.equal(body.prompt_cache_key, sessionId)
+        assert.equal(headers.session_id, sessionId)
+        assert.equal(headers['x-client-request-id'], sessionId)
+        assert.equal(body.store, false)
+        assert.equal(body.temperature, undefined)
+        assert.equal(body.max_output_tokens, undefined)
+      }
+      assert.equal(seen[0].body.instructions, seen[1].body.instructions)
+      assert.deepEqual(seen[0].body.tools, seen[1].body.tools)
+      assert.equal(seen[0].body.input[0].role, 'developer')
+      assert.match(seen[0].body.input[0].content[0].text, /Date: first/)
       assert.deepEqual(seen[0].body.reasoning, { summary: 'auto' })
       assert.deepEqual(seen[0].body.include, ['reasoning.encrypted_content'])
       const replay = seen[1].body.input
@@ -125,6 +141,12 @@ for (const transport of ['http', 'websocket']) {
       if (transport === 'websocket') assert.equal(socketConnections, 1)
       await send(model === 'gpt-6-sol' ? 'gpt-5.6-terra' : 'gpt-6-sol')
       assert.equal(seen[2].body.input.some(item => item.type === 'reasoning'), false, 'model switches must omit old state')
+      assert.match(seen[2].body.input[0].content[0].text, /Date: second/, 'a different model seeds its own environment anchor')
+      system = `${prefix}\n<env>\nDate: third\n</env>`
+      await send(model)
+      assert.equal(seen[3].body.prompt_cache_key, sessionId)
+      assert.deepEqual(seen[3].body.input, replay, 'returning to a model restores its cache prefix and encrypted reasoning')
+      if (transport === 'websocket') assert.equal(socketConnections, 1)
     })
   }
 

@@ -119,9 +119,9 @@ export function executeEffort(args: string): EffortCommandResult {
   if (normalized === 'auto' || normalized === 'unset') {
     return unsetEffortLevel();
   }
-  if (!isEffortLevel(normalized)) {
+  if (!isEffortLevel(normalized) || (normalized === 'none' && getAPIProvider() !== 'openai')) {
     return {
-      message: `Invalid argument: ${args}. Valid options are: low, medium, high, xhigh, max, ultracode, auto`
+      message: `Invalid argument: ${args}. Valid options are: ${getAPIProvider() === 'openai' ? 'none, ' : ''}low, medium, high, xhigh, max, ultracode, auto`
     };
   }
   return setEffortValue(normalized);
@@ -196,7 +196,7 @@ export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, arg
     return <ApplyProviderEffortAndClose args={args} onDone={onDone} />;
   }
   if (COMMON_HELP_ARGS.includes(args)) {
-    onDone('Usage: /effort [low|medium|high|xhigh|max|ultracode|auto]\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extra high reasoning for supported Claude models\n- max: Maximum capability with deepest reasoning\n- ultracode: Maximum reasoning, Claude Opus 4.8 only\n- auto: Use the default effort level for your model');
+    onDone('Usage: /effort [none|low|medium|high|xhigh|max|ultracode|auto]\n\nEffort levels:\n- none: Disable reasoning on supported OpenAI models\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extra high reasoning for supported models\n- max: Maximum capability with deepest reasoning\n- ultracode: Maximum reasoning, Claude Opus 4.8 only\n- auto: Use the default effort level for your model');
     return;
   }
   if (getAPIProvider() === 'antigravity') {

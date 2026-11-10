@@ -107,6 +107,20 @@ test('distinguishes history mutation, shortening, repetition and configuration c
   assert.equal(shortened.configChanged, true)
 })
 
+test('explicit no-reasoning effort stays distinct from the model default', () => {
+  const diagnostics = new CodexCacheDiagnostics()
+  const body = request({ model: 'gpt-6.1-terra', reasoning: { effort: 'none', summary: 'auto' } })
+  const before = JSON.stringify(body)
+  const disabled = log(diagnostics, body).diagnostics
+  assert.equal(disabled.effort, 'none')
+  assert.equal(JSON.stringify(body), before)
+  const automatic = log(diagnostics, { ...body, reasoning: { summary: 'auto' } }).diagnostics
+  assert.equal(automatic.effort, null)
+  assert.equal(automatic.prefix.status, 'identical')
+  assert.deepEqual(automatic.changedConfig, ['reasoning'])
+  assert.equal(automatic.configChanged, true)
+})
+
 test('concurrent conversations and model switches do not overwrite each other', () => {
   const diagnostics = new CodexCacheDiagnostics()
   const a = diagnostics.capture(request())

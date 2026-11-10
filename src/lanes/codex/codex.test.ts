@@ -64,6 +64,7 @@ async function main(): Promise<void> {
     const models = await codexLane.listModels()
     const expected = [
       ['gpt-6.1-sol', 'GPT-6.1 Sol'],
+      ['gpt-6.1-terra', 'GPT-6.1 Terra'],
       ['gpt-6-sol', 'GPT-6 Sol'],
       ['gpt-6-astra', 'GPT-6 Astra'],
       ['gpt-6-luna', 'GPT-6 Luna'],
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
       assert(model, `expected ${id} in codex model list`)
       assert(model?.name === name, `expected official ${id} display name`)
       assert(model?.contextWindow === 1050000, `expected 1.05M context for ${id}`)
+      assert(model?.supportsToolCalling === true, `expected tool calling for ${id}`)
       assert(model?.tags?.includes('reasoning'), `expected reasoning tag for ${id}`)
     }
     assert(models.find(m => m.id === 'gpt-6-sol')?.tags?.includes('recommended'), 'GPT-6 Sol should be recommended')
@@ -95,6 +97,10 @@ async function main(): Promise<void> {
   })
   await test('supports gpt-5.5', () => {
     assert(codexLane.supportsModel('gpt-5.5'), 'expected support')
+  })
+  await test('supports GPT-6.1 Terra on the OpenAI lane', () => {
+    assert(codexLane.supportsModel('gpt-6.1-terra'), 'expected Terra support')
+    assert(codexLane.supportsModel('openai/gpt-6.1-terra'), 'expected namespaced Terra support')
   })
   await test('supports o3-mini', () => {
     assert(codexLane.supportsModel('o3-mini'), 'expected support')

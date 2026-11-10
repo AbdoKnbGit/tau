@@ -9,10 +9,12 @@ import { getAPIProvider, setActiveProvider } from '../model/providers.js'
 import type { FallbackTarget } from './state.js'
 
 const OPENAI_REASONING_LEVELS: readonly OpenAIReasoningLevel[] = [
+  'none',
   'low',
   'medium',
   'high',
   'xhigh',
+  'max',
 ]
 
 function isOpenAIReasoningLevel(
@@ -33,7 +35,7 @@ export function applyFallbackTargetToRuntime(
   setMainLoopModelOverride(target.model)
 
   const effort = parseEffortValue(target.effort)
-  if (isOpenAIReasoningLevel(effort) && modelSupportsReasoning(target.model)) {
+  if (target.provider === 'openai' && isOpenAIReasoningLevel(effort) && modelSupportsReasoning(target.model)) {
     setOpenAIReasoningLevel(effort)
   }
   return effort

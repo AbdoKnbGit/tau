@@ -37,6 +37,11 @@ const r = await loadMcpRuntime({
     'parseHookOutput', 'registerHookCallbacks', 'clearRegisteredHooks',
     'executeSessionStartHooks', 'executeUserPromptSubmitHooks', 'handleStopHooks',
     'cacheSessionTitle', 'clearSessionMetadata', 'restoreSessionMetadata', 'switchSession',
+    `withProviderFixture: async (provider, fn) => {
+      const previous = getAPIProvider;
+      try { getAPIProvider = () => provider; return await fn(); }
+      finally { getAPIProvider = previous; }
+    }`,
   ],
 })
 r.setIsInteractive(false)
@@ -394,6 +399,26 @@ test('command stdin and CLAUDE_EFFORT agree with the current model effort', asyn
   context.getAppState().effortValue = 'medium'
   const output = await collect(r.executeHooks({ hookInput: input('PreToolUse'), toolUseID: 'fixture-effort', toolUseContext: context }))
   assert.ok(output.some(result => result.additionalContexts?.includes('medium|medium')))
+})
+
+test('OpenAI hooks receive explicit Terra none and the clamped sibling effort', async () => {
+  const previousEnvEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL
+  delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+  const script = `let stdin='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>stdin+=chunk);process.stdin.on('end',()=>console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',additionalContext:JSON.parse(stdin).effort.level+'|'+process.env.CLAUDE_EFFORT}})));`
+  try {
+    await r.withProviderFixture('openai', async () => {
+      for (const [model, expected] of [['gpt-6.1-terra', 'none'], ['gpt-6.1-sol', 'low']]) {
+        const context = contextFor(command(script), 'PreToolUse')
+        context.options.mainLoopModel = model
+        context.getAppState().effortValue = 'none'
+        const output = await collect(r.executeHooks({ hookInput: input('PreToolUse'), toolUseID: 'fixture-none-effort', toolUseContext: context }))
+        assert.ok(output.some(result => result.additionalContexts?.includes(`${expected}|${expected}`)), model)
+      }
+    })
+  } finally {
+    if (previousEnvEffort === undefined) delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+    else process.env.CLAUDE_CODE_EFFORT_LEVEL = previousEnvEffort
+  }
 })
 
 test('model-switch matchers filter canonical Claude IDs and run all hooks for unknown IDs', async () => {

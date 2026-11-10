@@ -11,9 +11,10 @@ import test from 'node:test'
 const cli = resolve(process.env.TAU_MCP_TEST_BUNDLE ?? 'dist/cli.mjs')
 const preload = new URL('./helpers/openai-turn-lifecycle-preload.mjs', import.meta.url).href
 
-async function conversation(workspace, env, turns, resume) {
+async function conversation(workspace, env, turns, resume, { model, cliEffort, effortLevels }) {
   const child = spawn(process.execPath, ['--import', preload, cli, '-p',
-    '--model', 'gpt-6.1-sol', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+    '--model', model, '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+    ...(cliEffort ? ['--effort', cliEffort] : []),
     ...(resume ? ['--resume', resume] : [])], {
     cwd: workspace, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
   })
@@ -44,6 +45,12 @@ async function conversation(workspace, env, turns, resume) {
   try {
     send({ type: 'control_request', request_id: 'lifecycle-initialize', request: { subtype: 'initialize' } })
     await waitFor(() => entries.some(entry => entry.type === 'control_response' && entry.response?.request_id === 'lifecycle-initialize'))
+    const initialize = entries.find(entry => entry.type === 'control_response' && entry.response?.request_id === 'lifecycle-initialize')
+    assert.equal(initialize.response.subtype, 'success', detail())
+    const metadata = initialize.response.response?.models?.find(entry => entry.value === model)
+    assert.ok(metadata, `initialize must list ${model}: ${detail()}`)
+    assert.equal(metadata.supportsEffort, true, `${model} must advertise effort support`)
+    assert.deepEqual(metadata.supportedEffortLevels, effortLevels, `${model} initialize effort metadata`)
     for (const [index, turn] of turns.entries()) {
       send({ type: 'user', session_id: '', message: { role: 'user', content: `TURN_LIFECYCLE_${turn}: read the two fixture files.` }, parent_tool_use_id: null })
       await waitFor(() => entries.filter(entry => entry.type === 'result').length > index)
@@ -62,7 +69,11 @@ async function conversation(workspace, env, turns, resume) {
   }
 }
 
-test('real SDK user turns retain routing through tools, reset between turns, and reset after resume', { timeout: 150_000 }, async () => {
+for (const fixture of [
+  { model: 'gpt-6.1-sol', effort: 'medium', effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { model: 'gpt-6.1-terra', effort: 'none', cliEffort: 'none', effortLevels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+]) {
+test(`real SDK ${fixture.model} ${fixture.effort} turns retain routing through tools and resume`, { timeout: 150_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tau-turn-lifecycle-'))
   const config = join(root, 'config'), workspace = join(root, 'workspace')
   for (const name of ['config', 'workspace', 'home', 'appdata', 'localappdata']) mkdirSync(join(root, name))
@@ -86,9 +97,9 @@ test('real SDK user turns retain routing through tools, reset between turns, and
     OPENAI_BASE_URL: 'https://turn-lifecycle.invalid/v1', TAU_CODEX_WEBSOCKET: '0', TAU_TURN_LIFECYCLE_LOG: log,
   })
   try {
-    const sessionId = await conversation(workspace, env, ['FIRST', 'SECOND'])
+    const sessionId = await conversation(workspace, env, ['FIRST', 'SECOND'], undefined, fixture)
     assert.ok(sessionId, 'CLI did not report its session ID')
-    const resumedSessionId = await conversation(workspace, env, ['RESUMED'], sessionId)
+    const resumedSessionId = await conversation(workspace, env, ['RESUMED'], sessionId, fixture)
     assert.equal(resumedSessionId, sessionId, 'resume must continue the same transcript')
     const records = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse)
     assert.equal(records.length, 9, 'three requests per user turn; no hidden extra request')
@@ -100,7 +111,10 @@ test('real SDK user turns retain routing through tools, reset between turns, and
       assert.ok(requests[1].readResults.some(result => result.includes('ALPHA_FILE_ACTUALLY_READ')), `${turn}: first tool did not execute`)
       assert.ok(requests[2].readResults.some(result => result.includes('BETA_FILE_ACTUALLY_READ')), `${turn}: second tool did not execute`)
     }
-    assert.ok(records.every(record => record.effort === 'medium' && record.model === 'gpt-6.1-sol'))
+    assert.ok(records.every(record => record.effort === fixture.effort && record.model === fixture.model),
+      `${fixture.model} must keep ${fixture.effort} on all tool rounds and resume requests`)
+    assert.equal(JSON.parse(readFileSync(join(config, 'settings.json'), 'utf8')).effortLevel, 'medium',
+      'session CLI effort must not overwrite persisted settings')
     assert.ok(records.every(record => !record.leakedTurnId), 'internal turn IDs must not enter the Responses body')
     assert.deepEqual(records.find(record => record.turn === 'RESUMED').previousPrompts, ['FIRST', 'SECOND'], 'resume must restore actual prior conversation history')
   } finally {
@@ -109,3 +123,4 @@ test('real SDK user turns retain routing through tools, reset between turns, and
     await rm(cleanupPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 })
+}

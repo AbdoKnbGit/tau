@@ -644,12 +644,14 @@ export class OpenAIProvider extends BaseProvider {
   // ─── Responses API (GPT-5 Codex models) ─────────────────────────
 
   /**
-   * True when the model should use the Responses API via the ChatGPT backend.
+   * True when the model should use the Responses API.
    * GPT-5 Codex models only work through chatgpt.com/backend-api/codex which
    * requires the OAuth session token (first-exchange access_token).
    * The standard api.openai.com endpoint rejects these models (missing scopes).
    */
   private _useResponsesAPI(model: string): boolean {
+    // Terra requires Responses for tool calling, including API-key sessions.
+    if (this.name === 'openai' && /^gpt-6\.1-terra(?:$|-\d{4}-\d{2}-\d{2}$)/i.test(model)) return true
     return /^gpt-[5-9]/i.test(model) && !!this.sessionToken
   }
 
