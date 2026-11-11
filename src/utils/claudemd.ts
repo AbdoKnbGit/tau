@@ -14,7 +14,7 @@
  * - Project and Local files are discovered by traversing from the current directory up to root
  * - Files closer to the current directory have higher priority (loaded later)
  * - CLAUDE.md, .claude/CLAUDE.md, all .md files in .claude/rules/, and AGENTS.md are checked in each directory for Project memory
- * - AGENTS.md is the cross-vendor convention (Codex, Cursor, Zed); it is read last in each directory and skipped when its content duplicates a CLAUDE.md already loaded
+ * - AGENTS.md is the cross-vendor convention (Codex, Cursor, Zed); it is probed after CLAUDE.md for deduplication, then placed before native instructions in the prompt
  *
  * Rules written by other coding agents (project-scoped only; their user-level
  * locations are deliberately not read):
@@ -863,11 +863,8 @@ export async function processMdRules({
  * honored without converting anything.
  *
  * Probed after the CLAUDE.md sources so that CLAUDE.md wins the content dedup
- * below. Note this also places AGENTS.md later in the load order, and this
- * module treats later files as higher priority, so a repo carrying both gives
- * AGENTS.md slightly more weight. The two orderings cannot both be satisfied
- * without re-sorting after the walk; dedup correctness was chosen because it
- * is a hard guarantee while load order is a soft hint to the model.
+ * below. Callers place the returned files before their native instructions,
+ * keeping native instructions later in prompt order in both eager and lazy loads.
  *
  * Content-deduped against what is already loaded. Repos routinely ship
  * AGENTS.md as a copy of — or a symlink to — CLAUDE.md, and the path dedup in
@@ -1593,7 +1590,7 @@ export async function getManagedAndUserConditionalRules(
 
 /**
  * Gets memory files for a single nested directory (between CWD and target).
- * Loads CLAUDE.md, unconditional rules, and conditional rules for that directory.
+ * Loads AGENTS.md, CLAUDE.md, unconditional rules, and conditional rules for that directory.
  *
  * @param dir The directory to process
  * @param targetPath The target file path (for conditional rule matching)
@@ -1613,7 +1610,8 @@ export async function getMemoryFilesForNestedDirectory(
     ...(await processForeignConditionedRules(targetPath, dir, processedPaths)),
   )
 
-  // Process project memory files (CLAUDE.md and .claude/CLAUDE.md)
+  // Keep AGENTS.md before native instructions in prompt order.
+  const agentsInsertionIndex = result.length
   if (isSettingSourceEnabled('projectSettings')) {
     const projectPath = join(dir, 'CLAUDE.md')
     result.push(
@@ -1643,6 +1641,13 @@ export async function getMemoryFilesForNestedDirectory(
     )
   }
 
+  // Parse explicit includes before rule scanning marks nonmatching rule files
+  // processed. Keep a separate set so those imports cannot suppress native rules.
+  const agentsProcessedPaths = new Set(processedPaths)
+  const agentsFiles = isSettingSourceEnabled('projectSettings')
+    ? await processAgentsMemoryFile(dir, result, agentsProcessedPaths, false)
+    : []
+
   const rulesDir = join(dir, '.claude', 'rules')
 
   // Process project unconditional .claude/rules/*.md files, which were not eagerly loaded
@@ -1671,6 +1676,25 @@ export async function getMemoryFilesForNestedDirectory(
 
   // processedPaths must be seeded with unconditional paths for subsequent directories
   for (const path of unconditionalProcessedPaths) {
+    processedPaths.add(path)
+  }
+
+  // Native sources win path/content dedup, including rules read after AGENTS.md.
+  // Only files actually emitted count: an unmatched rule must not hide an import.
+  const nativePaths = new Set(
+    result.map(file => normalizePathForComparison(file.path)),
+  )
+  const nativeContents = new Set(result.map(file => file.content))
+  result.splice(
+    agentsInsertionIndex,
+    0,
+    ...agentsFiles.filter(
+      file =>
+        !nativePaths.has(normalizePathForComparison(file.path)) &&
+        !nativeContents.has(file.content),
+    ),
+  )
+  for (const path of agentsProcessedPaths) {
     processedPaths.add(path)
   }
 
@@ -1815,20 +1839,29 @@ export async function shouldShowClaudeMdExternalIncludesWarning(): Promise<boole
 }
 
 /**
- * Check if a file path is a memory file (CLAUDE.md, CLAUDE.local.md, or .claude/rules/*.md)
+ * Check if a path names CLAUDE.md, CLAUDE.local.md, AGENTS.md, or a .claude/rules Markdown file.
  */
 export function isMemoryFilePath(filePath: string): boolean {
-  const name = basename(filePath)
+  const normalizedPath = normalizePathForComparison(filePath)
+  const name = basename(normalizedPath)
 
-  // CLAUDE.md or CLAUDE.local.md anywhere
-  if (name === 'CLAUDE.md' || name === 'CLAUDE.local.md') {
+  // Match direct instruction-file probes using the existing platform path
+  // comparison rules, including Windows case and separator normalization.
+  if (
+    ['CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md'].some(
+      candidate => name === normalizePathForComparison(candidate),
+    )
+  ) {
     return true
   }
 
-  // .md files in .claude/rules/ directories
+  // Rule discovery scans lowercase .md extensions. Preserve that behavior,
+  // while recognizing the rules directory in relative and absolute paths.
+  const rulesDirectory = normalizePathForComparison(join('.claude', 'rules'))
   if (
-    name.endsWith('.md') &&
-    filePath.includes(`${sep}.claude${sep}rules${sep}`)
+    basename(filePath).endsWith('.md') &&
+    (normalizedPath.startsWith(`${rulesDirectory}${sep}`) ||
+      normalizedPath.includes(`${sep}${rulesDirectory}${sep}`))
   ) {
     return true
   }

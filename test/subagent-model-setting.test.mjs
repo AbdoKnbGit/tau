@@ -23,6 +23,8 @@ delete process.env.CLAUDE_AUTO_BACKGROUND_TASKS
 process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1'
 // xAI keeps its per-model effort picks in a file of its own.
 process.env.TAU_XAI_THINKING_STORE = join(tempRoot, 'xai-thinking.json')
+process.env.TAU_XAI_MODEL_CATALOG_STORE = join(tempRoot, 'xai-models.json')
+process.env.TAU_COMPAT_THINKING_STORE = join(tempRoot, 'compat-thinking.json')
 
 const distPath = resolve('dist/tau.mjs')
 let bundle = readFileSync(distPath, 'utf8').replace(/\nvoid main\d*\(\);\r?\n/, '\n')
@@ -35,7 +37,7 @@ export function __subagentModelSetting() {
   init_agentModelManager(); init_settings(); init_settings2(); init_sessionStorage();
   init_messages(); init_runAgent(); init_subagentModelPick(); init_xaiThinking();
   init_model(); init_tokenEstimation(); init_QueryGuard(); init_processUserInput();
-  init_handlePromptSubmit();
+  init_handlePromptSubmit(); init_xai_responses();
   const realInner = runAgentWithoutProviderOverride;
   const realQuery = query;
   const realRunAgent = runAgent;
@@ -48,6 +50,7 @@ export function __subagentModelSetting() {
     getForcedProvider, getAgentResolvedModel, createStore, agentRunner: runAgent,
     updateSettingsForSource, getInitialSettings, readAgentMetadata, createUserMessage, flushSessionStorage,
     getSubagentSettingTarget, resolveSubagentModelPick, setXaiEffort, clearXaiEffort,
+    getProviderEffort, resolveXaiRequestEffort, buildXaiResponsesRequest,
     getMainLoopModel, getSmallFastModel, countMessagesTokensWithAPI, handlePromptSubmit, QueryGuard,
     setInnerAgentStream(makeStream) { runAgentWithoutProviderOverride = makeStream ?? realInner; },
     setQuery(fn) { query = fn ?? realQuery; },
@@ -653,9 +656,26 @@ test('a model browser selection becomes a pick: decoded id, an effort that reach
   assert.deepEqual(pick('antigravity', OPUS_46), { ok: true, target: { provider: 'antigravity', model: OPUS_46 } })
   assert.deepEqual(pick('xai', 'grok-4.7', undefined, 'low'), { ok: true, target: { provider: 'xai', model: 'grok-4.7', effort: 'low' } })
   assert.deepEqual(pick('xai', 'grok-4.7', undefined, 'auto'), { ok: true, target: { provider: 'xai', model: 'grok-4.7' } })
-  const native = pick('xai', 'grok-4.3', undefined, 'none')
+  // `none` is now a shared request-scoped effort and Grok 4.3 declares it.
+  // Check the actual wire value without changing the model's persisted pick.
+  const none = pick('xai', 'grok-4.3', undefined, 'none')
+  assert.deepEqual(none, { ok: true, target: { provider: 'xai', model: 'grok-4.3', effort: 'none' } })
+  const request = runtime.buildXaiResponsesRequest({
+    model: none.target.model, system: 'Stable instructions',
+    messages: [{ role: 'user', content: 'Finish.' }], tools: [], maxTokens: 1024,
+    sessionId: 'subagent-none-effort',
+    effort: runtime.resolveXaiRequestEffort(none.target.model, none.target.effort),
+  }).body
+  assert.equal(request.reasoning.effort, 'none')
+  assert.equal(runtime.getProviderEffort('xai', none.target.model).explicit, false)
+  assert.equal(runtime.resolveXaiRequestEffort(none.target.model, null), undefined)
+
+  // MiniMax M3 on Fireworks offers a native-only level that remains outside
+  // the shared effort schema; selecting it must still explain the refusal.
+  assert.ok(runtime.getProviderEffort('fireworks', 'accounts/fireworks/models/minimax-m3').levels.includes('adaptive'))
+  const native = pick('fireworks', 'accounts/fireworks/models/minimax-m3', undefined, 'adaptive')
   assert.equal(native.ok, false)
-  assert.match(native.message, /"none" can only be set for grok-4\.3 everywhere/)
+  assert.match(native.message, /"adaptive" can only be set for accounts\/fireworks\/models\/minimax-m3 everywhere/)
   runtime.setXaiEffort('grok-4.7', 'high')
   try {
     const conflict = pick('xai', 'grok-4.7', undefined, 'low')

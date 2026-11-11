@@ -113,6 +113,7 @@ const AgentJsonSchema = lazySchema(() =>
       initialPrompt: z.string().optional(),
       memory: z.enum(['user', 'project', 'local']).optional(),
       background: z.boolean().optional(),
+      omitClaudeMd: z.boolean().optional(),
       isolation: (process.env.USER_TYPE === 'ant'
         ? z.enum(['worktree', 'remote'])
         : z.enum(['worktree'])
@@ -178,10 +179,9 @@ export type BaseAgentDefinition = {
   memory?: AgentMemoryScope // Persistent memory scope
   isolation?: 'worktree' | 'remote' // Run in an isolated git worktree, or remotely in CCR (ant-only)
   pendingSnapshotUpdate?: { snapshotTimestamp: string }
-  /** Omit CLAUDE.md hierarchy from the agent's userContext. Read-only agents
-   * (Explore, Plan) don't need commit/PR/lint guidelines — the main agent has
-   * full CLAUDE.md and interprets their output. Saves ~5-15 Gtok/week across
-   * 34M+ Explore spawns. Kill-switch: tengu_slim_subagent_claudemd. */
+  /** Omit personal/project CLAUDE.md instructions from this agent's context.
+   * Managed instructions remain unless this is a managed agent. Explicit
+   * caller-provided context is preserved. */
   omitClaudeMd?: boolean
   /** This agent runs once and returns a report; the parent never continues it
    * with SendMessage. Its result skips the agentId/continuation/usage trailer,
@@ -593,6 +593,9 @@ export function parseAgentFromJson(
         : {}),
       ...(parsed.initialPrompt ? { initialPrompt: parsed.initialPrompt } : {}),
       ...(parsed.background ? { background: parsed.background } : {}),
+      ...(parsed.omitClaudeMd !== undefined
+        ? { omitClaudeMd: parsed.omitClaudeMd }
+        : {}),
       ...(parsed.memory ? { memory: parsed.memory } : {}),
       ...(parsed.isolation ? { isolation: parsed.isolation } : {}),
     }
@@ -740,6 +743,19 @@ export function parseAgentFromMarkdown(
 
     const background =
       backgroundRaw === 'true' || backgroundRaw === true ? true : undefined
+
+    const omitClaudeMdRaw = frontmatter['omitClaudeMd']
+    const omitClaudeMd =
+      omitClaudeMdRaw === true || omitClaudeMdRaw === 'true'
+        ? true
+        : omitClaudeMdRaw === false || omitClaudeMdRaw === 'false'
+          ? false
+          : undefined
+    if (omitClaudeMdRaw !== undefined && omitClaudeMd === undefined) {
+      logForDebugging(
+        `Agent file ${filePath} has invalid omitClaudeMd value. Must be 'true', 'false', or omitted.`,
+      )
+    }
 
     // Parse memory scope
     const VALID_MEMORY_SCOPES: AgentMemoryScope[] = ['user', 'project', 'local']
@@ -895,6 +911,7 @@ export function parseAgentFromMarkdown(
         : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
       ...(background ? { background } : {}),
+      ...(omitClaudeMd !== undefined ? { omitClaudeMd } : {}),
       ...(memory ? { memory } : {}),
       ...(isolation ? { isolation } : {}),
     }

@@ -1274,13 +1274,22 @@ async function validatePluginPaths(
   const checks = await Promise.all(
     relPaths.map(async relPath => {
       const fullPath = join(pluginPath, relPath)
-      return { relPath, fullPath, exists: await pathExists(fullPath) }
+      const exists = await pathExists(fullPath)
+      // Agent declarations select files. A directory whose name ends in .md
+      // must not become an unintended recursive agent scan.
+      const isAgentFile = component !== 'agents' || !exists ||
+        (fullPath.endsWith('.md') && (await stat(fullPath).catch(() => null))?.isFile() === true)
+      return { relPath, fullPath, exists, isAgentFile }
     }),
   )
   // Process results in original order to keep error/log ordering deterministic
   const validPaths: string[] = []
-  for (const { relPath, fullPath, exists } of checks) {
-    if (exists) {
+  for (const { relPath, fullPath, exists, isAgentFile } of checks) {
+    if (exists && !isAgentFile) {
+      const message = `Agent path must be a Markdown file: ${fullPath}`
+      logForDebugging(message, { level: 'warn' })
+      errors.push({ type: 'generic-error', source, plugin: pluginName, error: message })
+    } else if (exists) {
       validPaths.push(fullPath)
     } else {
       logForDebugging(
@@ -1329,7 +1338,7 @@ async function validatePluginPaths(
  * Component detection:
  * - Manifest: Loaded from plugin.json if present, otherwise creates default
  * - Commands: Sets commandsPath if commands/ directory exists
- * - Agents: Sets agentsPath if agents/ directory exists
+ * - Agents: Uses manifest agents files, or agents/ when the key is omitted
  * - Hooks: Loads from hooks/hooks.json if present
  *
  * The function is tolerant of missing components - a plugin can have
@@ -1530,14 +1539,16 @@ export async function createPluginFromPath(
     }
   }
 
-  // Step 4: Register agents directory if detected
+  // Step 4: The manifest selects agent files instead of adding to agents/.
+  // Presence matters: an empty list or missing selected files must not expose
+  // agents the author did not select by falling back to the default directory.
   const agentsPath = join(pluginPath, 'agents')
-  if (agentsDirExists) {
+  if (agentsDirExists && manifest.agents === undefined) {
     plugin.agentsPath = agentsPath
   }
 
-  // Step 4a: Process additional agent paths from manifest
-  if (manifest.agents) {
+  // Step 4a: Process selected agent files from the manifest
+  if (manifest.agents !== undefined) {
     const agentPaths = Array.isArray(manifest.agents)
       ? manifest.agents
       : [manifest.agents]
@@ -1553,9 +1564,7 @@ export async function createPluginFromPath(
       errors,
     )
 
-    if (validPaths.length > 0) {
-      plugin.agentsPaths = validPaths
-    }
+    plugin.agentsPaths = validPaths
   }
 
   // Step 4b: Register skills directory if detected
@@ -2617,8 +2626,9 @@ async function finishLoadingPluginFromPath(
       }
     }
 
-    // Process agents from marketplace entry
-    if (entry.agents) {
+    // With no plugin.json, the entry is the manifest and replaces agents/.
+    if (entry.agents !== undefined) {
+      delete plugin.agentsPath
       const agentPaths = Array.isArray(entry.agents)
         ? entry.agents
         : [entry.agents]
@@ -2634,9 +2644,7 @@ async function finishLoadingPluginFromPath(
         errors,
       )
 
-      if (validPaths.length > 0) {
-        plugin.agentsPaths = validPaths
-      }
+      plugin.agentsPaths = validPaths
     }
 
     // Process skills from marketplace entry

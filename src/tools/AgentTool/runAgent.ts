@@ -46,6 +46,11 @@ import type {
   UserMessage,
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
+import {
+  filterInjectedMemoryFiles,
+  getClaudeMds,
+  getMemoryFiles,
+} from '../../utils/claudemd.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
 import {
@@ -116,6 +121,36 @@ import {
 } from '../../utils/model/providers.js'
 import { parseEffortValue, type EffortValue } from '../../utils/effortValue.js'
 import { isSurfEnabled, recordSurfTurnStart } from '../../utils/surf/state.js'
+
+/** Build this agent's instruction context without changing the cached parent context. */
+async function resolveAgentUserContext(
+  baseUserContext: Record<string, string>,
+  agentDefinition: Pick<AgentDefinition, 'omitClaudeMd' | 'source'>,
+  hasOverride: boolean,
+): Promise<Record<string, string>> {
+  if (
+    !agentDefinition.omitClaudeMd ||
+    hasOverride ||
+    !getFeatureValue_CACHED_MAY_BE_STALE('tengu_slim_subagent_claudemd', true)
+  ) {
+    return baseUserContext
+  }
+
+  const { claudeMd, ...remainingContext } = baseUserContext
+  // A managed agent can omit managed instructions too. Other agents must
+  // retain organization policy while omitting personal/project instructions.
+  // Reuse the already-cached discovery result, never parse the formatted text.
+  if (!claudeMd || agentDefinition.source === 'policySettings') {
+    return remainingContext
+  }
+  const managedClaudeMd = getClaudeMds(
+    filterInjectedMemoryFiles(await getMemoryFiles()),
+    type => type === 'Managed',
+  )
+  return managedClaudeMd
+    ? { ...remainingContext, claudeMd: managedClaudeMd }
+    : remainingContext
+}
 
 /**
  * Resolve the model a subagent should run under when /surf is on and the
@@ -510,20 +545,12 @@ async function* runAgentWithoutProviderOverride({
     override?.systemContext ?? getSystemContext(),
   ])
 
-  // Read-only agents (Explore, Plan) don't act on commit/PR/lint rules from
-  // CLAUDE.md — the main agent has full context and interprets their output.
-  // Dropping claudeMd here saves ~5-15 Gtok/week across 34M+ Explore spawns.
-  // Explicit override.userContext from callers is preserved untouched.
-  // Kill-switch defaults true; flip tengu_slim_subagent_claudemd=false to revert.
-  const shouldOmitClaudeMd =
-    agentDefinition.omitClaudeMd &&
-    !override?.userContext &&
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_slim_subagent_claudemd', true)
-  const { claudeMd: _omittedClaudeMd, ...userContextNoClaudeMd } =
-    baseUserContext
-  const resolvedUserContext = shouldOmitClaudeMd
-    ? userContextNoClaudeMd
-    : baseUserContext
+  // Omission applies to this agent only; explicit caller context is preserved.
+  const resolvedUserContext = await resolveAgentUserContext(
+    baseUserContext,
+    agentDefinition,
+    Boolean(override?.userContext),
+  )
 
   // Explore/Plan are read-only search agents — the parent-session-start
   // gitStatus (up to 40KB, explicitly labeled stale) is dead weight. If they

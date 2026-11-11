@@ -107,6 +107,18 @@ async function loadAgentFromFile(
     const backgroundRaw = frontmatter.background
     const background =
       backgroundRaw === 'true' || backgroundRaw === true ? true : undefined
+    const omitClaudeMdRaw = frontmatter.omitClaudeMd
+    const omitClaudeMd =
+      omitClaudeMdRaw === true || omitClaudeMdRaw === 'true'
+        ? true
+        : omitClaudeMdRaw === false || omitClaudeMdRaw === 'false'
+          ? false
+          : undefined
+    if (omitClaudeMdRaw !== undefined && omitClaudeMd === undefined) {
+      logForDebugging(
+        `Plugin agent file ${filePath} has invalid omitClaudeMd value. Must be 'true', 'false', or omitted.`,
+      )
+    }
     // Substitute ${CLAUDE_PLUGIN_ROOT} so agents can reference bundled files,
     // and ${user_config.X} (non-sensitive only) so they can embed configured
     // usernames, endpoints, etc. Sensitive refs resolve to a placeholder.
@@ -223,6 +235,7 @@ async function loadAgentFromFile(
       filename: baseAgentName,
       plugin: sourceName,
       ...(background ? { background } : {}),
+      ...(omitClaudeMd !== undefined ? { omitClaudeMd } : {}),
       ...(memory ? { memory } : {}),
       ...(isolation ? { isolation } : {}),
       ...(effort !== undefined ? { effort } : {}),
@@ -280,7 +293,7 @@ export const loadPluginAgents = memoize(
           }
         }
 
-        // Load agents from additional paths specified in manifest
+        // Load selected manifest files and marketplace additions.
         if (plugin.agentsPaths) {
           // Process all agentsPaths in parallel. isDuplicatePath is synchronous
           // (check-and-add), so concurrent access to loadedPaths is safe.

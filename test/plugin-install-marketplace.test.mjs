@@ -358,7 +358,7 @@ test('plugin registration includes every supported event and keeps plugin identi
   }
 })
 
-test('root skills have stable names and manifest paths supplement standard directories', async () => {
+test('root skills have stable names and explicit agent paths replace default discovery', async () => {
   const path = fixture('version-4.5.6', 'root-skill-market', 'stable-skill')
   writeJson(join(path, '.claude-plugin/plugin.json'), {
     name: 'stable-skill', skills: '.', commands: './more-commands', agents: './more-agents.md',
@@ -375,7 +375,8 @@ test('root skills have stable names and manifest paths supplement standard direc
   assert.deepEqual(plugin.skillsPaths, [path])
   assert.equal(plugin.commandsPath, join(path, 'commands'))
   assert.deepEqual(plugin.commandsPaths, [join(path, 'more-commands')])
-  assert.equal(plugin.agentsPath, join(path, 'agents'))
+  assert.equal(plugin.agentsPath, undefined)
+  assert.deepEqual(plugin.agentsPaths, [join(path, 'more-agents.md')])
   assert.equal(plugin.outputStylesPath, join(path, 'output-styles'))
   const skills = await runtime.loadSkillsFromDirectory(path, plugin.name, plugin.source, plugin.manifest, path, new Set())
   assert.equal(skills.length, 1)

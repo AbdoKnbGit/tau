@@ -165,11 +165,14 @@ test('a racing turn cancels pending compaction and preserves history and Read an
   on('session.compact',async($,e)=>{
     if(await $.fs.exists('done-waiting'))return {skip:'idle again'};
     try{await $.session.compact();throw Error('recursive compact ran')}catch(error){await $.fs.write('nested-refusal',String(error))}
+    await $.fs.write('nested-refusal-ready','ready');
     await $.clock.sleep(30000);return {messages:[]}
   });`])
   const pending = command('request-compact', context)
   const deadline = Date.now() + 10_000
-  while (!existsSync(join(project,'nested-refusal'))) {
+  // File creation can precede the asynchronous write's bytes. The worker
+  // publishes this separate marker only after the refusal write completes.
+  while (!existsSync(join(project,'nested-refusal-ready'))) {
     assert.ok(Date.now() < deadline, 'compaction entered its hook')
     await new Promise(done=>setTimeout(done,10))
   }

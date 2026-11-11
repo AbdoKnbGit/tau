@@ -61,7 +61,7 @@ export type LoadedPlugin = {
   commandsPaths?: string[] // Additional command paths from manifest
   commandsMetadata?: Record<string, CommandMetadata> // Metadata for named commands from object-mapping format
   agentsPath?: string
-  agentsPaths?: string[] // Additional agent paths from manifest
+  agentsPaths?: string[] // Selected manifest files, plus strict marketplace additions
   skillsPath?: string
   skillsPaths?: string[] // Additional skill paths from manifest
   outputStylesPath?: string

@@ -49,14 +49,15 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
-          if ! command -v rg > /dev/null 2>&1; then
+          if ! rg --version > /dev/null 2>&1; then
             case "$RUNNER_OS" in
-              Linux)
-                sudo apt-get update
-                sudo apt-get install --yes ripgrep
-                ;;
-              macOS)
-                brew install ripgrep
+              Linux|macOS)
+                # Use Tau's pinned, checksum-verified installer rather than
+                # depending on an OS package mirror before npm can run.
+                node scripts/postinstall.mjs --ripgrep-only
+                RG_VENDOR_DIR="$(node --input-type=module -e 'import { resolveRipgrepRelease } from "./scripts/postinstall.mjs"; import { resolve } from "node:path"; const release = resolveRipgrepRelease(); if (!release) throw new Error("No vendor release for this host"); console.log(resolve("dist/vendor/ripgrep", release.dir));')"
+                export PATH="$RG_VENDOR_DIR:$PATH"
+                printf '%s\n' "$RG_VENDOR_DIR" >> "$GITHUB_PATH"
                 ;;
               Windows)
                 pwsh -NoProfile -File .github/scripts/ensure-ripgrep.ps1
@@ -130,8 +131,8 @@ jobs:
       - name: Test source-map reads and cache stability
         run: node --test test/file-read-source-maps.test.mjs test/file-read-range-dedup.test.mjs test/core-tool-contracts.test.mjs test/tool-result-budget.test.mjs
 
-      - name: Test memory index reminders
-        run: node --test test/memory-index-guard.test.mjs test/memory-index-tool-results.test.mjs
+      - name: Test memory discovery, attachments, and index reminders
+        run: node --test test/agents-md-memory.test.mjs test/nested-agents-memory.test.mjs test/memory-index-guard.test.mjs test/memory-index-tool-results.test.mjs
 
       - name: Test OpenAI effort settings, request routing, and cache stability
         run: node --test test/openai-effort.test.mjs test/openai-native-routing.test.mjs test/openai-websocket.test.mjs test/openai-reasoning-normalization.test.mjs test/openai-reasoning-transport.test.mjs test/openai-agent-completion.test.mjs test/openai-prompt-suggestions.test.mjs test/openai-cache-diagnostics.test.mjs test/openai-turn-state.test.mjs test/openai-turn-lifecycle.test.mjs
@@ -172,7 +173,7 @@ jobs:
         run: node --test test/plugin-update-marketplace-refresh.test.mjs
 
       - name: Test plugin dependencies, skills, reload, and hook isolation
-        run: node --test test/plugin-runtime-boundaries.test.mjs test/plugin-local-loading.test.mjs test/plugin-dependency-versions.test.mjs test/plugin-skill-compatibility.test.mjs test/plugin-reload-skills.test.mjs test/hook-engine-compatibility.test.mjs test/headless-hook-resume.test.mjs
+        run: node --test test/plugin-runtime-boundaries.test.mjs test/plugin-local-loading.test.mjs test/plugin-dependency-versions.test.mjs test/plugin-skill-compatibility.test.mjs test/plugin-reload-skills.test.mjs test/plugin-agent-selection.test.mjs test/agent-omit-claudemd.test.mjs test/hook-engine-compatibility.test.mjs test/headless-hook-resume.test.mjs
 
       - name: Test MCPB bundles, provider SDKs, sign-in, tool schemas, proxy and CA fetch, telemetry exporters, and optional integrations
         run: node --test test/plugin-mcpb-loading.test.mjs test/plugin-mcpb-cli.test.mjs test/provider-sdk-clients.test.mjs test/anthropic-sdk-auth.test.mjs test/print-mode-requests.test.mjs test/provider-failure.test.mjs test/print-killed-wrapper.test.mjs test/console-title.test.mjs test/openrouter-tool-execution.test.mjs test/resume-prompt-cache.test.mjs test/tool-schema-spelling.test.mjs test/undici-dispatcher-fetch.test.mjs test/telemetry-otlp-exporters.test.mjs test/optional-integrations.test.mjs
@@ -305,9 +306,11 @@ jobs:
       - name: Install dependencies with reviewed project policy
         shell: bash
         run: |
-          if ! command -v rg > /dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install --yes ripgrep
+          if ! rg --version > /dev/null 2>&1; then
+            node scripts/postinstall.mjs --ripgrep-only
+            RG_VENDOR_DIR="$(node --input-type=module -e 'import { resolveRipgrepRelease } from "./scripts/postinstall.mjs"; import { resolve } from "node:path"; const release = resolveRipgrepRelease(); if (!release) throw new Error("No vendor release for this host"); console.log(resolve("dist/vendor/ripgrep", release.dir));')"
+            export PATH="$RG_VENDOR_DIR:$PATH"
+            printf '%s\n' "$RG_VENDOR_DIR" >> "$GITHUB_PATH"
             hash -r
           fi
           rg --version
@@ -506,9 +509,11 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
-          if ! command -v rg > /dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install --yes ripgrep
+          if ! rg --version > /dev/null 2>&1; then
+            node scripts/postinstall.mjs --ripgrep-only
+            RG_VENDOR_DIR="$(node --input-type=module -e 'import { resolveRipgrepRelease } from "./scripts/postinstall.mjs"; import { resolve } from "node:path"; const release = resolveRipgrepRelease(); if (!release) throw new Error("No vendor release for this host"); console.log(resolve("dist/vendor/ripgrep", release.dir));')"
+            export PATH="$RG_VENDOR_DIR:$PATH"
+            printf '%s\n' "$RG_VENDOR_DIR" >> "$GITHUB_PATH"
             hash -r
           fi
           rg --version

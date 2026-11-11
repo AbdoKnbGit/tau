@@ -44,7 +44,7 @@ import {
   getConditionalRulesForCwdLevelDirectory,
   type MemoryFileInfo,
 } from './claudemd.js'
-import { dirname, parse, relative, resolve } from 'path'
+import { dirname, isAbsolute, parse, relative, resolve, sep } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
 import { getViewedTeammateTask } from '../state/selectors.js'
 import { logError } from './log.js'
@@ -119,6 +119,7 @@ import { isAbortError } from './errors.js'
 import {
   getFileModificationTimeAsync,
   isFileWithinReadSizeLimit,
+  normalizePathForComparison,
 } from './file.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { filterAgentsByMcpRequirements } from '../tools/AgentTool/loadAgentsDir.js'
@@ -1817,7 +1818,7 @@ async function getSelectedLinesFromIDE(
 /**
  * Computes the directories to process for nested memory file loading.
  * Returns two lists:
- * - nestedDirs: Directories between CWD and targetPath (processed for CLAUDE.md + all rules)
+ * - nestedDirs: Directories between CWD and targetPath (processed for AGENTS.md, CLAUDE.md, and all rules)
  * - cwdLevelDirs: Directories from root to CWD (processed for conditional rules only)
  *
  * @param targetPath The target file path
@@ -1830,15 +1831,22 @@ export function getDirectoriesToProcess(
 ): { nestedDirs: string[]; cwdLevelDirs: string[] } {
   // Build list of directories from original CWD to targetPath's directory
   const targetDir = dirname(resolve(targetPath))
+  const cwd = resolve(originalCwd)
+  const relativeTargetDir = relative(cwd, targetDir)
   const nestedDirs: string[] = []
   let currentDir = targetDir
 
-  // Walk up from target directory to original CWD
-  while (currentDir !== originalCwd && currentDir !== parse(currentDir).root) {
-    if (currentDir.startsWith(originalCwd)) {
+  // Native relative-path comparison respects Windows casing and directory
+  // boundaries. A sibling whose name shares the CWD prefix is not nested.
+  if (
+    !isAbsolute(relativeTargetDir) &&
+    relativeTargetDir !== '..' &&
+    !relativeTargetDir.startsWith(`..${sep}`)
+  ) {
+    while (relative(cwd, currentDir) !== '') {
       nestedDirs.push(currentDir)
+      currentDir = dirname(currentDir)
     }
-    currentDir = dirname(currentDir)
   }
 
   // Reverse to get order from CWD down to target
@@ -1846,7 +1854,7 @@ export function getDirectoriesToProcess(
 
   // Build list of directories from root to CWD (for conditional rules only)
   const cwdLevelDirs: string[] = []
-  currentDir = originalCwd
+  currentDir = cwd
 
   while (currentDir !== parse(currentDir).root) {
     cwdLevelDirs.push(currentDir)
@@ -1890,7 +1898,8 @@ export function memoryFilesToAttachments(
     // Dedup: loadedNestedMemoryPaths is a non-evicting Set; readFileState
     // is a 100-entry LRU that drops entries in busy sessions, so relying
     // on it alone re-injects the same CLAUDE.md on every eviction cycle.
-    if (toolUseContext.loadedNestedMemoryPaths?.has(memoryFile.path)) {
+    const memoryPathKey = normalizePathForComparison(memoryFile.path)
+    if (toolUseContext.loadedNestedMemoryPaths?.has(memoryPathKey)) {
       continue
     }
     if (!toolUseContext.readFileState.has(memoryFile.path)) {
@@ -1900,7 +1909,7 @@ export function memoryFilesToAttachments(
         content: memoryFile,
         displayPath: relative(getCwd(), memoryFile.path),
       })
-      toolUseContext.loadedNestedMemoryPaths?.add(memoryFile.path)
+      toolUseContext.loadedNestedMemoryPaths?.add(memoryPathKey)
 
       // Mark as loaded in readFileState — this provides cross-function and
       // cross-turn dedup via the .has() check above.
@@ -1947,12 +1956,12 @@ export function memoryFilesToAttachments(
 
 /**
  * Loads nested memory files for a given file path and returns them as attachments.
- * This function performs directory traversal to find CLAUDE.md files and conditional rules
+ * This function performs directory traversal to find AGENTS.md, CLAUDE.md, and conditional rules
  * that apply to the target file path.
  *
  * Processing order (must be preserved):
  * 1. Managed/User conditional rules matching targetPath
- * 2. Nested directories (CWD → target): CLAUDE.md + unconditional + conditional rules
+ * 2. Nested directories (CWD → target): AGENTS.md + CLAUDE.md + unconditional + conditional rules
  * 3. CWD-level directories (root → CWD): conditional rules only
  *
  * @param filePath The file path to get nested memory files for
@@ -1997,7 +2006,7 @@ async function getNestedMemoryAttachmentsForFile(
     )
 
     // Phase 3: Process nested directories (CWD → target)
-    // Each directory gets: CLAUDE.md + unconditional rules + conditional rules
+    // Each directory gets: AGENTS.md + CLAUDE.md + unconditional + conditional rules
     for (const dir of nestedDirs) {
       const memoryFiles = (
         await getMemoryFilesForNestedDirectory(dir, filePath, processedPaths)
@@ -2388,7 +2397,7 @@ export async function getChangedFiles(
 }
 
 /**
- * Processes paths that need nested memory attachments and checks for nested CLAUDE.md files
+ * Processes paths that need nested AGENTS.md/CLAUDE.md and rule attachments
  * Uses nestedMemoryAttachmentTriggers field from ToolUseContext
  */
 async function getNestedMemoryAttachments(

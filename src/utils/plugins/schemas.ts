@@ -479,25 +479,24 @@ const PluginManifestCommandsSchema = lazySchema(() =>
 )
 
 /**
- * Schema for additional agent definitions in plugin manifest
+ * Schema for selected agent definitions in plugin manifest
  *
- * Allows plugins to specify extra agent files beyond those in the
- * standard agents/ directory.
+ * When present, these files replace discovery in the standard agents/ directory.
  */
 const PluginManifestAgentsSchema = lazySchema(() =>
   z.object({
     agents: z.union([
       // TODO (future work): allow globs?
       RelativeMarkdownPath().describe(
-        'Path to additional agent file (in addition to those in the agents/ directory, if it exists), relative to the plugin root',
+        'Path to an agent Markdown file, relative to the plugin root. Replaces the default agents/ scan.',
       ),
       z
         .array(
           RelativeMarkdownPath().describe(
-            'Path to additional agent file (in addition to those in the agents/ directory, if it exists), relative to the plugin root',
+            'Path to an agent Markdown file, relative to the plugin root. Replaces the default agents/ scan.',
           ),
         )
-        .describe('List of paths to additional agent files'),
+        .describe('Agent Markdown files to load instead of scanning agents/'),
     ]),
   }),
 )
