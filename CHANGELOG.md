@@ -5,6 +5,11 @@ Each version lists what was fixed or added, newest first.
 
 ## Unreleased
 
+- Respect plugin manifest agent selections instead of scanning unselected agents, and accept omitClaudeMd on custom and plugin agents while preserving managed instructions and explicit caller context (75421bed)
+- Load nested AGENTS.md instructions with native instruction deduplication, preserve parent context, and avoid repeated attachments across platform paths (75421bed)
+- Add regression coverage for agent selection, instruction inheritance, malformed frontmatter and reloads (75421bed)
+- Add GPT-6.1 Terra to the OpenAI lane with its context limits and six reasoning effort levels, including none (fe756294)
+- Preserve prompt cache affinity, reasoning replay and resume behavior, with regression coverage for routing, effort settings and provider isolation (fe756294)
 - Complete mod APIs, events and UI to the 2.1.319 contract and add a mod lab (mod compatibility not completed yet) (bb39c045)
 - Wrap the prompt at the width its box really leaves, so typing spaces or line breaks no longer makes words jump between rows, and put a fullscreen click on the clicked character (issue #51) (557a7733)
 - Choosing bypass on a permission prompt during plan mode keeps the plan open instead of ending it mid-turn (557a7733)
