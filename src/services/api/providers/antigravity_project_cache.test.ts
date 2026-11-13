@@ -59,7 +59,7 @@ test('an ownerless legacy project is rediscovered using the request credential',
   expect(loads).toEqual(['account-A'])
 })
 
-test.each([undefined, 'antigravity/hub/2.8.1 darwin/arm64'])(
+test.each([undefined, 'antigravity/hub/2.8.1 darwin/arm64', 'antigravity/hub/2.23.0 darwin/arm64'])(
   'discovery from an old Hub identity (%s) is refreshed once', async userAgent => {
     mkdirSync(cacheDir, { recursive: true })
     writeFileSync(cacheFile, JSON.stringify({
@@ -91,6 +91,70 @@ test('matching Hub and credential reuse disk discovery without a network call', 
   expect(describeAntigravityEntitlementGap('gemini-3.8-flash-low')).toContain('gemini-3.8-flash-low')
 })
 
+test('one listed level names every level of its Gemini 4 model as usable', async () => {
+  mkdirSync(cacheDir, { recursive: true })
+  writeFileSync(cacheFile, JSON.stringify({
+    version: 7, credentialKey: createHash('sha256').update('account-A').digest('hex'),
+    userAgent: ANTIGRAVITY_HUB_USER_AGENT, projectId: 'saved-project', onboardedAt: Date.now(),
+    entitledModelIds: ['gemini-4-carbon-high', 'gemini-4-hydrogen-xhigh'],
+  }))
+  expect(await ensureCodeAssistReady('account-A', 'antigravity')).toBe('saved-project')
+  const listed = ['carbon', 'hydrogen'].flatMap(family =>
+    ['low', 'medium', 'high'].map(level => `gemini-4-${family}-${level}`))
+  const gap = describeAntigravityEntitlementGap('gemini-3.8-flash-low')
+  expect(gap).toContain('not entitled to gemini-3.8-flash-low')
+  for (const model of listed) expect(gap).toContain(model)
+  expect(gap).not.toContain('gemini-4-argon')
+})
+
+test('Gemini 4 entitlement follows the account plan, never the production quota list', async () => {
+  // Production's quota list leaves every Gemini 4 id out, even for plans that
+  // include them, as on the real Pro account this list is copied from.
+  const fetchNow = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input)
+    const token = new Headers(init?.headers).get('authorization')!.replace('Bearer ', '')
+    if (url.endsWith(':loadCodeAssist')) {
+      const paid = ({
+        'pro-account': 'g1-pro-tier', 'ultra-account': 'g1-ultra-tier', 'ultra-lite-account': 'g1-ultra-lite-tier',
+        'starter-account': 'free-tier',
+      } as Record<string, string>)[token]
+      return Response.json({
+        cloudaicompanionProject: `project-${token}`,
+        ...(token === 'business-account' ? { currentTier: { id: 'standard-tier' } } : {}),
+        ...(paid ? { currentTier: { id: 'free-tier' }, paidTier: { id: paid } } : {}),
+      })
+    }
+    if (url.endsWith(':retrieveUserQuota')) {
+      return Response.json({ buckets: ['claude-opus-4-6-thinking', 'claude-sonnet-4-6', 'gemini-3-flash',
+        'gemini-3.8-flash-high', 'gemini-3.8-flash-low', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-tiered']
+        .map(modelId => ({ modelId })) })
+    }
+    return fetchNow(input, init)
+  }) as typeof fetch
+
+  const levels = (family: string) => ['low', 'medium', 'high'].map(level => `gemini-4-${family}-${level}`)
+  for (const account of ['pro-account', 'ultra-account', 'ultra-lite-account', 'business-account', 'unknown-plan-account', 'starter-account']) {
+    await ensureCodeAssistReady(account, 'antigravity')
+    // A 429 on these is throttling, never "not entitled", on every plan.
+    for (const model of [...levels('argon'), ...levels('hydrogen')]) {
+      expect(describeAntigravityEntitlementGap(model)).toBeNull()
+    }
+    for (const model of levels('carbon')) {
+      const gap = describeAntigravityEntitlementGap(model)
+      if (account === 'pro-account') {
+        expect(gap).toContain('Gemini 4 Carbon on Antigravity launched for Google AI Ultra and business plans')
+        expect(gap).toContain('the "g1-pro-tier" plan')
+        expect(gap).not.toContain('not entitled')
+      } else if (account === 'starter-account') {
+        expect(gap).toContain('the free plan')
+      } else {
+        expect(gap).toBeNull()
+      }
+    }
+  }
+})
+
 test('entitlement diagnostics follow the request credential instead of another login', async () => {
   const fetchNow = globalThis.fetch
   const argonModels = ['gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-argon-high']
@@ -116,8 +180,10 @@ test('entitlement diagnostics follow the request credential instead of another l
   await ensureCodeAssistReady('account-B', 'antigravity')
   expect(describeAntigravityEntitlementGap('gemini-3.8-flash-low')).toBeNull()
   expect(describeAntigravityEntitlementGap('gemini-3.7-flash-low')).toContain('gemini-3.7-flash-low')
+  // Production's list leaves Gemini 4 out even where the plan includes it, so
+  // its absence from account B's list is no claim against Argon.
   for (const model of argonModels) {
-    expect(describeAntigravityEntitlementGap(model)).toContain(model)
+    expect(describeAntigravityEntitlementGap(model)).toBeNull()
   }
 })
 

@@ -208,9 +208,9 @@ async function main(): Promise<void> {
     )
   })
 
-  await test('picker offers only Argon and 3.8 Flash while retired Gemini sessions keep cache routing', () => {
+  await test('picker offers only Gemini 4 and 3.8 Flash while retired Gemini sessions keep cache routing', () => {
     const visible = ANTIGRAVITY_PICKER_MODELS.filter(model => model.id.startsWith('gemini-'))
-    const expected = ['gemini-4-argon', 'gemini-3.8-flash']
+    const expected = ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.8-flash']
       .flatMap(model => ['high', 'medium', 'low'].map(level => `${model}-${level}`))
     assert(JSON.stringify(visible.map(model => model.id)) === JSON.stringify(expected),
       `unexpected Gemini picker rows: ${visible.map(model => model.id).join(', ')}`)
@@ -230,18 +230,28 @@ async function main(): Promise<void> {
     }
   })
 
-  await test('Argon tiers use the upstream thinking format without changing the prompt prefix', () => {
-    for (const [level, label] of [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] as const) {
-      const id = `gemini-4-argon-${level}`
+  const gemini4Families = ['carbon', 'argon', 'hydrogen'] as const
+  const gemini4Rows = gemini4Families.flatMap(family =>
+    (['low', 'medium', 'high'] as const).map(level => ({
+      family,
+      level,
+      id: `gemini-4-${family}-${level}`,
+      name: `Gemini 4 ${family[0]!.toUpperCase()}${family.slice(1)} (${level[0]!.toUpperCase()}${level.slice(1)})`,
+    })))
+
+  await test('Gemini 4 tiers use the upstream thinking format without changing the prompt prefix', () => {
+    for (const { family, level, id, name } of gemini4Rows) {
       const row = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
-      assert(row?.name === `Gemini 4 Argon (${label})`, `${id} display name`)
+      assert(row?.name === name, `${id} display name`)
+      assert(getAntigravityModelDisplayName(`models/${id.toUpperCase()}`) === row?.name, `${id} usage label`)
       assert(row?.contextWindow === 1_048_576, `${id} context window`)
       assert(executorForModel(id) === 'antigravity', `${id} executor`)
       assert(isAntigravityModelId(id), `${id} lazy tool opt-out`)
       assert(isAntigravityGeminiModel(id), `${id} implicit-cache guards`)
+      assert(!isHiddenAntigravityPickerModel(id), `${id} hidden from the picker`)
       assert(resolveAntigravityWireModel(id.toUpperCase()) === id, `${id} wire normalization`)
       const request = {
-        sessionId: 'argon-stable-session',
+        sessionId: `${family}-stable-session`,
         systemInstruction: { parts: [{ text: 'Stable system prefix' }] },
         contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
         generationConfig: { thinkingConfig: { thinkingLevel: level, includeThoughts: false } },
@@ -261,7 +271,7 @@ async function main(): Promise<void> {
     }
   })
 
-  await test('Argon wire tier follows explicit reasoning overrides and normalizes mixed configs', () => {
+  await test('Gemini 4 wire tier follows explicit reasoning overrides and normalizes mixed configs', () => {
     const cases = [
       ['low', { thinkingLevel: 'high', thinkingBudget: 512 }, 'high'],
       ['high', { thinkingLevel: 'medium' }, 'medium'],
@@ -273,24 +283,45 @@ async function main(): Promise<void> {
       ['medium', { thinkingBudget: 24576 }, 'high'],
       ['medium', { thinkingBudget: -1 }, 'medium'],
     ] as const
-    for (const [selected, thinking, expected] of cases) {
-      const input = { generationConfig: { thinkingConfig: { ...thinking, includeThoughts: true } } }
-      const before = JSON.stringify(input)
-      const wrapped = wrapForCodeAssist(`gemini-4-argon-${selected}`, 'project', input)
-      const config = (wrapped.request.generationConfig as any).thinkingConfig
-      assert(wrapped.model === `gemini-4-argon-${expected}`, `${selected}/${before}: wire tier ${wrapped.model}`)
-      assert(config.includeThoughts === true, 'explicit thoughts lost')
-      assert(expected === 'high'
-        ? config.thinkingLevel === 'high' && !('thinkingBudget' in config)
-        : config.thinkingBudget === -1 && !('thinkingLevel' in config), 'incompatible thinking fields sent')
-      assert(JSON.stringify(input) === before, 'normalization mutated caller config')
+    for (const family of gemini4Families) {
+      for (const [selected, thinking, expected] of cases) {
+        const input = { generationConfig: { thinkingConfig: { ...thinking, includeThoughts: true } } }
+        const before = JSON.stringify(input)
+        const wrapped = wrapForCodeAssist(`gemini-4-${family}-${selected}`, 'project', input)
+        const config = (wrapped.request.generationConfig as any).thinkingConfig
+        assert(wrapped.model === `gemini-4-${family}-${expected}`, `${family} ${selected}/${before}: wire tier ${wrapped.model}`)
+        assert(config.includeThoughts === true, 'explicit thoughts lost')
+        assert(expected === 'high'
+          ? config.thinkingLevel === 'high' && !('thinkingBudget' in config)
+          : config.thinkingBudget === -1 && !('thinkingLevel' in config), 'incompatible thinking fields sent')
+        assert(JSON.stringify(input) === before, 'normalization mutated caller config')
+      }
+      for (const tier of ['low', 'medium', 'high']) {
+        const wrapped = wrapForCodeAssist(`gemini-4-${family}-${tier}`, 'project', {})
+        const config = (wrapped.request.generationConfig as any).thinkingConfig
+        assert(wrapped.model === `gemini-4-${family}-${tier}`, `${family} ${tier}: wire id changed`)
+        assert(tier === 'high' ? config.thinkingLevel === 'high' : config.thinkingBudget === -1,
+          `${family} ${tier}: missing default wire thinking config`)
+        assert(!('includeThoughts' in config), 'absent thought preference was invented')
+      }
     }
-    for (const tier of ['low', 'medium', 'high']) {
-      const wrapped = wrapForCodeAssist(`gemini-4-argon-${tier}`, 'project', {})
-      const config = (wrapped.request.generationConfig as any).thinkingConfig
-      assert(tier === 'high' ? config.thinkingLevel === 'high' : config.thinkingBudget === -1,
-        `${tier}: missing default wire thinking config`)
-      assert(!('includeThoughts' in config), 'absent thought preference was invented')
+  })
+
+  await test('Gemini 4 images reach the wire as inline data, and other Gemini 4 ids stay off the per-level path', () => {
+    const image = { inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } }
+    for (const id of ['gemini-4-carbon-high', 'gemini-4-hydrogen-low']) {
+      const request = { contents: [{ role: 'user', parts: [{ text: 'What is in this screenshot?' }, image] }] }
+      const wrapped = wrapForCodeAssist(id, 'project', request)
+      assert(JSON.stringify(wrapped.request.contents) === JSON.stringify(request.contents), `${id} dropped or rewrote the image`)
+    }
+    // An id outside the three levels is not a Gemini 4 row and keeps its text.
+    for (const id of ['gemini-4-hydrogen-xhigh', 'gemini-4-carbon', 'gemini-4-neon-high']) {
+      assert(!isAntigravityModelId(id), `${id} must not be registered`)
+      assert(resolveAntigravityWireModel(id) === id, `${id} must pass through untouched`)
+      const wrapped = wrapForCodeAssist(id, 'project', { generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } })
+      assert(wrapped.model === id, `${id} wire id changed`)
+      assert(JSON.stringify((wrapped.request.generationConfig as any).thinkingConfig) === '{"thinkingLevel":"low"}',
+        `${id} thinking config was rewritten`)
     }
   })
 

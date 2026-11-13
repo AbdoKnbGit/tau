@@ -214,6 +214,28 @@ test('Argon resolves its full context before the picker or remote catalog is loa
     'Argon context must not invent limits for unrelated Gemini 4 models')
 })
 
+test('Carbon and Hydrogen resolve their full context on Antigravity only', () => {
+  useCatalogue({})
+  for (const family of ['carbon', 'hydrogen']) {
+    for (const level of ['low', 'medium', 'high']) {
+      const id = `gemini-4-${family}-${level}`
+      for (const model of [id, `models/${id}`, `antigravity-${id}`, id.toUpperCase()]) {
+        assert(getProviderCatalogContextWindow(model, 'antigravity') === 1_048_576,
+          `${model} must have the 1,048,576-token window`)
+      }
+      // Scoped to Antigravity: every other host resolves these ids as before.
+      for (const provider of ['gemini', 'openrouter', 'opencode'] as const) {
+        assert(getProviderCatalogContextWindow(id, provider) === undefined,
+          `${provider}/${id} took Antigravity's window`)
+      }
+    }
+    for (const model of [`gemini-4-${family}`, `gemini-4-${family}-xhigh`, `google/gemini-4-${family}`]) {
+      assert(getProviderCatalogContextWindow(model, 'antigravity') === undefined,
+        `${model} is not an Antigravity row and must not take its window`)
+    }
+  }
+})
+
 test("a local build's window answers only for a local runtime", () => {
   useCatalogue({})
   assert(getProviderCatalogContextWindow('mistral:7b', 'ollama') === 32_768, 'Ollama keeps its Mistral 7B build')

@@ -42,9 +42,9 @@ function main(): void {
     assert(cfg.includeThoughts === true, `includeThoughts=${String(cfg.includeThoughts)}`)
   })
 
-  test('Flash and Argon variants preserve their Antigravity thinking level', () => {
+  test('Flash and Gemini 4 variants preserve their Antigravity thinking level', () => {
     // Preserve the chosen level for both shared and per-level wire models.
-    for (const family of ['3.6-flash', '3.7-flash', '3.8-flash', '4-argon'] as const) {
+    for (const family of ['3.6-flash', '3.7-flash', '3.8-flash', '4-argon', '4-carbon', '4-hydrogen'] as const) {
       for (const level of ['low', 'medium', 'high'] as const) {
         const id = `gemini-${family}-${level}`
         const cfg = resolveThinkingConfig(id, -1)
@@ -55,16 +55,18 @@ function main(): void {
     }
   })
 
-  test('Argon respects existing explicit thought and level overrides', () => {
+  test('Gemini 4 respects existing explicit thought and level overrides', () => {
     const previous = process.env.TAU_GEMINI_THINKING
     try {
-      for (const [override, expected] of [['medium', 'medium'], ['off', 'low']]) {
+      const cases = ['gemini-4-argon-high', 'gemini-4-carbon-high', 'gemini-4-hydrogen-high'].flatMap(model =>
+        [['medium', 'medium'], ['off', 'low']].map(([override, expected]) => ({ model, override, expected })))
+      for (const { model, override, expected } of cases) {
         process.env.TAU_GEMINI_THINKING = override
-        const cfg = resolveThinkingConfig('gemini-4-argon-high', 1024, {
+        const cfg = resolveThinkingConfig(model, 1024, {
           type: 'enabled', budget_tokens: 1024,
         })
-        assert(cfg.thinkingLevel === expected, `override ${override} was lost`)
-        assert(cfg.includeThoughts === true, 'explicit thoughts were lost')
+        assert(cfg.thinkingLevel === expected, `${model}: override ${override} was lost`)
+        assert(cfg.includeThoughts === true, `${model}: explicit thoughts were lost`)
       }
     } finally {
       if (previous === undefined) delete process.env.TAU_GEMINI_THINKING

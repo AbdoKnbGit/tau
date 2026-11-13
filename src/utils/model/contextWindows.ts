@@ -43,15 +43,19 @@ const PROVIDER_SCOPED_CONTEXT_WINDOWS: Partial<Record<APIProvider, ContextWindow
   },
   // Antigravity's per-level Claude 5.5 ids, per its own catalog. Keyed by the
   // full level ids: a bare `claude-opus-5-5` is not something Antigravity
-  // serves, so it keeps whatever it resolved to before.
-  antigravity: Object.fromEntries(
-    ANTIGRAVITY_CLAUDE_TIER_MODELS.flatMap(model =>
+  // serves, so it keeps whatever it resolved to before. Gemini 4 Carbon and
+  // Hydrogen are keyed the same way at Google's 1,048,576 tokens, so other
+  // hosts' rows for those models keep their own windows.
+  antigravity: Object.fromEntries([
+    ...ANTIGRAVITY_CLAUDE_TIER_MODELS.flatMap(model =>
       ANTIGRAVITY_CLAUDE_EFFORTS.map(effort => [
         antigravityClaudeTierModelId(model, effort),
         model.contextWindow,
       ]),
     ),
-  ),
+    ...['carbon', 'hydrogen'].flatMap(family =>
+      ['low', 'medium', 'high'].map(level => [`gemini-4-${family}-${level}`, GEMINI_LONG_CONTEXT_WINDOW])),
+  ]),
   // GPT-6 on the OpenAI (Codex) provider, per models.dev (2026-09-26;
   // GPT-6.1 Terra checked 2026-11-10). Input ceilings are applied separately below.
   openai: {

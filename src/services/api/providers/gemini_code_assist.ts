@@ -190,9 +190,17 @@ export function antigravityGenerationHostCount(_model: string | undefined): numb
 // daily Antigravity endpoint. They share the `userAgent: "antigravity"`
 // envelope but need small content-level fixes (see wrapForCodeAssist).
 export const ANTIGRAVITY_MODELS: readonly ModelInfo[] = [
+  // Google serves Carbon to Google AI Ultra and business plans; other plans
+  // get 404 for it.
+  { id: 'gemini-4-carbon-high', name: 'Gemini 4 Carbon (High)', contextWindow: 1048576 },
+  { id: 'gemini-4-carbon-medium', name: 'Gemini 4 Carbon (Medium)', contextWindow: 1048576 },
+  { id: 'gemini-4-carbon-low', name: 'Gemini 4 Carbon (Low)', contextWindow: 1048576 },
   { id: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)', contextWindow: 1048576 },
   { id: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)', contextWindow: 1048576 },
   { id: 'gemini-4-argon-low', name: 'Gemini 4 Argon (Low)', contextWindow: 1048576 },
+  { id: 'gemini-4-hydrogen-high', name: 'Gemini 4 Hydrogen (High)', contextWindow: 1048576 },
+  { id: 'gemini-4-hydrogen-medium', name: 'Gemini 4 Hydrogen (Medium)', contextWindow: 1048576 },
+  { id: 'gemini-4-hydrogen-low', name: 'Gemini 4 Hydrogen (Low)', contextWindow: 1048576 },
   { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', contextWindow: 1048576 },
   { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)', contextWindow: 1048576 },
   { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)', contextWindow: 1048576 },
@@ -233,7 +241,7 @@ const ANTIGRAVITY_WIRE_MODEL_DISPLAY_NAMES = new Map<string, string>([
 
 // Retired picker rows stay in the routing registry so saved sessions and
 // explicit model ids retain their executor, wire mapping and cache guards.
-// The picker offers Argon and 3.8 Flash; the original 3 Flash stays hidden.
+// The picker offers Gemini 4 and 3.8 Flash; the original 3 Flash stays hidden.
 export function isHiddenAntigravityPickerModel(model: string): boolean {
   const normalized = model.toLowerCase().replace(/^models\//, '')
   return normalized === 'gemini-3-flash'
@@ -299,11 +307,17 @@ export function getAntigravityModelDisplayName(model: string): string | null {
     ?? null
 }
 
+/**
+ * Gemini 4 ids Antigravity serves one per effort level: the level is part of
+ * the id, and there is no shared `-tiered` form. Captures family and level.
+ */
+const ANTIGRAVITY_GEMINI_4_LEVEL_ID = /^(gemini-4-(?:argon|carbon|hydrogen))-(low|medium|high)$/
+
 export function resolveAntigravityWireModel(model: string): string {
   const normalized = model.toLowerCase()
-  // Argon uses per-level ids; wrapForCodeAssist applies any explicit
+  // Gemini 4 uses per-level ids; wrapForCodeAssist applies any explicit
   // reasoning override and the tier-specific thinking wire format.
-  if (/^gemini-4-argon-(?:high|medium|low)$/.test(normalized)) return normalized
+  if (ANTIGRAVITY_GEMINI_4_LEVEL_ID.test(normalized)) return normalized
   // 3.6 and 3.8 keep their shared tiered wire models; the picker's level
   // rides in generationConfig.thinkingConfig.thinkingLevel.
   // 3.7 must preserve its per-level id: the daily endpoint returned 404 for
@@ -397,6 +411,17 @@ export function isPaidGeminiTier(tier: string | null | undefined): boolean {
 }
 
 /**
+ * Consumer plans known to leave out a model that launched for Ultra only: the
+ * free and legacy tiers and the Google One AI plans other than Ultra, such as
+ * `g1-pro-tier`. Business and unknown plans are not in it, so nothing is
+ * claimed for them.
+ */
+function isConsumerPlanWithoutUltra(tier: string): boolean {
+  return tier === GEMINI_TIER_FREE || tier === GEMINI_TIER_LEGACY
+    || (tier.startsWith('g1-') && !tier.includes('ultra'))
+}
+
+/**
  * Read the cached tier id for an executor (set during onboarding).
  * Returns null when no tier has been captured yet — typical for the
  * Antigravity executor, since loadCodeAssist there returns a project
@@ -453,14 +478,35 @@ export function describeAntigravityEntitlementGap(model: string): string | null 
     ].join('\n')
   }
 
+  // The same list leaves the Gemini 4 models out even on Pro and Ultra plans
+  // that include them, and it is read again only on a new login or Hub
+  // release, so a model that rolls out later stays missing from it. A missing
+  // id proves nothing here: only Carbon, which launched for Google AI Ultra
+  // and business plans, is judged, by plan, and only on a consumer plan
+  // without Ultra.
+  const gemini4 = ANTIGRAVITY_GEMINI_4_LEVEL_ID.exec(normalized)?.[1]
+  if (gemini4) {
+    const plan = getGeminiTier('antigravity')
+    if (gemini4 !== 'gemini-4-carbon' || !plan || !isConsumerPlanWithoutUltra(plan)) return null
+    return [
+      `Gemini 4 Carbon on Antigravity launched for Google AI Ultra and business plans, and this account is on ${plan === GEMINI_TIER_FREE ? 'the free plan' : `the "${plan}" plan`}.`,
+      'Antigravity answers a model the plan does not include with 404 or 429, which reads like a missing model or spent quota.',
+    ].join('\n')
+  }
+
   const entitled = getGeminiEntitledModelIds('antigravity')
   if (!entitled || entitled.length === 0) return null
 
   const entitledSet = new Set(entitled.map(id => id.toLowerCase()))
+  // For the alternatives below: some capability lists advertise one level for
+  // a whole Gemini 4 family (only High for Argon). The levels are one model,
+  // so one listed level covers them all.
+  const gemini4Family = (id: string): string | undefined =>
+    id.match(/^(gemini-4-(?:argon|carbon|hydrogen))-(?:low|medium|high|xhigh)$/)?.[1]
+  const entitledGemini4 = new Set([...entitledSet].map(gemini4Family).filter(Boolean))
   const isEntitled = (id: string): boolean => entitledSet.has(id)
     || entitledSet.has(resolveAntigravityWireModel(id).toLowerCase())
-    // Some capability lists advertise only High for the whole Argon family.
-    || (/^gemini-4-argon-(?:low|medium)$/.test(id) && entitledSet.has('gemini-4-argon-high'))
+    || entitledGemini4.has(gemini4Family(id))
   if (isEntitled(normalized)) return null
 
   const alternatives = ANTIGRAVITY_PICKER_MODELS
@@ -1249,13 +1295,14 @@ export interface CodeAssistWrapperBody {
   request: Record<string, unknown>
 }
 
-function normalizeAntigravityArgonRequest(
+function normalizeAntigravityGemini4Request(
   model: string,
   request: Record<string, unknown>,
 ): string {
-  const match = model.match(/^gemini-4-argon-(low|medium|high)$/)
+  const match = model.match(ANTIGRAVITY_GEMINI_4_LEVEL_ID)
   if (!match) return model
-  let tier = match[1]!
+  const family = match[1]!
+  let tier = match[2]!
   const generationConfig = request.generationConfig as Record<string, unknown> | undefined
   const thinkingConfig = { ...(generationConfig?.thinkingConfig as Record<string, unknown> | undefined) }
   const level = typeof thinkingConfig.thinkingLevel === 'string'
@@ -1279,7 +1326,7 @@ function normalizeAntigravityArgonRequest(
     thinkingConfig.thinkingBudget = -1
   }
   request.generationConfig = { ...generationConfig, thinkingConfig }
-  return `gemini-4-argon-${tier}`
+  return `${family}-${tier}`
 }
 
 /**
@@ -1309,7 +1356,7 @@ export function wrapForCodeAssist(
   // Also strip maxOutputTokens for non-Claude models (Antigravity executor
   // deletes request.generationConfig.maxOutputTokens for Gemini models).
   const request = { ...innerRequest }
-  const wireModel = normalizeAntigravityArgonRequest(resolveAntigravityWireModel(model), request)
+  const wireModel = normalizeAntigravityGemini4Request(resolveAntigravityWireModel(model), request)
   delete request.safetySettings
   const isClaude = wireModel.includes('claude')
   if (!isClaude) {

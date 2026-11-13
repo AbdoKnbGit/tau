@@ -609,8 +609,12 @@ async function main(): Promise<void> {
     assert(writeAntigravityCacheDebugEntry(context.model, probe, 'agent', { ...context, requestId: 'b' }) === 'ok: clean prefix extension', 'small identical request must be compared')
   })
 
-  const activeGeminiModels = ['gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-argon-high', 'gemini-3.8-flash-low']
-  await test('Argon tiers, Flash 3.8 and helper sources retain separate prompt snapshots', () => {
+  const activeGeminiModels = [
+    ...['carbon', 'argon', 'hydrogen'].flatMap(family =>
+      ['low', 'medium', 'high'].map(level => `gemini-4-${family}-${level}`)),
+    'gemini-3.8-flash-low',
+  ]
+  await test('Gemini 4 tiers, Flash 3.8 and helper sources retain separate prompt snapshots', () => {
     for (const model of activeGeminiModels) {
       _resetAntigravityCacheStateForTest()
       const context = { model, sessionId: 'root', querySource: 'repl_main_thread', requestId: 'main-1' }
@@ -641,7 +645,7 @@ async function main(): Promise<void> {
     assert(rows[1].promptDelta === 0 && rows[1].cacheReadDelta === 0, 'usage deltas')
   })
 
-  await test('Argon tiers, Flash 3.8 and helper sources have separate local recovery state', async () => {
+  await test('Gemini 4 tiers, Flash 3.8 and helper sources have separate local recovery state', async () => {
     for (const model of activeGeminiModels) {
       _resetAntigravityCacheStateForTest()
       _setAntigravityCommitWindowForTest(0)
@@ -703,7 +707,7 @@ async function main(): Promise<void> {
     _setAntigravityCommitWindowForTest(50)
     for (const [model, prompt] of [
       ['gemini-3.8-flash-low', 4993], ['gemini-3.5-flash-low', 9008],
-      ['gemini-4-argon-low', 9008], ['gemini-4-argon-medium', 9008], ['gemini-4-argon-high', 9008],
+      ...activeGeminiModels.filter(model => model.startsWith('gemini-4-')).map(model => [model, 9008] as const),
     ] as const) {
       const context = { model, sessionId: 'small', querySource: 'agent', requestId: model }
       recordAntigravityCacheRead('small', 0, prompt, context.querySource, context)
