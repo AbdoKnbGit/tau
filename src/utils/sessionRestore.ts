@@ -481,7 +481,9 @@ export async function processResumedConversation(
   // would delete a worktree the original session still references — so
   // strip worktreeSession from the fork path so the cache stays unset.
   restoreSessionMetadata(
-    opts.forkSession ? { ...result, worktreeSession: undefined } : result,
+    opts.forkSession
+      ? { ...result, worktreeSession: undefined, planFileReference: undefined }
+      : result,
   )
 
   if (!opts.forkSession) {

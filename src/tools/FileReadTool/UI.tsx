@@ -9,7 +9,7 @@ import { Text } from '../../ink.js';
 import { FILE_NOT_FOUND_CWD_NOTE, getDisplayPath } from '../../utils/file.js';
 import { formatFileSize } from '../../utils/format.js';
 import { expandPath } from '../../utils/path.js';
-import { getPlansDirectory } from '../../utils/plans.js';
+import { isPlanFileForDisplay } from '../../utils/plans.js';
 import { getTaskOutputDir } from '../../utils/task/diskOutput.js';
 import type { Input, Output } from './FileReadTool.js';
 
@@ -228,7 +228,7 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
 }
 export function userFacingName(input: Partial<Input> | undefined): string {
-  if (input?.file_path?.startsWith(getPlansDirectory())) {
+  if (input?.file_path && isPlanFileForDisplay(input.file_path)) {
     return 'Reading Plan';
   }
   if (input?.file_path && getAgentOutputTaskId(input.file_path)) {

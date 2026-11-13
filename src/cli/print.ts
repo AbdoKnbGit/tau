@@ -5080,7 +5080,11 @@ async function loadInitialMessages(
         // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
         restoreSessionMetadata(
           options.forkSession
-            ? { ...result, worktreeSession: undefined }
+            ? {
+                ...result,
+                worktreeSession: undefined,
+                planFileReference: undefined,
+              }
             : result,
         )
 
@@ -5283,7 +5287,11 @@ async function loadInitialMessages(
       // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
       restoreSessionMetadata(
         options.forkSession
-          ? { ...result, worktreeSession: undefined }
+          ? {
+              ...result,
+              worktreeSession: undefined,
+              planFileReference: undefined,
+            }
           : result,
       )
 

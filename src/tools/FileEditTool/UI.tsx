@@ -16,7 +16,7 @@ import { adjustHunkLineNumbers, CONTEXT_LINES } from '../../utils/diff.js';
 import { countDiffRows, MAX_DIFF_LINES_TO_RENDER } from '../../utils/diffTruncate.js';
 import { FILE_NOT_FOUND_CWD_NOTE, getDisplayPath } from '../../utils/file.js';
 import { logError } from '../../utils/log.js';
-import { getPlansDirectory } from '../../utils/plans.js';
+import { isPlanFileForDisplay } from '../../utils/plans.js';
 import { readEditContext } from '../../utils/readEditContext.js';
 import { firstLineOf } from '../../utils/stringUtils.js';
 import type { ThemeName } from '../../utils/theme.js';
@@ -33,7 +33,7 @@ export function userFacingName(input: Partial<{
   if (!input) {
     return 'Update';
   }
-  if (input.file_path?.startsWith(getPlansDirectory())) {
+  if (input.file_path && isPlanFileForDisplay(input.file_path)) {
     return 'Updated plan';
   }
   // Hashline edits always modify an existing file (line-ref based)
@@ -69,7 +69,7 @@ export function renderToolUseMessage({
     return null;
   }
   // For plan files, path is already in userFacingName
-  if (file_path.startsWith(getPlansDirectory())) {
+  if (isPlanFileForDisplay(file_path)) {
     return '';
   }
   return <FilePathLink filePath={file_path}>
@@ -88,7 +88,7 @@ export function renderToolResultMessage({
   verbose: boolean;
 }): React.ReactNode {
   // For plan files, show /plan hint above the diff
-  const isPlanFile = filePath.startsWith(getPlansDirectory());
+  const isPlanFile = isPlanFileForDisplay(filePath);
   return <FileEditToolUpdatedMessage filePath={filePath} structuredPatch={structuredPatch} firstLine={originalFile.split('\n')[0] ?? null} fileContent={originalFile} style={style} verbose={verbose} previewHint={isPlanFile ? '/plan to preview' : undefined} />;
 }
 /** The edit diff is capped to MAX_DIFF_LINES_TO_RENDER rows in the normal view;

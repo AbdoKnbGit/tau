@@ -2,20 +2,9 @@ import type { ToolUseContext } from '../../Tool.js'
 import type { LocalCommandResult } from '../../types/command.js'
 import { getDisplayPath } from '../../utils/file.js'
 import { cacheKeys } from '../../utils/fileStateCache.js'
+import { codeSpan } from '../../utils/format.js'
 
-// The output is rendered as Markdown, so each path goes in a code span.
-// Otherwise Windows backslashes act as escapes (\.claude shows as .claude)
-// and names like __init__.py turn bold. The fence is longer than any backtick
-// run in the path, and the padding keeps a leading or trailing backtick/space.
-export function codeSpan(text: string): string {
-  const longestRun = Math.max(
-    0,
-    ...Array.from(text.matchAll(/`+/g), match => match[0].length),
-  )
-  const fence = '`'.repeat(longestRun + 1)
-  const pad = /^[` ]|[` ]$/.test(text) ? ' ' : ''
-  return `${fence}${pad}${text}${pad}${fence}`
-}
+export { codeSpan } from '../../utils/format.js'
 
 export async function call(
   _args: string,

@@ -32,6 +32,7 @@ import {
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
 import { clearAllPlanSlugs } from '../../utils/plans.js'
+import { cancelPlanApprovalNaming } from '../../utils/planApprovalNaming.js'
 import { setCwd } from '../../utils/Shell.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
 import {
@@ -65,6 +66,9 @@ export async function clearConversation({
   setAppState?: (f: (prev: AppState) => AppState) => void
   setConversationId?: (id: UUID) => void
 }): Promise<void> {
+  // /clear regenerates the session without the switchSession signal. Discard
+  // this feature's pending notices before the asynchronous clear hooks.
+  cancelPlanApprovalNaming(true)
   // Execute SessionEnd hooks before clearing (bounded by
   // CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS, default 1.5s)
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()

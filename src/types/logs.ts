@@ -1,6 +1,7 @@
 import type { UUID } from 'crypto'
 import type { FileHistorySnapshot } from 'src/utils/fileHistory.js'
 import type { ContentReplacementRecord } from 'src/utils/toolResultStorage.js'
+import type { PlanFileReference } from '../utils/planFileStorage.js'
 import type { AgentId } from './ids.js'
 import type { Message } from './message.js'
 import type { QueueOperationMessage } from './messageQueueTypes.js'
@@ -50,6 +51,7 @@ export type LogOption = {
   mode?: 'coordinator' | 'normal' // Session mode for coordinator/normal detection
   worktreeSession?: PersistedWorktreeSession | null // Worktree state at session end (null = exited, undefined = never entered)
   contentReplacements?: ContentReplacementRecord[] // Replacement decisions for resume reconstruction
+  planFileReference?: PlanFileReference // Mutable main-plan filename; slug remains the stable plan ID
 }
 
 export type SummaryMessage = {
@@ -62,6 +64,12 @@ export type CustomTitleMessage = {
   type: 'custom-title'
   sessionId: UUID
   customTitle: string
+}
+
+export type PlanFileReferenceEntry = {
+  type: 'plan-file-reference'
+  sessionId: UUID
+  planFileReference: PlanFileReference
 }
 
 /**
@@ -298,6 +306,7 @@ export type Entry =
   | TranscriptMessage
   | SummaryMessage
   | CustomTitleMessage
+  | PlanFileReferenceEntry
   | AiTitleMessage
   | LastPromptMessage
   | TaskSummaryMessage

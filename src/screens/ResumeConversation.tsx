@@ -188,7 +188,7 @@ export function ResumeConversation({
       }
     }
     try {
-      const result_3 = await loadConversationForResume(log_0, undefined);
+      const result_3 = await loadConversationForResume(log_0, undefined, forkSession ? 'fork' : 'resume');
       if (!result_3) {
         throw new Error('Failed to load conversation');
       }
@@ -253,7 +253,8 @@ export function ResumeConversation({
       void updateSessionName(result_3.agentName);
       restoreSessionMetadata(forkSession ? {
         ...result_3,
-        worktreeSession: undefined
+        worktreeSession: undefined,
+        planFileReference: undefined
       } : result_3);
       if (!forkSession) {
         restoreWorktreeForResume(result_3.worktreeSession);

@@ -29,6 +29,7 @@ import { logError } from '../../utils/log.js'
 import {
   getPlan,
   getPlanFilePath,
+  withCurrentPlanFileMutation,
   persistFileSnapshotIfRemote,
 } from '../../utils/plans.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -263,7 +264,7 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
   async call(input, context) {
     const isAgent = !!context.agentId
 
-    const filePath = getPlanFilePath(context.agentId)
+    let filePath = getPlanFilePath(context.agentId)
     // CCR web UI may send an edited plan via permissionResult.updatedInput.
     // queryHelpers.ts full-replaces finalInput, so when CCR sends {} (no edit)
     // input.plan is undefined -> disk fallback. The internal inputSchema omits
@@ -276,7 +277,10 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     // after: the only other persistFileSnapshotIfRemote call (api.ts) runs
     // in normalizeToolInput, pre-permission — it captured the old plan.
     if (inputPlan !== undefined && filePath) {
-      await writeFile(filePath, inputPlan, 'utf-8').catch(e => logError(e))
+      await withCurrentPlanFileMutation(context.agentId, async path => {
+        filePath = path
+        await writeFile(path, inputPlan, 'utf-8')
+      }).catch(e => logError(e))
       void persistFileSnapshotIfRemote()
     }
 

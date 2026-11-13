@@ -34,7 +34,12 @@ import {
   getTaskListId,
   isTodoV2Enabled,
 } from './tasks.js'
-import { getPlanFilePath, getPlan } from './plans.js'
+import {
+  getPlanFilePath,
+  getPlan,
+  takePlanFileRenameNotices,
+} from './plans.js'
+import { samePlanPath, type PlanFileReference } from './planFileStorage.js'
 import { getConnectedIdeName } from './ide.js'
 import {
   filterInjectedMemoryFiles,
@@ -621,6 +626,12 @@ export type Attachment =
       type: 'plan_file_reference'
       planFilePath: string
       planContent: string
+      planFileReference?: PlanFileReference
+    }
+  | {
+      type: 'plan_file_renamed'
+      oldPath: string
+      newPath: string
     }
   | {
       type: 'mcp_resource'
@@ -925,6 +936,9 @@ export async function getAttachments(
     // replaces it; see src/services/skillSearch/prefetch.ts.
     maybe('plan_mode', () => getPlanModeAttachments(messages, toolUseContext)),
     maybe('plan_mode_exit', () => getPlanModeExitAttachment(toolUseContext)),
+    maybe('plan_file_renamed', () =>
+      Promise.resolve(getPlanFileRenameAttachments(toolUseContext, querySource)),
+    ),
     maybe('explore_mode', () => getExploreModeAttachments(toolUseContext)),
     ...(feature('TRANSCRIPT_CLASSIFIER')
       ? [
@@ -1208,12 +1222,27 @@ async function buildImageContentBlocks(
   return results
 }
 
+function samePlanModePath(previousPath: string, currentPath: string): boolean {
+  // Most reminders repeat the exact path: no filesystem work for those.
+  if (previousPath === currentPath) return true
+  // Saved transcripts can contain paths from another machine. Comparing an
+  // inherited network pathname must not initiate filesystem/network probes.
+  const isNetworkPath = (path: string) =>
+    path.startsWith('\\\\') || path.startsWith('//')
+  if (isNetworkPath(previousPath) || isNetworkPath(currentPath)) {
+    return relative(resolve(previousPath), resolve(currentPath)) === ''
+  }
+  return samePlanPath(previousPath, currentPath)
+}
+
 function getPlanModeAttachmentTurnCount(messages: Message[]): {
   turnCount: number
   foundPlanModeAttachment: boolean
+  lastPlanFilePath: string | undefined
 } {
   let turnsSinceLastAttachment = 0
   let foundPlanModeAttachment = false
+  let lastPlanFilePath: string | undefined
 
   // Iterate backwards to find most recent plan_mode attachment.
   // Count HUMAN turns (non-meta, non-tool-result user messages), not assistant
@@ -1222,6 +1251,13 @@ function getPlanModeAttachmentTurnCount(messages: Message[]): {
   // 5 tool calls instead of every 5 human turns.
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
+
+    if (
+      message?.type === 'attachment' &&
+      message.attachment.type === 'plan_mode_exit'
+    ) {
+      break
+    }
 
     if (
       message?.type === 'user' &&
@@ -1235,18 +1271,29 @@ function getPlanModeAttachmentTurnCount(messages: Message[]): {
         message.attachment.type === 'plan_mode_reentry')
     ) {
       foundPlanModeAttachment = true
+      lastPlanFilePath =
+        typeof message.attachment.planFilePath === 'string'
+          ? message.attachment.planFilePath
+          : undefined
       break
     }
   }
 
-  return { turnCount: turnsSinceLastAttachment, foundPlanModeAttachment }
+  return {
+    turnCount: turnsSinceLastAttachment,
+    foundPlanModeAttachment,
+    lastPlanFilePath,
+  }
 }
 
 /**
- * Count plan_mode attachments since the last plan_mode_exit (or from start if no exit).
- * This ensures the full/sparse cycle resets when re-entering plan mode.
+ * Count reminders for the current designated file since its last exit/change.
+ * A fork or rename starts with full instructions for its current plan path.
  */
-function countPlanModeAttachmentsSinceLastExit(messages: Message[]): number {
+function countPlanModeAttachmentsSinceLastExit(
+  messages: Message[],
+  planFilePath: string,
+): number {
   let count = 0
   // Iterate backwards - if we hit a plan_mode_exit, stop counting
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -1254,6 +1301,14 @@ function countPlanModeAttachmentsSinceLastExit(messages: Message[]): number {
     if (message?.type === 'attachment') {
       if (message.attachment.type === 'plan_mode_exit') {
         break // Stop counting at the last exit
+      }
+      if (
+        (message.attachment.type === 'plan_mode' ||
+          message.attachment.type === 'plan_mode_reentry') &&
+        (typeof message.attachment.planFilePath !== 'string' ||
+          !samePlanModePath(message.attachment.planFilePath, planFilePath))
+      ) {
+        break // A fork/rename starts the reminder cycle for its own file.
       }
       if (message.attachment.type === 'plan_mode') {
         count++
@@ -1272,22 +1327,24 @@ async function getPlanModeAttachments(
   if (permissionContext.mode !== 'plan') {
     return []
   }
+  const planFilePath = getPlanFilePath(toolUseContext.agentId)
 
   // Check if we should attach based on turn count (except for first turn)
   if (messages && messages.length > 0) {
-    const { turnCount, foundPlanModeAttachment } =
+    const { turnCount, foundPlanModeAttachment, lastPlanFilePath } =
       getPlanModeAttachmentTurnCount(messages)
-    // Only throttle if we've already sent a plan_mode attachment before
-    // On first turn in plan mode, always attach
+    // A recent inherited reminder cannot designate a fork's different file.
+    // Throttle only when the model has already received the current plan path.
     if (
       foundPlanModeAttachment &&
+      lastPlanFilePath !== undefined &&
+      samePlanModePath(lastPlanFilePath, planFilePath) &&
       turnCount < PLAN_MODE_ATTACHMENT_CONFIG.TURNS_BETWEEN_ATTACHMENTS
     ) {
       return []
     }
   }
 
-  const planFilePath = getPlanFilePath(toolUseContext.agentId)
   const existingPlan = getPlan(toolUseContext.agentId)
 
   const attachments: Attachment[] = []
@@ -1301,7 +1358,7 @@ async function getPlanModeAttachments(
   // Determine if this should be a full or sparse reminder
   // Full reminder on 1st, 6th, 11th... (every Nth attachment)
   const attachmentCount =
-    countPlanModeAttachmentsSinceLastExit(messages ?? []) + 1
+    countPlanModeAttachmentsSinceLastExit(messages ?? [], planFilePath) + 1
   const reminderType: 'full' | 'sparse' =
     attachmentCount %
       PLAN_MODE_ATTACHMENT_CONFIG.FULL_REMINDER_EVERY_N_ATTACHMENTS ===
@@ -1357,6 +1414,29 @@ async function getPlanModeExitAttachment(
   // planning. The user_message signal already fires on the request that
   // triggers planning ("plan how to deploy this"), which is the right moment.
   return [{ type: 'plan_mode_exit', planFilePath, planExists }]
+}
+
+/**
+ * A plan renamed after approval, for the main conversation's next request.
+ * Same main-loop test as query.ts uses for its queue: subagents and forked
+ * side queries must not take the main conversation's notice.
+ */
+function getPlanFileRenameAttachments(
+  toolUseContext: ToolUseContext,
+  querySource: QuerySource | undefined,
+): Attachment[] {
+  if (toolUseContext.agentId) return []
+  if (
+    querySource !== undefined &&
+    !querySource.startsWith('repl_main_thread') &&
+    querySource !== 'sdk'
+  )
+    return []
+  return takePlanFileRenameNotices().map(({ oldPath, newPath }) => ({
+    type: 'plan_file_renamed' as const,
+    oldPath,
+    newPath,
+  }))
 }
 
 async function getExploreModeAttachments(

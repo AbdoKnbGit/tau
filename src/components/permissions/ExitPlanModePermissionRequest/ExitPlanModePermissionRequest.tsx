@@ -1,16 +1,13 @@
 import { feature } from 'bun:bundle';
-import type { UUID } from 'crypto';
 import figures from 'figures';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNotifications } from 'src/context/notifications.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { useAppState, useAppStateStore, useSetAppState } from 'src/state/AppState.js';
-import { getSdkBetas, getSessionId, isSessionPersistenceDisabled, setHasExitedPlanMode, setNeedsAutoModeExitAttachment, setNeedsPlanModeExitAttachment } from '../../../bootstrap/state.js';
-import { generateSessionName } from '../../../commands/rename/generateSessionName.js';
+import { getSdkBetas, setHasExitedPlanMode, setNeedsAutoModeExitAttachment, setNeedsPlanModeExitAttachment } from '../../../bootstrap/state.js';
 import { launchUltraplan } from '../../../commands/ultraplan.js';
 import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../ink.js';
-import type { AppState } from '../../../state/AppStateStore.js';
 import { AGENT_TOOL_NAME } from '../../../tools/AgentTool/constants.js';
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants.js';
 import type { AllowedPrompt } from '../../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
@@ -28,10 +25,10 @@ import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpda
 import { isAutoModeGateEnabled, isBypassPermissionsModeDisabled, restoreDangerousPermissions, stripDangerousPermissionsForAutoMode } from '../../../utils/permissions/permissionSetup.js';
 import { isBypassPermissionsOnForSession } from '../../../utils/permissions/bypassPermissionsMode.js';
 import { getPewterLedgerVariant, isPlanModeInterviewPhaseEnabled } from '../../../utils/planModeV2.js';
-import { getPlan, getPlanFilePath } from '../../../utils/plans.js';
-import { editFileInEditor, editPromptInEditor } from '../../../utils/promptEditor.js';
-import { getCurrentSessionTitle, getTranscriptPath, saveAgentName, saveCustomTitle } from '../../../utils/sessionStorage.js';
-import { getSettings_DEPRECATED } from '../../../utils/settings/settings.js';
+import { capturePlanFileOwner, getPlan, getPlanFilePath, withPlanFileMutation } from '../../../utils/plans.js';
+import { cancelPlanApprovalNaming, startPlanApprovalNaming } from '../../../utils/planApprovalNaming.js';
+import { editFileInEditorAsync, editPromptInEditor } from '../../../utils/promptEditor.js';
+import { getTranscriptPath } from '../../../utils/sessionStorage.js';
 import { type OptionWithDescription, Select } from '../../CustomSelect/index.js';
 import { Markdown } from '../../Markdown.js';
 import { PermissionDialog } from '../PermissionDialog.js';
@@ -74,48 +71,9 @@ export function buildPermissionUpdates(mode: PermissionMode, allowedPrompts?: Al
   return updates;
 }
 
-/**
- * Auto-name the session from the plan content when the user accepts a plan,
- * if they haven't already named it via /rename or --name. Fire-and-forget.
- * Mirrors /rename: kebab-case name, updates the prompt-border badge.
- */
-export function autoNameSessionFromPlan(plan: string, setAppState: (updater: (prev: AppState) => AppState) => void, isClearContext: boolean): void {
-  if (isSessionPersistenceDisabled() || getSettings_DEPRECATED()?.cleanupPeriodDays === 0) {
-    return;
-  }
-  // On clear-context, the current session is about to be abandoned — its
-  // title (which may have been set by a PRIOR auto-name) is irrelevant.
-  // Checking it would make the feature self-defeating after first use.
-  if (!isClearContext && getCurrentSessionTitle(getSessionId())) return;
-  void generateSessionName(
-  // generateSessionName tail-slices to the last 1000 chars (correct for
-  // conversations, where recency matters). Plans front-load the goal and
-  // end with testing steps — head-slice so Haiku sees the summary.
-  [createUserMessage({
-    content: plan.slice(0, 1000)
-  })], new AbortController().signal).then(async name => {
-    // On clear-context acceptance, regenerateSessionId() has run by now —
-    // this intentionally names the NEW execution session. Do not "fix" by
-    // capturing sessionId once; that would name the abandoned planning session.
-    if (!name || getCurrentSessionTitle(getSessionId())) return;
-    const sessionId = getSessionId() as UUID;
-    const fullPath = getTranscriptPath();
-    await saveCustomTitle(sessionId, name, fullPath, 'auto');
-    await saveAgentName(sessionId, name, fullPath, 'auto');
-    setAppState(prev => {
-      if (prev.standaloneAgentContext?.name === name) return prev;
-      return {
-        ...prev,
-        standaloneAgentContext: {
-          ...prev.standaloneAgentContext,
-          name
-        }
-      };
-    });
-  }).catch(logError);
-}
 export function ExitPlanModePermissionRequest({
   toolUseConfirm,
+  toolUseContext,
   onDone,
   onReject,
   workerBadge,
@@ -230,7 +188,7 @@ export function ExitPlanModePermissionRequest({
       logEvent('tengu_plan_external_editor_used', {});
       void (async () => {
         if (isV2 && planFilePath) {
-          const result = await editFileInEditor(planFilePath);
+          const result = await withPlanFileMutation(planFilePath, () => editFileInEditorAsync(planFilePath));
           if (result.error) {
             addNotification({
               key: 'external-editor-error',
@@ -333,8 +291,13 @@ export function ExitPlanModePermissionRequest({
     // Keep-context options skip this block and go through the normal flow below
     const isResumeAutoOption = feature('TRANSCRIPT_CLASSIFIER') ? value === 'yes-resume-auto-mode' : false;
     const isKeepContextOption = value === 'yes-accept-edits-keep-context' || value === 'yes-default-keep-context' || isResumeAutoOption;
-    if (value !== 'no') {
-      autoNameSessionFromPlan(currentPlan, setAppState, !isKeepContextOption);
+    // Subagent approval must not change the main session's title or plan file.
+    const planApprovalNaming = value !== 'no' && !toolUseContext.agentId ? { plan: currentPlan, owner: capturePlanFileOwner() } : undefined;
+    if (planApprovalNaming) {
+      cancelPlanApprovalNaming();
+      if (isKeepContextOption) {
+        startPlanApprovalNaming(planApprovalNaming, { setAppState, readFileState: toolUseContext.readFileState });
+      }
     }
     if (value !== 'no' && !isKeepContextOption) {
       // Determine the permission mode based on the selected option
@@ -380,7 +343,8 @@ export function ExitPlanModePermissionRequest({
           },
           clearContext: true,
           mode,
-          allowedPrompts
+          allowedPrompts,
+          planApprovalNaming
         }
       }));
       setHasExitedPlanMode(true);

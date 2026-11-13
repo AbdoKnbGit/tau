@@ -39,6 +39,7 @@
     "build:native-shell": "node scripts/build-native-shell-parser.mjs",
     "build:native-tools": "node scripts/build-native-tools.mjs",
     "build:native-voice": "node scripts/build-native-voice.mjs",
+    "test:plans": "node scripts/test-plan-files.mjs",
     "test:voice": "node scripts/test-voice.mjs",
     "test:auth": "node --test test/auth-port-owners.test.mjs",
     "voice:sync-packages": "node release/sync-voice-packages.mjs",

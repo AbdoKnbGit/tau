@@ -1,6 +1,10 @@
 import { randomUUID, type UUID } from 'crypto'
 import { mkdir, readFile, writeFile } from 'fs/promises'
-import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
+import {
+  getOriginalCwd,
+  getPlanSlugCache,
+  getSessionId,
+} from '../../bootstrap/state.js'
 import type { LocalJSXCommandContext } from '../../commands.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
@@ -24,6 +28,8 @@ import {
 } from '../../utils/sessionStorage.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
+import { getCurrentPlanFileReference, getPlanSlug } from '../../utils/plans.js'
+import type { PlanFileReference } from '../../utils/planFileStorage.js'
 
 type TranscriptEntry = TranscriptMessage & {
   forkedFrom?: {
@@ -76,9 +82,12 @@ async function createFork(customTitle?: string): Promise<{
   forkPath: string
   serializedMessages: SerializedMessage[]
   contentReplacementRecords: ContentReplacementEntry['replacements']
+  sourcePlanReference?: PlanFileReference
 }> {
   const forkSessionId = randomUUID() as UUID
   const originalSessionId = getSessionId()
+  // Reading the source's plan must not create a plan identity for it.
+  const sourcePlanReference = getCurrentPlanFileReference()
   const projectDir = getProjectDir(getOriginalCwd())
   const forkSessionPath = getTranscriptPathForSession(forkSessionId)
   const currentTranscriptPath = getTranscriptPath()
@@ -128,6 +137,15 @@ async function createFork(customTitle?: string): Promise<{
     throw new Error('No messages to branch')
   }
 
+  // A conversation with a plan identity hands down rows that name it. The fork
+  // gets its own so that restarting it can never reattach the source's plan.
+  const forkPlanId =
+    getPlanSlugCache().has(originalSessionId) ||
+    mainConversationEntries.some(entry => entry.slug)
+      ? getPlanSlug(forkSessionId)
+      : undefined
+  const forkSlug = forkPlanId ? { slug: forkPlanId } : {}
+
   // Build forked entries with new sessionId and preserved metadata
   let parentUuid: UUID | null = null
   const lines: string[] = []
@@ -138,6 +156,7 @@ async function createFork(customTitle?: string): Promise<{
     const forkedEntry: TranscriptEntry = {
       ...entry,
       sessionId: forkSessionId,
+      ...forkSlug,
       parentUuid,
       isSidechain: false,
       forkedFrom: {
@@ -150,6 +169,7 @@ async function createFork(customTitle?: string): Promise<{
     const serialized: SerializedMessage = {
       ...entry,
       sessionId: forkSessionId,
+      ...forkSlug,
     }
 
     serializedMessages.push(serialized)
@@ -183,6 +203,7 @@ async function createFork(customTitle?: string): Promise<{
     forkPath: forkSessionPath,
     serializedMessages,
     contentReplacementRecords,
+    sourcePlanReference,
   }
 }
 
@@ -249,6 +270,7 @@ export async function call(
       forkPath,
       serializedMessages,
       contentReplacementRecords,
+      sourcePlanReference,
     } = await createFork(customTitle)
 
     // Build LogOption for resume
@@ -286,6 +308,9 @@ export async function call(
       sessionId,
       customTitle: effectiveTitle,
       contentReplacements: contentReplacementRecords,
+      // Used only while copying the source plan. Persisted fork rows carry
+      // their own family ID so restarting a branch never adopts its source.
+      planFileReference: sourcePlanReference,
     }
 
     // Resume into the fork

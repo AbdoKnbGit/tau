@@ -198,7 +198,8 @@ import { useAppState, useSetAppState, useAppStateStore, type AppState } from '..
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js';
 import type { PastedContent } from '../utils/config.js';
-import { copyPlanForFork, copyPlanForResume, getPlanSlug, setPlanSlug } from '../utils/plans.js';
+import { capturePlanFileOwner, copyPlanForFork, copyPlanForResume, isPlanFileOwnerCurrent, setPlanSlug } from '../utils/plans.js';
+import { cancelPlanApprovalNaming, cancelStalePlanApprovalNaming, startPlanApprovalNaming, startPlanApprovalNamingAfterClear } from '../utils/planApprovalNaming.js';
 import { clearSessionMetadata, resetSessionFilePointer, adoptResumedSessionFile, removeTranscriptMessage, restoreSessionMetadata, getCurrentSessionTitle, isEphemeralToolProgress, isLoggableMessage, saveWorktreeState, getAgentTranscript } from '../utils/sessionStorage.js';
 import { deserializeMessages } from '../utils/conversationRecovery.js';
 import { extractReadFilesFromMessages, extractBashToolsFromMessages } from '../utils/queryHelpers.js';
@@ -1577,6 +1578,9 @@ export function REPL({
   const [messageSelectorPreselect, setMessageSelectorPreselect] = useState<UserMessage | undefined>(undefined);
   const [showCostDialog, setShowCostDialog] = useState(false);
   const [conversationId, setConversationId] = useState(randomUUID());
+  useEffect(() => {
+    cancelStalePlanApprovalNaming();
+  }, [conversationId]);
 
   // Idle-return dialog: shown when user submits after a long idle gap
   const [idleReturnPending, setIdleReturnPending] = useState<{
@@ -1890,17 +1894,8 @@ export function REPL({
       // For forks, generate a new plan slug and copy the plan content so the
       // original and forked sessions don't clobber each other's plan files.
       // For regular resumes, reuse the original session's plan slug.
-      if (entrypoint === 'fork') {
-        void copyPlanForFork(log, asSessionId(sessionId));
-      } else {
-        void copyPlanForResume(log, asSessionId(sessionId));
-      }
-
-      // Restore file history and attribution state from the resumed conversation
-      restoreSessionStateFromLog(log, setAppState);
-      if (log.fileHistorySnapshots) {
-        void copyFileHistoryForResume(log);
-      }
+      // Restore after switching session/worktree below, before exposing the
+      // resumed conversation, so directory-dependent plan paths are correct.
 
       // Restore agent setting from the resumed conversation
       // Always reset to the new session's values (or clear if none),
@@ -1958,7 +1953,7 @@ export function REPL({
       // a session without an agent name would inherit the previous session's
       // cached name and write it to the wrong transcript on first message.
       clearSessionMetadata();
-      restoreSessionMetadata(log);
+      restoreSessionMetadata(entrypoint === 'fork' ? { ...log, worktreeSession: undefined, planFileReference: undefined } : log);
       // Resumed sessions shouldn't re-title from mid-conversation context
       // (same reasoning as the useRef seed), and the previous session's
       // Haiku title shouldn't carry over.
@@ -1991,6 +1986,19 @@ export function REPL({
         const ws = getCurrentWorktreeSession();
         if (ws) saveWorktreeState(ws);
       }
+
+      if (entrypoint === 'fork') {
+        await copyPlanForFork(log, asSessionId(sessionId));
+      } else {
+        await copyPlanForResume(log, asSessionId(sessionId));
+      }
+
+      // Fork plan copying rebases inherited plan history to the new identity.
+      // Restore history only after that mapping and the target session exist.
+      if (log.fileHistorySnapshots) {
+        await copyFileHistoryForResume(log);
+      }
+      restoreSessionStateFromLog(log, setAppState);
 
       // Persist the current mode so future resumes know what mode this session was in
       if (feature('COORDINATOR_MODE')) {
@@ -3368,11 +3376,19 @@ export function REPL({
     // Mark as processing to prevent re-entry
     initialMessageRef.current = true;
     async function processInitialMessage(initialMsg: NonNullable<typeof pending>) {
+      // A pending approval belongs to its planning session. If the user has
+      // resumed or cleared elsewhere, do not clear or name that other session.
+      if (initialMsg.planApprovalNaming && !isPlanFileOwnerCurrent(initialMsg.planApprovalNaming.owner)) {
+        cancelStalePlanApprovalNaming();
+        setAppState(prev => prev.initialMessage?.message.uuid === initialMsg.message.uuid ? { ...prev, initialMessage: null } : prev);
+        initialMessageRef.current = false;
+        return;
+      }
       // Clear context if requested (plan mode exit)
       if (initialMsg.clearContext) {
-        // Preserve the plan slug before clearing context, so the new session
-        // can access the same plan file after regenerateSessionId()
-        const oldPlanSlug = initialMsg.message.planContent ? getPlanSlug() : undefined;
+        cancelPlanApprovalNaming();
+        // Preserve immutable plan identity before clear regenerates session ID.
+        const oldPlanOwner = initialMsg.message.planContent !== undefined ? capturePlanFileOwner() : undefined;
         const {
           clearConversation
         } = await import('../commands/clear/conversation.js');
@@ -3390,9 +3406,9 @@ export function REPL({
         bashTools.current.clear();
         bashToolsProcessedIdx.current = 0;
 
-        // Restore the plan slug for the new session so getPlan() finds the file
-        if (oldPlanSlug) {
-          setPlanSlug(getSessionId(), oldPlanSlug);
+        // The execution session continues to resolve the approved plan.
+        if (oldPlanOwner) {
+          setPlanSlug(getSessionId(), oldPlanOwner.planId);
         }
       }
 
@@ -3425,6 +3441,12 @@ export function REPL({
           })
         };
       });
+
+      if (initialMsg.planApprovalNaming) {
+        const options = { setAppState, readFileState: readFileState.current };
+        if (initialMsg.clearContext) startPlanApprovalNamingAfterClear(initialMsg.planApprovalNaming, options);
+        else startPlanApprovalNaming(initialMsg.planApprovalNaming, options);
+      }
 
       // Create file history snapshot for code rewind
       if (fileHistoryEnabled()) {

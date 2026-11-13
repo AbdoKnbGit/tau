@@ -265,6 +265,13 @@ For example, `$E=mc^2$` renders as `E=mc²`; inline and display equations work w
 Greek letters, fractions, roots, scripts, and common matrices are supported; code, prompts, logs, and tool output stay literal.
 Copying or exporting preserves the original LaTeX. Unsupported expressions stay readable as source; full TeX documents and custom macros are unsupported.
 
+### Plan mode
+
+Plan mode lets Tau read your code and write a plan before it changes anything.
+When you approve the plan, its file is renamed after the session's title, so `gentle-fluttering-narwhal.md` becomes `add-text-slugify.md` and is easy to find later.
+Nothing is overwritten, and the plan's contents stay exactly the same.
+Settings, commands and an example setup: [docs/plan-mode.md](docs/plan-mode.md).
+
 ---
 
 ## License

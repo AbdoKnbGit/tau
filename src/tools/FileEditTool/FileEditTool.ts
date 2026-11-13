@@ -48,6 +48,10 @@ import {
 import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
 import {
+  getRetiredPlanPathReplacement,
+  withPlanFileMutation,
+} from '../../utils/plans.js'
+import {
   checkWritePermissionForTool,
   matchingRuleForInput,
 } from '../../utils/permissions/filesystem.js'
@@ -171,6 +175,14 @@ export const FileEditTool = buildTool({
     // Use expandPath for consistent path normalization (especially on Windows
     // where "/" vs "\" can cause readFileState lookup mismatches)
     const fullFilePath = expandPath(file_path)
+    const renamedPlanPath = getRetiredPlanPathReplacement(fullFilePath)
+    if (renamedPlanPath) {
+      return {
+        result: false,
+        message: `This plan was renamed to ${renamedPlanPath}. Read that file and edit its current path.`,
+        errorCode: 0,
+      }
+    }
     // Ownership check first: it must run before the file is read or old_string
     // is matched, otherwise the tool's own "not found" rejection fires first
     // and never mentions the agent that actually holds this path.
@@ -549,287 +561,289 @@ export const FileEditTool = buildTool({
     // 1. Get current state
     const fs = getFsImplementation()
     const absoluteFilePath = expandPath(file_path)
-    // Remember this dir so later commands can find files here from another cwd.
-    recordVisitedDir(dirname(absoluteFilePath))
+    return withPlanFileMutation(absoluteFilePath, async () => {
+      // Remember this dir so later commands can find files here from another cwd.
+      recordVisitedDir(dirname(absoluteFilePath))
 
-    // Discover skills from this file's path (fire-and-forget, non-blocking)
-    // Skip in simple mode - no skills available
-    const cwd = getCwd()
-    if (!isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
-      const newSkillDirs = await discoverSkillDirsForPaths(
-        [absoluteFilePath],
-        cwd,
-      )
-      if (newSkillDirs.length > 0) {
-        // Store discovered dirs for attachment display
-        for (const dir of newSkillDirs) {
-          dynamicSkillDirTriggers?.add(dir)
+      // Discover skills from this file's path (fire-and-forget, non-blocking)
+      // Skip in simple mode - no skills available
+      const cwd = getCwd()
+      if (!isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+        const newSkillDirs = await discoverSkillDirsForPaths(
+          [absoluteFilePath],
+          cwd,
+        )
+        if (newSkillDirs.length > 0) {
+          // Store discovered dirs for attachment display
+          for (const dir of newSkillDirs) {
+            dynamicSkillDirTriggers?.add(dir)
+          }
+          // Don't await - let skill loading happen in the background
+          addSkillDirectories(newSkillDirs).catch(() => {})
         }
-        // Don't await - let skill loading happen in the background
-        addSkillDirectories(newSkillDirs).catch(() => {})
+
+        // Activate conditional skills whose path patterns match this file
+        activateConditionalSkillsForPaths([absoluteFilePath], cwd)
       }
 
-      // Activate conditional skills whose path patterns match this file
-      activateConditionalSkillsForPaths([absoluteFilePath], cwd)
-    }
+      await diagnosticTracker.beforeFileEdited(absoluteFilePath)
 
-    await diagnosticTracker.beforeFileEdited(absoluteFilePath)
+      // Ensure parent directory exists before the atomic read-modify-write section.
+      // These awaits must stay OUTSIDE the critical section below — a yield between
+      // the staleness check and writeTextContent lets concurrent edits interleave.
+      await fs.mkdir(dirname(absoluteFilePath))
+      if (fileHistoryEnabled()) {
+        // Backup captures pre-edit content — safe to call before the staleness
+        // check (idempotent v1 backup keyed on content hash; if staleness fails
+        // later we just have an unused backup, not corrupt state).
+        await fileHistoryTrackEdit(
+          updateFileHistoryState,
+          absoluteFilePath,
+          parentMessage.uuid,
+        )
+      }
 
-    // Ensure parent directory exists before the atomic read-modify-write section.
-    // These awaits must stay OUTSIDE the critical section below — a yield between
-    // the staleness check and writeTextContent lets concurrent edits interleave.
-    await fs.mkdir(dirname(absoluteFilePath))
-    if (fileHistoryEnabled()) {
-      // Backup captures pre-edit content — safe to call before the staleness
-      // check (idempotent v1 backup keyed on content hash; if staleness fails
-      // later we just have an unused backup, not corrupt state).
-      await fileHistoryTrackEdit(
-        updateFileHistoryState,
-        absoluteFilePath,
-        parentMessage.uuid,
-      )
-    }
+      // 2. Load current state and confirm no changes since last read
+      // Please avoid async operations between here and writing to disk to preserve atomicity
+      const {
+        content: originalFileContents,
+        fileExists,
+        encoding,
+        lineEndings: endings,
+      } = readFileForEdit(absoluteFilePath)
 
-    // 2. Load current state and confirm no changes since last read
-    // Please avoid async operations between here and writing to disk to preserve atomicity
-    const {
-      content: originalFileContents,
-      fileExists,
-      encoding,
-      lineEndings: endings,
-    } = readFileForEdit(absoluteFilePath)
-
-    if (fileExists) {
-      const lastWriteTime = getFileModificationTime(absoluteFilePath)
-      const lastRead = readFileState.get(absoluteFilePath)
-      if (!lastRead || lastWriteTime > lastRead.timestamp) {
-        // Timestamp indicates modification, but on Windows timestamps can change
-        // without content changes (cloud sync, antivirus, etc.). For full reads,
-        // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          lastRead &&
-          lastRead.offset === undefined &&
-          lastRead.limit === undefined
-        const contentUnchanged =
-          isFullRead && originalFileContents === lastRead.content
-        if (!contentUnchanged) {
-          throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
+      if (fileExists) {
+        const lastWriteTime = getFileModificationTime(absoluteFilePath)
+        const lastRead = readFileState.get(absoluteFilePath)
+        if (!lastRead || lastWriteTime > lastRead.timestamp) {
+          // Timestamp indicates modification, but on Windows timestamps can change
+          // without content changes (cloud sync, antivirus, etc.). For full reads,
+          // compare content as a fallback to avoid false positives.
+          const isFullRead =
+            lastRead &&
+            lastRead.offset === undefined &&
+            lastRead.limit === undefined
+          const contentUnchanged =
+            isFullRead && originalFileContents === lastRead.content
+          if (!contentUnchanged) {
+            throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
+          }
         }
       }
-    }
 
-    // 3. Resolve old_string against the file's real content: exact /
-    // quote-normalized first, then the whitespace-flexible fallback. Must
-    // mirror validateInput, which approved this edit via the same resolution.
-    const exactOrQuoteMatch = findActualString(originalFileContents, old_string)
-    let actualOldString: string
-    let actualNewString: string
-    let flexMatchType: FlexibleMatchType | undefined
-    if (exactOrQuoteMatch !== null) {
-      actualOldString = exactOrQuoteMatch
-      // Preserve curly quotes in new_string when the file uses them
-      actualNewString = preserveQuoteStyle(
-        old_string,
-        actualOldString,
-        new_string,
-      )
-    } else {
-      const flex = resolveFlexibleMatch(
-        originalFileContents,
-        old_string,
-        new_string,
-      )
-      if (flex) {
-        actualOldString = flex.actualOldString
-        actualNewString = flex.actualNewString
-        flexMatchType = flex.matchType
+      // 3. Resolve old_string against the file's real content: exact /
+      // quote-normalized first, then the whitespace-flexible fallback. Must
+      // mirror validateInput, which approved this edit via the same resolution.
+      const exactOrQuoteMatch = findActualString(originalFileContents, old_string)
+      let actualOldString: string
+      let actualNewString: string
+      let flexMatchType: FlexibleMatchType | undefined
+      if (exactOrQuoteMatch !== null) {
+        actualOldString = exactOrQuoteMatch
+        // Preserve curly quotes in new_string when the file uses them
+        actualNewString = preserveQuoteStyle(
+          old_string,
+          actualOldString,
+          new_string,
+        )
       } else {
-        // No safe resolution — fall through with the raw strings; the no-op /
-        // "String not found" handling below keeps prior behavior.
-        actualOldString = old_string
-        actualNewString = new_string
+        const flex = resolveFlexibleMatch(
+          originalFileContents,
+          old_string,
+          new_string,
+        )
+        if (flex) {
+          actualOldString = flex.actualOldString
+          actualNewString = flex.actualNewString
+          flexMatchType = flex.matchType
+        } else {
+          // No safe resolution — fall through with the raw strings; the no-op /
+          // "String not found" handling below keeps prior behavior.
+          actualOldString = old_string
+          actualNewString = new_string
+        }
       }
-    }
 
-    // 4. Generate patch
-    const { patch, updatedFile } = getPatchForEdit({
-      filePath: absoluteFilePath,
-      fileContents: originalFileContents,
-      oldString: actualOldString,
-      newString: actualNewString,
-      replaceAll: replace_all,
-    })
+      // 4. Generate patch
+      const { patch, updatedFile } = getPatchForEdit({
+        filePath: absoluteFilePath,
+        fileContents: originalFileContents,
+        oldString: actualOldString,
+        newString: actualNewString,
+        replaceAll: replace_all,
+      })
 
-    // Idempotent no-op: the resolved edit leaves the file byte-for-byte
-    // identical (old_string === new_string, or new_string already equals the
-    // matched text). Skip the write and every downstream side effect — LSP
-    // didChange/didSave, the VSCode diff, file-history, analytics — since
-    // nothing changed, and return a result that says so plainly so the model
-    // moves on instead of re-issuing the same edit. Guarded on fileExists so
-    // creating a brand-new empty file (originalFileContents === '' with the
-    // file absent) is never mistaken for a no-op and dropped.
-    if (fileExists && updatedFile === originalFileContents) {
+      // Idempotent no-op: the resolved edit leaves the file byte-for-byte
+      // identical (old_string === new_string, or new_string already equals the
+      // matched text). Skip the write and every downstream side effect — LSP
+      // didChange/didSave, the VSCode diff, file-history, analytics — since
+      // nothing changed, and return a result that says so plainly so the model
+      // moves on instead of re-issuing the same edit. Guarded on fileExists so
+      // creating a brand-new empty file (originalFileContents === '' with the
+      // file absent) is never mistaken for a no-op and dropped.
+      if (fileExists && updatedFile === originalFileContents) {
+        readFileState.set(absoluteFilePath, {
+          ...carriedReadState(readFileState.get(absoluteFilePath)),
+          content: originalFileContents,
+          timestamp: getFileModificationTime(absoluteFilePath),
+          offset: undefined,
+          limit: undefined,
+        })
+        return {
+          data: {
+            filePath: file_path,
+            oldString: actualOldString,
+            newString: new_string,
+            originalFile: originalFileContents,
+            structuredPatch: patch,
+            userModified: userModified ?? false,
+            replaceAll: replace_all,
+            noOp: true,
+          },
+        }
+      }
+
+      // 5. Write to disk
+      writeTextContent(absoluteFilePath, updatedFile, encoding, endings)
+
+      // Notify LSP servers about file modification (didChange) and save (didSave)
+      const lspManager = getLspServerManager()
+      if (lspManager) {
+        // Clear previously delivered diagnostics so new ones will be shown
+        clearDeliveredDiagnosticsForFile(pathToFileURL(absoluteFilePath).href)
+        // didChange: Content has been modified
+        lspManager
+          .changeFile(absoluteFilePath, updatedFile)
+          .catch((err: Error) => {
+            logForDebugging(
+              `LSP: Failed to notify server of file change for ${absoluteFilePath}: ${err.message}`,
+            )
+            logError(err)
+          })
+        // didSave: File has been saved to disk (triggers diagnostics in TypeScript server)
+        lspManager.saveFile(absoluteFilePath).catch((err: Error) => {
+          logForDebugging(
+            `LSP: Failed to notify server of file save for ${absoluteFilePath}: ${err.message}`,
+          )
+          logError(err)
+        })
+      }
+
+      // Notify VSCode about the file change for diff view
+      notifyVscodeFileUpdated(absoluteFilePath, originalFileContents, updatedFile)
+
+      // 6. Update read timestamp, to invalidate stale writes
       readFileState.set(absoluteFilePath, {
         ...carriedReadState(readFileState.get(absoluteFilePath)),
-        content: originalFileContents,
+        content: updatedFile,
         timestamp: getFileModificationTime(absoluteFilePath),
         offset: undefined,
         limit: undefined,
       })
-      return {
-        data: {
-          filePath: file_path,
-          oldString: actualOldString,
-          newString: new_string,
-          originalFile: originalFileContents,
-          structuredPatch: patch,
-          userModified: userModified ?? false,
-          replaceAll: replace_all,
-          noOp: true,
-        },
+
+      // 7. Log events
+      if (absoluteFilePath.endsWith(`${sep}CLAUDE.md`)) {
+        logEvent('tengu_write_claudemd', {})
       }
-    }
+      countLinesChanged(patch)
 
-    // 5. Write to disk
-    writeTextContent(absoluteFilePath, updatedFile, encoding, endings)
+      logFileOperation({
+        operation: 'edit',
+        tool: 'FileEditTool',
+        filePath: absoluteFilePath,
+      })
 
-    // Notify LSP servers about file modification (didChange) and save (didSave)
-    const lspManager = getLspServerManager()
-    if (lspManager) {
-      // Clear previously delivered diagnostics so new ones will be shown
-      clearDeliveredDiagnosticsForFile(pathToFileURL(absoluteFilePath).href)
-      // didChange: Content has been modified
-      lspManager
-        .changeFile(absoluteFilePath, updatedFile)
-        .catch((err: Error) => {
-          logForDebugging(
-            `LSP: Failed to notify server of file change for ${absoluteFilePath}: ${err.message}`,
-          )
-          logError(err)
+      logEvent('tengu_edit_string_lengths', {
+        oldStringBytes: Buffer.byteLength(old_string, 'utf8'),
+        newStringBytes: Buffer.byteLength(new_string, 'utf8'),
+        replaceAll: replace_all,
+      })
+
+      // Track how often the whitespace-flexible fallback rescued an edit that
+      // exact matching would have failed. (Metadata values are boolean-only by
+      // policy — no strings.)
+      if (flexMatchType) {
+        logEvent('tengu_edit_flexible_match', {
+          trailingWhitespace: flexMatchType === 'trailing-whitespace',
+          indent: flexMatchType === 'indent',
+          blankLines: flexMatchType === 'blank-lines',
         })
-      // didSave: File has been saved to disk (triggers diagnostics in TypeScript server)
-      lspManager.saveFile(absoluteFilePath).catch((err: Error) => {
-        logForDebugging(
-          `LSP: Failed to notify server of file save for ${absoluteFilePath}: ${err.message}`,
-        )
-        logError(err)
-      })
-    }
-
-    // Notify VSCode about the file change for diff view
-    notifyVscodeFileUpdated(absoluteFilePath, originalFileContents, updatedFile)
-
-    // 6. Update read timestamp, to invalidate stale writes
-    readFileState.set(absoluteFilePath, {
-      ...carriedReadState(readFileState.get(absoluteFilePath)),
-      content: updatedFile,
-      timestamp: getFileModificationTime(absoluteFilePath),
-      offset: undefined,
-      limit: undefined,
-    })
-
-    // 7. Log events
-    if (absoluteFilePath.endsWith(`${sep}CLAUDE.md`)) {
-      logEvent('tengu_write_claudemd', {})
-    }
-    countLinesChanged(patch)
-
-    logFileOperation({
-      operation: 'edit',
-      tool: 'FileEditTool',
-      filePath: absoluteFilePath,
-    })
-
-    logEvent('tengu_edit_string_lengths', {
-      oldStringBytes: Buffer.byteLength(old_string, 'utf8'),
-      newStringBytes: Buffer.byteLength(new_string, 'utf8'),
-      replaceAll: replace_all,
-    })
-
-    // Track how often the whitespace-flexible fallback rescued an edit that
-    // exact matching would have failed. (Metadata values are boolean-only by
-    // policy — no strings.)
-    if (flexMatchType) {
-      logEvent('tengu_edit_flexible_match', {
-        trailingWhitespace: flexMatchType === 'trailing-whitespace',
-        indent: flexMatchType === 'indent',
-        blankLines: flexMatchType === 'blank-lines',
-      })
-    }
-
-    let gitDiff: ToolUseDiff | undefined
-    if (
-      isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
-      getFeatureValue_CACHED_MAY_BE_STALE('tengu_quartz_lantern', false)
-    ) {
-      const startTime = Date.now()
-      const diff = await fetchSingleFileGitDiff(absoluteFilePath)
-      if (diff) gitDiff = diff
-      logEvent('tengu_tool_use_diff_computed', {
-        isEditTool: true,
-        durationMs: Date.now() - startTime,
-        hasDiff: !!diff,
-      })
-    }
-
-    // Best-effort, non-blocking syntax check (warn-only). Runs AFTER the write
-    // above, so it is structurally incapable of blocking or reverting the edit —
-    // it only attaches an advisory note when the edit INTRODUCED new parse
-    // errors. Returns undefined for unsupported languages or unavailable
-    // parsing, and never throws.
-    const syntaxWarning = await validateEditSyntax(
-      absoluteFilePath,
-      originalFileContents,
-      updatedFile,
-    )
-    if (syntaxWarning) {
-      // Breadcrumb so the check is observable in a real session via --debug
-      // (writes to ~/.claude/debug/<session>.txt; use -d2e for stderr).
-      logForDebugging(`[tree-sitter] ${absoluteFilePath}: ${syntaxWarning}`)
-    }
-
-    // Same contract as the syntax check above, for named imports of Node
-    // builtin modules (catches e.g. `import { fileURLToPath } from
-    // 'node:path'` — wrong module — the instant it is written).
-    const importWarning = validateBuiltinImports(
-      absoluteFilePath,
-      originalFileContents,
-      updatedFile,
-    )
-    if (importWarning) {
-      logForDebugging(`[import-check] ${absoluteFilePath}: ${importWarning}`)
-    }
-
-    // Show the model the post-edit region (bounded, line-numbered) in the
-    // success result. This is the root-cause fix for chained-edit failures:
-    // the model's next old_string for this file is built from the current
-    // content it just saw, not a stale mental copy from before its own edit.
-    // Opt out with CLAUDE_CODE_DISABLE_EDIT_SNIPPET=1 to save tokens.
-    let editedSnippet: string | undefined
-    if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EDIT_SNIPPET)) {
-      const { formattedSnippet } = getSnippetForPatch(patch, updatedFile)
-      if (formattedSnippet) {
-        editedSnippet = capEditResultSnippet(formattedSnippet)
       }
-    }
 
-    // 8. Yield result
-    const data = {
-      filePath: file_path,
-      oldString: actualOldString,
-      newString: new_string,
-      originalFile: originalFileContents,
-      structuredPatch: patch,
-      userModified: userModified ?? false,
-      replaceAll: replace_all,
-      ...(gitDiff && { gitDiff }),
-      ...(syntaxWarning && { syntaxWarning }),
-      ...(importWarning && { importWarning }),
-      ...(editedSnippet && { editedSnippet }),
-    }
-    return {
-      data,
-    }
+      let gitDiff: ToolUseDiff | undefined
+      if (
+        isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
+        getFeatureValue_CACHED_MAY_BE_STALE('tengu_quartz_lantern', false)
+      ) {
+        const startTime = Date.now()
+        const diff = await fetchSingleFileGitDiff(absoluteFilePath)
+        if (diff) gitDiff = diff
+        logEvent('tengu_tool_use_diff_computed', {
+          isEditTool: true,
+          durationMs: Date.now() - startTime,
+          hasDiff: !!diff,
+        })
+      }
+
+      // Best-effort, non-blocking syntax check (warn-only). Runs AFTER the write
+      // above, so it is structurally incapable of blocking or reverting the edit —
+      // it only attaches an advisory note when the edit INTRODUCED new parse
+      // errors. Returns undefined for unsupported languages or unavailable
+      // parsing, and never throws.
+      const syntaxWarning = await validateEditSyntax(
+        absoluteFilePath,
+        originalFileContents,
+        updatedFile,
+      )
+      if (syntaxWarning) {
+        // Breadcrumb so the check is observable in a real session via --debug
+        // (writes to ~/.claude/debug/<session>.txt; use -d2e for stderr).
+        logForDebugging(`[tree-sitter] ${absoluteFilePath}: ${syntaxWarning}`)
+      }
+
+      // Same contract as the syntax check above, for named imports of Node
+      // builtin modules (catches e.g. `import { fileURLToPath } from
+      // 'node:path'` — wrong module — the instant it is written).
+      const importWarning = validateBuiltinImports(
+        absoluteFilePath,
+        originalFileContents,
+        updatedFile,
+      )
+      if (importWarning) {
+        logForDebugging(`[import-check] ${absoluteFilePath}: ${importWarning}`)
+      }
+
+      // Show the model the post-edit region (bounded, line-numbered) in the
+      // success result. This is the root-cause fix for chained-edit failures:
+      // the model's next old_string for this file is built from the current
+      // content it just saw, not a stale mental copy from before its own edit.
+      // Opt out with CLAUDE_CODE_DISABLE_EDIT_SNIPPET=1 to save tokens.
+      let editedSnippet: string | undefined
+      if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EDIT_SNIPPET)) {
+        const { formattedSnippet } = getSnippetForPatch(patch, updatedFile)
+        if (formattedSnippet) {
+          editedSnippet = capEditResultSnippet(formattedSnippet)
+        }
+      }
+
+      // 8. Yield result
+      const data = {
+        filePath: file_path,
+        oldString: actualOldString,
+        newString: new_string,
+        originalFile: originalFileContents,
+        structuredPatch: patch,
+        userModified: userModified ?? false,
+        replaceAll: replace_all,
+        ...(gitDiff && { gitDiff }),
+        ...(syntaxWarning && { syntaxWarning }),
+        ...(importWarning && { importWarning }),
+        ...(editedSnippet && { editedSnippet }),
+      }
+      return {
+        data,
+      }
+    })
   },
   mapToolResultToToolResultBlockParam(data: FileEditOutput, toolUseID) {
     const {

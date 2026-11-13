@@ -2,6 +2,31 @@
 
 import { getRelativeTimeFormat, getTimeZone } from './intl.js'
 
+/** Keep literal paths/text intact when command output is rendered as Markdown. */
+export function codeSpan(text: string): string {
+  let displayText = text
+  if (/[<>\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(text)) {
+    // Markdown folds raw line breaks inside code spans. A quoted representation
+    // also makes controls explicit and prevents paths from closing a command's
+    // stdout tag before Markdown parsing, while retaining a JSON round-trip.
+    displayText = JSON.stringify(text).replace(
+      /[<>\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
+      character =>
+        character
+          .split('')
+          .map(unit => `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`)
+          .join(''),
+    )
+  }
+  const longestRun = Math.max(
+    0,
+    ...Array.from(displayText.matchAll(/`+/g), match => match[0].length),
+  )
+  const fence = '`'.repeat(longestRun + 1)
+  const pad = /^[` ]|[` ]$/.test(displayText) ? ' ' : ''
+  return `${fence}${pad}${displayText}${pad}${fence}`
+}
+
 /**
  * Formats a byte count to a human-readable string (KB, MB, GB).
  * @example formatFileSize(1536) → "1.5KB"

@@ -4008,6 +4008,12 @@ You have exited plan mode. You can now make edits, run tools, and take actions.$
         createUserMessage({ content, isMeta: true }),
       ])
     }
+    case 'plan_file_renamed': {
+      const content = `The approved plan file was renamed from ${attachment.oldPath} to ${attachment.newPath}. Use the new path for future reads or edits.`
+      return wrapMessagesInSystemReminder([
+        createUserMessage({ content, isMeta: true }),
+      ])
+    }
     case 'explore_mode': {
       if (attachment.isSubAgent) {
         return []

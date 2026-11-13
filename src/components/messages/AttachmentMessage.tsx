@@ -255,6 +255,10 @@ export function AttachmentMessage({
       return <Line>
           Plan file referenced ({getDisplayPath(attachment.planFilePath)})
         </Line>;
+    case 'plan_file_renamed':
+      return <Line>
+          Plan renamed to {getDisplayPath(attachment.newPath)}
+        </Line>;
     case 'invoked_skills':
       {
         if (attachment.skills.length === 0) {

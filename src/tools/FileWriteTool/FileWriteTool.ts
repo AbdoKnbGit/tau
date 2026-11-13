@@ -41,6 +41,10 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
 import {
+  getRetiredPlanPathReplacement,
+  withPlanFileMutation,
+} from '../../utils/plans.js'
+import {
   checkWritePermissionForTool,
   matchingRuleForInput,
 } from '../../utils/permissions/filesystem.js'
@@ -181,6 +185,14 @@ export const FileWriteTool = buildTool({
   },
   async validateInput({ file_path, content }, toolUseContext: ToolUseContext) {
     const fullFilePath = expandPath(file_path)
+    const renamedPlanPath = getRetiredPlanPathReplacement(fullFilePath)
+    if (renamedPlanPath) {
+      return {
+        result: false,
+        message: `This plan was renamed to ${renamedPlanPath}. Read that file and write to its current path.`,
+        errorCode: 0,
+      }
+    }
     // Ownership check first: it must run before the file is read or old_string
     // is matched, otherwise the tool's own "not found" rejection fires first
     // and never mentions the agent that actually holds this path.
@@ -300,278 +312,280 @@ export const FileWriteTool = buildTool({
     parentMessage,
   ) {
     const fullFilePath = expandPath(file_path)
-    const dir = dirname(fullFilePath)
-    // Remember this dir so later commands can find files here from another cwd.
-    recordVisitedDir(dir)
+    return withPlanFileMutation(fullFilePath, async () => {
+      const dir = dirname(fullFilePath)
+      // Remember this dir so later commands can find files here from another cwd.
+      recordVisitedDir(dir)
 
-    // Discover skills from this file's path (fire-and-forget, non-blocking)
-    const cwd = getCwd()
-    const newSkillDirs = await discoverSkillDirsForPaths([fullFilePath], cwd)
-    if (newSkillDirs.length > 0) {
-      // Store discovered dirs for attachment display
-      for (const dir of newSkillDirs) {
-        dynamicSkillDirTriggers?.add(dir)
+      // Discover skills from this file's path (fire-and-forget, non-blocking)
+      const cwd = getCwd()
+      const newSkillDirs = await discoverSkillDirsForPaths([fullFilePath], cwd)
+      if (newSkillDirs.length > 0) {
+        // Store discovered dirs for attachment display
+        for (const dir of newSkillDirs) {
+          dynamicSkillDirTriggers?.add(dir)
+        }
+        // Don't await - let skill loading happen in the background
+        addSkillDirectories(newSkillDirs).catch(() => {})
       }
-      // Don't await - let skill loading happen in the background
-      addSkillDirectories(newSkillDirs).catch(() => {})
-    }
 
-    // Activate conditional skills whose path patterns match this file
-    activateConditionalSkillsForPaths([fullFilePath], cwd)
+      // Activate conditional skills whose path patterns match this file
+      activateConditionalSkillsForPaths([fullFilePath], cwd)
 
-    // Ensure parent directory exists before the atomic read-modify-write section.
-    // Must stay OUTSIDE the critical section below (a yield between the staleness
-    // check and writeTextContent lets concurrent edits interleave), and BEFORE the
-    // write (lazy-mkdir-on-ENOENT would fire a spurious tengu_atomic_write_error
-    // inside writeFileSyncAndFlush_DEPRECATED before ENOENT propagates back).
-    await getFsImplementation().mkdir(dir)
+      // Ensure parent directory exists before the atomic read-modify-write section.
+      // Must stay OUTSIDE the critical section below (a yield between the staleness
+      // check and writeTextContent lets concurrent edits interleave), and BEFORE the
+      // write (lazy-mkdir-on-ENOENT would fire a spurious tengu_atomic_write_error
+      // inside writeFileSyncAndFlush_DEPRECATED before ENOENT propagates back).
+      await getFsImplementation().mkdir(dir)
 
-    // Fast idempotency check before edit diagnostics/history hooks. No read-state
-    // check is needed to skip a write: if disk already equals the requested
-    // bytes, returning without mutation is safe even after an external change.
-    try {
-      const current = readFileSyncWithMetadata(fullFilePath)
-      if (isFileWriteNoOp(current.content, current.hasCRLF, content)) {
+      // Fast idempotency check before edit diagnostics/history hooks. No read-state
+      // check is needed to skip a write: if disk already equals the requested
+      // bytes, returning without mutation is safe even after an external change.
+      try {
+        const current = readFileSyncWithMetadata(fullFilePath)
+        if (isFileWriteNoOp(current.content, current.hasCRLF, content)) {
+          return {
+            data: {
+              type: 'update' as const,
+              filePath: file_path,
+              content,
+              structuredPatch: [],
+              originalFile: current.content,
+              noOp: true,
+            },
+          }
+        }
+      } catch (error) {
+        if (!isENOENT(error)) throw error
+      }
+
+      await diagnosticTracker.beforeFileEdited(fullFilePath)
+
+      if (fileHistoryEnabled()) {
+        await fileHistoryTrackEdit(
+          updateFileHistoryState,
+          fullFilePath,
+          parentMessage.uuid,
+        )
+      }
+
+      // Load current state and confirm no changes since last read.
+      // Please avoid async operations between here and writing to disk to preserve atomicity.
+      let meta: ReturnType<typeof readFileSyncWithMetadata> | null
+      try {
+        meta = readFileSyncWithMetadata(fullFilePath)
+      } catch (e) {
+        if (isENOENT(e)) {
+          meta = null
+        } else {
+          throw e
+        }
+      }
+
+      if (meta !== null) {
+        const lastWriteTime = getFileModificationTime(fullFilePath)
+        const lastRead = readFileState.get(fullFilePath)
+        if (lastRead?.sourceMapsOmitted) {
+          throw new Error('Read the whole file with include_source_maps: true before replacing it, or use Edit to change only the visible source.')
+        }
+        if (!lastRead || lastWriteTime > lastRead.timestamp) {
+          // Timestamp indicates modification, but on Windows timestamps can change
+          // without content changes (cloud sync, antivirus, etc.). For full reads,
+          // compare content as a fallback to avoid false positives.
+          const isFullRead =
+            lastRead &&
+            lastRead.offset === undefined &&
+            lastRead.limit === undefined
+          // meta.content is CRLF-normalized — matches readFileState's normalized form.
+          if (!isFullRead || meta.content !== lastRead.content) {
+            throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
+          }
+        }
+      }
+
+      const enc = meta?.encoding ?? 'utf8'
+      const oldContent = meta?.content ?? null
+
+      if (
+        meta !== null &&
+        isFileWriteNoOp(meta.content, meta.hasCRLF, content)
+      ) {
         return {
           data: {
             type: 'update' as const,
             filePath: file_path,
             content,
             structuredPatch: [],
-            originalFile: current.content,
+            originalFile: meta.content,
             noOp: true,
           },
         }
       }
-    } catch (error) {
-      if (!isENOENT(error)) throw error
-    }
 
-    await diagnosticTracker.beforeFileEdited(fullFilePath)
-
-    if (fileHistoryEnabled()) {
-      await fileHistoryTrackEdit(
-        updateFileHistoryState,
-        fullFilePath,
-        parentMessage.uuid,
-      )
-    }
-
-    // Load current state and confirm no changes since last read.
-    // Please avoid async operations between here and writing to disk to preserve atomicity.
-    let meta: ReturnType<typeof readFileSyncWithMetadata> | null
-    try {
-      meta = readFileSyncWithMetadata(fullFilePath)
-    } catch (e) {
-      if (isENOENT(e)) {
-        meta = null
-      } else {
+      // Write is a full content replacement — the model sent explicit line endings
+      // in `content` and meant them. Do not rewrite them. Previously we preserved
+      // the old file's line endings (or sampled the repo via ripgrep for new
+      // files), which silently corrupted e.g. bash scripts with \r on Linux when
+      // overwriting a CRLF file or when binaries in cwd poisoned the repo sample.
+      try {
+        writeTextContent(fullFilePath, content, enc, 'LF')
+      } catch (e) {
+        // "no such file or directory" is a lie when the directory is right
+        // there. The parent was just mkdir'd above, so an ENOENT that survives
+        // into the write means the path exists but refuses to accept a new file
+        // — on Windows that is almost always Controlled Folder Access (Defender
+        // ransomware protection covers Pictures/Documents/Desktop by default),
+        // which reports a blocked create as ENOENT rather than a permission
+        // error. Left raw, the model reads "directory missing", retries with a
+        // different separator, and burns turns on a path that can never work.
+        if (isENOENT(e) && existsSync(dir)) {
+          throw new Error(
+            `Cannot create ${fullFilePath}: the directory exists but the system refused to create the file. ` +
+              (process.platform === 'win32'
+                ? 'This is usually Windows Controlled Folder Access (Defender ransomware protection), which reports blocked writes as "no such file or directory". Check Windows Security > Virus & threat protection > Ransomware protection > Protected folders, or write somewhere else.'
+                : 'Check directory permissions, or write somewhere else.'),
+          )
+        }
         throw e
       }
-    }
 
-    if (meta !== null) {
-      const lastWriteTime = getFileModificationTime(fullFilePath)
-      const lastRead = readFileState.get(fullFilePath)
-      if (lastRead?.sourceMapsOmitted) {
-        throw new Error('Read the whole file with include_source_maps: true before replacing it, or use Edit to change only the visible source.')
+      // Notify LSP servers about file modification (didChange) and save (didSave)
+      const lspManager = getLspServerManager()
+      if (lspManager) {
+        // Clear previously delivered diagnostics so new ones will be shown
+        clearDeliveredDiagnosticsForFile(pathToFileURL(fullFilePath).href)
+        // didChange: Content has been modified
+        lspManager.changeFile(fullFilePath, content).catch((err: Error) => {
+          logForDebugging(
+            `LSP: Failed to notify server of file change for ${fullFilePath}: ${err.message}`,
+          )
+          logError(err)
+        })
+        // didSave: File has been saved to disk (triggers diagnostics in TypeScript server)
+        lspManager.saveFile(fullFilePath).catch((err: Error) => {
+          logForDebugging(
+            `LSP: Failed to notify server of file save for ${fullFilePath}: ${err.message}`,
+          )
+          logError(err)
+        })
       }
-      if (!lastRead || lastWriteTime > lastRead.timestamp) {
-        // Timestamp indicates modification, but on Windows timestamps can change
-        // without content changes (cloud sync, antivirus, etc.). For full reads,
-        // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          lastRead &&
-          lastRead.offset === undefined &&
-          lastRead.limit === undefined
-        // meta.content is CRLF-normalized — matches readFileState's normalized form.
-        if (!isFullRead || meta.content !== lastRead.content) {
-          throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
-        }
+
+      // Notify VSCode about the file change for diff view
+      notifyVscodeFileUpdated(fullFilePath, oldContent, content)
+
+      // Update read timestamp, to invalidate stale writes
+      readFileState.set(fullFilePath, {
+        content,
+        timestamp: getFileModificationTime(fullFilePath),
+        offset: undefined,
+        limit: undefined,
+      })
+
+      // Log when writing to CLAUDE.md
+      if (fullFilePath.endsWith(`${sep}CLAUDE.md`)) {
+        logEvent('tengu_write_claudemd', {})
       }
-    }
 
-    const enc = meta?.encoding ?? 'utf8'
-    const oldContent = meta?.content ?? null
+      let gitDiff: ToolUseDiff | undefined
+      if (
+        isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
+        getFeatureValue_CACHED_MAY_BE_STALE('tengu_quartz_lantern', false)
+      ) {
+        const startTime = Date.now()
+        const diff = await fetchSingleFileGitDiff(fullFilePath)
+        if (diff) gitDiff = diff
+        logEvent('tengu_tool_use_diff_computed', {
+          isWriteTool: true,
+          durationMs: Date.now() - startTime,
+          hasDiff: !!diff,
+        })
+      }
 
-    if (
-      meta !== null &&
-      isFileWriteNoOp(meta.content, meta.hasCRLF, content)
-    ) {
-      return {
-        data: {
+      // Best-effort post-write checks, warn-only (same contract as
+      // FileEditTool): only report problems this write introduced compared to
+      // the previous content ('' for new files). Runs AFTER the write, so it
+      // can never block or revert it.
+      const syntaxWarning = await validateEditSyntax(
+        fullFilePath,
+        oldContent ?? '',
+        content,
+      )
+      if (syntaxWarning) {
+        logForDebugging(`[tree-sitter] ${fullFilePath}: ${syntaxWarning}`)
+      }
+      const importWarning = validateBuiltinImports(
+        fullFilePath,
+        oldContent ?? '',
+        content,
+      )
+      if (importWarning) {
+        logForDebugging(`[import-check] ${fullFilePath}: ${importWarning}`)
+      }
+
+      if (oldContent) {
+        const patch = getPatchForDisplay({
+          filePath: file_path,
+          fileContents: oldContent,
+          edits: [
+            {
+              old_string: oldContent,
+              new_string: content,
+              replace_all: false,
+            },
+          ],
+        })
+
+        const data = {
           type: 'update' as const,
           filePath: file_path,
           content,
-          structuredPatch: [],
-          originalFile: meta.content,
-          noOp: true,
-        },
+          structuredPatch: patch,
+          originalFile: oldContent,
+          ...(gitDiff && { gitDiff }),
+          ...(syntaxWarning && { syntaxWarning }),
+          ...(importWarning && { importWarning }),
+        }
+        // Track lines added and removed for file updates, right before yielding result
+        countLinesChanged(patch)
+
+        logFileOperation({
+          operation: 'write',
+          tool: 'FileWriteTool',
+          filePath: fullFilePath,
+          type: 'update',
+        })
+
+        return {
+          data,
+        }
       }
-    }
-
-    // Write is a full content replacement — the model sent explicit line endings
-    // in `content` and meant them. Do not rewrite them. Previously we preserved
-    // the old file's line endings (or sampled the repo via ripgrep for new
-    // files), which silently corrupted e.g. bash scripts with \r on Linux when
-    // overwriting a CRLF file or when binaries in cwd poisoned the repo sample.
-    try {
-      writeTextContent(fullFilePath, content, enc, 'LF')
-    } catch (e) {
-      // "no such file or directory" is a lie when the directory is right
-      // there. The parent was just mkdir'd above, so an ENOENT that survives
-      // into the write means the path exists but refuses to accept a new file
-      // — on Windows that is almost always Controlled Folder Access (Defender
-      // ransomware protection covers Pictures/Documents/Desktop by default),
-      // which reports a blocked create as ENOENT rather than a permission
-      // error. Left raw, the model reads "directory missing", retries with a
-      // different separator, and burns turns on a path that can never work.
-      if (isENOENT(e) && existsSync(dir)) {
-        throw new Error(
-          `Cannot create ${fullFilePath}: the directory exists but the system refused to create the file. ` +
-            (process.platform === 'win32'
-              ? 'This is usually Windows Controlled Folder Access (Defender ransomware protection), which reports blocked writes as "no such file or directory". Check Windows Security > Virus & threat protection > Ransomware protection > Protected folders, or write somewhere else.'
-              : 'Check directory permissions, or write somewhere else.'),
-        )
-      }
-      throw e
-    }
-
-    // Notify LSP servers about file modification (didChange) and save (didSave)
-    const lspManager = getLspServerManager()
-    if (lspManager) {
-      // Clear previously delivered diagnostics so new ones will be shown
-      clearDeliveredDiagnosticsForFile(pathToFileURL(fullFilePath).href)
-      // didChange: Content has been modified
-      lspManager.changeFile(fullFilePath, content).catch((err: Error) => {
-        logForDebugging(
-          `LSP: Failed to notify server of file change for ${fullFilePath}: ${err.message}`,
-        )
-        logError(err)
-      })
-      // didSave: File has been saved to disk (triggers diagnostics in TypeScript server)
-      lspManager.saveFile(fullFilePath).catch((err: Error) => {
-        logForDebugging(
-          `LSP: Failed to notify server of file save for ${fullFilePath}: ${err.message}`,
-        )
-        logError(err)
-      })
-    }
-
-    // Notify VSCode about the file change for diff view
-    notifyVscodeFileUpdated(fullFilePath, oldContent, content)
-
-    // Update read timestamp, to invalidate stale writes
-    readFileState.set(fullFilePath, {
-      content,
-      timestamp: getFileModificationTime(fullFilePath),
-      offset: undefined,
-      limit: undefined,
-    })
-
-    // Log when writing to CLAUDE.md
-    if (fullFilePath.endsWith(`${sep}CLAUDE.md`)) {
-      logEvent('tengu_write_claudemd', {})
-    }
-
-    let gitDiff: ToolUseDiff | undefined
-    if (
-      isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
-      getFeatureValue_CACHED_MAY_BE_STALE('tengu_quartz_lantern', false)
-    ) {
-      const startTime = Date.now()
-      const diff = await fetchSingleFileGitDiff(fullFilePath)
-      if (diff) gitDiff = diff
-      logEvent('tengu_tool_use_diff_computed', {
-        isWriteTool: true,
-        durationMs: Date.now() - startTime,
-        hasDiff: !!diff,
-      })
-    }
-
-    // Best-effort post-write checks, warn-only (same contract as
-    // FileEditTool): only report problems this write introduced compared to
-    // the previous content ('' for new files). Runs AFTER the write, so it
-    // can never block or revert it.
-    const syntaxWarning = await validateEditSyntax(
-      fullFilePath,
-      oldContent ?? '',
-      content,
-    )
-    if (syntaxWarning) {
-      logForDebugging(`[tree-sitter] ${fullFilePath}: ${syntaxWarning}`)
-    }
-    const importWarning = validateBuiltinImports(
-      fullFilePath,
-      oldContent ?? '',
-      content,
-    )
-    if (importWarning) {
-      logForDebugging(`[import-check] ${fullFilePath}: ${importWarning}`)
-    }
-
-    if (oldContent) {
-      const patch = getPatchForDisplay({
-        filePath: file_path,
-        fileContents: oldContent,
-        edits: [
-          {
-            old_string: oldContent,
-            new_string: content,
-            replace_all: false,
-          },
-        ],
-      })
 
       const data = {
-        type: 'update' as const,
+        type: 'create' as const,
         filePath: file_path,
         content,
-        structuredPatch: patch,
-        originalFile: oldContent,
+        structuredPatch: [],
+        originalFile: null,
         ...(gitDiff && { gitDiff }),
         ...(syntaxWarning && { syntaxWarning }),
         ...(importWarning && { importWarning }),
       }
-      // Track lines added and removed for file updates, right before yielding result
-      countLinesChanged(patch)
+
+      // For creation of new files, count all lines as additions, right before yielding the result
+      countLinesChanged([], content)
 
       logFileOperation({
         operation: 'write',
         tool: 'FileWriteTool',
         filePath: fullFilePath,
-        type: 'update',
+        type: 'create',
       })
 
       return {
         data,
       }
-    }
-
-    const data = {
-      type: 'create' as const,
-      filePath: file_path,
-      content,
-      structuredPatch: [],
-      originalFile: null,
-      ...(gitDiff && { gitDiff }),
-      ...(syntaxWarning && { syntaxWarning }),
-      ...(importWarning && { importWarning }),
-    }
-
-    // For creation of new files, count all lines as additions, right before yielding the result
-    countLinesChanged([], content)
-
-    logFileOperation({
-      operation: 'write',
-      tool: 'FileWriteTool',
-      filePath: fullFilePath,
-      type: 'create',
     })
-
-    return {
-      data,
-    }
   },
   mapToolResultToToolResultBlockParam(
     { filePath, type, syntaxWarning, importWarning, noOp },

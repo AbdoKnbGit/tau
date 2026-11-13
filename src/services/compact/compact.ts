@@ -67,7 +67,11 @@ import {
   normalizeMessagesForAPI,
 } from '../../utils/messages.js'
 import { expandPath } from '../../utils/path.js'
-import { getPlan, getPlanFilePath } from '../../utils/plans.js'
+import {
+  getCurrentPlanFileReference,
+  getPlan,
+  getPlanFilePath,
+} from '../../utils/plans.js'
 import {
   isSessionActivityTrackingActive,
   sendSessionActivitySignal,
@@ -1629,11 +1633,13 @@ export function createPlanAttachmentIfNeeded(
   }
 
   const planFilePath = getPlanFilePath(agentId)
+  const planFileReference = agentId ? undefined : getCurrentPlanFileReference()
 
   return createAttachmentMessage({
     type: 'plan_file_reference',
     planFilePath,
     planContent,
+    ...(planFileReference ? { planFileReference } : {}),
   })
 }
 

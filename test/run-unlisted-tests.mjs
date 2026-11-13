@@ -7,8 +7,8 @@ import { resolve } from 'node:path'
 const root = resolve(import.meta.dirname, '..')
 const named = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8')
 const files = readdirSync(resolve(root, 'test'))
-  // The voice tests have a step of their own, which finds them by this name.
-  .filter(name => name.endsWith('.test.mjs') && !/^(?:live|native)-voice/.test(name))
+  // Voice and plan suites have dedicated CI steps that discover these names.
+  .filter(name => name.endsWith('.test.mjs') && !/^(?:(?:live|native)-voice|plan-)/.test(name))
   .map(name => `test/${name}`)
   .filter(file => !named.includes(file))
 console.log(`${files.length} test files no other step names`)

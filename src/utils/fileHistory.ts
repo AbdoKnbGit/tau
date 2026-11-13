@@ -10,7 +10,7 @@ import {
   stat,
   unlink,
 } from 'fs/promises'
-import { dirname, isAbsolute, join, relative } from 'path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import {
   getIsNonInteractiveSession,
   getOriginalCwd,
@@ -26,6 +26,12 @@ import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { getErrnoCode, isENOENT } from './errors.js'
 import { pathExists } from './file.js'
 import { logError } from './log.js'
+import {
+  getPlanHistoryPath,
+  getRetiredPlanPathReplacement,
+  withPlanFileMutation,
+} from './plans.js'
+import { readPlanFileRecord, samePlanDirectory } from './planFileStorage.js'
 import { recordFileHistorySnapshot } from './sessionStorage.js'
 
 type BackupFileName = string | null // The null value means the file does not exist in this version
@@ -104,7 +110,7 @@ export async function fileHistoryTrackEdit(
     return
   }
 
-  const trackingPath = maybeShortenFilePath(filePath)
+  const trackingPath = maybeShortenFilePath(getPlanHistoryPath(filePath))
 
   // Phase 1: check if backup is needed. Speculative writes would overwrite
   // the deterministic {hash}@v1 backup on every repeat call — a second
@@ -242,7 +248,7 @@ export function createFileHistoryBatch(
     skipped,
     async backup(filePath, { createdFile = false } = {}) {
       if (!fileHistoryEnabled()) return
-      const trackingPath = maybeShortenFilePath(filePath)
+      const trackingPath = maybeShortenFilePath(getPlanHistoryPath(filePath))
       if (pending.has(trackingPath) || skipped.has(filePath) || isTracked(trackingPath)) return
       try {
         if (createdFile) {
@@ -347,54 +353,55 @@ export async function fileHistoryMakeSnapshot(
     await Promise.all(
       Array.from(captured.trackedFiles, async trackingPath => {
         try {
-          const filePath = maybeExpandFilePath(trackingPath)
-          const latestBackup =
-            mostRecentSnapshot.trackedFileBackups[trackingPath]
-          const nextVersion = latestBackup ? latestBackup.version + 1 : 1
+          await withTrackedFileMutation(trackingPath, async filePath => {
+            const latestBackup =
+              mostRecentSnapshot.trackedFileBackups[trackingPath]
+            const nextVersion = latestBackup ? latestBackup.version + 1 : 1
 
-          // Stat the file once; ENOENT means the tracked file was deleted.
-          let fileStats: Stats | undefined
-          try {
-            fileStats = await stat(filePath)
-          } catch (e: unknown) {
-            if (!isENOENT(e)) throw e
-          }
-
-          if (!fileStats) {
-            trackedFileBackups[trackingPath] = {
-              backupFileName: null, // Use null to denote missing tracked file
-              version: nextVersion,
-              backupTime: new Date(),
+            // Stat the file once; ENOENT means the tracked file was deleted.
+            let fileStats: Stats | undefined
+            try {
+              fileStats = await stat(filePath)
+            } catch (e: unknown) {
+              if (!isENOENT(e)) throw e
             }
-            logEvent('tengu_file_history_backup_deleted_file', {
-              version: nextVersion,
-            })
-            logForDebugging(
-              `FileHistory: Missing tracked file: ${trackingPath}`,
-            )
-            return
-          }
 
-          // File exists - check if it needs to be backed up
-          if (
-            latestBackup &&
-            latestBackup.backupFileName !== null &&
-            !(await checkOriginFileChanged(
+            if (!fileStats) {
+              trackedFileBackups[trackingPath] = {
+                backupFileName: null, // Use null to denote missing tracked file
+                version: nextVersion,
+                backupTime: new Date(),
+              }
+              logEvent('tengu_file_history_backup_deleted_file', {
+                version: nextVersion,
+              })
+              logForDebugging(
+                `FileHistory: Missing tracked file: ${trackingPath}`,
+              )
+              return
+            }
+
+            // File exists - check if it needs to be backed up
+            if (
+              latestBackup &&
+              latestBackup.backupFileName !== null &&
+              !(await checkOriginFileChanged(
+                filePath,
+                latestBackup.backupFileName,
+                fileStats,
+              ))
+            ) {
+              // File hasn't been modified since the latest version, reuse it
+              trackedFileBackups[trackingPath] = latestBackup
+              return
+            }
+
+            // File is newer than the latest backup, create a new backup
+            trackedFileBackups[trackingPath] = await createBackup(
               filePath,
-              latestBackup.backupFileName,
-              fileStats,
-            ))
-          ) {
-            // File hasn't been modified since the latest version, reuse it
-            trackedFileBackups[trackingPath] = latestBackup
-            return
-          }
-
-          // File is newer than the latest backup, create a new backup
-          trackedFileBackups[trackingPath] = await createBackup(
-            filePath,
-            nextVersion,
-          )
+              nextVersion,
+            )
+          })
         } catch (error) {
           logError(error)
           logEvent('tengu_file_history_backup_file_failed', {})
@@ -552,7 +559,7 @@ export async function fileHistoryGetDiffStats(
   const results = await Promise.all(
     Array.from(state.trackedFiles, async trackingPath => {
       try {
-        const filePath = maybeExpandFilePath(trackingPath)
+        const filePath = resolveTrackedFilePath(trackingPath)
         const targetBackup = targetSnapshot.trackedFileBackups[trackingPath]
 
         const backupFileName: BackupFileName | undefined = targetBackup
@@ -631,7 +638,7 @@ export async function fileHistoryGetDiffStatsBetween(
   const results = await Promise.all(
     Object.entries(from.trackedFileBackups).map(async ([trackingPath, backup]) => {
       try {
-        const filePath = maybeExpandFilePath(trackingPath)
+        const filePath = resolveTrackedFilePath(trackingPath)
         const before = backup.backupFileName
         let after: string | null
         if (to) {
@@ -698,7 +705,7 @@ export async function fileHistoryHasAnyChanges(
 
   for (const trackingPath of state.trackedFiles) {
     try {
-      const filePath = maybeExpandFilePath(trackingPath)
+      const filePath = resolveTrackedFilePath(trackingPath)
       const targetBackup = targetSnapshot.trackedFileBackups[trackingPath]
       const backupFileName: BackupFileName | undefined = targetBackup
         ? targetBackup.backupFileName
@@ -731,45 +738,46 @@ async function applySnapshot(
   const filesChanged: string[] = []
   for (const trackingPath of state.trackedFiles) {
     try {
-      const filePath = maybeExpandFilePath(trackingPath)
-      const targetBackup = targetSnapshot.trackedFileBackups[trackingPath]
+      await withTrackedFileMutation(trackingPath, async filePath => {
+        const targetBackup = targetSnapshot.trackedFileBackups[trackingPath]
 
-      const backupFileName: BackupFileName | undefined = targetBackup
-        ? targetBackup.backupFileName
-        : getBackupFileNameFirstVersion(trackingPath, state)
+        const backupFileName: BackupFileName | undefined = targetBackup
+          ? targetBackup.backupFileName
+          : getBackupFileNameFirstVersion(trackingPath, state)
 
-      if (backupFileName === undefined) {
-        // Error resolving the backup, so don't touch the file
-        logError(
-          new Error('FileHistory: Error finding the backup file to apply'),
-        )
-        logEvent('tengu_file_history_rewind_restore_file_failed', {
-          dryRun: false,
-        })
-        continue
-      }
-
-      if (backupFileName === null) {
-        // File did not exist at the target version; delete it if present.
-        try {
-          await unlink(filePath)
-          logForDebugging(`FileHistory: [Rewind] Deleted ${filePath}`)
-          filesChanged.push(filePath)
-        } catch (e: unknown) {
-          if (!isENOENT(e)) throw e
-          // Already absent; nothing to do.
+        if (backupFileName === undefined) {
+          // Error resolving the backup, so don't touch the file
+          logError(
+            new Error('FileHistory: Error finding the backup file to apply'),
+          )
+          logEvent('tengu_file_history_rewind_restore_file_failed', {
+            dryRun: false,
+          })
+          return
         }
-        continue
-      }
 
-      // File should exist at a specific version. Restore only if it differs.
-      if (await checkOriginFileChanged(filePath, backupFileName)) {
-        await restoreBackup(filePath, backupFileName)
-        logForDebugging(
-          `FileHistory: [Rewind] Restored ${filePath} from ${backupFileName}`,
-        )
-        filesChanged.push(filePath)
-      }
+        if (backupFileName === null) {
+          // File did not exist at the target version; delete it if present.
+          try {
+            await unlink(filePath)
+            logForDebugging(`FileHistory: [Rewind] Deleted ${filePath}`)
+            filesChanged.push(filePath)
+          } catch (e: unknown) {
+            if (!isENOENT(e)) throw e
+            // Already absent; nothing to do.
+          }
+          return
+        }
+
+        // File should exist at a specific version. Restore only if it differs.
+        if (await checkOriginFileChanged(filePath, backupFileName)) {
+          await restoreBackup(filePath, backupFileName)
+          logForDebugging(
+            `FileHistory: [Rewind] Restored ${filePath} from ${backupFileName}`,
+          )
+          filesChanged.push(filePath)
+        }
+      })
     } catch (error) {
       logError(error)
       logEvent('tengu_file_history_rewind_restore_file_failed', {
@@ -964,7 +972,9 @@ async function createBackup(
     return { backupFileName: null, version, backupTime: new Date() }
   }
 
-  const backupFileName = getBackupFileName(filePath, version)
+  // The backup identity stays stable when an approved plan is renamed. Reading
+  // uses its current filename, while version hashes continue using the old key.
+  const backupFileName = getBackupFileName(getPlanHistoryPath(filePath), version)
   const backupPath = resolveBackupPath(backupFileName)
 
   // Stat first: if the source is missing, record a null backup and skip the
@@ -1072,6 +1082,29 @@ function getBackupFileNameFirstVersion(
   return undefined
 }
 
+/** Resolve a stable history key to the plan's current filename at the IO boundary. */
+function resolveTrackedFilePath(trackingPath: string): string {
+  const filePath = maybeExpandFilePath(trackingPath)
+  return getRetiredPlanPathReplacement(filePath) ?? filePath
+}
+
+/** Serialize plan history IO with renames, retrying if it moved before lock acquisition. */
+async function withTrackedFileMutation<T>(
+  trackingPath: string,
+  operation: (filePath: string) => Promise<T>,
+): Promise<T> {
+  let filePath = resolveTrackedFilePath(trackingPath)
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await withPlanFileMutation(filePath, () => operation(resolveTrackedFilePath(trackingPath)))
+    } catch (error) {
+      const currentPath = resolveTrackedFilePath(trackingPath)
+      if (currentPath === filePath || attempt >= 2) throw error
+      filePath = currentPath
+    }
+  }
+}
+
 /**
  * Use the relative path as the key to reduce session storage space for tracking.
  */
@@ -1124,6 +1157,62 @@ export function fileHistoryRestoreStateFromLog(
     snapshots: snapshots,
     trackedFiles: trackedFiles,
     snapshotSequence: snapshots.length,
+  })
+}
+
+/** A fork inherits backup contents, but never the source plan's writable paths. */
+export function rebasePlanFileHistorySnapshots(
+  snapshots: FileHistorySnapshot[] | undefined,
+  sourceId: string,
+  targetId: string,
+  directory: string,
+  sourceCwd: string = getOriginalCwd(),
+  targetDirectory: string = directory,
+): FileHistorySnapshot[] | undefined {
+  if (!snapshots || sourceId === targetId) return snapshots
+  const mainNames = new Set([`${sourceId}.md`])
+  try {
+    const record = readPlanFileRecord(directory, sourceId)
+    mainNames.add(record.filename)
+    for (const filename of record.previousFilenames) mainNames.add(filename)
+  } catch {
+    // Stable pre-rename history keys still identify the source plan even when
+    // optional filename metadata is unavailable. Do not guess at sibling files.
+  }
+  const agentPrefix = `${sourceId}-agent-`
+  return snapshots.map(snapshot => {
+    const trackedFileBackups: Record<string, FileHistoryBackup> = {}
+    for (const [trackingPath, backup] of Object.entries(snapshot.trackedFileBackups)) {
+      const absolutePath = isAbsolute(trackingPath)
+        ? trackingPath
+        : resolve(sourceCwd, trackingPath)
+      // Match the name before resolving the directory: forks can carry many
+      // snapshots of many files, and only plan names can be rebased.
+      const name = basename(absolutePath)
+      let filename: string | undefined
+      if (mainNames.has(name)) {
+        filename = `${targetId}.md`
+      } else if (name.startsWith(agentPrefix) && name.endsWith('.md')) {
+        const agentId = name.slice(agentPrefix.length, -3)
+        if (/^[a-zA-Z0-9_-]{1,160}$/.test(agentId)) {
+          filename = `${targetId}-agent-${agentId}.md`
+        }
+      }
+      if (filename && !samePlanDirectory(dirname(absolutePath), directory)) {
+        filename = undefined
+      }
+      const targetPath = filename
+        ? isAbsolute(trackingPath)
+          ? join(targetDirectory, filename)
+          : relative(getOriginalCwd(), join(targetDirectory, filename))
+        : trackingPath
+      // Older logs may hold both a named path and the stable key. Keep one
+      // stream, preferring the canonical identity's backup when both occur.
+      if (!(targetPath in trackedFileBackups) || basename(absolutePath) === `${sourceId}.md`) {
+        trackedFileBackups[targetPath] = backup
+      }
+    }
+    return { ...snapshot, trackedFileBackups }
   })
 }
 
@@ -1274,7 +1363,7 @@ async function notifyVscodeSnapshotFilesUpdated(
   }
 
   for (const trackingPath of newState.trackedFiles) {
-    const filePath = maybeExpandFilePath(trackingPath)
+    const filePath = resolveTrackedFilePath(trackingPath)
     const oldBackup = oldSnapshot?.trackedFileBackups[trackingPath]
     const newBackup = newSnapshot.trackedFileBackups[trackingPath]
 

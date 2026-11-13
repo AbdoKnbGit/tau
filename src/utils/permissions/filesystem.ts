@@ -29,7 +29,7 @@ import {
   getDirectoryForPath,
   sanitizePath,
 } from '../path.js'
-import { getPlanSlug, getPlansDirectory } from '../plans.js'
+import { isCurrentSessionPlanFile } from '../plans.js'
 import { getPlatform } from '../platform.js'
 import { getProjectDir } from '../sessionStorage.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
@@ -244,15 +244,9 @@ function isClaudeConfigFilePath(filePath: string): boolean {
 
 // Check if file is the plan file for the current session
 function isSessionPlanFile(absolutePath: string): boolean {
-  // Check if path is a plan file for this session (main or agent-specific)
-  // Main plan file: {plansDir}/{planSlug}.md
-  // Agent plan file: {plansDir}/{planSlug}-agent-{agentId}.md
-  const expectedPrefix = join(getPlansDirectory(), getPlanSlug())
-  // SECURITY: Normalize to prevent path traversal bypasses via .. segments
-  const normalizedPath = normalize(absolutePath)
-  return (
-    normalizedPath.startsWith(expectedPrefix) && normalizedPath.endsWith('.md')
-  )
+  // Exact ownership matters: title-derived slugs commonly share a prefix with
+  // other sessions, including their timestamp-suffixed collision filenames.
+  return isCurrentSessionPlanFile(absolutePath)
 }
 
 /**

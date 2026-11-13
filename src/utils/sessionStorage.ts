@@ -89,6 +89,10 @@ import {
 } from './messages.js'
 import { sanitizePath } from './path.js'
 import {
+  parsePlanFileReference,
+  type PlanFileReference,
+} from './planFileStorage.js'
+import {
   extractJsonStringField,
   extractLastJsonStringField,
   LITE_READ_BUF_SIZE,
@@ -100,6 +104,21 @@ import { getSettings_DEPRECATED } from './settings/settings.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import type { ContentReplacementRecord } from './toolResultStorage.js'
 import { validateUuid } from './uuid.js'
+
+function latestPlanFileReference(
+  current: PlanFileReference | undefined,
+  value: unknown,
+): PlanFileReference | undefined {
+  const reference = parsePlanFileReference(value)
+  if (
+    !reference ||
+    (current?.planId === reference.planId &&
+      current.revision > reference.revision)
+  ) {
+    return current
+  }
+  return reference
+}
 
 // Cache MACRO.VERSION at module level to work around bun --define bug in async contexts
 // See: https://github.com/oven-sh/bun/issues/26168
@@ -655,6 +674,7 @@ class Project {
   // Minimal cache for current session only (not all sessions)
   currentSessionTag: string | undefined
   currentSessionTitle: string | undefined
+  currentSessionPlanFileReference: PlanFileReference | undefined
   currentSessionAgentName: string | undefined
   currentSessionAgentColor: string | undefined
   currentSessionLastPrompt: string | undefined
@@ -885,6 +905,22 @@ class Project {
       }
     }
 
+    // Another session can rename a shared plan. Never re-append an older
+    // reference over a newer revision already present in this transcript.
+    for (const line of tailLines) {
+      if (!line.startsWith('{"type":"plan-file-reference"')) continue
+      try {
+        const entry = jsonParse(line) as Record<string, unknown>
+        if (entry.sessionId !== sessionId) continue
+        this.currentSessionPlanFileReference = latestPlanFileReference(
+          this.currentSessionPlanFileReference,
+          entry.planFileReference,
+        )
+      } catch {
+        // Ignore an incomplete or malformed tail entry.
+      }
+    }
+
     // lastPrompt is re-appended so readLiteMetadata can show what the
     // user was most recently doing. Written first so customTitle/tag/etc
     // land closer to EOF (they're the more critical fields for tail reads).
@@ -901,6 +937,13 @@ class Project {
       appendEntryToFile(this.sessionFile, {
         type: 'custom-title',
         customTitle: this.currentSessionTitle,
+        sessionId,
+      })
+    }
+    if (this.currentSessionPlanFileReference) {
+      appendEntryToFile(this.sessionFile, {
+        type: 'plan-file-reference',
+        planFileReference: this.currentSessionPlanFileReference,
         sessionId,
       })
     }
@@ -1136,8 +1179,10 @@ class Project {
     agentId?: string,
     startingParentUuid?: UUID | null,
     teamInfo?: { teamName?: string; agentName?: string },
+    shouldRecord?: () => boolean,
   ) {
     return this.trackWrite(async () => {
+      if (shouldRecord && !shouldRecord()) return
       let parentUuid: UUID | null = startingParentUuid ?? null
 
       // First user/assistant message materializes the session file.
@@ -1147,6 +1192,7 @@ class Project {
         messages.some(m => m.type === 'user' || m.type === 'assistant')
       ) {
         await this.materializeSessionFile()
+        if (shouldRecord && !shouldRecord()) return
       }
 
       // Get current git branch once for this message chain
@@ -1157,12 +1203,14 @@ class Project {
         // Not in a git repo or git command failed
         gitBranch = undefined
       }
+      if (shouldRecord && !shouldRecord()) return
 
       // Get slug if one exists for this session (used for plan files, etc.)
       const sessionId = getSessionId()
       const slug = getPlanSlugCache().get(sessionId)
 
       for (const message of messages) {
+        if (shouldRecord && !shouldRecord()) return
         const isCompactBoundary = isCompactBoundaryMessage(message)
 
         // For tool_result messages, use the assistant message UUID from the message
@@ -1202,7 +1250,7 @@ class Project {
           gitBranch,
           slug,
         }
-        await this.appendEntry(transcriptMessage)
+        await this.appendEntry(transcriptMessage, shouldRecord ? sessionId as UUID : undefined, shouldRecord)
         if (isChainParticipant(message)) {
           parentUuid = message.uuid
         }
@@ -1283,7 +1331,8 @@ class Project {
     }
   }
 
-  async appendEntry(entry: Entry, sessionId: UUID = getSessionId() as UUID) {
+  async appendEntry(entry: Entry, sessionId: UUID = getSessionId() as UUID, shouldRecord?: () => boolean) {
+    if (shouldRecord && !shouldRecord()) return
     if (this.shouldSkipPersistence()) {
       return
     }
@@ -1301,6 +1350,7 @@ class Project {
       sessionFile = this.sessionFile
     } else {
       const existing = await this.getExistingSessionFile(sessionId)
+      if (shouldRecord && !shouldRecord()) return
       if (!existing) {
         logError(
           new Error(
@@ -1318,6 +1368,8 @@ class Project {
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'custom-title') {
       // Custom titles can always be appended
+      void this.enqueueWrite(sessionFile, entry)
+    } else if (entry.type === 'plan-file-reference') {
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'ai-title') {
       // AI titles can always be appended
@@ -1374,6 +1426,7 @@ class Project {
       void this.enqueueWrite(sessionFile, entry)
     } else {
       const messageSet = await getSessionMessages(sessionId)
+      if (shouldRecord && !shouldRecord()) return
       if (entry.type === 'queue-operation') {
         // Queue operations are always appended to the session file
         void this.enqueueWrite(sessionFile, entry)
@@ -1603,10 +1656,15 @@ export async function recordTranscript(
   teamInfo?: TeamInfo,
   startingParentUuidHint?: UUID,
   allMessages?: readonly Message[],
+  shouldRecord?: () => boolean,
 ): Promise<UUID | null> {
+  // Background snapshots may become stale at any persistence await. Ordinary
+  // transcript callers keep their existing behavior; guarded callers fail closed.
+  if (shouldRecord && !shouldRecord()) return null
   const cleanedMessages = cleanMessagesForLogging(messages, allMessages)
   const sessionId = getSessionId() as UUID
   const messageSet = await getSessionMessages(sessionId)
+  if (shouldRecord && !shouldRecord()) return null
   let newMessages: typeof cleanedMessages = []
   let startingParentUuid: UUID | undefined = startingParentUuidHint
   let seenNewMessage = false
@@ -1629,6 +1687,7 @@ export async function recordTranscript(
             undefined,
             startingParentUuid,
             teamInfo,
+            shouldRecord,
           )
           newMessages = []
         }
@@ -1647,6 +1706,7 @@ export async function recordTranscript(
       undefined,
       startingParentUuid,
       teamInfo,
+      shouldRecord,
     )
   }
   // Return the last ACTUALLY recorded chain-participant's UUID, OR the
@@ -2638,6 +2698,7 @@ export async function loadTranscriptFromFile(
       leafUuids,
       contentReplacements,
       worktreeStates,
+      planFileReferences,
     } = await loadTranscriptFile(filePath)
 
     if (messages.size === 0) {
@@ -2683,6 +2744,7 @@ export async function loadTranscriptFromFile(
       worktreeSession: worktreeStates.has(sessionId)
         ? worktreeStates.get(sessionId)
         : undefined,
+      planFileReference: planFileReferences.get(sessionId),
     }
   }
 
@@ -2711,15 +2773,22 @@ export async function loadTranscriptFromFile(
     )
   }
 
-  return convertToLogOption(
-    messages,
-    0,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    filePath,
-  )
+  return {
+    ...convertToLogOption(
+      messages,
+      0,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      filePath,
+    ),
+    planFileReference: parsePlanFileReference(
+      parsed && typeof parsed === 'object' && 'planFileReference' in parsed
+        ? parsed.planFileReference
+        : undefined,
+    ),
+  }
 }
 
 /**
@@ -2968,6 +3037,39 @@ export async function saveCustomTitle(
   })
 }
 
+/** Persist the main plan's mutable filename without changing its stable slug. */
+export async function savePlanFileReference(
+  sessionId: UUID,
+  reference: PlanFileReference,
+  fullPath?: string,
+): Promise<void> {
+  const parsed = parsePlanFileReference(reference)
+  if (!parsed) throw new Error('Invalid plan file reference')
+  const isCurrentSession = sessionId === getSessionId()
+  if (isCurrentSession) {
+    const project = getProject()
+    project.currentSessionPlanFileReference = latestPlanFileReference(
+      project.currentSessionPlanFileReference,
+      parsed,
+    )
+  }
+  if (
+    isSessionPersistenceDisabled() ||
+    getSettings_DEPRECATED()?.cleanupPeriodDays === 0
+  )
+    return
+  const path = fullPath ?? getTranscriptPathForSession(sessionId)
+  // Like other startup metadata, the current session's reference stays cached
+  // until its first message creates the transcript (materializeSessionFile
+  // writes it then). Appending now would leave a metadata-only file.
+  if (isCurrentSession && !getFsImplementation().existsSync(path)) return
+  appendEntryToFile(path, {
+    type: 'plan-file-reference',
+    sessionId,
+    planFileReference: parsed,
+  })
+}
+
 /**
  * Persist an AI-generated title to the JSONL as a distinct `ai-title` entry.
  *
@@ -3097,6 +3199,7 @@ export function restoreSessionMetadata(meta: {
   prNumber?: number
   prUrl?: string
   prRepository?: string
+  planFileReference?: PlanFileReference
 }): void {
   const project = getProject()
   // ??= so --name (cacheSessionTitle) wins over the resumed
@@ -3113,6 +3216,13 @@ export function restoreSessionMetadata(meta: {
     project.currentSessionPrNumber = meta.prNumber
   if (meta.prUrl) project.currentSessionPrUrl = meta.prUrl
   if (meta.prRepository) project.currentSessionPrRepository = meta.prRepository
+  project.currentSessionPlanFileReference = latestPlanFileReference(
+    project.currentSessionPlanFileReference,
+    meta.planFileReference,
+  )
+  if (project.currentSessionPlanFileReference) {
+    getPlanSlugCache().set(getSessionId(), project.currentSessionPlanFileReference.planId)
+  }
 }
 
 /**
@@ -3123,6 +3233,7 @@ export function restoreSessionMetadata(meta: {
 export function clearSessionMetadata(): void {
   const project = getProject()
   project.currentSessionTitle = undefined
+  project.currentSessionPlanFileReference = undefined
   project.currentSessionTag = undefined
   project.currentSessionAgentName = undefined
   project.currentSessionAgentColor = undefined
@@ -3303,6 +3414,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       prRepositories,
       modes,
       worktreeStates,
+      planFileReferences,
       fileHistorySnapshots,
       attributionSnapshots,
       contentReplacements,
@@ -3349,6 +3461,9 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
         sessionId && worktreeStates.has(sessionId)
           ? worktreeStates.get(sessionId)
           : log.worktreeSession,
+      planFileReference: sessionId
+        ? (planFileReferences.get(sessionId) ?? log.planFileReference)
+        : log.planFileReference,
       prNumber: sessionId ? prNumbers.get(sessionId) : log.prNumber,
       prUrl: sessionId ? prUrls.get(sessionId) : log.prUrl,
       prRepository: sessionId
@@ -3444,6 +3559,7 @@ export async function searchSessionsByCustomTitle(
 const METADATA_TYPE_MARKERS = [
   '"type":"summary"',
   '"type":"custom-title"',
+  '"type":"plan-file-reference"',
   '"type":"tag"',
   '"type":"agent-name"',
   '"type":"agent-color"',
@@ -3453,8 +3569,9 @@ const METADATA_TYPE_MARKERS = [
   '"type":"pr-link"',
 ]
 const METADATA_MARKER_BUFS = METADATA_TYPE_MARKERS.map(m => Buffer.from(m))
-// Longest marker is 22 bytes; +1 for leading `{` = 23.
-const METADATA_PREFIX_BOUND = 25
+// Include the leading `{` so split markers survive chunk boundaries.
+const METADATA_PREFIX_BOUND =
+  Math.max(...METADATA_MARKER_BUFS.map(marker => marker.length)) + 1
 
 // null = carry spans whole chunk. Skips concat when carry provably isn't
 // a metadata line (markers sit at byte 1 after `{`).
@@ -3816,6 +3933,7 @@ export async function loadTranscriptFile(
   prRepositories: Map<UUID, string>
   modes: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
+  planFileReferences: Map<UUID, PlanFileReference>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -3836,6 +3954,7 @@ export async function loadTranscriptFile(
   const prRepositories = new Map<UUID, string>()
   const modes = new Map<UUID, string>()
   const worktreeStates = new Map<UUID, PersistedWorktreeSession | null>()
+  const planFileReferences = new Map<UUID, PlanFileReference>()
   const fileHistorySnapshots = new Map<UUID, FileHistorySnapshotMessage>()
   const attributionSnapshots = new Map<UUID, AttributionSnapshotMessage>()
   const contentReplacements = new Map<UUID, ContentReplacementRecord[]>()
@@ -3922,6 +4041,12 @@ export async function loadTranscriptFile(
           summaries.set(entry.leafUuid, entry.summary)
         } else if (entry.type === 'custom-title' && entry.sessionId) {
           customTitles.set(entry.sessionId, entry.customTitle)
+        } else if (entry.type === 'plan-file-reference' && entry.sessionId) {
+          const reference = latestPlanFileReference(
+            planFileReferences.get(entry.sessionId),
+            entry.planFileReference,
+          )
+          if (reference) planFileReferences.set(entry.sessionId, reference)
         } else if (entry.type === 'tag' && entry.sessionId) {
           tags.set(entry.sessionId, entry.tag)
         } else if (entry.type === 'agent-name' && entry.sessionId) {
@@ -3990,6 +4115,12 @@ export async function loadTranscriptFile(
         summaries.set(entry.leafUuid, entry.summary)
       } else if (entry.type === 'custom-title' && entry.sessionId) {
         customTitles.set(entry.sessionId, entry.customTitle)
+      } else if (entry.type === 'plan-file-reference' && entry.sessionId) {
+        const reference = latestPlanFileReference(
+          planFileReferences.get(entry.sessionId),
+          entry.planFileReference,
+        )
+        if (reference) planFileReferences.set(entry.sessionId, reference)
       } else if (entry.type === 'tag' && entry.sessionId) {
         tags.set(entry.sessionId, entry.tag)
       } else if (entry.type === 'agent-name' && entry.sessionId) {
@@ -4133,6 +4264,7 @@ export async function loadTranscriptFile(
     prRepositories,
     modes,
     worktreeStates,
+    planFileReferences,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -4153,6 +4285,7 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   tags: Map<UUID, string>
   agentSettings: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
+  planFileReferences: Map<UUID, PlanFileReference>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -4208,6 +4341,7 @@ export async function getLastSessionLog(
     tags,
     agentSettings,
     worktreeStates,
+    planFileReferences,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -4253,6 +4387,7 @@ export async function getLastSessionLog(
       contentReplacements.get(sessionId) ?? [],
     ),
     worktreeSession: worktreeStates.get(sessionId),
+    planFileReference: planFileReferences.get(sessionId),
     contextCollapseCommits: contextCollapseCommits.filter(
       e => e.sessionId === sessionId,
     ),
@@ -4954,6 +5089,7 @@ export async function loadAllLogsFromSessionFile(
     prUrls,
     prRepositories,
     modes,
+    planFileReferences,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -5016,6 +5152,7 @@ export async function loadAllLogsFromSessionFile(
       agentColor: agentColors.get(sessionId),
       agentSetting: agentSettings.get(sessionId),
       mode: modes.get(sessionId) as LogOption['mode'],
+      planFileReference: planFileReferences.get(sessionId),
       prNumber: prNumbers.get(sessionId),
       prUrl: prUrls.get(sessionId),
       prRepository: prRepositories.get(sessionId),

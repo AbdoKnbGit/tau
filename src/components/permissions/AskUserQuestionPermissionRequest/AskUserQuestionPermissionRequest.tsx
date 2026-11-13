@@ -228,10 +228,11 @@ function AskUserQuestionPermissionRequestBody(t0) {
   const allImageAttachments = t9;
   const toolPermissionContextMode = useAppState(_temp4);
   const isInPlanMode = toolPermissionContextMode === "plan";
+  const currentPlanFilePath = isInPlanMode ? getPlanFilePath() : undefined;
   let t10;
-  if ($[20] !== isInPlanMode) {
-    t10 = isInPlanMode ? getPlanFilePath() : undefined;
-    $[20] = isInPlanMode;
+  if ($[20] !== currentPlanFilePath) {
+    t10 = currentPlanFilePath;
+    $[20] = currentPlanFilePath;
     $[21] = t10;
   } else {
     t10 = $[21];

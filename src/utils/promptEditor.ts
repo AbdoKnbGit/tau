@@ -1,3 +1,4 @@
+import { spawn } from 'child_process'
 import {
   expandPastedTextRefs,
   formatPastedTextRef,
@@ -27,8 +28,14 @@ export type EditorResult = {
   error?: string
 }
 
-// sync IO: called from sync context (React components, sync command handlers)
-export function editFileInEditor(filePath: string): EditorResult {
+type PreparedEditor = {
+  command: string
+  read: () => EditorResult
+  failed: (error: unknown) => EditorResult
+  finish: () => void
+}
+
+function prepareEditor(filePath: string): PreparedEditor | EditorResult {
   const fs = getFsImplementation()
   const inkInstance = instances.get(process.stdout)
   if (!inkInstance) {
@@ -63,40 +70,72 @@ export function editFileInEditor(filePath: string): EditorResult {
     inkInstance.suspendStdin()
   }
 
-  try {
-    // Use override command if available, otherwise use the editor as-is
-    const editorCommand = EDITOR_OVERRIDES[editor] ?? editor
-    execSync_DEPRECATED(`${editorCommand} "${filePath}"`, {
-      stdio: 'inherit',
-    })
-
-    // Read the edited content
-    const editedContent = fs.readFileSync(filePath, { encoding: 'utf-8' })
-    return { content: editedContent }
-  } catch (err) {
-    if (
-      typeof err === 'object' &&
-      err !== null &&
-      'status' in err &&
-      typeof (err as { status: unknown }).status === 'number'
-    ) {
-      const status = (err as { status: number }).status
-      if (status !== 0) {
-        const editorName = toIDEDisplayName(editor)
-        return {
-          content: null,
-          error: `${editorName} exited with code ${status}`,
+  const editorCommand = EDITOR_OVERRIDES[editor] ?? editor
+  return {
+    command: `${editorCommand} "${filePath}"`,
+    read: () => ({ content: fs.readFileSync(filePath, { encoding: 'utf-8' }) }),
+    failed(err) {
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        'status' in err &&
+        typeof (err as { status: unknown }).status === 'number'
+      ) {
+        const status = (err as { status: unknown }).status
+        if (status !== 0) {
+          const editorName = toIDEDisplayName(editor)
+          return {
+            content: null,
+            error: `${editorName} exited with code ${status}`,
+          }
         }
       }
-    }
-    return { content: null }
+      return { content: null }
+    },
+    finish() {
+      if (useAlternateScreen) {
+        inkInstance.exitAlternateScreen()
+      } else {
+        inkInstance.resumeStdin()
+        inkInstance.resume()
+      }
+    },
+  }
+}
+
+// Preserve the synchronous API used by prompt editing and other existing callers.
+export function editFileInEditor(filePath: string): EditorResult {
+  const session = prepareEditor(filePath)
+  if ('content' in session) return session
+  try {
+    execSync_DEPRECATED(session.command, { stdio: 'inherit' })
+    return session.read()
+  } catch (error) {
+    return session.failed(error)
   } finally {
-    if (useAlternateScreen) {
-      inkInstance.exitAlternateScreen()
-    } else {
-      inkInstance.resumeStdin()
-      inkInstance.resume()
-    }
+    session.finish()
+  }
+}
+
+/** Plan locks need their heartbeat to run while an external editor is open. */
+export async function editFileInEditorAsync(filePath: string): Promise<EditorResult> {
+  const session = prepareEditor(filePath)
+  if ('content' in session) return session
+  try {
+    await new Promise<void>((resolve, reject) => {
+      // Like the synchronous path: an interactive editor must not start hidden.
+      const child = spawn(session.command, { shell: true, stdio: 'inherit' })
+      child.once('error', reject)
+      child.once('exit', (code, signal) => {
+        if (code === 0) resolve()
+        else reject(Object.assign(new Error(`Editor exited: ${signal ?? code}`), { status: code ?? 1 }))
+      })
+    })
+    return session.read()
+  } catch (error) {
+    return session.failed(error)
+  } finally {
+    session.finish()
   }
 }
 

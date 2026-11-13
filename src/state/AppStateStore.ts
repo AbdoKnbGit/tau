@@ -33,6 +33,7 @@ import type { SessionHooksState } from '../utils/hooks/sessionHooks.js'
 import type { ModelSetting } from '../utils/model/model.js'
 import type { DenialTrackingState } from '../utils/permissions/denialTracking.js'
 import type { PermissionMode } from '../utils/permissions/PermissionMode.js'
+import type { PlanApprovalNamingRequest } from '../utils/planApprovalNaming.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
 import { seedSessionPowerMode } from '../utils/powerMode.js'
 import type { SettingsJson } from '../utils/settings/types.js'
@@ -409,6 +410,8 @@ export type AppState = DeepImmutable<{
     mode?: PermissionMode
     // Session-scoped permission rules from plan mode (e.g., "run tests", "install dependencies")
     allowedPrompts?: AllowedPrompt[]
+    // Begin naming after a clear-context approval has its execution session.
+    planApprovalNaming?: PlanApprovalNamingRequest
   } | null
   // Pending plan verification state (set when exiting plan mode)
   // Used by VerifyPlanExecution tool to trigger background verification

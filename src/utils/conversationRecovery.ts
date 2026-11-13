@@ -3,7 +3,7 @@ import { pendingDeferredHookTool } from './hooks/deferredTool.js'
 import type { UUID } from 'crypto'
 import { relative } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
-import { addInvokedSkill } from '../bootstrap/state.js'
+import { addInvokedSkill, getSessionId } from '../bootstrap/state.js'
 import { asSessionId } from '../types/ids.js'
 import type {
   AttributionSnapshotMessage,
@@ -36,7 +36,8 @@ import {
   NO_RESPONSE_REQUESTED,
   normalizeMessages,
 } from './messages.js'
-import { copyPlanForResume } from './plans.js'
+import { copyPlanForFork, copyPlanForResume } from './plans.js'
+import type { PlanFileReference } from './planFileStorage.js'
 import { processSessionStartHooks } from './sessionStart.js'
 import {
   buildConversationChain,
@@ -48,6 +49,7 @@ import {
   loadFullLog,
   loadMessageLogs,
   loadTranscriptFile,
+  loadTranscriptFromFile,
   removeExtraFields,
 } from './sessionStorage.js'
 import type { ContentReplacementRecord } from './toolResultStorage.js'
@@ -525,6 +527,7 @@ export async function loadConversationForResume(
   prNumber?: number
   prUrl?: string
   prRepository?: string
+  planFileReference?: PlanFileReference
   // Full path to the session file (for cross-directory resume)
   fullPath?: string
 } | null> {
@@ -568,6 +571,9 @@ export async function loadConversationForResume(
       messages = loaded.messages
       sessionId = loaded.sessionId
       replacementsFromJsonl = loaded.contentReplacements
+      if (messages.length > 0) {
+        log = { ...await loadTranscriptFromFile(sourceJsonlFile), messages }
+      }
     } else if (typeof source === 'string') {
       // Load specific session by ID
       log = await getLastSessionLog(source as UUID)
@@ -593,7 +599,9 @@ export async function loadConversationForResume(
       }
       // Pass the original session ID to ensure the plan slug is associated with
       // the session we're resuming, not the temporary session ID before resume
-      if (sessionId) {
+      if (hookSource === 'fork') {
+        await copyPlanForFork(log, getSessionId())
+      } else if (sessionId) {
         await copyPlanForResume(log, asSessionId(sessionId))
       }
 
@@ -642,6 +650,7 @@ export async function loadConversationForResume(
       prNumber: log?.prNumber,
       prUrl: log?.prUrl,
       prRepository: log?.prRepository,
+      planFileReference: hookSource === 'fork' ? undefined : log?.planFileReference,
       // Include full path for cross-directory resume
       fullPath: log?.fullPath,
     }
