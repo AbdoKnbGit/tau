@@ -21,6 +21,7 @@ import { SystemAPIErrorMessage } from './SystemAPIErrorMessage.js';
 import { HiddenBashMessage } from './HiddenBashMessage.js';
 import { isHiddenBashMessage } from '../../utils/hiddenBashMessage.js';
 import { formatDuration, formatNumber, formatSecondsShort } from '../../utils/format.js';
+import { getDisplayPath } from '../../utils/file.js';
 import { getGlobalConfig } from '../../utils/config.js';
 import Link from '../../ink/components/Link.js';
 import ThemedText from '../design-system/ThemedText.js';
@@ -201,6 +202,11 @@ export function SystemTextMessage(t0) {
       t6 = $[36];
     }
     return t6;
+  }
+  if (message.subtype === "plan_file_renamed") {
+    // Drawn like the plan_file_renamed attachment row, which shows the same
+    // rename when it reaches the model in the middle of a turn.
+    return <Box backgroundColor={bg}><MessageResponse><Text dimColor={true} wrap="wrap">Plan renamed to {getDisplayPath(message.newPath)}</Text></MessageResponse></Box>;
   }
   const isStopHookSummary = message.subtype === "stop_hook_summary";
   // A plugin's own line (`$.ui.log`, a turn.complete text) shows in every view.

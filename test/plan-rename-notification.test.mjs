@@ -1,5 +1,6 @@
 // Run after npm run build. Real naming controller, queue, and model attachments.
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import {
   mkdirSync,
   mkdtempSync,
@@ -11,7 +12,8 @@ import {
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { after, test } from 'node:test'
-import { loadBuiltRuntime } from './helpers/ink-built-runtime.mjs'
+import React from 'react'
+import { loadBuiltRuntime, mount } from './helpers/ink-built-runtime.mjs'
 
 const repoDir = process.cwd()
 const tempRoot = realpathSync.native(tmpdir())
@@ -45,6 +47,10 @@ const r = await loadBuiltRuntime({
     'src/utils/messageQueueManager.ts',
     'src/utils/attachments.ts',
     'src/utils/messages.ts',
+    'src/utils/sessionStorage.ts',
+    'src/components/messages/AttachmentMessage.tsx',
+    'src/components/messages/SystemTextMessage.tsx',
+    'src/components/messages/nullRenderingAttachments.ts',
   ],
   exports: [
     'capturePlanFileOwner',
@@ -57,6 +63,18 @@ const r = await loadBuiltRuntime({
     'dequeue',
     'getPlanFileRenameAttachments',
     'normalizeAttachmentForAPI',
+    'addPlanFileRenameNotice',
+    'onPlanFileRenameNotice',
+    'showPlanFileRenameNotices',
+    'createPlanFileRenamedMessage',
+    'createAttachmentMessage',
+    'createAssistantMessage',
+    'createUserMessage',
+    'normalizeMessagesForAPI',
+    'isLoggableMessage',
+    'isNullRenderingAttachment',
+    'AttachmentMessage',
+    'SystemTextMessage',
     'setNameGenerator: generate => { generateSessionName = generate; }',
   ],
 })
@@ -161,3 +179,164 @@ test(
     assert.ok(modelText.includes('Use the new path for future reads or edits'))
   },
 )
+
+const modelTextOf = (attachments) =>
+  attachments
+    .flatMap(r.normalizeAttachmentForAPI)
+    .map((message) =>
+      typeof message.message.content === 'string'
+        ? message.message.content
+        : message.message.content.map((block) => block.text ?? '').join(' '),
+    )
+    .join(' ')
+
+async function screenOf(element) {
+  const ui = await mount(r, element, { columns: 120 })
+  try {
+    return ui.frame()
+  } finally {
+    ui.close()
+  }
+}
+
+// A turn can end without another request, and a rename can land while the
+// session is idle. The screen then shows the rename itself, at once.
+test('a rename the screen showed first still reaches the model once, with the same text', () => {
+  const owner = r.capturePlanFileOwner()
+  const oldPath = join(projectDir, 'plans', 'curious-wandering-otter.md')
+  const newPath = join(projectDir, 'plans', 'add-oauth-login.md')
+  let heard = 0
+  // A failing listener must not lose the notice or silence the others.
+  const stopFailing = r.onPlanFileRenameNotice(() => {
+    throw new Error('a listener failed')
+  })
+  const stopHearing = r.onPlanFileRenameNotice(() => {
+    heard++
+  })
+  try {
+    r.addPlanFileRenameNotice({ owner, oldPath, newPath })
+  } finally {
+    stopFailing()
+    stopHearing()
+  }
+  assert.equal(heard, 1, 'the screen hears about a rename as it is recorded')
+
+  // Another session's rename is not this screen's to show.
+  r.addPlanFileRenameNotice({
+    owner: { ...owner, sessionId: randomUUID() },
+    oldPath: join(projectDir, 'plans', 'other-old.md'),
+    newPath: join(projectDir, 'plans', 'other-new.md'),
+  })
+  assert.equal(heard, 1, 'a removed listener hears nothing more')
+  assert.deepEqual(r.showPlanFileRenameNotices(), [{ newPath }])
+  assert.deepEqual(
+    r.showPlanFileRenameNotices(),
+    [],
+    'the screen shows a rename once',
+  )
+
+  const attachments = r.getPlanFileRenameAttachments({}, 'repl_main_thread')
+  assert.deepEqual(attachments, [
+    { type: 'plan_file_renamed', oldPath, newPath, shownToUser: true },
+  ])
+  assert.deepEqual(
+    r.getPlanFileRenameAttachments({}, 'repl_main_thread'),
+    [],
+    'the model is told once',
+  )
+  assert.equal(
+    modelTextOf(attachments),
+    modelTextOf([{ type: 'plan_file_renamed', oldPath, newPath }]),
+    'the model gets the same text whether or not the screen showed it first',
+  )
+})
+
+test('a session that showed the rename first sends the same request as one that did not', () => {
+  const oldPath = join(projectDir, 'plans', 'curious-wandering-otter.md')
+  const newPath = join(projectDir, 'plans', 'add-oauth-login.md')
+  const approved = r.createUserMessage({ content: 'Approve the plan.' })
+  const answer = r.createAssistantMessage({ content: 'Plan saved.' })
+  const next = r.createUserMessage({ content: 'Continue with the plan.' })
+  const told = (extra) =>
+    r.createAttachmentMessage({
+      type: 'plan_file_renamed',
+      oldPath,
+      newPath,
+      ...extra,
+    })
+  // Only what goes on the wire: ids and timestamps never do.
+  const wire = (messages) =>
+    r
+      .normalizeMessagesForAPI(messages)
+      .map(({ message }) => ({ role: message.role, content: message.content }))
+
+  // The model stopped after approval and the user typed again. Before, the
+  // request that told the model also drew the line.
+  const before = wire([approved, answer, next, told({})])
+  // Now the screen line comes first and the notice is marked as shown.
+  const now = wire([
+    approved,
+    answer,
+    r.createPlanFileRenamedMessage(newPath),
+    next,
+    told({ shownToUser: true }),
+  ])
+  assert.deepEqual(now, before)
+  assert.equal(
+    JSON.stringify(now).split('Use the new path for future reads or edits')
+      .length - 1,
+    1,
+  )
+})
+
+test('the screen line is saved with the session, drawn once, and never sent to the model', async () => {
+  const oldPath = join(projectDir, 'plans', 'curious-wandering-otter.md')
+  const newPath = join(projectDir, 'plans', 'add-oauth-login.md')
+  const row = `Plan renamed to ${join('plans', 'add-oauth-login.md')}`
+  const draw = (component, props) =>
+    screenOf(
+      React.createElement(component, {
+        addMargin: false,
+        verbose: false,
+        ...props,
+      }),
+    )
+
+  const line = r.createPlanFileRenamedMessage(newPath)
+  assert.equal(r.isLoggableMessage(line), true, 'a resumed session shows it')
+  const sent = r.normalizeMessagesForAPI([
+    r.createUserMessage({ content: 'Continue with the plan.' }),
+    line,
+  ])
+  assert.equal(sent.length, 1)
+  assert.ok(!JSON.stringify(sent).includes('Plan renamed'))
+  assert.ok((await draw(r.SystemTextMessage, { message: line })).includes(row))
+
+  // Told to the model in the middle of a turn: the attachment draws the row.
+  const first = { type: 'plan_file_renamed', oldPath, newPath }
+  assert.ok(
+    (await draw(r.AttachmentMessage, { attachment: first })).includes(row),
+  )
+  assert.equal(
+    r.isNullRenderingAttachment(r.createAttachmentMessage(first)),
+    false,
+  )
+
+  // Already on screen: the attachment only tells the model.
+  const later = { ...first, shownToUser: true }
+  assert.equal(
+    (await draw(r.AttachmentMessage, { attachment: later })).trim(),
+    '',
+  )
+  assert.equal(
+    r.isNullRenderingAttachment(r.createAttachmentMessage(later)),
+    true,
+  )
+  for (const attachment of [first, later]) {
+    assert.equal(
+      r.isLoggableMessage(r.createAttachmentMessage(attachment)),
+      true,
+      'what the model was told is saved, so a resumed session sends it again',
+    )
+  }
+})

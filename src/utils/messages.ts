@@ -4659,6 +4659,21 @@ export function createStopHookSummaryMessage(
   }
 }
 
+/**
+ * The screen's line for a plan renamed after approval, added when the rename
+ * lands while the session is idle or when a turn ends before telling the
+ * model. A system message is saved with the session and never sent to the
+ * model, which gets the rename as a plan_file_renamed attachment with its
+ * next request.
+ */
+export function createPlanFileRenamedMessage(newPath: string) {
+  return {
+    ...createSystemMessage(`Plan renamed to ${newPath}`, 'info'),
+    subtype: 'plan_file_renamed' as const,
+    newPath,
+  }
+}
+
 export function createTurnDurationMessage(
   durationMs: number,
   budget?: { tokens: number; limit: number; nudges: number },

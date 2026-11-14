@@ -632,6 +632,12 @@ export type Attachment =
       type: 'plan_file_renamed'
       oldPath: string
       newPath: string
+      /**
+       * The screen already drew this rename (createPlanFileRenamedMessage), so
+       * this attachment only tells the model. Its text for the model is the
+       * same either way.
+       */
+      shownToUser?: true
     }
   | {
       type: 'mcp_resource'
@@ -1432,10 +1438,9 @@ function getPlanFileRenameAttachments(
     querySource !== 'sdk'
   )
     return []
-  return takePlanFileRenameNotices().map(({ oldPath, newPath }) => ({
+  return takePlanFileRenameNotices().map(notice => ({
     type: 'plan_file_renamed' as const,
-    oldPath,
-    newPath,
+    ...notice,
   }))
 }
 

@@ -256,6 +256,9 @@ export function AttachmentMessage({
           Plan file referenced ({getDisplayPath(attachment.planFilePath)})
         </Line>;
     case 'plan_file_renamed':
+      // The screen drew this rename when it happened (SystemTextMessage, from
+      // createPlanFileRenamedMessage). This attachment then only tells the model.
+      if (attachment.shownToUser) return null;
       return <Line>
           Plan renamed to {getDisplayPath(attachment.newPath)}
         </Line>;

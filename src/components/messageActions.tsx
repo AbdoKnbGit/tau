@@ -49,6 +49,8 @@ export function isNavigableMessage(msg: NavigableMessage): boolean {
         case 'agents_killed':
         case 'away_summary':
         case 'thinking':
+        // Like the plan_file_renamed attachment row below, a status line.
+        case 'plan_file_renamed':
           return false;
       }
       return true;

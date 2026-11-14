@@ -313,7 +313,7 @@ export function looksLikeCommand(commandName: string): boolean {
   return !/[^a-zA-Z0-9:\-_]/.test(commandName);
 }
 export async function processSlashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], imageContentBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn, uuid?: string, isAlreadyProcessing?: boolean, canUseTool?: CanUseToolFn): Promise<ProcessUserInputBaseResult> {
-  const parsed = parseSlashCommand(inputString);
+  const parsed = parseSlashCommand(inputString, name => hasCommand(name, context.options.commands));
   if (!parsed) {
     logEvent('tengu_input_slash_missing', {});
     const errorMessage = 'Commands are in the form `/command [args]`';

@@ -40,13 +40,15 @@ Names work on Windows, macOS and Linux. Letters from any alphabet are kept, acce
 
 ## What you see after approving
 
-One short line in the conversation:
+One short line in the conversation, as soon as the new name is ready:
 
 ```
 Plan renamed to plans\add-text-slugify.md
 ```
 
-The model gets the new path with its next step. It does not start an extra turn for it, and the earlier conversation is sent unchanged, so the prompt cache keeps working.
+Making the title takes a few seconds, so the line can come after the model has started answering. If an earlier message still shows the old name, this line has the current one, and `/plan` always shows the current path.
+
+The model gets the new path with its next step, or with your next message if it had already finished. Tau does not start an extra turn for it, and the earlier conversation is sent unchanged, so the prompt cache keeps working.
 
 ## The approval menu
 
@@ -106,6 +108,7 @@ Plan renamed to plans\add-character-count-helper.md
 | Command | What it does |
 |---|---|
 | `/plan` | In plan mode: shows the current plan and its path. Otherwise: turns plan mode on. |
+| `/plan <request>` | Outside plan mode: turns it on and sends your request. The request can follow on the same line or start on the next one. |
 | `/plan open` | Opens the plan in your editor: `VISUAL`, then `EDITOR`. Without them: Notepad on Windows, otherwise VS Code, vi or nano. |
 
 ## Plans and your sessions

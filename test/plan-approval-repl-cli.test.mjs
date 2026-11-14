@@ -104,11 +104,18 @@ function allRows(config) {
   })
 }
 
-// keep/clear: the title arrives while the post-approval tool stream is open.
+// keep/clear: the title arrives while the post-approval tool stream is open,
+// so the same turn tells the model with its next request.
 // idle: it arrives after that turn has ended and the REPL is waiting for input.
+// final: it arrives while the turn's last answer is streaming, so the turn ends
+// without another request.
+// In idle and final the screen shows the rename at once, and the model is told
+// with the user's next prompt.
 async function runApproval(pty, mode) {
   const clearContext = mode === 'clear'
   const idle = mode === 'idle'
+  const final = mode === 'final'
+  const toldLater = idle || final
   // The CLI works in the resolved directory (on macOS /var is /private/var),
   // so paths expected here must start from it too.
   const temporaryRoot = realpathSync.native(tmpdir())
@@ -254,15 +261,23 @@ async function runApproval(pty, mode) {
         phase++
         planningRequest = body
         reply(response, body, [{ name: 'ExitPlanMode', input: {} }])
-      } else if (phase === 2 && idle) {
+      } else if (phase === 2 && toldLater) {
         phase++
         reply(response, body, [
           { name: 'Read', input: { file_path: join(project, 'input.txt') } },
         ])
-      } else if (phase === 2) {
+      } else if (phase === 2 || (phase === 3 && final)) {
         phase++
+        // Held open: the tool call for keep/clear, the last answer for final.
         const wire = anthropicReply(
-          [{ name: 'Read', input: { file_path: join(project, 'input.txt') } }],
+          final
+            ? 'APPROVAL_CONTINUED'
+            : [
+                {
+                  name: 'Read',
+                  input: { file_path: join(project, 'input.txt') },
+                },
+              ],
           body.model,
         )
         const split = wire.indexOf('event: message_delta')
@@ -372,34 +387,82 @@ async function runApproval(pty, mode) {
     // Both configurations put the requested auto-accept option first. Clear
     // context is an explicit separate scenario, not inferred from a label.
     term.write('1')
-    const answered = () =>
-      allRows(config).some(
-        (row) =>
-          row.type === 'assistant' &&
-          row.message?.content?.some(
-            (block) => block.text === 'APPROVAL_CONTINUED',
-          ),
-      )
-    let beforeNotice
+    const isAnswer = (row) =>
+      row.type === 'assistant' &&
+      row.message?.content?.some((block) => block.text === 'APPROVAL_CONTINUED')
+    // What the model is told, and the line the screen draws on its own.
+    const isRenameNotice = (row) =>
+      row.type === 'attachment' && row.attachment?.type === 'plan_file_renamed'
+    const isRenameLine = (row) =>
+      row.type === 'system' && row.subtype === 'plan_file_renamed'
+    const saved = (isRow) => allRows(config).filter(isRow)
+    const answered = () => saved(isAnswer).length > 0
+    const renamed = () => existsSync(join(plans, `${title}.md`))
+    const screenShowsRename = () =>
+      stripVTControlCharacters(raw)
+        .replace(/\s+/g, '')
+        .includes('Planrenamedto')
+    let beforeNotice, settled
     if (idle) {
       await waitFor(answered, 'post-approval turn end', 45_000, details)
       // Let the REPL finish the turn and return to waiting for input.
       await pause(1500)
-      const settled = mainRequests().length
-      beforeNotice = mainRequests().at(-1)
+      settled = mainRequests().length
       titleAllowed = true
       releaseTitle()
+      await waitFor(renamed, 'background title rename', 45_000, details)
+    } else {
       await waitFor(
-        () => existsSync(join(plans, `${title}.md`)),
-        'background title rename',
+        () => mainStream !== undefined,
+        final ? 'last answer stream' : 'post-approval active model stream',
         45_000,
+        details,
+      )
+      await waitFor(renamed, 'background title rename', 45_000, details)
+      await pause(750)
+      assert.equal(
+        prematureClose,
+        false,
+        'the path notification must not abort a live model stream',
+      )
+      assert.equal(mainStream.response.destroyed, false)
+      assert.equal(
+        screenShowsRename(),
+        false,
+        'a running turn shows the rename with the request that tells the model',
+      )
+      settled = mainRequests().length
+      mainStream.released = true
+      mainStream.response.end(mainStream.tail)
+      await waitFor(answered, 'continued assistant answer', 45_000, details)
+      beforeNotice = mainStream.request
+    }
+    if (toldLater) {
+      // The turn is over and the model has not been told. The user must not
+      // have to type something to learn the plan's new name.
+      beforeNotice = mainRequests().at(-1)
+      await waitFor(
+        screenShowsRename,
+        'the rename on screen without a new prompt',
+        30_000,
+        details,
+      )
+      await waitFor(
+        () => saved(isRenameLine).length === 1,
+        'the saved rename line',
+        30_000,
         details,
       )
       await pause(3000)
       assert.equal(
         mainRequests().length,
         settled,
-        'a rename after the turn ended must not start a model turn by itself',
+        'a rename must not start a model turn by itself',
+      )
+      assert.equal(
+        saved(isRenameNotice).length,
+        0,
+        'the model is told with its next request, not before',
       )
       await submit('Continue with the saved plan.')
       await waitFor(
@@ -409,42 +472,11 @@ async function runApproval(pty, mode) {
         details,
       )
       await waitFor(
-        () =>
-          allRows(config).filter(
-            (row) =>
-              row.type === 'assistant' &&
-              row.message?.content?.some(
-                (block) => block.text === 'APPROVAL_CONTINUED',
-              ),
-          ).length >= 2,
+        () => saved(isAnswer).length >= 2,
         'follow-up answer',
         45_000,
         details,
       )
-    } else {
-      await waitFor(
-        () => mainStream !== undefined,
-        'post-approval active model stream',
-        45_000,
-        details,
-      )
-      await waitFor(
-        () => existsSync(join(plans, `${title}.md`)),
-        'background title rename',
-        45_000,
-        details,
-      )
-      await pause(750)
-      assert.equal(
-        prematureClose,
-        false,
-        'the path notification must not abort a live model stream',
-      )
-      assert.equal(mainStream.response.destroyed, false)
-      mainStream.released = true
-      mainStream.response.end(mainStream.tail)
-      await waitFor(answered, 'continued assistant answer', 45_000, details)
-      beforeNotice = mainStream.request
     }
     const rows = allRows(config)
     const reference = rows.findLast((row) => row.type === 'plan-file-reference')
@@ -507,6 +539,15 @@ async function runApproval(pty, mode) {
       1,
       'the same rename notice must enter model history only once',
     )
+    // The screen draws each rename once. A turn that tells the model itself
+    // draws it with that request. Otherwise the screen drew it first, and the
+    // model's copy is marked so that it is not drawn again.
+    const notices = rows.filter(isRenameNotice)
+    assert.equal(notices.length, 1, 'the model is told once')
+    assert.equal(notices[0].attachment.shownToUser === true, toldLater)
+    const lines = rows.filter(isRenameLine)
+    assert.equal(lines.length, toldLater ? 1 : 0)
+    if (toldLater) assert.equal(lines[0].newPath, join(plans, `${title}.md`))
     const hasMcpTool = (body) =>
       (body.tools ?? []).some(
         (tool) => tool.name.startsWith('mcp__') && tool.name.endsWith('tool_0'),
@@ -572,11 +613,17 @@ if (probe !== -1) {
     )
   }
 } else {
-  for (const mode of ['keep', 'clear', 'idle']) {
+  const names = {
+    keep: 'real REPL keep-context approval survives naming while model tools stream',
+    clear:
+      'real REPL clear-context approval survives naming while model tools stream',
+    idle: 'real REPL rename after the turn ends is shown at once and tells the model with the next prompt, without starting a turn',
+    final:
+      'real REPL rename during the last answer is shown when the turn ends, without starting a turn',
+  }
+  for (const mode of Object.keys(names)) {
     test(
-      mode === 'idle'
-        ? 'real REPL rename after the turn ends waits for the next prompt instead of starting a turn'
-        : `real REPL ${mode}-context approval survives naming while model tools stream`,
+      names[mode],
       { timeout: 150_000 },
       async (t) => {
         try {

@@ -243,9 +243,23 @@ type PlanFileRenameNotice = {
   owner: PlanFileOwner
   oldPath: string
   newPath: string
+  /** The screen has drawn this rename; only the model still needs it. */
+  shownToUser?: boolean
 }
 
 let pendingPlanFileRenameNotices: PlanFileRenameNotice[] = []
+const planFileRenameNoticeListeners = new Set<() => void>()
+
+/**
+ * Hear about each rename as it is recorded. The screen uses this to show a
+ * rename while the session is idle. Nothing here reaches the model.
+ */
+export function onPlanFileRenameNotice(listener: () => void): () => void {
+  planFileRenameNoticeListeners.add(listener)
+  return () => {
+    planFileRenameNoticeListeners.delete(listener)
+  }
+}
 
 /**
  * Hold a rename for the session's next model request. Unlike a queued
@@ -253,6 +267,27 @@ let pendingPlanFileRenameNotices: PlanFileRenameNotice[] = []
  */
 export function addPlanFileRenameNotice(notice: PlanFileRenameNotice): void {
   pendingPlanFileRenameNotices.push(notice)
+  for (const listener of [...planFileRenameNoticeListeners]) {
+    try {
+      listener()
+    } catch (error) {
+      logError(error)
+    }
+  }
+}
+
+/**
+ * The current session's renames the screen has not drawn yet. They stay
+ * pending for the model, marked so that its request does not draw them again.
+ * A turn can end without another request, and a rename can land while the
+ * session is idle; without this the user would not see it until they type.
+ */
+export function showPlanFileRenameNotices(): Array<{ newPath: string }> {
+  const fresh = pendingPlanFileRenameNotices.filter(
+    notice => !notice.shownToUser && isPlanFileOwnerCurrent(notice.owner),
+  )
+  for (const notice of fresh) notice.shownToUser = true
+  return fresh.map(({ newPath }) => ({ newPath }))
 }
 
 /** Drop notices for sessions that are no longer current, or all of them. */
@@ -268,12 +303,17 @@ export function discardPlanFileRenameNotices(all = false): void {
 export function takePlanFileRenameNotices(): Array<{
   oldPath: string
   newPath: string
+  shownToUser?: true
 }> {
   const current = pendingPlanFileRenameNotices.filter(notice =>
     isPlanFileOwnerCurrent(notice.owner),
   )
   pendingPlanFileRenameNotices = []
-  return current.map(({ oldPath, newPath }) => ({ oldPath, newPath }))
+  return current.map(({ oldPath, newPath, shownToUser }) => ({
+    oldPath,
+    newPath,
+    ...(shownToUser ? { shownToUser: true as const } : {}),
+  }))
 }
 
 /** The main plan reference, without creating a plan identity for the session. */

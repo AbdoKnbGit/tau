@@ -70,8 +70,8 @@ the previous session, and delivery itself checks the owner. Remote snapshots
 check ownership across transcript persistence awaits as well.
 
 The notice is a `plan_file_renamed` attachment. The model receives it once as
-meta content with the old and new paths as written; the transcript shows one
-line, "Plan renamed to …". It appends after earlier messages and does not
+meta content with the old and new paths as written. It appends after earlier
+messages and does not
 rewrite earlier plan instructions or tool results, alter the system prompt/tool
 schemas, or reset a provider cache session. Subagents and forked side queries
 cannot take it. The terminal regression tests compare the actual requests before
@@ -82,6 +82,17 @@ boundaries normally. These checks establish prefix stability, not a guarantee
 that a remote provider retains or bills a cache hit. Clear-context approval
 deliberately starts a new conversation and is tested within that new execution
 session.
+
+The screen shows each rename once, as one line, "Plan renamed to …", and does
+not wait for the model to be told. A running turn draws the line with the
+request that carries the notice. When the rename lands while the session is
+idle, or the turn ends without another request, the REPL adds the line at once
+as a `plan_file_renamed` system message: saved with the session, never part of
+a request. The pending notice is then marked `shownToUser`, so the attachment
+that later tells the model draws nothing and its text for the model is the
+same. Without this a model that stops right after approval leaves the user with
+the old name on screen, sometimes quoted in its last answer, until they type
+again.
 
 Transcript metadata and remote snapshots carry the current reference.
 Compaction readers preserve it, including metadata before the boundary. Local
@@ -124,7 +135,7 @@ existing plan-mode permission tests. After an existing build, use
 
 | Area | Scenarios exercised |
 | --- | --- |
-| Actual terminal approval | Keep context and clear context; real Write/Read/ExitPlanMode tools, delayed naming during an active HTTP model stream, continued execution, exact SHA-256 contents, and path notice delivery; a rename after the turn has ended starts no model request and reaches the next prompt once; the screen shows "Plan renamed to" and no reminder markup |
+| Actual terminal approval | Keep context and clear context; real Write/Read/ExitPlanMode tools, delayed naming during an active HTTP model stream, continued execution, exact SHA-256 contents, and path notice delivery; a rename after the turn has ended, or during the turn's last answer, is shown at once, starts no model request and reaches the next prompt once; the screen shows "Plan renamed to" once and no reminder markup |
 | Request prefixes | Actual CLI requests preserve system/tools and earlier message content after the notice; native Codex HTTP preserves instructions, tools, cache affinity, session headers, and every earlier input item across the rename and a later turn |
 | Session ownership | Manual rename wins; stale/superseded naming; clear/resume session changes; queued notices; remote snapshots during transcript awaits |
 | Plan-mode binding | Fork/rename/subagent paths refresh immediately; stable paths and directory aliases keep normal throttling; reentry resets guidance; inherited network paths cause no filesystem comparison probes |

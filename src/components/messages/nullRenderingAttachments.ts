@@ -65,8 +65,10 @@ const NULL_RENDERING_ATTACHMENT_TYPES: ReadonlySet<Attachment['type']> =
 export function isNullRenderingAttachment(
   msg: Message | NormalizedMessage,
 ): boolean {
-  return (
-    msg.type === 'attachment' &&
-    NULL_RENDERING_ATTACHMENT_TYPES.has(msg.attachment.type)
-  )
+  if (msg.type !== 'attachment') return false
+  // A plan rename the screen already drew is kept only for the model.
+  if (msg.attachment.type === 'plan_file_renamed') {
+    return msg.attachment.shownToUser === true
+  }
+  return NULL_RENDERING_ATTACHMENT_TYPES.has(msg.attachment.type)
 }

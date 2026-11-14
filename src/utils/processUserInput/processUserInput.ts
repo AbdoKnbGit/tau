@@ -223,7 +223,7 @@ async function processUserInputImpl({
   const finalBlock = typeof input === 'string' ? undefined : input.at(-1)
   const commandText = typeof input === 'string' ? input : finalBlock?.type === 'text' ? finalBlock.text : undefined
   const originalParsed = mode === 'prompt' && commandText?.startsWith('/')
-    ? parseSlashCommand(commandText) : undefined
+    ? parseSlashCommand(commandText, name => findCommand(name, context.options.commands) !== undefined) : undefined
   const originalCommand = originalParsed
     ? findCommand(originalParsed.commandName, context.options.commands) : undefined
   const asText = !!skipSlashCommands && !(bridgeOrigin && originalCommand && isBridgeSafeCommand(originalCommand))
@@ -411,7 +411,7 @@ async function processUserInputImpl({
   const rewrittenCommandText = typeof input === 'string' ? input : rewrittenFinalBlock?.type === 'text' ? rewrittenFinalBlock.text : undefined
   const parsedCommand =
     mode === 'prompt' && rewrittenCommandText?.startsWith('/')
-      ? parseSlashCommand(rewrittenCommandText)
+      ? parseSlashCommand(rewrittenCommandText, name => findCommand(name, context.options.commands) !== undefined)
       : undefined
   const command = parsedCommand
     ? findCommand(parsedCommand.commandName, context.options.commands)
@@ -655,7 +655,7 @@ async function processUserInputBase(
   // with a helpful message rather than letting the model see raw "/config".
   let effectiveSkipSlash = skipSlashCommands
   if (bridgeOrigin && inputString !== null && inputString.startsWith('/')) {
-    const parsed = parseSlashCommand(inputString)
+    const parsed = parseSlashCommand(inputString, name => findCommand(name, context.options.commands) !== undefined)
     const cmd = parsed
       ? findCommand(parsed.commandName, context.options.commands)
       : undefined

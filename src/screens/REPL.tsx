@@ -154,7 +154,7 @@ import { getGlobalConfig, saveGlobalConfig, getGlobalConfigWriteCount } from '..
 import { hasConsoleBillingAccess } from '../utils/billing.js';
 import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
-import { textForResubmit, handleMessageFromStream, type StreamingToolUse, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
+import { textForResubmit, handleMessageFromStream, type StreamingToolUse, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createPlanFileRenamedMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
 import { generateSessionTitle } from '../utils/sessionTitle.js';
 import { BASH_INPUT_TAG, COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG, LOCAL_COMMAND_STDOUT_TAG } from '../constants/xml.js';
 import { escapeXml } from '../utils/xml.js';
@@ -198,7 +198,7 @@ import { useAppState, useSetAppState, useAppStateStore, type AppState } from '..
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js';
 import type { PastedContent } from '../utils/config.js';
-import { capturePlanFileOwner, copyPlanForFork, copyPlanForResume, isPlanFileOwnerCurrent, setPlanSlug } from '../utils/plans.js';
+import { capturePlanFileOwner, copyPlanForFork, copyPlanForResume, isPlanFileOwnerCurrent, onPlanFileRenameNotice, setPlanSlug, showPlanFileRenameNotices } from '../utils/plans.js';
 import { cancelPlanApprovalNaming, cancelStalePlanApprovalNaming, startPlanApprovalNaming, startPlanApprovalNamingAfterClear } from '../utils/planApprovalNaming.js';
 import { clearSessionMetadata, resetSessionFilePointer, adoptResumedSessionFile, removeTranscriptMessage, restoreSessionMetadata, getCurrentSessionTitle, isEphemeralToolProgress, isLoggableMessage, saveWorktreeState, getAgentTranscript } from '../utils/sessionStorage.js';
 import { deserializeMessages } from '../utils/conversationRecovery.js';
@@ -1289,6 +1289,20 @@ export function REPL({
     }
     rawSetMessages(next);
   }, []);
+  // A plan renamed after approval. A running turn shows the rename with the
+  // request that tells the model. When the rename lands while the session is
+  // idle, or the turn ended without another request, that request may be far
+  // off, so the screen gets its line now. What the model receives is unchanged.
+  const showPlanFileRenames = useCallback(() => {
+    if (queryGuard.isActive) return;
+    const renames = showPlanFileRenameNotices();
+    if (renames.length === 0) return;
+    setMessages(prev => [...prev, ...renames.map(rename => createPlanFileRenamedMessage(rename.newPath))]);
+  }, [queryGuard, setMessages]);
+  useEffect(() => onPlanFileRenameNotice(showPlanFileRenames), [showPlanFileRenames]);
+  useEffect(() => {
+    if (!isQueryActive) showPlanFileRenames();
+  }, [isQueryActive, showPlanFileRenames]);
   // Capture the baseline message count alongside the placeholder text so
   // the render can hide it once displayedMessages grows past the baseline.
   const setUserInputOnProcessing = useCallback((input: string | undefined) => {
