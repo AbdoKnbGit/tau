@@ -351,6 +351,10 @@ export class GeminiLane implements Lane {
     // Claude's refusals arrive through Antigravity as a SAFETY finish with no
     // content; reported as a refusal so the user sees why the turn is empty.
     let safetyStop = false
+    // A STOP finish is the only proof that the reply ended on its own. A call
+    // still open when the stream ends is known complete only then; see
+    // finalizeCurrentArgs.
+    let finishedNormally = false
     let inBlock: 'thinking' | 'text' | null = null
     let messageStartEmitted = false
     const toolCalls: Array<{
@@ -405,15 +409,20 @@ export class GeminiLane implements Lane {
       }
     }
 
-    function finalizeCurrentArgs(): {
+    function finalizeCurrentArgs(finished: boolean): {
       args: Record<string, unknown>
       decodeFailure?: ToolDecodeStatus
     } {
       if (!currentCall) return { args: {} }
       const merged: Record<string, unknown> = { ...currentCall.args }
+      // A call with no arguments arrives with no `args` at all (Claude through
+      // Antigravity always sends it that way). Once the reply is known to have
+      // finished the call, that is an empty argument object. A reply that just
+      // stopped coming may have lost the arguments, so the call stays
+      // undecoded and is refused.
       const decoded = decodeToolArguments(currentCall.hasStringArgs
         ? currentCall.argsString
-        : currentCall.hasArgs ? merged : undefined)
+        : (currentCall.hasArgs || finished) ? merged : undefined)
       const decodeFailure = currentCall.invalidArgs ?? decoded.status
       return {
         args: decodeFailure ? merged : { ...merged, ...decoded.input },
@@ -435,9 +444,13 @@ export class GeminiLane implements Lane {
     // the shared tool layer sees is `{}` and EVERY tool call reports
     // its required params missing. That is exactly the regression the
     // legacy gemini_to_anthropic adapter's structure avoided.
-    function* commitCurrentCall(): Generator<AnthropicStreamEvent, void> {
+    //
+    // `finished` is false only when the stream ended with the call still open
+    // and no STOP finish. Every other commit happens because the model moved
+    // on to its next part, which closes the call before it.
+    function* commitCurrentCall(finished = true): Generator<AnthropicStreamEvent, void> {
       if (!currentCall) return
-      const { args: nativeArgs, decodeFailure } = finalizeCurrentArgs()
+      const { args: nativeArgs, decodeFailure } = finalizeCurrentArgs(finished)
       const reg = getRegistrationByNativeName(currentCall.nativeName)
       // MCP tools whose names had to be aliased for Gemini map back to the
       // real tool name so the dispatcher resolves them.
@@ -555,6 +568,7 @@ export class GeminiLane implements Lane {
           // stop_reason 'max_tokens'; the native lane must too.
           if (isOutputCapTruncation(candidate.finishReason)) outputCapTruncated = true
           if (isAntigravityClaude && isSafetyFinish(candidate.finishReason)) safetyStop = true
+          if (isNormalFinish(candidate.finishReason)) finishedNormally = true
           for (const part of (candidate.content?.parts ?? []) as any[]) {
             // ── Thinking part ──
             if (part.thought === true && typeof part.text === 'string') {
@@ -882,7 +896,7 @@ export class GeminiLane implements Lane {
       // call followed by more output was already committed above, so this
       // only ever drops the one that was genuinely in flight.
       if (outputCapTruncated) currentCall = null
-      else yield* commitCurrentCall()
+      else yield* commitCurrentCall(finishedNormally)
     }
 
     // Close final open block.
@@ -1652,6 +1666,11 @@ const SAFETY_FINISH_REASONS = new Set([
 
 function isSafetyFinish(reason: unknown): boolean {
   return typeof reason === 'string' && SAFETY_FINISH_REASONS.has(reason.toUpperCase())
+}
+
+/** STOP: the model reached its own stopping point, so the reply is whole. */
+function isNormalFinish(reason: unknown): boolean {
+  return typeof reason === 'string' && reason.toUpperCase() === 'STOP'
 }
 
 /**

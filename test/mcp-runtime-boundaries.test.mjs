@@ -101,7 +101,10 @@ const routes = {
 
 for (const [route, decode] of Object.entries(routes)) {
   test(`R2 ${route}: decoded calls reach the real executor only when complete`, async () => {
-    for (const [raw, runs] of [['{}', 1], ['{"value":null}', 1], ['', 0], ['   ', 0], ['{"value":', 0], ['null', 0], ['[]', 0], ['42', 0], ['true', 0], [undefined, 0], [null, 0]]) {
+    // Gemini sends a call with no arguments as a functionCall with no `args`. This reply
+    // finished with STOP, so the call is complete and runs with {} (empty-tool-call.test.mjs).
+    const noArgsField = route === 'gemini' ? 1 : 0
+    for (const [raw, runs] of [['{}', 1], ['{"value":null}', 1], ['', 0], ['   ', 0], ['{"value":', 0], ['null', 0], ['[]', 0], ['42', 0], ['true', 0], [undefined, noArgsField], [null, 0]]) {
       const message = await decode(raw)
       const blocks = r.normalizeContentFromAPI(message.content, [], undefined)
       assert.equal(blocks.length, 1, `${route} lost the call for ${JSON.stringify(raw)}`)
@@ -112,7 +115,7 @@ for (const [route, decode] of Object.entries(routes)) {
       assert.equal(results[0].is_error ?? false, !runs)
       assert.equal(results[0].tool_use_id, blocks[0].id)
       if (!runs) assert.match(JSON.stringify(results[0].content), /was not run/)
-      else assert.deepEqual(tool.calls[0], JSON.parse(raw))
+      else assert.deepEqual(tool.calls[0], raw === undefined ? {} : JSON.parse(raw))
     }
   })
 }

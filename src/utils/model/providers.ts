@@ -266,6 +266,16 @@ export function isAnthropicNativeProvider(p: APIProvider): boolean {
 }
 
 /**
+ * Providers reached through the Anthropic SDK client, so requests and replies
+ * are the Anthropic Messages format itself: the native four, plus AgentRouter,
+ * which is Messages-compatible (see services/api/client.ts). Every other
+ * provider goes through a lane that translates.
+ */
+export function usesAnthropicMessagesWire(p: APIProvider): boolean {
+  return isAnthropicNativeProvider(p) || p === 'agentrouter'
+}
+
+/**
  * Claude 5 support covers the Anthropic-native providers only. Elsewhere a
  * Claude 5 id keeps the reading it had before that support (claude-opus /
  * claude-sonnet), so no other provider's requests, prompt or prices move;

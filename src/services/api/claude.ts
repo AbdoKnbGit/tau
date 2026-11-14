@@ -26,6 +26,7 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
   isThirdPartyProvider,
+  usesAnthropicMessagesWire,
 } from 'src/utils/model/providers.js'
 import {
   getAttributionHeader,
@@ -254,6 +255,7 @@ import {
   CLIENT_REQUEST_ID_HEADER,
   getAnthropicClient,
 } from './client.js'
+import { settleEmptyToolInputs } from './emptyToolInput.js'
 import { resolveEffectiveAPIProvider } from './providerRouting.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
@@ -2620,7 +2622,14 @@ async function* queryModel(
       let totalStallTime = 0
       let stallCount = 0
 
-      for await (const part of stream) {
+      // A tool call with no arguments arrives as an empty tool_use block. On
+      // the Messages wire it is delivered as `{}` once the reply shows the
+      // block was finished; see emptyToolInput.ts.
+      const streamEvents = usesAnthropicMessagesWire(streamProvider)
+        ? settleEmptyToolInputs(stream)
+        : stream
+
+      for await (const part of streamEvents) {
         resetStreamIdleTimer()
         // OpenRouter buffers a preamble until its tool batch is complete.
         // Network progress resets the watchdog without leaking partial output

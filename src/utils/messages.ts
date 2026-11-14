@@ -1,8 +1,8 @@
-import { decodeToolArguments, toolDecodeFields } from '../services/mcp/decodeStatus.js'
+import { TOOL_DECODE_STATUS_KEY, decodeToolArguments, toolDecodeFields } from '../services/mcp/decodeStatus.js'
 import { hookClassifierMetadata } from './hooks/classifierContext.js'
 import { getStreamDisplayText, hasMessageDisplayText } from './hooks/messageDisplay.js'
 import { isPlainStdoutContextEvent } from './hooks/hookPolicy.js'
-import { getAPIProvider, type APIProvider } from './model/providers.js'
+import { getAPIProvider, usesAnthropicMessagesWire, type APIProvider } from './model/providers.js'
 import { normalizeModelStringForAPI } from './model/model.js'
 import { resolveEffectiveAPIProvider } from '../services/api/providerRouting.js'
 import { stripCodexReasoningFromBlock } from '../lanes/codex/reasoning.js'
@@ -2034,6 +2034,12 @@ export function normalizeMessagesForAPI(
   const reasoningProvider = options.provider ?? resolveEffectiveAPIProvider(getAPIProvider(), options.model)
   const preserveCodexReasoning =
     reasoningProvider === 'openai' || reasoningProvider === 'xai' || reasoningProvider === 'meta'
+  // Decode status is Tau's own note on a tool_use block. The Anthropic
+  // Messages API rejects a field it does not define, and the block stays in
+  // history, so one marked call would fail every later request. Dropped on
+  // that wire only: lanes build their own wire messages, and the OpenRouter
+  // guard reads the status from history.
+  const stripToolDecodeStatus = usesAnthropicMessagesWire(reasoningProvider)
   // Compare the same model identity sent to the provider, without UI context tags.
   const codexModel = options.model ? normalizeModelStringForAPI(options.model) : undefined
   const invalidCodexReasoningMessages = new Set<Message>()
@@ -2307,6 +2313,10 @@ export function normalizeMessagesForAPI(
                     block = restoreOpenRouterToolIdMetadata(block, message.message.id)
                   } else if ('_openrouter_reasoning' in block || '_openrouter_tool_call_id' in block) {
                     const { _openrouter_reasoning: _state, _openrouter_tool_call_id: _id, ...rest } = block
+                    block = rest
+                  }
+                  if (stripToolDecodeStatus && TOOL_DECODE_STATUS_KEY in block) {
+                    const { [TOOL_DECODE_STATUS_KEY]: _status, ...rest } = block
                     block = rest
                   }
                   const tool = tools.find(t => toolMatchesName(t, block.name))

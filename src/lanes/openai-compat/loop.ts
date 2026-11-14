@@ -18,6 +18,7 @@
 
 import { APIConnectionError } from '@anthropic-ai/sdk'
 import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
+import { EmptyToolInputSettler } from '../../services/api/emptyToolInput.js'
 import {
   noteLocalServerTimings,
   ollamaServerTimings,
@@ -2228,6 +2229,9 @@ async function* streamOpenCodeAnthropicRoute(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  // This route relays the server's own Messages stream, so a call with no
+  // arguments follows the first-party rule (services/api/emptyToolInput.ts).
+  const emptyToolInputs = new EmptyToolInputSettler<AnthropicStreamEvent>()
 
   try {
     while (true) {
@@ -2255,6 +2259,7 @@ async function* streamOpenCodeAnthropicRoute(
         }
 
         if (parsed.type === 'error') {
+          for (const event of emptyToolInputs.end()) yield event
           if (!sawMessageStart) {
             sawMessageStart = true
             yield emitSyntheticStart()
@@ -2304,7 +2309,7 @@ async function* streamOpenCodeAnthropicRoute(
           || parsed.type === 'message_delta'
           || parsed.type === 'message_stop'
         ) {
-          yield parsed as AnthropicStreamEvent
+          for (const event of emptyToolInputs.push(parsed as AnthropicStreamEvent)) yield event
         }
       }
 
@@ -2314,6 +2319,7 @@ async function* streamOpenCodeAnthropicRoute(
     reader.releaseLock()
   }
 
+  for (const event of emptyToolInputs.end()) yield event
   if (!sawMessageStart) yield emitSyntheticStart()
   if (!sawMessageStop) {
     yield {
