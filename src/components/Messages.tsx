@@ -403,9 +403,12 @@ const MessagesImpl = ({
       const msg = normalizedMessages[i];
       if (msg?.type === 'assistant') {
         const content = msg.message.content;
-        // Find the last thinking block in this message
+        // Find the last thinking block in this message. An empty one shows
+        // nothing (a signature carrier, or omitted thinking), so it must not
+        // stand in for the last visible thinking.
         for (let j = content.length - 1; j >= 0; j--) {
-          if (content[j]?.type === 'thinking') {
+          const block = content[j];
+          if (block?.type === 'thinking' && block.thinking) {
             return `${msg.uuid}:${j}`;
           }
         }

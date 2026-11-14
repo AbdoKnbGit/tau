@@ -98,6 +98,7 @@ import { quote } from './bash/shellQuote.js'
 import { formatNumber, formatTokens } from './format.js'
 import { getPewterLedgerVariant } from './planModeV2.js'
 import { jsonStringify } from './slowOperations.js'
+import { isSignatureCarrierBlock } from './thoughtSignatureCarrier.js'
 
 // Hook attachments that have a hookName field (excludes HookPermissionDecisionAttachment)
 type HookAttachmentWithName = Exclude<
@@ -3067,6 +3068,16 @@ export function handleMessageFromStream(
     if (message.type === 'tool_use_summary') {
       return
     }
+    // A stored thought signature is history for the next request, not
+    // output: keep it, and leave the live text and thinking display alone.
+    if (
+      message.type === 'assistant' &&
+      message.message.content.length > 0 &&
+      message.message.content.every(isSignatureCarrierBlock)
+    ) {
+      onMessage(message)
+      return
+    }
     // Capture complete thinking blocks for real-time display in transcript mode.
     // Only fire onStreamingThinking if the thinking text actually changed —
     // without this check, repeated assistant messages with identical thinking
@@ -3123,6 +3134,7 @@ export function handleMessageFromStream(
 
   switch (message.event.type) {
     case 'content_block_start':
+      if (isSignatureCarrierBlock(message.event.content_block)) return
       onStreamingText?.(() => null)
       onStreamingDisplayText?.(() => null)
       if (

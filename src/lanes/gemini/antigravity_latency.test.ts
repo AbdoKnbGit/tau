@@ -27,10 +27,10 @@ function assert(cond: unknown, hint: string): void {
 function main(): void {
   console.log('antigravity gemini latency:')
 
-  test('Antigravity Gemini low keeps reasoning level but does not stream thoughts by default', () => {
+  test('Antigravity Gemini low keeps reasoning level and streams thought summaries by default', () => {
     const cfg = resolveThinkingConfig('gemini-3.5-flash-low', -1)
     assert(cfg.thinkingLevel === 'low', `thinkingLevel=${String(cfg.thinkingLevel)}`)
-    assert(cfg.includeThoughts === false, `includeThoughts=${String(cfg.includeThoughts)}`)
+    assert(cfg.includeThoughts === true, `includeThoughts=${String(cfg.includeThoughts)}`)
   })
 
   test('explicit thinking request still streams thoughts', () => {
@@ -49,7 +49,7 @@ function main(): void {
         const id = `gemini-${family}-${level}`
         const cfg = resolveThinkingConfig(id, -1)
         assert(cfg.thinkingLevel === level, `${id} thinkingLevel=${String(cfg.thinkingLevel)}`)
-        assert(cfg.includeThoughts === false, `${id} includeThoughts=${String(cfg.includeThoughts)}`)
+        assert(cfg.includeThoughts === true, `${id} includeThoughts=${String(cfg.includeThoughts)}`)
         assert(!('thinkingBudget' in cfg), `${id} must use level-based reasoning`)
       }
     }
@@ -74,14 +74,21 @@ function main(): void {
     }
   })
 
-  test('TAU_GEMINI_INCLUDE_THOUGHTS can opt back into visible thoughts', () => {
-    process.env.TAU_GEMINI_INCLUDE_THOUGHTS = '1'
+  test('TAU_GEMINI_INCLUDE_THOUGHTS=0 turns visible thoughts off, and thinking off sends none', () => {
     try {
-      const cfg = resolveThinkingConfig('gemini-3.5-flash-low', -1)
-      assert(cfg.includeThoughts === true, `includeThoughts=${String(cfg.includeThoughts)}`)
+      for (const value of ['0', 'false', 'no', 'off']) {
+        process.env.TAU_GEMINI_INCLUDE_THOUGHTS = value
+        const cfg = resolveThinkingConfig('gemini-3.8-flash-high', -1)
+        assert(cfg.includeThoughts === false, `${value}: includeThoughts=${String(cfg.includeThoughts)}`)
+        assert(cfg.thinkingLevel === 'high', `${value}: the reasoning level must not change`)
+      }
+      process.env.TAU_GEMINI_INCLUDE_THOUGHTS = '1'
+      assert(resolveThinkingConfig('gemini-3.8-flash-high', -1).includeThoughts === true, '=1 still turns them on')
     } finally {
       delete process.env.TAU_GEMINI_INCLUDE_THOUGHTS
     }
+    const off = resolveThinkingConfig('gemini-3.8-flash-high', 0, { type: 'disabled' })
+    assert(off.includeThoughts === false, `thinking off: includeThoughts=${String(off.includeThoughts)}`)
   })
 
   test('non-Antigravity Gemini keeps legacy adaptive thought behavior', () => {

@@ -1473,9 +1473,12 @@ export function antigravityApiHeaders(accessToken: string): Record<string, strin
  *      role="user" (Claude's tool-result messages are user-role).
  *   2. Parts that are pure `{thought: true}` with no functionCall are
  *      dropped — Claude rejects empty thought blobs (Gemini 3.x sends
- *      these, Claude doesn't accept them).
- *   3. Parts that carry only a `thoughtSignature` with no functionCall
- *      and no text are dropped for the same reason.
+ *      these, Claude doesn't accept them). A thought part with a signature
+ *      is Claude's own thinking (the lane sends one back only to the model
+ *      that wrote it) and stays: without it the bridge runs a tool-loop
+ *      step without thinking, on a different cached prompt.
+ *   3. Parts that carry a `thoughtSignature` with no functionCall and no
+ *      text are dropped for the same reason.
  *
  * Mirrors CLIProxyAPI's antigravity executor transformRequest().
  */
@@ -1490,9 +1493,13 @@ function _applyClaudeContentFixes(request: Record<string, unknown>): void {
     const parts = c.parts.filter(p => {
       if (!p || typeof p !== 'object') return true
       const hasFunctionCall = 'functionCall' in p
-      const hasText = 'text' in p && typeof (p as { text?: unknown }).text === 'string'
-      if ('thought' in p && !hasFunctionCall) return false
-      if ('thoughtSignature' in p && !hasFunctionCall && !hasText) return false
+      const text = (p as { text?: unknown }).text
+      const signature = (p as { thoughtSignature?: unknown; thought_signature?: unknown }).thoughtSignature
+        ?? (p as { thought_signature?: unknown }).thought_signature
+      const signed = typeof signature === 'string' && signature.length > 0
+      if ('thought' in p && !hasFunctionCall) return p.thought === true && signed
+      if (('thoughtSignature' in p || 'thought_signature' in p) && !hasFunctionCall
+        && !(typeof text === 'string' && text.length > 0)) return false
       return true
     })
     contents[i] = { ...c, role, parts }

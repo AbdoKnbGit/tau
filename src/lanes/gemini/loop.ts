@@ -102,6 +102,14 @@ import {
   resolveThinkingBudget as resolveGeminiThinkingBudget,
   resolveThinkingConfig as resolveGeminiThinkingConfig,
 } from './thinking.js'
+import {
+  geminiTextSignaturesEnabled,
+  partThoughtSignature,
+  SIGNATURE_CARRIER_KEY,
+  type SignatureCarrier,
+  signatureCarrierOf,
+  signatureFitsModel,
+} from './signature_carrier.js'
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -119,10 +127,10 @@ interface GeminiContent {
 }
 
 type GeminiPart =
-  | { text: string }
+  | { text: string; thoughtSignature?: string }
   | { functionCall: { id?: string; name: string; args: Record<string, unknown> }; thoughtSignature?: string }
   | { functionResponse: { id?: string; name: string; response: { content: string } } }
-  | { thought: boolean; text: string }
+  | { thought: boolean; text: string; thoughtSignature?: string }
   | { inlineData: { mimeType: string; data: string } }
 
 // ─── The Lane Implementation ─────────────────────────────────────
@@ -203,11 +211,25 @@ export class GeminiLane implements Lane {
     // tool_result blocks can find their original Gemini function name.
     const toolUseIdToNative = buildToolUseIdToNativeMap(messages)
 
+    // Map thinkingBudget from Anthropic-format thinking param.
+    const thinkingBudget = resolveGeminiThinkingBudget(thinking)
+    // Claude 4.6 thinks only with a positive budget (thinking.ts). Its signed
+    // thinking goes back only on requests that think: one that doesn't is a
+    // different cached prompt anyway and gains nothing from it.
+    const requestThinkingBudget = resolveGeminiThinkingConfig(model, thinkingBudget, thinking, max_tokens)
+      .thinkingBudget
+    const claudeBudgetThinking = isAntigravityClaude
+      && typeof requestThinkingBudget === 'number' && requestThinkingBudget > 0
+
     // Convert Anthropic-format messages → Gemini native contents.
     // If we have volatile content, inject it as a leading user message —
     // FIXED position with frozen bytes (see above), so every implicit cache
     // reads it as part of the stable prefix instead of a per-turn rewrite.
-    const contents = convertHistoryToGemini(messages, toolUseIdToNative)
+    const contents = convertHistoryToGemini(messages, toolUseIdToNative, {
+      model,
+      claude: isAntigravityClaude,
+      claudeThinking: claudeBudgetThinking,
+    })
     if (volatileText) {
       contents.unshift({
         role: 'user',
@@ -243,9 +265,6 @@ export class GeminiLane implements Lane {
     if (process.env.TAU_CACHE_DEBUG && isAntigravityGemini) {
       console.error(`[tau-prompt] systemChars=${split.stableText.length} volatileChars=${(split.volatileText ?? '').length} toolsChars=${JSON.stringify(functionDeclarations).length} nTools=${functionDeclarations.length}`)
     }
-
-    // Map thinkingBudget from Anthropic-format thinking param.
-    const thinkingBudget = resolveGeminiThinkingBudget(thinking)
 
     // Try to place the stable portion of the request (system + tools) into
     // Google's cachedContents API. On a hit, the model sees cache_read
@@ -295,6 +314,10 @@ export class GeminiLane implements Lane {
       thinking,
       cacheName,
     })
+    // Signatures that arrive on a part of their own are kept for the next
+    // request (see signature_carrier.ts): Claude's whenever it thinks with a
+    // budget, Gemini's plain-text ones unless TAU_GEMINI_TEXT_SIGNATURES=0.
+    const keepGeminiTextSignatures = isAntigravityGemini && geminiTextSignaturesEnabled()
     const cacheContext: AntigravityCacheRequestContext | undefined = isAntigravityGemini
       ? { model, sessionId, querySource, requestId: randomUUID() }
       : undefined
@@ -501,6 +524,30 @@ export class GeminiLane implements Lane {
       currentCall = null
     }
 
+    // A stored signature is an empty thinking block carrying it (see
+    // signature_carrier.ts). Gemini's wait for the end of the reply.
+    const pendingCarriers: SignatureCarrier[] = []
+    function* carrierBlock(index: number, carrier: SignatureCarrier): Generator<AnthropicStreamEvent, void> {
+      yield {
+        type: 'content_block_start',
+        index,
+        content_block: { type: 'thinking', thinking: '', [SIGNATURE_CARRIER_KEY]: carrier },
+      } as AnthropicStreamEvent
+      yield { type: 'content_block_stop', index }
+    }
+    // Claude's: right where it arrived, after the thinking it signs.
+    function* emitSignatureCarrier(signature: string): Generator<AnthropicStreamEvent, void> {
+      if (inBlock !== null) {
+        yield { type: 'content_block_stop', index: blockIndex }
+        blockIndex++
+        inBlock = null
+        responseText = ''
+        thinkingText = ''
+      }
+      yield* carrierBlock(blockIndex, { kind: 'thought', signature, model })
+      blockIndex++
+    }
+
     // Defer message_start until the first chunk arrives so we can fold
     // cache-hit and input-token numbers into the initial usage block —
     // Anthropic's AnthropicMessage.usage carries cache_read_input_tokens
@@ -576,25 +623,34 @@ export class GeminiLane implements Lane {
               if (currentCall) {
                 yield* commitCurrentCall()
               }
-              if (inBlock === 'text') {
-                yield { type: 'content_block_stop', index: blockIndex }
-                blockIndex++
-                inBlock = null
-                responseText = ''
-              }
-              if (inBlock !== 'thinking') {
-                yield {
-                  type: 'content_block_start',
-                  index: blockIndex,
-                  content_block: { type: 'thinking', thinking: '' },
+              const signature = claudeBudgetThinking || keepGeminiTextSignatures
+                ? partThoughtSignature(part)
+                : undefined
+              if (part.text.length > 0 || !signature) {
+                if (inBlock === 'text') {
+                  yield { type: 'content_block_stop', index: blockIndex }
+                  blockIndex++
+                  inBlock = null
+                  responseText = ''
                 }
-                inBlock = 'thinking'
+                if (inBlock !== 'thinking') {
+                  yield {
+                    type: 'content_block_start',
+                    index: blockIndex,
+                    content_block: { type: 'thinking', thinking: '' },
+                  }
+                  inBlock = 'thinking'
+                }
+                thinkingText += part.text
+                yield {
+                  type: 'content_block_delta',
+                  index: blockIndex,
+                  delta: { type: 'thinking_delta', thinking: part.text },
+                }
               }
-              thinkingText += part.text
-              yield {
-                type: 'content_block_delta',
-                index: blockIndex,
-                delta: { type: 'thinking_delta', thinking: part.text },
+              if (signature) {
+                if (claudeBudgetThinking) yield* emitSignatureCarrier(signature)
+                else pendingCarriers.push({ kind: 'thought', signature, model })
               }
               continue
             }
@@ -604,26 +660,30 @@ export class GeminiLane implements Lane {
               if (currentCall) {
                 yield* commitCurrentCall()
               }
-              if (inBlock === 'thinking') {
-                yield { type: 'content_block_stop', index: blockIndex }
-                blockIndex++
-                inBlock = null
-                thinkingText = ''
-              }
-              if (inBlock !== 'text') {
-                yield {
-                  type: 'content_block_start',
-                  index: blockIndex,
-                  content_block: { type: 'text', text: '' },
+              const signature = keepGeminiTextSignatures ? partThoughtSignature(part) : undefined
+              if (part.text.length > 0 || !signature) {
+                if (inBlock === 'thinking') {
+                  yield { type: 'content_block_stop', index: blockIndex }
+                  blockIndex++
+                  inBlock = null
+                  thinkingText = ''
                 }
-                inBlock = 'text'
+                if (inBlock !== 'text') {
+                  yield {
+                    type: 'content_block_start',
+                    index: blockIndex,
+                    content_block: { type: 'text', text: '' },
+                  }
+                  inBlock = 'text'
+                }
+                responseText += part.text
+                yield {
+                  type: 'content_block_delta',
+                  index: blockIndex,
+                  delta: { type: 'text_delta', text: part.text },
+                }
               }
-              responseText += part.text
-              yield {
-                type: 'content_block_delta',
-                index: blockIndex,
-                delta: { type: 'text_delta', text: part.text },
-              }
+              if (signature) pendingCarriers.push({ kind: 'text', signature, model })
               continue
             }
 
@@ -899,6 +959,14 @@ export class GeminiLane implements Lane {
       else yield* commitCurrentCall(finishedNormally)
     }
 
+    // Gemini's signatures go in while the final block is still open: blocks
+    // are stored as they close, so the answer stays the reply's last block.
+    if (pendingCarriers.length > 0) {
+      let carrierIndex = inBlock !== null ? blockIndex + 1 : blockIndex
+      for (const carrier of pendingCarriers) yield* carrierBlock(carrierIndex++, carrier)
+      if (inBlock === null) blockIndex = carrierIndex
+    }
+
     // Close final open block.
     if (inBlock !== null) {
       yield { type: 'content_block_stop', index: blockIndex }
@@ -913,7 +981,10 @@ export class GeminiLane implements Lane {
         hadToolUse: toolCalls.length > 0,
       })
 
-    if (isAntigravityClaude && querySource === 'repl_main_thread' && !signal.aborted) {
+    // A one-token refresh can't carry a thinking budget (the budget must stay
+    // below the output cap), and the budget is part of the cached prompt, so
+    // no cheap refresh reaches a budget-thinking turn's cache. Skip it.
+    if (isAntigravityClaude && querySource === 'repl_main_thread' && !signal.aborted && !claudeBudgetThinking) {
       scheduleAntigravityClaudeKeepAlive(cacheRefresher(request), {
         // A switch to another provider leaves this prompt behind. Required
         // lazily: the provider module pulls the config graph into lane tests.
@@ -1193,6 +1264,10 @@ function buildToolUseIdToNativeMap(
 function convertHistoryToGemini(
   messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
   toolUseIdToNative: Map<string, string>,
+  // The request's model: stored signatures go back only to the model that
+  // wrote them (see signature_carrier.ts), and Claude's only when this
+  // request thinks with a budget too.
+  target: { model: string; claude: boolean; claudeThinking?: boolean } = { model: '', claude: false },
 ): GeminiContent[] {
   const contents: GeminiContent[] = []
 
@@ -1203,7 +1278,11 @@ function convertHistoryToGemini(
     if (typeof msg.content === 'string') {
       if (msg.content.length > 0) parts.push({ text: msg.content })
     } else {
-      for (const block of msg.content) {
+      const blocks = msg.content
+      // Gemini's stored signatures go back at the end of the turn.
+      const trailing: GeminiPart[] = []
+      for (let blockAt = 0; blockAt < blocks.length; blockAt++) {
+        const block = blocks[blockAt]!
         switch (block.type) {
           case 'text':
             if (block.text) parts.push({ text: block.text })
@@ -1256,9 +1335,33 @@ function convertHistoryToGemini(
             }
             break
           }
-          case 'thinking':
+          case 'thinking': {
+            const carrier = signatureCarrierOf(block)
+            if (carrier) {
+              // A signature on a part of its own goes back the same way.
+              if (signatureFitsModel(carrier.model, target.model) && (!target.claude || target.claudeThinking)) {
+                const part: GeminiPart = carrier.kind === 'thought'
+                  ? { thought: true, text: '', thoughtSignature: carrier.signature }
+                  : { text: '', thoughtSignature: carrier.signature }
+                if (target.claude) parts.push(part)
+                else trailing.push(part)
+              }
+              break
+            }
+            // Claude's thinking goes back as one signed part, the shape the
+            // bridge accepts; without it the bridge runs the turn unthinking.
+            const next = signatureCarrierOf(blocks[blockAt + 1])
+            if (
+              target.claude && target.claudeThinking && next?.kind === 'thought'
+              && signatureFitsModel(next.model, target.model)
+            ) {
+              parts.push({ thought: true, text: block.thinking ?? '', thoughtSignature: next.signature })
+              blockAt++
+              break
+            }
             if (block.thinking) parts.push({ thought: true, text: block.thinking })
             break
+          }
           case 'image': {
             // Pasted screenshots arrive as an Anthropic image block on the
             // user message. The tool-result path already maps these to
@@ -1286,6 +1389,7 @@ function convertHistoryToGemini(
           }
         }
       }
+      parts.push(...trailing)
     }
 
     if (parts.length > 0) contents.push({ role, parts })
@@ -1298,8 +1402,9 @@ function convertHistoryToGemini(
 export function _convertHistoryToGeminiForTest(
   messages: import('../../services/api/providers/base_provider.js').ProviderMessage[],
   toolUseIdToNative: Map<string, string> = new Map(),
+  target?: { model: string; claude: boolean; claudeThinking?: boolean },
 ): GeminiContent[] {
-  return convertHistoryToGemini(messages, toolUseIdToNative)
+  return convertHistoryToGemini(messages, toolUseIdToNative, target)
 }
 
 function stableAntigravitySessionId(
@@ -1748,7 +1853,7 @@ function buildGeminiRequest(config: GeminiRequestConfig): Record<string, unknown
   //   gemini-3.1-pro-low  → thinkingLevel: "low"
   //   gemini-3-flash      → thinkingLevel: "low"   (flash default)
   //   (other -flash, -lite preview, 2.5 family)   → thinkingBudget (legacy)
-  const thinkingConfig = resolveGeminiThinkingConfig(model, thinkingBudget, thinking)
+  const thinkingConfig = resolveGeminiThinkingConfig(model, thinkingBudget, thinking, maxOutputTokens)
 
   const request: Record<string, unknown> = {
     model,

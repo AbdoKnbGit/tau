@@ -88,8 +88,8 @@ try {
           assert.deepEqual(envelope.request.contents, contents, 'conversation prefix changed')
           assert.deepEqual(envelope.request.generationConfig, { thinkingConfig:
             model.startsWith('gemini-4-') && level !== 'high'
-              ? { thinkingBudget: -1, includeThoughts: false }
-              : { thinkingLevel: level, includeThoughts: false },
+              ? { thinkingBudget: -1, includeThoughts: true }
+              : { thinkingLevel: level, includeThoughts: true },
           })
           assert.ok(!('cachedContent' in envelope.request), 'explicit cache metadata leaked into implicit-cache transport')
           assert.ok(!JSON.stringify(envelope).includes(context.requestId), 'local diagnostic ID leaked onto the wire')
