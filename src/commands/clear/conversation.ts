@@ -31,6 +31,12 @@ import {
   getSessionEndHookTimeoutMs,
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
+import { armMcpReloadWait } from '../../services/mcp/launchBarrier.js'
+import {
+  beginMcpReload,
+  MCP_SOURCE_LOCAL_CONFIG,
+} from '../../services/mcp/readiness.js'
+import { keepConnectedMcpServers } from '../../services/mcp/utils.js'
 import { clearAllPlanSlugs } from '../../utils/plans.js'
 import { cancelPlanApprovalNaming } from '../../utils/planApprovalNaming.js'
 import { setCwd } from '../../utils/Shell.js'
@@ -188,16 +194,15 @@ export async function clearConversation({
           trackedFiles: new Set(),
           snapshotSequence: 0,
         },
-        // Reset MCP state to default to trigger re-initialization.
-        // Preserve pluginReconnectKey so /clear doesn't cause a no-op
-        // (it's only bumped by /reload-plugins).
-        mcp: {
-          clients: [],
-          tools: [],
-          commands: [],
-          resources: {},
-          pluginReconnectKey: prev.mcp.pluginReconnectKey,
-        },
+        // Keep connected MCP servers so the new conversation's first request
+        // still carries their tools. The session change makes the connection
+        // manager re-check every server: changed ones restart (their old
+        // process is closed), new ones connect, and the dropped ones (failed,
+        // needs-auth, pending, disabled) start over. Emptying it would send
+        // the first request without any MCP tool and leave a replaced
+        // server's process running. pluginReconnectKey is kept: only
+        // /reload-plugins bumps it.
+        mcp: keepConnectedMcpServers(prev.mcp),
       }
     })
   }
@@ -212,6 +217,11 @@ export async function clearConversation({
   // Generate new session ID to provide fresh state
   // Set the old session as parent for analytics lineage tracking
   regenerateSessionId({ setCurrentAsParent: true })
+  // The new session id makes the MCP connection manager reload. Arm the wait
+  // now, not when it next renders: a cleared plan approval sends its first
+  // request right away, and it must wait for any server that reconnects.
+  beginMcpReload(MCP_SOURCE_LOCAL_CONFIG)
+  armMcpReloadWait()
   // Update the environment variable so subprocesses use the new session ID
   if (process.env.USER_TYPE === 'ant' && process.env.CLAUDE_CODE_SESSION_ID) {
     process.env.CLAUDE_CODE_SESSION_ID = getSessionId()

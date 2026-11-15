@@ -74,6 +74,7 @@ import {
   type TurnInterruptionState,
 } from 'src/utils/conversationRecovery.js'
 import type {
+  ConnectedMCPServer,
   MCPServerConnection,
   McpSdkServerConfig,
   ScopedMcpServerConfig,
@@ -5687,6 +5688,11 @@ export async function reconcileMcpServers(
     configs: newConfigs,
   }
 
+  // Clients this update drops from AppState that no dynamic state owns: the
+  // servers connected at startup. Close the ones nothing here reuses, or a
+  // reload that replaces a startup server leaves its process running.
+  const orphaned = new Map<ConnectedMCPServer['client'], ConnectedMCPServer>()
+
   // Update AppState with the new tools
   setAppState(prev => {
     // Get all dynamic server names (current + new)
@@ -5694,6 +5700,16 @@ export async function reconcileMcpServers(
       ...Object.keys(currentState.configs),
       ...Object.keys(newConfigs),
     ])
+    for (const c of prev.mcp.clients) {
+      if (
+        c.type === 'connected' &&
+        allDynamicServerNames.has(c.name) &&
+        !currentState.clients.some(d => d.type === 'connected' && d.client === c.client) &&
+        !newClients.some(n => n.type === 'connected' && n.client === c.client)
+      ) {
+        orphaned.set(c.client, c)
+      }
+    }
 
     // Remove old dynamic tools
     const nonDynamicTools = prev.mcp.tools.filter(t => {
@@ -5719,6 +5735,16 @@ export async function reconcileMcpServers(
       },
     }
   })
+
+  // Identity-checked, so a startup connection reused under the same config
+  // (it is in newClients then) is never closed.
+  for (const old of orphaned.values()) {
+    try {
+      await clearServerCache(old.name, old.config, old.client)
+    } catch (e) {
+      logError(e)
+    }
+  }
 
   return {
     response: { added, removed, errors },

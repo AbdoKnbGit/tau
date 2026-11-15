@@ -2145,8 +2145,20 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
 ): Promise<LoadedPlugin | null> {
   let pluginPath: string
 
-  if (typeof entry.source === 'string' && !useInstalledPath) {
-    // Local relative path — read from the marketplace source dir directly.
+  // An installed marketplace-relative plugin has its own copy in the versioned
+  // cache, and that copy is what the full loader resolves it to. Read it when
+  // it exists, so the plugin keeps one root for the whole session: its MCP
+  // server commands and env, hooks and skills are built from that root, and a
+  // root that changed when the full load replaced this result made the next
+  // MCP reload restart the plugin's servers. ZIP caches keep the old path.
+  const installedCopy =
+    typeof entry.source === 'string' &&
+    installPath !== undefined &&
+    !installPath.endsWith('.zip') &&
+    (await pathExists(installPath))
+
+  if (typeof entry.source === 'string' && !useInstalledPath && !installedCopy) {
+    // Local relative path, not installed — read the marketplace source dir.
     // Skip copyPluginToVersionedCache; startup doesn't need a fresh copy.
     let marketplaceDir: string
     try {
@@ -2166,8 +2178,9 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
     // finishLoadingPluginFromPath reads pluginPath — its error handling
     // surfaces ENOENT as a load failure, no need to pre-check here.
   } else {
-    // External source (npm/github/url/git-subdir) — use recorded installPath.
-    if (!installPath || !(await pathExists(installPath))) {
+    // External source (npm/github/url/git-subdir), or an installed relative
+    // one — use the recorded installPath.
+    if (!installPath || !(installedCopy || (await pathExists(installPath)))) {
       errorsOut.push({
         type: 'plugin-cache-miss',
         source: pluginId,

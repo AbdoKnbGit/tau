@@ -30,7 +30,7 @@ export function __mcpReadiness() {
     beginMcpServer, settleMcpServer, isMcpDiscoverySettled,
     getMcpReadinessCounts, waitForMcpDiscovery,
     getMcpLaunchBudgetMs, waitForMcpLaunchBarrier,
-    shouldWaitForMcpAtLaunch,
+    shouldWaitForMcpAtLaunch, beginMcpReload, armMcpReloadWait,
     launchElapsedMs };
 }
 `
@@ -247,4 +247,75 @@ test('the launch barrier is consumed by its first use', async () => {
   assert.equal(second.outcome, 'disarmed')
   assert.equal(second.waitedMs, 0)
   mcp.settleMcpServer(server)
+})
+
+// Reloads (a new or cleared session, a plugin reload, a mode or login change)
+// arm the same wait again. These run after the launch use above.
+test('a reload re-opens the servers it settles and holds the next request until they publish', async () => {
+  const src = nextId('reload-src')
+  const server = nextId('reloaded')
+  mcp.beginMcpSource(src)
+  mcp.settleMcpSource(src, [server])
+  mcp.settleMcpServer(server)
+  assert.equal(mcp.isMcpDiscoverySettled(), true)
+
+  mcp.beginMcpReload(src)
+  mcp.armMcpReloadWait()
+  // The source is enumerating again before the manager has listed anything.
+  assert.equal(mcp.isMcpDiscoverySettled(), false)
+  assert.equal(mcp.shouldWaitForMcpAtLaunch(true), true)
+  // The reload's settle re-opens a server that had settled before.
+  mcp.settleMcpSource(src, [server])
+  assert.equal(mcp.isMcpDiscoverySettled(), false)
+
+  const started = Date.now()
+  setTimeout(() => mcp.settleMcpServer(server), 150)
+  const result = await mcp.waitForMcpLaunchBarrier()
+  assert.equal(result.outcome, 'settled')
+  assert.equal(Date.now() - started >= 120, true, 'released before the server published')
+  // Consumed again: one request per reload waits.
+  assert.equal(mcp.shouldWaitForMcpAtLaunch(true), false)
+})
+
+test('only the settle that ends a reload re-opens servers', () => {
+  const src = nextId('plain-src')
+  const server = nextId('plain')
+  mcp.beginMcpSource(src)
+  mcp.settleMcpSource(src, [server])
+  mcp.settleMcpServer(server)
+  // A later settle without a reload leaves the settled server alone.
+  mcp.settleMcpSource(src, [server])
+  assert.equal(mcp.isMcpDiscoverySettled(), true)
+})
+
+test('a reload wait is measured from the reload, not from launch', async () => {
+  const original = process.env.TAU_MCP_LAUNCH_WAIT_MS
+  const src = nextId('late-src')
+  const server = nextId('late')
+  try {
+    // Launch is long past 300 ms here, so a window measured from launch
+    // would already be spent and the request would not wait at all.
+    process.env.TAU_MCP_LAUNCH_WAIT_MS = '300'
+    mcp.beginMcpReload(src)
+    mcp.armMcpReloadWait()
+    mcp.settleMcpSource(src, [server])
+    const started = Date.now()
+    const result = await mcp.waitForMcpLaunchBarrier()
+    assert.equal(result.outcome, 'deadline')
+    assert.equal(Date.now() - started >= 250, true, 'did not wait for the reload window')
+  } finally {
+    if (original === undefined) delete process.env.TAU_MCP_LAUNCH_WAIT_MS
+    else process.env.TAU_MCP_LAUNCH_WAIT_MS = original
+    mcp.settleMcpServer(server)
+  }
+})
+
+test('a reload with no servers to reconnect does not hold the request', async () => {
+  const src = nextId('empty-reload')
+  mcp.beginMcpReload(src)
+  mcp.armMcpReloadWait()
+  mcp.skipMcpSource(src)
+  const result = await mcp.waitForMcpLaunchBarrier()
+  assert.equal(result.outcome, 'already-settled')
+  assert.equal(result.waitedMs, 0)
 })

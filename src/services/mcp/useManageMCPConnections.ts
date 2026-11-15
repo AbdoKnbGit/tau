@@ -79,9 +79,11 @@ import {
   isChannelPermissionRelayEnabled,
 } from './channelPermissions.js'
 import { registerElicitationHandler } from './elicitationHandler.js'
+import { armMcpReloadWait } from './launchBarrier.js'
 import {
   MCP_SOURCE_LOCAL_CONFIG,
   acknowledgeMcpPublication,
+  beginMcpReload,
   beginMcpSource,
   registerMcpPublisher,
   forgetMcpServer,
@@ -865,6 +867,21 @@ export function useManageMCPConnections(
   // Skip claude.ai dedup here to avoid blocking on the network fetch; the connect
   // useEffect below runs immediately after and dedups before connecting.
   const sessionId = getSessionId()
+
+  // A reload — a new or cleared session, /reload-plugins, a power mode or
+  // login change — re-runs the effects below, which may reconnect servers the
+  // next request needs. Arm the wait the first turn uses, so a request sent
+  // right away (a cleared plan approval, a queued prompt) waits for them
+  // instead of going out without their tools. Done during render, before any
+  // effect of this commit can start a request; the effects settle it.
+  const reloadKey = `${sessionId}\0${_pluginReconnectKey}\0${powerMode}\0${_authVersion}`
+  const reloadKeyRef = useRef<string | undefined>(undefined)
+  if (reloadKeyRef.current !== undefined && reloadKeyRef.current !== reloadKey) {
+    beginMcpReload(MCP_SOURCE_LOCAL_CONFIG)
+    armMcpReloadWait()
+  }
+  reloadKeyRef.current = reloadKey
+
   useEffect(() => {
     // Cheap power mode: no MCP at all — nothing to register as pending.
     // The effect re-runs on mode change (powerMode dep) so leaving cheap
@@ -905,11 +922,17 @@ export function useManageMCPConnections(
             s.client.onclose = undefined
             void clearServerCache(s.name, s.config).catch(() => {})
           }
-          // Its config is gone or changed. Whatever the old identity was
-          // still discovering, nothing will finish it, so it must not hold
-          // the launch barrier. The replacement re-registers under the new
-          // config when it starts connecting.
-          forgetMcpServer(s.name)
+          // Its config is gone or now disabled: nothing will publish it
+          // again, so whatever the old identity was still discovering must
+          // not hold the launch barrier. A server whose config changed is
+          // left registered — the connect effect below reconnects it under
+          // the new config and that publication settles it. Forgetting it
+          // here could erase the replacement's own registration when the
+          // connect effect got there first, and release a reload's wait
+          // before the server it is waiting for is back.
+          if (!(s.name in configs) || isMcpServerDisabled(s.name)) {
+            forgetMcpServer(s.name)
+          }
         }
 
         const existingServerNames = new Set(

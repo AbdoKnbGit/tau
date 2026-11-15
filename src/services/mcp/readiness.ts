@@ -75,18 +75,36 @@ export function beginMcpSource(id: McpSourceId): void {
   sources.set(id, 'enumerating')
 }
 
+/** Sources reloading: their next settle re-opens the servers they list. */
+const reloading = new Set<McpSourceId>()
+
+/**
+ * A reload of this source has started (a new or cleared session, a plugin
+ * reload, a power mode or login change). The source enumerates again, and the
+ * servers it hands over when it settles count as discovering until they are
+ * published again — whether they reconnect from scratch or reuse a live
+ * connection. Paired with `armMcpReloadWait`, this holds the next request
+ * until the catalog it reads is complete again.
+ */
+export function beginMcpReload(id: McpSourceId): void {
+  sources.set(id, 'enumerating')
+  reloading.add(id)
+}
+
 /**
  * Settle a source and register the servers it found, as one transition.
  *
  * `serverNames` are the servers this source expects to discover tools for.
- * Servers already registered by another source are not re-opened.
+ * Servers already registered by another source are not re-opened, except by
+ * the settle that ends a reload of this source.
  */
 export function settleMcpSource(
   id: McpSourceId,
   serverNames: readonly string[] = [],
 ): void {
+  const reopen = reloading.delete(id)
   for (const name of serverNames) {
-    if (!servers.has(name)) servers.set(name, 'discovering')
+    if (reopen || !servers.has(name)) servers.set(name, 'discovering')
   }
   sources.set(id, 'settled')
   notifyIfSettled()

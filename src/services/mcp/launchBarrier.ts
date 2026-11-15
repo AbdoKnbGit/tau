@@ -13,9 +13,12 @@
  * discovery settles at +1 s waits about 1 s.
  *
  * This barrier is a wait, never a gate: at the deadline the request proceeds
- * with whatever is connected and background discovery continues. It arms once
- * per process — /clear, /resume, a provider switch and a mid-session install
- * all go through the normal lifecycle instead.
+ * with whatever is connected and background discovery continues. It arms at
+ * launch, and again when the MCP connection manager reloads (a new or cleared
+ * session, a plugin reload, a power mode or login change): a request sent
+ * while servers reconnect would otherwise go out without their tools, and the
+ * next one would carry a different tool list. A re-armed wait has the same
+ * budget, measured from the reload instead of from launch.
  */
 
 import { logForDebugging } from '../../utils/debug.js'
@@ -47,9 +50,21 @@ export function getMcpLaunchBudgetMs(): number {
 }
 
 let armed = true
+/** Launch-elapsed ms the current wait is measured from; undefined = launch. */
+let windowStart: number | undefined
 
 export function isMcpLaunchBarrierArmed(): boolean {
   return armed
+}
+
+/**
+ * Arm the wait for an MCP reload. The next MCP-capable request waits for the
+ * reloading servers (see `beginMcpReload`), bounded by the configured budget
+ * measured from now. Arming again before that request only restarts the window.
+ */
+export function armMcpReloadWait(): void {
+  armed = true
+  windowStart = launchElapsedMs()
 }
 
 export type McpLaunchWaitOutcome =
@@ -80,6 +95,8 @@ export async function waitForMcpLaunchBarrier(
 ): Promise<McpLaunchWaitResult> {
   if (!armed) return { outcome: 'disarmed', waitedMs: 0 }
   armed = false
+  const since = windowStart ?? 0
+  windowStart = undefined
 
   const budgetMs = getMcpLaunchBudgetMs()
   if (budgetMs === 0) return { outcome: 'disabled', waitedMs: 0 }
@@ -88,11 +105,11 @@ export async function waitForMcpLaunchBarrier(
     return { outcome: 'already-settled', waitedMs: 0 }
   }
 
-  const elapsed = launchElapsedMs()
+  const elapsed = launchElapsedMs() - since
   const remainingMs = budgetMs - elapsed
   if (remainingMs <= 0) {
     logForDebugging(
-      `[MCP launch barrier] budget already spent (${elapsed}ms of ${budgetMs}ms at launch) — not waiting`,
+      `[MCP launch barrier] budget already spent (${elapsed}ms of ${budgetMs}ms ${since ? 'since the reload' : 'at launch'}) — not waiting`,
     )
     return { outcome: 'expired', waitedMs: 0 }
   }

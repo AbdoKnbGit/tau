@@ -224,6 +224,40 @@ export function excludeStalePluginClients(
 }
 
 /**
+ * MCP state to carry into a new conversation (/clear, a cleared plan
+ * approval): connected servers with their tools, commands and resources.
+ *
+ * The connection manager re-checks every server when the session changes, so
+ * a kept server whose settings changed is still restarted and its old process
+ * closed, and a new server is still connected. Servers that are not connected
+ * (failed, needs-auth, pending, disabled) are dropped so they start over.
+ */
+export function keepConnectedMcpServers<
+  T extends {
+    clients: MCPServerConnection[]
+    tools: Tool[]
+    commands: Command[]
+    resources: Record<string, ServerResource[]>
+  },
+>(mcp: T): T {
+  const dropped = mcp.clients.filter(c => c.type !== 'connected')
+  if (dropped.length === 0) return mcp
+  let { tools, commands, resources } = mcp
+  for (const c of dropped) {
+    tools = excludeToolsByServer(tools, c.name)
+    commands = excludeCommandsByServer(commands, c.name)
+    resources = excludeResourcesByServer(resources, c.name)
+  }
+  return {
+    ...mcp,
+    clients: mcp.clients.filter(c => c.type === 'connected'),
+    tools,
+    commands,
+    resources,
+  }
+}
+
+/**
  * Checks if a tool name belongs to a specific MCP server
  * @param toolName The tool name to check
  * @param serverName The server name to match against
