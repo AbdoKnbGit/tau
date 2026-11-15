@@ -1,9 +1,14 @@
 // Stands in for Google during a real CLI run, so print mode on Antigravity can be tested without an
-// account. It refuses the one system prompt identity Google answers with a bare 429, and records the
-// identity line of every system prompt it receives. Load with: node --import
+// account. It refuses the system prompt texts Google answers with a bare 429 (an identity line and two
+// sentences of the main prompt), and records the identity line of every system prompt it receives.
+// Load with: node --import
 import { appendFileSync } from 'node:fs'
 
 const refusedIdentity = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+const refusedSentences = [
+  'You are an interactive agent that helps users with software engineering tasks.',
+  'Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.',
+]
 const json = (value, status = 200) => new Response(JSON.stringify(value), {
   status,
   headers: { 'content-type': 'application/json' },
@@ -21,7 +26,7 @@ globalThis.fetch = async function fetch(input, init) {
   const lines = JSON.parse(init.body).request.systemInstruction.parts.map(part => part.text).join('\n').split('\n')
   appendFileSync(process.env.TAU_TEST_FAKE_GOOGLE_RECORD, `${lines.find(line => line.startsWith('You are ')) ?? ''}\n`)
   if (process.env.TAU_TEST_FAKE_GOOGLE_BODIES) appendFileSync(process.env.TAU_TEST_FAKE_GOOGLE_BODIES, `${init.body}\n`)
-  if (lines.includes(refusedIdentity)) {
+  if (lines.includes(refusedIdentity) || refusedSentences.some(sentence => lines.some(line => line.includes(sentence)))) {
     return json({ error: { code: 429, message: 'Resource has been exhausted (e.g. check quota).', status: 'RESOURCE_EXHAUSTED' } }, 429)
   }
   const response = {

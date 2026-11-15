@@ -97,6 +97,7 @@ import { geminiSafeToolName } from '../shared/gemini_schema.js'
 import { describeUnsendableMedia } from '../shared/media_blocks.js'
 import { isOutputCapTruncation, laneStopReason } from '../shared/truncation.js'
 import { parseAntigravityClaudeTier } from '../../utils/model/antigravityClaudeTiers.js'
+import { antigravityAcceptedSystemText } from './antigravity_system_text.js'
 import { selectGeminiToolsForRequest } from './lazy_tools.js'
 import {
   resolveThinkingBudget as resolveGeminiThinkingBudget,
@@ -179,9 +180,13 @@ export class GeminiLane implements Lane {
     // using cachedContents — so the cache key stays byte-identical
     // across turns. If the caller passed flat text without the marker,
     // we fall back to treating the whole thing as stable (no regression).
-    const split = splitSystemAtBoundary(systemText)
     const isAntigravityModel = ANTIGRAVITY_MODEL_IDS.has(model.toLowerCase())
     const isAntigravityRequest = providerHint === 'antigravity' || isAntigravityModel
+    // Antigravity refuses two exact sentences of the system prompt with a fake
+    // quota 429; it gets them reworded (antigravity_system_text.ts).
+    const split = splitSystemAtBoundary(
+      isAntigravityRequest ? antigravityAcceptedSystemText(systemText) : systemText,
+    )
     const isAntigravityGemini =
       isAntigravityModel && isAntigravityGeminiModel(model)
     const isAntigravityClaude = isAntigravityModel && !isAntigravityGemini
