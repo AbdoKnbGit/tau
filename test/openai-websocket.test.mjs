@@ -47,15 +47,18 @@ const events = id => [
   } } },
 ]
 
-// One local server for both transports. `refuse` answers upgrades with 426.
-const seen = { connections: [], socketRequests: [], httpRequests: [], refuse: false, turnState: false, firstEvent: null, firstEventTimes: Infinity }
+// One local server for both transports. `refuse` answers upgrades with 426;
+// `answerDelayMs` holds every answer that long, so a request stays in flight.
+const seen = { connections: [], socketRequests: [], httpRequests: [], refuse: false, turnState: false, firstEvent: null, firstEventTimes: Infinity, answerDelayMs: 0 }
 const server = createServer((req, res) => {
   let raw = ''
   req.on('data', chunk => { raw += chunk })
   req.on('end', () => {
     seen.httpRequests.push(JSON.parse(raw))
-    res.writeHead(200, { 'Content-Type': 'text/event-stream' })
-    res.end(events('resp-http').map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''))
+    setTimeout(() => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.end(events('resp-http').map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''))
+    }, seen.answerDelayMs)
   })
 })
 const wss = new WebSocketServer({ noServer: true })
@@ -70,12 +73,15 @@ server.on('upgrade', (req, socket, head) => {
     seen.connections.push(req.headers)
     ws.on('message', data => {
       seen.socketRequests.push(JSON.parse(data.toString()))
-      if (seen.firstEvent && seen.socketRequests.length <= seen.firstEventTimes) {
-        ws.send(JSON.stringify(seen.firstEvent))
-        return
-      }
-      if (seen.turnState) ws.send(JSON.stringify({ type: 'response.metadata', headers: { 'x-codex-turn-state': 'routing-fixture' } }))
-      for (const event of events(`resp-ws-${seen.socketRequests.length}`)) ws.send(JSON.stringify(event))
+      const count = seen.socketRequests.length
+      setTimeout(() => {
+        if (seen.firstEvent && count <= seen.firstEventTimes) {
+          ws.send(JSON.stringify(seen.firstEvent))
+          return
+        }
+        if (seen.turnState) ws.send(JSON.stringify({ type: 'response.metadata', headers: { 'x-codex-turn-state': 'routing-fixture' } }))
+        for (const event of events(`resp-ws-${count}`)) ws.send(JSON.stringify(event))
+      }, seen.answerDelayMs)
     })
   })
 })
@@ -103,6 +109,7 @@ test.beforeEach(() => {
   seen.turnState = false
   seen.firstEvent = null
   seen.firstEventTimes = Infinity
+  seen.answerDelayMs = 0
   r.codexApi.clearChain()
   r.resetReadiness()
   r.installNativeLaneReadinessResolver(r.providerUsesNativeLane)
@@ -113,11 +120,16 @@ const usageLimit = fields => ({ type: 'error', status: 429, error: {
   type: 'usage_limit_reached', message: 'The usage limit has been reached', ...fields,
 } })
 
+// A conversation's requests carry its tools; a standalone helper (a title, a
+// plan name) sends none.
+const conversationTools = [{ name: 'fixture_lookup', description: 'Look a value up',
+  input_schema: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } }]
+
 async function sendAndCollect(sessionId = 'conversation-fixture') {
   const shim = r.createProviderShim('openai', 'repl_main_thread')
   const response = await shim.beta.messages.create({
     model: 'gpt-5.6-luna', messages: [{ role: 'user', content: 'hello' }],
-    system: 'Fixture instructions', tools: [], max_tokens: 64, sessionId, stream: true,
+    system: 'Fixture instructions', tools: conversationTools, max_tokens: 64, sessionId, stream: true,
   })
   const received = []
   for await (const event of response) received.push(event)
@@ -129,7 +141,7 @@ async function send(sessionId = 'conversation-fixture', overrides = {}) {
   assert.equal(shim._provider.name, 'codex')
   const response = await shim.beta.messages.create({
     model: 'gpt-5.6-luna', messages: [{ role: 'user', content: 'hello' }],
-    system: 'Fixture instructions', tools: [], max_tokens: 64, sessionId, stream: true,
+    system: 'Fixture instructions', tools: conversationTools, max_tokens: 64, sessionId, stream: true,
     ...overrides,
   })
   const received = []
@@ -268,6 +280,36 @@ test('another conversation gets its own socket', async () => {
   await send('conversation-b')
   assert.equal(seen.connections.length, 2)
   assert.deepEqual(seen.connections.map(headers => headers.session_id), ['conversation-a', 'conversation-b'])
+})
+
+test('a standalone helper with no tools goes over HTTP and leaves the socket to the conversation', async () => {
+  await send('conversation-fixture', { tools: [] })
+  await send()
+  assert.equal(seen.httpRequests.length, 1)
+  assert.deepEqual(seen.httpRequests[0].tools ?? [], [])
+  assert.equal(seen.httpRequests[0].prompt_cache_key, 'conversation-fixture')
+  assert.equal(seen.socketRequests.length, 1)
+  assert.ok(seen.socketRequests[0].tools.length > 0)
+})
+
+test('a request in a query chain keeps the socket without tools, and so does a standalone one with tools', async () => {
+  await send('conversation-fixture', { tools: [], turnId: 'chain-fixture' })
+  await send()
+  assert.equal(seen.httpRequests.length, 0)
+  assert.equal(seen.socketRequests.length, 2)
+})
+
+test('a helper still answering does not push the conversation\'s request off its socket', async () => {
+  seen.answerDelayMs = 400
+  // A plan-name helper starts as the approved plan's first request goes out.
+  const helper = send('conversation-fixture', { tools: [] })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  await send()
+  await helper
+  assert.equal(seen.socketRequests.length, 1)
+  assert.ok(seen.socketRequests[0].tools.length > 0, 'the conversation\'s request went over its socket')
+  assert.equal(seen.httpRequests.length, 1)
+  assert.deepEqual(seen.httpRequests[0].tools ?? [], [], 'the helper went over HTTP')
 })
 
 test('a refused upgrade sends the request over HTTP', async () => {

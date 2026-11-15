@@ -628,7 +628,14 @@ export class CodexApiClient {
     }
     let cacheCapture: CodexCacheCapture | undefined
 
-    if (this.usesWebSocket) {
+    // The conversation's one socket carries its warm cache. A standalone
+    // helper with no tools and no query chain (a title, a plan name, a
+    // tool-use summary) shares nothing with that cached prefix and often
+    // runs just as the conversation's own request goes out: on the socket it
+    // only kept it busy, and that request fell back to HTTP, which misses
+    // this backend's cache far more often. Such helpers go over HTTP.
+    const helperWithoutTools = !turnId && !(Array.isArray(request.tools) && request.tools.length > 0)
+    if (this.usesWebSocket && !helperWithoutTools) {
       const socketBody = turnState.value ? {
         ...body,
         client_metadata: { ...body.client_metadata, [CODEX_TURN_STATE_HEADER]: turnState.value },

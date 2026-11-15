@@ -93,6 +93,10 @@ const complete: Reply = (ws, _request, index) => {
   send(ws, { type: 'response.completed', response: { id: `r${index}`, usage: { input_tokens: 100 } } })
 }
 
+// The client tests below send conversation requests, which carry their query
+// chain's turn id; a standalone helper sends neither tools nor a turn id.
+const TURN = 'turn-1'
+
 async function drain(started: { first: { type: string }; rest: AsyncGenerator<{ type: string }> }): Promise<string[]> {
   const types = [started.first.type]
   for await (const event of started.rest) types.push(event.type)
@@ -360,7 +364,7 @@ async function main(): Promise<void> {
       const client = new CodexApiClient()
       client.configure({ chatgptAccessToken: 'chatgpt-token', baseUrl: url })
       const types: string[] = []
-      for await (const event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never)) types.push(event.type)
+      for await (const event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never, undefined, TURN)) types.push(event.type)
       client.clearChain()
       assert(types.at(-1) === 'response.completed', `events: ${types}`)
       assert(seen.connections === 1 && seen.requests[0]?.type === 'response.create', 'did not go over the socket')
@@ -372,7 +376,7 @@ async function main(): Promise<void> {
       const client = new CodexApiClient()
       client.configure({ chatgptAccessToken: 'chatgpt-token', baseUrl: url })
       const types: string[] = []
-      for await (const event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never)) types.push(event.type)
+      for await (const event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never, undefined, TURN)) types.push(event.type)
       client.clearChain()
       assert(types.at(-1) === 'response.completed', `events: ${types}`)
       assert(seen.connections === 0 && seen.requests.length === 1 && seen.requests[0]?.type === undefined, 'did not fall back to HTTP')
@@ -386,7 +390,7 @@ async function main(): Promise<void> {
       client.configure({ chatgptAccessToken: 'chatgpt-token', baseUrl: url })
       let caught: unknown
       try {
-        for await (const _event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never)) { /* drain */ }
+        for await (const _event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never, undefined, TURN)) { /* drain */ }
       } catch (error) {
         caught = error
       }
@@ -396,12 +400,24 @@ async function main(): Promise<void> {
     })
   })
 
+  await test('a standalone helper without tools goes over HTTP with a ChatGPT login', async () => {
+    await withServer(complete, async (url, seen) => {
+      const client = new CodexApiClient()
+      client.configure({ chatgptAccessToken: 'chatgpt-token', baseUrl: url })
+      const types: string[] = []
+      for await (const event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never)) types.push(event.type)
+      client.clearChain()
+      assert(types.at(-1) === 'response.completed', `events: ${types}`)
+      assert(seen.connections === 0 && seen.requests.length === 1 && seen.requests[0]?.type === undefined, `connections ${seen.connections}`)
+    }, { sse: true })
+  })
+
   await test('an API key keeps HTTP', async () => {
     await withServer(complete, async (url, seen) => {
       const client = new CodexApiClient()
       client.configure({ apiKey: 'sk-test', baseUrl: url })
       const types: string[] = []
-      for await (const event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never)) types.push(event.type)
+      for await (const event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never, undefined, TURN)) types.push(event.type)
       assert(seen.connections === 0 && types.at(-1) === 'response.completed', `connections ${seen.connections}, events ${types}`)
     }, { sse: true })
   })
@@ -412,7 +428,7 @@ async function main(): Promise<void> {
       await withServer(complete, async (url, seen) => {
         const client = new CodexApiClient()
         client.configure({ chatgptAccessToken: 'chatgpt-token', baseUrl: url })
-        for await (const _event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never)) { /* drain */ }
+        for await (const _event of client.streamResponses({ model: 'gpt-x', input: [], prompt_cache_key: 'conv' } as never, undefined, TURN)) { /* drain */ }
         assert(seen.connections === 0 && seen.requests.length === 1, `connections ${seen.connections}`)
       }, { sse: true })
     } finally {
