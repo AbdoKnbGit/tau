@@ -8,6 +8,11 @@
  *
  * Deliberately not persisted across restarts: a listener that revives itself
  * without being asked is a surprise, and the token would be stale anyway.
+ * `tau --remote-local` (autostart.ts) is that ask, made once per launch.
+ *
+ * Phones the user chose to remember (devices.ts) sign in with their own key
+ * instead of the session token, so they reconnect to a later session without
+ * a QR code — but still only while that session has turned remote on.
  *
  * Starting or stopping never touches the agent loop, the message array, or the
  * prompt cache — the server is a side channel onto state the REPL already
@@ -17,10 +22,26 @@
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { isRemoteActive, setBroadcastSink } from './bus.js'
 import type { RemoteCommand } from './commands.js'
+import {
+  addDevice,
+  listDevices,
+  lookupDevice,
+  markDeviceSeen,
+  removeDevice,
+  type TrustedDevice,
+} from './devices.js'
 import { clearImages } from './images.js'
 import type { RemoteAsk } from './interactive.js'
 import { resolveLanReach } from './reach.js'
-import { startRemoteServer, type RemoteServer, type ServerHooks } from './server.js'
+import {
+  startRemoteServer,
+  type ConnectionEvent,
+  type DeviceStore,
+  type RemoteConnection,
+  type RemoteServer,
+  type ServerHooks,
+  type TrustOutcome,
+} from './server.js'
 import { getRemoteState, newToken, setRemoteState, type RemoteState } from './state.js'
 import { startTunnel, type Tunnel } from './tunnel.js'
 import type { RemoteItem } from './transcript.js'
@@ -111,6 +132,66 @@ export class InvalidRemoteHostError extends Error {
   }
 }
 
+export class InvalidRemotePortError extends Error {
+  constructor(value: string) {
+    super(`TAU_REMOTE_PORT must be a port number from 1 to 65535, not "${value}".`)
+    this.name = 'InvalidRemotePortError'
+  }
+}
+
+/**
+ * TAU_REMOTE_PORT pins the port: needed behind a port forward (WSL 2, a
+ * container), and lets two sessions each keep their own address for their
+ * remembered phones. Unset, the server prefers 7777 and falls back to any
+ * free port. 0 means any free port.
+ */
+function portFromEnv(): number | undefined {
+  const raw = process.env.TAU_REMOTE_PORT?.trim()
+  if (!raw) return undefined
+  if (!/^\d{1,5}$/.test(raw) || Number(raw) > 65535) throw new InvalidRemotePortError(raw)
+  return Number(raw)
+}
+
+const DEVICE_STORE: DeviceStore = {
+  lookup: lookupDevice,
+  add: addDevice,
+  remove: removeDevice,
+  seen: id => {
+    void markDeviceSeen(id)
+  },
+}
+
+const connectionListeners = new Set<(event: ConnectionEvent) => void>()
+
+/** Phones joining, leaving and being remembered, for the dialogs. */
+export function subscribeConnections(fn: (event: ConnectionEvent) => void): () => void {
+  connectionListeners.add(fn)
+  return () => {
+    connectionListeners.delete(fn)
+  }
+}
+
+export function listConnections(): RemoteConnection[] {
+  return server?.connections() ?? []
+}
+
+export function listRememberedDevices(): TrustedDevice[] {
+  return listDevices()
+}
+
+/** Remember a phone connected by the QR link; resolves once it saved its key. */
+export function trustConnection(connectionId: string): Promise<TrustOutcome> {
+  if (!server) return Promise.resolve({ ok: false, reason: 'remote is off' })
+  return server.trust(connectionId)
+}
+
+/** Forget a phone: it needs the QR code again, and is signed out right away. */
+export async function forgetDevice(deviceId: string): Promise<boolean> {
+  const removed = await removeDevice(deviceId)
+  server?.disconnectDevice(deviceId)
+  return removed
+}
+
 /**
  * Serializes starts. Two `/remote` invocations racing — a second one typed
  * while a tunnel is still opening, say — would each bind a listener, and the
@@ -178,6 +259,8 @@ async function start(
   }
   const lan = reach.kind === 'lan' ? reach : null
   const host = lan?.address ?? '127.0.0.1'
+  // Also before anything is torn down: a typo must not end a working session.
+  const port = portFromEnv()
 
   if (server) {
     // Our own stop for a mode switch — re-baseline so it doesn't read as
@@ -192,9 +275,19 @@ async function start(
     onPrompt: text => inbound.onPrompt(text),
     onInterrupt: () => inbound.onInterrupt(),
     onReply: (id, payload) => inbound.onReply(id, payload),
+    devices: DEVICE_STORE,
+    onConnection: event => {
+      for (const fn of connectionListeners) {
+        try {
+          fn(event)
+        } catch {
+          /* one broken listener must not starve the others */
+        }
+      }
+    },
   }
 
-  const started = await startRemoteServer(token, hooks)
+  const started = await startRemoteServer(token, hooks, { port })
   if (superseded()) {
     started.close()
     throw new RemoteCancelledError()
@@ -243,6 +336,7 @@ async function start(
     mode,
     token,
     port: started.port,
+    preferredPortBusy: started.preferredPortBusy,
     host,
     url: `${origin}/#${token}`,
     lanUrl: mode === 'global' ? lanUrl : null,

@@ -13,10 +13,24 @@
  *
  * Two rules when editing the embedded script:
  *   - no JS template literals, so this file stays one plain TS template
- *     literal without escaping games;
+ *     literal without escaping games (its only `${}` are deliberate TS
+ *     interpolations: the hash code and the close codes);
  *   - any backslash escape intended for the *page* must be doubled here
  *     (`\\n`), or the TS literal consumes it and ships a raw newline.
+ *
+ * The page signs in one of two ways (see server.ts): with the session token
+ * from the QR code's fragment, or — on a phone the user chose to remember —
+ * with a device key kept in localStorage for this origin, which lets it
+ * reconnect to later sessions without scanning again.
  */
+
+import { PAGE_CRYPTO_JS } from './pageCrypto.js'
+import {
+  CLOSE_FORGOTTEN,
+  CLOSE_NOT_REMEMBERED,
+  CLOSE_STALE_LINK,
+  CLOSE_WRONG_ORIGIN,
+} from './protocol.js'
 
 export const REMOTE_HTML = `<!doctype html>
 <html lang="en">
@@ -318,7 +332,7 @@ export const REMOTE_HTML = `<!doctype html>
       cwdEl=document.getElementById('cwd'), subEl=document.getElementById('sub'),
       banner=document.getElementById('banner'), asksEl=document.getElementById('asks'),
       palette=document.getElementById('palette');
-  var token=location.hash.slice(1), ws=null, busy=false, retry=0;
+  var link=location.hash.slice(1), imgToken=link, ws=null, busy=false, retry=0;
   var FENCE=String.fromCharCode(96,96,96), TICK=String.fromCharCode(96);
   var cards={}, asks={}, model='', commands=[];
 
@@ -383,7 +397,7 @@ export const REMOTE_HTML = `<!doctype html>
   function addImage(item){
     var wrap=el('div','shot');
     var img=document.createElement('img');
-    img.src='/img/'+encodeURIComponent(item.id)+'?t='+encodeURIComponent(token);
+    img.src='/img/'+encodeURIComponent(item.id)+'?t='+encodeURIComponent(imgToken);
     img.alt='screenshot';
     img.loading='lazy';
     img.addEventListener('click', function(){ wrap.classList.toggle('zoom'); });
@@ -636,33 +650,261 @@ export const REMOTE_HTML = `<!doctype html>
     return out;
   }
 
-  function connect(){
-    if(!token){ showBanner('Missing access token — rescan the QR code'); return; }
-    var proto=location.protocol==='https:'?'wss://':'ws://';
-    ws=new WebSocket(proto+location.host+'/ws?t='+encodeURIComponent(token));
+  // ---- connection ------------------------------------------------------
+  // Two ways in. A QR link carries this session's token in the fragment. A
+  // remembered phone keeps a device id and key in localStorage for this
+  // origin and answers the server's challenge with an HMAC, so it reconnects
+  // to later sessions with no QR code; after pairing its key never crosses
+  // the network again.
+  //
+  // It keeps one key per Tau that remembered it at this address, most
+  // recently used first. Tau on Windows and Tau in WSL can take turns on the
+  // same address, each with its own list, so a key the running Tau refuses
+  // is skipped, never deleted: the other Tau may still know it. Only a key
+  // whose Tau forgot this phone on purpose is dropped.
+${PAGE_CRYPTO_JS}
+  var KEYS='tau-remote-keys', OLD_KEY='tau-remote-device', MAX_KEYS=8;
+  var NOT_HERE='Tau on your computer does not remember this phone. Run /remote local there and scan the QR code to pair it.';
+  var keys=loadKeys(), tried={}, current=null;
+  var scanned=!!link, timer=null, stopped=false, via='', heard=0, probe=null, noteTimer=null;
 
-    ws.onopen=function(){ retry=0; dot.className='dot ok'; showBanner(''); };
-
-    ws.onmessage=function(ev){
-      var m; try{ m=JSON.parse(ev.data); }catch(e){ return; }
-      if(m.t==='hello'){ reset(m); }
-      else if(m.t==='messages'){ (m.messages||[]).forEach(add); }
-      else if(m.t==='state'){ setBusy(!!m.busy); }
-      else if(m.t==='ask'){ addAsk(flatten(m)); }
-      else if(m.t==='ask-end'){ dropAsk(m.id); }
-      else if(m.t==='bye'){ showBanner(m.reason||'Session ended'); }
-    };
-
-    ws.onclose=function(ev){
-      dot.className='dot off';
-      if(ev.code===4003){ showBanner('Access denied — rescan the QR code'); return; }
-      retry++;
-      showBanner(retry>2?'Reconnecting…':'');
-      setTimeout(connect, Math.min(800*retry, 5000));
-    };
-
-    ws.onerror=function(){ try{ ws.close(); }catch(e){} };
+  function validKey(k){
+    return !!k && typeof k.id==='string' && typeof k.key==='string' &&
+      /^[0-9a-f]{32}$/.test(k.id) && /^[0-9a-f]{64}$/.test(k.key);
   }
+  function hasKey(list, id){
+    for(var i=0;i<list.length;i++) if(list[i].id===id) return true;
+    return false;
+  }
+  function loadKeys(){
+    var list=[];
+    try{
+      var saved=JSON.parse(localStorage.getItem(KEYS)||'[]');
+      if(saved && saved.length) for(var i=0;i<saved.length;i++) if(validKey(saved[i])) list.push(saved[i]);
+      // The single key an older page kept, before keys became a list.
+      var old=JSON.parse(localStorage.getItem(OLD_KEY)||'null');
+      if(validKey(old) && !hasKey(list, old.id)) list.push(old);
+    }catch(e){}
+    return list.slice(0, MAX_KEYS);
+  }
+  function storeKeys(){
+    try{
+      localStorage.setItem(KEYS, JSON.stringify(keys));
+      localStorage.removeItem(OLD_KEY);
+      return true;
+    }catch(e){ return false; }
+  }
+  function putFirst(k){
+    var rest=[];
+    for(var i=0;i<keys.length;i++) if(keys[i].id!==k.id) rest.push(keys[i]);
+    keys=[k].concat(rest).slice(0, MAX_KEYS);
+  }
+  function dropKey(id){
+    var rest=[];
+    for(var i=0;i<keys.length;i++) if(keys[i].id!==id) rest.push(keys[i]);
+    keys=rest;
+    storeKeys();
+  }
+  // Read back what was written: a private tab or blocked site data can
+  // accept the write and keep nothing, or throw.
+  function saveKey(m){
+    keys=loadKeys();
+    putFirst({id:String(m.id), key:String(m.key), name:String(m.name||'')});
+    if(storeKeys() && hasKey(loadKeys(), m.id)) return true;
+    dropKey(m.id);
+    return false;
+  }
+  function untried(){
+    for(var i=0;i<keys.length;i++) if(!tried[keys[i].id]) return keys[i];
+    return null;
+  }
+  // Keep the address bar, bookmarks and home-screen icons on the plain
+  // address: a session token in them is dead by the next session.
+  function cleanAddress(){
+    if(!location.hash) return;
+    try{ history.replaceState(null, '', location.pathname+location.search); }catch(e){}
+  }
+
+  // Shown in the terminal when it asks whether to remember this phone.
+  function deviceLabel(){
+    var ua=navigator.userAgent||'', os='Browser', br='';
+    function has(s){ return ua.indexOf(s)>=0; }
+    if(has('iPhone')) os='iPhone';
+    else if(has('iPad') || (has('Macintosh') && navigator.maxTouchPoints>1)) os='iPad';
+    else if(has('Android')) os=has('Mobile')?'Android phone':'Android tablet';
+    else if(has('CrOS')) os='Chromebook';
+    else if(has('Windows')) os='Windows';
+    else if(has('Macintosh')) os='Mac';
+    else if(has('Linux')) os='Linux';
+    if(has('SamsungBrowser')) br='Samsung Internet';
+    else if(has('EdgA/')||has('EdgiOS/')||has('Edg/')) br='Edge';
+    else if(has('OPR/')||has('OPiOS/')) br='Opera';
+    else if(has('FxiOS/')||has('Firefox/')) br='Firefox';
+    else if(has('CriOS/')||has('Chrome/')) br='Chrome';
+    else if(has('Safari/')) br='Safari';
+    return br ? os+' · '+br : os;
+  }
+
+  function note(msg){
+    showBanner(msg);
+    if(noteTimer) clearTimeout(noteTimer);
+    noteTimer=setTimeout(function(){ noteTimer=null; if(banner.textContent===msg) showBanner(''); }, 10000);
+  }
+
+  // For answers that retrying cannot change: say what to do, then stay put.
+  function stop(msg){
+    stopped=true;
+    if(timer){ clearTimeout(timer); timer=null; }
+    dot.className='dot off';
+    showBanner(msg);
+  }
+
+  function later(){
+    if(stopped || timer) return;
+    retry++;
+    timer=setTimeout(function(){ timer=null; connect(); }, Math.min(800*retry, 5000));
+  }
+
+  // Every key was refused and there is no link to fall back on. That is final
+  // only for whichever Tau holds this address now, so say what to do and keep
+  // trying slowly: the phone gets in by itself once a Tau that remembers it
+  // takes the address back.
+  function waitForTau(msg){
+    dot.className='dot off';
+    showBanner(msg);
+    tried={};
+    if(stopped || timer) return;
+    timer=setTimeout(function(){ timer=null; connect(); }, 10000);
+  }
+
+  function connect(){
+    if(stopped) return;
+    if(ws && (ws.readyState===0 || ws.readyState===1)) return;
+    var params;
+    // Remembered keys go first: they outlive any one session's link.
+    current=location.protocol==='http:' ? untried() : null;
+    if(current){
+      via='device';
+      params='d='+current.id+(scanned?'&s=1':'');
+    } else if(link){
+      via='link';
+      params='t='+encodeURIComponent(link)+'&n='+encodeURIComponent(deviceLabel());
+    } else if(keys.length){
+      waitForTau(NOT_HERE);
+      return;
+    } else {
+      stop('This browser is not paired with your computer. Run /remote local there and scan the QR code.');
+      return;
+    }
+    var proto=location.protocol==='https:'?'wss://':'ws://';
+    var sock=new WebSocket(proto+location.host+'/ws?'+params);
+    ws=sock;
+    sock.onmessage=function(ev){ if(ws===sock) receive(ev); };
+    sock.onclose=function(ev){ if(ws===sock) closed(ev); };
+    sock.onerror=function(){ try{ sock.close(); }catch(e){} };
+  }
+
+  function receive(ev){
+    heard=Date.now();
+    var m; try{ m=JSON.parse(ev.data); }catch(e){ return; }
+    if(m.t==='challenge'){
+      if(!current){ try{ ws.close(); }catch(e){} return; }
+      ws.send(JSON.stringify({t:'auth', proof:deviceProof(current.key, String(m.nonce||''))}));
+    }
+    else if(m.t==='hello'){
+      retry=0; scanned=false; tried={};
+      if(m.img) imgToken=m.img;
+      // The key works, so the link is spent: if keys are refused later,
+      // falling back to it would only report a stale link, not the reason.
+      // And this Tau's key goes first next time.
+      if(via==='device' && current){ link=''; cleanAddress(); putFirst(current); storeKeys(); }
+      dot.className='dot ok';
+      showBanner('');
+      reset(m);
+    }
+    else if(m.t==='trusted'){
+      var saved=saveKey(m);
+      if(saved){ current=keys[0]; via='device'; link=''; cleanAddress(); }
+      ws.send(JSON.stringify({t:saved?'trust-saved':'trust-failed', id:m.id}));
+      if(saved) note('Remembered in this browser. Next time just open this page while Tau runs /remote local on your computer.');
+    }
+    else if(m.t==='messages'){ (m.messages||[]).forEach(add); }
+    else if(m.t==='state'){ setBusy(!!m.busy); }
+    else if(m.t==='ask'){ addAsk(flatten(m)); }
+    else if(m.t==='ask-end'){ dropAsk(m.id); }
+    else if(m.t==='bye'){ showBanner(m.reason||'Session ended'); }
+  }
+
+  function closed(ev){
+    dot.className='dot off';
+    if(probe){ clearTimeout(probe); probe=null; }
+    if(ev.code===${CLOSE_STALE_LINK}){
+      var expired='This link has expired. On your computer, run /remote local and scan the new QR code.';
+      link=''; cleanAddress();
+      if(untried()){ connect(); return; }
+      if(keys.length) waitForTau(expired); else stop(expired);
+      return;
+    }
+    if(ev.code===${CLOSE_NOT_REMEMBERED}){
+      // Skipped, not deleted: another Tau at this address may know this key.
+      if(current) tried[current.id]=true;
+      if(untried() || link){ connect(); return; }
+      waitForTau(NOT_HERE);
+      return;
+    }
+    if(ev.code===${CLOSE_FORGOTTEN}){
+      // This Tau forgot the phone on purpose: drop its key, keep the others.
+      var forgot='Your computer forgot this phone. To connect again, run /remote local there and scan the QR code.';
+      if(current) dropKey(current.id);
+      link=''; cleanAddress();
+      if(keys.length) waitForTau(forgot); else stop(forgot);
+      return;
+    }
+    if(ev.code===${CLOSE_WRONG_ORIGIN}){
+      stop('Open Tau from the address shown on your computer.');
+      return;
+    }
+    if(retry>=2) showBanner(via==='device' ? 'Waiting for Tau on your computer…' : 'Reconnecting…');
+    later();
+  }
+
+  // Phones suspend background tabs and kill their sockets, and a Wi-Fi switch
+  // can leave one that looks open but is dead. Back on the tab or the
+  // network: reconnect now, or check that the open socket still answers.
+  function wake(){
+    if(stopped) return;
+    if(ws && ws.readyState===1){
+      if(probe || Date.now()-heard<5000) return;
+      var sock=ws, asked=Date.now();
+      try{ sock.send(JSON.stringify({t:'ping'})); }catch(e){}
+      probe=setTimeout(function(){
+        probe=null;
+        if(ws!==sock || heard>=asked) return;
+        // Abandon it; its late close event is ignored by the ws===sock guard.
+        ws=null;
+        try{ sock.close(); }catch(e){}
+        dot.className='dot off';
+        retry=0;
+        connect();
+      }, 4000);
+      return;
+    }
+    if(ws && ws.readyState===0) return;
+    if(timer){ clearTimeout(timer); timer=null; }
+    retry=0; tried={};
+    connect();
+  }
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) wake(); });
+  window.addEventListener('online', wake);
+  window.addEventListener('focus', wake);
+  window.addEventListener('pageshow', function(ev){ if(ev.persisted) wake(); });
+  window.addEventListener('storage', function(ev){
+    if(ev.key===KEYS || ev.key===OLD_KEY){
+      keys=loadKeys();
+      tried={};
+      if(stopped && keys.length){ stopped=false; showBanner(''); connect(); }
+    }
+  });
 
   function sendPrompt(text){
     if(!text||!ws||ws.readyState!==1) return false;

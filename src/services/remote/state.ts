@@ -2,8 +2,10 @@
  * Module-level state for the /remote server.
  *
  * Deliberately not persisted: unlike /whatsapp, remote control of this session
- * should never survive a restart without the user asking for it again. A stale
- * token on a shared network is a footgun.
+ * should never survive a restart without the user asking for it again (the
+ * /remote command, or `tau --remote-local` at launch). A stale token on a
+ * shared network is a footgun. Phones the user chose to remember are a
+ * separate, revocable credential; see devices.ts.
  */
 
 import { randomBytes } from 'node:crypto'
@@ -16,6 +18,11 @@ export type RemoteState = {
   token: string
   /** Port the HTTP+WS server is bound to. */
   port: number
+  /**
+   * 7777 was taken, so this session listens elsewhere. Remembered phones
+   * dial the address they paired on, usually :7777, and will not find it.
+   */
+  preferredPortBusy: boolean
   /** LAN address in local mode; loopback when a tunnel fronts it. */
   host: string
   /** Full scan URL, fragment included. */

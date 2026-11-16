@@ -33,6 +33,7 @@ import { exitWithError, exitWithMessage, getRenderContext, renderAndRun, showSet
 import { initBuiltinPlugins } from './plugins/bundled/index.js';
 import { getEnvironmentPluginPaths, setSessionPluginUrls } from './utils/plugins/sessionPaths.js';
 import { launchRepl } from './replLauncher.js';
+import { requestLocalAtStartup } from './services/remote/autostart.js';
 import { hasGrowthBookEnvOverride, initializeGrowthBook, refreshGrowthBookAfterAuthChange } from './services/analytics/growthbook.js';
 import { fetchBootstrapData } from './services/api/bootstrap.js';
 import { type DownloadResult, downloadSessionFiles, type FilesApiConfig, parseFileSpecs } from './services/api/filesApi.js';
@@ -1099,7 +1100,7 @@ async function run(): Promise<CommanderCommand> {
   // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
   .option('--plugin-dir <path>', 'Load a plugin directory or ZIP for this session (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
   .option('--plugin-url <urls>', 'Load plugin ZIP archives from URLs for this session (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
-  .option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Tau in Chrome integration').option('--no-chrome', 'Disable Tau in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
+  .option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Tau in Chrome integration').option('--no-chrome', 'Disable Tau in Chrome integration').option('--remote-local', 'Start /remote local with the session: a phone on your Wi-Fi can connect, and phones you chose to remember reconnect without a QR code (plain HTTP on your network)', () => true).option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
     trace('action_handler_start');
     profileCheckpoint('action_handler_start');
 
@@ -1944,6 +1945,16 @@ async function run(): Promise<CommanderCommand> {
     if (options.sessionPersistence === false && !isNonInteractiveSession) {
       writeToStderr(`Error: --no-session-persistence can only be used with --print mode.`);
       process.exit(1);
+    }
+
+    // --remote-local serves the interactive session to a phone; --print has
+    // none. The REPL starts the listener once it can serve a phone.
+    if (options.remoteLocal) {
+      if (isNonInteractiveSession) {
+        writeToStderr(`Error: --remote-local needs an interactive session, so it cannot be used with --print.\n`);
+        process.exit(1);
+      }
+      requestLocalAtStartup();
     }
     const effectivePrompt = prompt || '';
     let inputPrompt = await getInputPrompt(effectivePrompt, (inputFormat ?? 'text') as 'text' | 'stream-json');

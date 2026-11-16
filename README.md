@@ -120,6 +120,8 @@ Web search works out of the box. Tau has a native MCP search built in as a tool,
 
 `/remote local` serves your session over your own Wi-Fi. It connects instantly and nothing leaves your network. `/remote global` opens a free Cloudflare HTTPS tunnel that works from anywhere, even on cellular (it needs `cloudflared`). Scan the QR code to pair, then read, prompt and approve tools from your phone while the work keeps running on your machine.
 
+Start Tau with `tau --remote-local` to have it on from launch. When a phone first connects, press Y to remember it: it then reconnects to later sessions without a QR code, until you forget it with `/remote devices`. Local mode is plain HTTP on your network, so read the [security notes](docs/remote.md#security) first. [Setup, settings, WSL and platform notes](docs/remote.md).
+
 The global link is also how you work together. Share that one link and your teammates can join the session and work in it with you.
 
 <p align="center">

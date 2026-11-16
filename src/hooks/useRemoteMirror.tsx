@@ -9,16 +9,23 @@
  * same reply twice.
  *
  * The hook also installs the snapshot provider the WebSocket server calls when
- * a phone connects, and the interrupt handler the Stop button drives.
+ * a phone connects, and the interrupt handler the Stop button drives — and,
+ * for `tau --remote-local`, starts the listener once those are in place.
  */
 
 import { useEffect, useRef } from 'react'
+import { useNotifications } from '../context/notifications.js'
+import { takeLocalAtStartup } from '../services/remote/autostart.js'
 import { broadcast, isRemoteActive as isOn } from '../services/remote/bus.js'
+import { listDevices } from '../services/remote/devices.js'
 import {
+  RemoteCancelledError,
   setInboundHandlers,
   setSnapshotProvider,
+  turnOn,
   type Snapshot,
 } from '../services/remote/lifecycle.js'
+import type { RemoteState } from '../services/remote/state.js'
 import { listRemoteCommands } from '../services/remote/commands.js'
 import { getPendingAsks } from '../services/remote/interactive.js'
 import {
@@ -30,6 +37,19 @@ import {
 import { projectAll } from '../services/remote/transcript.js'
 import { isBridgeSafeCommand, type Command } from '../commands.js'
 import type { Message } from '../types/message.js'
+
+/** One line: the address a phone opens, without the session token. */
+function startedNotice(state: RemoteState): string {
+  const parts = [`Remote local on · http://${state.host}:${state.port}`]
+  if (state.preferredPortBusy) parts.push('port 7777 was taken')
+  const remembered = listDevices().length
+  parts.push(
+    remembered > 0
+      ? `${remembered} remembered phone${remembered === 1 ? '' : 's'} can reconnect · /remote local for a new one`
+      : '/remote local shows the QR code',
+  )
+  return parts.join(' · ')
+}
 
 export function useRemoteMirror(
   messages: readonly Message[],
@@ -70,6 +90,36 @@ export function useRemoteMirror(
       setInboundHandlers(null)
     }
   }, [abortControllerRef])
+
+  const { addNotification } = useNotifications()
+
+  // `tau --remote-local`. Declared after the effect above, so React runs it
+  // later in the same commit: by the time a phone can connect, the snapshot
+  // provider and inbound handlers are installed, and nothing it sends is lost.
+  useEffect(() => {
+    if (!takeLocalAtStartup()) return
+    void turnOn('local').then(
+      state =>
+        addNotification({
+          key: 'remote-local',
+          text: startedNotice(state),
+          priority: 'medium',
+          timeoutMs: 20_000,
+        }),
+      err => {
+        // `/remote off` landed while it was starting: that is the answer.
+        if (err instanceof RemoteCancelledError) return
+        const reason = String((err as Error)?.message ?? err).split('\n')[0]
+        addNotification({
+          key: 'remote-local',
+          text: `Remote local did not start: ${reason} · /remote local for details`,
+          color: 'warning',
+          priority: 'high',
+          timeoutMs: 30_000,
+        })
+      },
+    )
+  }, [addNotification])
 
   // Busy flag goes out immediately so the phone shows progress the moment a
   // turn starts, well before any text settles.
