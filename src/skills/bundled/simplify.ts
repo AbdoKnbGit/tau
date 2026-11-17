@@ -10,11 +10,13 @@ const NO_AGENT_TOOL = `The ${AGENT_TOOL_NAME} tool isn't available in this conte
 function gatherDiff(args: string): string {
   const argument = args.trim()
   const argumentNote = argument
-    ? `\n\nArgument: ${argument}\nIf it is a PR number, branch name, or file path, review that target instead. Otherwise treat it as extra focus for the review.`
+    ? `\n\nArgument: ${argument}\nIf it is a PR number, an existing branch, or an existing file path, review that instead: the PR's or branch's diff against the default branch, or that file. Anything else is extra focus only, and the scope stays the diff.`
     : ''
   return `## Phase 0 — Gather the diff
 
-Run \`git diff '@{upstream}...HEAD'\` to get the unified diff under review. Without an upstream, use \`git diff main...HEAD\` (\`master...HEAD\` where that is the default branch) or \`git diff HEAD~1\`. If there are uncommitted changes, or the range diff is empty, also run \`git diff HEAD\` and include the working-tree changes in scope — the review often runs before the commit. Outside a git repository, or with no changes at all, review the files you edited earlier in this conversation or that the user named. Treat this diff as the review scope.${argumentNote}`
+Run \`git diff '@{upstream}...HEAD'\` to get the unified diff under review. Without an upstream, use \`git diff main...HEAD\` (\`master...HEAD\` where that is the default branch) or \`git diff HEAD~1\`. If there are uncommitted changes, or the range diff is empty, also run \`git diff HEAD\` and include the working-tree changes in scope — the review often runs before the commit. Outside a git repository, or with no changes at all, review the files you edited earlier in this conversation or that the user named.${argumentNote}
+
+That is the review scope. Read other project files only for context — never review or edit them, and never search outside the project.`
 }
 
 const FINDING_FIELDS =
@@ -32,11 +34,11 @@ Flag unnecessary complexity the diff adds: redundant or derivable state, copy-pa
 
 Flag wasted work the diff introduces: redundant computation or repeated I/O, independent operations run sequentially, blocking work added to startup or hot paths, memory that only grows (unbounded caches or queues, missing cleanup, listener leaks). Also flag long-lived objects built from closures or captured environments — they keep the entire enclosing scope alive for the object's lifetime (a memory leak when that scope holds large values); prefer a class/struct that copies only the fields it needs. Name the cheaper alternative.
 
-### Altitude
+### Altitude (root cause, not symptom)
 
 Check that each change fixes the root cause at the right depth rather than patching a symptom with a fragile bandaid. Special cases layered on shared infrastructure are a sign the fix isn't deep enough — prefer the simpler, more general change to the underlying mechanism over adding special cases, and name that change.`
 
-const SKIP_AND_SUMMARIZE = `Skip any finding whose fix would change intended behavior, require changes well outside the reviewed diff, or that you judge to be a false positive — note the skip rather than arguing with it. Finish with a brief summary of what was fixed and what was skipped (or confirm the code was already clean).`
+const FIX_RULES = `Before removing or renaming anything, find every use of it. Skip any finding whose fix would change observable behavior (what users or callers see or get), reach outside the review scope, or that you judge to be a false positive — note the skip rather than arguing with it. Finish with a brief summary of what was fixed and what was skipped (or confirm the code was already clean).`
 
 function fanOutPrompt(args: string): string {
   return [
@@ -44,11 +46,11 @@ function fanOutPrompt(args: string): string {
     gatherDiff(args),
     `## Phase 1 — Review (4 cleanup agents in parallel)
 
-Launch **4 independent review agents** via the ${AGENT_TOOL_NAME} tool, all in a single message so they run concurrently. Pass each agent the diff and one of the four angles below. Each returns its findings with ${FINDING_FIELDS}.`,
+Launch **4 independent review agents** via the ${AGENT_TOOL_NAME} tool, all in a single message so they run concurrently. Do it as soon as you have the diff: the agents do the reading. Give each a complete, self-contained brief: the diff, one of the four angles below copied in full, the scope rule above, and this rule: report findings only, never edit files or run skills. Each returns its findings with ${FINDING_FIELDS}.`,
     ANGLES,
     `## Phase 2 — Apply the fixes
 
-Wait for all four agents to complete, dedup findings that point at the same line or mechanism, and fix each remaining one directly. ${SKIP_AND_SUMMARIZE}`,
+Wait for all four agents to complete. If an agent fails or returns no report, review its angle yourself and say so in your summary. Dedup findings that point at the same line or mechanism, and fix each remaining one directly. ${FIX_RULES}`,
   ].join('\n\n')
 }
 
@@ -63,7 +65,7 @@ Review the diff against each angle below in turn. For each, note findings with $
     ANGLES,
     `## Phase 2 — Apply the fixes
 
-Dedup findings that point at the same line or mechanism, and fix each remaining one directly. ${SKIP_AND_SUMMARIZE} State clearly in your summary that this was a single-pass review done without the ${AGENT_TOOL_NAME} tool, not the full 4-agent fan-out, so whoever reads it isn't misled about what actually ran.`,
+Dedup findings that point at the same line or mechanism, and fix each remaining one directly. ${FIX_RULES} State clearly in your summary that this was a single-pass review done without the ${AGENT_TOOL_NAME} tool, not the full 4-agent fan-out, so whoever reads it isn't misled about what actually ran.`,
   ].join('\n\n')
 }
 

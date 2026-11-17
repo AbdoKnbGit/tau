@@ -49,8 +49,27 @@ test('without the Agent tool the review runs in one pass', async () => {
 
 test('an argument becomes the review target or extra focus', async () => {
   const text = await promptFor(['Agent'], '  src/parser.ts  ')
-  assert.ok(text.includes('Argument: src/parser.ts\nIf it is a PR number, branch name, or file path, review that target instead.'))
+  assert.ok(text.includes('Argument: src/parser.ts\nIf it is a PR number, an existing branch, or an existing file path, review that instead'))
+  // "my brunch" once widened the review to every file on the branch.
+  assert.ok(text.includes('Anything else is extra focus only, and the scope stays the diff.'))
   assert.ok(!(await promptFor(['Agent'])).includes('Argument:'))
+})
+
+test('the review stays inside its scope and the project', async () => {
+  // A live run's Altitude agent searched the whole home folder for the skill,
+  // and fixes landed in files outside the diff.
+  for (const tools of [['Agent'], ['Bash']]) {
+    const text = await promptFor(tools)
+    assert.ok(text.includes('never review or edit them, and never search outside the project'))
+    assert.ok(text.includes('change observable behavior (what users or callers see or get)'))
+    // A live run removed a state setter that two handlers still called.
+    assert.ok(text.includes('Before removing or renaming anything, find every use of it.'))
+  }
+  const fanOut = await promptFor(['Agent'])
+  assert.ok(fanOut.includes('Give each a complete, self-contained brief'))
+  // A review agent once ran /simplify itself through the Skill tool.
+  assert.ok(fanOut.includes('report findings only, never edit files or run skills'))
+  assert.ok(fanOut.includes('If an agent fails or returns no report, review its angle yourself and say so'))
 })
 
 test('the same tools give the same prompt, which names no missing command', async () => {
