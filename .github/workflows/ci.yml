@@ -146,6 +146,9 @@ jobs:
       - name: Test ToolSearch wording and the environment block's folder
         run: node --test test/tool-search-wording.test.mjs test/env-working-directory.test.mjs
 
+      - name: Test /simplify's fan-out and single-pass variants
+        run: node --test test/simplify-variants.test.mjs
+
       - name: Test copy selection after resume
         run: node --test test/copy-response.test.mjs
 
