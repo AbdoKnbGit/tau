@@ -64,11 +64,18 @@ test('the review stays inside its scope and the project', async () => {
     assert.ok(text.includes('change observable behavior (what users or callers see or get)'))
     // A live run removed a state setter that two handlers still called.
     assert.ok(text.includes('Before removing or renaming anything, find every use of it.'))
+    // `git diff HEAD~1` already holds the working tree, so with `git diff HEAD`
+    // the same 545 KB was gathered twice; the commit alone was 852 bytes.
+    assert.ok(text.includes('`git diff HEAD~1 HEAD` (the last commit)'))
+    assert.ok(!text.includes('`git diff HEAD~1`'))
+    assert.ok(text.includes('read it one file at a time with `git diff -D <range> -- <file>`'))
   }
   const fanOut = await promptFor(['Agent'])
   assert.ok(fanOut.includes('Give each a complete, self-contained brief'))
   // A review agent once ran /simplify itself through the Skill tool.
   assert.ok(fanOut.includes('report findings only, never edit files or run skills'))
+  // Agents handed a saved 536 KB diff hit Read's 256 KB limit and moved into Python.
+  assert.ok(fanOut.includes('instead of a saved copy'))
   assert.ok(fanOut.includes('If an agent fails or returns no report, review its angle yourself and say so'))
 })
 

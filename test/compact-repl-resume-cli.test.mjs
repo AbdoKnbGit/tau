@@ -73,7 +73,10 @@ async function checkResume(pty, mode) {
   })
   await new Promise(done => server.listen(0, '127.0.0.1', done))
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(CLAUDE|ANTHROPIC|OPENAI|GEMINI|TAU_|CLAUDEX|CODEX_)/i.test(name)))
+  // No official-marketplace clone: on a slow fetch it was still writing into
+  // the temp folder when the test deleted it (ENOTEMPTY on Windows CI).
   Object.assign(env, { CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PLUGIN_CACHE_DIR: join(root, 'cache'), TAU_SKIP_PREFLIGHT: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: '1',
     DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_AUTOUPDATER: '1', ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`,
     NO_PROXY: '127.0.0.1,localhost', ENABLE_TOOL_SEARCH: 'false', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '0.001' })
   const common = [...(mode === 'replacement' ? ['--plugin-dir', plugin] : []), '--setting-sources', 'project', '--strict-mcp-config', '--model', 'claude-sonnet-4-6', '--tools', 'Read']
@@ -137,7 +140,7 @@ async function checkResume(pty, mode) {
     if (term) { term.kill(); await pause(500) }
     server.closeAllConnections()
     await new Promise(done => server.close(done))
-    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
   }
 }
 

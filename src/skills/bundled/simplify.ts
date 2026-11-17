@@ -14,7 +14,7 @@ function gatherDiff(args: string): string {
     : ''
   return `## Phase 0 — Gather the diff
 
-Run \`git diff '@{upstream}...HEAD'\` to get the unified diff under review. Without an upstream, use \`git diff main...HEAD\` (\`master...HEAD\` where that is the default branch) or \`git diff HEAD~1\`. If there are uncommitted changes, or the range diff is empty, also run \`git diff HEAD\` and include the working-tree changes in scope — the review often runs before the commit. Outside a git repository, or with no changes at all, review the files you edited earlier in this conversation or that the user named.${argumentNote}
+Run \`git diff '@{upstream}...HEAD'\` to get the unified diff under review. Without an upstream, use \`git diff main...HEAD\` (\`master...HEAD\` where that is the default branch) or \`git diff HEAD~1 HEAD\` (the last commit). If there are uncommitted changes, or the range diff is empty, also run \`git diff HEAD\` and include the working-tree changes in scope — the review often runs before the commit. Add \`--irreversible-delete\` (\`-D\`) so deleted files are listed without their contents, and check the size with \`--stat\` first: if the diff is too large to read in one go, read it one file at a time with \`git diff -D <range> -- <file>\`. Outside a git repository, or with no changes at all, review the files you edited earlier in this conversation or that the user named.${argumentNote}
 
 That is the review scope. Read other project files only for context — never review or edit them, and never search outside the project.`
 }
@@ -46,7 +46,7 @@ function fanOutPrompt(args: string): string {
     gatherDiff(args),
     `## Phase 1 — Review (4 cleanup agents in parallel)
 
-Launch **4 independent review agents** via the ${AGENT_TOOL_NAME} tool, all in a single message so they run concurrently. Do it as soon as you have the diff: the agents do the reading. Give each a complete, self-contained brief: the diff, one of the four angles below copied in full, the scope rule above, and this rule: report findings only, never edit files or run skills. Each returns its findings with ${FINDING_FIELDS}.`,
+Launch **4 independent review agents** via the ${AGENT_TOOL_NAME} tool, all in a single message so they run concurrently. Do it as soon as you have the diff: the agents do the reading. Give each a complete, self-contained brief: the diff, one of the four angles below copied in full, the scope rule above, and this rule: report findings only, never edit files or run skills. When the diff is too large to paste, give the changed files and the per-file command (\`git diff -D <range> -- <file>\`) instead of a saved copy. Each returns its findings with ${FINDING_FIELDS}.`,
     ANGLES,
     `## Phase 2 — Apply the fixes
 

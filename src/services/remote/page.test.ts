@@ -136,15 +136,20 @@ class Page {
     return reply.result.value
   }
 
-  /** about:blank first, so a new #fragment on the same page really reloads. */
+  /**
+   * about:blank first, so a new #fragment on the same page really reloads.
+   * The check ignores the #fragment: the page drops an expired link's token
+   * from the address bar, which can happen before the load is seen.
+   */
   async go(url: string): Promise<void> {
     await this.send('Page.navigate', { url: 'about:blank' })
     await sleep(100)
     await this.send('Page.navigate', { url })
+    const page = url.split('#')[0]
     const end = Date.now() + 10_000
     while (Date.now() < end) {
       try {
-        if (await this.eval<boolean>(`location.href === ${JSON.stringify(url)} && document.readyState === 'complete'`)) return
+        if (await this.eval<boolean>(`location.href.split('#')[0] === ${JSON.stringify(page)} && document.readyState === 'complete'`)) return
       } catch {
         /* navigating */
       }
