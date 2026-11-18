@@ -314,7 +314,7 @@ import { ScrollKeybindingHandler } from '../components/ScrollKeybindingHandler.j
 import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type MessageActionsState, type MessageActionsNav, type MessageActionCaps } from '../components/messageActions.js';
 import { setClipboard } from '../ink/termio/osc.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
-import { createAttachmentMessage, getQueuedCommandAttachments } from '../utils/attachments.js';
+import { createAttachmentMessage, getQueuedCommandAttachments, restartMainSkillListing } from '../utils/attachments.js';
 
 // Stable empty array for hooks that accept MCPServerConnection[] — avoids
 // creating a new [] literal on every render in remote mode, which would
@@ -1933,6 +1933,15 @@ export function REPL({
 
       // Restore read file state from the message history
       restoreReadFileState(messages, log.projectPath ?? getOriginalCwd());
+
+      // What this window sent to the model belongs to the conversation it is
+      // leaving. Start the main thread's skills list over from what this
+      // conversation already holds. /branch and /clone hand back this window's
+      // own conversation (same message ids), which already matches.
+      const ownMessageIds = new Set(messagesRef.current.map(m => m.uuid));
+      if (entrypoint !== 'fork' || !messages.some(m => ownMessageIds.has(m.uuid))) {
+        restartMainSkillListing(messages.some(m => m.type === 'attachment' && m.attachment.type === 'skill_listing'));
+      }
 
       // Clear any active loading state (no queryId since we're not in a query)
       resetLoadingState();

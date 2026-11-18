@@ -2933,6 +2933,7 @@ const sentSkillNames = new Map<string, Set<string>>()
 export function resetSentSkillNames(): void {
   sentSkillNames.clear()
   suppressNext = false
+  restartedMainListing = false
 }
 
 /**
@@ -2955,6 +2956,21 @@ export function suppressNextSkillListing(): void {
   suppressNext = true
 }
 let suppressNext = false
+
+/**
+ * The window switched to another conversation (/resume, /tree, /import). What
+ * the main thread sent belongs to the conversation it left, so forget it. When
+ * the conversation it switched into already holds a skills list, the next
+ * main-thread pass marks the current skills as sent instead of listing them
+ * again, as CLI resume does through suppressNextSkillListing(). Only the main
+ * thread reads this flag, so a background agent still running cannot take it,
+ * and running agents keep their own sets.
+ */
+export function restartMainSkillListing(conversationHasListing: boolean): void {
+  sentSkillNames.delete('')
+  restartedMainListing = conversationHasListing
+}
+let restartedMainListing = false
 
 // When skill-search is enabled and the filtered (bundled + MCP) listing exceeds
 // this count, fall back to bundled-only. Protects MCP-heavy users (100+ servers)
@@ -3029,6 +3045,16 @@ async function getSkillListingAttachments(
   // (skills loaded later via /reload-plugins etc) get announced.
   if (suppressNext) {
     suppressNext = false
+    for (const cmd of allCommands) {
+      sent.add(cmd.name)
+    }
+    return []
+  }
+
+  // In-window switch into a conversation that already holds a skills list
+  // (see restartMainSkillListing).
+  if (agentKey === '' && restartedMainListing) {
+    restartedMainListing = false
     for (const cmd of allCommands) {
       sent.add(cmd.name)
     }
