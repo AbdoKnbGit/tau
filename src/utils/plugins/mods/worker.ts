@@ -274,11 +274,12 @@ const api = new vm.Script(
         : Array.isArray(node.children) ? node.children.map(child => encodeTree(child, ids)) : node.children;
       return { type: node.type, props, children };
     };
-    // $.process.spawn: the command's output as an async iterator of
-    // { stream, text } chunks, its exit on .result once read to the end;
-    // leaving the loop early (or kill()) stops the command.
-    const spawnStream = (invoke, argv, init) => {
-      const started = invoke('process.spawn', init === undefined ? [argv] : [argv, init]);
+    // $.process.spawn(request): the command's output as an async iterator of
+    // { stream, text } chunks, its { code, signal } as the loop's return
+    // value and on .result once read to the end. Leaving the loop early (or
+    // kill()) stops the command, and .result then rejects.
+    const spawnStream = (invoke, request) => {
+      const started = invoke('process.spawn', [request]);
       const buffer = [];
       let ended = false, settle, fail;
       const result = new Promise((resolve, reject) => { settle = resolve; fail = reject; });
@@ -299,11 +300,9 @@ const api = new vm.Script(
         },
         async return(value) {
           if (!ended) {
-            try {
-              const { id } = await started;
-              await invoke('process.__kill', [{ id }]);
-              while (!ended) { await pull(); buffer.length = 0; }
-            } catch (error) { end(error); }
+            // Resolves once the command is gone.
+            try { const { id } = await started; await invoke('process.__kill', [{ id }]); } catch {}
+            end(new Error('process.spawn: the stream was closed before the command ended'));
           }
           buffer.length = 0;
           return { value, done: true };
@@ -445,7 +444,7 @@ const api = new vm.Script(
         api.clock.after = (ms, fn) => { check(); return startTimer('clock.after', ms, fn); };
         api.clock.every = (ms, fn) => { check(); return startTimer('clock.every', ms, fn); };
       }
-      if (api.process) api.process.spawn = (argv, init) => { check(); return spawnStream(invoke, argv, init); };
+      if (api.process) api.process.spawn = (...args) => { check(); return spawnStream(invoke, args.length === 1 ? args[0] : args); };
       // A clip's AbortSignal stays here; aborting it stops the host's player.
       if (api.audio && api.audio.play) api.audio.play = (clip, options) => {
         check();

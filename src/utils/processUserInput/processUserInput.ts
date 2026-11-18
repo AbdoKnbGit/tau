@@ -68,6 +68,7 @@ import { setPromptId } from '../../bootstrap/state.js'
 import { capturePromptHistoryEntry, revisePromptHistoryEntry } from '../../history.js'
 import { hasModEvent } from '../plugins/mods/manager.js'
 import { replaceSubmittedPromptText, submittedPromptText, submitModPrompt } from '../plugins/mods/lifecycle.js'
+import { noteModTurnText } from '../plugins/mods/turnText.js'
 import { getQueuedModPrompt, prepareQueuedModPrompt, dropQueuedModPrompt, bindQueuedModPrompt } from '../plugins/mods/promptQueue.js'
 import { resumeModSessionOnUserInput } from '../plugins/mods/sessionState.js'
 import {
@@ -439,6 +440,8 @@ async function processUserInputImpl({
       ...hooks.hookMessages,
       ...(await takePendingLifecycleHookMessages()),
     )
+    // turn.start's text: the prompt as this turn proceeds with it.
+    if (mode === 'prompt' && !isMeta) noteModTurnText(result.messages, submittedPromptText(input))
     return result
   }
 
@@ -474,6 +477,9 @@ async function processUserInputImpl({
     return expandedResult
   }
   expandedResult.messages.push(...hooks.hookMessages, ...pendingMessages)
+  // turn.start's text: the prompt as prompt.submit settled it, before any
+  // command expanded it.
+  if (!isMeta) noteModTurnText(expandedResult.messages, submittedPromptText(input))
 
   // Happy path: onQuery will clear userInputOnProcessing via startTransition
   // so it resolves in the same frame as deferredMessages (no flicker gap).

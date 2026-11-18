@@ -46,6 +46,7 @@ import {
 import { setAgentResolvedModel } from './agentModelManager.js'
 import { getAgentConversation } from './resumeParity.js'
 import { runAgent } from './runAgent.js'
+import { noteModAgentTurnText } from '../../utils/plugins/mods/turnText.js'
 
 export type ResumeAgentResult = {
   agentId: string
@@ -233,6 +234,8 @@ export async function resumeAgentBackground({
         assembleToolPool(workerPermissionContext, appState.mcp.tools),
       )
 
+  // The mods' turn.start for the resumed run carries the message that woke it.
+  noteModAgentTurnText(agentId, prompt)
   const runAgentParams: Parameters<typeof runAgent>[0] = {
     agentDefinition: selectedAgent,
     promptMessages: [

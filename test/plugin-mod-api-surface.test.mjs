@@ -272,26 +272,63 @@ test('http.fetch follows redirects, drops credentials across origins and bounds 
   }
 })
 
-test('process.spawn streams output, reports its exit, stops on an early break, and a guard above can refuse it', async () => {
+test('process.spawn takes a request, ends with { code, signal }, stops on an early break, and streams through the hooks above', async () => {
   await loadMods([
-    `on('process.spawn',async($,e,next)=>e.argv.includes('forbidden')?{deny:'not that one'}:next(e));`,
+    // A generator above the caller: it refuses, withholds, or rewrites each piece.
+    `on('process.spawn',async function*($,e,next){
+      if(e.argv.includes('forbidden'))return {deny:'not that one'};
+      if(e.argv.includes('stop-early')){next(e);return {deny:'stopped early'}}
+      const stream=next(e);
+      if(e.argv.includes('withhold')){for await(const piece of stream){}return {deny:'output withheld'}}
+      for await(const chunk of stream)yield {...chunk,text:chunk.text.replaceAll('secret','***')};
+      return await stream.result;
+    });`,
     probe('spawn', `
       const node=await $.env.get('TAU_TEST_NODE');
       const chunks=[];
-      const proc=$.process.spawn([node,'-e','for(let i=0;i<3;i++)console.log("line"+i);console.error("warn");process.exitCode=4']);
+      const proc=$.process.spawn({argv:[node,'-e','for(let i=0;i<3;i++)console.log("line"+i+" secret");console.error("warn");process.exitCode=4']});
       for await(const chunk of proc)chunks.push(chunk);
       const result=await proc.result;
-      const endless=$.process.spawn([node,'-e','setInterval(()=>console.log("tick"),20)']);
+      const endless=$.process.spawn({argv:[node,'-e','setInterval(()=>console.log("tick"),20)']});
       let ticks=0;for await(const chunk of endless){ticks++;if(ticks>=2)break}
-      let refused;try{const blocked=$.process.spawn([node,'-e','1','forbidden']);await blocked.result}catch(error){refused=error.message}
-      return {text:chunks.filter(c=>c.stream==='stdout').map(c=>c.text).join(''),stderr:chunks.filter(c=>c.stream==='stderr').map(c=>c.text).join(''),result,ticks,refused};`),
+      let closed;try{await endless.result}catch(error){closed=error.message}
+      const refusal=async argv=>{try{for await(const piece of $.process.spawn({argv})){}return 'not refused'}catch(error){return error.message}};
+      const refused=await refusal([node,'-e','1','forbidden']);
+      const stopped=await refusal([node,'-e','setInterval(()=>console.log("x"),20)','stop-early']);
+      const withheld=await refusal([node,'-e','console.log("done")','withhold']);
+      let positional;try{for await(const piece of $.process.spawn([node,'-e','1'])){}}catch(error){positional=error.message}
+      let echoed='';for await(const piece of $.process.spawn({argv:[node,'-e','process.stdin.pipe(process.stdout)'],input:'from input'}))echoed+=piece.text;
+      return {text:chunks.filter(c=>c.stream==='stdout').map(c=>c.text).join(''),stderr:chunks.filter(c=>c.stream==='stderr').map(c=>c.text).join(''),result,ticks,closed,refused,stopped,withheld,positional,echoed};`),
   ])
   const out = await run('spawn')
-  assert.equal(out.text.replace(/\r/g, ''), 'line0\nline1\nline2\n')
+  assert.equal(out.text.replace(/\r/g, ''), 'line0 ***\nline1 ***\nline2 ***\n')
   assert.equal(out.stderr.trim(), 'warn')
-  assert.equal(out.result.exitCode, 4)
+  assert.deepEqual(out.result, { code: 4, signal: null })
   assert.ok(out.ticks >= 2)
-  assert.match(out.refused, /\$\.process\.spawn: not that one/)
+  assert.match(out.closed, /closed before the command ended/)
+  assert.match(out.refused, /: \$\.process\.spawn: not that one$/)
+  assert.match(out.stopped, /: \$\.process\.spawn started, and a plugin withheld its result: stopped early$/)
+  assert.match(out.withheld, /: \$\.process\.spawn ran, and a plugin withheld its result: output withheld$/)
+  assert.match(out.positional, /process\.spawn takes one request/)
+  assert.equal(out.echoed, 'from input')
+})
+
+test('process.spawn drops nothing: a child that writes faster than it is read waits for its reader', async () => {
+  await loadMods([probe('backpressure', `
+    const node=await $.env.get('TAU_TEST_NODE');
+    const script='const fs=require("node:fs");const chunk="x".repeat(65536);let n=0;const step=()=>{while(n<48){n++;if(!process.stdout.write(chunk)){process.stdout.once("drain",step);return}}process.stdout.write("",()=>fs.writeFileSync("spawn-flushed.txt","yes"))};step()';
+    const iterator=$.process.spawn({argv:[node,'-e',script]})[Symbol.asyncIterator]();
+    const first=await iterator.next();
+    await $.clock.sleep(1500);
+    const flushedEarly=await $.fs.exists('spawn-flushed.txt');
+    let total=first.value.text.length,step;
+    while(!(step=await iterator.next()).done)total+=step.value.text.length;
+    return {total,flushedEarly,flushedAfter:await $.fs.exists('spawn-flushed.txt'),result:step.value};`)])
+  const out = await run('backpressure')
+  assert.equal(out.total, 48 * 65536)
+  assert.equal(out.flushedEarly, false, 'the child must wait while 1 MiB of its output is unread')
+  assert.equal(out.flushedAfter, true)
+  assert.deepEqual(out.result, { code: 0, signal: null })
 })
 
 test('command.run answers through another mod\'s command; agents register, list and spawn hooks decide', async () => {

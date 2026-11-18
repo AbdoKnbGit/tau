@@ -1236,6 +1236,7 @@ export function categorizeRetryableAPIError(
 export function getErrorMessageIfRefusal(
   stopReason: BetaStopReason | null,
   model: string,
+  stopDetails?: unknown,
 ): AssistantMessage | undefined {
   if (stopReason !== 'refusal') {
     return
@@ -1255,8 +1256,18 @@ export function getErrorMessageIfRefusal(
       ? ' If you are seeing this refusal repeatedly, try running /model claude-sonnet-4-20250514 to switch models.'
       : ''
 
-  return createAssistantAPIErrorMessage({
+  const message = createAssistantAPIErrorMessage({
     content: baseMessage + modelSuggestion,
+    apiError: 'refusal',
     error: 'invalid_request',
+  })
+  // What the API said of the refusal (its stop_details), for the mods'
+  // turn.complete; a wrapper field, so it never reaches the model.
+  const details = stopDetails && typeof stopDetails === 'object' ? stopDetails as { category?: unknown; explanation?: unknown } : undefined
+  return Object.assign(message, {
+    refusal: {
+      category: typeof details?.category === 'string' ? details.category : null,
+      explanation: typeof details?.explanation === 'string' ? details.explanation : null,
+    },
   })
 }

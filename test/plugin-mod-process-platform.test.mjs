@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import {
+  chmodSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -136,7 +138,7 @@ test(
   },
 )
 
-test('mod processes reject cancellation, timeout and oversized output, and report missing commands as failures', async () => {
+test('mod processes reject cancellation and timeout, and report missing commands as failures', async () => {
   const controller = new AbortController()
   const pending = r.runModProcess(
     [process.execPath, '-e', 'setInterval(()=>{},1000)'],
@@ -159,16 +161,60 @@ test('mod processes reject cancellation, timeout and oversized output, and repor
   } catch (error) {
     assert.ok(error)
   }
-  await assert.rejects(
-    r.runModProcess([
-      process.execPath,
-      '-e',
-      "process.stdout.write('x'.repeat(2*1024*1024))",
-    ]),
-  )
 })
 
-for (const mode of ['timeout', 'cancel', 'overflow']) {
+test('each output stream keeps its first 4 MiB, says when it was cut, and the command still runs to its end', async () => {
+  const marker = join(project, 'wrote everything.txt')
+  const whole = await r.runModProcess([process.execPath, '-e', "process.stdout.write('x'.repeat(2*1024*1024))"])
+  assert.equal(whole.stdout.length, 2 * 1024 * 1024)
+  assert.equal(whole.isStdoutTruncated, false)
+  assert.equal(whole.isStderrTruncated, false)
+  const big = await r.runModProcess([process.execPath, '-e',
+    `process.stdout.write('o'.repeat(5*1024*1024));process.stderr.write('e'.repeat(4*1024*1024+9),()=>require('node:fs').writeFileSync(${JSON.stringify(marker)},'yes'))`])
+  assert.equal(big.exitCode, 0)
+  assert.equal(big.stdout.length, 4 * 1024 * 1024)
+  assert.equal(big.isStdoutTruncated, true)
+  assert.equal(big.stderr.length, 4 * 1024 * 1024)
+  assert.equal(big.isStderrTruncated, true)
+  // Output past the limit is read and dropped: nothing stops the command.
+  assert.equal(readFileSync(marker, 'utf8'), 'yes')
+  // A cut inside a multi-byte character drops that character.
+  const cut = await r.runModProcess([process.execPath, '-e', "process.stdout.write('x'.repeat(4*1024*1024-1)+'é and more')"])
+  assert.equal(cut.isStdoutTruncated, true)
+  assert.equal(cut.stdout.length, 4 * 1024 * 1024 - 1)
+  assert.ok(cut.stdout.endsWith('x'))
+})
+
+test('a mod process ended by a signal resolves with exit code 1', async () => {
+  const result = await r.runModProcess([process.execPath, '-e', "process.kill(process.pid,'SIGKILL')"])
+  assert.equal(result.exitCode, 1)
+  assert.equal(result.isStdoutTruncated, false)
+})
+
+test('git runs with the repository hooks off, called directly or started by the command', async () => {
+  const repo = join(root, 'hooked repo')
+  mkdirSync(repo)
+  const env = { GIT_AUTHOR_NAME: 'Mod Test', GIT_AUTHOR_EMAIL: 'mod-test@example.invalid', GIT_COMMITTER_NAME: 'Mod Test', GIT_COMMITTER_EMAIL: 'mod-test@example.invalid' }
+  assert.equal((await r.runModProcess(['git', 'init', '-q'], { cwd: repo })).exitCode, 0)
+  // A hook that records each run and refuses the commit.
+  const hook = join(repo, '.git', 'hooks', 'pre-commit')
+  writeFileSync(hook, '#!/bin/sh\necho ran >> hook-ran.txt\nexit 1\n')
+  chmodSync(hook, 0o755)
+  const marker = join(repo, 'hook-ran.txt')
+  const direct = await r.runModProcess(['git', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-q', '-m', 'direct'], { cwd: repo, env })
+  assert.equal(direct.exitCode, 0, direct.stderr)
+  // A git another program starts reads the same setting from the environment.
+  const script = "require('node:child_process').execFileSync('git',['-c','commit.gpgsign=false','commit','--allow-empty','-q','-m','nested'],{stdio:'inherit'})"
+  const nested = await r.runModProcess([process.execPath, '-e', script], { cwd: repo, env })
+  assert.equal(nested.exitCode, 0, nested.stderr)
+  assert.equal(existsSync(marker), false, 'no repository hook may run')
+  // The same commit outside a mod runs the hook, which refuses it.
+  assert.throws(() => execFileSync('git', ['-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-q', '-m', 'control'],
+    { cwd: repo, env: { ...process.env, ...env }, stdio: 'ignore' }))
+  assert.equal(existsSync(marker), true)
+})
+
+for (const mode of ['timeout', 'cancel']) {
   test(`mod process ${mode} terminates wrapper descendants before their delayed side effects`,
     {skip:windowsShimWorkerSkip}, async () => {
       const fixture = join(project, 'tree-' + mode)
@@ -178,7 +224,7 @@ for (const mode of ['timeout', 'cancel', 'overflow']) {
       const descendant = join(fixture,'descendant.cjs')
       const launcher = join(fixture,'launcher.cjs')
       writeFileSync(descendant, `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},'ready');setTimeout(()=>fs.writeFileSync(${JSON.stringify(marker)},'survived'),1800);setTimeout(()=>process.exit(),2500);`)
-      writeFileSync(launcher, `const fs=require('node:fs');require('node:child_process').spawn(process.execPath,[${JSON.stringify(descendant)}],{stdio:'inherit',windowsHide:true});${mode==='overflow'?`const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(timer);process.stdout.write('x'.repeat(2*1024*1024))}},10);`:''}setTimeout(()=>process.exit(),3200);`)
+      writeFileSync(launcher, `require('node:child_process').spawn(process.execPath,[${JSON.stringify(descendant)}],{stdio:'inherit',windowsHide:true});setTimeout(()=>process.exit(),3200);`)
       let argv = [process.execPath,launcher]
       if (process.platform === 'win32') {
         const bin = join(fixture,'node_modules','.bin')
@@ -190,7 +236,7 @@ for (const mode of ['timeout', 'cancel', 'overflow']) {
       const controller = new AbortController()
       const started = Date.now()
       const pending = r.runModProcess(argv,{timeoutMs:mode==='timeout'?1000:5000},controller.signal)
-      const rejected = assert.rejects(pending,error=>mode==='timeout'?error.timedOut===true:mode==='cancel'?error.isCanceled===true:error.isMaxBuffer===true)
+      const rejected = assert.rejects(pending,error=>mode==='timeout'?error.timedOut===true:error.isCanceled===true)
       if (mode === 'cancel') {
         while (!existsSync(ready) && Date.now()-started<2000)
           await new Promise(done=>setTimeout(done,10))

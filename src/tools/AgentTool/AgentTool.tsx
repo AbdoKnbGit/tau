@@ -58,6 +58,7 @@ import type { AgentDefinition } from './loadAgentsDir.js';
 import { filterAgentsByMcpRequirements, getAgentModelScope, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
 import { getPrompt } from './prompt.js';
 import { runAgent } from './runAgent.js';
+import { noteModAgentTurnText } from '../../utils/plugins/mods/turnText.js';
 import { runWithAgentProvider, runWithForcedProvider } from '../../utils/forcedProvider.js';
 import { getAPIProvider, isAPIProvider } from '../../utils/model/providers.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
@@ -575,6 +576,8 @@ export const AgentTool = buildTool({
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();
+    // The mods' turn.start for this run carries the Agent call's prompt.
+    noteModAgentTurnText(earlyAgentId, prompt);
 
     // Set up worktree isolation if requested
     let worktreeInfo: {

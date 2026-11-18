@@ -197,8 +197,11 @@ export function validateModResult(
     if (typeof value.turnId !== 'string' || Object.keys(value).some(key => key !== 'turnId'))
       throw new Error('turn.start must return { turnId }')
   } else if (event === 'turn.complete') {
-    if (typeof value.text !== 'string' || Object.keys(value).some(key => key !== 'text'))
-      throw new Error('turn.complete must return { text }')
+    // { text, usage? }: core fills usage from the turn's; `by` is the
+    // engine's, so what a hook puts there is replaced, never refused.
+    if (typeof value.text !== 'string' || Object.keys(value).some(key => key !== 'text' && key !== 'usage' && key !== 'by') ||
+        (value.usage !== undefined && value.usage !== null && (typeof value.usage !== 'object' || Array.isArray(value.usage))))
+      throw new Error('turn.complete must return { text, usage? }')
   } else if (event === 'command.run') {
     if (value.text !== undefined && typeof value.text !== 'string')
       throw new Error('Command text must be a string')

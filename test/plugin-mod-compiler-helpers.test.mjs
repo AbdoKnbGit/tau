@@ -77,6 +77,31 @@ test('same-file named helpers and helper chains execute through the compiled wor
   assert.deepEqual(result, { text: 'saved:stored:notes' })
 })
 
+test('a module of any suffix, JavaScript ones included, passes $ to its helpers and runs', async () => {
+  for (const extension of ['js', 'mjs', 'cjs', 'jsx', 'mts', 'cts']) {
+    const path = join(root, `mod-${fixtures++}`)
+    const entry = join(path, `register.${extension}`)
+    write(entry, `
+      async function loadNotes($, key) { return $.store.get(key) }
+      export function register(on) {
+        on('command.run', { command: 'notes' }, async ($) => ({ text: await loadNotes($, '${extension}') }))
+      }
+    `)
+    const compiled = await r.compileMod(path, entry)
+    assert.deepEqual(compiled.calls, ['store.get'], extension)
+    const mod = new r.ModRuntime({ name: 'helper-fixture', root: path }, compiled)
+    runtimes.add(mod)
+    await mod.initialize()
+    const result = await mod.dispatch(
+      'command.run',
+      { command: 'notes' },
+      async () => { throw new Error('Unexpected core call') },
+      async (method, args) => `stored:${args[0]}`,
+    )
+    assert.deepEqual(result, { text: `stored:${extension}` }, extension)
+  }
+})
+
 test('recursive helpers resolve their own lexical symbols and erased this parameters', async () => {
   const { calls, result } = await run(`
     const loadNotes = function repeat(this: void, $, remaining: number) {

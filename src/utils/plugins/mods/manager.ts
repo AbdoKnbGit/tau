@@ -65,6 +65,7 @@ import {
   type ModChunkSink,
   type ModRecord,
   type ModHost,
+  type ModStreamPressure,
   type ModTier,
   type ModTraceEntry,
   type ModTraceSinks,
@@ -275,9 +276,29 @@ export function dispatchModStream(
   core: (event: ModRecord, sink: ModChunkSink, signal: AbortSignal | undefined) => Promise<unknown>,
   sink: ModChunkSink,
   signal?: AbortSignal,
-  options: ModDispatchOptions & { resultOf?: (chunks: unknown[], input: ModRecord) => unknown } = {},
+  options: ModStreamDispatchOptions = {},
 ): Promise<unknown> {
-  const mods = active.filter(mod => allowed(mod.plugin))
+  return dispatchModStreamSnapshot(active, event, input, core, sink, signal, options)
+}
+
+type ModStreamDispatchOptions = ModDispatchOptions & {
+  resultOf?: (chunks: unknown[], input: ModRecord) => unknown
+  /** Counts the chunks waiting unread in the chain's streams. */
+  pressure?: ModStreamPressure
+}
+
+/** A streaming event through the mods of `snapshot` (an op event's: those
+ * above its caller), the engine at the bottom. */
+function dispatchModStreamSnapshot(
+  snapshot: readonly ActiveMod[],
+  event: string,
+  input: ModRecord,
+  core: (event: ModRecord, sink: ModChunkSink, signal: AbortSignal | undefined) => Promise<unknown>,
+  sink: ModChunkSink,
+  signal?: AbortSignal,
+  options: ModStreamDispatchOptions = {},
+): Promise<unknown> {
+  const mods = snapshot.filter(mod => allowed(mod.plugin))
   const bound = getModToolContext()
   const counts = mods.map(mod => mod.runtime.hooks.filter(hook => modHookSelects(hook, event)).length)
   const bases = counts.map((_, index) => counts.slice(0, index).reduce((sum, count) => sum + count, 0))
@@ -332,6 +353,7 @@ export function dispatchModStream(
         validateResult: options.validateResult,
         validateInput: options.validateInput,
         resultOf: options.resultOf,
+        pressure: options.pressure,
       },
     )
   }
@@ -391,6 +413,21 @@ async function callModApi(
       : spawn.stopModSpawn(args[0], mod.runtime)
   }
   if (MOD_PLAIN_METHODS.has(method)) return callPlainModApi(mod, method, args, signal, frame)
+  if (method === 'process.spawn') {
+    // A streaming op event: the hooks above the caller see the request, then
+    // each piece the child writes, and may rewrite or refuse either.
+    const request = MOD_OP_CODECS[method]!.event(args)
+    const position = snapshot.indexOf(mod)
+    const above = position < 0 ? [] : snapshot.slice(0, position)
+    const { startModSpawn } = await import('./actionsApi.js')
+    return startModSpawn(mod.runtime, mod.plugin.name, signal, (core, sink, chain, pressure) =>
+      dispatchModStreamSnapshot(above, method, request, core, sink, chain, {
+        origin: { plugin: mod.plugin.name, tier: mod.tier },
+        pressure,
+        // A hook that answered with pieces of its own and returned nothing.
+        resultOf: () => ({ value: { code: 0, signal: null } }),
+      }))
+  }
   if (MOD_API_EVENTS.has(method)) {
     const mcp = MOD_MCP_EVENTS.has(method) ? await import('./mcpApi.js') : undefined
     const codec = MOD_OP_CODECS[method]
@@ -537,8 +574,6 @@ async function serveModOp(
       return (await import('./sessionApi.js')).readSessionIdentity(isManagedMod(mod))
     case 'prompt.read':
       return (await import('./sessionApi.js')).readPromptBox()
-    case 'process.spawn':
-      return (await import('./actionsApi.js')).startModSpawn(event.argv, event.init, mod.runtime, signal)
     case 'agent.list': {
       const state = getModToolContext()?.toolUseContext.getAppState() ?? getModSessionBinding()?.getAppState?.()
       return (await import('./actionsApi.js')).listModAgents(state as ModRecord | undefined)

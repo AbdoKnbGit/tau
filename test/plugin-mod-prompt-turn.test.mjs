@@ -18,8 +18,10 @@ Object.assign(process.env, {
 process.chdir(project)
 const r = await loadMcpRuntime({
   paths: ['src/query.ts', 'src/utils/plugins/mods/lifecycle.ts', 'src/utils/plugins/mods/manager.ts',
-    'src/utils/processUserInput/processUserInput.ts', 'src/history.ts'],
+    'src/utils/processUserInput/processUserInput.ts', 'src/history.ts', 'src/utils/plugins/mods/turnText.ts',
+    'src/services/api/errors.ts'],
   exports: ['query', 'withModTurnLifecycle', 'replaceSubmittedPromptText', 'processUserInput', 'dispatchModEvent', 'startPluginMods', 'stopPluginMods',
+    'noteModAgentTurnText', 'getErrorMessageIfRefusal', 'createAssistantAPIErrorMessage',
     'getModWarnings', 'setInlinePlugins', 'clearAllCaches', 'resetSettingsCache', 'setOriginalCwd',
     'setSessionTrustAccepted', 'setAllowedSettingSources', 'setIsInteractive', 'getManagedFilePath',
     'createUserMessage', 'createAssistantMessage', 'createStore', 'onChangeAppState', 'normalizeMessagesForAPI',
@@ -54,13 +56,14 @@ after(async () => {
   r.setPromptTurnDeps(originalDeps); await r.stopPluginMods(); await settleHistory(); process.chdir(original)
   rmSync(root, {recursive: true, force: true, maxRetries: 10})
 })
-function context(tools = [], commands = [], agentId) {
+function context(tools = [], commands = [], agentId, messages) {
   const base = fixtureContext(tools).getAppState()
   const store = r.createStore({...base, tasks: {}, settings: {}, speculation: {status: 'idle'}, mainLoopModel: 'fixture-model'}, r.onChangeAppState)
   return fixtureContext(tools, {
     getAppState: store.getState, setAppState: store.setState, readFileState: new Map(),
     setMessages() {}, setResponseLength() {}, setInProgressToolUseIDs() {}, setHasInterruptibleToolInProgress() {},
     ...(agentId ? {agentId} : {}),
+    ...(messages ? {messages} : {}),
     options: {tools, commands, mainLoopModel: 'fixture-model', mcpClients: [], isNonInteractiveSession: true, agentDefinitions: {activeAgents: []}},
   })
 }
@@ -174,18 +177,23 @@ test('query emits one lifecycle pair across tool iterations; totals dedupe respo
   }}))
   assert.equal(requests.length,2); assert.equal(probe.calls.length,1)
   const completion=JSON.parse(readFileSync(join(project,'completion.json'),'utf8'))
-  assert.equal(completion.started,completion.turnId);assert.equal(completion.isAborted,false)
+  assert.equal(completion.started,completion.turnId);assert.equal(completion.isAborted,false);assert.equal(completion.reason,'answer')
   assert.equal(completion.answer,'final answer\nsecond block')
-  assert.deepEqual(completion.usage,Object.fromEntries(Object.entries(usage).map(([k,v])=>[k,2*v])))
-  assert.equal(result.output.at(-1).content,'UI completion line')
+  const {model,...counts}=completion.usage
+  assert.deepEqual(counts,Object.fromEntries(Object.entries(usage).map(([k,v])=>[k,2*v])))
+  assert.equal(typeof model,'string');assert.ok(model)
+  // The note under the answer is headed by the plugin that wrote it.
+  assert.match(result.output.at(-1).content,/^turn-fixture-\d+: UI completion line$/)
   assert.ok(result.output.some(m=>m.type==='assistant'&&m.message.content.some(b=>b.text==='final answer')))
   assert.doesNotMatch(JSON.stringify(r.normalizeMessagesForAPI(result.output,tools)),/UI completion line/)
   assert.deepEqual(prefix,['frozen prefix']);assert.equal(ctx.options.tools,tools)
 })
 
-test('turn.complete runs once on return, throw and abort, including agents without turn.start', async () => {
+test('turn.complete runs once on return, throw and abort, and says why each ended; agents start turns too', async () => {
   await mod(`let starts=0,completes=0;on('turn.start',async($,e,next)=>{starts++;return next(e)});on('turn.complete',async($,e,next)=>{completes++;await $.fs.write('termination.json',JSON.stringify({starts,completes,...e}));return next(e)});`)
   let expected=0
+  // A reader that stopped and an abort are interruptions; a turn that threw ended on an error.
+  const ends={return:{reason:'aborted',isAborted:true},throw:{reason:'error',isAborted:false},abort:{reason:'aborted',isAborted:true}}
   for (const kind of ['return','throw','abort']) {
     const ctx=context([],[],kind==='abort'?'agent-fixture':undefined)
     const source=(async function*(){yield assistant('termination','partial',usage);if(kind==='throw')throw new Error('fixture failed');if(kind==='abort')ctx.abortController.abort();return 'done'})()
@@ -195,9 +203,88 @@ test('turn.complete runs once on return, throw and abort, including agents witho
     else if(kind==='throw')await assert.rejects(wrapped.next(),/fixture failed/)
     else await drain(wrapped)
     const event=JSON.parse(readFileSync(join(project,'termination.json'),'utf8'))
-    assert.equal(event.completes,++expected);assert.equal(event.isAborted,true)
-    if(kind==='abort'){assert.equal(event.agentId,'agent-fixture');assert.equal(event.starts,2)}
+    assert.equal(event.completes,++expected)
+    assert.equal(event.reason,ends[kind].reason);assert.equal(event.isAborted,ends[kind].isAborted)
+    // Every loop's turn starts, a subagent's as well as the main one's.
+    assert.equal(event.starts,expected)
+    if(kind==='abort')assert.equal(event.agentId,'agent-fixture')
   }
+})
+
+test('turn.start carries the prompt the turn proceeds with: settled, typed as a command, an agent\'s, or none', async () => {
+  await mod(`on('prompt.submit',async($,e,next)=>next({...e,text:e.text+' (settled)'}));on('turn.start',async($,e,next)=>{await $.fs.write('start-'+(e.agentId??'main')+'.json',JSON.stringify(e));return next(e)});`)
+  const started=name=>JSON.parse(readFileSync(join(project,`start-${name}.json`),'utf8'))
+  const answer=async function*(){yield assistant('answer','done',usage);return 'done'}
+  // A typed prompt: its text as prompt.submit settled it, before the turn sees it.
+  const typed=await submit('typed prompt')
+  assert.equal(typed.shouldQuery,true)
+  await drain(r.withModTurnLifecycle(answer(),context([],[],undefined,typed.messages),permit))
+  assert.deepEqual(Object.keys(started('main')).sort(),['text','turnId'])
+  assert.equal(started('main').text,'typed prompt (settled)')
+  // A prompt command: the command line as typed, not its expansion.
+  const skill={name:'fixture',type:'prompt',getPromptForCommand:async()=>[{type:'text',text:'expanded skill body'}],isEnabled:()=>true,userInvocable:true}
+  const command=await submit('/fixture with args',context([],[skill]))
+  assert.equal(command.shouldQuery,true)
+  await drain(r.withModTurnLifecycle(answer(),context([],[skill],undefined,command.messages),permit))
+  assert.equal(started('main').text,'/fixture with args (settled)')
+  // A turn no prompt started (it continues after an answer): no text.
+  await drain(r.withModTurnLifecycle(answer(),context([],[],undefined,[...typed.messages,assistant('earlier','earlier answer',usage)]),permit))
+  assert.equal(started('main').text,'')
+  // A subagent's run: the Agent call's prompt, and the loop's id, pinned.
+  r.noteModAgentTurnText('agent-run','investigate the build')
+  await drain(r.withModTurnLifecycle(answer(),context([],[],'agent-run',[r.createUserMessage({content:'wrapped prompt'})]),permit))
+  assert.deepEqual(started('agent-run'),{text:'investigate the build',turnId:started('agent-run').turnId,agentId:'agent-run'})
+  // One nobody noted (a teammate woken by a message): its newest text.
+  await drain(r.withModTurnLifecycle(answer(),context([],[],'teammate',[r.createUserMessage({content:'message that woke it'})]),permit))
+  assert.equal(started('teammate').text,'message that woke it')
+  assert.deepEqual(r.getModWarnings(),[])
+})
+
+test('turn.start pins the turn and its loop; a hook may pass other text down', async () => {
+  await mod(`on('turn.start',async($,e,next)=>{const r=await next({...e,text:'changed for those beneath'});await $.fs.write('pass-down.json',JSON.stringify(r));return r});on('turn.start',{agentId:'pinned-agent'},async($,e,next)=>next({...e,agentId:'another'}));on('turn.start',{text:'changed for those beneath'},async($,e,next)=>{await $.fs.write('beneath.json',JSON.stringify(e));return next(e)});`)
+  await drain(r.withModTurnLifecycle((async function*(){return 'done'})(),context(),permit))
+  assert.equal(JSON.parse(readFileSync(join(project,'beneath.json'),'utf8')).text,'changed for those beneath')
+  assert.deepEqual(r.getModWarnings(),[])
+  await drain(r.withModTurnLifecycle((async function*(){return 'done'})(),context([],[],'pinned-agent'),permit))
+  assert.match(r.getModWarnings().join('\n'),/turn\.start cannot rewrite agentId/)
+})
+
+test('turn.complete says why a turn ended: a refusal with what the API said of it, or an API error', async () => {
+  await mod(`on('turn.complete',async($,e,next)=>{await $.fs.write('ended.json',JSON.stringify(e));return next(e)});`)
+  const ended=()=>JSON.parse(readFileSync(join(project,'ended.json'),'utf8'))
+  const refusal=r.getErrorMessageIfRefusal('refusal','fixture-model',{type:'refusal',category:'cyber',explanation:'fixture explanation'})
+  await drain(r.withModTurnLifecycle((async function*(){yield assistant('partial','partial text',usage);yield refusal;return {reason:'completed'}})(),context(),permit))
+  assert.equal(ended().reason,'refusal');assert.equal(ended().isAborted,false)
+  assert.deepEqual(ended().refusal,{category:'cyber',explanation:'fixture explanation'})
+  assert.equal(ended().answer,'partial text')
+  // The API sent no details: each reads null.
+  await drain(r.withModTurnLifecycle((async function*(){yield r.getErrorMessageIfRefusal('refusal','fixture-model',null);return {reason:'completed'}})(),context(),permit))
+  assert.deepEqual(ended().refusal,{category:null,explanation:null})
+  // An API error ended it: no refusal, and nothing counted, so no usage.
+  await drain(r.withModTurnLifecycle((async function*(){yield r.createAssistantAPIErrorMessage({content:'API Error: 500 overloaded'});return {reason:'completed'}})(),context(),permit))
+  assert.equal(ended().reason,'error');assert.equal(ended().isAborted,false)
+  assert.equal('refusal' in ended(),false);assert.equal('usage' in ended(),false)
+  // A plain answer.
+  await drain(r.withModTurnLifecycle((async function*(){yield assistant('fine','all good',usage);return {reason:'completed'}})(),context(),permit))
+  assert.equal(ended().reason,'answer');assert.equal('refusal' in ended(),false)
+})
+
+test('turn.complete answers with the answer: a different text or a rewritten answer goes beneath it, headed by its plugins', async () => {
+  const notes=async(source)=>{const {output}=await drain(r.withModTurnLifecycle(source,context(),permit));return output.filter(m=>m.modNotice).map(m=>m.content)}
+  const answered=async function*(){yield assistant('reply','the answer',usage);return {reason:'completed'}}
+  // An observer: next(e) is the answer itself, and nothing more is shown.
+  await mod(`on('turn.complete',async($,e,next)=>{const r=await next(e);await $.fs.write('core.json',JSON.stringify(r));return r});`)
+  assert.deepEqual(await notes(answered()),[])
+  const core=JSON.parse(readFileSync(join(project,'core.json'),'utf8'))
+  assert.equal(core.text,'the answer');assert.equal(core.usage.output_tokens,usage.output_tokens)
+  // A result that keeps the engine's usage beside its text is a result.
+  await mod(`on('turn.complete',async($,e,next)=>({text:'TL;DR: answered',usage:e.usage,by:['ignored']}));`)
+  assert.deepEqual(await notes(answered()),[`turn-fixture-${serial}: TL;DR: answered`])
+  assert.deepEqual(r.getModWarnings(),[])
+  // An answer rewritten going down is the engine's text, headed by its writer.
+  await mod(`on('turn.complete',async($,e,next)=>next({...e,answer:e.answer.toUpperCase()}));`)
+  assert.deepEqual(await notes(answered()),[`turn-fixture-${serial}: THE ANSWER`])
+  assert.deepEqual(r.getModWarnings(),[])
 })
 
 test('aborting an active turn.start host wait preserves completion and later hooks', {timeout:10_000}, async () => {

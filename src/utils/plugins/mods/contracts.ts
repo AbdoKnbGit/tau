@@ -158,11 +158,17 @@ export const MOD_OP_CODECS: Readonly<Record<string, ModOpCodec>> = {
     event: ([argv, init]) => (init === undefined ? { argv } : { argv, init }),
     args: event => (event.init === undefined ? [event.argv] : [event.argv, event.init]),
   },
-  // A guard above sees the command before it starts; its output streams to
-  // the caller alone.
+  // One request { argv, cwd, env, input }, the `e` its hooks see. It streams:
+  // the hooks above the caller are generators over what the child writes
+  // (manager.ts dispatches it), and the result is { value: { code, signal } }.
   'process.spawn': {
-    event: ([argv, init]) => (init === undefined ? { argv } : { argv, init }),
-    args: event => (event.init === undefined ? [event.argv] : [event.argv, event.init]),
+    event: (args) => {
+      const [request] = args
+      if (args.length !== 1 || !request || typeof request !== 'object' || Array.isArray(request))
+        throw new Error('process.spawn takes one request { argv, cwd, env, input }')
+      return { ...(request as ModRecord) }
+    },
+    args: event => [event],
   },
   'session.repo': noArgs,
   'session.usage': optionalObject('session.usage'),

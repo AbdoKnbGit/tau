@@ -19,10 +19,14 @@ const mutableEventFields: Record<string, ReadonlySet<string>> = {
   'prompt.submit': new Set(['text', 'context']),
   'skill.prompt': new Set(['text', 'frontmatter']),
   'session.compact': new Set(['instructions', 'messages']),
-  'turn.start': new Set(),
+  // The text goes down to the hooks beneath (the turn keeps its own); the
+  // turn and its loop (`agentId`) are pinned.
+  'turn.start': new Set(['text']),
   // Another model or effort goes down; the turn, index and count are pinned.
   'turn.step': new Set(['model', 'effort']),
-  'turn.complete': new Set(),
+  // An answer rewritten going down is the engine's text, shown beneath the
+  // answer; the turn, its loop, reason and cost are pinned.
+  'turn.complete': new Set(['answer']),
   // A hook chooses the model of a subagent that is starting; nothing else.
   'agent.spawn': new Set(['model']),
   // A render hook may rewrite the site's props; the typing and the pick may
@@ -85,6 +89,13 @@ export type ModStreamContinuation = (
   jump?: ModChainJump,
   sinks?: ModTraceSinks,
 ) => Promise<unknown>
+/** The unread chunks of one streaming dispatch, wherever they wait: what
+ * the stream buffers count, so its source can wait for its readers
+ * (`process.spawn` pauses its child). A dispatch without one counts nothing. */
+export type ModStreamPressure = {
+  add(chunk: unknown): void
+  release(chunks: readonly unknown[]): void
+}
 /** A streaming hook's calls on its `next`, and the chunks it yields. */
 type ModStreamOps = {
   open(event: ModRecord, tier?: ModTier): { id: string }
@@ -103,12 +114,28 @@ class ModChunkStream {
   error: unknown
   forward?: ModChunkSink
   private wake?: () => void
+  private closed = false
+  constructor(private readonly pressure?: ModStreamPressure) {}
   push(chunk: unknown): void {
     if (this.forward) this.forward(chunk)
-    else {
+    // A stream its hook closed reads nothing more: what still arrives is dropped.
+    else if (!this.closed) {
       this.buffer.push(chunk)
+      this.pressure?.add(chunk)
       this.wake?.()
     }
+  }
+  /** Everything buffered, out of the unread count. */
+  take(): unknown[] {
+    const chunks = this.buffer.splice(0)
+    this.pressure?.release(chunks)
+    return chunks
+  }
+  /** Its hook stopped reading: what is beneath stops, and its unread chunks go. */
+  close(reason: Error): void {
+    this.closed = true
+    if (!this.done) this.controller.abort(reason)
+    this.take()
   }
   finish(error: unknown, result?: unknown): void {
     this.done = true
@@ -123,7 +150,7 @@ class ModChunkStream {
   async settled(): Promise<void> {
     while (!this.done) {
       await this.wait()
-      if (!this.forward) this.buffer.length = 0
+      if (!this.forward) this.take()
     }
   }
 }
@@ -689,6 +716,16 @@ export class ModRuntime {
             return Promise.reject(new Error('prompt.submit requires text and optional string context'))
           if (event === 'skill.prompt' && (typeof rewritten.text !== 'string' || !rewritten.frontmatter || typeof rewritten.frontmatter !== 'object' || Array.isArray(rewritten.frontmatter)))
             return Promise.reject(new Error('skill.prompt requires text and a frontmatter object'))
+          // turn.start's text and turn.complete's answer: one left out is kept,
+          // another value must be text.
+          const textField = event === 'turn.start' ? 'text' : event === 'turn.complete' ? 'answer' : undefined
+          if (textField !== undefined) {
+            if (rewritten[textField] === undefined) {
+              if (current[textField] === undefined) delete rewritten[textField]
+              else rewritten[textField] = current[textField]
+            } else if (typeof rewritten[textField] !== 'string')
+              return Promise.reject(new Error(`${event} ${textField} must be a string`))
+          }
         }
         if (event === 'command.run') {
           for (const key of ['command', 'origin', 'presentation']) {
@@ -910,6 +947,8 @@ export class ModRuntime {
       warn?: (message: string) => void
       /** The result of a hook that answered alone and returned nothing. */
       resultOf?: (chunks: unknown[], input: ModRecord) => unknown
+      /** Counts the chunks this module's streams hold unread. */
+      pressure?: ModStreamPressure
     } & ModLinkOptions = {},
   ): Promise<unknown> {
     await this.ready
@@ -969,7 +1008,7 @@ export class ModRuntime {
             throw new Error(`next.to cannot continue at ${String(target)} from the ${tier} tier`)
         }
         options.validateInput?.(rewritten)
-        const stream = new ModChunkStream()
+        const stream = new ModChunkStream(options.pressure)
         const id = randomUUID()
         streams.set(id, stream)
         last = stream
@@ -995,15 +1034,14 @@ export class ModRuntime {
           const stream = streams.get(id)
           if (!stream) throw new Error('That stream is closed')
           await stream.wait()
-          const chunks = stream.buffer.splice(0)
+          const chunks = stream.take()
           if (!stream.done) return { chunks, done: false }
           return stream.error !== undefined
             ? { chunks, done: true, error: stream.error instanceof Error ? stream.error.message : String(stream.error) }
             : { chunks, done: true, result: stream.result }
         },
         cancel(id) {
-          const stream = streams.get(id)
-          if (stream && !stream.done) stream.controller.abort(new Error('the hook stopped reading'))
+          streams.get(id)?.close(new Error('the hook stopped reading'))
         },
         chunk(chunk) {
           yielded++
@@ -1014,7 +1052,7 @@ export class ModRuntime {
       // Streams a hook left unread when it finished stop: their requests end.
       const closeOthers = (keep?: ModChunkStream) => {
         for (const stream of streams.values())
-          if (stream !== keep && !stream.done) stream.controller.abort(new Error('the hook finished'))
+          if (stream !== keep) stream.close(new Error('the hook finished'))
       }
       const record = (outcome: ModTraceEntry['outcome'], returned: unknown, reason?: string) =>
         settle(sinks, {
@@ -1066,7 +1104,7 @@ export class ModRuntime {
         // it opened, else everything beneath run now.
         if (last) {
           closeOthers(last)
-          for (const chunk of last.buffer.splice(0)) sink(chunk)
+          for (const chunk of last.take()) sink(chunk)
           last.forward = sink
           await last.settled()
           if (last.error !== undefined) {

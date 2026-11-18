@@ -213,8 +213,10 @@ function modAPIHelpers(
     useCaseSensitiveFileNames: () => true,
     getNewLine: () => '\n',
   }
+  // allowJs: without it a .js, .mjs, .cjs or .jsx module is left out of the
+  // program, nothing in it binds, and every helper reads as an alias.
   const checker = ts
-    .createProgram([ast.fileName], { noLib: true, noResolve: true }, host)
+    .createProgram([ast.fileName], { noLib: true, noResolve: true, allowJs: true }, host)
     .getTypeChecker()
   const helpers = new Map<ts.Symbol, Helper>()
   for (const { name, helper } of candidates) {
@@ -592,7 +594,10 @@ export async function compileMod(
       emitted = emitted.slice(0, client.start) + JSON.stringify(path) + emitted.slice(client.end)
     }
     const compiled = ts.transpileModule(emitted, {
-      fileName: canonical,
+      // TypeScript emits a .mjs or .mts file as an ES module whatever
+      // `module` says, which the worker cannot load; a mod is an ES module
+      // whatever its suffix, so such a file compiles as its .js or .ts twin.
+      fileName: canonical.replace(/\.m([jt])s$/i, '.$1s'),
       reportDiagnostics: true,
       compilerOptions: {
         target: ts.ScriptTarget.ES2022,

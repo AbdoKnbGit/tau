@@ -6,10 +6,11 @@ import type { AssistantMessage, Message, RequestStartEvent, StreamEvent, Tombsto
 import { createAssistantMessage, createSystemMessage } from '../../messages.js'
 import { logForDebugging } from '../../debug.js'
 import { dispatchModEvent, hasModEvent } from './manager.js'
-import type { ModRecord } from './runtime.js'
+import type { ModRecord, ModTraceEntry } from './runtime.js'
 import { withModToolContext } from './toolContext.js'
 import { beginModMainTurn, bindModAgentConversation, isModTurnAbort } from './sessionState.js'
 import { acceptQueuedModPrompt } from './promptQueue.js'
+import { takeModAgentTurnText, takeModTurnText } from './turnText.js'
 import type { ModDispatchOptions } from './manager.js'
 
 type TurnMessage = Message | RequestStartEvent | StreamEvent | TombstoneMessage | ToolUseSummaryMessage
@@ -68,6 +69,76 @@ export function takeModTurnStep(controller: AbortController, agentId?: string):
   return { turnId: turn.turnId, index: turn.next++, context: turn.context, canUseTool: turn.canUseTool }
 }
 
+/** Why a turn ended, as turn.complete's `reason` says it. */
+type TurnEnd = 'answer' | 'aborted' | 'refusal' | 'error'
+/** Query ends an API error decided; each also leaves an API error row. */
+const ERROR_ENDS = new Set(['model_error', 'prompt_too_long', 'image_error', 'blocking_limit'])
+const USAGE_KEYS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const
+
+/**
+ * turn.start's `text`: the prompt the turn proceeds with as the prompt
+ * pipeline settled it, "" for a turn no prompt started (a continuation, a
+ * notification). A subagent's run begins with its Agent call's prompt or,
+ * when nobody noted one (a teammate woken by a message), the newest text
+ * after its last answer.
+ */
+function turnStartText(messages: readonly Message[], agentId: string | undefined): string {
+  const noted = agentId === undefined ? undefined : takeModAgentTurnText(agentId)
+  if (noted !== undefined) return noted
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!
+    if (message.type === 'assistant') break
+    if (message.type !== 'user') continue
+    const text = takeModTurnText(message.uuid)
+    if (text !== undefined) return text
+  }
+  if (agentId === undefined) return ''
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!
+    if (message.type === 'assistant') break
+    if (message.type !== 'user' || message.isMeta) continue
+    const text = submittedPromptText(message.message.content as string | ContentBlockParam[])
+    if (text) return text
+  }
+  return ''
+}
+
+/** What the API said of the refusal that ended a turn (TurnRefusal). */
+function refusalOf(row: AssistantMessage | undefined): { category: string | null; explanation: string | null } {
+  const details = (row as { refusal?: { category?: unknown; explanation?: unknown } } | undefined)?.refusal
+  return {
+    category: typeof details?.category === 'string' ? details.category : null,
+    explanation: typeof details?.explanation === 'string' ? details.explanation : null,
+  }
+}
+
+/**
+ * turn.complete's `by`, the engine's: the plugins that rewrote the answer
+ * they passed down or wrote the text, in chain order. They head its note.
+ */
+function completionAuthors(trace: readonly ModTraceEntry[], answer: string): string[] {
+  // A link's last run stands; links in the order the chain runs them.
+  const links = [...new Map(trace.map(entry => [entry.index, entry])).values()].sort((a, b) => a.index - b.index)
+  const answerOf = (entry: ModTraceEntry) => {
+    const received = entry.received as ModRecord | undefined
+    return typeof received?.answer === 'string' ? received.answer : undefined
+  }
+  const authors = new Set<number>()
+  for (let index = 0; index + 1 < links.length; index++) {
+    const own = answerOf(links[index]!), beneath = answerOf(links[index + 1]!)
+    if (own !== undefined && beneath !== undefined && own !== beneath) authors.add(links[index]!.index)
+  }
+  let text = answer
+  for (let index = links.length - 1; index >= 0; index--) {
+    const link = links[index]!
+    const returned = link.returned as ModRecord | undefined
+    if (!['returned', 'caught', 'passed'].includes(link.outcome) || typeof returned?.text !== 'string') continue
+    if (returned.text !== text) authors.add(link.index)
+    text = returned.text
+  }
+  return [...new Set(links.filter(link => authors.has(link.index) && link.plugin !== 'engine').map(link => link.plugin))]
+}
+
 /** Observe the complete shared query, rather than individual model requests. */
 export async function* withModTurnLifecycle<T>(
   source: AsyncGenerator<TurnMessage, T>,
@@ -86,12 +157,18 @@ export async function* withModTurnLifecycle<T>(
   const endAgent = context.agentId ? bindModAgentConversation(context.agentId, () => agentMessages!) : undefined
   const startedAt = Date.now()
   const requests = new Map<string, AssistantMessage>()
+  // Each response's message_start counts and model, so a response with no
+  // content of its own (a refusal) still counts.
+  const opened = new Map<string, { usage: Record<string, number>; model?: string }>()
   const streamedUsage = new Map<string, Record<string, number>>()
   const responseText = new Map<string, string>()
   let responseId: string | undefined
   let streamingResponseId: string | undefined
   let assistant: AssistantMessage | undefined
+  // The turn's last assistant row, an API error's included: what ended it.
+  let lastRow: AssistantMessage | undefined
   let done = false
+  let threw = false
   let terminal: T
   let completeText = ''
   try {
@@ -99,9 +176,14 @@ export async function* withModTurnLifecycle<T>(
       for (const message of context.messages)
         if (message.type === 'user') acceptQueuedModPrompt(message.uuid)
     }
-    if (!context.agentId && hasModEvent('turn.start')) {
+    // Every loop's turn starts: the main one's and each subagent's or
+    // teammate's run, whose `agentId` is pinned.
+    if (hasModEvent('turn.start')) {
+      const text = turnStartText(context.messages, context.agentId)
       try {
-        await inToolContext(context, canUseTool, () => dispatchModEvent('turn.start', { turnId }, async e => ({ turnId: e.turnId }), context.abortController.signal))
+        await inToolContext(context, canUseTool, () => dispatchModEvent('turn.start',
+          { text, turnId, ...(context.agentId ? { agentId: context.agentId } : {}) },
+          async e => ({ turnId: e.turnId }), context.abortController.signal))
       } catch (error) {
         // Aborting its own turn is an acknowledged API action. Let the query
         // return its ordinary aborted result instead of surfacing a hook error.
@@ -109,7 +191,13 @@ export async function* withModTurnLifecycle<T>(
       }
     }
     while (true) {
-      const next = await source.next()
+      let next: IteratorResult<TurnMessage, T>
+      try {
+        next = await source.next()
+      } catch (error) {
+        threw = true
+        throw error
+      }
       if (next.done) { done = true; terminal = next.value; break }
       const message = next.value
       if (agentMessages) {
@@ -124,6 +212,7 @@ export async function* withModTurnLifecycle<T>(
         }
       }
       if (message.type === 'stream_request_start') streamingResponseId = undefined
+      if (message.type === 'assistant') lastRow = message
       if (message.type === 'assistant' && !message.isApiErrorMessage) {
         assistant = message
         const id = message.message.id || message.uuid
@@ -133,11 +222,20 @@ export async function* withModTurnLifecycle<T>(
         // Retain the response, then read its final usage after the stream closes.
         requests.set(id, message)
       }
-      if (message.type === 'stream_event' && message.event.type === 'message_start') streamingResponseId = message.event.message.id
+      if (message.type === 'stream_event' && message.event.type === 'message_start') {
+        streamingResponseId = message.event.message.id
+        const counts: Record<string, number> = {}
+        for (const key of USAGE_KEYS) {
+          const count = (message.event.message.usage as Record<string, unknown> | undefined)?.[key]
+          if (typeof count === 'number' && Number.isFinite(count) && count > 0) counts[key] = count
+        }
+        const model = message.event.message.model
+        opened.set(message.event.message.id, { usage: counts, ...(typeof model === 'string' && model ? { model } : {}) })
+      }
       const usageResponseId = streamingResponseId ?? responseId
       if (message.type === 'stream_event' && message.event.type === 'message_delta' && usageResponseId) {
         const finalUsage = streamedUsage.get(usageResponseId) ?? {}
-        for (const key of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']) {
+        for (const key of USAGE_KEYS) {
           const count = message.event.usage[key as keyof typeof message.event.usage]
           if (typeof count === 'number' && Number.isFinite(count) && (count > 0 || key === 'output_tokens')) finalUsage[key] = count
         }
@@ -152,26 +250,50 @@ export async function* withModTurnLifecycle<T>(
       turnSteps.get(context.abortController)?.delete(context.agentId ?? '')
       endTurn?.()
       if (hasModEvent('turn.complete')) {
-        let usage: Record<string, number> | null = null
-        for (const [id, request] of requests) {
-          const finalUsage = streamedUsage.get(id)
-          if (!request.message.usage && !finalUsage) continue
+        // What the turn cost (TurnUsage): its responses' counts summed and the
+        // model of the last that counted; absent when nothing counted.
+        let usage: Record<string, number> | undefined
+        let model: string | undefined
+        for (const id of new Set([...opened.keys(), ...requests.keys()])) {
+          const request = requests.get(id), start = opened.get(id), finalUsage = streamedUsage.get(id)
+          const reported = request?.message.usage as Record<string, unknown> | undefined
+          if (!reported && !finalUsage && !start) continue
           usage ??= { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
-          for (const key of Object.keys(usage)) {
-            const count = finalUsage?.[key] ?? request.message.usage?.[key as keyof typeof request.message.usage]
-            if (typeof count === 'number' && Number.isFinite(count)) usage[key] = (usage[key] ?? 0) + count
+          for (const key of USAGE_KEYS) {
+            const count = finalUsage?.[key] ?? reported?.[key] ?? start?.usage[key]
+            if (typeof count === 'number' && Number.isFinite(count)) usage[key] += count
           }
+          const named = request?.message.model
+          model = (typeof named === 'string' && named) || start?.model || model
         }
+        // Why it ended: interrupted (an abort, or its reader stopped), an error
+        // (the query failed, or an API error row ended it), a refusal, or an answer.
+        const ended = (terminal! as { reason?: unknown } | undefined)?.reason
+        const reason: TurnEnd = context.abortController.signal.aborted || (!done && !threw) ? 'aborted'
+          : threw ? 'error'
+          : lastRow?.isApiErrorMessage ? (lastRow.apiError === 'refusal' ? 'refusal' : 'error')
+          : typeof ended === 'string' && ERROR_ENDS.has(ended) ? 'error'
+          : 'answer'
+        const answer = [...responseText.values()].filter(Boolean).join('\n')
+        const trace: ModTraceEntry[] = []
         try {
           // Completion must run even when the turn's abort signal is already set.
           const result = await inToolContext(context, canUseTool, async () => await dispatchModEvent('turn.complete', {
-            turnId, ...(context.agentId ? { agentId: context.agentId } : {}),
-            answer: [...responseText.values()].filter(Boolean).join('\n'),
+            answer,
             durationMs: Math.max(0, Date.now() - startedAt),
-            isAborted: context.abortController.signal.aborted || !done,
-            usage,
-          }, async () => ({ text: '' })) as ModRecord, assistant)
-          completeText = result.text
+            isAborted: reason === 'aborted',
+            turnId,
+            ...(context.agentId ? { agentId: context.agentId } : {}),
+            ...(usage ? { usage: { ...usage, model: model ?? context.options.mainLoopModel } } : {}),
+            reason,
+            ...(reason === 'refusal' ? { refusal: refusalOf(lastRow) } : {}),
+          }, async e => ({ text: e.answer, ...(e.usage ? { usage: e.usage } : {}) }), undefined, { collect: trace }) as ModRecord, assistant)
+          // The answer is on screen already: a text other than it goes beneath
+          // it, headed by the plugins that wrote it.
+          if (typeof result.text === 'string' && result.text && result.text !== answer) {
+            const by = completionAuthors(trace, answer)
+            completeText = by.length ? `${by.join(', ')}: ${result.text}` : result.text
+          }
         } catch (error) {
           logForDebugging(`Mod turn.complete failed: ${String(error)}`)
         }

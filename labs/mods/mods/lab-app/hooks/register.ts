@@ -92,11 +92,11 @@ async function battery($, offline: boolean): Promise<Check[]> {
   })
   await check('process.run and process.spawn', async () => {
     const run = await $.process.run(['node', '-e', 'process.stdout.write(String(6 * 7))'])
-    const spawned = $.process.spawn(['node', '-e', 'console.log("a"); console.log("b")'])
+    const spawned = $.process.spawn({ argv: ['node', '-e', 'console.log("a"); console.log("b")'] })
     let streamed = ''
     for await (const chunk of spawned) streamed += chunk.text
     const result = await spawned.result
-    return [run.stdout.trim() === '42' && /a\s+b/.test(streamed) && result.exitCode === 0, { run: run.stdout.trim(), streamed: streamed.trim() }]
+    return [run.stdout.trim() === '42' && /a\s+b/.test(streamed) && result.code === 0, { run: run.stdout.trim(), streamed: streamed.trim() }]
   })
   await check('http.fetch', async () => {
     const reply = await $.http.fetch(offline ? 'http://lab.invalid/ping' : 'https://example.com/')

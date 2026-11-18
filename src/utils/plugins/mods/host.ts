@@ -12,7 +12,9 @@ import {
   rename,
   unlink,
 } from 'fs/promises'
-import { resolve, join } from 'path'
+import { basename, resolve, join } from 'path'
+import { devNull } from 'os'
+import { StringDecoder } from 'string_decoder'
 import {
   getOriginalCwd,
   getProjectRoot,
@@ -165,6 +167,65 @@ export async function killModProcessTree(child: { pid?: number; kill(signal?: No
   try { child.kill('SIGKILL') } catch {}
 }
 
+/** What `$.process.run` keeps of each output stream, Claude Code's limit. */
+const RUN_OUTPUT_LIMIT = 4 * 1024 * 1024
+
+/**
+ * A mod's command as it runs: git with the repository's hooks off, as Claude
+ * Code runs it. A git command gets `-c core.hooksPath=<null device>`, which
+ * every git version reads, and the environment carries the same setting
+ * (GIT_CONFIG_COUNT, git 2.31 or later) to any git the command starts. No
+ * hook can live under the null device on any OS. A later `-c` of the mod's
+ * own still wins: hooks a mod asks for are its choice, not the repository's.
+ */
+export function modProcessCommand(
+  argv: readonly string[],
+  env: Record<string, string | undefined>,
+): { argv: string[]; env: Record<string, string | undefined> } {
+  const [file = '', ...rest] = argv
+  const name = basename(file)
+  const isGit = process.platform === 'win32'
+    ? /^git(\.(exe|com|cmd|bat))?$/i.test(name)
+    : name === 'git'
+  const count = env.GIT_CONFIG_COUNT
+  const index = count === undefined || count === '' ? 0 : /^\d+$/.test(count) ? Number(count) : undefined
+  return {
+    argv: isGit ? [file, '-c', `core.hooksPath=${devNull}`, ...rest] : [file, ...rest],
+    // A count git cannot read stays as it is: git refuses it either way.
+    env: index === undefined ? env : {
+      ...env,
+      GIT_CONFIG_COUNT: String(index + 1),
+      [`GIT_CONFIG_KEY_${index}`]: 'core.hooksPath',
+      [`GIT_CONFIG_VALUE_${index}`]: devNull,
+    },
+  }
+}
+
+/** One output stream of `$.process.run`: its first RUN_OUTPUT_LIMIT bytes,
+ * the rest read and dropped. A cut inside a multi-byte character drops that
+ * character, as Claude Code's does. */
+function boundedOutput() {
+  const chunks: Buffer[] = []
+  let kept = 0
+  let truncated = false
+  return {
+    take: (chunk: Buffer | string) => {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      const room = RUN_OUTPUT_LIMIT - kept
+      if (data.length > room) truncated = true
+      if (room <= 0) return
+      const part = data.length > room ? data.subarray(0, room) : data
+      chunks.push(part)
+      kept += part.length
+    },
+    isTruncated: () => truncated,
+    text: () => {
+      const bytes = Buffer.concat(chunks)
+      return truncated ? new StringDecoder('utf8').write(bytes) : bytes.toString('utf8')
+    },
+  }
+}
+
 /** External programs are argv calls, never interpolated into a shell command. */
 export function runModProcess(
   argv: string[],
@@ -191,15 +252,16 @@ export function runModProcess(
   if (init.cwd !== undefined && typeof init.cwd !== 'string')
     throw new Error('process.run cwd must be a path')
   signal?.throwIfAborted()
-  const child = execa(argv[0]!, argv.slice(1), {
+  const command = modProcessCommand(argv, { ...process.env, ...init.env })
+  const child = execa(command.argv[0]!, command.argv.slice(1), {
     cwd: resolve(getOriginalCwd(), init.cwd ?? '.'),
-    env: { ...process.env, ...init.env },
+    env: command.env,
     // A POSIX process group and Windows taskkill /T keep child programs from
     // surviving the command wrapper that launched them.
     detached: process.platform !== 'win32',
     windowsHide: true,
-    // Collect bounded output below so overflow can stop the entire tree before
-    // the process library kills its wrapper and orphans descendants.
+    // Output is collected below, bounded per stream; whatever is past the
+    // bound is still read, so the child never blocks on a full pipe.
     buffer: false,
     encoding: 'utf8',
     input: init.stdin ?? '',
@@ -208,25 +270,11 @@ export function runModProcess(
   })
   let timedOut = false,
     canceled = false,
-    maxBuffer = false,
     stopping: Promise<void> | undefined
   const stop = () => (stopping ??= killModProcessTree(child))
-  const stdout: Buffer[] = [], stderr: Buffer[] = []
-  const collect = (chunks: Buffer[]) => {
-    let bytes = 0
-    return (chunk: Buffer | string) => {
-      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-      const available = Math.max(0, 1024 * 1024 - bytes)
-      if (available) chunks.push(data.subarray(0, available))
-      bytes += data.byteLength
-      if (bytes > 1024 * 1024) {
-        maxBuffer = true
-        void stop()
-      }
-    }
-  }
-  child.stdout?.on('data', collect(stdout))
-  child.stderr?.on('data', collect(stderr))
+  const stdout = boundedOutput(), stderr = boundedOutput()
+  child.stdout?.on('data', stdout.take)
+  child.stderr?.on('data', stderr.take)
   const abort = () => {
     canceled = true
     void stop()
@@ -240,21 +288,24 @@ export function runModProcess(
   return child.then(async result => {
     await stopping
     const output = {
-      stdout: Buffer.concat(stdout).toString('utf8'),
-      stderr: Buffer.concat(stderr).toString('utf8'),
+      stdout: stdout.text(),
+      stderr: stderr.text(),
+      isStdoutTruncated: stdout.isTruncated(),
+      isStderrTruncated: stderr.isTruncated(),
     }
-    if (timedOut || canceled || maxBuffer) {
+    if (timedOut || canceled) {
       throw Object.assign(new Error(timedOut
         ? `Mod process timed out after ${timeout} milliseconds`
-        : canceled ? 'Mod process canceled' : 'Mod process output exceeds 1 MiB'), {
-        timedOut, isCanceled: canceled, isMaxBuffer: maxBuffer,
+        : 'Mod process canceled'), {
+        timedOut, isCanceled: canceled,
         ...output,
       })
     }
-    if (result.timedOut || result.isCanceled || result.isMaxBuffer ||
-      result.isTerminated || result.exitCode === undefined)
-      throw Object.assign(result, output)
-    return { exitCode: result.exitCode, ...output }
+    // A child ended by a signal reads as exit code 1, as Claude Code reports
+    // it; one with neither an exit code nor a signal never started.
+    const exitCode = typeof result.exitCode === 'number' ? result.exitCode : result.signal ? 1 : undefined
+    if (exitCode === undefined) throw Object.assign(result, output)
+    return { exitCode, ...output }
   }).finally(() => {
     clearTimeout(timer)
     signal?.removeEventListener('abort', abort)
