@@ -137,3 +137,46 @@ test('repeated invalid calls remain blocked after exactly two repair attempts', 
   assert.equal(toolStarts(events).length, 0, 'an invalid call escaped to execution')
   assert.match(JSON.stringify(events), /blocked them before local execution/)
 })
+
+// The arguments the lane let through for its one tool call.
+function toolInput(events) {
+  const start = events.find(event => event.type === 'content_block_start' && event.content_block?.type === 'tool_use')
+  const json = events.filter(event => event.index === start.index && event.delta?.type === 'input_json_delta')
+    .map(event => event.delta.partial_json).join('')
+  return json ? JSON.parse(json) : start.content_block.input
+}
+
+// MCP update tools where null is a value: it clears a field, while leaving the field out keeps it.
+const nullable = {
+  due_date: { type: ['string', 'null'] },
+  label: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+  owner: { type: 'string', nullable: true },
+}
+const optionalNullTool = {
+  name: 'mcp__tracker__update_issue', description: 'Fixture',
+  input_schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' }, ...nullable, note: { type: 'string' } } },
+}
+const requiredNullTool = {
+  name: 'mcp__tracker__move_issue', description: 'Fixture',
+  input_schema: { type: 'object', required: ['id', 'parent'], properties: { id: { type: 'string' }, parent: { type: ['string', 'null'] } } },
+}
+
+for (const providerHint of ['cline', 'clinepass']) {
+  test(`${providerHint}: optional nulls the schema accepts reach the tool, placeholder nulls are still dropped`, async t => {
+    const input = { id: 'ISSUE-1', due_date: null, label: null, owner: null, note: null }
+    const { run, bodies } = fixture(t, [optionalNullTool], [{ input }, { input }, { input }], { providerHint })
+    const events = await run()
+    assert.equal(toolStarts(events).length, 1, 'the call was blocked')
+    assert.equal(bodies.length, 1, 'a valid call spent a repair retry')
+    assert.deepEqual(toolInput(events), { id: 'ISSUE-1', due_date: null, label: null, owner: null })
+  })
+
+  test(`${providerHint}: a required field the schema lets be null is not read as missing`, async t => {
+    const input = { id: 'ISSUE-1', parent: null }
+    const { run, bodies } = fixture(t, [requiredNullTool], [{ input }, { input }, { input }], { providerHint })
+    const events = await run()
+    assert.equal(toolStarts(events).length, 1, 'a valid call was blocked')
+    assert.equal(bodies.length, 1, 'a valid null spent a repair retry')
+    assert.deepEqual(toolInput(events), input)
+  })
+}

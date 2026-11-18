@@ -159,7 +159,9 @@ export function findClineToolCallsMissingRequiredArgs(
     }
 
     const required = requiredByTool.get(state.toolName) ?? []
-    const missing = required.filter(name => isMissingRequiredToolArg(received[name]))
+    const properties = schemaByTool?.get(state.toolName)?.properties
+    const missing = required.filter(name =>
+      isMissingRequiredToolArg(received[name], isPlainRecord(properties) ? properties[name] : undefined))
     if (missing.length > 0) {
       invalid.push({
         toolName: state.toolName,
@@ -391,6 +393,9 @@ function validateClineToolInputAgainstSchema(
   if (isRawSentinel(value)) {
     return [`${path || 'arguments'} must be a valid JSON object`]
   }
+  // OpenAPI's `nullable: true` admits null next to `type`, as the shared
+  // contract check (Ajv) does.
+  if (value === null && schema.nullable === true) return []
 
   const variants = schemaVariants(schema)
   if (variants.length > 0) {
@@ -422,7 +427,7 @@ function validateClineToolInputAgainstSchema(
       ? schema.required.filter((item): item is string => typeof item === 'string')
       : []
     for (const key of required) {
-      if (!hasSchemaDefault(properties[key]) && isMissingRequiredToolArg(value[key])) {
+      if (!hasSchemaDefault(properties[key]) && isMissingRequiredToolArg(value[key], properties[key])) {
         problems.push(`${joinSchemaPath(path, key)} is required`)
       }
     }
@@ -668,6 +673,10 @@ function collectClineToolCallStates(
   return states
 }
 
+// Drops the placeholder nulls a model sends for optional fields it means to
+// leave out. A null the field's schema accepts is a real value (an update
+// tool's `due_date: null` clears the date, leaving it out keeps it), so it
+// stays, as it does on every other lane.
 function stripSchemaOptionalNulls(
   value: unknown,
   schema: JsonSchemaRecord,
@@ -690,7 +699,7 @@ function stripSchemaOptionalNulls(
   for (const [key, child] of Object.entries(value)) {
     const hasExplicitChildSchema = Object.prototype.hasOwnProperty.call(properties, key)
     const childSchema = properties[key]
-    if (child === null && hasExplicitChildSchema && !required.has(key)) continue
+    if (child === null && hasExplicitChildSchema && !required.has(key) && !schemaAllowsNull(childSchema)) continue
     out[key] = hasExplicitChildSchema && isPlainRecord(childSchema)
       ? stripSchemaOptionalNulls(child, childSchema)
       : child
@@ -751,12 +760,21 @@ function hasSchemaDefault(schema: unknown): boolean {
   return isPlainRecord(schema) && Object.prototype.hasOwnProperty.call(schema, 'default')
 }
 
-function isMissingRequiredToolArg(value: unknown): boolean {
+function isMissingRequiredToolArg(value: unknown, schema?: unknown): boolean {
   return (
     value === undefined
-    || value === null
+    || (value === null && !schemaAllowsNull(schema))
     || (typeof value === 'string' && value.trim().length === 0)
   )
+}
+
+// Whether a field's schema accepts null, as the shared contract check (Ajv)
+// decides it: a null type, a null branch, OpenAPI's `nullable: true`, or no
+// type constraint at all.
+function schemaAllowsNull(schema: unknown): boolean {
+  if (!isPlainRecord(schema)) return false
+  if (schema.nullable === true) return true
+  return schemaAcceptsValueBasicType(schema, null)
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
