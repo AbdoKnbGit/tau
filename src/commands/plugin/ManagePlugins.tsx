@@ -24,7 +24,7 @@ import { filterToolsByServer } from '../../services/mcp/utils.js';
 import { disablePluginOp, enablePluginOp, getPluginInstallationFromV2, isInstallableScope, isPluginEnabledAtProjectScope, uninstallPluginOp, updatePluginOp } from '../../services/plugins/pluginOperations.js';
 import { useAppState } from '../../state/AppState.js';
 import type { Tool } from '../../Tool.js';
-import type { LoadedPlugin, PluginError } from '../../types/plugin.js';
+import { isPluginNotice, type LoadedPlugin, type PluginError } from '../../types/plugin.js';
 import { count } from '../../utils/array.js';
 import { openBrowser } from '../../utils/browser.js';
 import { logForDebugging } from '../../utils/debug.js';
@@ -561,7 +561,7 @@ export function ManagePlugins({
     for (const state of pluginStates) {
       const pluginId = state.plugin.source;
       const isEnabled = (mergedSettings?.enabledPlugins?.[pluginId] ?? state.plugin.manifest.defaultEnabled) !== false;
-      const errors = pluginErrors.filter(e => e.source === pluginId);
+      const errors = pluginErrors.filter(e => e.source === pluginId && !isPluginNotice(e));
 
       // Built-in plugins use 'builtin' scope; others look up from V2 data.
       const originalScope = state.plugin.isBuiltin ? 'builtin' : state.scope || 'user';
@@ -595,7 +595,8 @@ export function ManagePlugins({
     }) => item_0.name));
     const orphanErrorsBySource = new Map<string, typeof pluginErrors>();
     for (const error of pluginErrors) {
-      if (matchedPluginIds.has(error.source) || 'plugin' in error && typeof error.plugin === 'string' && matchedPluginNames.has(error.plugin)) {
+      // Notices (a rename) stay in the Errors tab; they aren't failed plugins.
+      if (isPluginNotice(error) || matchedPluginIds.has(error.source) || 'plugin' in error && typeof error.plugin === 'string' && matchedPluginNames.has(error.plugin)) {
         continue;
       }
       const existing_0 = orphanErrorsBySource.get(error.source) || [];

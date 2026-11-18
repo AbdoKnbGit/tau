@@ -23,6 +23,7 @@ import {
 } from '../settings/settings.js'
 import { buildPluginTelemetryFields } from '../telemetry/pluginTelemetry.js'
 import { clearAllCaches } from './cacheUtils.js'
+import { isLinkModeCommandSource } from './commandSource.js'
 import {
   formatDependencyCountSuffix,
   getEnabledPluginIdsForScope,
@@ -156,6 +157,7 @@ export async function cacheAndRegisterPlugin(
     prepared?.cached ??
     (await cachePlugin(source, {
       manifest: entry as PluginMarketplaceEntry,
+      fetchContext: { pluginId, entry },
     }))
 
   // For local plugins, use the original source path for Git SHA calculation
@@ -179,6 +181,7 @@ export async function cacheAndRegisterPlugin(
         pathForGitSha,
         entry.version,
         cacheResult.gitCommitSha,
+        cacheResult.contentDigest,
       )
 
   // Move the cached plugin to the versioned path: cache/marketplace/plugin/version/
@@ -224,8 +227,9 @@ export async function cacheAndRegisterPlugin(
     finalPath = versionedPath
   }
 
-  // Zip cache mode: convert directory to ZIP and remove the directory
-  if (isPluginZipCacheEnabled()) {
+  // Zip cache mode: convert directory to ZIP and remove the directory. A
+  // link-mode command source stays links into its printed directory.
+  if (isPluginZipCacheEnabled() && !isLinkModeCommandSource(entry.source)) {
     const zipPath = getVersionedZipCachePath(pluginId, version)
     await convertDirectoryToZipInPlace(finalPath, zipPath)
     finalPath = zipPath
@@ -511,6 +515,7 @@ export async function installResolvedPlugin({
               manifest: info.entry,
               temporary: true,
               marketplaceRoot: typeof source === 'string' ? info.marketplaceInstallLocation : undefined,
+              fetchContext: { pluginId: id, entry: info.entry },
             })
             temporaryPaths.add(cached.path)
             candidate = { key, cached, selected }

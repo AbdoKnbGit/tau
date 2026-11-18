@@ -82,17 +82,21 @@ import {
   type KnownMarketplacesFile,
   KnownMarketplacesFileSchema,
   type MarketplaceSource,
-  type PluginMarketplace,
   type PluginMarketplaceEntry,
-  PluginMarketplaceSchema,
   validateOfficialNameSource,
 } from './schemas.js'
+import {
+  MarketplaceCatalogParser,
+  parseMarketplaceCatalog,
+  type ParsedPluginMarketplace,
+} from './marketplaceCatalog.js'
+import { getMarketplaceRequestHeaders } from './marketplaceHeaders.js'
 
 /**
  * Result of loading and caching a marketplace
  */
 type LoadedPluginMarketplace = {
-  marketplace: PluginMarketplace
+  marketplace: ParsedPluginMarketplace
   cachePath: string
 }
 
@@ -1357,8 +1361,9 @@ async function cacheMarketplaceFromUrl(
   }
 
   safeCallProgress(onProgress, 'Validating marketplace data')
-  // Validate the response is a valid marketplace
-  const result = PluginMarketplaceSchema().safeParse(response.data)
+  // Validate the response is a valid marketplace. Entries are checked one by
+  // one, so an entry this build can't use doesn't reject the catalog.
+  const result = parseMarketplaceCatalog(response.data)
   if (!result.success) {
     logPluginFetch(
       'marketplace_url',
@@ -1385,8 +1390,10 @@ async function cacheMarketplaceFromUrl(
   const cacheDir = join(cachePath, '..')
   await fs.mkdir(cacheDir)
 
-  // Write the validated marketplace file
-  writeFileSync_DEPRECATED(cachePath, jsonStringify(result.data, null, 2), {
+  // Cache the document as published, not the parsed view: parsing drops
+  // entries and keys this build doesn't understand, and the cache file is
+  // shared with other Claude Code installs and later Tau versions.
+  writeFileSync_DEPRECATED(cachePath, jsonStringify(response.data, null, 2), {
     encoding: 'utf-8',
     flush: true,
   })
@@ -1499,7 +1506,7 @@ async function loadAndCacheMarketplace(
         await cacheMarketplaceFromUrl(
           source.url,
           temporaryCachePath,
-          source.headers,
+          await getMarketplaceRequestHeaders(source, undefined),
           onProgress,
         )
         marketplacePath = temporaryCachePath
@@ -1733,11 +1740,11 @@ async function loadAndCacheMarketplace(
 
     // Load and validate the marketplace
     logForDebugging(`Reading marketplace from ${marketplacePath}`)
-    let marketplace: PluginMarketplace
+    let marketplace: ParsedPluginMarketplace
     try {
       marketplace = await parseFileWithSchema(
         marketplacePath,
-        PluginMarketplaceSchema(),
+        MarketplaceCatalogParser,
       )
     } catch (e) {
       if (isENOENT(e)) {
@@ -2104,20 +2111,20 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
  */
 async function readCachedMarketplace(
   installLocation: string,
-): Promise<PluginMarketplace> {
+): Promise<ParsedPluginMarketplace> {
   // For git-sourced directories, the manifest lives at .claude-plugin/marketplace.json.
   // For url/file/directory sources it is the installLocation itself.
   // Try the nested path first; fall back to installLocation when it is a plain file
   // (ENOTDIR) or the nested file is simply missing (ENOENT).
   const nestedPath = join(installLocation, '.claude-plugin', 'marketplace.json')
   try {
-    return await parseFileWithSchema(nestedPath, PluginMarketplaceSchema())
+    return await parseFileWithSchema(nestedPath, MarketplaceCatalogParser)
   } catch (e) {
     if (e instanceof ConfigParseError) throw e
     const code = getErrnoCode(e)
     if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e
   }
-  return await parseFileWithSchema(installLocation, PluginMarketplaceSchema())
+  return await parseFileWithSchema(installLocation, MarketplaceCatalogParser)
 }
 
 /**
@@ -2127,7 +2134,7 @@ async function readCachedMarketplace(
  */
 export async function getMarketplaceCacheOnly(
   name: string,
-): Promise<PluginMarketplace | null> {
+): Promise<ParsedPluginMarketplace | null> {
   const fs = getFsImplementation()
   const configFile = getKnownMarketplacesFile()
 
@@ -2167,7 +2174,7 @@ export async function getMarketplaceCacheOnly(
  * @returns The marketplace object or null if not found/failed
  */
 export const getMarketplace = memoize(
-  async (name: string): Promise<PluginMarketplace> => {
+  async (name: string): Promise<ParsedPluginMarketplace> => {
     const config = await loadKnownMarketplacesConfig()
     const entry = config[name]
 
@@ -2207,7 +2214,7 @@ export const getMarketplace = memoize(
     }
 
     // Cache doesn't exist or is invalid, fetch from source
-    let marketplace: PluginMarketplace
+    let marketplace: ParsedPluginMarketplace
     try {
       ;({ marketplace } = await loadAndCacheMarketplace(entry.source))
     } catch (error) {
@@ -2590,11 +2597,19 @@ export async function refreshMarketplace(
       // The repo may have been restructured or deprecated
       try {
         await readCachedMarketplace(installLocation)
-      } catch {
+      } catch (error) {
         const sourceDisplay =
           source.source === 'github'
             ? source.repo
             : redactUrlCredentials(source.url)
+        // The file exists but can't be read as a catalog: say that, rather
+        // than reporting it missing.
+        if (error instanceof ConfigParseError) {
+          throw new Error(
+            `The marketplace.json in this repository is not a valid marketplace after the update: ${errorMessage(error)}\n` +
+              `Source: ${sourceDisplay}`,
+          )
+        }
         const reason =
           name === 'claude-code-plugins'
             ? `We've deprecated "claude-code-plugins" in favor of "claude-plugins-official".`
@@ -2611,7 +2626,7 @@ export async function refreshMarketplace(
       await cacheMarketplaceFromUrl(
         source.url,
         installLocation,
-        source.headers,
+        await getMarketplaceRequestHeaders(source, name),
         onProgress,
       )
     } else if (isLocalMarketplaceSource(source)) {

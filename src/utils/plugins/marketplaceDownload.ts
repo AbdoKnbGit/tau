@@ -30,30 +30,78 @@ export function isBlockedMarketplaceRedirectHost(host: string): boolean {
   )
 }
 
+type DownloadPolicy = {
+  maxBytes: number
+  timeoutMs: number
+  maxRedirects: number
+  /**
+   * Every hop, the first included, must use HTTPS and resolve to a host that
+   * isn't loopback, link-local or cloud metadata. Otherwise only a hop that
+   * left the original origin is held to that.
+   */
+  secureEveryHop: boolean
+}
+
+const MARKETPLACE_JSON_POLICY: DownloadPolicy = {
+  maxBytes: 5 * 1024 * 1024,
+  timeoutMs: 10_000,
+  maxRedirects: 20,
+  secureEveryHop: false,
+}
+
+// --plugin-dir URLs: a zip the user named on the command line.
+const SESSION_ARCHIVE_POLICY: DownloadPolicy = {
+  maxBytes: 50 * 1024 * 1024,
+  timeoutMs: 10_000,
+  maxRedirects: 20,
+  secureEveryHop: false,
+}
+
+// `archive` plugin sources named by a catalog: Claude Code's documented limits.
+const ARCHIVE_SOURCE_POLICY: DownloadPolicy = {
+  maxBytes: 256 * 1024 * 1024,
+  timeoutMs: 120_000,
+  maxRedirects: 5,
+  secureEveryHop: true,
+}
+
 /** Follow redirects explicitly so credentials and source restrictions survive each hop. */
 export async function downloadMarketplaceJson(
   url: string,
   headers: Record<string, string>,
 ) {
-  return downloadPluginResource(url, headers, 5 * 1024 * 1024)
+  return downloadPluginResource(url, headers, MARKETPLACE_JSON_POLICY)
 }
 
 export async function downloadPluginArchive(url: string): Promise<Buffer> {
-  const response = await downloadPluginResource(url, {}, 50 * 1024 * 1024, 'arraybuffer')
+  const response = await downloadPluginResource(url, {}, SESSION_ARCHIVE_POLICY, 'arraybuffer')
+  return Buffer.from(response.data)
+}
+
+/**
+ * Download the zip of an `archive` plugin source. `headers` go only to the
+ * archive URL's origin: a redirect elsewhere carries none of them.
+ */
+export async function downloadArchiveSource(
+  url: string,
+  headers: Record<string, string>,
+): Promise<Buffer> {
+  const response = await downloadPluginResource(url, headers, ARCHIVE_SOURCE_POLICY, 'arraybuffer')
   return Buffer.from(response.data)
 }
 
 async function downloadPluginResource(
   url: string,
   headers: Record<string, string>,
-  maxContentLength: number,
+  policy: DownloadPolicy,
   responseType?: AxiosRequestConfig['responseType'],
 ) {
   let current = new URL(url)
   let requestHeaders = { ...headers }
-  let guarded = false
-  const deadline = Date.now() + 10000
-  for (let hop = 0; hop <= 20; hop++) {
+  let guarded = policy.secureEveryHop
+  const maxContentLength = policy.maxBytes
+  const deadline = Date.now() + policy.timeoutMs
+  for (let hop = 0; hop <= policy.maxRedirects; hop++) {
     if (Date.now() >= deadline)
       throw new Error('Marketplace download timed out')
     if (!['http:', 'https:'].includes(current.protocol))
@@ -65,7 +113,9 @@ async function downloadPluginResource(
         isBlockedMarketplaceRedirectHost(current.hostname)
       ) {
         throw new Error(
-          'Marketplace redirect must use HTTPS and a non-local destination',
+          hop === 0
+            ? 'Plugin archive URLs must use HTTPS and a non-local destination'
+            : 'Marketplace redirect must use HTTPS and a non-local destination',
         )
       }
       const host = current.hostname.replace(/^\[|\]$/g, '')
@@ -85,7 +135,9 @@ async function downloadPluginResource(
           addresses.some((a) => isBlockedMarketplaceRedirectHost(a.address))
         ) {
           throw new Error(
-            'Marketplace redirect resolves to a local or metadata address',
+            hop === 0
+              ? 'Plugin archive URL resolves to a local or metadata address'
+              : 'Marketplace redirect resolves to a local or metadata address',
           )
         }
         // Bind the request to the addresses just checked, including IPv6.

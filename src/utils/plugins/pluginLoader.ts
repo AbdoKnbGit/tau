@@ -42,6 +42,7 @@ import {
   stat,
 } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
+import { homedir } from 'os'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { getInlinePlugins, getOriginalCwd } from '../../bootstrap/state.js'
 import {
@@ -86,7 +87,7 @@ import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { checkGitAvailable } from './gitAvailability.js'
 import { getInMemoryInstalledPlugins } from './installedPluginsManager.js'
 import { preparePluginHookFile, preparePluginManifestHooks, type PluginHookIssue } from './hookCompatibility.js'
-import { copyDir } from './pluginFiles.js'
+import { copyDir, isWithinDirectory } from './pluginFiles.js'
 export { copyDir } from './pluginFiles.js'
 import { assignPluginHookOwners } from './hookOwnership.js'
 import { resolveSessionPluginPath } from './sessionArchives.js'
@@ -105,6 +106,37 @@ import {
   isGitHubSshLikelyConfigured,
   loadKnownMarketplacesConfigSafe,
 } from './marketplaceManager.js'
+import {
+  installArchiveBytes,
+  resolveArchiveHeaders,
+  sharesMarketplaceOrigin,
+} from './archiveSource.js'
+import {
+  assertDeclaredCommandMayRun,
+  type DeclaredCommandRun,
+  getDeclaredCommand,
+} from './commandConsent.js'
+import {
+  type CommandRunner,
+  installFromCommandSource,
+  isCommandSource,
+  isLinkModeCommandSource,
+  linkedDirectoryOf,
+  withoutCredentials,
+} from './commandSource.js'
+import {
+  getArchiveEntryHelperHeaders,
+  getMarketplaceRequestHeaders,
+} from './marketplaceHeaders.js'
+import { downloadArchiveSource } from './marketplaceDownload.js'
+import {
+  explainMissingCatalogEntry,
+  resolvePluginRename,
+} from './marketplaceCatalog.js'
+import {
+  applyPluginRenameMigrations,
+  type PluginRenameMigration,
+} from './pluginRenameMigration.js'
 import { getPluginSeedDirs, getPluginsDirectory } from './pluginDirectories.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
 import { validatePathWithinBase } from './pluginInstallationHelpers.js'
@@ -352,6 +384,15 @@ export async function copyPluginToVersionedCache(
 
   // Create parent directories
   await getFsImplementation().mkdir(dirname(cachePath))
+
+  // A link-mode command source's entry is links into the directory its
+  // command printed. Copying would drop them (they point outside the cache),
+  // so the fetched entry moves into place as is.
+  if (entry && isLinkModeCommandSource(entry.source)) {
+    await rename(sourcePath, cachePath)
+    logForDebugging(`Linked plugin ${pluginId} at ${cachePath}`)
+    return cachePath
+  }
 
   // For local plugins: copy entry.source directory (the single source of truth)
   // For remote plugins: marketplaceDir is undefined, fall back to copying sourcePath
@@ -844,6 +885,12 @@ export function generateTemporaryCacheNameForPlugin(
       case 'git-subdir':
         prefix = 'subdir'
         break
+      case 'archive':
+        prefix = 'archive'
+        break
+      case 'command':
+        prefix = 'command'
+        break
       default:
         prefix = 'unknown'
     }
@@ -851,6 +898,23 @@ export function generateTemporaryCacheNameForPlugin(
 
   return `temp_${prefix}_${timestamp}_${random}`
 }
+
+/**
+ * Run a command a marketplace declares: through the platform shell (sh, or
+ * cmd.exe on Windows), no stdin, killing its whole process tree on timeout.
+ */
+const runDeclaredCommand: CommandRunner = (command, { timeoutMs, cwd, env }) =>
+  execFileNoThrowWithCwd(command, [], {
+    shell: true,
+    timeout: timeoutMs,
+    killTreeOnTimeout: true,
+    cwd,
+    env,
+    // Exactly `env`: credential-like variables removed from it stay out.
+    extendEnv: false,
+    stdin: 'ignore',
+    maxBuffer: 1_000_000,
+  })
 
 /**
  * Cache a plugin from an external source
@@ -861,8 +925,22 @@ export async function cachePlugin(
     manifest?: PluginManifest
     temporary?: boolean
     marketplaceRoot?: string
+    /** The marketplace entry being fetched, for sources that need its fields (archive headers, commands). */
+    fetchContext?: { pluginId: string; entry: PluginMarketplaceEntry }
+    /**
+     * For a command the catalog declares: 'install' (the default) needs the
+     * user's consent from this process; 'later' (startup, background re-run)
+     * reuses the last accepted command.
+     */
+    commandRun?: DeclaredCommandRun
   },
-): Promise<{ path: string; manifest: PluginManifest; gitCommitSha?: string }> {
+): Promise<{
+  path: string
+  manifest: PluginManifest
+  gitCommitSha?: string
+  /** Digest the version derives from: an archive's SHA-256, or a command source's output hash. */
+  contentDigest?: string
+}> {
   const cachePath = getPluginCachePath()
 
   await getFsImplementation().mkdir(cachePath)
@@ -872,6 +950,7 @@ export async function cachePlugin(
 
   let shouldCleanup = false
   let gitCommitSha: string | undefined
+  let contentDigest: string | undefined
 
   try {
     logForDebugging(
@@ -917,6 +996,89 @@ export async function cachePlugin(
           break
         case 'pip':
           throw new Error('Python package plugins are not yet supported')
+        case 'archive': {
+          const context = options?.fetchContext
+          let headers: Record<string, string> = {}
+          if (context) {
+            const { marketplace } = parsePluginIdentifier(context.pluginId)
+            const known = marketplace
+              ? await loadKnownMarketplacesConfigSafe()
+              : undefined
+            const marketplaceSource = marketplace
+              ? known?.[marketplace]?.source
+              : undefined
+            const helperHeaders: {
+              marketplace?: Record<string, string>
+              entry?: Record<string, string>
+            } = {}
+            if (sharesMarketplaceOrigin(context.entry, marketplaceSource)) {
+              helperHeaders.marketplace = await getMarketplaceRequestHeaders(
+                marketplaceSource,
+                marketplace,
+              )
+            }
+            const declared = getDeclaredCommand(context.pluginId, context.entry)
+            if (declared?.kind === 'headers-helper') {
+              // An entry's helper runs only when the user installs or updates
+              // that plugin by itself and accepts the command.
+              assertDeclaredCommandMayRun(declared, 'install')
+              helperHeaders.entry = await getArchiveEntryHelperHeaders(
+                declared.command,
+                context.entry.name,
+                source.url,
+              )
+            }
+            const resolved = resolveArchiveHeaders(
+              context.entry,
+              marketplaceSource,
+              helperHeaders,
+            )
+            for (const name of resolved.dropped) {
+              logForDebugging(
+                `Dropped header "${name}" from ${context.pluginId}: catalog entries may not set request-routing or identity headers`,
+                { level: 'warn' },
+              )
+            }
+            headers = resolved.headers
+          }
+          const bytes = await downloadArchiveSource(source.url, headers)
+          contentDigest = (
+            await installArchiveBytes(
+              bytes,
+              source,
+              tempPath,
+              extractZipToDirectory,
+            )
+          ).sha256
+          break
+        }
+        case 'command': {
+          const context = options?.fetchContext
+          const declared = context
+            ? getDeclaredCommand(context.pluginId, context.entry)
+            : undefined
+          if (!context || declared?.kind !== 'command-source') {
+            throw new Error(
+              'A command source can only be installed through its marketplace entry',
+            )
+          }
+          assertDeclaredCommandMayRun(declared, options?.commandRun ?? 'install')
+          try {
+            contentDigest = (
+              await installFromCommandSource(source, tempPath, {
+                run: runDeclaredCommand,
+                sessionCwd: getOriginalCwd(),
+                homeDir: homedir(),
+                env: withoutCredentials(process.env),
+              })
+            ).digest
+          } catch (error) {
+            throw new Error(
+              `The command for plugin "${context.pluginId}" ${errorMessage(error)}`,
+            )
+          }
+          break
+        }
         default:
           throw new Error(`Unsupported plugin source type`)
       }
@@ -1057,7 +1219,9 @@ export async function cachePlugin(
     }
   }
 
-  if (options?.temporary) return { path: tempPath, manifest, gitCommitSha }
+  if (options?.temporary) {
+    return { path: tempPath, manifest, gitCommitSha, contentDigest }
+  }
 
   const finalName = manifest.name.replace(/[^a-zA-Z0-9-_]/g, '-')
   const finalPath = join(cachePath, finalName)
@@ -1075,6 +1239,7 @@ export async function cachePlugin(
     path: finalPath,
     manifest,
     ...(gitCommitSha && { gitCommitSha }),
+    ...(contentDigest && { contentDigest }),
   }
 }
 
@@ -1990,9 +2155,43 @@ async function loadPluginsFromMarketplaces({
   // can hit even when the marketplace entry omits `version`.
   const installedPluginsData = getInMemoryInstalledPlugins()
 
+  // Follow each catalog's `renames` before loading: a plugin enabled under
+  // both names loads once, and an installed plugin keeps reading its cached
+  // files (recorded under the old ID) until the migration below moves them.
+  const renameMigrations: PluginRenameMigration[] = []
+  const pluginsToLoad: Array<{
+    pluginId: string
+    enabledValue: (typeof marketplacePluginEntries)[number][1]
+    installedAs: string
+  }> = []
+  const requestedIds = new Set(marketplacePluginEntries.map(([id]) => id))
+  for (const [pluginId, enabledValue] of marketplacePluginEntries) {
+    const { name, marketplace } = parsePluginIdentifier(pluginId)
+    const catalog = marketplace ? marketplaceCatalogs.get(marketplace) : null
+    const rename = catalog && name ? resolvePluginRename(catalog, name) : undefined
+    if (!rename || rename.kind === 'unresolved') {
+      pluginsToLoad.push({ pluginId, enabledValue, installedAs: pluginId })
+      continue
+    }
+    const renamedTo = rename.kind === 'renamed' ? rename.to : null
+    const toId = renamedTo ? `${renamedTo}@${marketplace}` : null
+    renameMigrations.push({ from: pluginId, to: toId })
+    errors.push({
+      type: 'plugin-renamed',
+      source: pluginId,
+      plugin: name!,
+      marketplace: marketplace!,
+      renamedTo,
+    })
+    if (toId && !requestedIds.has(toId)) {
+      requestedIds.add(toId)
+      pluginsToLoad.push({ pluginId: toId, enabledValue, installedAs: pluginId })
+    }
+  }
+
   // Load all marketplace plugins in parallel for faster startup
   const results = await Promise.allSettled(
-    marketplacePluginEntries.map(async ([pluginId, enabledValue]) => {
+    pluginsToLoad.map(async ({ pluginId, enabledValue, installedAs }) => {
       const { name: pluginName, marketplace: marketplaceName } =
         parsePluginIdentifier(pluginId)
 
@@ -2068,23 +2267,52 @@ async function loadPluginsFromMarketplaces({
       }
 
       if (!result) {
-        errors.push({
-          type: 'plugin-not-found',
-          source: pluginId,
-          pluginId: pluginName!,
-          marketplace: marketplaceName!,
-        })
+        // Say why when the catalog knows the name: an entry this build can't
+        // use, or a renames chain that doesn't resolve.
+        const reason = marketplace
+          ? explainMissingCatalogEntry(marketplace, pluginName!, marketplaceName!)
+          : undefined
+        errors.push(
+          reason
+            ? { type: 'generic-error', source: pluginId, plugin: pluginName, error: reason }
+            : {
+                type: 'plugin-not-found',
+                source: pluginId,
+                pluginId: pluginName!,
+                marketplace: marketplaceName!,
+              },
+        )
         return null
       }
 
       // installed_plugins.json records what's actually cached on disk
       // (version for the full loader's first-pass probe, installPath for
       // the cache-only loader's direct read).
-      const installations = installedPluginsData.plugins[pluginId] ?? []
+      const installations =
+        installedPluginsData.plugins[pluginId] ??
+        installedPluginsData.plugins[installedAs] ??
+        []
       const installEntry = ['managed', 'local', 'project', 'user']
         .map(scope => installations.find(i => i.scope === scope &&
           (scope === 'managed' || scope === 'user' || i.projectPath === getOriginalCwd())))
         .find(Boolean)
+
+      // A link-mode command source loads in place from the directory its
+      // command printed; a session started there (or below) doesn't load it.
+      if (isLinkModeCommandSource(result.entry.source) && installEntry?.installPath) {
+        const linked = await linkedDirectoryOf(installEntry.installPath)
+        const cwd = await realpath(getOriginalCwd()).catch(() => getOriginalCwd())
+        if (linked && isWithinDirectory(linked, cwd)) {
+          errors.push({
+            type: 'generic-error',
+            source: pluginId,
+            plugin: pluginName,
+            error: `Plugin "${pluginId}" is not loaded: this session started inside the directory its command printed (${linked})`,
+          })
+          return null
+        }
+      }
+
       const loaded = cacheOnly || installEntry?.dependencyVersion
         ? await loadPluginFromMarketplaceEntryCacheOnly(
             result.entry,
@@ -2114,7 +2342,7 @@ async function loadPluginsFromMarketplaces({
     } else if (result.status === 'rejected') {
       const err = toError(result.reason)
       logError(err)
-      const pluginId = marketplacePluginEntries[i]![0]
+      const pluginId = pluginsToLoad[i]!.pluginId
       errors.push({
         type: 'generic-error',
         source: pluginId,
@@ -2122,6 +2350,12 @@ async function loadPluginsFromMarketplaces({
         error: err.message,
       })
     }
+  }
+
+  // Settings writes here are marked internal, so they don't trigger a
+  // settings-change reload in the running session.
+  if (renameMigrations.length > 0) {
+    await applyPluginRenameMigrations(renameMigrations)
   }
 
   return { plugins, errors }
@@ -2335,12 +2569,17 @@ async function loadPluginFromMarketplaceEntry(
       //    3. Marketplace entry version, 4. source.sha (pinned commits — the
       //    exact value the post-clone call at cached.gitCommitSha would see),
       //    5. 'unknown' → ref-tracked, falls through to clone by design.
+      // A command source's version comes only from its output, never from
+      // the entry's `version`.
+      const versionHint = isCommandSource(entry.source)
+        ? installedVersion
+        : (installedVersion ?? entry.version)
       const version = await calculatePluginVersion(
         pluginId,
         entry.source,
         undefined,
         undefined,
-        installedVersion ?? entry.version,
+        versionHint,
         'sha' in entry.source ? entry.source.sha : undefined,
       )
 
@@ -2376,9 +2615,13 @@ async function loadPluginFromMarketplaceEntry(
             `Using seed cache for external plugin ${entry.name} at ${seedPath}`,
           )
         } else {
-          // Download to temp location, then copy to versioned cache
+          // Download to temp location, then copy to versioned cache. A command
+          // source whose cached version is missing re-runs the command the
+          // user last accepted; a changed command does not run.
           const cached = await cachePlugin(entry.source, {
             manifest: { name: entry.name },
+            fetchContext: { pluginId, entry },
+            commandRun: 'later',
           })
 
           // If the pre-clone version was deterministic (source.sha /
@@ -2397,8 +2640,9 @@ async function loadPluginFromMarketplaceEntry(
                   entry.source,
                   cached.manifest,
                   cached.path,
-                  installedVersion ?? entry.version,
+                  versionHint,
                   cached.gitCommitSha,
+                  cached.contentDigest,
                 )
 
           // Copy to versioned cache

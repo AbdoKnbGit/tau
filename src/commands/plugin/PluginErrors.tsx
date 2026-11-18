@@ -54,6 +54,8 @@ export function formatErrorMessage(error: PluginError): string {
       return `LSP server "${error.serverName}" ${error.method} failed: ${error.error}`;
     case 'plugin-cache-miss':
       return `Plugin "${error.plugin}" not cached at ${error.installPath}`;
+    case 'plugin-renamed':
+      return getPluginErrorMessage(error);
     case 'generic-error':
       return error.error;
   }
@@ -118,6 +120,8 @@ export function getErrorGuidance(error: PluginError): string | null {
       return 'Check LSP server logs with --debug for details';
     case 'plugin-cache-miss':
       return 'Run /plugins to refresh the plugin cache';
+    case 'plugin-renamed':
+      return error.renamedTo === null ? null : `Your settings now use "${error.renamedTo}@${error.marketplace}"`;
     case 'marketplace-load-failed':
     case 'generic-error':
       return null;

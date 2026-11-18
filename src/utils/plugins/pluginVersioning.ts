@@ -31,6 +31,9 @@ import type { PluginManifest, PluginSource } from './schemas.js'
  * @param providedVersion - Optional version from marketplace entry or caller
  * @param gitCommitSha - Optional pre-resolved git SHA (for sources like
  *   git-subdir where the clone is discarded and the install path has no .git)
+ * @param contentDigest - Digest of the fetched content: the SHA-256 of a
+ *   downloaded archive (used when the entry doesn't pin one), or the hash of
+ *   what a command source produced
  * @returns Version string (semver, short SHA, or 'unknown')
  */
 export async function calculatePluginVersion(
@@ -40,7 +43,21 @@ export async function calculatePluginVersion(
   installPath?: string,
   providedVersion?: string,
   gitCommitSha?: string,
+  contentDigest?: string,
 ): Promise<string> {
+  // Command sources: always from what the command produced — the hash, or
+  // `<manifest version>-<hash>`. The entry's version is ignored. Before the
+  // command has run, only the caller's installed version can name the cache.
+  if (typeof source === 'object' && source.source === 'command') {
+    if (contentDigest) {
+      const hash = contentDigest.toLowerCase().substring(0, 12)
+      const version = manifest?.version ? `${manifest.version}-${hash}` : hash
+      logForDebugging(`Using command output version for ${pluginId}: ${version}`)
+      return version
+    }
+    return providedVersion ?? 'unknown'
+  }
+
   // 1. Use explicit version from plugin.json if available
   if (manifest?.version) {
     logForDebugging(
@@ -57,7 +74,20 @@ export async function calculatePluginVersion(
     return providedVersion
   }
 
-  // 3. Use pre-resolved git SHA if caller captured it before discarding the clone
+  // 3. Archive sources: the pinned digest (known before any download), else
+  // the digest of the archive that was downloaded.
+  if (typeof source === 'object' && source.source === 'archive') {
+    const digest = source.sha256 ?? contentDigest
+    if (digest) {
+      const version = digest.toLowerCase().substring(0, 12)
+      logForDebugging(
+        `Using archive sha256 version for ${pluginId}: ${version} (${source.sha256 ? 'pinned' : 'downloaded'})`,
+      )
+      return version
+    }
+  }
+
+  // 4. Use pre-resolved git SHA if caller captured it before discarding the clone
   if (gitCommitSha) {
     const shortSha = gitCommitSha.substring(0, 12)
     if (
@@ -94,7 +124,7 @@ export async function calculatePluginVersion(
     return shortSha
   }
 
-  // 4. Try to get git SHA from install path
+  // 5. Try to get git SHA from install path
   if (installPath) {
     const sha = await getGitCommitSha(installPath)
     if (sha) {
@@ -104,7 +134,7 @@ export async function calculatePluginVersion(
     }
   }
 
-  // 5. Return 'unknown' as last resort
+  // 6. Return 'unknown' as last resort
   logForDebugging(`No version found for ${pluginId}, using 'unknown'`)
   return 'unknown'
 }

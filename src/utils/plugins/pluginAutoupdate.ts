@@ -65,6 +65,19 @@ export function onPluginsAutoUpdated(
 }
 
 /**
+ * Tell the REPL that plugins were updated on disk in the background, with
+ * the same "Run /reload-plugins to apply" notice as auto-update.
+ */
+export function notifyPluginsUpdated(updatedPlugins: string[]): void {
+  if (updatedPlugins.length === 0) return
+  if (pluginUpdateCallback) {
+    pluginUpdateCallback(updatedPlugins)
+  } else {
+    pendingNotification = [...(pendingNotification ?? []), ...updatedPlugins]
+  }
+}
+
+/**
  * Check if pending updates came from autoupdate (for notification purposes).
  * Returns the list of plugin names that have pending updates.
  */

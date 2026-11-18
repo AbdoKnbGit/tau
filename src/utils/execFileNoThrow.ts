@@ -75,6 +75,11 @@ type ExecFileWithCwdOptions = {
   discardOutput?: boolean
   /** Kill the full descendant tree on Windows when timeout elapses. */
   killTreeOnTimeout?: boolean
+  /**
+   * false: the child gets exactly `env`, not `env` laid over this process's
+   * environment, so variables left out of `env` stay out.
+   */
+  extendEnv?: boolean
 }
 
 type ExecaResultWithError = {
@@ -123,6 +128,7 @@ export function execFileNoThrowWithCwd(
     input: finalInput,
     discardOutput,
     killTreeOnTimeout = false,
+    extendEnv,
   }: ExecFileWithCwdOptions = {
     timeout: 10 * SECONDS_IN_MINUTE * MS_IN_SECOND,
     preserveOutputOnError: true,
@@ -141,6 +147,7 @@ export function execFileNoThrowWithCwd(
       timeout: useTreeTimeout ? undefined : finalTimeout,
       cwd: finalCwd,
       env: finalEnv,
+      ...(extendEnv === false && { extendEnv: false }),
       shell,
       // A detached POSIX child leads its own process group, allowing timeout
       // cleanup to terminate synchronous npm/node-gyp descendants as a unit.

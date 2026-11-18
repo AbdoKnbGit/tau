@@ -505,6 +505,15 @@ export const SettingsSchema = lazySchema(() =>
           'When true (and set in managed settings), only hooks from managed settings run. ' +
             'User, project, and local hooks are ignored.',
         ),
+      // Commands a marketplace catalog declares (command plugin sources, headersHelper)
+      disableCommandPluginSources: z
+        .boolean()
+        .optional()
+        .describe(
+          'Controls commands that marketplaces declare: the `command` plugin source and `headersHelper`. ' +
+            'true: Tau never runs them (a marketplace that managed settings declare keeps its headersHelper). ' +
+            'false: they run after the user accepts them, even when allowManagedHooksOnly is set.',
+        ),
       // Allowlist of URL patterns HTTP hooks may target (follows allowedMcpServers precedent)
       allowedHttpHookUrls: z
         .array(z.string())

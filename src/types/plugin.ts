@@ -291,6 +291,15 @@ export type PluginError =
       installPath: string
     }
   | {
+      /** Informational: the plugin's marketplace renamed or removed it. */
+      type: 'plugin-renamed'
+      source: string
+      plugin: string
+      marketplace: string
+      /** The plugin's new name, or null when the marketplace removed it. */
+      renamedTo: string | null
+    }
+  | {
       type: 'generic-error'
       source: string
       plugin?: string
@@ -379,5 +388,17 @@ export function getPluginErrorMessage(error: PluginError): string {
     }
     case 'plugin-cache-miss':
       return `Plugin "${error.plugin}" not cached at ${error.installPath} — run /plugins to refresh`
+    case 'plugin-renamed':
+      return error.renamedTo === null
+        ? `Removed from the "${error.marketplace}" marketplace`
+        : `Renamed to "${error.renamedTo}" in the "${error.marketplace}" marketplace`
   }
+}
+
+/**
+ * Entries that travel with plugin errors but don't mean anything failed, so
+ * they must not mark a plugin as failed to load.
+ */
+export function isPluginNotice(error: PluginError): boolean {
+  return error.type === 'plugin-renamed'
 }

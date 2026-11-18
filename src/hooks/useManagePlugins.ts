@@ -18,6 +18,8 @@ import { getPluginCommands } from '../utils/plugins/loadPluginCommands.js'
 import { loadPluginHooks } from '../utils/plugins/loadPluginHooks.js'
 import { loadPluginLspServers } from '../utils/plugins/lspPluginIntegration.js'
 import { loadPluginMcpServers } from '../utils/plugins/mcpPluginIntegration.js'
+import { rerunCommandSourcePlugins } from '../utils/plugins/commandSourceRefresh.js'
+import { notifyPluginsUpdated } from '../utils/plugins/pluginAutoupdate.js'
 import { detectAndUninstallDelistedPlugins } from '../utils/plugins/pluginBlocklist.js'
 import { getFlaggedPlugins } from '../utils/plugins/pluginFlagging.js'
 import { loadAllPlugins } from '../utils/plugins/pluginLoader.js'
@@ -182,6 +184,29 @@ export function useManagePlugins({
       logForDebugging(
         `Loaded plugins - Enabled: ${enabled.length}, Disabled: ${disabled.length}, Commands: ${commands.length}, Agents: ${agents.length}, Errors: ${errors.length}`,
       )
+
+      // Command-sourced plugins re-run their accepted command once per
+      // session, in the background. New output is installed for the next
+      // /reload-plugins and never swapped into this session, so the session's
+      // prompt cache is untouched.
+      void rerunCommandSourcePlugins()
+        .then(({ updated, errors: rerunErrors }) => {
+          notifyPluginsUpdated(updated)
+          if (rerunErrors.length === 0) return
+          setAppState(prevState => ({
+            ...prevState,
+            plugins: {
+              ...prevState.plugins,
+              errors: [...prevState.plugins.errors, ...rerunErrors],
+            },
+          }))
+        })
+        .catch(error => {
+          logForDebugging(
+            `Command source re-run failed: ${toError(error).message}`,
+            { level: 'warn' },
+          )
+        })
 
       // Count component types across enabled plugins
       const hook_count = enabled.reduce((sum, p) => {

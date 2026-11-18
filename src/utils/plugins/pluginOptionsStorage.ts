@@ -273,6 +273,45 @@ export function deletePluginOptions(pluginId: string): void {
 }
 
 /**
+ * Move a plugin's sensitive options to a new plugin ID after its marketplace
+ * renamed it: `pluginSecrets[fromId]` and the per-server `${fromId}/<server>`
+ * keys. A key that already exists under the new ID is left as it is, and the
+ * old key then stays too, so nothing stored is lost.
+ */
+export function renamePluginSecrets(fromId: string, toId: string): void {
+  const storage = getSecureStorage()
+  const existing = storage.read()
+  const secrets = existing?.pluginSecrets
+  if (!existing || !secrets) return
+
+  const prefix = `${fromId}/`
+  const next = { ...secrets }
+  let moved = false
+  for (const [key, value] of Object.entries(secrets)) {
+    const target =
+      key === fromId
+        ? toId
+        : key.startsWith(prefix)
+          ? `${toId}/${key.slice(prefix.length)}`
+          : undefined
+    if (target === undefined || Object.hasOwn(next, target)) continue
+    next[target] = value
+    delete next[key]
+    moved = true
+  }
+  if (!moved) return
+
+  const result = storage.update({ ...existing, pluginSecrets: next })
+  if (!result.success) {
+    logForDebugging(
+      `renamePluginSecrets: failed to move pluginSecrets from ${fromId} to ${toId}`,
+      { level: 'warn' },
+    )
+  }
+  clearPluginOptionsCache()
+}
+
+/**
  * Find option keys whose saved values don't satisfy the schema — i.e., what to
  * prompt for. Returns the schema slice for those keys, or empty if everything
  * validates. Empty manifest.userConfig → empty result.

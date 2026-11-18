@@ -15,11 +15,11 @@ import { join } from 'path'
 import { logForDebugging } from '../debug.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { loadKnownMarketplacesConfigSafe } from './marketplaceManager.js'
+import { parseMarketplaceCatalog } from './marketplaceCatalog.js'
 import {
   type KnownMarketplacesFile,
   KnownMarketplacesFileSchema,
   type PluginMarketplace,
-  PluginMarketplaceSchema,
 } from './schemas.js'
 import {
   atomicWriteToZipCache,
@@ -81,7 +81,8 @@ export async function readMarketplaceJson(
   try {
     const content = await readFile(fullPath, 'utf-8')
     const parsed = jsonParse(content)
-    const result = PluginMarketplaceSchema().safeParse(parsed)
+    // Entries are checked one by one, as on every other catalog read.
+    const result = parseMarketplaceCatalog(parsed)
     if (result.success) {
       return result.data
     }

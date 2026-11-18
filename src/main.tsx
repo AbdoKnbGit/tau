@@ -4338,10 +4338,12 @@ async function run(): Promise<CommanderCommand> {
   });
 
   // Plugin install command
-  pluginCmd.command('install <plugin>').alias('i').description('Install a plugin from available marketplaces (use plugin@marketplace for specific marketplace)').option('-s, --scope <scope>', 'Installation scope: user, project, or local', 'user').option('--marketplace <source>', 'Marketplace name or source (owner/repo, URL, or local path); adds it if needed').addOption(coworkOption()).action(async (plugin: string, options: {
+  pluginCmd.command('install <plugin>').alias('i').description('Install a plugin from available marketplaces (use plugin@marketplace for specific marketplace)').option('-s, --scope <scope>', 'Installation scope: user, project, or local', 'user').option('--marketplace <source>', 'Marketplace name or source (owner/repo, URL, or local path); adds it if needed').option('-y, --yes', 'Accept a command the plugin\'s marketplace declares without asking (needed when there is no terminal to ask in)').option('--accept-command <sha256>', 'Accept only the marketplace-declared command with this SHA-256, as shown by a previous run').addOption(coworkOption()).action(async (plugin: string, options: {
     scope?: string;
     cowork?: boolean;
     marketplace?: string;
+    yes?: boolean;
+    acceptCommand?: string;
   }) => {
     const {
       pluginInstallHandler
@@ -4385,9 +4387,11 @@ async function run(): Promise<CommanderCommand> {
   });
 
   // Plugin update command
-  pluginCmd.command('update <plugin>').description('Update a plugin to the latest version (restart required to apply)').option('-s, --scope <scope>', `Installation scope: ${VALID_UPDATE_SCOPES.join(', ')} (default: user)`).addOption(coworkOption()).action(async (plugin: string, options: {
+  pluginCmd.command('update <plugin>').description('Update a plugin to the latest version (restart required to apply)').option('-s, --scope <scope>', `Installation scope: ${VALID_UPDATE_SCOPES.join(', ')} (default: user)`).option('-y, --yes', 'Accept a command the plugin\'s marketplace declares without asking (needed when there is no terminal to ask in)').option('--accept-command <sha256>', 'Accept only the marketplace-declared command with this SHA-256, as shown by a previous run').addOption(coworkOption()).action(async (plugin: string, options: {
     scope?: string;
     cowork?: boolean;
+    yes?: boolean;
+    acceptCommand?: string;
   }) => {
     const {
       pluginUpdateHandler

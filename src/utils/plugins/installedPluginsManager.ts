@@ -475,6 +475,52 @@ export function removePluginInstallation(
   logForDebugging(`Removed installation for ${pluginId} at scope ${scope}`)
 }
 
+/**
+ * Move every installation record of `fromId` to `toId` (a marketplace renamed
+ * the plugin), or drop them when `toId` is null (the marketplace removed it).
+ * A record `toId` already has for the same scope and project wins over the
+ * moved one. Returns the install paths no remaining record refers to.
+ */
+export function renamePluginInstallations(
+  fromId: string,
+  toId: string | null,
+): string[] {
+  const data = loadInstalledPluginsFromDisk()
+  const moving = data.plugins[fromId]
+  if (!moving || fromId === toId) return []
+  delete data.plugins[fromId]
+
+  if (toId) {
+    const target = data.plugins[toId] ?? []
+    for (const entry of moving) {
+      const taken = target.some(
+        existing =>
+          existing.scope === entry.scope &&
+          existing.projectPath === entry.projectPath,
+      )
+      if (!taken) target.push(entry)
+    }
+    data.plugins[toId] = target
+  }
+
+  saveInstalledPluginsV2(data)
+  refreshInstalledPluginSnapshot(toId ? [fromId, toId] : [fromId])
+  logForDebugging(
+    toId
+      ? `Moved installations of ${fromId} to ${toId}`
+      : `Removed installations of ${fromId}`,
+  )
+
+  const stillUsed = new Set(
+    Object.values(data.plugins).flatMap(entries =>
+      entries.map(entry => entry.installPath),
+    ),
+  )
+  return [...new Set(moving.map(entry => entry.installPath))].filter(
+    path => !stillUsed.has(path),
+  )
+}
+
 // =============================================================================
 // In-Memory vs Disk State Management (for non-in-place updates)
 // =============================================================================

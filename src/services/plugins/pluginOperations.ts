@@ -40,6 +40,11 @@ import {
   loadKnownMarketplacesConfig,
   refreshMarketplace,
 } from '../../utils/plugins/marketplaceManager.js'
+import {
+  type DeclaredCommandRun,
+  forgetDeclaredCommandConsents,
+} from '../../utils/plugins/commandConsent.js'
+import { explainMissingCatalogEntry } from '../../utils/plugins/marketplaceCatalog.js'
 import { deletePluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import {
   parsePluginIdentifier,
@@ -384,9 +389,23 @@ export async function installPluginOp(
     const location = marketplaceName
       ? `marketplace "${marketplaceName}"`
       : 'any configured marketplace'
+    // The catalog may know the name: an entry this build can't use, or a
+    // plugin it renamed or removed.
+    let explanation: string | undefined
+    if (marketplaceName && pluginName) {
+      try {
+        explanation = explainMissingCatalogEntry(
+          await getMarketplace(marketplaceName),
+          pluginName,
+          marketplaceName,
+        )
+      } catch {
+        // An unreadable catalog gets the plain message below.
+      }
+    }
     return {
       success: false,
-      message: `Plugin "${pluginName}" not found in ${location}`,
+      message: explanation ?? `Plugin "${pluginName}" not found in ${location}`,
     }
   }
 
@@ -549,6 +568,8 @@ export async function uninstallPluginOp(
   // ungated too.
   if (isLastScope) {
     deletePluginOptions(pluginId)
+    // A reinstall asks again before running any command its marketplace declares.
+    forgetDeclaredCommandConsents(pluginId)
     if (deleteDataDir) {
       await deletePluginDataDir(pluginId)
     }
@@ -861,6 +882,10 @@ export async function disableAllPluginsOp(): Promise<PluginOperationResult> {
 export async function updatePluginOp(
   plugin: string,
   scope: PluginScope,
+  options: {
+    /** 'later' for runs nobody asked for now (a command source's background re-run). */
+    commandRun?: DeclaredCommandRun
+  } = {},
 ): Promise<PluginUpdateResult> {
   const parsedPlugin = parsePluginIdentifier(plugin)
   const pluginName = parsedPlugin.name
@@ -919,7 +944,9 @@ export async function updatePluginOp(
   let cachedPluginInfo:
     | Awaited<ReturnType<typeof getPluginById>>
     | undefined
-  if (marketplaceName) {
+  // A command source's background re-run reads only its own output: it
+  // uses the cached catalog, without a network round trip.
+  if (marketplaceName && options.commandRun !== 'later') {
     const marketplaceSource = (await loadKnownMarketplacesConfig())[
       marketplaceName
     ]?.source
@@ -1004,6 +1031,7 @@ export async function updatePluginOp(
     scope,
     projectPath,
     refreshWarning,
+    commandRun: options.commandRun,
   })
 }
 
@@ -1020,6 +1048,7 @@ async function performPluginUpdate({
   scope,
   projectPath,
   refreshWarning,
+  commandRun,
 }: {
   pluginId: string
   pluginName: string
@@ -1029,6 +1058,7 @@ async function performPluginUpdate({
   scope: PluginScope
   projectPath: string | undefined
   refreshWarning?: string
+  commandRun?: DeclaredCommandRun
 }): Promise<PluginUpdateResult> {
   const fs = getFsImplementation()
   const oldVersion = installation.version
@@ -1055,6 +1085,8 @@ async function performPluginUpdate({
     const cacheResult = await cachePlugin(selected?.source ?? entry.source, {
       manifest: { name: entry.name },
       temporary: true,
+      fetchContext: { pluginId, entry },
+      commandRun,
     })
     sourcePath = cacheResult.path
     shouldCleanupSource = true
@@ -1072,6 +1104,7 @@ async function performPluginUpdate({
       cacheResult.path,
       entry.version,
       cacheResult.gitCommitSha,
+      cacheResult.contentDigest,
     )
   } else {
     // Local plugin: use path from marketplace

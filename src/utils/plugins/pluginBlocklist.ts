@@ -13,6 +13,10 @@ import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
 import { loadInstalledPluginsV2 } from './installedPluginsManager.js'
 import {
+  getCatalogEntryNames,
+  resolvePluginRename,
+} from './marketplaceCatalog.js'
+import {
   getMarketplace,
   loadKnownMarketplacesConfigSafe,
 } from './marketplaceManager.js'
@@ -36,7 +40,9 @@ export function detectDelistedPlugins(
   marketplace: PluginMarketplace,
   marketplaceName: string,
 ): string[] {
-  const marketplacePluginNames = new Set(marketplace.plugins.map(p => p.name))
+  // An entry this build can't use is still listed, and a plugin the catalog
+  // renamed moves to its new name; neither one was removed.
+  const marketplacePluginNames = getCatalogEntryNames(marketplace)
   const suffix = `@${marketplaceName}`
 
   const delisted: string[] = []
@@ -44,7 +50,10 @@ export function detectDelistedPlugins(
     if (!pluginId.endsWith(suffix)) continue
 
     const pluginName = pluginId.slice(0, -suffix.length)
-    if (!marketplacePluginNames.has(pluginName)) {
+    if (
+      !marketplacePluginNames.has(pluginName) &&
+      resolvePluginRename(marketplace, pluginName)?.kind !== 'renamed'
+    ) {
       delisted.push(pluginId)
     }
   }

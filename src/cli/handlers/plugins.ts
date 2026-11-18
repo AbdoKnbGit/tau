@@ -21,7 +21,11 @@ import {
   VALID_INSTALLABLE_SCOPES,
   VALID_UPDATE_SCOPES,
 } from '../../services/plugins/pluginCliCommands.js'
-import { getPluginErrorMessage, type PluginLoadResult } from '../../types/plugin.js'
+import {
+  getPluginErrorMessage,
+  isPluginNotice,
+  type PluginLoadResult,
+} from '../../types/plugin.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
@@ -59,6 +63,10 @@ import {
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { plural } from '../../utils/stringUtils.js'
 import { cliError, cliOk } from '../exit.js'
+import {
+  type CommandConsentOptions,
+  confirmDeclaredCommand,
+} from './pluginCommandConsent.js'
 
 // Re-export for main.tsx to reference in option definitions
 export { VALID_INSTALLABLE_SCOPES, VALID_UPDATE_SCOPES }
@@ -211,19 +219,24 @@ export async function pluginListHandler(options: {
       projectPath?: string
       mcpServers?: Record<string, unknown>
       errors?: string[]
+      notices?: string[]
     }> = []
 
     for (const pluginId of pluginIds.sort()) {
       const installations = installedData.plugins[pluginId]
       if (!installations || installations.length === 0) continue
 
-      // Find loading errors for this plugin
+      // Find loading errors for this plugin; notices aren't failures
       const pluginName = parsePluginIdentifier(pluginId).name
-      const pluginErrors = loadErrors
-        .filter(
-          e =>
-            e.source === pluginId || ('plugin' in e && e.plugin === pluginName),
-        )
+      const matching = loadErrors.filter(
+        e =>
+          e.source === pluginId || ('plugin' in e && e.plugin === pluginName),
+      )
+      const pluginErrors = matching
+        .filter(e => !isPluginNotice(e))
+        .map(getPluginErrorMessage)
+      const pluginNotices = matching
+        .filter(isPluginNotice)
         .map(getPluginErrorMessage)
 
       for (const installation of installations) {
@@ -252,6 +265,7 @@ export async function pluginListHandler(options: {
           projectPath: installation.projectPath,
           mcpServers,
           errors: pluginErrors.length > 0 ? pluginErrors : undefined,
+          notices: pluginNotices.length > 0 ? pluginNotices : undefined,
         })
       }
     }
@@ -368,11 +382,13 @@ export async function pluginListHandler(options: {
     const installations = installedData.plugins[pluginId]
     if (!installations || installations.length === 0) continue
 
-    // Find loading errors for this plugin
+    // Find loading errors for this plugin; notices aren't failures
     const pluginName = parsePluginIdentifier(pluginId).name
-    const pluginErrors = loadErrors.filter(
+    const matching = loadErrors.filter(
       e => e.source === pluginId || ('plugin' in e && e.plugin === pluginName),
     )
+    const pluginErrors = matching.filter(e => !isPluginNotice(e))
+    const pluginNotices = matching.filter(isPluginNotice)
 
     for (const installation of installations) {
       const isEnabled = enabledPlugins.has(pluginId)
@@ -396,6 +412,10 @@ export async function pluginListHandler(options: {
       for (const error of pluginErrors) {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(`    Error: ${getPluginErrorMessage(error)}`)
+      }
+      for (const notice of pluginNotices) {
+        // biome-ignore lint/suspicious/noConsole:: intentional console output
+        console.log(`    Note: ${getPluginErrorMessage(notice)}`)
       }
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('')
@@ -671,7 +691,11 @@ export async function marketplaceUpdateHandler(
 // plugin install (lines 5690–5721)
 export async function pluginInstallHandler(
   plugin: string,
-  options: { scope?: string; cowork?: boolean; marketplace?: string },
+  options: {
+    scope?: string
+    cowork?: boolean
+    marketplace?: string
+  } & CommandConsentOptions,
 ): Promise<void> {
   if (options.cowork) setUseCoworkPlugins(true)
   const scope = options.scope || 'user'
@@ -721,6 +745,7 @@ export async function pluginInstallHandler(
     scope: scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
 
+  await confirmDeclaredCommand(plugin, options)
   await installPlugin(plugin, scope as 'user' | 'project' | 'local')
 }
 
@@ -869,7 +894,7 @@ export async function pluginDisableHandler(
 // plugin update (lines 5918–5948)
 export async function pluginUpdateHandler(
   plugin: string,
-  options: { scope?: string; cowork?: boolean },
+  options: { scope?: string; cowork?: boolean } & CommandConsentOptions,
 ): Promise<void> {
   if (options.cowork) setUseCoworkPlugins(true)
   const { name, marketplace } = parsePluginIdentifier(plugin)
@@ -898,5 +923,6 @@ export async function pluginUpdateHandler(
     cliError('--cowork can only be used with user scope')
   }
 
+  await confirmDeclaredCommand(plugin, options)
   await updatePluginCli(plugin, scope)
 }

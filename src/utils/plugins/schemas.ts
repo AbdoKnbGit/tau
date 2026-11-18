@@ -943,6 +943,12 @@ export const MarketplaceSourceSchema = lazySchema(() =>
         .record(z.string(), z.string())
         .optional()
         .describe('Custom HTTP headers (e.g., for authentication)'),
+      headersHelper: z
+        .string()
+        .optional()
+        .describe(
+          'Command that prints headers as one JSON object, for credentials too short-lived to list in headers. Runs before each fetch of marketplace.json and each archive download on its origin',
+        ),
     }),
     z.object({
       source: z.literal('github'),
@@ -1192,9 +1198,126 @@ export const PluginSourceSchema = lazySchema(() =>
         'Plugin located in a subdirectory of a larger repository (monorepo). ' +
           'Only the specified subdirectory is materialized; the rest of the repo is not downloaded.',
       ),
+    z
+      .object({
+        source: z.literal('archive'),
+        url: z
+          .string()
+          .url()
+          .refine(isHttpsUrl, 'Archive URLs must use https://')
+          .describe('HTTPS URL of a zip archive holding the plugin'),
+        sha256: z
+          .string()
+          .regex(
+            /^[0-9a-fA-F]{64}$/,
+            "Must be the archive's SHA-256 digest as 64 hex characters",
+          )
+          .optional()
+          .describe(
+            'SHA-256 of the zip. When set, a download with another digest is refused',
+          ),
+      })
+      .describe(
+        'Zip archive downloaded over HTTPS. The plugin root may be at the top of the zip or one directory down.',
+      ),
+    z
+      .object({
+        source: z.literal('command'),
+        command: z
+          .string()
+          .min(1)
+          .max(MAX_DECLARED_COMMAND_LENGTH, 'Must be at most 500 characters')
+          .refine(
+            isReviewableCommand,
+            'Must be printable ASCII with no run of 4 or more spaces',
+          )
+          .describe(
+            "Shell command that prints the plugin directory's absolute path as one line and exits 0. Users review the whole string before it runs",
+          ),
+        timeout: z
+          .number()
+          .int()
+          .min(1)
+          .max(600)
+          .optional()
+          .describe('Seconds the command may run, from 1 to 600. Defaults to 60'),
+        mode: z
+          .enum(['copy', 'link'])
+          .optional()
+          .describe(
+            'copy (default): copy the printed directory into the plugin cache. link: load it in place through links (not on Windows)',
+          ),
+      })
+      .describe(
+        "Directory printed by a command that runs on the user's machine after they accept it",
+      ),
     // TODO (future work) gist
     // TODO (future work) single file?
   ]),
+)
+
+/** Longest command a catalog may declare: what a consent prompt can show. */
+export const MAX_DECLARED_COMMAND_LENGTH = 500
+
+/**
+ * A command a user reviews before it runs: printable ASCII, so nothing is
+ * hidden by control or look-alike characters, and no run of 4 or more spaces
+ * that could push part of it out of view.
+ */
+export function isReviewableCommand(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i)
+    if (code < 32 || code > 126) return false
+  }
+  return !value.includes('    ')
+}
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/** The object schema for one `source` type, to report its own issues. */
+export function getPluginSourceVariant(type: string): z.ZodType | undefined {
+  for (const option of PluginSourceSchema().options) {
+    if (!(option instanceof z.ZodObject)) continue
+    const literal = option.shape.source
+    if (literal instanceof z.ZodLiteral && literal.values.has(type)) return option
+  }
+  return undefined
+}
+
+let knownPluginSourceTypes: ReadonlySet<string> | undefined
+
+/**
+ * The object `source` types this build can install, read from
+ * PluginSourceSchema itself so the set can't drift from the schema.
+ */
+export function getKnownPluginSourceTypes(): ReadonlySet<string> {
+  if (!knownPluginSourceTypes) {
+    const types = new Set<string>()
+    for (const option of PluginSourceSchema().options) {
+      if (!(option instanceof z.ZodObject)) continue
+      const literal = option.shape.source
+      if (literal instanceof z.ZodLiteral) {
+        for (const value of literal.values) types.add(String(value))
+      }
+    }
+    knownPluginSourceTypes = types
+  }
+  return knownPluginSourceTypes
+}
+
+/**
+ * Former plugin names mapped to their current name, or to null for a plugin
+ * the marketplace removed. A target may itself be a key, forming a chain that
+ * is followed from the oldest name.
+ */
+export const MarketplaceRenamesSchema = lazySchema(() =>
+  z.record(z.string(), z.string().nullable()),
 )
 
 /**
@@ -1234,11 +1357,21 @@ const SettingsMarketplacePluginSchema = lazySchema(() =>
       description: z.string().optional(),
       version: z.string().optional(),
       strict: z.boolean().optional(),
+      headers: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe("HTTP headers sent when downloading this item's archive source"),
+      headersHelper: z
+        .string()
+        .optional()
+        .describe(
+          "Command that prints this item's archive-download headers as one JSON object",
+        ),
     })
     .refine(p => typeof p.source !== 'string', {
       message:
         'Plugins in a settings-sourced marketplace must use remote sources ' +
-        '(github, git-subdir, npm, url, pip). Relative-path sources like "./foo" ' +
+        '(github, git-subdir, npm, url, archive, pip). Relative-path sources like "./foo" ' +
         'have no marketplace repository to resolve against.',
     }),
 )
@@ -1311,6 +1444,18 @@ export const PluginMarketplaceEntrySchema = lazySchema(() =>
         .array(z.string())
         .optional()
         .describe('Tags for searchability and discovery'),
+      headers: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe(
+          "HTTP headers sent when downloading this entry's archive source. A header set here replaces one of the same name from the marketplace url source's headers",
+        ),
+      headersHelper: z
+        .string()
+        .optional()
+        .describe(
+          "Command that prints this entry's archive-download headers as one JSON object. The entry must also set \"strict\": false",
+        ),
       strict: z
         .boolean()
         .optional()
@@ -1336,6 +1481,29 @@ export const PluginMarketplaceSchema = lazySchema(() =>
     plugins: z
       .array(PluginMarketplaceEntrySchema())
       .describe('Collection of available plugins in this marketplace'),
+    // Informational keys: a malformed value is dropped rather than failing
+    // the whole catalog. `tau plugin validate` still reports it.
+    $schema: z
+      .string()
+      .optional()
+      .catch(undefined)
+      .describe('JSON Schema URL for editor autocomplete. Ignored at load time'),
+    description: z
+      .string()
+      .optional()
+      .catch(undefined)
+      .describe('Marketplace description shown to users'),
+    version: z
+      .string()
+      .optional()
+      .catch(undefined)
+      .describe('Marketplace manifest version'),
+    renames: MarketplaceRenamesSchema()
+      .optional()
+      .catch(undefined)
+      .describe(
+        'Former plugin names mapped to their current name, or to null for a removed plugin',
+      ),
     forceRemoveDeletedPlugins: z
       .boolean()
       .optional()

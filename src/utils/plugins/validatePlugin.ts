@@ -7,7 +7,10 @@ import { FRONTMATTER_REGEX } from '../frontmatterParser.js'
 import { jsonParse } from '../slowOperations.js'
 import { parseYaml } from '../yaml.js'
 import { preparePluginHookFile, preparePluginManifestHooks } from './hookCompatibility.js'
+import { isCatalogSettableHeader } from './archiveSource.js'
+import { validateRenames } from './marketplaceCatalog.js'
 import {
+  MarketplaceRenamesSchema,
   PluginHooksSchema,
   PluginManifestSchema,
   PluginMarketplaceEntrySchema,
@@ -396,25 +399,93 @@ export async function validateMarketplaceManifest(
   }
 
   // Validate against schema.
-  // The base schemas are lenient (strip unknown keys) for runtime resilience,
-  // but this is a developer tool — authors want typo feedback. We rebuild the
-  // schema with .strict() here. Note .strict() on the outer object does NOT
-  // propagate into z.array() elements, so we also override the plugins array
-  // with strict entries to catch typos inside individual plugin entries too.
+  // The load path ignores unknown keys and drops a malformed informational
+  // field, but this is a developer tool — authors want typo feedback. Here a
+  // malformed field is an error and an unknown key is a warning (Tau ignores
+  // it at load time, as Claude Code does). Note .strict() on the outer object
+  // does NOT propagate into z.array() elements, so the plugins array is
+  // overridden with strict entries to catch typos inside entries too.
+  const authoredFields = {
+    $schema: z.string().optional(),
+    description: z.string().optional(),
+    version: z.string().optional(),
+    renames: MarketplaceRenamesSchema().optional(),
+  }
   const strictMarketplaceSchema = PluginMarketplaceSchema()
     .extend({
+      ...authoredFields,
       plugins: z.array(PluginMarketplaceEntrySchema().strict()),
     })
     .strict()
   const result = strictMarketplaceSchema.safeParse(parsed)
 
   if (!result.success) {
-    errors.push(...formatZodErrors(result.error))
+    for (const issue of result.error.issues) {
+      if (issue.code === 'unrecognized_keys') {
+        for (const key of issue.keys) {
+          warnings.push({
+            path: [...issue.path, key].map(String).join('.'),
+            message: `Unknown field '${key}'. Tau ignores it at load time.`,
+          })
+        }
+      } else {
+        errors.push({
+          path: issue.path.map(String).join('.') || 'root',
+          message: issue.message,
+          code: issue.code,
+        })
+      }
+    }
   }
 
-  // Check for common issues and add warnings
-  if (result.success) {
-    const marketplace = result.data
+  // Check for common issues and add warnings. These run on the document with
+  // unknown keys stripped, so an unknown key alone doesn't hide them.
+  const checked = PluginMarketplaceSchema().extend(authoredFields).safeParse(parsed)
+  if (checked.success) {
+    const marketplace = checked.data
+
+    if (marketplace.renames) {
+      errors.push(
+        ...validateRenames(
+          marketplace.renames,
+          new Set(marketplace.plugins.map(p => p.name)),
+        ),
+      )
+    }
+
+    // Archive download headers: where they apply and what they may carry.
+    for (const [i, entry] of marketplace.plugins.entries()) {
+      const archive =
+        typeof entry.source === 'object' && entry.source.source === 'archive'
+          ? entry.source
+          : undefined
+      if ((entry.headers || entry.headersHelper) && !archive) {
+        warnings.push({
+          path: `plugins[${i}].headers`,
+          message: `Plugin "${entry.name}" sets headers/headersHelper, which only apply to "archive" sources; they have no effect on this entry.`,
+        })
+      }
+      if (entry.headersHelper && entry.strict !== false) {
+        errors.push({
+          path: `plugins[${i}].headersHelper`,
+          message: `Plugin "${entry.name}" sets headersHelper but is not "strict": false`,
+        })
+      }
+      if (archive && entry.headersHelper && !archive.sha256) {
+        warnings.push({
+          path: `plugins[${i}].source.sha256`,
+          message: `Plugin "${entry.name}" fetches its archive with a headersHelper but sets no sha256 pin`,
+        })
+      }
+      for (const name of Object.keys(entry.headers ?? {})) {
+        if (!isCatalogSettableHeader(name)) {
+          warnings.push({
+            path: `plugins[${i}].headers.${name}`,
+            message: `Header "${name}" is a request-routing/identity header that catalog entries may not set; Tau drops it at download time.`,
+          })
+        }
+      }
+    }
 
     // Warn if no plugins
     if (!marketplace.plugins || marketplace.plugins.length === 0) {
@@ -488,10 +559,10 @@ export async function validateMarketplaceManifest(
       }
     }
 
-    // Warn if no description in metadata
-    if (!marketplace.metadata?.description) {
+    // Warn if no description (top level, or its metadata alternative)
+    if (!marketplace.description && !marketplace.metadata?.description) {
       warnings.push({
-        path: 'metadata.description',
+        path: 'description',
         message:
           'No marketplace description provided. Adding a description helps users understand what this marketplace offers',
       })
