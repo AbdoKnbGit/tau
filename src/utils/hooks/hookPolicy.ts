@@ -175,6 +175,18 @@ export function isDecidingHookEvent(event: string): boolean {
   return DECIDING_EVENTS.has(event)
 }
 
+// Events that ask whether the agent may stop. A block sends the agent back to
+// work instead of ending the turn, and a prompt hook can let the stop go ahead
+// by judging its condition impossible to meet.
+const STOP_CONDITION_EVENTS: ReadonlySet<string> = new Set([
+  'Stop',
+  'SubagentStop',
+])
+
+export function isStopConditionEvent(event: string): boolean {
+  return STOP_CONDITION_EVENTS.has(event)
+}
+
 // OSC 0/1/2 titles, 9 (including 9;4 progress), 99 and 777 notifications,
 // each ended by BEL or ST, and bare BEL.
 const ALLOWED_OSC = /^\x1b\](?:0|1|2|9|99|777);[^\x00-\x1f\x7f-\x9f]*(?:\x07|\x1b\\)/

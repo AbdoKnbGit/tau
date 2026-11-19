@@ -104,6 +104,12 @@ function buildHookSchemas() {
       .describe(
         'Model to use for this prompt hook (e.g., "claude-sonnet-4-6"). If not specified, uses the default small fast model.',
       ),
+    continueOnBlock: z
+      .boolean()
+      .optional()
+      .describe(
+        'If true, ok:false returns the reason to Claude and the turn goes on, on events that allow it, instead of ending the turn. Stop and SubagentStop always go on.',
+      ),
     statusMessage: z
       .string()
       .optional()

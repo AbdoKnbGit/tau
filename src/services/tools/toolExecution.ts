@@ -1108,6 +1108,21 @@ function prependNoteToToolResult(
   }
 }
 
+/** Ends the turn after this call because a PreToolUse hook asked to stop. */
+function preToolUseStopMessage(
+  toolName: string,
+  toolUseID: string,
+  message: string,
+) {
+  return createAttachmentMessage({
+    type: 'hook_stopped_continuation',
+    message,
+    hookName: `PreToolUse:${toolName}`,
+    toolUseID,
+    hookEvent: 'PreToolUse',
+  })
+}
+
 async function checkPermissionsAndCallTool(
   tool: Tool,
   toolUseID: string,
@@ -1869,6 +1884,23 @@ async function checkPermissionsAndCallTool(
       }),
     })
 
+    // A hook that denied the call and asked to stop ends the turn, as it does
+    // after an allowed call.
+    if (
+      shouldPreventContinuation &&
+      permissionDecision.behavior === 'deny' &&
+      permissionDecision.decisionReason?.type === 'hook' &&
+      !toolUseContext.abortController.signal.aborted
+    ) {
+      resultingMessages.push({
+        message: preToolUseStopMessage(
+          tool.name,
+          toolUseID,
+          stopReason ?? errorMessage,
+        ),
+      })
+    }
+
     // Run PermissionDenied hooks for auto mode classifier denials.
     // If a hook returns {retry: true}, tell the model it may retry.
     if (
@@ -2468,13 +2500,11 @@ async function checkPermissionsAndCallTool(
     // If hook indicated to prevent continuation after successful execution, yield a stop reason message
     if (shouldPreventContinuation) {
       resultingMessages.push({
-        message: createAttachmentMessage({
-          type: 'hook_stopped_continuation',
-          message: stopReason || 'Execution stopped by hook',
-          hookName: `PreToolUse:${tool.name}`,
-          toolUseID: toolUseID,
-          hookEvent: 'PreToolUse',
-        }),
+        message: preToolUseStopMessage(
+          tool.name,
+          toolUseID,
+          stopReason || 'Execution stopped by hook',
+        ),
       })
     }
 

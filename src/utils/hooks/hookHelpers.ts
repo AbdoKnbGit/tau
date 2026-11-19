@@ -24,6 +24,19 @@ export const hookResponseSchema = lazySchema(() =>
 )
 
 /**
+ * A prompt hook's answer. On Stop and SubagentStop it may also report that the
+ * condition can never be met; agent hooks keep hookResponseSchema.
+ */
+export const promptHookResponseSchema = lazySchema(() =>
+  hookResponseSchema().extend({
+    impossible: z
+      .boolean()
+      .describe('Whether the condition can never be met in this session (with ok false)')
+      .optional(),
+  }),
+)
+
+/**
  * Add hook input JSON to prompt, either replacing $ARGUMENTS placeholder or appending.
  * Also supports indexed arguments like $ARGUMENTS[0], $ARGUMENTS[1], or shorthand $0, $1, etc.
  */
