@@ -64,10 +64,10 @@ export async function execPromptHook(
     const userMessage = createUserMessage({ content: processedPrompt })
 
     // Prepend conversation history if provided
-    const messagesToQuery =
-      messages && messages.length > 0
-        ? [...messages, userMessage]
-        : [userMessage]
+    const carriesConversation = messages !== undefined && messages.length > 0
+    const messagesToQuery = carriesConversation
+      ? [...messages, userMessage]
+      : [userMessage]
 
     logForDebugging(
       `Hooks: Querying model with ${messagesToQuery.length} messages`,
@@ -87,7 +87,12 @@ export async function execPromptHook(
           stopCondition ? STOP_HOOK_SYSTEM_PROMPT : HOOK_SYSTEM_PROMPT,
         ]),
         thinkingConfig: { type: 'disabled' as const },
-        tools: toolUseContext.options.tools,
+        // The evaluator answers in JSON and never runs a tool, so a check made
+        // of the hook prompt alone sends no tool list, as queryHaiku does. A
+        // check that carries the conversation keeps the session's list: its
+        // history holds tool calls, which not every provider is known to
+        // accept with no tools declared.
+        tools: carriesConversation ? toolUseContext.options.tools : [],
         signal: combinedSignal,
         options: {
           async getToolPermissionContext() {
@@ -98,7 +103,11 @@ export async function execPromptHook(
           toolChoice: undefined,
           isNonInteractiveSession: true,
           hasAppendSystemPrompt: false,
-          agents: [],
+          // Tool descriptions are cached for the process by the first request
+          // that builds them, so describe the agents as the conversation does.
+          agents: toolUseContext.options.agentDefinitions.activeAgents,
+          allowedAgentTypes:
+            toolUseContext.options.agentDefinitions.allowedAgentTypes,
           querySource: 'hook_prompt',
           mcpTools: [],
           agentId: toolUseContext.agentId,

@@ -6,7 +6,7 @@ import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { after, before, test } from 'node:test'
-import { fixtureContext, loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
+import { fixtureContext, fixtureTool, loadMcpRuntime } from './helpers/mcp-built-runtime.mjs'
 import { anthropicReply } from './mcp-instructions/anthropic-reply.mjs'
 
 // Prompt hooks against a fake Anthropic API, through the real CLI and, for what
@@ -249,4 +249,90 @@ test('UserPromptSubmit: the prompt stays blocked whatever continueOnBlock says',
   }, 'Blocked fixture prompt.')
   assert.equal(evaluator.length, 1, log)
   assert.equal(main.length, 0, 'the model never gets the prompt')
+})
+
+// The evaluator answers in JSON and never runs a tool. A check made of the hook
+// prompt alone sends no tool list; one that carries the conversation keeps the
+// session's, because its history holds tool calls.
+test('Checks of the hook prompt alone send no tools; a Stop check keeps the session tools', { timeout: 120_000 }, async () => {
+  const { main, evaluator, log } = await run({
+    UserPromptSubmit: promptHook('Allow fixture prompts.'),
+    PreToolUse: onWrite('Allow every fixture write.'),
+    PostToolUse: onWrite('Accept every fixture write.'),
+    Stop: promptHook('The fixture file was written.'),
+  }, {
+    main: [writeCall, 'Wrote the fixture.'],
+    evaluator: [{ ok: true, reason: 'Fine.' }],
+  }, 'Write the fixture file.')
+  assert.equal(main.length, 2, log)
+  const check = prompt => {
+    const found = evaluator.filter(body => textOf(body.messages.at(-1)).startsWith(prompt))
+    assert.equal(found.length, 1, `one check for "${prompt}"\n${log}`)
+    return found[0]
+  }
+  for (const prompt of ['Allow fixture prompts.', 'Allow every fixture write.', 'Accept every fixture write.']) {
+    assert.deepEqual(check(prompt).tools ?? [], [], `the "${prompt}" check sends no tools`)
+  }
+  const stop = check('The fixture file was written.')
+  assertUnchanged(stop.tools, main[1].tools, 'the Stop check tool list')
+  assert.ok(stop.messages.some(message => Array.isArray(message.content) && message.content.some(block => block.type === 'tool_use')),
+    'the Stop check history keeps the tool call')
+})
+
+// Tool descriptions are cached for the process by whichever request builds them
+// first. A check that ran before the first request used to build them, with no
+// agents, and the conversation's Agent tool then listed no agent types.
+test('A check before the first request leaves the tool descriptions as they are without hooks', { timeout: 180_000 }, async () => {
+  const hooked = await run({ UserPromptSubmit: promptHook('Allow fixture prompts.') }, {
+    main: ['Done.'], evaluator: [{ ok: true, reason: 'Fine.' }],
+  }, 'Answer the fixture.')
+  assert.equal(hooked.evaluator.length, 1, hooked.log)
+  const plain = await run({}, { main: ['Done.'] }, 'Answer the fixture.')
+  assert.equal(plain.main.length, 1, plain.log)
+  assertUnchanged(hooked.main[0].tools, plain.main[0].tools, 'the tool list')
+})
+
+test('A Stop check that rebuilds a tool description uses the session agents; a prompt-only check builds none', { timeout: 120_000 }, async () => {
+  const cwd = process.cwd()
+  Object.assign(process.env, {
+    CLAUDE_CONFIG_DIR: join(root, 'engine-config'), ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
+    ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL, NO_PROXY: env.NO_PROXY, TAU_MCP_TEST_BUNDLE: bundle,
+    DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: '0',
+  })
+  process.chdir(workspace)
+  process.argv.push('--bare')
+  try {
+    const r = await loadMcpRuntime({ paths: ['src/utils/hooks/execPromptHook.ts', 'src/utils/toolSchemaCache.ts'],
+      exports: ['execPromptHook', 'getToolSchemaCache', 'createUserMessage'] })
+    // Like the Agent tool, its description names the agents it is given.
+    const probe = fixtureTool({
+      name: 'AgentListProbe',
+      prompt: async options => `Agents: ${(options?.agents ?? []).map(agent => agent.agentType).join(', ')}`,
+    })
+    const context = fixtureContext([probe])
+    Object.assign(context, {
+      setResponseLength: () => {},
+      options: { ...context.options, agentDefinitions: { activeAgents: [{ agentType: 'fixture-reviewer' }] } },
+    })
+    const probeSchema = () => [...r.getToolSchemaCache().values()].find(schema => schema.name === 'AgentListProbe')
+    const judge = (event, messages) => r.execPromptHook({ type: 'prompt', prompt: 'The fixture is done.' }, event, event,
+      JSON.stringify({ hook_event_name: event }), new AbortController().signal, context, messages)
+    script = { evaluator: [{ ok: true, reason: 'Done.' }] }
+
+    requests = []
+    r.getToolSchemaCache().clear()
+    assert.equal((await judge('PreToolUse')).outcome, 'success')
+    assert.deepEqual(requests.map(request => request.body.tools ?? []), [[]], 'a prompt-only check sends no tools')
+    assert.equal(probeSchema(), undefined, 'and builds no tool description')
+
+    // A settings change or a token refresh can clear the cache mid-turn, so a
+    // Stop check may be the first request to build a description.
+    requests = []
+    assert.equal((await judge('Stop', [r.createUserMessage({ content: 'Write the fixture file.' })])).outcome, 'success')
+    assert.equal(requests.length, 1)
+    assert.equal(probeSchema()?.description, 'Agents: fixture-reviewer', 'the description names the session agents')
+  } finally {
+    process.argv.pop()
+    process.chdir(cwd)
+  }
 })
