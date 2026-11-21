@@ -40,6 +40,24 @@ import type {
 import { OPENAI_COMPAT_TOOL_REGISTRY, selectEditToolSet } from './tools.js'
 import { getCompatShellDescription } from './shell_descriptions.js'
 import { filterToSingleShell } from './single_shell.js'
+import {
+  capLocalOutputTokens,
+  chooseOllamaNumCtx,
+  fitLocalOutputTokens,
+  growOllamaNumCtx,
+  isLocalModelRequest,
+  localAnswerRoom,
+  localPromptBudget,
+  OLLAMA_DEFAULT_NUM_CTX,
+  ollamaContextKey,
+  ollamaContextSetting,
+  ollamaKeepAlive,
+  ollamaModelContextLength,
+  ollamaOverflowAdvice,
+  ollamaTruncateFields,
+  parseOllamaContextOverflow,
+  resolveLocalSampling,
+} from './local_model_settings.js'
 import { recordProviderRateLimits } from '../../services/api/providerRateLimits.js'
 import { selectOpenAICompatToolsForRequest } from './lazy_tools.js'
 import {
@@ -259,6 +277,8 @@ interface OpenAIChatRequest {
   max_tokens?: number
   temperature?: number
   top_p?: number
+  // Local model servers only (local_model_settings.ts): llama.cpp-style top_k.
+  top_k?: number
   stop?: string[]
   // Reasoning knobs — provider-specific. Passed through when supported.
   reasoning_effort?: 'low' | 'medium' | 'high'
@@ -505,6 +525,9 @@ export class OpenAICompatLane implements Lane {
     const isBareLocalServer = isLocal && provider === 'generic'
     const isLocalModelServer =
       isLocal && (provider === 'ollama' || provider === 'lmstudio' || provider === 'generic')
+    // Local model servers get their own request settings
+    // (local_model_settings.ts). Nothing else reads them.
+    const isLocalRequest = isLocalModelRequest(provider, model, isLocal)
     const cacheSessionId = providerUsesStableRequestSession(provider)
       ? sessionId
       : undefined
@@ -685,8 +708,13 @@ export class OpenAICompatLane implements Lane {
         // proxy — and ollama/lmstudio — keep full tool calling.
         tools: openaiTools.length > 0 && !isBareLocalServer ? openaiTools : undefined,
         tool_choice: openaiTools.length > 0 && !isBareLocalServer ? 'auto' : undefined,
-        max_tokens: clampMaxTokens(provider, max_tokens),
-        temperature: temperature ?? (isLocalModelServer ? 0.7 : undefined),
+        max_tokens: isLocalRequest
+          ? capLocalOutputTokens(clampMaxTokens(provider, max_tokens))
+          : clampMaxTokens(provider, max_tokens),
+        // A local model keeps its own sampling unless the user set one.
+        ...(isLocalRequest
+          ? resolveLocalSampling(temperature)
+          : { temperature: temperature ?? (isLocalModelServer ? 0.7 : undefined) }),
         stop: stop_sequences?.length ? stop_sequences : undefined,
       },
       provider,
@@ -717,7 +745,7 @@ export class OpenAICompatLane implements Lane {
     // turn — that was the latency cancer). Other providers stay on /v1
     // unchanged.
     if (provider === 'ollama') {
-      const ollamaUsage = yield* streamOllamaNative(cfg, body, model, signal)
+      const ollamaUsage = yield* streamOllamaNative(cfg, body, model, signal, isLocalRequest)
       return ollamaUsage
     }
 
@@ -797,7 +825,8 @@ export class OpenAICompatLane implements Lane {
     }
 
     if (provider === 'lmstudio') {
-      const contextMessage = await getLmStudioContextPreflightMessage(cfg, model, body).catch(() => null)
+      const lmStudioInfo = await getLmStudioModelInfo(cfg, model).catch(() => null)
+      const contextMessage = lmStudioContextPreflightMessage(lmStudioInfo, model, body)
       if (contextMessage) {
         const mst = emitMessageStart()
         if (mst) yield mst
@@ -806,6 +835,12 @@ export class OpenAICompatLane implements Lane {
         yield { type: 'message_stop' }
         return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
       }
+      // Fit the answer limit to the room the loaded context leaves.
+      body.max_tokens = fitLocalOutputTokens(
+        body.max_tokens,
+        lmStudioInfo?.lmStudioLoadedContextWindow,
+        localPromptBudget(estimateOpenAICompatRequestTokens(body)),
+      )
     }
 
     let response!: Response
@@ -2723,7 +2758,14 @@ async function getLmStudioContextPreflightMessage(
   model: string,
   body: OpenAIChatRequest,
 ): Promise<string | null> {
-  const info = await getLmStudioModelInfo(cfg, model)
+  return lmStudioContextPreflightMessage(await getLmStudioModelInfo(cfg, model), model, body)
+}
+
+function lmStudioContextPreflightMessage(
+  info: LmStudioModelInfo | null,
+  model: string,
+  body: OpenAIChatRequest,
+): string | null {
   const loadedContextWindow = info?.lmStudioLoadedContextWindow
   if (!loadedContextWindow || loadedContextWindow <= 0) return null
 
@@ -3381,26 +3423,52 @@ async function* streamOllamaNative(
   body: OpenAIChatRequest,
   model: string,
   signal: AbortSignal | undefined,
+  local: boolean,
 ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
   const root = normalizeBaseUrl(cfg.baseUrl).replace(/\/v1$/i, '')
   const url = `${root}/api/chat`
+  const messages = body.messages.map(toOllamaMessage)
 
-  const numCtx = parseInt(process.env.OLLAMA_NUM_CTX ?? '16384', 10)
-  const keepAlive = process.env.OLLAMA_KEEP_ALIVE ?? '30m'
+  // A model on this machine gets a context that fits the request and an
+  // answer limit that fits the context (local_model_settings.ts). A `:cloud`
+  // model keeps the request Tau has always sent it.
+  const legacyNumCtx = parseInt(process.env.OLLAMA_NUM_CTX ?? '16384', 10)
+  const contextSetting = local ? ollamaContextSetting() : undefined
+  const contextKey = ollamaContextKey(root, body.model)
+  const answerRoom = localAnswerRoom(body.max_tokens)
+  const promptTokens = local ? localPromptBudget(estimateOpenAICompatRequestTokens(body)) : 0
+  // The model's own limit only matters once `auto` would go past the 16K Tau
+  // has always sent, so a small request makes no extra /api/show call.
+  const readModelLimit = () => ollamaModelContextLength(root, body.model, cfg.apiKey)
+  let modelMax = contextSetting?.kind === 'auto' && promptTokens + answerRoom > OLLAMA_DEFAULT_NUM_CTX
+    ? await readModelLimit()
+    : undefined
+  const numCtx = contextSetting
+    ? chooseOllamaNumCtx({ key: contextKey, promptTokens, answerRoom, modelMax, setting: contextSetting })
+    : Number.isFinite(legacyNumCtx) ? legacyNumCtx : 16384
+  const numPredict = local
+    ? fitLocalOutputTokens(body.max_tokens, numCtx, promptTokens)
+    : body.max_tokens
 
-  const ollamaBody: Record<string, unknown> = {
-    model: body.model,
-    messages: body.messages.map(toOllamaMessage),
-    stream: true,
-    keep_alive: keepAlive,
-    options: {
-      num_ctx: numCtx,
-      ...(body.max_tokens != null && { num_predict: body.max_tokens }),
-      ...(body.temperature !== undefined && { temperature: body.temperature }),
-      ...(body.stop?.length && { stop: body.stop }),
-    },
+  const buildOllamaBody = (contextTokens: number, answerTokens: number | undefined): Record<string, unknown> => {
+    const ollamaBody: Record<string, unknown> = {
+      model: body.model,
+      messages,
+      stream: true,
+      keep_alive: ollamaKeepAlive(),
+      ...(local && ollamaTruncateFields()),
+      options: {
+        num_ctx: contextTokens,
+        ...(answerTokens != null && { num_predict: answerTokens }),
+        ...(body.temperature !== undefined && { temperature: body.temperature }),
+        ...(local && body.top_p !== undefined && { top_p: body.top_p }),
+        ...(local && body.top_k !== undefined && { top_k: body.top_k }),
+        ...(body.stop?.length && { stop: body.stop }),
+      },
+    }
+    if (body.tools && body.tools.length > 0) ollamaBody.tools = body.tools
+    return ollamaBody
   }
-  if (body.tools && body.tools.length > 0) ollamaBody.tools = body.tools
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
@@ -3440,30 +3508,59 @@ async function* streamOllamaNative(
     return event
   }
 
-  let response: Response
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(ollamaBody),
-      signal,
+  const send = async (payload: Record<string, unknown>): Promise<Response> => {
+    try {
+      return await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        signal,
+      })
+    } catch (err: any) {
+      if (isAbortError(err, signal)) throw err
+      throw createProviderConnectionError('ollama', err)
+    }
+  }
+
+  let response = await send(buildOllamaBody(numCtx, numPredict))
+  let errText = response.ok ? '' : await response.text().catch(() => '')
+
+  // Too long for the context: Ollama counted the request exactly, so `auto`
+  // grows to fit it and tries once more, before anything has streamed.
+  const overflow = !response.ok && contextSetting ? parseOllamaContextOverflow(errText) : undefined
+  if (overflow && contextSetting) {
+    if (contextSetting.kind === 'auto' && modelMax === undefined) modelMax = await readModelLimit()
+    const grown = growOllamaNumCtx({
+      key: contextKey,
+      requestTokens: overflow.requestTokens,
+      answerRoom,
+      modelMax,
+      setting: contextSetting,
+      current: numCtx,
     })
-  } catch (err: any) {
-    if (isAbortError(err, signal)) throw err
-    throw createProviderConnectionError('ollama', err)
+    if (grown !== undefined) {
+      response = await send(buildOllamaBody(grown, fitLocalOutputTokens(body.max_tokens, grown, overflow.requestTokens)))
+      errText = response.ok ? '' : await response.text().catch(() => '')
+    }
   }
 
   if (!response.ok) {
-    const errText = await response.text().catch(() => '')
     throwRetryableProviderHttpError('ollama', response, errText)
     const mst = emitMessageStart()
     if (mst) yield mst
     const lowered = errText.toLowerCase()
-    const isPromptTooLong = ['context length', 'too long', 'context window'].some(m => lowered.includes(m))
+    const tooLongMarkers = local
+      ? ['context length', 'context size', 'too long', 'context window']
+      : ['context length', 'too long', 'context window']
+    const isPromptTooLong = tooLongMarkers.some(m => lowered.includes(m))
     const headline = isPromptTooLong
       ? `Prompt is too long (ollama ${response.status})`
       : `ollama API error ${response.status}`
-    yield* emitErrorText(`${headline}: ${errText.slice(0, 500)}`)
+    const stillTooLong = contextSetting ? parseOllamaContextOverflow(errText) : undefined
+    const detail = stillTooLong && contextSetting
+      ? ollamaOverflowAdvice(stillTooLong, contextSetting, modelMax)
+      : errText.slice(0, 500)
+    yield* emitErrorText(`${headline}: ${detail}`)
     yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
     yield { type: 'message_stop' }
     return blankUsage(0, 0, 0, 0)

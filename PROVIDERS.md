@@ -46,6 +46,41 @@ lms server start
 
 LM Studio defaults to `http://localhost:1234/v1` in Tau. Make sure LM Studio is running and a model is loaded before you select it in `/login`.
 
+## Local models (Ollama, LM Studio, other local servers)
+
+Tau tunes every request it sends to a model on your machine. Hosted providers
+are untouched, and so are Ollama's `:cloud` models. Every setting is an
+environment variable: set it in your shell, or in the `env` block of
+`~/.claude/settings.json` to keep it.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `OLLAMA_NUM_CTX` | `auto` | Ollama context per request. `auto` fits Tau's request plus 8K for the answer, in 8K steps from 16K, and never shrinks during a session (Ollama reloads the model whenever it changes). A number fixes it. |
+| `OLLAMA_NUM_CTX_MAX` | `32768` | The largest context `auto` picks. The model's own limit, read from Ollama, also caps it. |
+| `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded after a request. |
+| `OLLAMA_TRUNCATE` | off | Tau asks Ollama to refuse a request that doesn't fit instead of silently dropping your oldest messages. On `auto`, Tau then grows the context once and resends; past the limit you get the exact sizes and what to change. `1` brings back Ollama's silent truncation. |
+| `TAU_LOCAL_MAX_OUTPUT_TOKENS` | none | Most tokens an answer may use. Tau also fits the answer to the room left in the context, so a long answer never pushes the model's instructions out. |
+| `TAU_LOCAL_TEMPERATURE`, `TAU_LOCAL_TOP_P`, `TAU_LOCAL_TOP_K` | the model's own | Sampling. Unset, the model keeps its own settings: its Ollama Modelfile or its LM Studio preset. |
+
+Server addresses: `OLLAMA_HOST` (default `http://localhost:11434`) and
+`LMSTUDIO_BASE_URL` (default `http://localhost:1234/v1`), or set them in
+`/provider`. Any other OpenAI-compatible server on your machine (llama.cpp,
+vLLM, Jan) works through the LM Studio provider: point `LMSTUDIO_BASE_URL` at
+it and the same settings apply.
+
+A larger context needs more GPU memory. If a model slows down at 32K, give
+Ollama `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` and restart
+it: that halves the context's memory, so more of the model stays on the GPU.
+Or set `OLLAMA_NUM_CTX_MAX=16384`, or switch to `/mode cheap`, which roughly
+halves Tau's prompt.
+
+LM Studio sets the context when it loads a model. Tau reads that loaded
+context, fits each answer to it, and tells you how to reload the model with a
+larger one when a request doesn't fit.
+
+Tau pulls its list of Ollama cloud models only once, at the first interactive
+launch with Ollama selected.
+
 ## DeepSeek thinking effort
 
 DeepSeek V4 splits thinking across two body fields — `thinking.type` toggles it
