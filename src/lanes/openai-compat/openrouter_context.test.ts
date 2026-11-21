@@ -62,6 +62,16 @@ async function main(): Promise<void> {
     assert(key('s1', 'prompt_suggestion', 'Initial') === main, 'a fork with the conversation prompt still shares it')
   })
 
+  await test('each prompt a helper purpose sends keeps a snapshot of its own', () => {
+    freezeOpenRouterSystem(key('s1', 'repl_main_thread', 'Initial'), 'Initial')
+    const check = key('s1', 'hook_prompt', 'PreToolUse check')
+    assert(freezeOpenRouterSystem(check, 'PreToolUse check') === 'PreToolUse check', 'the first check prompt')
+    const stop = key('s1', 'hook_prompt', 'Stop check')
+    assert(stop !== check, 'a second prompt of the same purpose must not reuse the first snapshot')
+    assert(freezeOpenRouterSystem(stop, 'Stop check') === 'Stop check', 'the Stop check prompt must reach the model')
+    assert(key('s1', 'hook_prompt', 'PreToolUse check') === check, 'a repeated prompt keeps its snapshot')
+  })
+
   await test('a helper before any conversation request neither shares nor seeds a snapshot', () => {
     const early = key('s1', 'compact')
     freezeOpenRouterSystem(early, 'HELPER')

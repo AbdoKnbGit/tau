@@ -28,7 +28,10 @@ function isConversationSource(querySource: string | undefined): boolean {
  * conversation's session is a fork of it (a prompt suggestion, a compaction):
  * it resends the conversation's prefix, so it uses the conversation's
  * snapshot, frozen system prompt and tool order included. Any other helper
- * keeps a snapshot of its own. `system` is the caller's system prompt before
+ * keeps a snapshot of its own for each prompt it sends: one purpose can send
+ * several (a Stop hook check and a PreToolUse check give different
+ * instructions; an agent hook names its own transcript), and each must reach
+ * the model as written. `system` is the caller's system prompt before
  * freezing; the working directory it states is part of both keys, so a
  * snapshot frozen before EnterWorktree/ExitWorktree is never replayed into a
  * turn that states another directory (see working_directory.ts).
@@ -50,7 +53,8 @@ export function openRouterContextKey(
   const systemHash = createHash('sha256').update(system).digest('hex')
   if (!isConversationSource(querySource)) {
     const conversation = conversations.get(base)
-    return conversation?.system === systemHash ? conversation.key : own
+    if (conversation?.system === systemHash) return conversation.key
+    return JSON.stringify([route, model, lineage, querySource ?? '', systemHash])
   }
   conversations.delete(base)
   conversations.set(base, { key: own, system: systemHash })

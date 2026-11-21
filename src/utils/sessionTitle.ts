@@ -19,7 +19,7 @@ import { queryHaiku } from '../services/api/claude.js'
 import type { Message } from '../types/message.js'
 import { logForDebugging } from './debug.js'
 import { areNonEssentialModelCallsDisabled } from './sideQueries.js'
-import { safeParseJSON } from './json.js'
+import { safeParseJSON, stripJsonCodeFence } from './json.js'
 import { lazySchema } from './lazySchema.js'
 import { extractTextContent } from './messages.js'
 import { asSystemPrompt } from './systemPromptType.js'
@@ -116,7 +116,9 @@ export async function generateSessionTitle(
 
     const text = extractTextContent(result.message.content)
 
-    const parsed = titleSchema().safeParse(safeParseJSON(text))
+    const parsed = titleSchema().safeParse(
+      safeParseJSON(stripJsonCodeFence(text), false),
+    )
     const title = parsed.success ? parsed.data.title.trim() || null : null
 
     logEvent('tengu_session_title_generated', { success: title !== null })

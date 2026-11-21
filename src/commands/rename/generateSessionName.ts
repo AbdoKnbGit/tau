@@ -2,7 +2,7 @@ import { queryHaiku } from '../../services/api/claude.js'
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
-import { safeParseJSON } from '../../utils/json.js'
+import { safeParseJSON, stripJsonCodeFence } from '../../utils/json.js'
 import { extractTextContent } from '../../utils/messages.js'
 import { extractConversationText } from '../../utils/sessionTitle.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
@@ -45,7 +45,7 @@ export async function generateSessionName(
 
     const content = extractTextContent(result.message.content)
 
-    const response = safeParseJSON(content)
+    const response = safeParseJSON(stripJsonCodeFence(content), false)
     if (
       response &&
       typeof response === 'object' &&

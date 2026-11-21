@@ -136,8 +136,8 @@ async function sendAndCollect(sessionId = 'conversation-fixture') {
   return received
 }
 
-async function send(sessionId = 'conversation-fixture', overrides = {}) {
-  const shim = r.createProviderShim('openai', 'repl_main_thread')
+async function send(sessionId = 'conversation-fixture', overrides = {}, querySource = 'repl_main_thread') {
+  const shim = r.createProviderShim('openai', querySource)
   assert.equal(shim._provider.name, 'codex')
   const response = await shim.beta.messages.create({
     model: 'gpt-5.6-luna', messages: [{ role: 'user', content: 'hello' }],
@@ -310,6 +310,27 @@ test('a helper still answering does not push the conversation\'s request off its
   assert.ok(seen.socketRequests[0].tools.length > 0, 'the conversation\'s request went over its socket')
   assert.equal(seen.httpRequests.length, 1)
   assert.deepEqual(seen.httpRequests[0].tools ?? [], [], 'the helper went over HTTP')
+})
+
+test('a hook keeps a socket of its own, so the conversation\'s request keeps its socket', async () => {
+  seen.answerDelayMs = 400
+  // A background agent's Stop check: the conversation's tools and session,
+  // sent as the main thread's next request goes out.
+  const check = send('conversation-fixture', {}, 'hook_prompt')
+  await new Promise(resolve => setTimeout(resolve, 100))
+  await send()
+  await check
+  assert.equal(seen.httpRequests.length, 0, 'neither request fell back to HTTP')
+  assert.equal(seen.socketRequests.length, 2)
+  assert.deepEqual(seen.connections.map(headers => headers.session_id), ['conversation-fixture', 'conversation-fixture'])
+  assert.ok(seen.socketRequests.every(request => request.prompt_cache_key === 'conversation-fixture'),
+    'the hook keeps the conversation\'s cache key')
+  // Its next request reuses the hooks' connection; the conversation's stays its own.
+  seen.answerDelayMs = 0
+  await send('conversation-fixture', {}, 'hook_agent')
+  await send()
+  assert.equal(seen.connections.length, 2)
+  assert.equal(seen.socketRequests.length, 4)
 })
 
 test('a refused upgrade sends the request over HTTP', async () => {

@@ -26,8 +26,10 @@ let script = {}, requests = [], env
 const pick = (list, index) => list[Math.min(index, list.length - 1)]
 const textOf = message => typeof message.content === 'string' ? message.content
   : message.content.map(block => block.text ?? '').join('\n')
-// Only the evaluator asks for structured output; a subagent starts from the Agent call's prompt.
+// Only the evaluator asks for structured output; only an agent hook's own agent
+// gets the structured output tool; a subagent starts from the Agent call's prompt.
 const kindOf = body => body.output_config?.format ? 'evaluator'
+  : body.tools?.some(tool => tool.name === 'StructuredOutput') ? 'hookAgent'
   : textOf(body.messages.find(message => message.role === 'user')).includes(TASK) ? 'subagent' : 'main'
 
 const server = createServer((req, res) => {
@@ -44,6 +46,10 @@ const server = createServer((req, res) => {
     const kind = kindOf(body)
     const answer = pick(script[kind] ?? ['Unexpected request.'], requests.filter(r => r.kind === kind).length)
     requests.push({ kind, body })
+    // A scripted refusal: the provider turns the request down with an HTTP error.
+    if (answer?.httpStatus) {
+      res.writeHead(answer.httpStatus, { 'content-type': 'application/json' }); res.end(JSON.stringify(answer.body)); return
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     res.end(anthropicReply(typeof answer === 'string' || Array.isArray(answer) ? answer : JSON.stringify(answer), body.model))
   })
@@ -87,7 +93,8 @@ async function run(hooks, scripted, prompt, extraEnv = {}) {
   let output = null
   try { output = JSON.parse(stdout) } catch {}
   const sent = kind => requests.filter(request => request.kind === kind).map(request => request.body)
-  return { code, output, log: `exit ${code}\n${stderr}\n${stdout}`, main: sent('main'), evaluator: sent('evaluator'), subagent: sent('subagent') }
+  return { code, output, log: `exit ${code}\n${stderr}\n${stdout}`, main: sent('main'), evaluator: sent('evaluator'),
+    subagent: sent('subagent'), hookAgent: sent('hookAgent') }
 }
 
 function transcript(sessionId) {
@@ -249,6 +256,224 @@ test('UserPromptSubmit: the prompt stays blocked whatever continueOnBlock says',
   }, 'Blocked fixture prompt.')
   assert.equal(evaluator.length, 1, log)
   assert.equal(main.length, 0, 'the model never gets the prompt')
+})
+
+// Providers that take no output schema let the model wrap its JSON answer in a
+// Markdown code fence, as Mistral did in a live run; the check reads it as JSON.
+test('A check answer wrapped in a code fence counts like plain JSON', { timeout: 120_000 }, async () => {
+  const blocked = await run({ PreToolUse: onWrite('Allow only safe writes.', { continueOnBlock: true }) }, {
+    main: [writeCall, 'Skipped the write.'],
+    evaluator: ['```json\n{\n  "ok": false,\n  "reason": "Writes are frozen."\n}\n```'],
+  }, 'Write the fixture file.')
+  assert.equal(existsSync(target), false, `the fenced block denied the write\n${blocked.log}`)
+  assert.equal(blocked.main.length, 2, blocked.log)
+  assert.ok(JSON.stringify(toolResults(blocked.main[1])[0].content).includes('Writes are frozen.'))
+
+  const stop = await run({ Stop: promptHook('The fixture check ran.') }, {
+    main: ['First answer.', 'Checked and done.'],
+    evaluator: ['```\n{"ok": false, "reason": "Run the fixture check first."}\n```', '```JSON\n{"ok": true, "reason": "It ran."}\n```'],
+  }, 'Do the fixture task.')
+  assert.equal(stop.main.length, 2, `the fenced Stop block sent Claude back once\n${stop.log}`)
+  assert.equal(stop.output.result, 'Checked and done.')
+})
+
+test('A check the provider refuses reports the API error, not a JSON failure', { timeout: 120_000 }, async () => {
+  // The hook's error lives in what the engine yields; -p prints only the result.
+  await inEngine(async r => {
+    const context = fixtureContext([])
+    const state = context.getAppState()
+    state.sessionHooks.set(r.getSessionId(), { hooks: { Stop: [{ matcher: '', hooks: [{ hook: { type: 'prompt', prompt: 'The fixture check ran.' } }] }] } })
+    Object.assign(context, { getAppState: () => state, setResponseLength: () => {} })
+    script = { evaluator: [{ httpStatus: 400, body: { type: 'error', error: {
+      type: 'invalid_request_error', message: 'Reasoning input is not enabled for this model' } } }] }
+    requests = []
+    const generator = r.handleStopHooks([], [], [], {}, {}, context, 'fixture')
+    const yielded = []
+    let next
+    while (!(next = await generator.next()).done) yielded.push(next.value)
+    assert.equal(requests.length, 1, 'one refused check, no retry')
+    const errors = yielded.filter(message => message.attachment?.type === 'hook_non_blocking_error')
+      .map(message => message.attachment)
+    assert.equal(errors.length, 1)
+    assert.match(errors[0].stderr, /^Hook evaluator API error: .*Reasoning input is not enabled for this model/)
+    assert.equal(errors[0].stdout, '')
+    assert.equal(next.value.blockingErrors.length, 0, 'a refused check does not block the stop')
+  })
+})
+
+// The hook engine in this process, for what -p does not print: which requests
+// a turn's end sends and what they carry. `bare` skips the turn-end
+// background work, as the engine tests above do. It runs in a project with
+// no settings, so hooks a CLI test left in the workspace's settings stay out.
+const engineProject = join(root, 'engine-project')
+mkdirSync(engineProject, { recursive: true })
+async function inEngine(body, { exports = [], bare = true, env: extraEnv = {} } = {}) {
+  const cwd = process.cwd()
+  const saved = Object.fromEntries(Object.keys(extraEnv).map(key => [key, process.env[key]]))
+  Object.assign(process.env, {
+    CLAUDE_CONFIG_DIR: join(root, 'engine-config'), ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
+    ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL, NO_PROXY: env.NO_PROXY, TAU_MCP_TEST_BUNDLE: bundle,
+    DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: '0',
+  }, extraEnv)
+  process.chdir(engineProject)
+  if (bare) process.argv.push('--bare')
+  try {
+    const r = await loadMcpRuntime({ paths: ['src/utils/hooks.ts', 'src/query/stopHooks.ts', 'src/services/api/cacheAffinity.ts'],
+      exports: ['handleStopHooks', 'getSessionId', 'setIsInteractive', 'createUserMessage', 'createAssistantMessage', ...exports] })
+    r.setIsInteractive(false)
+    return await body(r)
+  } finally {
+    if (bare) process.argv.pop()
+    process.chdir(cwd)
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
+async function drain(generator) {
+  const yielded = []
+  let next
+  while (!(next = await generator.next()).done) yielded.push(next.value)
+  return { yielded, result: next.value }
+}
+
+const sessionPromptHook = (event, prompt) => ({ hooks: { [event]: [{ matcher: '', hooks: [{ hook: { type: 'prompt', prompt } }] }] } })
+const waitFor = async (condition, ms = 10_000) => {
+  for (let waited = 0; waited < ms && !condition(); waited += 50) await new Promise(resolve => setTimeout(resolve, 50))
+}
+
+// An agent hook runs an agent of its own that answers through the structured
+// output tool. Its turn ends fire SubagentStop, so a Stop function hook could
+// not remind it to answer, and the user's SubagentStop hooks judged it.
+test('An agent hook\'s agent is reminded until it answers, and no SubagentStop hook judges it', { timeout: 120_000 }, async () => {
+  const { output, main, hookAgent, evaluator, log } = await run({
+    Stop: [{ hooks: [{ type: 'agent', prompt: 'Check that the fixture task is done.' }] }],
+    SubagentStop: promptHook('The subagent may stop.'),
+  }, {
+    main: ['Done.'],
+    hookAgent: ['It looks done.', [{ name: 'StructuredOutput', input: { ok: true } }], 'Answered.'],
+    evaluator: [{ ok: true, reason: 'It answered.' }],
+  }, 'Do the fixture task.')
+  assert.ok(hookAgent.length >= 2, `the agent was sent back after a turn without an answer\n${log}`)
+  assert.match(JSON.stringify(hookAgent[1].messages), /You MUST call the StructuredOutput tool/)
+  assert.equal(evaluator.length, 0, 'no SubagentStop hook judges the agent hook\'s agent')
+  assert.equal(main.length, 1, 'the answer ok:true lets the turn end')
+  assert.equal(output.result, 'Done.')
+})
+
+test('An agent hook\'s turn end runs no hook and waits for the structured output', { timeout: 120_000 }, async () => {
+  await inEngine(async r => {
+    const agentId = 'hook-agent-fixture'
+    const context = fixtureContext([])
+    const state = context.getAppState()
+    state.sessionHooks.set(agentId, sessionPromptHook('SubagentStop', 'The subagent may stop.'))
+    state.sessionHooks.set(r.getSessionId(), sessionPromptHook('Stop', 'The task is done.'))
+    Object.assign(context, { agentId, getAppState: () => state, setResponseLength: () => {} })
+    script = { evaluator: [{ ok: true, reason: 'It answered.' }] }
+    requests = []
+    const question = r.createUserMessage({ content: 'Check the condition.' })
+    const unanswered = await drain(r.handleStopHooks([question], [r.createAssistantMessage({ content: 'It looks fine.' })],
+      [], {}, {}, context, 'hook_agent'))
+    assert.equal(unanswered.result.blockingErrors.length, 1, 'no answer yet: the turn goes on')
+    assert.equal(textOf(unanswered.result.blockingErrors[0].message),
+      'Stop hook feedback:\nYou MUST call the StructuredOutput tool to complete this request. Call this tool now.')
+    const call = r.createAssistantMessage({ content: [{ type: 'tool_use', id: 'toolu_answer', name: 'StructuredOutput', input: { ok: true } }] })
+    const result = r.createUserMessage({ content: [{ type: 'tool_result', tool_use_id: 'toolu_answer', content: 'Structured output provided successfully' }] })
+    const answered = await drain(r.handleStopHooks([question, call, result], [r.createAssistantMessage({ content: 'Answered.' })],
+      [], {}, {}, context, 'hook_agent'))
+    assert.equal(answered.result.blockingErrors.length, 0, 'answered: the turn ends')
+    assert.equal(requests.length, 0, 'no Stop or SubagentStop hook judged it')
+  })
+})
+
+test('A conversation too long for the check model is asked again with its newest part', { timeout: 120_000 }, async () => {
+  await inEngine(async r => {
+    const context = fixtureContext([])
+    const state = context.getAppState()
+    state.sessionHooks.set(r.getSessionId(), sessionPromptHook('Stop', 'The fixture check ran.'))
+    Object.assign(context, { getAppState: () => state, setResponseLength: () => {} })
+    const assistant = content => {
+      const message = r.createAssistantMessage({ content })
+      message.message.model = 'claude-sonnet-4-6'
+      return message
+    }
+    // Twelve tool rounds of about 50,000 estimated tokens each: more than half
+    // the check model's window, the budget of the second request.
+    const conversation = [r.createUserMessage({ content: 'Run the fixture task.' })]
+    for (let i = 0; i < 12; i++) {
+      conversation.push(
+        assistant([{ type: 'tool_use', id: `toolu_round_${i}`, name: 'FixtureTool', input: {} }]),
+        r.createUserMessage({ content: [{ type: 'tool_result', tool_use_id: `toolu_round_${i}`, content: `round ${i} ${'x'.repeat(200_000)}` }] }),
+      )
+    }
+    script = { evaluator: [
+      { httpStatus: 400, body: { type: 'error', error: { type: 'invalid_request_error', message: 'prompt is too long: 612000 tokens > 200000 maximum' } } },
+      { ok: false, reason: 'Run the fixture check first.' },
+    ] }
+    requests = []
+    const { result } = await drain(r.handleStopHooks(conversation, [assistant('Done.')], [], {}, {}, context, 'fixture'))
+    assert.equal(requests.length, 2, 'asked once more after the refusal')
+    const [first, second] = requests.map(request => JSON.stringify(request.body.messages))
+    assert.ok(second.length < first.length / 2, 'the second request carries part of the conversation')
+    assert.match(textOf(requests[1].body.messages[0]), /^\[The start of the conversation was left out/)
+    assert.ok(second.includes('round 11 ') && !second.includes('round 0 '), 'the newest rounds stay, the oldest leave')
+    assert.ok(second.includes('The fixture check ran.'), 'the hook prompt is still asked')
+    assert.equal(result.blockingErrors.length, 1, 'the answer to the second request decides')
+  })
+})
+
+test('A helper forked from the conversation fires no SubagentStop hook; an Agent subagent does', { timeout: 120_000 }, async () => {
+  await inEngine(async r => {
+    const checksAtEndOf = async agentId => {
+      const context = fixtureContext([])
+      const state = context.getAppState()
+      // A subagent's session hooks are kept under its own id.
+      state.sessionHooks.set(agentId, sessionPromptHook('SubagentStop', 'The subagent may stop.'))
+      Object.assign(context, { agentId, agentType: 'general-purpose', getAppState: () => state, setResponseLength: () => {} })
+      script = { evaluator: [{ ok: true, reason: 'It answered.' }] }
+      requests = []
+      await drain(r.handleStopHooks([], [], [], {}, {}, context, 'fixture'))
+      return requests.length
+    }
+    // runForkedAgent registers each fork (a prompt suggestion, /btw, compaction) while it runs.
+    const release = r.registerForkedAgent('afixturefork00001', undefined, 'repl_main_thread')
+    try {
+      assert.equal(await checksAtEndOf('afixturefork00001'), 0, 'no hook judges a forked helper')
+    } finally {
+      release()
+    }
+    assert.equal(await checksAtEndOf('afixtureagent0001'), 1, 'an Agent subagent is still judged')
+  }, { exports: ['registerForkedAgent'] })
+})
+
+test('A Stop hook that sends the turn on starts no prompt suggestion; the turn\'s end starts one', { timeout: 120_000 }, async () => {
+  await inEngine(async r => {
+    const context = fixtureContext([])
+    const state = { ...context.getAppState(), promptSuggestionEnabled: true, elicitation: { queue: [] } }
+    state.sessionHooks.set(r.getSessionId(), sessionPromptHook('Stop', 'The fixture check ran.'))
+    // A suggestion forks the conversation, and the fork reads these two.
+    context.options = { ...context.options, thinkingConfig: { type: 'disabled' } }
+    Object.assign(context, { getAppState: () => state, setResponseLength: () => {},
+      readFileState: r.createFileStateCacheWithSizeLimit(10) })
+    const conversation = [r.createUserMessage({ content: 'Start the fixture task.' }),
+      r.createAssistantMessage({ content: 'Started.' }), r.createUserMessage({ content: 'Finish it.' })]
+    script = { evaluator: [{ ok: false, reason: 'Run the fixture check first.' }], main: ['Run the fixture check'] }
+    requests = []
+    const suggestions = () => requests.filter(request => JSON.stringify(request.body.messages).includes('[SUGGESTION MODE'))
+    const { result } = await drain(r.handleStopHooks(conversation, [r.createAssistantMessage({ content: 'Finished.' })],
+      [], {}, {}, context, 'repl_main_thread'))
+    assert.equal(result.blockingErrors.length, 1, 'the Stop hook sends the turn on')
+    await new Promise(resolve => setTimeout(resolve, 500))
+    assert.equal(suggestions().length, 0, 'no suggestion for an answer that is not the turn\'s last')
+    // The query loop calls this where the turn ends; twice starts it once.
+    result.startTurnEndWork()
+    result.startTurnEndWork()
+    await waitFor(() => suggestions().length > 0)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    assert.equal(suggestions().length, 1, 'the end of the turn starts one suggestion')
+  }, { bare: false, exports: ['createFileStateCacheWithSizeLimit'], env: { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: '1' } })
 })
 
 // The evaluator answers in JSON and never runs a tool. A check made of the hook

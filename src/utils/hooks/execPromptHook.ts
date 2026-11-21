@@ -1,14 +1,18 @@
 import { randomUUID } from 'crypto'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 import { queryModelWithoutStreaming } from '../../services/api/claude.js'
+import { isPromptTooLongMessage } from '../../services/api/errors.js'
+import { groupMessagesByApiRound } from '../../services/compact/grouping.js'
+import { roughTokenCountEstimationForMessages } from '../../services/tokenEstimation.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { createAttachmentMessage } from '../attachments.js'
 import { createCombinedAbortSignal } from '../combinedAbortSignal.js'
+import { getContextWindowForModel } from '../context.js'
 import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
 import type { HookResult } from '../hooks.js'
-import { safeParseJSON } from '../json.js'
+import { safeParseJSON, stripJsonCodeFence } from '../json.js'
 import { createUserMessage, extractTextContent } from '../messages.js'
 import { getSmallFastModel } from '../model/model.js'
 import type { PromptHook } from '../settings/types.js'
@@ -35,6 +39,35 @@ Answer "impossible" only when no further work in this session could meet the con
 
 const withReason = (text: string, reason: string | undefined): string =>
   reason?.trim() ? `${text}: ${reason}` : text
+
+/**
+ * The newest API rounds of `messages` that fit `budget` tokens, after a note
+ * that the start was left out. Rounds stay whole, so no tool call loses its
+ * result, and the newest one stays even when it alone is over the budget.
+ * Undefined when nothing could be left out.
+ */
+function recentConversation(
+  messages: Message[],
+  budget: number,
+): Message[] | undefined {
+  const rounds = groupMessagesByApiRound(messages)
+  let first = rounds.length
+  let tokens = 0
+  for (let i = rounds.length - 1; i >= 0; i--) {
+    const size = roughTokenCountEstimationForMessages(rounds[i]!)
+    if (first < rounds.length && tokens + size > budget) break
+    tokens += size
+    first = i
+  }
+  if (first === 0) return undefined
+  const omitted = rounds.slice(0, first).reduce((n, round) => n + round.length, 0)
+  return [
+    createUserMessage({
+      content: `[The start of the conversation was left out to fit the hook evaluator's context window: ${omitted} earlier messages. Judge the condition against the recent part below. If what it needs may be in the part left out, answer {"ok": false, "reason": "insufficient evidence in the transcript"}.]`,
+    }),
+    ...rounds.slice(first).flat(),
+  ]
+}
 
 /**
  * Execute a prompt-based hook using an LLM
@@ -75,14 +108,15 @@ export async function execPromptHook(
 
     // Query the model with Haiku
     const hookTimeoutMs = hook.timeout ? hook.timeout * 1000 : 30000
+    const model = hook.model ?? getSmallFastModel()
 
     // Combined signal: aborts if either the hook signal or timeout triggers
     const { signal: combinedSignal, cleanup: cleanupSignal } =
       createCombinedAbortSignal(signal, { timeoutMs: hookTimeoutMs })
 
     try {
-      const response = await queryModelWithoutStreaming({
-        messages: messagesToQuery,
+      const ask = (toQuery: Message[]) => queryModelWithoutStreaming({
+        messages: toQuery,
         systemPrompt: asSystemPrompt([
           stopCondition ? STOP_HOOK_SYSTEM_PROMPT : HOOK_SYSTEM_PROMPT,
         ]),
@@ -99,7 +133,7 @@ export async function execPromptHook(
             const appState = toolUseContext.getAppState()
             return appState.toolPermissionContext
           },
-          model: hook.model ?? getSmallFastModel(),
+          model,
           toolChoice: undefined,
           isNonInteractiveSession: true,
           hasAppendSystemPrompt: false,
@@ -128,7 +162,46 @@ export async function execPromptHook(
         },
       })
 
+      let response = await ask(messagesToQuery)
+      // A long conversation can outgrow the check model's window, sooner when
+      // that model is a smaller helper. Like Claude Code, ask once more with
+      // the newest part of it that fits half the window.
+      if (carriesConversation && isPromptTooLongMessage(response)) {
+        const recent = recentConversation(
+          messages,
+          Math.floor(getContextWindowForModel(model) / 2),
+        )
+        if (recent) {
+          logForDebugging(
+            `Hooks: evaluator prompt too long; retrying with ${recent.length} of ${messages.length} messages`,
+          )
+          response = await ask([...recent, userMessage])
+        }
+      }
+
       cleanupSignal()
+
+      // A request the provider refused comes back as an error message, which
+      // is no answer to parse.
+      if (response.isApiErrorMessage) {
+        const errorText = extractTextContent(response.message.content).trim()
+        logForDebugging(`Hooks: prompt-hook evaluator API error: ${errorText}`, {
+          level: 'error',
+        })
+        return {
+          hook,
+          outcome: 'non_blocking_error',
+          message: createAttachmentMessage({
+            type: 'hook_non_blocking_error',
+            hookName,
+            toolUseID: effectiveToolUseID,
+            hookEvent,
+            stderr: `Hook evaluator API error: ${errorText}`,
+            stdout: '',
+            exitCode: 1,
+          }),
+        }
+      }
 
       // Extract text content from response
       const content = extractTextContent(response.message.content)
@@ -139,7 +212,9 @@ export async function execPromptHook(
       const fullResponse = content.trim()
       logForDebugging(`Hooks: Model response: ${fullResponse}`)
 
-      const json = safeParseJSON(fullResponse)
+      // Only some providers take the output schema; models on the others can
+      // wrap the JSON in a code fence.
+      const json = safeParseJSON(stripJsonCodeFence(fullResponse), false)
       if (!json) {
         logForDebugging(
           `Hooks: error parsing response as JSON: ${fullResponse}`,

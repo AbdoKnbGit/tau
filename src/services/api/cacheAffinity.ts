@@ -74,6 +74,25 @@ const PER_AGENT_SESSION_PROVIDERS = new Set<string>([
   'meta',
 ])
 
+/**
+ * Providers where the request session pins a request to the one server (or
+ * replica) that holds its prompt cache: Mistral's prompt_cache_key, xAI's
+ * conversation id, the session affinity of Fireworks, Cloudflare and LXD, and
+ * OpenRouter's session. Hook requests there get a session per hook kind
+ * (resolveProviderRequestSessionId). Not here: Codex (OpenAI routes by the
+ * prompt's start as well, and hooks have a connection of their own), Copilot
+ * and Cline (the id also groups requests at the gateway), Antigravity (dedup
+ * and quota routing), and providers that send no such key.
+ */
+const HOOK_SESSION_PROVIDERS = new Set<string>([
+  'mistral',
+  'xai',
+  'fireworks',
+  'cloudflare',
+  'lxd',
+  'openrouter',
+])
+
 function usesRootProviderSession(querySource: QuerySource): boolean {
   return (
     querySource.startsWith('repl_main_thread') ||
@@ -105,6 +124,11 @@ export function registerForkedAgent(
   return () => {
     forkedAgentParents.delete(forkAgentId)
   }
+}
+
+/** True while `agentId` is a helper forked from a conversation and still running. */
+export function isForkedAgent(agentId: AgentId | undefined): boolean {
+  return agentId !== undefined && forkedAgentParents.has(agentId)
 }
 
 /** The agent whose conversation a request resends: a fork resolves to what it forked. */
@@ -182,6 +206,25 @@ export function resolveProviderRequestSessionId({
   if (querySource === 'report') {
     if (provider === 'antigravity') return root
     return derivedProviderSessionId(root, 'query', querySource)
+  }
+
+  // Hooks (a prompt hook's check, an agent hook) send prompts of their own.
+  // Where the session pins requests to the server holding their cache, hooks
+  // on the conversation's session landed on its server, and different
+  // prompts sent at once missed each other's cache (Mistral, live: a Stop
+  // check beside an agent hook). The main thread's hooks get a session per
+  // hook kind, which a later check of that kind reads the cache of. A
+  // subagent's checks carry its conversation and tools: they keep that
+  // subagent's session, so they never share a server, or a frozen tool list,
+  // with the main thread's checks. An agent hook's own agent sends the same
+  // prompt shape every run, so all runs share its kind's session.
+  if (HOOK_SESSION_PROVIDERS.has(provider) && querySource.startsWith('hook_')) {
+    const owner = querySource === 'hook_agent' || agentId === undefined
+      ? undefined
+      : forkedConversationAgentId(agentId)
+    return owner === undefined
+      ? derivedProviderSessionId(root, 'query', querySource)
+      : derivedProviderSessionId(root, 'agent', owner)
   }
 
   // OpenRouter sends this id as session_id / prompt_cache_key and pins the

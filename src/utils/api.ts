@@ -204,17 +204,12 @@ export async function toolToAPISchema(
       input_schema,
     }
 
-    // Only add strict if:
-    // 1. Feature flag is enabled
-    // 2. Tool has strict: true
-    // 3. Model is provided and supports it (not all models support it right now)
-    //    (if model is not provided, assume we can't use strict tools)
-    if (
-      strictToolsEnabled &&
-      tool.strict === true &&
-      options.model &&
-      modelSupportsStructuredOutputs(options.model)
-    ) {
+    // The base keeps whether the session sends this tool strict: the feature
+    // flag is enabled and the tool has strict: true. Whether this request's
+    // model supports it is decided per request below, since the first request
+    // to build the base may be for another model (a helper, an agent, a hook
+    // check) than the ones that reuse it.
+    if (strictToolsEnabled && tool.strict === true) {
       base.strict = true
     }
 
@@ -236,14 +231,20 @@ export async function toolToAPISchema(
   }
 
   // Per-request overlay: defer_loading and cache_control vary by call
-  // (tool search defers different tools per turn; cache markers move).
+  // (tool search defers different tools per turn; cache markers move), and
+  // strict needs a model that supports it (no model given: assume it does
+  // not; not all models support it right now).
   // Explicit field copy avoids mutating the cached base and sidesteps
   // BetaTool.cache_control's `| null` clashing with our narrower type.
+  const strict =
+    base.strict === true &&
+    !!options.model &&
+    modelSupportsStructuredOutputs(options.model)
   const schema: BetaToolWithExtras = {
     name: base.name,
     description: base.description,
     input_schema: base.input_schema,
-    ...(base.strict && { strict: true }),
+    ...(strict && { strict: true }),
     ...(base.eager_input_streaming && { eager_input_streaming: true }),
   }
 

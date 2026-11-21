@@ -1,5 +1,6 @@
 import { z } from 'zod/v4'
 import type { Tool } from '../../Tool.js'
+import type { Message } from '../../types/message.js'
 import {
   SYNTHETIC_OUTPUT_TOOL_NAME,
   SyntheticOutputTool,
@@ -76,9 +77,19 @@ export function createStructuredOutputTool(): Tool {
   }
 }
 
+/** What a model that must answer through SyntheticOutputTool is told while it has not. */
+export const STRUCTURED_OUTPUT_REMINDER = `You MUST call the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool to complete this request. Call this tool now.`
+
+/** Whether the most recent SyntheticOutputTool call in `messages` succeeded. */
+export function hasStructuredOutput(messages: Message[]): boolean {
+  return hasSuccessfulToolCall(messages, SYNTHETIC_OUTPUT_TOOL_NAME)
+}
+
 /**
- * Register a function hook that enforces structured output via SyntheticOutputTool.
- * Used by ask.tsx, execAgentHook.ts, and background verification.
+ * Register a function hook that enforces structured output via SyntheticOutputTool
+ * on the main thread's Stop (the SDK's structured output). An agent hook's own
+ * agent ends its turns with SubagentStop; its turn end is checked in
+ * handleStopHooks instead.
  */
 export function registerStructuredOutputEnforcement(
   setAppState: SetAppState,
@@ -89,8 +100,8 @@ export function registerStructuredOutputEnforcement(
     sessionId,
     'Stop',
     '', // No matcher - applies to all stops
-    messages => hasSuccessfulToolCall(messages, SYNTHETIC_OUTPUT_TOOL_NAME),
-    `You MUST call the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool to complete this request. Call this tool now.`,
+    hasStructuredOutput,
+    STRUCTURED_OUTPUT_REMINDER,
     { timeout: 5000 },
   )
 }

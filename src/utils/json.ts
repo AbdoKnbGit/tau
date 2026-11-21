@@ -58,6 +58,20 @@ export const safeParseJSON = Object.assign(
 )
 
 /**
+ * A model asked for a JSON answer can wrap it in a Markdown code fence
+ * (```json ... ```), as models do when the provider takes no output schema.
+ * Returns the text inside one leading and one trailing fence; text without a
+ * fence comes back trimmed and otherwise unchanged.
+ */
+export function stripJsonCodeFence(text: string): string {
+  return text
+    .trim()
+    .replace(/^```[a-zA-Z]*\s*/, '')
+    .replace(/\s*```$/, '')
+    .trim()
+}
+
+/**
  * Safely parse JSON with comments (jsonc).
  * This is useful for VS Code configuration files like keybindings.json
  * which support comments and other jsonc features.

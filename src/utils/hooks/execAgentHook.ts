@@ -26,7 +26,6 @@ import {
   addArgumentsToPrompt,
   createStructuredOutputTool,
   hookResponseSchema,
-  registerStructuredOutputEnforcement,
 } from './hookHelpers.js'
 import { clearSessionHooks } from './sessionHooks.js'
 
@@ -153,11 +152,10 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
         },
       }
 
-      // Register a session-level stop hook to enforce structured output
-      registerStructuredOutputEnforcement(
-        toolUseContext.setAppState,
-        hookAgentId,
-      )
+      // Until the agent has answered through the structured output tool, each
+      // of its turn ends sends it back with a reminder (handleStopHooks, for
+      // querySource 'hook_agent'). A Stop function hook could not do this:
+      // with an agentId the turn end fires SubagentStop.
 
       let structuredOutputResult: { ok: boolean; reason?: string } | null = null
       let turnCount = 0

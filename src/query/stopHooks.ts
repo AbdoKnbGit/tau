@@ -19,6 +19,10 @@ import type {
 import { createAttachmentMessage } from '../utils/attachments.js'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
+import {
+  hasStructuredOutput,
+  STRUCTURED_OUTPUT_REMINDER,
+} from '../utils/hooks/hookHelpers.js'
 import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
 import {
   executeStopHooks,
@@ -49,6 +53,7 @@ const jobClassifierModule = feature('TEMPLATES')
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 import type { QuerySource } from '../constants/querySource.js'
+import { isForkedAgent } from '../services/api/cacheAffinity.js'
 import { executeAutoDream } from '../services/autoDream/autoDream.js'
 import { executePromptSuggestion } from '../services/PromptSuggestion/promptSuggestion.js'
 import { isBareMode, isEnvDefinedFalsy } from '../utils/envUtils.js'
@@ -61,6 +66,8 @@ type StopHookResult = {
   blockingErrors: Message[]
   preventContinuation: boolean
   additionalContextMessages?: Message[]
+  /** Starts the end-of-turn background work; call it once the turn has ended. */
+  startTurnEndWork: () => void
 }
 
 export async function* handleStopHooks(
@@ -131,10 +138,18 @@ export async function* handleStopHooks(
       new Promise<void>(r => setTimeout(r, 60_000).unref()),
     ])
   }
-  // --bare / SIMPLE: skip background bookkeeping (prompt suggestion,
-  // memory extraction, auto-dream). Scripted -p calls don't want auto-memory
-  // or forked agents contending for resources during shutdown.
-  if (!isBareMode()) {
+  // End-of-turn background work reads the finished turn, so the caller starts
+  // it once the turn has ended. A Stop hook, the token budget or /goal can
+  // send the turn on; work started for an answer that is not the turn's last
+  // is a request spent for nothing (a suggestion nobody sees).
+  let turnEndWorkStarted = false
+  const startTurnEndWork = (): void => {
+    if (turnEndWorkStarted) return
+    turnEndWorkStarted = true
+    // --bare / SIMPLE: skip background bookkeeping (prompt suggestion,
+    // memory extraction, auto-dream). Scripted -p calls don't want auto-memory
+    // or forked agents contending for resources during shutdown.
+    if (isBareMode()) return
     // Inline env check for dead code elimination in external builds
     if (!isEnvDefinedFalsy(process.env.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION)) {
       void executePromptSuggestion(stopHookContext)
@@ -171,6 +186,30 @@ export async function* handleStopHooks(
     } catch {
       // Failures are silent — this is dogfooding cleanup, not critical path
     }
+  }
+
+  // A helper forked from a conversation (runForkedAgent: a prompt suggestion,
+  // compaction, /btw, a memory, goal or summary fork) is no turn that the
+  // user or an Agent call started, so no Stop, SubagentStop or teammate hook
+  // judges where it ends. Its fork registration lasts while it runs.
+  if (isForkedAgent(toolUseContext.agentId)) {
+    return { blockingErrors: [], preventContinuation: false, startTurnEndWork }
+  }
+
+  // An agent hook's own agent (execAgentHook) answers through the structured
+  // output tool and is no subagent that the user or an Agent call started,
+  // so no Stop or SubagentStop hook judges it. Until it has answered, its
+  // turn goes on with the reminder.
+  if (querySource === 'hook_agent') {
+    if (hasStructuredOutput([...messagesForQuery, ...assistantMessages])) {
+      return { blockingErrors: [], preventContinuation: false, startTurnEndWork }
+    }
+    const reminder = createUserMessage({
+      content: getStopHookMessage({ blockingError: STRUCTURED_OUTPUT_REMINDER, command: 'function' }),
+      isMeta: true,
+    })
+    yield reminder
+    return { blockingErrors: [reminder], preventContinuation: false, startTurnEndWork }
   }
 
   try {
@@ -304,7 +343,7 @@ export async function* handleStopHooks(
         yield createUserInterruptionMessage({
           toolUse: false,
         })
-        return { blockingErrors: [], preventContinuation: true }
+        return { blockingErrors: [], preventContinuation: true, startTurnEndWork }
       }
     }
 
@@ -337,12 +376,12 @@ export async function* handleStopHooks(
     }
 
     if (preventedContinuation) {
-      return { blockingErrors: [], preventContinuation: true }
+      return { blockingErrors: [], preventContinuation: true, startTurnEndWork }
     }
 
     // Collect blocking errors from stop hooks
     if (blockingErrors.length > 0) {
-      return { blockingErrors, preventContinuation: false, additionalContextMessages }
+      return { blockingErrors, preventContinuation: false, additionalContextMessages, startTurnEndWork }
     }
 
     // After Stop hooks pass, run TeammateIdle and TaskCompleted hooks if this is a teammate
@@ -408,7 +447,7 @@ export async function* handleStopHooks(
             })
           }
           if (toolUseContext.abortController.signal.aborted) {
-            return { blockingErrors: [], preventContinuation: true }
+            return { blockingErrors: [], preventContinuation: true, startTurnEndWork }
           }
         }
       }
@@ -450,12 +489,12 @@ export async function* handleStopHooks(
           })
         }
         if (toolUseContext.abortController.signal.aborted) {
-          return { blockingErrors: [], preventContinuation: true }
+          return { blockingErrors: [], preventContinuation: true, startTurnEndWork }
         }
       }
 
       if (teammatePreventedContinuation) {
-        return { blockingErrors: [], preventContinuation: true }
+        return { blockingErrors: [], preventContinuation: true, startTurnEndWork }
       }
 
       if (teammateBlockingErrors.length > 0) {
@@ -463,11 +502,12 @@ export async function* handleStopHooks(
           blockingErrors: teammateBlockingErrors,
           preventContinuation: false,
           additionalContextMessages,
+          startTurnEndWork,
         }
       }
     }
 
-    return { blockingErrors: [], preventContinuation: false, additionalContextMessages }
+    return { blockingErrors: [], preventContinuation: false, additionalContextMessages, startTurnEndWork }
   } catch (error) {
     const durationMs = Date.now() - hookStartTime
     logEvent('tengu_stop_hook_error', {
@@ -483,6 +523,6 @@ export async function* handleStopHooks(
       `Stop hook failed: ${errorMessage(error)}`,
       'warning',
     )
-    return { blockingErrors: [], preventContinuation: false }
+    return { blockingErrors: [], preventContinuation: false, startTurnEndWork }
   }
 }

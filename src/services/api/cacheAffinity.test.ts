@@ -188,7 +188,9 @@ async function main(): Promise<void> {
     }
     // Everything else keeps its own session: agents, hook agents, side queries.
     assert(agent !== 'root-session' && agent!.startsWith('tau-agent-'), `agent=${agent}`)
-    assert(resolve('hook-1', 'hook_agent')!.startsWith('tau-agent-'), 'hook agent lost its own session')
+    // Hook agents get a session of their own, one for every run of that kind.
+    const hookAgents = resolve('hook-1', 'hook_agent')
+    assert(hookAgents!.startsWith('tau-query-') && hookAgents === resolve('hook-2', 'hook_agent'), 'hook agents lost their shared session')
     assert(resolve(undefined, 'generate_session_title')!.startsWith('tau-query-'), 'side query lost its own session')
   })
 
@@ -229,7 +231,14 @@ async function main(): Promise<void> {
     assert(resolve('fork-child', 'agent:builtin:fork') === 'mistral-root', 'synthetic fork left root')
     assert(resolve('mistral-a', 'repl_main_thread') === 'mistral-root', 'main thread left root')
     assert(resolve('mistral-a', 'sdk') === 'mistral-root', 'SDK left root')
-    assert(resolve('hook-a', 'hook_agent') === 'mistral-root', 'unregistered helper policy changed')
+    assert(resolve('helper-a', 'side_question') === 'mistral-root', 'unregistered helper policy changed')
+    // Hooks send prompts of their own: one session per hook kind, off the root.
+    const hookAgents = resolve('hook-a', 'hook_agent')
+    assert(hookAgents !== 'mistral-root' && hookAgents === resolve('hook-b', 'hook_agent'), 'hook agents left their shared session')
+    const checks = resolve(undefined, 'hook_prompt')
+    assert(checks !== 'mistral-root' && checks !== hookAgents, 'main-thread checks left their session')
+    // A subagent's checks carry its conversation: the subagent's session.
+    assert(resolve('mistral-a', 'hook_prompt') === agent, 'subagent checks left the subagent session')
     assert(resolve(undefined, 'generate_session_title') === 'mistral-root', 'side-query policy changed')
     assert(resolve('mistral-a', 'agent:custom', '   ') === undefined, 'empty root gained an identity')
   })

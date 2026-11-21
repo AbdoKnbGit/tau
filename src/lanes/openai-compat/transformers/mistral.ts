@@ -12,7 +12,8 @@
  *   on replayed history.
  * - Prompt caching uses top-level `prompt_cache_key`; Anthropic
  *   `cache_control` markers stay stripped by the shared compat loop.
- * - Reasoning is model-specific; Mistral replays it as ThinkChunk content.
+ * - Reasoning is model-specific; Mistral replays it as ThinkChunk content,
+ *   never to a model the catalog lists as non-reasoning.
  */
 
 import type { Transformer, TransformContext } from './base.js'
@@ -39,13 +40,23 @@ export const mistralTransformer: Transformer = {
     if (ctx.sessionId) body.prompt_cache_key = ctx.sessionId
     else delete bag.prompt_cache_key
 
-    body.messages = sanitizeMistralToolCallAdjacency(body.messages).map(m => {
+    const meta = getMistralModelMeta(body.model)
+    // A model the catalog lists as non-reasoning refuses thinking input with
+    // 400 "Reasoning input is not enabled for this model". The conversation can
+    // still hold thinking from a reasoning model, for example when a hook check
+    // sends it to the helper model, so leave the thinking out. A turn that held
+    // nothing else is then empty and is dropped below like any other empty
+    // turn. Models outside the catalog are sent what they were sent before.
+    const history = meta?.reasoning === false
+      ? body.messages.map(withoutReasoning)
+      : body.messages
+
+    body.messages = sanitizeMistralToolCallAdjacency(history).map(m => {
       if (m.role === 'tool') return m
       const { name: _name, ...rest } = m as OpenAIChatMessage & { name?: string }
       return rest as OpenAIChatMessage
     })
 
-    const meta = getMistralModelMeta(body.model)
     delete body.thinking
     delete body.reasoning
     delete body.reasoning_effort
@@ -128,6 +139,16 @@ export const mistralTransformer: Transformer = {
   preferLiveModelCatalog(): boolean {
     return true
   },
+}
+
+function withoutReasoning(message: OpenAIChatMessage): OpenAIChatMessage {
+  if (
+    message.reasoning_content === undefined
+    && message.reasoning === undefined
+    && message.reasoning_details === undefined
+  ) return message
+  const { reasoning_content: _content, reasoning: _reasoning, reasoning_details: _details, ...rest } = message
+  return rest
 }
 
 type PendingToolCalls = {

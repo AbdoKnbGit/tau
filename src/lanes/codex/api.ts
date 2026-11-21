@@ -609,6 +609,7 @@ export class CodexApiClient {
     request: CodexResponsesRequest,
     signal?: AbortSignal,
     turnId?: string,
+    querySource?: string,
   ): AsyncGenerator<CodexStreamEvent> {
     const sessionId = request.prompt_cache_key?.trim() || this.sessionCacheKey
     const turnState = this.turnStates.get(sessionId, turnId)
@@ -635,6 +636,16 @@ export class CodexApiClient {
     // only kept it busy, and that request fell back to HTTP, which misses
     // this backend's cache far more often. Such helpers go over HTTP.
     const helperWithoutTools = !turnId && !(Array.isArray(request.tools) && request.tools.length > 0)
+    // A hook (a prompt hook's check, an agent hook) is no part of the
+    // conversation's chain: it carries instructions of its own, yet it keeps
+    // the conversation's session. On the conversation's socket a hook that
+    // carries tools kept it busy, and a request the conversation sent
+    // meanwhile (as its main thread does while a background agent's hooks
+    // run) fell back to HTTP. Hooks get a connection of their own on the same
+    // session; what they send is unchanged.
+    const socketKey = querySource?.startsWith('hook_')
+      ? JSON.stringify([sessionId, 'hooks'])
+      : sessionId
     if (this.usesWebSocket && !helperWithoutTools) {
       const socketBody = turnState.value ? {
         ...body,
@@ -653,7 +664,7 @@ export class CodexApiClient {
               `${this.baseUrl}/responses`,
               this.buildHeaders(sessionId, turnState.value),
               socketBody as unknown as Record<string, unknown>,
-              sessionId,
+              socketKey,
               signal,
               headers => turnState.captureHeaders(headers),
             )

@@ -134,6 +134,21 @@ test('main compaction and explicit prompt rebuild still refresh all Mistral snap
   f.refreshed(main)
 })
 
+test('helper requests of one purpose keep their own prompts; the conversation and its forks keep theirs', () => {
+  const f = fixture()
+  const main = f.seed(undefined, 'main system')
+  for (const route of ['mistral:https://api.mistral.ai/v1', 'native', 'legacy']) {
+    const check = f.key(undefined, 'PreToolUse check', route, 'mistral-large-2512', 'hook_prompt')
+    assert.equal(f.freezeOpenRouterSystem(check, 'PreToolUse check'), 'PreToolUse check')
+    const stop = f.key(undefined, 'Stop check', route, 'mistral-large-2512', 'hook_prompt')
+    assert.notEqual(stop, check, `${route}: a second prompt of the same purpose shares the first snapshot`)
+    assert.equal(f.freezeOpenRouterSystem(stop, 'Stop check'), 'Stop check')
+    assert.equal(f.key(undefined, 'PreToolUse check', route, 'mistral-large-2512', 'hook_prompt'), check)
+  }
+  assert.equal(f.key(undefined, 'main system', undefined, undefined, 'prompt_suggestion'), main.k)
+  f.retained(main)
+})
+
 test('background cleanup preserves existing reset behavior for other providers', () => {
   const f = fixture()
   const main = f.seed(undefined, 'Mistral main')

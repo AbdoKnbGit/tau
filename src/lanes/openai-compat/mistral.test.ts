@@ -188,6 +188,23 @@ test('thinking-only assistant history is retained as a Mistral ThinkChunk', () =
   expect(shape('mistral-large-4', messages).messages.at(-1)?.content).toEqual([{ type: 'thinking', thinking: [{ type: 'text', text: 'Keep this trace.' }] }])
 })
 
+// Mistral refuses thinking input on a non-reasoning model (400 "Reasoning input
+// is not enabled for this model"); hook checks send the conversation to one.
+test('a model the catalog lists as non-reasoning gets the converted history without its thinking', () => {
+  const turns: ProviderMessage[] = [user, assistant, result, answer, user]
+  const send = (model: string) => shape(model, _convertHistoryToOpenAIForTest(turns, '', 'mistral', model))
+  const thinking = (body: OpenAIChatRequest) => body.messages
+    .flatMap(message => Array.isArray(message.content) ? message.content : [])
+    .filter(part => part.type === 'thinking')
+  const plain = send('mistral-large-2512')
+  expect(thinking(plain)).toEqual([])
+  expect(JSON.stringify(plain)).not.toContain('Inspect first.')
+  expect(JSON.stringify(plain)).not.toContain('Done thinking.')
+  expect(plain.messages.map(message => message.role)).toEqual(send('mistral-large-4').messages.map(message => message.role))
+  expect(plain.messages.find(message => message.tool_calls)?.tool_calls?.[0]?.id).toBe('abcdefghi')
+  for (const model of ['mistral-large-4', 'magistral-medium-latest']) expect(thinking(send(model))).toHaveLength(2)
+})
+
 test('vision models keep pixels on the first request; hosted GLM stays text-only', () => {
   const message: ProviderMessage = { role: 'user', content: [{ type: 'image', source: {
     type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=',

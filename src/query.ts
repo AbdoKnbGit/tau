@@ -1661,7 +1661,11 @@ async function* queryLoop(
         stopHookActive,
       )
 
+      // The turn-end background work (prompt suggestion, memory extraction,
+      // auto-dream) starts where the turn ends, never on a path that sends it
+      // on: a Stop hook, the token budget or /goal.
       if (stopHookResult.preventContinuation) {
+        stopHookResult.startTurnEndWork()
         return { reason: 'stop_hook_prevented' }
       }
 
@@ -1672,6 +1676,7 @@ async function* queryLoop(
         // End the turn at the hook cap rather than falling through to another
         // continuation source that could keep invoking the same Stop hook.
         if (!stopHookContinuations.allowContinuation()) {
+          stopHookResult.startTurnEndWork()
           return { reason: 'completed' }
         }
         const next: State = {
@@ -1797,6 +1802,7 @@ async function* queryLoop(
         }
       }
 
+      stopHookResult.startTurnEndWork()
       return { reason: 'completed' }
     }
 
