@@ -693,6 +693,7 @@ export class OpenAICompatLane implements Lane {
       thinking,
       cacheSessionId,
       params.effortValue,
+      params.promptCacheTtl,
     )
 
     if (provider === 'openrouter' && openRouterRecovery) {
@@ -3056,6 +3057,7 @@ function applyProviderRequestQuirks(
   thinking: LaneProviderCallParams['thinking'] | undefined,
   sessionId?: string,
   effortValue?: LaneProviderCallParams['effortValue'],
+  promptCacheTtl?: LaneProviderCallParams['promptCacheTtl'],
 ): OpenAIChatRequest {
   const transformer = getTransformer(provider as ProviderId)
   const isReasoning = !!(thinking && thinking.type !== 'disabled')
@@ -3089,6 +3091,7 @@ function applyProviderRequestQuirks(
     effortValue,
     sessionId,
     provider,
+    ...(promptCacheTtl !== undefined && { promptCacheTtl }),
   })
 
   // Per-model default generation params (Qwen 0.55, Kimi-k2 0.6,

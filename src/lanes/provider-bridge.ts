@@ -311,6 +311,7 @@ export class LaneBackedProvider implements BaseProvider {
         ...(sessionId ? { sessionId } : {}),
         ...(lane.name === 'codex' && params.turnId ? { turnId: params.turnId } : {}),
         ...(params.querySource ? { querySource: params.querySource } : {}),
+        ...(params.promptCacheTtl ? { promptCacheTtl: params.promptCacheTtl } : {}),
         providerHint: providerHint,
       })
       for await (const ev of gen) {

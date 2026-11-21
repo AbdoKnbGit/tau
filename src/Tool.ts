@@ -189,6 +189,12 @@ export type ToolUseContext = {
     refreshTools?: () => Tools
     /** Read tools and their MCP connections from one current state snapshot. */
     refreshMcpContext?: () => { tools: Tools; mcpClients: MCPServerConnection[] }
+    /** A subagent's own compaction ceiling (its `autoCompactWindow`). It only
+     * lowers the window the session would compact at. */
+    autoCompactWindow?: number
+    /** The prompt-cache lifetime this agent's requests ask for (its
+     * `experimental.cacheTtl`); lanes without that control ignore it. */
+    promptCacheTtl?: '5m' | '1h'
   }
   abortController: AbortController
   readFileState: FileStateCache

@@ -77,6 +77,7 @@ import {
   persistPermissionUpdates,
 } from '../permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../permissions/PermissionUpdateSchema.js'
+import { permissionRuleValueFromString } from '../permissions/permissionRuleParser.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
 import { sleep } from '../sleep.js'
@@ -967,6 +968,19 @@ export async function runInProcessTeammate(
     teammateSystemPrompt = systemPromptParts.join('\n')
   }
 
+  // A custom agent's disallowedTools still apply to its teammate, except for
+  // the tools a teammate needs to coordinate (Claude Code drops those too).
+  const teammateDisallowedTools = agentDefinition?.disallowedTools?.filter(
+    rule =>
+      ![
+        SEND_MESSAGE_TOOL_NAME,
+        TASK_CREATE_TOOL_NAME,
+        TASK_GET_TOOL_NAME,
+        TASK_LIST_TOOL_NAME,
+        TASK_UPDATE_TOOL_NAME,
+      ].includes(permissionRuleValueFromString(rule).toolName),
+  )
+
   // Resolve agent definition - use full system prompt with teammate addendum
   // IMPORTANT: Set permissionMode to 'default' so teammates always get full tool
   // access regardless of the leader's permission mode.
@@ -989,11 +1003,22 @@ export async function runInProcessTeammate(
           ]),
         ]
       : ['*'],
+    ...(teammateDisallowedTools?.length
+      ? { disallowedTools: teammateDisallowedTools }
+      : {}),
     source: 'projectSettings',
     permissionMode: 'default',
     // Propagate model from custom agent definition so getAgentModel()
     // can use it as a fallback when no tool-level model is specified
     ...(agentDefinition?.model ? { model: agentDefinition.model } : {}),
+    // Carried for a teammate of a custom agent the way Claude Code does.
+    ...(agentDefinition?.effort !== undefined
+      ? { effort: agentDefinition.effort }
+      : {}),
+    ...(agentDefinition?.omitClaudeMd ? { omitClaudeMd: true } : {}),
+    ...(agentDefinition?.autoCompactWindow !== undefined
+      ? { autoCompactWindow: agentDefinition.autoCompactWindow }
+      : {}),
     // runAgent() scopes this override to the teammate's async call tree.
     ...(agentDefinition?.provider
       ? { provider: agentDefinition.provider }
@@ -1080,7 +1105,10 @@ export async function runInProcessTeammate(
       const tokenCount = tokenCountWithEstimation(allMessages)
       if (
         tokenCount >
-        getAutoCompactThreshold(toolUseContext.options.mainLoopModel)
+        getAutoCompactThreshold(
+          toolUseContext.options.mainLoopModel,
+          resolvedAgentDefinition.autoCompactWindow,
+        )
       ) {
         logForDebugging(
           `[inProcessRunner] ${identity.agentId} compacting history (${tokenCount} tokens)`,

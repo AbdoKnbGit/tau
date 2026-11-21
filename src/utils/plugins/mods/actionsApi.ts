@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { execa } from 'execa'
 import { getOriginalCwd } from '../../../bootstrap/state.js'
+import { AGENT_AUTO_COMPACT_WINDOW_MIN } from '../../../tools/AgentTool/agentFrontmatterFields.js'
 import { killModProcessTree, modProcessCommand } from './host.js'
 import type { ModChunkSink, ModRecord, ModStreamPressure } from './runtime.js'
 
@@ -257,6 +258,9 @@ export function registerModAgent(spec: unknown, plugin: { name: string; root: st
   if (spec.model !== undefined && typeof spec.model !== 'string') throw new Error('agent.register model must be a string')
   if (spec.maxTurns !== undefined && (!Number.isInteger(spec.maxTurns) || spec.maxTurns < 1))
     throw new Error('agent.register maxTurns must be a positive whole number')
+  if (spec.autoCompactWindow !== undefined && (!Number.isSafeInteger(spec.autoCompactWindow) ||
+    (spec.autoCompactWindow as number) < AGENT_AUTO_COMPACT_WINDOW_MIN))
+    throw new Error(`agent.register autoCompactWindow must be a whole number of at least ${AGENT_AUTO_COMPACT_WINDOW_MIN}`)
   if (spec.background !== undefined && typeof spec.background !== 'boolean')
     throw new Error('agent.register background must be a boolean')
   if (spec.effort !== undefined && typeof spec.effort !== 'string' && !Number.isInteger(spec.effort))
@@ -272,6 +276,7 @@ export function registerModAgent(spec: unknown, plugin: { name: string; root: st
     ...(spec.model !== undefined ? { model: spec.model } : {}),
     ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
     ...(spec.maxTurns !== undefined ? { maxTurns: spec.maxTurns } : {}),
+    ...(spec.autoCompactWindow !== undefined ? { autoCompactWindow: spec.autoCompactWindow } : {}),
     ...(spec.background === true ? { background: true } : {}),
     ...(spec.omitClaudeMd === true ? { omitClaudeMd: true } : {}),
     getSystemPrompt: () => prompt,

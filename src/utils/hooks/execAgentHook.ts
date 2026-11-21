@@ -131,6 +131,10 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
           mainLoopModel: model,
           isNonInteractiveSession: true,
           thinkingConfig: { type: 'disabled' as const },
+          // The hook agent is its own agent: the cache lifetime and the
+          // compaction ceiling of the agent it checks do not carry over.
+          promptCacheTtl: undefined,
+          autoCompactWindow: undefined,
         },
         setInProgressToolUseIDs: () => {},
         getAppState() {

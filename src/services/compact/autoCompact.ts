@@ -137,9 +137,10 @@ export function previewAutoCompaction(
 
 /**
  * What the *saved* configuration resolves to for a given model, including
- * whether an environment variable is overriding it.
+ * whether an environment variable is overriding it. `windowCeiling` is a
+ * subagent's own `autoCompactWindow`: it can only lower the window.
  */
-export function describeAutoCompaction(model: string): AutoCompactionPreview & {
+export function describeAutoCompaction(model: string, windowCeiling?: number): AutoCompactionPreview & {
   windowCap: number | undefined
   source: 'auto' | 'percent' | 'env-percent'
   envOverridesCap: boolean
@@ -153,7 +154,11 @@ export function describeAutoCompaction(model: string): AutoCompactionPreview & {
   const hasEnvCap = !isNaN(envCap) && envCap > 0
 
   const configuredPercent = getConfiguredThresholdPercent()
-  const windowCap = hasEnvCap ? envCap : getConfiguredWindowCap()
+  const sessionCap = hasEnvCap ? envCap : getConfiguredWindowCap()
+  const windowCap =
+    windowCeiling === undefined
+      ? sessionCap
+      : Math.min(sessionCap ?? windowCeiling, windowCeiling)
   const percent = hasEnvPercent ? envPercent : configuredPercent
 
   return {
@@ -203,13 +208,14 @@ function markTurnSkipped(signal: AbortSignal, agentId: string | undefined): void
  * are literally the same call. Precedence, highest first:
  * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, the configured percentage, then auto.
  */
-export function getAutoCompactThreshold(model: string): number {
-  return describeAutoCompaction(model).threshold
+export function getAutoCompactThreshold(model: string, windowCeiling?: number): number {
+  return describeAutoCompaction(model, windowCeiling).threshold
 }
 
 export function calculateTokenWarningState(
   tokenUsage: number,
   model: string,
+  windowCeiling?: number,
 ): {
   percentLeft: number
   isAboveWarningThreshold: boolean
@@ -217,7 +223,7 @@ export function calculateTokenWarningState(
   isAboveAutoCompactThreshold: boolean
   isAtBlockingLimit: boolean
 } {
-  const autoCompactThreshold = getAutoCompactThreshold(model)
+  const autoCompactThreshold = getAutoCompactThreshold(model, windowCeiling)
   const threshold = isAutoCompactEnabled()
     ? autoCompactThreshold
     : getEffectiveContextWindowSize(model)
@@ -288,6 +294,8 @@ export async function shouldAutoCompact(
   // pre-snip context, so tokenCountWithEstimation can't see the savings.
   // Subtract the rough-delta that snip already computed.
   snipTokensFreed = 0,
+  // A subagent's own autoCompactWindow, which can only lower the window.
+  windowCeiling?: number,
 ): Promise<boolean> {
   // Recursion guards. session_memory and compact are forked agents that
   // would deadlock.
@@ -346,16 +354,17 @@ export async function shouldAutoCompact(
   }
 
   const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
-  const threshold = getAutoCompactThreshold(model)
+  const threshold = getAutoCompactThreshold(model, windowCeiling)
   const effectiveWindow = getEffectiveContextWindowSize(model)
 
   logForDebugging(
-    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
+    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}${windowCeiling !== undefined ? ` agentWindow=${windowCeiling}` : ''}`,
   )
 
   const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
     tokenCount,
     model,
+    windowCeiling,
   )
 
   return isAboveAutoCompactThreshold
@@ -391,11 +400,13 @@ export async function autoCompactIfNeeded(
   }
 
   const model = toolUseContext.options.mainLoopModel
+  const windowCeiling = toolUseContext.options.autoCompactWindow
   const shouldCompact = await shouldAutoCompact(
     messages,
     model,
     querySource,
     snipTokensFreed,
+    windowCeiling,
   )
 
   if (!shouldCompact) {
@@ -406,7 +417,7 @@ export async function autoCompactIfNeeded(
     isRecompactionInChain: tracking?.compacted === true,
     turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
     previousCompactTurnId: tracking?.turnId,
-    autoCompactThreshold: getAutoCompactThreshold(model),
+    autoCompactThreshold: getAutoCompactThreshold(model, windowCeiling),
     querySource,
   }
 

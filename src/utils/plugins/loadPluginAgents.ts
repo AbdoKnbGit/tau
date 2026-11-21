@@ -3,6 +3,14 @@ import { basename } from 'path'
 import { isAutoMemoryEnabled } from '../../memdir/paths.js'
 import type { AgentColorName } from '../../tools/AgentTool/agentColorManager.js'
 import {
+  AGENT_AUTO_COMPACT_WINDOW_MIN,
+  AGENT_OBSERVER_FIELDS,
+  describeFrontmatterValue,
+  parseAgentAutoCompactWindow,
+  parseAgentCacheTtl,
+  unknownPluginAgentKeys,
+} from '../../tools/AgentTool/agentFrontmatterFields.js'
+import {
   type AgentMemoryScope,
   loadAgentMemoryPrompt,
 } from '../../tools/AgentTool/agentMemory.js'
@@ -33,6 +41,9 @@ import type { PluginManifest } from './schemas.js'
 import { walkPluginMarkdown } from './walkPluginMarkdown.js'
 
 const VALID_MEMORY_SCOPES: AgentMemoryScope[] = ['user', 'project', 'local']
+
+// Claude Code skips a plugin agent that is not a regular file or is larger.
+const MAX_PLUGIN_AGENT_FILE_BYTES = 1_048_576
 
 async function loadAgentsFromDirectory(
   agentsPath: string,
@@ -76,6 +87,14 @@ async function loadAgentFromFile(
     return null
   }
   try {
+    const stats = await fs.stat(filePath)
+    if (!stats.isFile() || stats.size > MAX_PLUGIN_AGENT_FILE_BYTES) {
+      logForDebugging(
+        `Skipping plugin agent ${filePath}: not a regular file or exceeds ${MAX_PLUGIN_AGENT_FILE_BYTES} byte limit`,
+        { level: 'warn' },
+      )
+      return null
+    }
     const content = await fs.readFile(filePath, { encoding: 'utf-8' })
     const { frontmatter, content: markdownContent } = parseFrontmatter(
       content,
@@ -92,6 +111,7 @@ async function loadAgentFromFile(
     // Parse agent metadata from frontmatter
     const whenToUse =
       coerceDescriptionToString(frontmatter.description, agentType) ??
+      coerceDescriptionToString(frontmatter.when_to_use, agentType) ??
       coerceDescriptionToString(frontmatter['when-to-use'], agentType) ??
       `Agent from ${pluginName} plugin`
 
@@ -119,6 +139,15 @@ async function loadAgentFromFile(
         `Plugin agent file ${filePath} has invalid omitClaudeMd value. Must be 'true', 'false', or omitted.`,
       )
     }
+    const autoCompactWindowRaw = frontmatter.autoCompactWindow
+    const autoCompactWindow = parseAgentAutoCompactWindow(autoCompactWindowRaw)
+    if (autoCompactWindowRaw !== undefined && autoCompactWindow === undefined) {
+      logForDebugging(
+        `Plugin agent file ${filePath} has invalid autoCompactWindow ${describeFrontmatterValue(autoCompactWindowRaw)}. Must be an integer of at least ${AGENT_AUTO_COMPACT_WINDOW_MIN}.`,
+        { level: 'warn' },
+      )
+    }
+    const cacheTtl = parseAgentCacheTtl(frontmatter)
     // Substitute ${CLAUDE_PLUGIN_ROOT} so agents can reference bundled files,
     // and ${user_config.X} (non-sensitive only) so they can embed configured
     // usernames, endpoints, etc. Sensitive refs resolve to a placeholder.
@@ -186,6 +215,28 @@ async function loadAgentFromFile(
         )
       }
     }
+    // Claude Code ignores these for plugin agents too, and says so.
+    if (frontmatter.initialPrompt !== undefined) {
+      logForDebugging(
+        `Plugin agent file ${filePath} sets initialPrompt, which is ignored for plugin agents. Define the agent in .claude/agents/ to use initialPrompt.`,
+        { level: 'warn' },
+      )
+    }
+    for (const field of AGENT_OBSERVER_FIELDS) {
+      if (frontmatter[field] !== undefined) {
+        logForDebugging(
+          `Plugin agent file ${filePath} sets ${field}, which Tau ignores: it has no observer agents.`,
+          { level: 'warn' },
+        )
+      }
+    }
+    const unknownKeys = unknownPluginAgentKeys(frontmatter)
+    if (unknownKeys.length > 0) {
+      logForDebugging(
+        `Plugin agent file ${filePath} has frontmatter keys Tau does not recognize or apply: ${unknownKeys.join(', ')}`,
+        { level: 'warn' },
+      )
+    }
 
     // Parse maxTurns
     const maxTurnsRaw = frontmatter.maxTurns
@@ -240,6 +291,8 @@ async function loadAgentFromFile(
       ...(isolation ? { isolation } : {}),
       ...(effort !== undefined ? { effort } : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
+      ...(cacheTtl !== undefined ? { cacheTtl } : {}),
     } as AgentDefinition
   } catch (error) {
     logForDebugging(`Failed to load agent from ${filePath}: ${error}`, {

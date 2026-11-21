@@ -49,6 +49,8 @@ export interface CacheLookupResult {
 // died — the extra 5 min server-side gives the refresh cycle time to
 // create a replacement before the old one expires.
 const CACHE_TTL_MS = 5 * 60 * 1000
+// The same breathing room for a cache an agent asked to keep longer.
+const SERVER_TTL_MARGIN_SECONDS = 300
 
 // Proactively refresh the cache when less than this much TTL remains.
 // This prevents the gap where the old cache expires before the new one
@@ -130,6 +132,7 @@ function computeKey(
   model: string,
   systemInstruction: unknown,
   tools: unknown,
+  ttlSeconds?: number,
 ): string {
   const hash = createHash('sha256')
   hash.update(model)
@@ -137,6 +140,8 @@ function computeKey(
   hash.update(JSON.stringify(systemInstruction ?? null))
   hash.update('|')
   hash.update(JSON.stringify(tools ?? null))
+  // A longer-lived cache is its own entry; the default key is unchanged.
+  if (ttlSeconds !== undefined) hash.update(`|ttl:${ttlSeconds}`)
   return hash.digest('hex')
 }
 
@@ -168,11 +173,11 @@ async function _createCacheOnServer(
   key: string,
   args: GetOrCreateCacheArgs,
 ): Promise<CacheLookupResult | null> {
-  const { model, baseUrl, apiKey, systemInstruction, tools } = args
+  const { model, baseUrl, apiKey, systemInstruction, tools, ttlSeconds } = args
   try {
     const body: Record<string, unknown> = {
       model: `models/${model}`,
-      ttl: '600s',
+      ttl: ttlSeconds === undefined ? '600s' : `${ttlSeconds + SERVER_TTL_MARGIN_SECONDS}s`,
     }
     if (systemInstruction) body.systemInstruction = systemInstruction
     if (tools) body.tools = tools
@@ -217,7 +222,7 @@ async function _createCacheOnServer(
 
     _caches.set(key, {
       cacheName: data.name,
-      expiresAt: Date.now() + CACHE_TTL_MS,
+      expiresAt: Date.now() + (ttlSeconds === undefined ? CACHE_TTL_MS : ttlSeconds * 1000),
       model,
     })
     return {
@@ -259,6 +264,9 @@ export interface GetOrCreateCacheArgs {
   apiKey: string
   systemInstruction: unknown
   tools: unknown
+  /** How long the cache should stay usable, in seconds, when an agent asked
+   * for a longer prompt-cache lifetime. Unset keeps the default (5 min). */
+  ttlSeconds?: number
 }
 
 /**
@@ -279,7 +287,7 @@ export async function getOrCreateCacheWithUsage(
   if (!apiKey) return null
   if (approxSize(systemInstruction, tools) < minCacheSizeCharsForModel(model)) return null
 
-  const key = computeKey(model, systemInstruction, tools)
+  const key = computeKey(model, systemInstruction, tools, args.ttlSeconds)
 
   // Honor active miss cooldown.
   const miss = _misses.get(key)

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -68,16 +68,73 @@ test('default agents recurse, while explicit files replace discovery and keep fl
 })
 
 test('empty or unusable selections never fall back to default agents', async () => {
-  for (const agents of [[], ['./missing.md'], ['./not-a-file.md']]) {
+  for (const agents of [[], ['./missing.md']]) {
     const f = fixture({ agents })
-    mkdirSync(join(f.path, 'not-a-file.md'))
-    write(join(f.path, 'not-a-file.md', 'hidden.md'), '---\ndescription: Must not load\n---\nHidden.')
     const { plugin, errors } = await r.createPluginFromPath(f.path, `${f.name}@inline`, true, f.name)
     assert.equal(plugin.agentsPath, undefined)
     assert.deepEqual(plugin.agentsPaths, [])
     assert.equal(errors.length, agents.length)
     assert.deepEqual(await load(f), [])
   }
+})
+
+test('a selected folder is scanned, even one named like a Markdown file (Claude Code 2.1.329)', async () => {
+  const f = fixture({ agents: ['./not-a-file.md'] })
+  write(join(f.path, 'not-a-file.md', 'hidden.md'), '---\ndescription: Selected folder\n---\nHidden.')
+  const { plugin, errors } = await r.createPluginFromPath(f.path, `${f.name}@inline`, true, f.name)
+  assert.equal(plugin.agentsPath, undefined)
+  assert.deepEqual(plugin.agentsPaths, [join(f.path, 'not-a-file.md')])
+  assert.deepEqual(errors, [])
+  assert.deepEqual(names(await load(f)), [`${f.name}:hidden`])
+})
+
+test('component paths that leave the plugin are refused, by .. or by a link', async () => {
+  const outside = join(root, `outside ${fixtures}`)
+  write(join(outside, 'agent.md'), '---\ndescription: Outside the plugin\n---\nOutside.')
+  write(join(outside, 'cmd.md'), '---\ndescription: Outside command\n---\nOutside.')
+  const f = fixture({
+    agents: ['./../outside-agent.md', './linked.md'],
+    commands: ['./../outside-cmd.md'],
+    skills: ['./../outside-skill'],
+  })
+  write(join(root, 'outside-agent.md'), '---\ndescription: Climbed out\n---\nOutside.')
+  write(join(root, 'outside-cmd.md'), '---\ndescription: Climbed out\n---\nOutside.')
+  mkdirSync(join(root, 'outside-skill'), { recursive: true })
+  // A directory junction needs no privilege on Windows; elsewhere it is a symlink.
+  symlinkSync(outside, join(f.path, 'linked.md'), 'junction')
+  const { plugin, errors } = await r.createPluginFromPath(f.path, `${f.name}@inline`, true, f.name)
+  assert.deepEqual(plugin.agentsPaths, [])
+  assert.equal(plugin.commandsPaths, undefined)
+  assert.equal(plugin.skillsPaths, undefined)
+  const refused = errors.filter(error => error.type === 'component-load-failed')
+  assert.deepEqual(refused.map(error => [error.component, error.path]).sort(), [
+    ['agents', './../outside-agent.md'],
+    ['agents', './linked.md'],
+    ['commands', './../outside-cmd.md'],
+    ['skills', './../outside-skill'],
+  ])
+  assert.ok(refused.every(error => /outside|climbs out/.test(error.reason)))
+  assert.deepEqual(await load(f), [])
+})
+
+test('a plugin read in place may link into its own marketplace folder, not past it', async () => {
+  const market = join(root, `market ${fixtures}`)
+  const shared = join(market, 'shared')
+  write(join(shared, 'shared.md'), '---\ndescription: Shared marketplace agent\n---\nShared.')
+  const f = fixture({ agents: ['./shared-link.md'] })
+  const pluginPath = join(market, 'plugin')
+  mkdirSync(market, { recursive: true })
+  renameSync(f.path, pluginPath)
+  symlinkSync(shared, join(pluginPath, 'shared-link.md'), 'junction')
+  const entry = { name: f.name, source: './plugin', strict: true }
+  const inPlaceErrors = []
+  const inPlace = await r.finishLoadingPluginFromPath(entry, `${f.name}@market`, true, inPlaceErrors, pluginPath, market)
+  assert.deepEqual(inPlace.agentsPaths, [join(pluginPath, 'shared-link.md')])
+  assert.deepEqual(inPlaceErrors, [])
+  const cachedErrors = []
+  const cached = await r.finishLoadingPluginFromPath(entry, `${f.name}@market`, true, cachedErrors, pluginPath)
+  assert.deepEqual(cached.agentsPaths, [])
+  assert.ok(cachedErrors.some(error => error.type === 'component-load-failed' && error.path === './shared-link.md'))
 })
 
 test('mixed selections keep valid files, reject missing files and load duplicate paths once', async () => {
@@ -96,13 +153,13 @@ test('malformed declarations reject the manifest instead of exposing default age
   }
 })
 
-test('marketplace-as-manifest replaces defaults; strict additions preserve manifest selection', async () => {
+test('an entry with no plugin.json keeps agents/ beside its files (Claude Code 2.1.329); strict additions preserve manifest selection', async () => {
   for (const agents of [[], ['./custom/security.md'], ['./missing.md']]) {
     const f = fixture({}, false)
     const errors = []
     const plugin = await r.finishLoadingPluginFromPath(
       { name: f.name, source: './', agents, strict: true }, `${f.name}@catalog`, true, errors, f.path)
-    assert.equal(plugin.agentsPath, undefined)
+    assert.equal(plugin.agentsPath, join(f.path, 'agents'))
     assert.deepEqual(plugin.agentsPaths, agents.includes('./custom/security.md') ? [join(f.path, 'custom', 'security.md')] : [])
     assert.equal(errors.length, agents.includes('./missing.md') ? 1 : 0)
   }

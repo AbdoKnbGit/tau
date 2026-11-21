@@ -141,6 +141,8 @@ export interface LaneProviderCallParams {
   turnId?: string
   /** Logical caller source used for diagnostics and cache-key isolation. */
   querySource?: ProviderRequestParams['querySource']
+  /** The requesting agent's prompt-cache lifetime; lanes without one ignore it. */
+  promptCacheTtl?: ProviderRequestParams['promptCacheTtl']
   /**
    * Which sub-provider the shim was built for (e.g. 'groq',
    * 'openrouter', 'deepseek'). Shared lanes like openai-compat use

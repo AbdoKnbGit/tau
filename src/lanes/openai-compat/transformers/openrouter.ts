@@ -72,7 +72,7 @@ export const openrouterTransformer: Transformer = {
     }
 
     applyOpenRouterToolCacheBreakpoint(body)
-    applyOpenRouterClaudeCacheTtl(body)
+    applyOpenRouterClaudeCacheTtl(body, ctx.promptCacheTtl)
     applyOpenRouterContextCompressionPlugin(body)
     applyOpenRouterProviderRouting(body, ctx.sessionId)
 
@@ -194,10 +194,18 @@ function applyOpenRouterToolCacheBreakpoint(body: OpenAIChatRequest): void {
  * one-hour write 2x, so it pays off when replies are more than five minutes
  * apart. Every breakpoint gets the same lifetime because Anthropic requires
  * one-hour breakpoints to come before five-minute ones. Other model families
- * keep their own cache lifetimes.
+ * keep their own cache lifetimes. An agent's own `experimental.cacheTtl`
+ * ranks above the env var, both ways: "1h" asks for the hour without it and
+ * "5m" keeps five minutes with it.
  */
-function applyOpenRouterClaudeCacheTtl(body: OpenAIChatRequest): void {
-  if (!isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_OPENROUTER)) return
+function applyOpenRouterClaudeCacheTtl(
+  body: OpenAIChatRequest,
+  agentTtl?: '5m' | '1h',
+): void {
+  const oneHour = agentTtl === undefined
+    ? isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_OPENROUTER)
+    : agentTtl === '1h'
+  if (!oneHour) return
   if (!/^~?anthropic\//i.test(body.model)) return
   for (const tool of body.tools ?? []) {
     if (tool.cache_control) tool.cache_control = { ...tool.cache_control, ttl: '1h' }

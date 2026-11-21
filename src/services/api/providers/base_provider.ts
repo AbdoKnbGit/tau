@@ -179,6 +179,9 @@ export interface ProviderRequestParams {
   /** Request-scoped OpenAI effort. null explicitly selects the model default;
    * undefined lets standalone provider calls inherit the session/settings. */
   effortValue?: import('../../../utils/effort.js').EffortValue | null
+  /** The requesting agent's prompt-cache lifetime (`experimental.cacheTtl`).
+   * Lanes with that control apply it; every other path ignores it. */
+  promptCacheTtl?: '5m' | '1h'
 }
 
 export interface SystemBlock {

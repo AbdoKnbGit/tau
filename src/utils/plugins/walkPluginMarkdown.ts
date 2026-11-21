@@ -3,6 +3,9 @@ import { logForDebugging } from '../debug.js'
 import { getFsImplementation } from '../fsOperations.js'
 
 const SKILL_MD_RE = /^skill\.md$/i
+// Claude Code's limits: a plugin tree deeper or wider than this is not scanned.
+const MAX_SCAN_DEPTH = 32
+const MAX_SCAN_DIRECTORIES = 4096
 
 /**
  * Recursively walk a plugin directory, invoking onFile for each .md file.
@@ -25,8 +28,27 @@ export async function walkPluginMarkdown(
 ): Promise<void> {
   const fs = getFsImplementation()
   const label = opts.logLabel ?? 'plugin'
+  let scannedDirectories = 0
+  let stopped = false
 
   async function scan(dirPath: string, namespace: string[]): Promise<void> {
+    if (namespace.length >= MAX_SCAN_DEPTH) {
+      logForDebugging(
+        `Skipping ${label} directory beyond depth ${MAX_SCAN_DEPTH}: ${dirPath}`,
+        { level: 'error' },
+      )
+      return
+    }
+    if (++scannedDirectories > MAX_SCAN_DIRECTORIES) {
+      if (!stopped) {
+        stopped = true
+        logForDebugging(
+          `Stopping ${label} scan after ${MAX_SCAN_DIRECTORIES} directories (root=${rootDir})`,
+          { level: 'error' },
+        )
+      }
+      return
+    }
     try {
       const entries = await fs.readdir(dirPath)
 

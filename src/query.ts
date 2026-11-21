@@ -1002,6 +1002,9 @@ async function* queryLoop(
               advisorModel: appState.advisorModel,
               skipCacheWrite,
               agentId: toolUseContext.agentId,
+              ...(toolUseContext.options.promptCacheTtl !== undefined && {
+                promptCacheTtl: toolUseContext.options.promptCacheTtl,
+              }),
               addNotification: toolUseContext.addNotification,
               ...(params.taskBudget && {
                 taskBudget: {

@@ -163,6 +163,7 @@ export class GeminiLane implements Lane {
       sessionId,
       providerHint,
       querySource,
+      promptCacheTtl,
     } = params
 
     // Normalize system → plain string.
@@ -295,6 +296,9 @@ export class GeminiLane implements Lane {
             apiKey,
             systemInstruction: cacheSystemInstruction,
             tools: cacheTools,
+            // An agent that asked for a one-hour prompt cache keeps its
+            // explicit cache that long; "5m" is already the default here.
+            ...(promptCacheTtl === '1h' && { ttlSeconds: 3600 }),
           })
           cacheName = cache?.cacheName ?? null
           cacheWriteTokens = cache?.createdTokens ?? 0

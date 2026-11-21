@@ -23,11 +23,14 @@ import { OpenRouterToolCallError } from '../../lanes/openai-compat/openrouter_to
 import { isProviderFailureBlock } from '../../lanes/shared/provider_failure.js'
 import { randomUUID } from 'crypto'
 import {
+  type APIProvider,
   getAPIProvider,
+  isAnthropicNativeProvider,
   isFirstPartyAnthropicBaseUrl,
   isThirdPartyProvider,
   usesAnthropicMessagesWire,
 } from 'src/utils/model/providers.js'
+import type { AgentCacheTtl } from '../../tools/AgentTool/agentFrontmatterFields.js'
 import {
   getAttributionHeader,
   getCLISyspromptPrefix,
@@ -486,9 +489,12 @@ function maybeNotifyAgentRouterCacheStats({
 export function getCacheControl({
   scope,
   querySource,
+  agentTtl,
 }: {
   scope?: CacheScope
   querySource?: QuerySource
+  /** The requesting agent's own lifetime, from resolveMarkerCacheTtl. */
+  agentTtl?: AgentCacheTtl
 } = {}): {
   type: 'ephemeral'
   ttl?: '1h'
@@ -496,9 +502,27 @@ export function getCacheControl({
 } {
   return {
     type: 'ephemeral',
-    ...(should1hCacheTTL(querySource) && { ttl: '1h' }),
+    ...((agentTtl === undefined ? should1hCacheTTL(querySource) : agentTtl === '1h') && { ttl: '1h' }),
     ...(scope === 'global' && { scope }),
   }
+}
+
+/**
+ * The prompt-cache lifetime an agent asked for (`experimental.cacheTtl`), for
+ * a request that carries it in its Anthropic cache markers: Anthropic,
+ * Bedrock, Vertex and Foundry. It ranks above the session's 1h rules, so a
+ * "5m" agent stays at five minutes; as in Claude Code, "1h" is not used while
+ * a Claude subscription is in overage. Lanes get the value as a request field.
+ */
+function resolveMarkerCacheTtl(
+  provider: APIProvider,
+  ttl: AgentCacheTtl | undefined,
+): AgentCacheTtl | undefined {
+  if (ttl === undefined || !isAnthropicNativeProvider(provider)) return undefined
+  if (ttl === '1h' && isClaudeAISubscriber() && currentLimits.isUsingOverage) {
+    return undefined
+  }
+  return ttl
 }
 
 /**
@@ -725,6 +749,7 @@ export function userMessageToMessageParam(
   addCache = false,
   enablePromptCaching: boolean,
   querySource?: QuerySource,
+  agentTtl?: AgentCacheTtl,
 ): MessageParam {
   if (addCache) {
     if (typeof message.message.content === 'string') {
@@ -735,7 +760,7 @@ export function userMessageToMessageParam(
             type: 'text',
             text: message.message.content,
             ...(enablePromptCaching && {
-              cache_control: getCacheControl({ querySource }),
+              cache_control: getCacheControl({ querySource, agentTtl }),
             }),
           },
         ],
@@ -747,7 +772,7 @@ export function userMessageToMessageParam(
           ..._,
           ...(i === message.message.content.length - 1
             ? enablePromptCaching
-              ? { cache_control: getCacheControl({ querySource }) }
+              ? { cache_control: getCacheControl({ querySource, agentTtl }) }
               : {}
             : {}),
         })),
@@ -770,6 +795,7 @@ export function assistantMessageToMessageParam(
   addCache = false,
   enablePromptCaching: boolean,
   querySource?: QuerySource,
+  agentTtl?: AgentCacheTtl,
 ): MessageParam {
   if (addCache) {
     if (typeof message.message.content === 'string') {
@@ -780,7 +806,7 @@ export function assistantMessageToMessageParam(
             type: 'text',
             text: message.message.content,
             ...(enablePromptCaching && {
-              cache_control: getCacheControl({ querySource }),
+              cache_control: getCacheControl({ querySource, agentTtl }),
             }),
           },
         ],
@@ -795,7 +821,7 @@ export function assistantMessageToMessageParam(
           _.type !== 'redacted_thinking' &&
           (feature('CONNECTOR_TEXT') ? !isConnectorTextBlock(_) : true)
             ? enablePromptCaching
-              ? { cache_control: getCacheControl({ querySource }) }
+              ? { cache_control: getCacheControl({ querySource, agentTtl }) }
               : {}
             : {}),
         })),
@@ -830,6 +856,9 @@ export type Options = {
   hasPendingMcpServers?: boolean
   queryTracking?: QueryChainTracking
   agentId?: AgentId // Only set for subagents
+  /** The agent's prompt-cache lifetime (its `experimental.cacheTtl`): carried
+   * in Anthropic cache markers or handed to the lane. Unset for the session. */
+  promptCacheTtl?: AgentCacheTtl
   outputFormat?: BetaJSONOutputFormat
   fastMode?: boolean
   advisorModel?: string
@@ -1883,9 +1912,13 @@ async function* queryModel(
 
   const enablePromptCaching =
     options.enablePromptCaching ?? getPromptCachingEnabled(options.model)
+  // Decided once from the provider this request goes to, so a lane never
+  // receives the lifetime inside markers it might forward as they are.
+  const markerCacheTtl = resolveMarkerCacheTtl(requestProvider, options.promptCacheTtl)
   const system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
     skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
     querySource: options.querySource,
+    agentTtl: markerCacheTtl,
   })
   const useBetas = betas.length > 0
 
@@ -2247,6 +2280,7 @@ async function* queryModel(
         consumedCacheEdits,
         consumedPinnedEdits,
         options.skipCacheWrite,
+        markerCacheTtl,
       ),
       system,
       tools: allTools,
@@ -2278,6 +2312,13 @@ async function* queryModel(
       }),
       ...(speed !== undefined && { speed }),
       ...(providerSessionId && { sessionId: providerSessionId }),
+      // Lanes set an agent's cache lifetime themselves (OpenRouter's Claude
+      // rows, Gemini's explicit cache). Never on the Anthropic SDK wire, which
+      // would send an unknown field.
+      ...(options.promptCacheTtl !== undefined &&
+        !usesAnthropicMessagesWire(requestProvider) && {
+          promptCacheTtl: options.promptCacheTtl,
+        }),
     }
   }
 
@@ -3959,6 +4000,7 @@ export function addCacheBreakpoints(
   newCacheEdits?: CachedMCEditsBlock | null,
   pinnedEdits?: CachedMCPinnedEdits[],
   skipCacheWrite = false,
+  agentTtl?: AgentCacheTtl,
 ): MessageParam[] {
   logEvent('tengu_api_cache_breakpoints', {
     totalMessageCount: messages.length,
@@ -3986,6 +4028,7 @@ export function addCacheBreakpoints(
         addCache,
         enablePromptCaching,
         querySource,
+        agentTtl,
       )
     }
     return assistantMessageToMessageParam(
@@ -3993,6 +4036,7 @@ export function addCacheBreakpoints(
       addCache,
       enablePromptCaching,
       querySource,
+      agentTtl,
     )
   })
 
@@ -4107,6 +4151,7 @@ export function buildSystemPromptBlocks(
   options?: {
     skipGlobalCacheForSystemPrompt?: boolean
     querySource?: QuerySource
+    agentTtl?: AgentCacheTtl
   },
 ): TextBlockParam[] {
   // IMPORTANT: Do not add any more blocks for caching or you will get a 400
@@ -4121,6 +4166,7 @@ export function buildSystemPromptBlocks(
           cache_control: getCacheControl({
             scope: block.cacheScope,
             querySource: options?.querySource,
+            agentTtl: options?.agentTtl,
           }),
         }),
     }

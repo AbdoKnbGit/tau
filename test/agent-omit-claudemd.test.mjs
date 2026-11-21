@@ -85,7 +85,7 @@ test('agent context omits personal/project instructions, retains managed policy 
   r.getMemoryFiles.cache.set(undefined, Promise.resolve(files))
   r.getUserContext.cache.set(undefined, Promise.resolve(parent))
   try {
-    for (const source of ['plugin', 'projectSettings', 'userSettings', 'built-in']) {
+    for (const source of ['plugin', 'projectSettings', 'userSettings']) {
       const selected = await r.resolveAgentUserContext(parent, { source, omitClaudeMd: true }, false)
       assert.equal(selected.claudeMd, r.getClaudeMds(files, type => type === 'Managed'))
       assert.equal(selected.currentDate, parent.currentDate)
@@ -99,8 +99,11 @@ test('agent context omits personal/project instructions, retains managed policy 
     }
     assert.equal(await r.resolveAgentUserContext(parent, { source: 'plugin', omitClaudeMd: true }, true), parent,
       'explicit caller context must not be filtered')
-    assert.deepEqual(await r.resolveAgentUserContext(parent, { source: 'policySettings', omitClaudeMd: true }, false),
-      { currentDate: parent.currentDate, otherContext: parent.otherContext })
+    // Built-in and managed agents omit managed policy too (Claude Code 2.1.329).
+    for (const source of ['policySettings', 'built-in']) {
+      assert.deepEqual(await r.resolveAgentUserContext(parent, { source, omitClaudeMd: true }, false),
+        { currentDate: parent.currentDate, otherContext: parent.otherContext })
+    }
     r.getMemoryFiles.cache.set(undefined, Promise.resolve(files.filter(file => file.type !== 'Managed')))
     assert.deepEqual(await r.resolveAgentUserContext(parent, { source: 'plugin', omitClaudeMd: true }, false),
       { currentDate: parent.currentDate, otherContext: parent.otherContext })

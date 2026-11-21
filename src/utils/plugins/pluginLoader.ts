@@ -1434,26 +1434,23 @@ async function validatePluginPaths(
   componentLabel: string,
   contextLabel: string,
   errors: PluginError[],
+  containmentRoot?: string,
 ): Promise<string[]> {
-  // Parallelize the async pathExists checks
+  // Parallelize the async pathExists checks. A selected folder (even one
+  // named like a file, `./agents.md`) is scanned, as Claude Code does.
   const checks = await Promise.all(
     relPaths.map(async relPath => {
       const fullPath = join(pluginPath, relPath)
-      const exists = await pathExists(fullPath)
-      // Agent declarations select files. A directory whose name ends in .md
-      // must not become an unintended recursive agent scan.
-      const isAgentFile = component !== 'agents' || !exists ||
-        (fullPath.endsWith('.md') && (await stat(fullPath).catch(() => null))?.isFile() === true)
-      return { relPath, fullPath, exists, isAgentFile }
+      const escape = await componentPathEscape(pluginPath, fullPath, containmentRoot)
+      const exists = escape === undefined && (await pathExists(fullPath))
+      return { relPath, fullPath, escape, exists }
     }),
   )
   // Process results in original order to keep error/log ordering deterministic
   const validPaths: string[] = []
-  for (const { relPath, fullPath, exists, isAgentFile } of checks) {
-    if (exists && !isAgentFile) {
-      const message = `Agent path must be a Markdown file: ${fullPath}`
-      logForDebugging(message, { level: 'warn' })
-      errors.push({ type: 'generic-error', source, plugin: pluginName, error: message })
+  for (const { relPath, fullPath, escape, exists } of checks) {
+    if (escape !== undefined) {
+      reportComponentPathEscape(errors, source, pluginName, component, relPath, escape)
     } else if (exists) {
       validPaths.push(fullPath)
     } else {
@@ -1476,6 +1473,49 @@ async function validatePluginPaths(
     }
   }
   return validPaths
+}
+
+/**
+ * Why a component path a manifest or marketplace entry names must not load,
+ * or undefined when it may. As in Claude Code, a path may not climb out of
+ * its plugin (`./../agent.md`), and an existing file or folder may not be a
+ * link that resolves outside it: either would read files the plugin does not
+ * own into the session. A link may also resolve into `containmentRoot`, the
+ * marketplace folder a plugin is read from in place. A path whose real
+ * location cannot be read is left to the existence check that follows.
+ */
+async function componentPathEscape(
+  pluginPath: string,
+  fullPath: string,
+  containmentRoot?: string,
+): Promise<string | undefined> {
+  if (!isWithinDirectory(pluginPath, fullPath)) {
+    return 'the path climbs out of the plugin folder'
+  }
+  const [target, ...roots] = await Promise.all(
+    [fullPath, pluginPath, ...(containmentRoot ? [containmentRoot] : [])].map(
+      path => realpath(path).catch(() => undefined),
+    ),
+  )
+  const anchors = roots.filter((root): root is string => root !== undefined)
+  if (target === undefined || anchors.length === 0) return undefined
+  return anchors.some(root => isWithinDirectory(root, target))
+    ? undefined
+    : 'the path links to a place outside the plugin folder'
+}
+
+function reportComponentPathEscape(
+  errors: PluginError[],
+  source: string,
+  plugin: string,
+  component: PluginComponent,
+  path: string,
+  reason: string,
+): void {
+  logForDebugging(`Plugin ${plugin}: not loading ${component} path ${path}: ${reason}`, {
+    level: 'error',
+  })
+  errors.push({ type: 'component-load-failed', source, plugin, component, path, reason })
 }
 
 /**
@@ -1515,6 +1555,9 @@ async function validatePluginPaths(
  * @param enabled - Initial enabled state (may be overridden by settings)
  * @param fallbackName - Name to use if manifest doesn't specify one
  * @param strict - When true, adds errors for duplicate hook files (default: true)
+ * @param containmentRoot - The marketplace folder a plugin is read from in
+ *   place: links in the plugin may resolve into it, and its default folders
+ *   may not be links out of it
  * @returns Object containing the LoadedPlugin and any errors encountered
  */
 export async function createPluginFromPath(
@@ -1523,6 +1566,7 @@ export async function createPluginFromPath(
   enabled: boolean,
   fallbackName: string,
   strict = true,
+  containmentRoot?: string,
 ): Promise<{ plugin: LoadedPlugin; errors: PluginError[] }> {
   const errors: PluginError[] = []
 
@@ -1550,18 +1594,25 @@ export async function createPluginFromPath(
     enabled, // Current enabled state
   }
 
-  // Step 3: Auto-detect optional directories in parallel
+  // Step 3: Auto-detect optional directories in parallel. Read in place from
+  // a marketplace, a default folder that is a link out of it is not loaded
+  // (Claude Code checks the same); cached copies never hold such a link.
   const [
     commandsDirExists,
     agentsDirExists,
     skillsDirExists,
     outputStylesDirExists,
-  ] = await Promise.all([
-    pathExists(join(pluginPath, 'commands')),
-    pathExists(join(pluginPath, 'agents')),
-    pathExists(join(pluginPath, 'skills')),
-    pathExists(join(pluginPath, 'output-styles')),
-  ])
+  ] = await Promise.all(
+    (['commands', 'agents', 'skills', 'output-styles'] as const).map(async folder => {
+      const folderPath = join(pluginPath, folder)
+      if (!(await pathExists(folderPath))) return false
+      if (containmentRoot === undefined) return true
+      const escape = await componentPathEscape(pluginPath, folderPath, containmentRoot)
+      if (escape === undefined) return true
+      reportComponentPathEscape(errors, source, manifest.name, folder, `./${folder}`, escape)
+      return false
+    }),
+  )
 
   const commandsPath = join(pluginPath, 'commands')
   if (commandsDirExists) {
@@ -1593,12 +1644,14 @@ export async function createPluginFromPath(
           }
           if (metadata.source) {
             const fullPath = join(pluginPath, metadata.source)
+            const escape = await componentPathEscape(pluginPath, fullPath, containmentRoot)
             return {
               commandName,
               metadata,
               kind: 'source' as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              escape,
+              exists: escape === undefined && (await pathExists(fullPath)),
             }
           }
           if (metadata.content) {
@@ -1615,7 +1668,9 @@ export async function createPluginFromPath(
           continue
         }
         // kind === 'source'
-        if (check.exists) {
+        if (check.escape !== undefined) {
+          reportComponentPathEscape(errors, source, manifest.name, 'commands', check.metadata.source!, check.escape)
+        } else if (check.exists) {
           validPaths.push(check.fullPath)
           commandsMetadata[check.commandName] = check.metadata
         } else {
@@ -1659,11 +1714,13 @@ export async function createPluginFromPath(
             return { cmdPath, kind: 'invalid' as const }
           }
           const fullPath = join(pluginPath, cmdPath)
+          const escape = await componentPathEscape(pluginPath, fullPath, containmentRoot)
           return {
             cmdPath,
             kind: 'path' as const,
             fullPath,
-            exists: await pathExists(fullPath),
+            escape,
+            exists: escape === undefined && (await pathExists(fullPath)),
           }
         }),
       )
@@ -1676,7 +1733,9 @@ export async function createPluginFromPath(
           )
           continue
         }
-        if (check.exists) {
+        if (check.escape !== undefined) {
+          reportComponentPathEscape(errors, source, manifest.name, 'commands', check.cmdPath, check.escape)
+        } else if (check.exists) {
           validPaths.push(check.fullPath)
         } else {
           logForDebugging(
@@ -1717,6 +1776,15 @@ export async function createPluginFromPath(
     const agentPaths = Array.isArray(manifest.agents)
       ? manifest.agents
       : [manifest.agents]
+    if (
+      agentsDirExists &&
+      !agentPaths.some(path => isWithinDirectory(agentsPath, join(pluginPath, path)))
+    ) {
+      logForDebugging(
+        `Plugin ${manifest.name}: agents/ folder exists but is not auto-loaded because the manifest sets "agents"`,
+        { level: 'warn' },
+      )
+    }
 
     const validPaths = await validatePluginPaths(
       agentPaths,
@@ -1727,6 +1795,7 @@ export async function createPluginFromPath(
       'Agent',
       'specified in manifest but',
       errors,
+      containmentRoot,
     )
 
     plugin.agentsPaths = validPaths
@@ -1753,6 +1822,7 @@ export async function createPluginFromPath(
       'Skill',
       'specified in manifest but',
       errors,
+      containmentRoot,
     )
 
     if (validPaths.length > 0) {
@@ -1781,6 +1851,7 @@ export async function createPluginFromPath(
       'Output style',
       'specified in manifest but',
       errors,
+      containmentRoot,
     )
 
     if (validPaths.length > 0) {
@@ -2378,6 +2449,8 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
   useInstalledPath = false,
 ): Promise<LoadedPlugin | null> {
   let pluginPath: string
+  // Set when the plugin is read in place from its marketplace folder.
+  let containmentRoot: string | undefined
 
   // An installed marketplace-relative plugin has its own copy in the versioned
   // cache, and that copy is what the full loader resolves it to. Read it when
@@ -2409,6 +2482,7 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
       return null
     }
     pluginPath = join(marketplaceDir, entry.source)
+    containmentRoot = marketplaceDir
     // finishLoadingPluginFromPath reads pluginPath — its error handling
     // surfaces ENOENT as a load failure, no need to pre-check here.
   } else {
@@ -2457,6 +2531,7 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
     enabled,
     errorsOut,
     pluginPath,
+    containmentRoot,
   )
 }
 
@@ -2487,6 +2562,8 @@ async function loadPluginFromMarketplaceEntry(
     `Loading plugin ${entry.name} from source: ${jsonStringify(entry.source)}`,
   )
   let pluginPath: string
+  // Set when the plugin is read in place from its marketplace folder.
+  let containmentRoot: string | undefined
 
   if (typeof entry.source === 'string') {
     // Relative path - resolve relative to marketplace install location
@@ -2560,6 +2637,7 @@ async function loadPluginFromMarketplaceEntry(
         { level: 'warn' },
       )
       pluginPath = sourcePluginPath
+      containmentRoot = marketplaceDir
     }
   } else {
     // External source (npm, github, url, pip) - always use versioned cache
@@ -2703,6 +2781,7 @@ async function loadPluginFromMarketplaceEntry(
     enabled,
     errorsOut,
     pluginPath,
+    containmentRoot,
   )
 }
 
@@ -2720,6 +2799,7 @@ async function finishLoadingPluginFromPath(
   enabled: boolean,
   errorsOut: PluginError[],
   pluginPath: string,
+  containmentRoot?: string,
 ): Promise<LoadedPlugin | null> {
   const errors: PluginError[] = []
 
@@ -2733,6 +2813,7 @@ async function finishLoadingPluginFromPath(
     enabled,
     entry.name,
     entry.strict ?? true, // Respect marketplace entry's strict setting
+    containmentRoot,
   )
   errors.push(...pluginErrors)
 
@@ -2787,18 +2868,22 @@ async function finishLoadingPluginFromPath(
               return { commandName, metadata, skip: true as const }
             }
             const fullPath = join(pluginPath, metadata.source)
+            const escape = await componentPathEscape(pluginPath, fullPath, containmentRoot)
             return {
               commandName,
               metadata,
               skip: false as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              escape,
+              exists: escape === undefined && (await pathExists(fullPath)),
             }
           }),
         )
         for (const check of checks) {
           if (check.skip) continue
-          if (check.exists) {
+          if (check.escape !== undefined) {
+            reportComponentPathEscape(errors, pluginId, entry.name, 'commands', check.metadata.source ?? check.fullPath, check.escape)
+          } else if (check.exists) {
             validPaths.push(check.fullPath)
             commandsMetadata[check.commandName] = check.metadata
           } else {
@@ -2838,11 +2923,13 @@ async function finishLoadingPluginFromPath(
               return { cmdPath, kind: 'invalid' as const }
             }
             const fullPath = join(pluginPath, cmdPath)
+            const escape = await componentPathEscape(pluginPath, fullPath, containmentRoot)
             return {
               cmdPath,
               kind: 'path' as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              escape,
+              exists: escape === undefined && (await pathExists(fullPath)),
             }
           }),
         )
@@ -2855,7 +2942,9 @@ async function finishLoadingPluginFromPath(
             )
             continue
           }
-          if (check.exists) {
+          if (check.escape !== undefined) {
+            reportComponentPathEscape(errors, pluginId, entry.name, 'commands', check.cmdPath, check.escape)
+          } else if (check.exists) {
             validPaths.push(check.fullPath)
           } else {
             logForDebugging(
@@ -2883,9 +2972,10 @@ async function finishLoadingPluginFromPath(
       }
     }
 
-    // With no plugin.json, the entry is the manifest and replaces agents/.
+    // With no plugin.json the plugin was built without an `agents` field, so
+    // agents/ stays and the entry's files load beside it. Claude Code 2.1.329
+    // does the same (an empty or missing selection still leaves agents/).
     if (entry.agents !== undefined) {
-      delete plugin.agentsPath
       const agentPaths = Array.isArray(entry.agents)
         ? entry.agents
         : [entry.agents]
@@ -2899,6 +2989,7 @@ async function finishLoadingPluginFromPath(
         'Agent',
         'from marketplace entry',
         errors,
+        containmentRoot,
       )
 
       plugin.agentsPaths = validPaths
@@ -2919,15 +3010,23 @@ async function finishLoadingPluginFromPath(
       const checks = await Promise.all(
         skillPaths.map(async skillPath => {
           const fullPath = join(pluginPath, skillPath)
-          return { skillPath, fullPath, exists: await pathExists(fullPath) }
+          const escape = await componentPathEscape(pluginPath, fullPath, containmentRoot)
+          return {
+            skillPath,
+            fullPath,
+            escape,
+            exists: escape === undefined && (await pathExists(fullPath)),
+          }
         }),
       )
       const validPaths: string[] = []
-      for (const { skillPath, fullPath, exists } of checks) {
+      for (const { skillPath, fullPath, escape, exists } of checks) {
         logForDebugging(
           `Checking skill path: ${skillPath} -> ${fullPath} (exists: ${exists})`,
         )
-        if (exists) {
+        if (escape !== undefined) {
+          reportComponentPathEscape(errors, pluginId, entry.name, 'skills', skillPath, escape)
+        } else if (exists) {
           validPaths.push(fullPath)
         } else {
           logForDebugging(
@@ -2974,6 +3073,7 @@ async function finishLoadingPluginFromPath(
         'Output style',
         'from marketplace entry',
         errors,
+        containmentRoot,
       )
 
       if (validPaths.length > 0) {
@@ -3037,18 +3137,22 @@ async function finishLoadingPluginFromPath(
               return { commandName, metadata, skip: true as const }
             }
             const fullPath = join(pluginPath, metadata.source)
+            const escape = await componentPathEscape(pluginPath, fullPath, containmentRoot)
             return {
               commandName,
               metadata,
               skip: false as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              escape,
+              exists: escape === undefined && (await pathExists(fullPath)),
             }
           }),
         )
         for (const check of checks) {
           if (check.skip) continue
-          if (check.exists) {
+          if (check.escape !== undefined) {
+            reportComponentPathEscape(errors, pluginId, entry.name, 'commands', check.metadata.source ?? check.fullPath, check.escape)
+          } else if (check.exists) {
             validPaths.push(check.fullPath)
             commandsMetadata[check.commandName] = check.metadata
           } else {
@@ -3091,11 +3195,13 @@ async function finishLoadingPluginFromPath(
               return { cmdPath, kind: 'invalid' as const }
             }
             const fullPath = join(pluginPath, cmdPath)
+            const escape = await componentPathEscape(pluginPath, fullPath, containmentRoot)
             return {
               cmdPath,
               kind: 'path' as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              escape,
+              exists: escape === undefined && (await pathExists(fullPath)),
             }
           }),
         )
@@ -3108,7 +3214,9 @@ async function finishLoadingPluginFromPath(
             )
             continue
           }
-          if (check.exists) {
+          if (check.escape !== undefined) {
+            reportComponentPathEscape(errors, pluginId, entry.name, 'commands', check.cmdPath, check.escape)
+          } else if (check.exists) {
             validPaths.push(check.fullPath)
           } else {
             logForDebugging(
@@ -3154,6 +3262,7 @@ async function finishLoadingPluginFromPath(
         'Agent',
         'from marketplace entry',
         errors,
+        containmentRoot,
       )
 
       if (validPaths.length > 0) {
@@ -3176,6 +3285,7 @@ async function finishLoadingPluginFromPath(
         'Skill',
         'from marketplace entry',
         errors,
+        containmentRoot,
       )
 
       if (validPaths.length > 0) {
@@ -3198,6 +3308,7 @@ async function finishLoadingPluginFromPath(
         'Output style',
         'from marketplace entry',
         errors,
+        containmentRoot,
       )
 
       if (validPaths.length > 0) {

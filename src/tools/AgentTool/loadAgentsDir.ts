@@ -58,6 +58,14 @@ import {
   type AgentColorName,
   setAgentColor,
 } from './agentColorManager.js'
+import {
+  AGENT_AUTO_COMPACT_WINDOW_MIN,
+  AGENT_OBSERVER_FIELDS,
+  type AgentCacheTtl,
+  describeFrontmatterValue,
+  parseAgentAutoCompactWindow,
+  parseAgentCacheTtl,
+} from './agentFrontmatterFields.js'
 import { type AgentMemoryScope, loadAgentMemoryPrompt } from './agentMemory.js'
 import {
   checkAgentMemorySnapshot,
@@ -109,6 +117,11 @@ const AgentJsonSchema = lazySchema(() =>
       mcpServers: z.array(AgentMcpServerSpecSchema()).optional(),
       hooks: HooksSchema().optional(),
       maxTurns: z.number().int().positive().optional(),
+      autoCompactWindow: z
+        .number()
+        .int()
+        .min(AGENT_AUTO_COMPACT_WINDOW_MIN)
+        .optional(),
       skills: z.array(z.string()).optional(),
       initialPrompt: z.string().optional(),
       memory: z.enum(['user', 'project', 'local']).optional(),
@@ -170,6 +183,12 @@ export type BaseAgentDefinition = {
   effort?: EffortValue
   permissionMode?: PermissionMode
   maxTurns?: number // Maximum number of agentic turns before stopping
+  /** Token count at which this agent compacts its own conversation when it
+   * runs as a subagent. Only lowers the window it would otherwise use. */
+  autoCompactWindow?: number
+  /** Prompt-cache lifetime for this agent's requests (`experimental.cacheTtl`),
+   * applied by the lanes that can set one. */
+  cacheTtl?: AgentCacheTtl
   filename?: string // Original filename without .md extension (for user/project/managed agents)
   baseDir?: string
   criticalSystemReminder_EXPERIMENTAL?: string // Short message re-injected at every user turn
@@ -588,6 +607,9 @@ export function parseAgentFromJson(
         : {}),
       ...(parsed.hooks ? { hooks: parsed.hooks } : {}),
       ...(parsed.maxTurns !== undefined ? { maxTurns: parsed.maxTurns } : {}),
+      ...(parsed.autoCompactWindow !== undefined
+        ? { autoCompactWindow: parsed.autoCompactWindow }
+        : {}),
       ...(parsed.skills && parsed.skills.length > 0
         ? { skills: parsed.skills }
         : {}),
@@ -820,6 +842,24 @@ export function parseAgentFromMarkdown(
       )
     }
 
+    const autoCompactWindowRaw = frontmatter['autoCompactWindow']
+    const autoCompactWindow = parseAgentAutoCompactWindow(autoCompactWindowRaw)
+    if (autoCompactWindowRaw !== undefined && autoCompactWindow === undefined) {
+      logForDebugging(
+        `Agent file ${filePath} has invalid autoCompactWindow ${describeFrontmatterValue(autoCompactWindowRaw)}. Must be an integer of at least ${AGENT_AUTO_COMPACT_WINDOW_MIN}.`,
+        { level: 'warn' },
+      )
+    }
+    const cacheTtl = parseAgentCacheTtl(frontmatter)
+    for (const field of AGENT_OBSERVER_FIELDS) {
+      if (frontmatter[field] !== undefined) {
+        logForDebugging(
+          `Agent file ${filePath} sets ${field}, which Tau ignores: it has no observer agents.`,
+          { level: 'warn' },
+        )
+      }
+    }
+
     // Extract filename without extension
     const filename = basename(filePath, '.md')
 
@@ -910,6 +950,8 @@ export function parseAgentFromMarkdown(
         ? { permissionMode: permissionModeRaw as PermissionMode }
         : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
+      ...(cacheTtl !== undefined ? { cacheTtl } : {}),
       ...(background ? { background } : {}),
       ...(omitClaudeMd !== undefined ? { omitClaudeMd } : {}),
       ...(memory ? { memory } : {}),

@@ -1366,11 +1366,25 @@ export const AgentDefinitionSchema = lazySchema(() =>
         .describe(
           'Maximum number of agentic turns (API round-trips) before stopping',
         ),
+      autoCompactWindow: z
+        .number()
+        .int()
+        .min(100_000)
+        .optional()
+        .describe(
+          'Token count at which this agent compacts its own conversation when it runs as a subagent. It only lowers the window the subagent would otherwise inherit. No effect on the main session agent.',
+        ),
       background: z
         .boolean()
         .optional()
         .describe(
           'Run this agent as a background task (non-blocking, fire-and-forget) when invoked',
+        ),
+      omitClaudeMd: z
+        .boolean()
+        .optional()
+        .describe(
+          'Run this agent without the user, project and local CLAUDE.md instruction files when it runs as a subagent; managed policy files are kept. No effect on the main session agent.',
         ),
       memory: z
         .enum(['user', 'project', 'local'])

@@ -105,6 +105,7 @@ import {
   type ForcedProviderContext,
 } from '../../utils/forcedProvider.js'
 import { resolveAgentTools } from './agentToolUtils.js'
+import { FORK_SUBAGENT_TYPE } from './forkSubagent.js'
 import {
   type AgentDefinition,
   getAgentModelScope,
@@ -137,10 +138,15 @@ async function resolveAgentUserContext(
   }
 
   const { claudeMd, ...remainingContext } = baseUserContext
-  // A managed agent can omit managed instructions too. Other agents must
-  // retain organization policy while omitting personal/project instructions.
-  // Reuse the already-cached discovery result, never parse the formatted text.
-  if (!claudeMd || agentDefinition.source === 'policySettings') {
+  // Built-in and managed agents omit every instruction file, managed policy
+  // included (as in Claude Code). Other agents keep organization policy while
+  // omitting personal/project instructions. Reuse the already-cached
+  // discovery result, never parse the formatted text.
+  if (
+    !claudeMd ||
+    agentDefinition.source === 'policySettings' ||
+    agentDefinition.source === 'built-in'
+  ) {
     return remainingContext
   }
   const managedClaudeMd = getClaudeMds(
@@ -780,6 +786,14 @@ async function* runAgentWithoutProviderOverride({
       ? uniqBy([...resolvedTools, ...agentMcpTools], 'name')
       : resolvedTools
 
+  // An agent's own compaction ceiling applies to this subagent only (nested
+  // agents start without it); the fork keeps the window it inherits.
+  const autoCompactWindow =
+    agentDefinition.agentType === FORK_SUBAGENT_TYPE &&
+    isBuiltInAgent(agentDefinition)
+      ? toolUseContext.options.autoCompactWindow
+      : agentDefinition.autoCompactWindow
+
   // Build agent-specific options
   const agentOptions: ToolUseContext['options'] = {
     // Picks the CLI identity line at byte 0 of the system prompt, so it follows
@@ -811,6 +825,13 @@ async function* runAgentWithoutProviderOverride({
     // reads undefined and only the message-scan fallback fires — which
     // autocompact defeats by replacing the fork-boilerplate message.
     ...(useExactTools && { querySource }),
+    ...(autoCompactWindow !== undefined && { autoCompactWindow }),
+    // The agent's prompt-cache lifetime rides on this context, so the
+    // agent's requests and the forks that share its prefix (compaction,
+    // summaries) use it; helpers and hooks build their own options.
+    ...(agentDefinition.cacheTtl !== undefined && {
+      promptCacheTtl: agentDefinition.cacheTtl,
+    }),
   }
 
   // Create subagent context using shared helper

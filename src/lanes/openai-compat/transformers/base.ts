@@ -61,6 +61,9 @@ export interface TransformContext {
    * (OpenCode Zen and Go) use it where the hosts publish different ladders.
    */
   provider?: string
+  /** The requesting agent's prompt-cache lifetime (`experimental.cacheTtl`),
+   * for transformers that can set one; unset for the session. */
+  promptCacheTtl?: '5m' | '1h'
 }
 
 export interface HeaderContext {
