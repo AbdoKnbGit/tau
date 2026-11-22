@@ -54,10 +54,21 @@ import {
   ollamaKeepAlive,
   ollamaModelContextLength,
   ollamaOverflowAdvice,
+  ollamaOwnContext,
   ollamaTruncateFields,
   parseOllamaContextOverflow,
   resolveLocalSampling,
 } from './local_model_settings.js'
+import {
+  localAutoContextRange,
+  localTokenEstimate,
+  type LocalAutoContextRange,
+  noteLocalFixedPrompt,
+  noteLocalModelLimit,
+  noteLocalOwnContext,
+  noteLocalSentContext,
+  noteLocalTokenCount,
+} from '../../utils/model/localModelContext.js'
 import { recordProviderRateLimits } from '../../services/api/providerRateLimits.js'
 import { selectOpenAICompatToolsForRequest } from './lazy_tools.js'
 import {
@@ -2805,6 +2816,13 @@ function estimateOpenAICompatRequestTokens(body: OpenAIChatRequest): number {
   return Math.ceil((messageChars + toolChars) / 4)
 }
 
+/** The same estimate for the system prompt and tools alone. */
+function estimateFixedPromptTokens(body: OpenAIChatRequest): number {
+  const systemChars = JSON.stringify(body.messages.filter(message => message.role === 'system')).length
+  const toolChars = body.tools ? JSON.stringify(body.tools).length : 0
+  return Math.ceil((systemChars + toolChars) / 4)
+}
+
 function roundUpToMultiple(value: number, multiple: number): number {
   return Math.ceil(value / multiple) * multiple
 }
@@ -3436,16 +3454,34 @@ async function* streamOllamaNative(
   const contextSetting = local ? ollamaContextSetting() : undefined
   const contextKey = ollamaContextKey(root, body.model)
   const answerRoom = localAnswerRoom(body.max_tokens)
-  const promptTokens = local ? localPromptBudget(estimateOpenAICompatRequestTokens(body)) : 0
-  // The model's own limit only matters once `auto` would go past the 16K Tau
-  // has always sent, so a small request makes no extra /api/show call.
-  const readModelLimit = () => ollamaModelContextLength(root, body.model, cfg.apiKey)
-  let modelMax = contextSetting?.kind === 'auto' && promptTokens + answerRoom > OLLAMA_DEFAULT_NUM_CTX
+  const rawEstimate = local ? estimateOpenAICompatRequestTokens(body) : 0
+  // Scaled by Ollama's exact count of an earlier request once one is known.
+  const promptTokens = local ? localTokenEstimate(body.model, rawEstimate) : 0
+  // Auto compaction plans around the part it cannot shrink (localModelContext.ts).
+  if (local) noteLocalFixedPrompt(body.model, estimateFixedPromptTokens(body))
+  // Without OLLAMA_NUM_CTX_MAX, `auto` starts from the context Ollama itself
+  // gives the model on this machine, asked once per model.
+  const own = contextSetting?.kind === 'auto' && contextSetting.max === undefined
+    ? await ollamaOwnContext(root, body.model, cfg.apiKey, signal)
+    : undefined
+  if (local) noteLocalOwnContext(body.model, own)
+  // The model's own limit matters once `auto` may go past the 16K Tau has
+  // always sent: for a large request, or when Ollama answered about the model
+  // (an unreachable server gets no extra request).
+  const readModelLimit = async () => {
+    const limit = await ollamaModelContextLength(root, body.model, cfg.apiKey)
+    noteLocalModelLimit(body.model, limit)
+    return limit
+  }
+  let modelMax = contextSetting?.kind === 'auto' && (own !== undefined || promptTokens + answerRoom > OLLAMA_DEFAULT_NUM_CTX)
     ? await readModelLimit()
     : undefined
+  const autoRange = (): LocalAutoContextRange | undefined =>
+    contextSetting?.kind === 'auto' && contextSetting.max === undefined ? localAutoContextRange(body.model) : undefined
   const numCtx = contextSetting
-    ? chooseOllamaNumCtx({ key: contextKey, promptTokens, answerRoom, modelMax, setting: contextSetting })
+    ? chooseOllamaNumCtx({ key: contextKey, promptTokens, answerRoom, modelMax, range: autoRange(), setting: contextSetting })
     : Number.isFinite(legacyNumCtx) ? legacyNumCtx : 16384
+  if (local) noteLocalSentContext(body.model, numCtx)
   const numPredict = local
     ? fitLocalOutputTokens(body.max_tokens, numCtx, promptTokens)
     : body.max_tokens
@@ -3529,16 +3565,19 @@ async function* streamOllamaNative(
   // grows to fit it and tries once more, before anything has streamed.
   const overflow = !response.ok && contextSetting ? parseOllamaContextOverflow(errText) : undefined
   if (overflow && contextSetting) {
+    noteLocalTokenCount(body.model, rawEstimate, overflow.requestTokens)
     if (contextSetting.kind === 'auto' && modelMax === undefined) modelMax = await readModelLimit()
     const grown = growOllamaNumCtx({
       key: contextKey,
       requestTokens: overflow.requestTokens,
       answerRoom,
       modelMax,
+      range: autoRange(),
       setting: contextSetting,
       current: numCtx,
     })
     if (grown !== undefined) {
+      noteLocalSentContext(body.model, grown)
       response = await send(buildOllamaBody(grown, fitLocalOutputTokens(body.max_tokens, grown, overflow.requestTokens)))
       errText = response.ok ? '' : await response.text().catch(() => '')
     }
@@ -3700,6 +3739,9 @@ async function* streamOllamaNative(
     hadToolUse: emittedAnyToolUse,
   })
   noteLocalServerTimings(startMessage, serverTimings)
+  // prompt_eval_count is the whole prompt even when Ollama reused its cache,
+  // so it calibrates Tau's character estimate for this model.
+  if (local && inputTokens > 0) noteLocalTokenCount(body.model, rawEstimate, inputTokens)
   yield {
     type: 'message_delta',
     delta: { stop_reason: stopReason },

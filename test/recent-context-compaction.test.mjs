@@ -155,6 +155,9 @@ function setup({
     isRecentContextPreservationEnabled: () => enabled,
     getGlobalConfig: () => ({ autoCompactEnabled: true }),
     getContextWindowForModel: () => threshold + 33000,
+    // A hosted provider: no local compaction profile, the generic rules apply.
+    getAPIProvider: () => 'firstParty',
+    localCompactionProfile: () => undefined,
     getSdkBetas: () => [],
     isEnvTruthy: () => false,
     hasExactErrorMessage: (err, value) => err.message === value,

@@ -34,6 +34,13 @@ type Server = {
   refuseBelow?: { numCtx: number; requestTokens: number }
   /** LM Studio /api/v1/models answer. */
   lmStudioModels?: unknown[]
+  /**
+   * Ollama /api/ps: the context the model is loaded with when the request
+   * starts. Without this or `ownDefault`, /api/ps answers 404.
+   */
+  loadedAt?: number
+  /** The context Ollama picks when it loads the model with no options. */
+  ownDefault?: number
 }
 
 function ndjson(lines: unknown[]): Response {
@@ -69,6 +76,13 @@ async function run(input: {
   })
   const sent: Sent[] = []
   const server = input.server ?? {}
+  const answersPs = server.loadedAt !== undefined || server.ownDefault !== undefined
+  let loadedAt = server.loadedAt
+  // Ollama clamps a context to the model's own limit, as 0.40 does.
+  const show = typeof server.show === 'object' ? server.show : { model_info: { 'qwen3.context_length': 262_144 } }
+  const limit = Object.entries((show.model_info ?? {}) as Record<string, unknown>)
+    .find(([name, value]) => name.endsWith('.context_length') && typeof value === 'number')?.[1] as number | undefined
+  const clamp = (numCtx: number) => Math.min(numCtx, limit ?? Number.POSITIVE_INFINITY)
   const oldFetch = globalThis.fetch
   globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const href = String(url)
@@ -80,11 +94,20 @@ async function run(input: {
       if (typeof server.show === 'number') return new Response('nope', { status: server.show })
       return Response.json(server.show ?? { model_info: { 'qwen3.context_length': 262_144 } })
     }
+    if (href.endsWith('/api/ps')) {
+      if (!answersPs) return new Response('not found', { status: 404 })
+      return Response.json({ models: loadedAt === undefined ? [] : [{ name: input.model, model: input.model, context_length: loadedAt }] })
+    }
+    if (href.endsWith('/api/generate')) {
+      loadedAt = server.ownDefault === undefined ? undefined : clamp(server.ownDefault)
+      return Response.json({ model: body.model, done: true, done_reason: 'load' })
+    }
     if (href.endsWith('/api/chat')) {
+      loadedAt = clamp(body.options.num_ctx)
       const refuse = server.refuseBelow
-      if (refuse && body?.truncate === false && body.options.num_ctx < refuse.numCtx) {
+      if (refuse && body?.truncate === false && loadedAt < refuse.numCtx) {
         return Response.json({
-          error: `request (${refuse.requestTokens} tokens) exceeds the available context size (${body.options.num_ctx} tokens), try increasing it`,
+          error: `request (${refuse.requestTokens} tokens) exceeds the available context size (${loadedAt} tokens), try increasing it`,
         }, { status: 400 })
       }
       return ndjson([
@@ -142,17 +165,17 @@ afterEach(() => {
 })
 
 describe('Ollama, a model on this machine', () => {
-  test("a small request keeps 16K, fits the answer limit, refuses truncation, keeps the model's sampling", async () => {
+  test("a small request gets the context the conversation uses, fits the answer limit, refuses truncation, keeps the model's sampling", async () => {
     const { sent, text } = await run({ providerHint: 'ollama', model: 'qwen3:4b', temperature: 1 })
     expect(text).toBe('ok')
     const [chat] = chats(sent)
     expect(chat!.body.truncate).toBe(false)
     expect(chat!.body.keep_alive).toBe('30m')
-    expect(chat!.body.options.num_ctx).toBe(16_384)
-    expect(chat!.body.options.num_predict).toBeLessThan(16_384)
-    expect(chat!.body.options.num_predict).toBeGreaterThan(16_000)
+    // The least Tau works in, so the conversation's own requests do not reload the model.
+    expect(chat!.body.options.num_ctx).toBe(32_768)
+    expect(chat!.body.options.num_predict).toBe(32_000)
     expect('temperature' in chat!.body.options).toBe(false)
-    // Within the 16K Tau always used, the model's own limit is not needed.
+    // A server that says nothing about the model, and a small request: no /api/show.
     expect(sent.some(entry => entry.url.endsWith('/api/show'))).toBe(false)
   })
 
@@ -175,23 +198,66 @@ describe('Ollama, a model on this machine', () => {
     expect(chats(sent)[0]!.body.options.num_ctx).toBe(8192)
   })
 
-  test('a fixed OLLAMA_NUM_CTX is sent as given, without asking /api/show', async () => {
+  test('a fixed OLLAMA_NUM_CTX is sent as given, without asking Ollama anything', async () => {
     process.env.OLLAMA_NUM_CTX = '20000'
-    const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', system: 'x '.repeat(40_000) })
+    const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', system: 'x '.repeat(40_000), server: { ownDefault: 262_144 } })
     expect(chats(sent)[0]!.body.options.num_ctx).toBe(20_000)
-    expect(sent.some(entry => entry.url.endsWith('/api/show'))).toBe(false)
+    expect(sent.filter(entry => !entry.url.endsWith('/api/chat'))).toEqual([])
   })
 
   test("a refused request grows to Ollama's exact count and is sent once more", async () => {
     const { sent, text } = await run({
       providerHint: 'ollama',
       model: 'qwen3:4b',
-      server: { refuseBelow: { numCtx: 32_768, requestTokens: 20_000 } },
+      system: 'x '.repeat(40_000),
+      server: { refuseBelow: { numCtx: 40_960, requestTokens: 30_000 } },
     })
     const sentChats = chats(sent)
-    expect(sentChats.map(chat => chat.body.options.num_ctx)).toEqual([16_384, 32_768])
-    expect(sentChats[1]!.body.options.num_predict).toBe(12_768)
+    expect(sentChats.map(chat => chat.body.options.num_ctx)).toEqual([32_768, 40_960])
+    expect(sentChats[1]!.body.options.num_predict).toBe(10_960)
     expect(text).toBe('ok')
+  })
+
+  test('a model Ollama already holds is used at its context, without loading it again', async () => {
+    const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', system: 'x '.repeat(40_000), server: { loadedAt: 65_536 } })
+    expect(chats(sent)[0]!.body.options.num_ctx).toBe(65_536)
+    expect(chats(sent)[0]!.body.options.num_predict).toBe(32_000)
+    expect(sent.some(entry => entry.url.endsWith('/api/generate'))).toBe(false)
+  })
+
+  test('a big machine: Ollama loads the model at 256K on its own, and Tau keeps that context', async () => {
+    const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', system: 'x '.repeat(40_000), server: { ownDefault: 262_144 } })
+    const order = sent.map(entry => `${entry.method} ${new URL(entry.url).pathname}`)
+    expect(order.slice(0, 3)).toEqual(['GET /api/ps', 'POST /api/generate', 'GET /api/ps'])
+    // A plain load: no context or other options, so Ollama decides.
+    expect(sent[1]!.body).toEqual({ model: 'qwen3:4b', keep_alive: '30m', stream: false })
+    expect(chats(sent)[0]!.body.options.num_ctx).toBe(262_144)
+  })
+
+  test("a small machine: Ollama's own 4K cannot hold Tau's prompt, so Tau asks for what it needs", async () => {
+    const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', system: 'x '.repeat(40_000), server: { ownDefault: 4096 } })
+    expect(chats(sent)[0]!.body.options.num_ctx).toBe(32_768)
+  })
+
+  test('OLLAMA_NUM_CTX_MAX: Tau sizes the context itself and does not ask Ollama', async () => {
+    process.env.OLLAMA_NUM_CTX_MAX = '65536'
+    const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', system: 'x '.repeat(40_000), server: { ownDefault: 262_144 } })
+    expect(chats(sent)[0]!.body.options.num_ctx).toBe(32_768)
+    expect(sent.some(entry => entry.url.endsWith('/api/ps') || entry.url.endsWith('/api/generate'))).toBe(false)
+  })
+
+  test('past the context it may use, the advice says how to allow more', async () => {
+    const { sent, text } = await run({
+      providerHint: 'ollama',
+      model: 'qwen3:4b',
+      system: 'x '.repeat(40_000),
+      server: { ownDefault: 4096, refuseBelow: { numCtx: 131_072, requestTokens: 36_000 } },
+    })
+    const sizes = chats(sent).map(chat => chat.body.options.num_ctx)
+    expect(sizes).toHaveLength(2)
+    expect(sizes[1]!).toBeGreaterThan(sizes[0]!)
+    expect(text).toContain('This request is 36000 tokens')
+    expect(text).toContain('set OLLAMA_NUM_CTX_MAX to let Tau ask for more')
   })
 
   test('past the ceiling the user gets the sizes and what to change', async () => {
@@ -213,7 +279,8 @@ describe('Ollama, a model on this machine', () => {
       model: 'tiny:1b',
       server: { show: { model_info: { 'llama.context_length': 8192 } }, refuseBelow: { numCtx: 32_768, requestTokens: 20_000 } },
     })
-    expect(chats(sent).map(chat => chat.body.options.num_ctx)).toEqual([16_384])
+    // Ollama clamped the context to the model's 8K, and refused.
+    expect(chats(sent).map(chat => chat.body.options.num_ctx)).toEqual([32_768])
     expect(text).toContain('This model takes at most 8192 tokens')
   })
 

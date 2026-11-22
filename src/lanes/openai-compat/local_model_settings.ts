@@ -10,8 +10,10 @@
  * Every setting is an environment variable, so it can also live in the `env`
  * block of settings.json:
  *
- *   OLLAMA_NUM_CTX              context per request: a number, or `auto` (default)
- *   OLLAMA_NUM_CTX_MAX          largest context `auto` may pick (default 32768)
+ *   OLLAMA_NUM_CTX              context per request: a number, or `auto` (default).
+ *                               `auto` uses the context Ollama gives the model on
+ *                               this machine, raised to the least Tau needs
+ *   OLLAMA_NUM_CTX_MAX          lets `auto` grow up to this many tokens instead
  *   OLLAMA_KEEP_ALIVE           how long Ollama keeps the model loaded (default 30m)
  *   OLLAMA_TRUNCATE             `1` lets Ollama drop the oldest messages of a
  *                               request that does not fit, without saying so
@@ -22,15 +24,28 @@
  */
 
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import {
+  envPositiveInt,
+  isOllamaCloudModel,
+  OLLAMA_DEFAULT_NUM_CTX,
+  ollamaContextSetting,
+  resetLocalModelContextForTests,
+  roundUpToStep,
+  type LocalAutoContextRange,
+  type OllamaContextSetting,
+} from '../../utils/model/localModelContext.js'
 
-/** The context Tau has always asked Ollama for; `auto` never goes below it. */
-export const OLLAMA_DEFAULT_NUM_CTX = 16_384
-/** The largest context `auto` picks unless OLLAMA_NUM_CTX_MAX says otherwise. */
-export const OLLAMA_DEFAULT_NUM_CTX_MAX = 32_768
+// Shared with auto compaction, which plans for the same context.
+export {
+  isOllamaCloudModel,
+  OLLAMA_DEFAULT_NUM_CTX,
+  ollamaContextSetting,
+  type OllamaContextSetting,
+}
 export const OLLAMA_DEFAULT_KEEP_ALIVE = '30m'
 
-/** `auto` moves in whole steps, so a growing conversation rarely changes it. */
-const CONTEXT_STEP = 8_192
+/** How long Tau waits for Ollama to load a model it asked about. */
+const MODEL_LOAD_TIMEOUT_MS = 5 * 60_000
 /** Room kept for the answer when no output limit is set. */
 const ANSWER_ROOM = 8_192
 /** The smallest answer limit Tau sends, so a full context still gets a reply. */
@@ -40,10 +55,6 @@ const MIN_OUTPUT_TOKENS = 1_024
  * the estimate can run low on dense text. Sizing against it adds this share.
  */
 const ESTIMATE_MARGIN = 1.15
-
-export function isOllamaCloudModel(model: string): boolean {
-  return /[:-]cloud$/i.test(model.trim())
-}
 
 /**
  * Whether a request goes to a local model server. Ollama and LM Studio count
@@ -60,13 +71,6 @@ export function isLocalModelRequest(provider: string, model: string, loopbackUrl
 function envText(name: string): string | undefined {
   const value = process.env[name]?.trim()
   return value ? value : undefined
-}
-
-function envPositiveInt(name: string): number | undefined {
-  const text = envText(name)
-  if (text === undefined) return undefined
-  const value = Number(text)
-  return Number.isInteger(value) && value > 0 ? value : undefined
 }
 
 function envNumber(name: string, accepts: (value: number) => boolean): number | undefined {
@@ -135,20 +139,6 @@ export function fitLocalOutputTokens(
   return Math.min(requested, Math.max(MIN_OUTPUT_TOKENS, contextTokens - promptTokens))
 }
 
-export type OllamaContextSetting =
-  | { kind: 'fixed'; numCtx: number }
-  | { kind: 'auto'; max: number }
-
-export function ollamaContextSetting(): OllamaContextSetting {
-  const text = envText('OLLAMA_NUM_CTX')
-  if (text !== undefined && text.toLowerCase() !== 'auto') {
-    // parseInt, as Tau has always read this variable.
-    const fixed = Number.parseInt(text, 10)
-    if (Number.isFinite(fixed) && fixed > 0) return { kind: 'fixed', numCtx: fixed }
-  }
-  return { kind: 'auto', max: envPositiveInt('OLLAMA_NUM_CTX_MAX') ?? OLLAMA_DEFAULT_NUM_CTX_MAX }
-}
-
 export function ollamaKeepAlive(): string {
   return process.env.OLLAMA_KEEP_ALIVE ?? OLLAMA_DEFAULT_KEEP_ALIVE
 }
@@ -170,29 +160,46 @@ export function ollamaContextKey(serverRoot: string, model: string): string {
   return `${serverRoot}\n${model}`
 }
 
-function autoCeiling(setting: { max: number }, modelMax: number | undefined): number {
-  return Math.max(1, Math.min(setting.max, modelMax ?? Number.POSITIVE_INFINITY))
+/** What `auto` knows about the model when it picks a context. */
+type AutoContextFacts = {
+  /** The model's own limit (Ollama's /api/show). */
+  modelMax?: number
+  /**
+   * Without OLLAMA_NUM_CTX_MAX: where `auto` starts and the most it uses,
+   * from the context Ollama gives the model on this machine and the least
+   * Tau needs (localAutoContextRange).
+   */
+  range?: LocalAutoContextRange
+}
+
+/**
+ * The most `auto` asks for: OLLAMA_NUM_CTX_MAX when it is set, and otherwise
+ * the top of its range. The model's own limit caps both.
+ */
+function autoCeiling(setting: { max?: number }, facts: AutoContextFacts): number {
+  const wanted = setting.max ?? facts.range?.ceiling ?? OLLAMA_DEFAULT_NUM_CTX
+  return Math.max(1, Math.min(wanted, facts.modelMax ?? Number.POSITIVE_INFINITY))
 }
 
 /**
  * The context to ask Ollama for. A fixed OLLAMA_NUM_CTX is used as given.
- * `auto` fits the request plus room for the answer, in 8K steps from 16K,
- * never past OLLAMA_NUM_CTX_MAX or the model's own limit, and never below the
- * context already used for this model.
+ * `auto` asks for at least what the request needs (the request plus room for
+ * the answer, in whole steps, at least 16K) and at least the bottom of its
+ * range, and never goes below a context already used for this model. Every
+ * change reloads the model, so it grows by doubling, up to its ceiling.
  */
-export function chooseOllamaNumCtx(input: {
+export function chooseOllamaNumCtx(input: AutoContextFacts & {
   key: string
   promptTokens: number
   answerRoom: number
-  modelMax?: number
   setting: OllamaContextSetting
 }): number {
   const { setting } = input
   if (setting.kind === 'fixed') return setting.numCtx
-  const ceiling = autoCeiling(setting, input.modelMax)
-  const needed = Math.ceil((input.promptTokens + input.answerRoom) / CONTEXT_STEP) * CONTEXT_STEP
-  const fitted = Math.min(ceiling, Math.max(OLLAMA_DEFAULT_NUM_CTX, needed))
-  const chosen = Math.min(ceiling, Math.max(fitted, chosenContexts.get(input.key) ?? 0))
+  const previous = chosenContexts.get(input.key)
+  let wanted = Math.max(OLLAMA_DEFAULT_NUM_CTX, roundUpToStep(input.promptTokens + input.answerRoom), input.range?.floor ?? 0)
+  if (previous !== undefined && wanted > previous) wanted = Math.max(wanted, previous * 2)
+  const chosen = Math.min(autoCeiling(setting, input), Math.max(wanted, previous ?? 0))
   chosenContexts.set(input.key, chosen)
   return chosen
 }
@@ -202,19 +209,16 @@ export function chooseOllamaNumCtx(input: {
  * its exact size plus room for the answer. Undefined when a fixed
  * OLLAMA_NUM_CTX or the ceiling leaves nothing larger to try.
  */
-export function growOllamaNumCtx(input: {
+export function growOllamaNumCtx(input: AutoContextFacts & {
   key: string
   requestTokens: number
   answerRoom: number
-  modelMax?: number
   setting: OllamaContextSetting
   current: number
 }): number | undefined {
   const { setting } = input
   if (setting.kind === 'fixed') return undefined
-  const ceiling = autoCeiling(setting, input.modelMax)
-  const wanted = Math.ceil((input.requestTokens + input.answerRoom) / CONTEXT_STEP) * CONTEXT_STEP
-  const grown = Math.min(ceiling, wanted)
+  const grown = Math.min(autoCeiling(setting, input), roundUpToStep(input.requestTokens + input.answerRoom))
   if (grown <= input.current || grown < input.requestTokens + MIN_OUTPUT_TOKENS) return undefined
   chosenContexts.set(input.key, grown)
   return grown
@@ -238,15 +242,101 @@ export function ollamaOverflowAdvice(
   modelMax?: number,
 ): string {
   const sizes = `This request is ${overflow.requestTokens} tokens and Ollama's context is ${overflow.contextTokens}. `
-  if (setting.kind === 'auto' && modelMax !== undefined && modelMax <= setting.max) {
+  if (modelMax !== undefined && overflow.contextTokens >= modelMax) {
     return sizes + `This model takes at most ${modelMax} tokens: run /compact, or pick a model with a larger context.`
   }
-  const raise = setting.kind === 'auto'
-    ? `raise OLLAMA_NUM_CTX_MAX (now ${setting.max})`
-    : `raise OLLAMA_NUM_CTX (now ${setting.numCtx})`
+  const raise = setting.kind === 'fixed'
+    ? `raise OLLAMA_NUM_CTX (now ${setting.numCtx})`
+    : setting.max !== undefined
+      ? `raise OLLAMA_NUM_CTX_MAX (now ${setting.max})`
+      : 'set OLLAMA_NUM_CTX_MAX to let Tau ask for more than Ollama gives this model here (a context that no longer fits on the GPU runs slower)'
   return sizes
     + `Run /compact, or ${raise}. `
     + 'With OLLAMA_FLASH_ATTENTION=1 and OLLAMA_KV_CACHE_TYPE=q8_0 set for Ollama (then restart it), a larger context fits on the GPU.'
+}
+
+// The context Ollama gives a model on its own, per server and model.
+const ownContexts = new Map<string, Promise<number | undefined>>()
+
+/**
+ * The context Ollama gives the model on this machine when Tau does not set
+ * one: the context it is loaded with now, or else the one Ollama picks when
+ * Tau loads it the way any other app would. Ollama picks that from the GPU's
+ * memory (4K, 32K or 256K in Ollama 0.40), or takes the server's
+ * OLLAMA_CONTEXT_LENGTH or the model's Modelfile num_ctx, capped by the
+ * model's own limit. Asked once per model per process. Undefined when the
+ * server does not say (no /api/ps, or an Ollama without context_length); a
+ * server that cannot be reached is asked again on the next request, and is
+ * never sent a load request.
+ */
+export function ollamaOwnContext(
+  serverRoot: string,
+  model: string,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<number | undefined> {
+  const key = ollamaContextKey(serverRoot, model)
+  const known = ownContexts.get(key)
+  if (known) return known
+  const pending = readOllamaOwnContext(serverRoot, model, apiKey, signal).catch(() => {
+    ownContexts.delete(key)
+    return undefined
+  })
+  ownContexts.set(key, pending)
+  return pending
+}
+
+async function readOllamaOwnContext(
+  serverRoot: string,
+  model: string,
+  apiKey: string,
+  signal: AbortSignal | undefined,
+): Promise<number | undefined> {
+  const headers = ollamaHeaders(apiKey)
+  const loaded = await readLoadedContext(serverRoot, model, headers)
+  if (loaded !== 'not loaded') return loaded
+  // A load request with no prompt and no options: Ollama loads the model as it
+  // would for any app, and Tau's request then reuses it when it fits.
+  const timeout = AbortSignal.timeout(MODEL_LOAD_TIMEOUT_MS)
+  const response = await fetch(`${serverRoot}/api/generate`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ model, keep_alive: ollamaKeepAlive(), stream: false }),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  })
+  await response.text()
+  if (!response.ok) return undefined
+  const after = await readLoadedContext(serverRoot, model, headers)
+  return after === 'not loaded' ? undefined : after
+}
+
+/**
+ * The context the model is loaded with, from /api/ps. Undefined when the
+ * server does not say; throws when it cannot be reached.
+ */
+async function readLoadedContext(
+  serverRoot: string,
+  model: string,
+  headers: Record<string, string>,
+): Promise<number | undefined | 'not loaded'> {
+  const response = await fetch(`${serverRoot}/api/ps`, { headers, signal: AbortSignal.timeout(3_000) })
+  if (!response.ok) return undefined
+  const data = await response.json().catch(() => undefined) as
+    | { models?: Array<{ name?: unknown; model?: unknown; context_length?: unknown }> }
+    | undefined
+  if (!Array.isArray(data?.models)) return undefined
+  // `llama3` is listed as `llama3:latest`.
+  const names = new Set([model, model.includes(':') ? model : `${model}:latest`])
+  const entry = data.models.find(item => names.has(String(item.name)) || names.has(String(item.model)))
+  if (!entry) return 'not loaded'
+  const context = entry.context_length
+  return typeof context === 'number' && Number.isFinite(context) && context > 0 ? context : undefined
+}
+
+function ollamaHeaders(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+  return headers
 }
 
 // A model's own context limit, from Ollama's /api/show, per server and model.
@@ -277,11 +367,9 @@ async function fetchOllamaModelContextLength(
   apiKey: string,
 ): Promise<number | undefined> {
   try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (apiKey) headers.Authorization = `Bearer ${apiKey}`
     const response = await fetch(`${serverRoot}/api/show`, {
       method: 'POST',
-      headers,
+      headers: ollamaHeaders(apiKey),
       body: JSON.stringify({ model }),
       signal: AbortSignal.timeout(3_000),
     })
@@ -298,8 +386,10 @@ async function fetchOllamaModelContextLength(
   }
 }
 
-/** Test seam: forget every context chosen and limit read in this process. */
+/** Test seam: forget every context chosen, asked about and recorded in this process. */
 export function resetLocalModelSettingsForTests(): void {
   chosenContexts.clear()
   modelLimits.clear()
+  ownContexts.clear()
+  resetLocalModelContextForTests()
 }

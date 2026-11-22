@@ -295,15 +295,6 @@ export async function getOllamaCatalog(): Promise<OllamaCatalog> {
 
 // ─── First-launch auto-pull ────────────────────────────────────────
 
-/**
- * Whether this launch should pre-pull the cloud aliases: only an interactive
- * session on Ollama. Other providers never use them, and scripted runs (tests
- * and harnesses start from throwaway configs) would pull them on every launch.
- */
-export function shouldPrimeOllamaCloudModels(provider: string, nonInteractive: boolean): boolean {
-  return provider === 'ollama' && !nonInteractive
-}
-
 /** Config flag that records whether we've already run the auto-pull pass. */
 const FIRST_PULL_FLAG = 'ollamaCloudModelsPrimedAt' as const
 

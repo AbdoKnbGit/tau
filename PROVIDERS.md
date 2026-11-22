@@ -55,8 +55,8 @@ environment variable: set it in your shell, or in the `env` block of
 
 | Setting | Default | What it does |
 |---|---|---|
-| `OLLAMA_NUM_CTX` | `auto` | Ollama context per request. `auto` fits Tau's request plus 8K for the answer, in 8K steps from 16K, and never shrinks during a session (Ollama reloads the model whenever it changes). A number fixes it. |
-| `OLLAMA_NUM_CTX_MAX` | `32768` | The largest context `auto` picks. The model's own limit, read from Ollama, also caps it. |
+| `OLLAMA_NUM_CTX` | `auto` | Ollama context per request. `auto` uses the context Ollama itself gives the model on your machine: Ollama picks 4K, 32K or 256K from your GPU's memory, or takes your `OLLAMA_CONTEXT_LENGTH` or the model's Modelfile, and never more than the model's own limit. When that is too small for Tau's prompt, Tau asks for the least it can work in instead, worked out from the size of its own prompt (32K with the default tools, more with many MCP tools). It never shrinks during a session, because Ollama reloads the model whenever it changes. A number fixes it. |
+| `OLLAMA_NUM_CTX_MAX` | none | Instead of the context Ollama picks, `auto` grows as the conversation needs, up to this many tokens. It doubles each time, since every change reloads the model. The model's own limit still caps it. |
 | `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded after a request. |
 | `OLLAMA_TRUNCATE` | off | Tau asks Ollama to refuse a request that doesn't fit instead of silently dropping your oldest messages. On `auto`, Tau then grows the context once and resends; past the limit you get the exact sizes and what to change. `1` brings back Ollama's silent truncation. |
 | `TAU_LOCAL_MAX_OUTPUT_TOKENS` | none | Most tokens an answer may use. Tau also fits the answer to the room left in the context, so a long answer never pushes the model's instructions out. |
@@ -68,18 +68,35 @@ Server addresses: `OLLAMA_HOST` (default `http://localhost:11434`) and
 vLLM, Jan) works through the LM Studio provider: point `LMSTUDIO_BASE_URL` at
 it and the same settings apply.
 
-A larger context needs more GPU memory. If a model slows down at 32K, give
-Ollama `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` and restart
-it: that halves the context's memory, so more of the model stays on the GPU.
-Or set `OLLAMA_NUM_CTX_MAX=16384`, or switch to `/mode cheap`, which roughly
-halves Tau's prompt.
+To learn what your machine gives a model, Tau asks Ollama once per model per
+session. When the model isn't loaded yet, that loads it the way any other app
+would, which costs one extra load when Ollama's own context turns out too small
+(about 2 seconds for a small model on an 8 GB laptop GPU). Setting
+`OLLAMA_NUM_CTX` or `OLLAMA_NUM_CTX_MAX` skips the question.
+
+A larger context needs more GPU memory. If a model is slow because part of it
+runs on the CPU (`ollama ps` shows a CPU share), give Ollama
+`OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` and restart it: that
+halves the context's memory, so more of the model stays on the GPU. Or switch
+to `/mode cheap`, which roughly halves Tau's prompt and so the context Tau
+needs.
+
+Auto-compact on Ollama plans for the context the model really has, not the
+size it was trained for or a 200K default. Once Tau has sent a model its first
+request, it compacts the conversation at 80% of a small context (26K of 32K),
+keeping room for the summary, and with the usual reserves on a large one (from
+about 165K up, the same as any model that size). After compacting it restores
+recently read files and skills within a share of the context, never more than
+usual, so the conversation fits again. Tau calibrates its own size estimates
+against the exact token counts Ollama reports. When even Tau's system prompt
+and tools leave less than 8K of room in a context you fixed, compacting can't
+help, so Tau doesn't try: raise `OLLAMA_NUM_CTX`, or use `/mode cheap`. Your
+`/compact-settings` percentage still applies, inside that context.
 
 LM Studio sets the context when it loads a model. Tau reads that loaded
 context, fits each answer to it, and tells you how to reload the model with a
-larger one when a request doesn't fit.
-
-Tau pulls its list of Ollama cloud models only once, at the first interactive
-launch with Ollama selected.
+larger one when a request doesn't fit. LM Studio sends Tau no token counts
+yet, so its auto-compact keeps the generic rules.
 
 ## DeepSeek thinking effort
 

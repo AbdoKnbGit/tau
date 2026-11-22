@@ -4,6 +4,7 @@ import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import { parseAntigravityClaudeTier } from './model/antigravityClaudeTiers.js'
 import { getProviderCatalogContextWindow } from './model/contextWindows.js'
+import { localModelContextWindow } from './model/localModelContext.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
 import { getAPIProvider } from './model/providers.js'
@@ -79,6 +80,14 @@ export function getContextWindowForModel(
   const provider = getAPIProvider()
   if (provider === 'opencode' || provider === 'opencodego') {
     return getProviderCatalogContextWindow(model, provider) ?? MODEL_CONTEXT_WINDOW_DEFAULT
+  }
+
+  // An Ollama model on this machine plans for the context Tau sends it, not
+  // the size it was trained for (model/localModelContext.ts). Undefined for
+  // every other provider.
+  const localWindow = localModelContextWindow(provider, model, MODEL_CONTEXT_WINDOW_DEFAULT)
+  if (localWindow !== undefined) {
+    return localWindow
   }
 
   // [1m] suffix — explicit client-side opt-in, respected over all detection

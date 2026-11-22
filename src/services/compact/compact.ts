@@ -40,6 +40,8 @@ import {
 } from '../../utils/attachments.js'
 import { getMemoryPath } from '../../utils/config.js'
 import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
+import { localCompactionProfile } from '../../utils/model/localModelContext.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import {
   analyzeContext,
   tokenStatsToStatsigMetrics,
@@ -584,7 +586,7 @@ export async function compactConversation(
     }
 
     // Add skill attachment if skills were invoked in this session
-    const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
+    const skillAttachment = createSkillAttachmentIfNeeded(context.agentId, context.options.mainLoopModel)
     if (skillAttachment) {
       postCompactFileAttachments.push(skillAttachment)
     }
@@ -1074,7 +1076,7 @@ export async function partialCompactConversation(
       postCompactFileAttachments.push(planModeAttachment)
     }
 
-    const skillAttachment = createSkillAttachmentIfNeeded(context.agentId)
+    const skillAttachment = createSkillAttachmentIfNeeded(context.agentId, context.options.mainLoopModel)
     if (skillAttachment) {
       postCompactFileAttachments.push(skillAttachment)
     }
@@ -1575,6 +1577,14 @@ export async function createPostCompactFileAttachments(
   preservedMessages: Message[] = [],
 ): Promise<AttachmentMessage[]> {
   const preservedReadPaths = collectReadToolFilePaths(preservedMessages)
+  // A local model's window is the context it really has, often 32K: restored
+  // files get a share of it, never more than the usual budget, or they would
+  // refill the context compaction just emptied (localModelContext.ts).
+  const localProfile = localCompactionProfile(getAPIProvider(), toolUseContext.options.mainLoopModel)
+  const tokenBudget = localProfile
+    ? Math.min(localProfile.fileRestoreBudget, POST_COMPACT_TOKEN_BUDGET)
+    : POST_COMPACT_TOKEN_BUDGET
+  const maxTokensPerFile = Math.min(POST_COMPACT_MAX_TOKENS_PER_FILE, tokenBudget)
   const recentFiles = Object.entries(readFileState)
     .map(([filename, state]) => ({ filename, ...state }))
     .filter(
@@ -1594,7 +1604,7 @@ export async function createPostCompactFileAttachments(
         {
           ...toolUseContext,
           fileReadingLimits: {
-            maxTokens: POST_COMPACT_MAX_TOKENS_PER_FILE,
+            maxTokens: maxTokensPerFile,
           },
         },
         'tengu_post_compact_file_restore_success',
@@ -1611,7 +1621,7 @@ export async function createPostCompactFileAttachments(
       return false
     }
     const attachmentTokens = roughTokenCountEstimation(jsonStringify(result))
-    if (usedTokens + attachmentTokens <= POST_COMPACT_TOKEN_BUDGET) {
+    if (usedTokens + attachmentTokens <= tokenBudget) {
       usedTokens += attachmentTokens
       return true
     }
@@ -1651,12 +1661,20 @@ export function createPlanAttachmentIfNeeded(
  */
 export function createSkillAttachmentIfNeeded(
   agentId?: string,
+  model?: string,
 ): AttachmentMessage | null {
   const invokedSkills = getInvokedSkillsForAgent(agentId)
 
   if (invokedSkills.size === 0) {
     return null
   }
+
+  // A local model gets a share of its window for skills, as for files above.
+  const localProfile = model === undefined ? undefined : localCompactionProfile(getAPIProvider(), model)
+  const skillsBudget = localProfile
+    ? Math.min(localProfile.skillRestoreBudget, POST_COMPACT_SKILLS_TOKEN_BUDGET)
+    : POST_COMPACT_SKILLS_TOKEN_BUDGET
+  const maxTokensPerSkill = Math.min(POST_COMPACT_MAX_TOKENS_PER_SKILL, skillsBudget)
 
   // Sorted most-recent-first so budget pressure drops the least-relevant skills.
   // Per-skill truncation keeps the head of each file (where setup/usage
@@ -1669,12 +1687,12 @@ export function createSkillAttachmentIfNeeded(
       path: skill.skillPath,
       content: truncateToTokens(
         skill.content,
-        POST_COMPACT_MAX_TOKENS_PER_SKILL,
+        maxTokensPerSkill,
       ),
     }))
     .filter(skill => {
       const tokens = roughTokenCountEstimation(skill.content)
-      if (usedTokens + tokens > POST_COMPACT_SKILLS_TOKEN_BUDGET) {
+      if (usedTokens + tokens > skillsBudget) {
         return false
       }
       usedTokens += tokens

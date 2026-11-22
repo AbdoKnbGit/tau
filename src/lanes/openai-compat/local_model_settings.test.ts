@@ -10,12 +10,12 @@ import {
   ollamaContextSetting,
   ollamaKeepAlive,
   ollamaOverflowAdvice,
+  ollamaOwnContext,
   ollamaTruncateFields,
   parseOllamaContextOverflow,
   resetLocalModelSettingsForTests,
   resolveLocalSampling,
 } from './local_model_settings.js'
-import { shouldPrimeOllamaCloudModels } from '../../utils/model/ollamaCatalog.js'
 
 const ENV_KEYS = [
   'OLLAMA_NUM_CTX',
@@ -68,15 +68,6 @@ describe('which requests are local', () => {
   })
 })
 
-describe('Ollama cloud pre-pull', () => {
-  test('only an interactive session on Ollama pulls the cloud list', () => {
-    expect(shouldPrimeOllamaCloudModels('ollama', false)).toBe(true)
-    expect(shouldPrimeOllamaCloudModels('ollama', true)).toBe(false)
-    expect(shouldPrimeOllamaCloudModels('deepseek', false)).toBe(false)
-    expect(shouldPrimeOllamaCloudModels('lmstudio', false)).toBe(false)
-  })
-})
-
 describe('sampling', () => {
   test("no setting and Tau's default temperatures leave the model's own sampling", () => {
     expect(resolveLocalSampling(undefined)).toEqual({})
@@ -125,8 +116,8 @@ describe('answer limits', () => {
 })
 
 describe('Ollama context', () => {
-  test('auto by default; a number is fixed; auto and junk mean auto', () => {
-    expect(ollamaContextSetting()).toEqual({ kind: 'auto', max: 32_768 })
+  test('auto by default with no ceiling of its own; a number is fixed; auto and junk mean auto', () => {
+    expect(ollamaContextSetting()).toEqual({ kind: 'auto' })
     process.env.OLLAMA_NUM_CTX = '20000'
     expect(ollamaContextSetting()).toEqual({ kind: 'fixed', numCtx: 20_000 })
     process.env.OLLAMA_NUM_CTX = 'auto'
@@ -136,19 +127,46 @@ describe('Ollama context', () => {
     expect(ollamaContextSetting()).toEqual({ kind: 'auto', max: 65_536 })
   })
 
-  test('auto keeps 16K for a request that fits it, as Tau always sent', () => {
-    const numCtx = chooseOllamaNumCtx({ key: 'a', promptTokens: 4000, answerRoom: 8192, setting: { kind: 'auto', max: 32_768 } })
-    expect(numCtx).toBe(16_384)
+  const auto = { kind: 'auto' } as const
+
+  test('with OLLAMA_NUM_CTX_MAX, a small request keeps 16K, as Tau always sent', () => {
+    expect(chooseOllamaNumCtx({ key: 'a', promptTokens: 4000, answerRoom: 8192, setting: { kind: 'auto', max: 32_768 } })).toBe(16_384)
+  })
+
+  test("without it, a small request gets the bottom of auto's range, so the conversation does not reload the model", () => {
+    expect(chooseOllamaNumCtx({ key: 'a2', promptTokens: 4000, answerRoom: 8192, setting: auto, range: { floor: 32_768, ceiling: 40_960 } })).toBe(32_768)
   })
 
   test("auto fits Tau's 16K-token prompt with room for the answer", () => {
-    const numCtx = chooseOllamaNumCtx({ key: 'b', promptTokens: 18_700, answerRoom: 8192, setting: { kind: 'auto', max: 32_768 } })
-    expect(numCtx).toBe(32_768)
+    expect(chooseOllamaNumCtx({ key: 'b', promptTokens: 18_700, answerRoom: 8192, setting: auto, range: { floor: 32_768, ceiling: 40_960 } })).toBe(32_768)
   })
 
-  test("auto stops at the ceiling and at the model's own limit", () => {
-    expect(chooseOllamaNumCtx({ key: 'c', promptTokens: 60_000, answerRoom: 8192, setting: { kind: 'auto', max: 32_768 } })).toBe(32_768)
-    expect(chooseOllamaNumCtx({ key: 'd', promptTokens: 18_000, answerRoom: 8192, modelMax: 8192, setting: { kind: 'auto', max: 32_768 } })).toBe(8192)
+  test('auto takes the context Ollama gives the model when it holds the request, so nothing reloads', () => {
+    // A 48 GB machine: Ollama loads the model at 256K on its own.
+    expect(chooseOllamaNumCtx({ key: 'big', promptTokens: 18_700, answerRoom: 8192, setting: auto, range: { floor: 262_144, ceiling: 262_144 } })).toBe(262_144)
+    // An 8 GB machine: Ollama's own 4K cannot hold Tau's prompt, so the range starts at what Tau needs.
+    expect(chooseOllamaNumCtx({ key: 'small', promptTokens: 18_700, answerRoom: 8192, setting: auto, range: { floor: 32_768, ceiling: 32_768 } })).toBe(32_768)
+  })
+
+  test("auto without OLLAMA_NUM_CTX_MAX stops at the top of its range and at the model's limit", () => {
+    expect(chooseOllamaNumCtx({ key: 'c', promptTokens: 60_000, answerRoom: 8192, setting: auto, range: { floor: 32_768, ceiling: 32_768 } })).toBe(32_768)
+    expect(chooseOllamaNumCtx({ key: 'd', promptTokens: 18_000, answerRoom: 8192, modelMax: 8192, setting: auto, range: { floor: 32_768, ceiling: 32_768 } })).toBe(8192)
+  })
+
+  test("OLLAMA_NUM_CTX_MAX lets auto grow to it, and the model's limit still caps it", () => {
+    const setting = { kind: 'auto', max: 1_048_576 } as const
+    expect(chooseOllamaNumCtx({ key: 'm', promptTokens: 300_000, answerRoom: 8192, setting })).toBe(311_296)
+    expect(chooseOllamaNumCtx({ key: 'n', promptTokens: 300_000, answerRoom: 8192, modelMax: 131_072, setting })).toBe(131_072)
+  })
+
+  test('auto grows by doubling, because every change reloads the model', () => {
+    const setting = { kind: 'auto', max: 1_048_576 } as const
+    expect(chooseOllamaNumCtx({ key: 'g2', promptTokens: 20_000, answerRoom: 8192, setting })).toBe(32_768)
+    expect(chooseOllamaNumCtx({ key: 'g2', promptTokens: 30_000, answerRoom: 8192, setting })).toBe(65_536)
+    expect(chooseOllamaNumCtx({ key: 'g2', promptTokens: 70_000, answerRoom: 8192, setting })).toBe(131_072)
+    // The ceiling still wins over a doubling.
+    expect(chooseOllamaNumCtx({ key: 'g3', promptTokens: 20_000, answerRoom: 8192, setting: { kind: 'auto', max: 40_960 } })).toBe(32_768)
+    expect(chooseOllamaNumCtx({ key: 'g3', promptTokens: 30_000, answerRoom: 8192, setting: { kind: 'auto', max: 40_960 } })).toBe(40_960)
   })
 
   test('auto never shrinks for the same model, so Ollama does not reload it', () => {
@@ -159,7 +177,7 @@ describe('Ollama context', () => {
   })
 
   test('a fixed context is used as given', () => {
-    expect(chooseOllamaNumCtx({ key: 'f', promptTokens: 60_000, answerRoom: 8192, setting: { kind: 'fixed', numCtx: 12_000 } })).toBe(12_000)
+    expect(chooseOllamaNumCtx({ key: 'f', promptTokens: 60_000, answerRoom: 8192, range: { floor: 262_144, ceiling: 262_144 }, setting: { kind: 'fixed', numCtx: 12_000 } })).toBe(12_000)
   })
 
   test("growing after Ollama's refusal uses the exact size, up to the ceiling", () => {
@@ -170,6 +188,10 @@ describe('Ollama context', () => {
     // Nothing larger to try.
     expect(growOllamaNumCtx({ key: 'i', requestTokens: 40_000, answerRoom: 8192, setting, current: 32_768 })).toBeUndefined()
     expect(growOllamaNumCtx({ key: 'j', requestTokens: 18_000, answerRoom: 8192, setting: { kind: 'fixed', numCtx: 16_384 }, current: 16_384 })).toBeUndefined()
+    // Without OLLAMA_NUM_CTX_MAX the ceiling is the top of auto's range.
+    const range = { floor: 32_768, ceiling: 40_960 }
+    expect(growOllamaNumCtx({ key: 'l', requestTokens: 30_000, answerRoom: 8192, setting: auto, range, current: 32_768 })).toBe(40_960)
+    expect(growOllamaNumCtx({ key: 'l2', requestTokens: 40_000, answerRoom: 8192, setting: auto, range, current: 40_960 })).toBeUndefined()
   })
 
   test('a grown context is kept for the next request', () => {
@@ -188,7 +210,10 @@ describe('Ollama context', () => {
     const overflow = { requestTokens: 40_000, contextTokens: 32_768 }
     expect(ollamaOverflowAdvice(overflow, { kind: 'auto', max: 32_768 })).toContain('OLLAMA_NUM_CTX_MAX (now 32768)')
     expect(ollamaOverflowAdvice(overflow, { kind: 'fixed', numCtx: 16_384 })).toContain('OLLAMA_NUM_CTX (now 16384)')
+    expect(ollamaOverflowAdvice(overflow, auto)).toContain('set OLLAMA_NUM_CTX_MAX to let Tau ask for more')
+    // The model's own limit is what blocks once the context reached it.
     expect(ollamaOverflowAdvice(overflow, { kind: 'auto', max: 32_768 }, 8192)).toContain('This model takes at most 8192 tokens')
+    expect(ollamaOverflowAdvice(overflow, auto, 32_768)).toContain('This model takes at most 32768 tokens')
     expect(ollamaOverflowAdvice(overflow, { kind: 'auto', max: 32_768 }, 262_144)).toContain('OLLAMA_NUM_CTX_MAX (now 32768)')
   })
 
@@ -202,5 +227,78 @@ describe('Ollama context', () => {
     expect(ollamaKeepAlive()).toBe('30m')
     process.env.OLLAMA_KEEP_ALIVE = '2h'
     expect(ollamaKeepAlive()).toBe('2h')
+  })
+})
+
+describe("the context Ollama gives a model on this machine", () => {
+  const ROOT = 'http://127.0.0.1:11434'
+  type Call = { path: string; method: string; body: any }
+
+  async function withServer(
+    answer: (path: string, calls: Call[]) => Response,
+    fn: (calls: Call[]) => Promise<void>,
+  ): Promise<void> {
+    const calls: Call[] = []
+    const oldFetch = globalThis.fetch
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname
+      calls.push({ path, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      return answer(path, calls)
+    }) as typeof fetch
+    try {
+      await fn(calls)
+    } finally {
+      globalThis.fetch = oldFetch
+    }
+  }
+
+  const ps = (models: unknown[]) => Response.json({ models })
+
+  test('a loaded model: its context, without loading anything', async () => {
+    await withServer(() => ps([{ name: 'qwen3:4b', model: 'qwen3:4b', context_length: 65_536 }]), async calls => {
+      expect(await ollamaOwnContext(ROOT, 'qwen3:4b', '')).toBe(65_536)
+      expect(calls.map(call => call.path)).toEqual(['/api/ps'])
+    })
+  })
+
+  test('not loaded: Ollama loads it with no options, and Tau reads the context it chose', async () => {
+    let loaded = false
+    await withServer(path => {
+      if (path === '/api/generate') { loaded = true; return Response.json({ done: true, done_reason: 'load' }) }
+      return ps(loaded ? [{ name: 'qwen3:4b', model: 'qwen3:4b', context_length: 4096 }] : [])
+    }, async calls => {
+      expect(await ollamaOwnContext(ROOT, 'qwen3:4b', '')).toBe(4096)
+      expect(calls.map(call => `${call.method} ${call.path}`)).toEqual(['GET /api/ps', 'POST /api/generate', 'GET /api/ps'])
+      expect(calls[1]!.body).toEqual({ model: 'qwen3:4b', keep_alive: '30m', stream: false })
+      // Asked once per model.
+      expect(await ollamaOwnContext(ROOT, 'qwen3:4b', '')).toBe(4096)
+      expect(calls).toHaveLength(3)
+    })
+  })
+
+  test('a model named without a tag is found under :latest', async () => {
+    await withServer(() => ps([{ name: 'llama3:latest', model: 'llama3:latest', context_length: 8192 }]), async () => {
+      expect(await ollamaOwnContext(ROOT, 'llama3', '')).toBe(8192)
+    })
+  })
+
+  test('a server without /api/ps or context_length says nothing, gets no load request, and is not asked again', async () => {
+    await withServer(() => new Response('not found', { status: 404 }), async calls => {
+      expect(await ollamaOwnContext(ROOT, 'a:1b', '')).toBeUndefined()
+      expect(await ollamaOwnContext(ROOT, 'a:1b', '')).toBeUndefined()
+      expect(calls.map(call => call.path)).toEqual(['/api/ps'])
+    })
+    await withServer(() => ps([{ name: 'b:1b', model: 'b:1b' }]), async calls => {
+      expect(await ollamaOwnContext(ROOT, 'b:1b', '')).toBeUndefined()
+      expect(calls.map(call => call.path)).toEqual(['/api/ps'])
+    })
+  })
+
+  test('an unreachable server gets no load request and is asked again next time', async () => {
+    await withServer(() => { throw new TypeError('fetch failed') }, async calls => {
+      expect(await ollamaOwnContext(ROOT, 'c:1b', '')).toBeUndefined()
+      expect(await ollamaOwnContext(ROOT, 'c:1b', '')).toBeUndefined()
+      expect(calls.map(call => `${call.method} ${call.path}`)).toEqual(['GET /api/ps', 'GET /api/ps'])
+    })
   })
 })

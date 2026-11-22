@@ -12,6 +12,8 @@ import {
 import { computeCompactionThreshold } from '../../utils/compactionSettings.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import { getContextWindowForModel } from '../../utils/context.js'
+import { localCompactionProfile } from '../../utils/model/localModelContext.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
@@ -38,6 +40,22 @@ import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 // Based on p99.99 of compact summary output being 17,387 tokens.
 const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 
+/**
+ * The reserves of an Ollama model on this machine whose window is too small
+ * for the generic ones (localModelContext.ts): the summary room as a share of
+ * the window, no extra buffer, and an answer's worth of room before Tau
+ * refuses a request. Undefined for every other model, and for a local window
+ * large enough to hold the generic reserves, which then apply exactly as they
+ * do for any model of that size.
+ */
+function smallLocalWindowReserves(model: string): { summary: number; output: number } | undefined {
+  const profile = localCompactionProfile(getAPIProvider(), model)
+  if (!profile) return undefined
+  const genericSummary = Math.min(getMaxOutputTokensForModel(model), MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+  if (profile.summaryReserve >= genericSummary + AUTOCOMPACT_BUFFER_TOKENS) return undefined
+  return { summary: profile.summaryReserve, output: profile.outputReserve }
+}
+
 // Returns the context window size minus the max output tokens for the model
 export function getEffectiveContextWindowSize(
   model: string,
@@ -54,10 +72,12 @@ export function getEffectiveContextWindowSize(
     ignoreConfiguredCap?: boolean
   },
 ): number {
-  const reservedTokensForSummary = Math.min(
-    getMaxOutputTokensForModel(model),
-    MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-  )
+  // A small local window keeps only an answer's worth of room: a 20K summary
+  // reserve would refuse requests far below the point compaction fires.
+  const localReserves = smallLocalWindowReserves(model)
+  const reservedTokensForSummary = localReserves
+    ? localReserves.output
+    : Math.min(getMaxOutputTokensForModel(model), MAX_OUTPUT_TOKENS_FOR_SUMMARY)
   let contextWindow = getContextWindowForModel(model, getSdkBetas())
 
   // Ceiling on context carried, as `min(modelWindow, cap)`. The env var is the
@@ -114,23 +134,27 @@ export function previewAutoCompaction(
   windowCap: number | undefined,
 ): AutoCompactionPreview {
   const contextWindow = getContextWindowForModel(model, getSdkBetas())
-  const reservedForSummary = Math.min(
-    getMaxOutputTokensForModel(model),
-    MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-  )
+  // A small local window compacts at 80% of the context the model has
+  // (localModelContext.ts). Every other model, and a local window large
+  // enough for them, keeps the 20K summary reserve and the 13K buffer.
+  const localReserves = smallLocalWindowReserves(model)
+  const reservedForSummary = localReserves
+    ? localReserves.summary
+    : Math.min(getMaxOutputTokensForModel(model), MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+  const bufferTokens = localReserves ? 0 : AUTOCOMPACT_BUFFER_TOKENS
   // Same arithmetic getAutoCompactThreshold applies, so the preview cannot
   // drift from what actually fires.
   const resolved = computeCompactionThreshold({
     contextWindow,
     reservedForSummary,
-    bufferTokens: AUTOCOMPACT_BUFFER_TOKENS,
+    bufferTokens,
     thresholdPercent,
     windowCap,
   })
 
   return {
     contextWindow,
-    reservedTokens: reservedForSummary + AUTOCOMPACT_BUFFER_TOKENS,
+    reservedTokens: reservedForSummary + bufferTokens,
     ...resolved,
   }
 }
