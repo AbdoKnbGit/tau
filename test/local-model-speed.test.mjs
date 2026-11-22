@@ -191,10 +191,10 @@ test('LM Studio without token counts: estimated speed, marked with a tilde', asy
   assert.deepEqual([rows[0].provider, rows[0].estimated], ['LM Studio', true], stats)
   assertRate(rows[0].rate, stats)
   assert.ok(stats.includes('~ estimated from text length: the server sent no token counts'), stats)
-  // The feature only reads timings: LM Studio still gets the request it got
-  // before, with no stream_options.
+  // Tau asks LM Studio for its token counts; this server sends none, so the
+  // speed is estimated.
   for (const request of server.chatRequests()) {
-    assert.equal(request.body?.stream_options, undefined, 'stream_options must stay off for LM Studio')
+    assert.deepEqual(request.body?.stream_options, { include_usage: true })
   }
 })
 
@@ -211,8 +211,9 @@ test('LM Studio thinking first: the wait ends at the first thinking token, and t
   assert.deepEqual([row.model, row.provider, row.estimated], [MODEL, 'LM Studio', false], stats)
   assertRate(row.rate, stats)
   assertWait(row.wait, stats)
+  // Tau asks LM Studio for its token counts, which time the answer exactly.
   for (const request of server.chatRequests()) {
-    assert.equal(request.body?.stream_options, undefined, 'stream_options must stay off for LM Studio')
+    assert.deepEqual(request.body?.stream_options, { include_usage: true })
   }
 })
 

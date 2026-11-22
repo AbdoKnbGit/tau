@@ -1,7 +1,7 @@
-// Auto compaction on an Ollama model on this machine, through the built CLI and
-// a fake Ollama that counts tokens and refuses a request larger than its
-// context, as Ollama 0.40 does with `truncate: false`. Tau must compact before
-// the conversation outgrows the context it sends, fit every request into that
+// Auto compaction on local models, through the built CLI and a fake Ollama or
+// LM Studio that counts tokens and refuses a request larger than its context,
+// as Ollama 0.40 does with `truncate: false`. Tau must compact before the
+// conversation outgrows the context the model has, fit every request into that
 // context, and never refuse its own requests.
 //
 // TAU_LOCAL_COMPACTION_CLI runs the case against another build.
@@ -73,7 +73,60 @@ async function startFakeOllama({ ownDefault }) {
   }
 }
 
-function freshPlace(name) {
+const LMS_MODEL = 'compact-test-lms'
+
+// A fake LM Studio: its REST list has the model loaded with `loaded` tokens of
+// context, and its OpenAI-compatible chat counts tokens like the fake Ollama,
+// refuses a prompt over the loaded context, and sends usage only when asked.
+async function startFakeLmStudio({ loaded }) {
+  const chats = []
+  const server = createServer(async (request, response) => {
+    request.setEncoding('utf8')
+    let raw = ''
+    for await (const part of request) raw += part
+    const body = raw ? JSON.parse(raw) : null
+    const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname
+    const json = (data, status = 200) => {
+      response.writeHead(status, { 'content-type': 'application/json' })
+      response.end(JSON.stringify(data))
+    }
+    if (path === '/api/v1/models') {
+      return json({ models: [{
+        type: 'llm',
+        key: LMS_MODEL,
+        display_name: 'Compact Test',
+        max_context_length: 131_072,
+        loaded_instances: [{ id: LMS_MODEL, config: { context_length: loaded } }],
+        capabilities: { trained_for_tool_use: true },
+      }] })
+    }
+    if (path === '/v1/models') return json({ object: 'list', data: [{ id: LMS_MODEL, object: 'model' }] })
+    if (path !== '/v1/chat/completions') return json({ error: `no route for ${path}` }, 404)
+
+    const promptTokens = Math.ceil(JSON.stringify({ messages: body.messages, tools: body.tools ?? [] }).length / CHARS_PER_TOKEN)
+    const lastUser = [...body.messages].reverse().find(message => message.role === 'user')
+    const isCompaction = JSON.stringify(lastUser?.content ?? '').includes(SUMMARY_MARKER)
+    const refused = promptTokens > loaded
+    const asksUsage = body.stream_options?.include_usage === true
+    chats.push({ promptTokens, maxTokens: body.max_tokens, asksUsage, isCompaction, refused })
+    if (refused) return json({ error: `The model is loaded with a context length of ${loaded} tokens, not enough for this prompt` }, 400)
+    const text = isCompaction ? '<summary>The user shared long project notes in several parts.</summary>' : 'Noted.'
+    const chunk = data => response.write(`data: ${JSON.stringify(data)}\n\n`)
+    response.writeHead(200, { 'content-type': 'text/event-stream' })
+    chunk({ id: 'x', object: 'chat.completion.chunk', model: LMS_MODEL, choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }] })
+    chunk({ id: 'x', object: 'chat.completion.chunk', model: LMS_MODEL, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+    if (asksUsage) chunk({ id: 'x', object: 'chat.completion.chunk', model: LMS_MODEL, choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 8, total_tokens: promptTokens + 8 } })
+    response.end('data: [DONE]\n\n')
+  })
+  await new Promise(done => server.listen(0, '127.0.0.1', done))
+  return {
+    chats,
+    baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+    close: () => new Promise(done => { server.closeAllConnections?.(); server.close(() => done()) }),
+  }
+}
+
+function freshPlace(name, provider = 'ollama') {
   const home = join(root, name)
   const workspace = join(home, 'workspace')
   const configDir = join(home, 'config')
@@ -82,7 +135,7 @@ function freshPlace(name) {
   writeFileSync(join(configDir, '.claude.json'), JSON.stringify({
     hasCompletedOnboarding: true,
     lastOnboardingVersion: '99.0.0',
-    activeProvider: 'ollama',
+    activeProvider: provider,
     // A throwaway config would pull Ollama's cloud models into this machine's
     // Ollama on every run (ensureCloudModelsPrimed).
     ollamaCloudModelsPrimedAt: 1,
@@ -109,11 +162,11 @@ function note(turn) {
   return `${line}\n`.repeat(110) + `End of part ${turn}. Reply with one word.`
 }
 
-async function runConversation(place, env, turns) {
+async function runConversation(place, env, turns, model = MODEL) {
   const child = spawn(process.execPath, [
     cli, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
     '--strict-mcp-config', '--setting-sources', 'project', '--no-session-persistence', '--tools', 'Read',
-    '--model', MODEL,
+    '--model', model,
   ], {
     cwd: place.workspace, env, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -146,7 +199,7 @@ async function runConversation(place, env, turns) {
 function describeRun(run, server) {
   return [
     `exit ${run.code}, results ${run.results}`,
-    `calls: ${JSON.stringify(server.calls)}`,
+    `calls: ${JSON.stringify(server.calls ?? [])}`,
     `chats: ${JSON.stringify(server.chats)}`,
     `stdout tail: ${run.stdout.slice(-1500)}`,
     `stderr tail: ${run.stderr.slice(-1500)}`,
@@ -216,6 +269,40 @@ test('where Ollama gives the model 256K on its own (a 48 GB GPU), Tau keeps that
       assert.equal(chat.reloaded, false, context)
       assert.equal(chat.isCompaction, false, context)
     }
+  } finally {
+    await server.close()
+  }
+})
+
+test('an LM Studio model compacts within the context LM Studio loaded it with', async () => {
+  const loaded = 32_768
+  const server = await startFakeLmStudio({ loaded })
+  try {
+    const place = freshPlace('lmstudio', 'lmstudio')
+    const turns = 14
+    const run = await runConversation(place, cleanEnv(place, { LMSTUDIO_BASE_URL: server.baseUrl }), turns, LMS_MODEL)
+    const chats = server.chats
+    const context = describeRun(run, server)
+    if (process.env.TAU_LOCAL_COMPACTION_VERBOSE) console.log(chats)
+
+    assert.equal(run.results, turns, context)
+    assert.doesNotMatch(run.stdout, /Prompt is too long/, context)
+    const compactions = chats.filter(chat => chat.isCompaction)
+    assert.ok(compactions.length >= 1, `no compaction request\n${context}`)
+    assert.deepEqual(chats.filter(chat => chat.refused), [], context)
+    for (const chat of chats) {
+      // Tau asks for LM Studio's exact counts and keeps room for an answer.
+      assert.equal(chat.asksUsage, true, context)
+      assert.ok(chat.promptTokens + 1024 <= loaded || chat.isCompaction, `no room for an answer: ${JSON.stringify(chat)}\n${context}`)
+    }
+    // Compaction fired near 80% of the loaded context, not at the 131K LM
+    // Studio lists as the model's maximum, and left the summary room.
+    const before = chats[chats.indexOf(compactions[0]) - 1]
+    assert.ok(before.promptTokens < loaded * 0.8 + 3000, context)
+    assert.ok(compactions[0].maxTokens >= 2000, context)
+    const afterCompaction = chats.slice(chats.indexOf(compactions[0]) + 1).filter(chat => !chat.isCompaction)
+    assert.ok(afterCompaction.length >= 1, context)
+    assert.ok(afterCompaction[0].promptTokens < before.promptTokens / 2, context)
   } finally {
     await server.close()
   }

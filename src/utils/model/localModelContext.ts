@@ -3,20 +3,22 @@
  * compaction treats it.
  *
  * Planning covers Ollama models on this machine (not Ollama's `:cloud`
- * models). Ollama reports the exact size of every prompt, which is what
- * compaction needs. LM Studio sends Tau no token counts yet, so it keeps the
- * generic rules for now. Every function answers `undefined` for any other
- * provider, so they keep exactly the behavior they had.
+ * models) and LM Studio's models. Every function answers `undefined` for any
+ * other provider, so they keep exactly the behavior they had.
  *
  * Nothing here assumes a machine or a model. The local lane records facts as
- * requests go out: the context Ollama itself gives the model on this machine
- * (Ollama picks it from the GPU's memory, or takes the server's
- * OLLAMA_CONTEXT_LENGTH or the model's Modelfile), the model's own limit, the
- * size of Tau's fixed prompt (system prompt and tools), and how Ollama's exact
- * token counts compare to Tau's character estimate. Tau uses Ollama's own
- * context when it holds Tau's prompt, raises it to the smallest context Tau
- * can work in when it does not, and auto compaction plans for the context the
- * model really has.
+ * requests go out: the context the server gives the model, the model's own
+ * limit, the size of Tau's fixed prompt (system prompt and tools), and how the
+ * server's exact token counts compare to Tau's character estimate.
+ *
+ * - Ollama: Ollama picks a context from the GPU's memory, or takes the
+ *   server's OLLAMA_CONTEXT_LENGTH or the model's Modelfile. Tau uses it when
+ *   it holds Tau's prompt and raises it to the smallest context Tau can work in
+ *   when it does not (Tau sets Ollama's context per request).
+ * - LM Studio: the context it loaded the model with, which only LM Studio
+ *   changes. Tau reads it before every request.
+ *
+ * Auto compaction then plans for the context the model really has.
  */
 
 /** The least context Tau asks Ollama for, as it always has. */
@@ -69,9 +71,9 @@ export function isOllamaCloudModel(model: string): boolean {
   return /[:-]cloud$/i.test(model.trim())
 }
 
-/** Ollama models on this machine: the ones this module plans for. */
+/** Ollama models on this machine and LM Studio's: the ones this module plans for. */
 export function isLocalContextProvider(provider: string, model: string): boolean {
-  return provider === 'ollama' && !isOllamaCloudModel(model)
+  return (provider === 'ollama' && !isOllamaCloudModel(model)) || provider === 'lmstudio'
 }
 
 /** A token count rounded up to whole context steps. */
@@ -119,8 +121,9 @@ const tokenRatios = new Map<string, number>()
 const fixedRatios = new Map<string, number>()
 const ownContexts = new Map<string, number>()
 const sentContexts = new Map<string, number>()
+const loadedContexts = new Map<string, number>()
 
-const positive = (value: number | undefined): value is number =>
+const positive =(value: number | undefined): value is number =>
   value !== undefined && Number.isFinite(value) && value > 0
 
 /** The context length the model was trained for (Ollama's /api/show). */
@@ -169,6 +172,14 @@ export function noteLocalOwnContext(model: string, tokens: number | undefined): 
 /** A context Tau sent for the model. Ollama keeps the model loaded at it. */
 export function noteLocalSentContext(model: string, tokens: number): void {
   if (positive(tokens)) sentContexts.set(model, Math.max(tokens, sentContexts.get(model) ?? 0))
+}
+
+/**
+ * The context LM Studio has the model loaded with. Only LM Studio changes it,
+ * so the latest one read counts; a model it unloaded keeps the last one.
+ */
+export function noteLocalLoadedContext(model: string, tokens: number | undefined): void {
+  if (positive(tokens)) loadedContexts.set(model, tokens)
 }
 
 function scaled(estimatedTokens: number, ratio: number | undefined): number {
@@ -232,6 +243,7 @@ export function localAutoContextRange(model: string): LocalAutoContextRange | un
 /** The context the model has: what compaction plans for. */
 export function localModelContext(provider: string, model: string): number | undefined {
   if (!isLocalContextProvider(provider, model)) return undefined
+  if (provider === 'lmstudio') return loadedContexts.get(model)
   const setting = ollamaContextSetting()
   if (setting.kind === 'fixed') return setting.numCtx
   if (setting.max !== undefined) {
@@ -285,8 +297,11 @@ export function localCompactionProfile(provider: string, model: string): LocalCo
 }
 
 /**
- * The window Tau plans with for a local model, or undefined for any other
- * provider. A model compaction cannot help gets the generic default: then
+ * The window Tau plans with for a local model, or undefined to use the
+ * generic lookup (every other provider, and an LM Studio model compaction
+ * cannot plan for, which keeps the window LM Studio lists for it).
+ *
+ * An Ollama model compaction cannot help gets the generic default: then
  * nothing blocks or compacts on Tau's side, and Ollama's refusal explains a
  * request that does not fit. That replaces the trained sizes of a few model
  * families (llama3 at 8K), whose small window made Tau refuse every request
@@ -294,7 +309,9 @@ export function localCompactionProfile(provider: string, model: string): LocalCo
  */
 export function localModelContextWindow(provider: string, model: string, genericDefault: number): number | undefined {
   if (!isLocalContextProvider(provider, model)) return undefined
-  return localCompactionProfile(provider, model)?.window ?? genericDefault
+  const planned = localCompactionProfile(provider, model)?.window
+  if (provider === 'lmstudio') return planned
+  return planned ?? genericDefault
 }
 
 /** Test seam: forget every recorded fact. */
@@ -305,4 +322,5 @@ export function resetLocalModelContextForTests(): void {
   fixedRatios.clear()
   ownContexts.clear()
   sentContexts.clear()
+  loadedContexts.clear()
 }

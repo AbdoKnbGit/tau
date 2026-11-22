@@ -133,11 +133,42 @@ describe('an Ollama model on this machine', () => {
   })
 })
 
+describe('an LM Studio model', () => {
+  test('plans for the context LM Studio loaded it with', () => {
+    local.noteLocalLoadedContext('local-model', 32_768)
+    recordTauRequest('local-model')
+    asProvider('lmstudio', () => {
+      expect(getContextWindowForModel('local-model')).toBe(32_768)
+      expect(getAutoCompactThreshold('local-model')).toBe(26_214)
+      expect(getEffectiveContextWindowSize('local-model')).toBe(32_768 - 1024)
+      expect(calculateTokenWarningState(29_000, 'local-model').isAtBlockingLimit).toBe(true)
+    })
+  })
+
+  test('before LM Studio reports a loaded context it keeps the generic rules', () => {
+    recordTauRequest('local-model')
+    asProvider('lmstudio', () => {
+      const window = getContextWindowForModel('local-model')
+      const reserve = Math.min(getMaxOutputTokensForModel('local-model'), 20_000)
+      const generic = computeCompactionThreshold({
+        contextWindow: window,
+        reservedForSummary: reserve,
+        bufferTokens: AUTOCOMPACT_BUFFER_TOKENS,
+        thresholdPercent: undefined,
+        windowCap: undefined,
+      })
+      expect(getAutoCompactThreshold('local-model')).toBe(generic.threshold)
+    })
+  })
+})
+
 describe('other providers keep the generic rules', () => {
-  for (const [provider, model] of [['deepseek', 'deepseek-chat'], ['ollama', 'glm-5.1:cloud'], ['lmstudio', 'qwen3:4b'], ['openrouter', 'qwen3:4b']] as const) {
+  for (const [provider, model] of [['deepseek', 'deepseek-chat'], ['ollama', 'glm-5.1:cloud'], ['openrouter', 'qwen3:4b']] as const) {
     test(`${provider} ${model}`, () => {
       // Even facts recorded under the same model name change nothing.
       recordTauRequest(model)
+      local.noteLocalLoadedContext(model, 32_768)
+      local.noteLocalOwnContext(model, 32_768)
       asProvider(provider, () => {
         const window = getContextWindowForModel(model)
         const reserve = Math.min(getMaxOutputTokensForModel(model), 20_000)

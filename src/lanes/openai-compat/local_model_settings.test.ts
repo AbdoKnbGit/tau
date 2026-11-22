@@ -6,6 +6,7 @@ import {
   growOllamaNumCtx,
   isLocalModelRequest,
   isOllamaCloudModel,
+  isStreamOptionsRefusal,
   localAnswerRoom,
   ollamaContextSetting,
   ollamaKeepAlive,
@@ -221,6 +222,13 @@ describe('Ollama context', () => {
     expect(ollamaTruncateFields()).toEqual({ truncate: false })
     process.env.OLLAMA_TRUNCATE = '1'
     expect(ollamaTruncateFields()).toEqual({})
+  })
+
+  test("a server's refusal of stream_options is recognized; other errors are not", () => {
+    expect(isStreamOptionsRefusal(400, "Unrecognized key 'stream_options'")).toBe(true)
+    expect(isStreamOptionsRefusal(422, '{"detail":[{"loc":["body","stream_options","include_usage"]}]}')).toBe(true)
+    expect(isStreamOptionsRefusal(400, 'context length exceeded')).toBe(false)
+    expect(isStreamOptionsRefusal(500, 'stream_options')).toBe(false)
   })
 
   test('keep-alive defaults to 30 minutes', () => {

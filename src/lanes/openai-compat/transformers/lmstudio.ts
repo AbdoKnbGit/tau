@@ -19,8 +19,9 @@ export const lmStudioTransformer: Transformer = {
     return requested
   },
 
+  // stream_options stays: LM Studio's exact token counts size requests and
+  // plan compaction (loop.ts drops it for a server that refuses it).
   transformRequest(body: OpenAIChatRequest, ctx: TransformContext): OpenAIChatRequest {
-    delete body.stream_options
     if (!ctx.isReasoning) {
       body.thinking = { type: 'disabled' }
     }

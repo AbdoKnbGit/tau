@@ -50,11 +50,6 @@ const MODEL_LOAD_TIMEOUT_MS = 5 * 60_000
 const ANSWER_ROOM = 8_192
 /** The smallest answer limit Tau sends, so a full context still gets a reply. */
 const MIN_OUTPUT_TOKENS = 1_024
-/**
- * Tau estimates a request's size from its characters before sending it, and
- * the estimate can run low on dense text. Sizing against it adds this share.
- */
-const ESTIMATE_MARGIN = 1.15
 
 /**
  * Whether a request goes to a local model server. Ollama and LM Studio count
@@ -109,11 +104,6 @@ export function resolveLocalSampling(callerTemperature: number | undefined): Loc
 export function capLocalOutputTokens(requested: number): number {
   const cap = envPositiveInt('TAU_LOCAL_MAX_OUTPUT_TOKENS')
   return cap === undefined ? requested : Math.min(requested, cap)
-}
-
-/** A character-based size estimate, raised by the margin sizing works with. */
-export function localPromptBudget(estimatedTokens: number): number {
-  return Math.ceil(estimatedTokens * ESTIMATE_MARGIN)
 }
 
 /** Tokens to keep free for the answer when picking a context size. */
@@ -333,6 +323,27 @@ async function readLoadedContext(
   return typeof context === 'number' && Number.isFinite(context) && context > 0 ? context : undefined
 }
 
+// LM Studio servers that refused `stream_options`, by base URL. Without it a
+// server sends no token counts, so Tau asks for them until one refuses.
+const refusesStreamOptions = new Set<string>()
+
+/**
+ * Whether an error from LM Studio's server is a refusal of `stream_options`
+ * (an older LM Studio, or another OpenAI-compatible server behind the LM
+ * Studio provider).
+ */
+export function isStreamOptionsRefusal(status: number, text: string): boolean {
+  return (status === 400 || status === 422) && /stream_options|include_usage/i.test(text)
+}
+
+export function lmStudioRefusesStreamOptions(baseUrl: string): boolean {
+  return refusesStreamOptions.has(baseUrl)
+}
+
+export function rememberLmStudioRefusesStreamOptions(baseUrl: string): void {
+  refusesStreamOptions.add(baseUrl)
+}
+
 function ollamaHeaders(apiKey: string): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`
@@ -391,5 +402,6 @@ export function resetLocalModelSettingsForTests(): void {
   chosenContexts.clear()
   modelLimits.clear()
   ownContexts.clear()
+  refusesStreamOptions.clear()
   resetLocalModelContextForTests()
 }

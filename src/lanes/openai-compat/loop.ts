@@ -47,7 +47,6 @@ import {
   growOllamaNumCtx,
   isLocalModelRequest,
   localAnswerRoom,
-  localPromptBudget,
   OLLAMA_DEFAULT_NUM_CTX,
   ollamaContextKey,
   ollamaContextSetting,
@@ -55,6 +54,9 @@ import {
   ollamaModelContextLength,
   ollamaOverflowAdvice,
   ollamaOwnContext,
+  isStreamOptionsRefusal,
+  lmStudioRefusesStreamOptions,
+  rememberLmStudioRefusesStreamOptions,
   ollamaTruncateFields,
   parseOllamaContextOverflow,
   resolveLocalSampling,
@@ -64,6 +66,7 @@ import {
   localTokenEstimate,
   type LocalAutoContextRange,
   noteLocalFixedPrompt,
+  noteLocalLoadedContext,
   noteLocalModelLimit,
   noteLocalOwnContext,
   noteLocalSentContext,
@@ -835,8 +838,17 @@ export class OpenAICompatLane implements Lane {
       }
     }
 
+    // LM Studio's estimate of this request, kept for calibration once LM Studio
+    // reports its exact count.
+    let lmStudioEstimate = 0
     if (provider === 'lmstudio') {
       const lmStudioInfo = await getLmStudioModelInfo(cfg, model).catch(() => null)
+      // Auto compaction plans for the context LM Studio loaded the model with,
+      // around the part it cannot shrink (localModelContext.ts).
+      noteLocalLoadedContext(model, lmStudioInfo?.lmStudioLoadedContextWindow)
+      noteLocalFixedPrompt(model, estimateFixedPromptTokens(body))
+      lmStudioEstimate = estimateOpenAICompatRequestTokens(body)
+      if (lmStudioRefusesStreamOptions(cfg.baseUrl)) delete body.stream_options
       const contextMessage = lmStudioContextPreflightMessage(lmStudioInfo, model, body)
       if (contextMessage) {
         const mst = emitMessageStart()
@@ -846,11 +858,12 @@ export class OpenAICompatLane implements Lane {
         yield { type: 'message_stop' }
         return blankUsage(inputTokens, outputTokens, cacheReadTokens(), reasoningTokens)
       }
-      // Fit the answer limit to the room the loaded context leaves.
+      // Fit the answer limit to the room the loaded context leaves, sized by
+      // LM Studio's own counts once it has reported one.
       body.max_tokens = fitLocalOutputTokens(
         body.max_tokens,
         lmStudioInfo?.lmStudioLoadedContextWindow,
-        localPromptBudget(estimateOpenAICompatRequestTokens(body)),
+        localTokenEstimate(model, lmStudioEstimate),
       )
     }
 
@@ -863,6 +876,7 @@ export class OpenAICompatLane implements Lane {
     // openrouterStrictSchema.ts remembers the row so no later turn pays for
     // it. Nothing has been yielded yet, so the retry is invisible.
     let strictToolSchemaRetried = false
+    let streamOptionsRetried = false
     for (;;) {
       try {
         response = await fetch(url, {
@@ -903,6 +917,19 @@ export class OpenAICompatLane implements Lane {
         // Re-stamp the tool-prefix cache breakpoint the transformer placed on
         // the original array; losing it would cold-start the upstream cache.
         if (stamped && lastTool) lastTool.cache_control = stamped
+        continue
+      }
+      // A server behind the LM Studio provider that does not take
+      // stream_options: resend without it, and leave it out from now on.
+      if (
+        !streamOptionsRetried
+        && provider === 'lmstudio'
+        && body.stream_options
+        && isStreamOptionsRefusal(response.status, errText)
+      ) {
+        streamOptionsRetried = true
+        rememberLmStudioRefusesStreamOptions(cfg.baseUrl)
+        delete body.stream_options
         continue
       }
       break
@@ -1424,6 +1451,10 @@ export class OpenAICompatLane implements Lane {
       const mst = emitMessageStart()
       if (mst) yield mst
     }
+
+    // LM Studio's exact count of this prompt (stream_options.include_usage)
+    // calibrates Tau's estimate for the model, as Ollama's counts do.
+    if (lmStudioEstimate > 0 && inputTokens > 0) noteLocalTokenCount(model, lmStudioEstimate, inputTokens)
 
     const stopReason = laneStopReason({
       truncated: outputCapTruncated,
@@ -2794,7 +2825,9 @@ function lmStudioContextPreflightMessage(
     ? ` Reload it with a larger context, for example: lms unload "${model}"; lms load "${model}" -c ${suggestedContextWindow} -y --identifier "${model}".`
     : ''
 
-  return `LM Studio has "${model}" loaded with ${formatTokenCount(loadedContextWindow)} context tokens, but Tau's agent request is about ${formatTokenCount(estimatedInputTokens)} tokens before generation. LM Studio can return an empty response in that state.${maxContextWindow ? ` This model reports up to ${formatTokenCount(maxContextWindow)} tokens available.` : ''}${reloadHint}`
+  // "Prompt is too long" first: a compaction whose own request does not fit
+  // then drops its oldest part and tries again (compact.ts).
+  return `Prompt is too long (LM Studio): LM Studio has "${model}" loaded with ${formatTokenCount(loadedContextWindow)} context tokens, but Tau's agent request is about ${formatTokenCount(estimatedInputTokens)} tokens before generation. LM Studio can return an empty response in that state.${maxContextWindow ? ` This model reports up to ${formatTokenCount(maxContextWindow)} tokens available.` : ''}${reloadHint}`
 }
 
 async function getLmStudioModelInfo(

@@ -93,10 +93,16 @@ and tools leave less than 8K of room in a context you fixed, compacting can't
 help, so Tau doesn't try: raise `OLLAMA_NUM_CTX`, or use `/mode cheap`. Your
 `/compact-settings` percentage still applies, inside that context.
 
-LM Studio sets the context when it loads a model. Tau reads that loaded
-context, fits each answer to it, and tells you how to reload the model with a
-larger one when a request doesn't fit. LM Studio sends Tau no token counts
-yet, so its auto-compact keeps the generic rules.
+LM Studio sets the context when it loads a model, and only LM Studio changes
+it. Tau reads that loaded context before every request, fits each answer to
+it, and auto-compact plans for it the same way as on Ollama (at 80% of a small
+context), instead of the larger maximum LM Studio lists for the model. Tau
+asks LM Studio for its exact token counts and calibrates its estimates with
+them; a server that refuses the request for counts gets it without, from then
+on. When the loaded context is too small for Tau's prompt, or a request still
+doesn't fit, Tau tells you how to reload the model with a larger one. Other
+servers you point the LM Studio provider at get the same answer fitting and
+token counts, but compaction can plan only with LM Studio's own loaded context.
 
 ## DeepSeek thinking effort
 

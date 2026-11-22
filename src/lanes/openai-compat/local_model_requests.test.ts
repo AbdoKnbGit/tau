@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { initOpenAICompatLane, openaiCompatLane } from './index.js'
 import { resetLocalModelSettingsForTests } from './local_model_settings.js'
+import { localCompactionProfile, localTokenEstimate } from '../../utils/model/localModelContext.js'
 import type { AnthropicStreamEvent } from '../../services/api/providers/base_provider.js'
 
 const OLLAMA = 'http://127.0.0.1:11434/v1'
@@ -34,6 +35,10 @@ type Server = {
   refuseBelow?: { numCtx: number; requestTokens: number }
   /** LM Studio /api/v1/models answer. */
   lmStudioModels?: unknown[]
+  /** LM Studio counts a prompt at this share of Tau's 4-characters estimate. */
+  lmStudioCountRatio?: number
+  /** An OpenAI-compatible server that rejects stream_options with a 400. */
+  refusesStreamOptions?: boolean
   /**
    * Ollama /api/ps: the context the model is loaded with when the request
    * starts. Without this or `ownDefault`, /api/ps answers 404.
@@ -50,10 +55,14 @@ function ndjson(lines: unknown[]): Response {
   })
 }
 
-function sse(model: string): Response {
+// Usage only when the request asks for it, as OpenAI-compatible servers do.
+function sse(model: string, promptTokens?: number): Response {
   const chunks = [
     { id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] },
-    { id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 } },
+    {
+      id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      ...(promptTokens !== undefined && { usage: { prompt_tokens: promptTokens, completion_tokens: 1, total_tokens: promptTokens + 1 } }),
+    },
   ]
   return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n', {
     status: 200,
@@ -116,7 +125,14 @@ async function run(input: {
       ])
     }
     if (href.endsWith('/api/v1/models')) return Response.json({ models: server.lmStudioModels ?? [] })
-    if (href.endsWith('/chat/completions')) return sse(body?.model ?? 'model')
+    if (href.endsWith('/chat/completions')) {
+      if (server.refusesStreamOptions && body?.stream_options) {
+        return Response.json({ error: "'stream_options' is not supported" }, { status: 400 })
+      }
+      const estimate = (JSON.stringify(body.messages).length + (body.tools ? JSON.stringify(body.tools).length : 0)) / 4
+      const promptTokens = server.lmStudioCountRatio === undefined ? 10 : Math.ceil(estimate * server.lmStudioCountRatio)
+      return sse(body?.model ?? 'model', body?.stream_options?.include_usage ? promptTokens : undefined)
+    }
     return new Response('not found', { status: 404 })
   }) as typeof fetch
 
@@ -348,6 +364,53 @@ describe('LM Studio', () => {
     process.env.TAU_LOCAL_MAX_OUTPUT_TOKENS = '4096'
     const { sent } = await run({ providerHint: 'lmstudio', model: 'other-server-model' })
     expect(chats(sent)[0]!.body.max_tokens).toBe(4096)
+  })
+
+  const loaded32k = [{
+    type: 'llm',
+    key: 'local-model',
+    display_name: 'Local Model',
+    max_context_length: 131_072,
+    loaded_instances: [{ id: 'local-model', config: { context_length: 32_768 } }],
+  }]
+
+  test("LM Studio is asked for its exact token counts, and they calibrate Tau's estimate", async () => {
+    const { sent } = await run({
+      providerHint: 'lmstudio',
+      model: 'local-model',
+      system: 'x '.repeat(24_000),
+      server: { lmStudioModels: loaded32k, lmStudioCountRatio: 0.9 },
+    })
+    expect(chats(sent)[0]!.body.stream_options).toEqual({ include_usage: true })
+    // 0.9 of the estimate, plus the 5% margin a counted model gets.
+    const scaled = localTokenEstimate('local-model', 10_000)
+    expect(scaled).toBeGreaterThan(9400)
+    expect(scaled).toBeLessThan(9500)
+  })
+
+  test('auto-compact plans for the context LM Studio loaded the model with', async () => {
+    await run({
+      providerHint: 'lmstudio',
+      model: 'local-model',
+      system: 'x '.repeat(24_000),
+      server: { lmStudioModels: loaded32k, lmStudioCountRatio: 0.9 },
+    })
+    expect(localCompactionProfile('lmstudio', 'local-model')?.window).toBe(32_768)
+  })
+
+  test('a server that refuses stream_options gets the request again without it, and never again', async () => {
+    const server = { lmStudioModels: loaded32k, refusesStreamOptions: true }
+    const first = await run({ providerHint: 'lmstudio', model: 'local-model', server })
+    expect(first.text).toBe('ok')
+    expect(chats(first.sent).map(chat => 'stream_options' in chat.body)).toEqual([true, false])
+    const second = await run({ providerHint: 'lmstudio', model: 'local-model', server })
+    expect(chats(second.sent).map(chat => 'stream_options' in chat.body)).toEqual([false])
+  })
+
+  test('a request larger than the loaded context is not sent, and its message is one compaction recognizes', async () => {
+    const { sent, text } = await run({ providerHint: 'lmstudio', model: 'local-model', system: 'x '.repeat(40_000), server: { lmStudioModels: loaded } })
+    expect(chats(sent)).toHaveLength(0)
+    expect(text.startsWith('Prompt is too long (LM Studio): LM Studio has "local-model" loaded with 8,192 context tokens')).toBe(true)
   })
 })
 

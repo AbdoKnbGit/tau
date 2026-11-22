@@ -8,6 +8,7 @@ import {
   localTokenEstimate,
   localWorkableContext,
   noteLocalFixedPrompt,
+  noteLocalLoadedContext,
   noteLocalModelLimit,
   noteLocalOwnContext,
   noteLocalSentContext,
@@ -45,17 +46,18 @@ function recordTauRequest(model: string): void {
 }
 
 describe('which models are planned for', () => {
-  test('Ollama models on this machine only', () => {
+  test('Ollama models on this machine and LM Studio models only', () => {
     expect(isLocalContextProvider('ollama', 'qwen3:4b')).toBe(true)
     expect(isLocalContextProvider('ollama', 'glm-5.1:cloud')).toBe(false)
-    expect(isLocalContextProvider('lmstudio', 'local-model')).toBe(false)
+    expect(isLocalContextProvider('lmstudio', 'local-model')).toBe(true)
     expect(isLocalContextProvider('deepseek', 'deepseek-chat')).toBe(false)
   })
 
   test('every other provider gets no window and no profile, whatever was recorded', () => {
     recordTauRequest('deepseek-chat')
     noteLocalOwnContext('deepseek-chat', 262_144)
-    for (const provider of ['deepseek', 'openrouter', 'firstParty', 'lmstudio', 'mistral']) {
+    noteLocalLoadedContext('deepseek-chat', 32_768)
+    for (const provider of ['deepseek', 'openrouter', 'firstParty', 'mistral']) {
       expect(localModelContext(provider, 'deepseek-chat')).toBeUndefined()
       expect(localCompactionProfile(provider, 'deepseek-chat')).toBeUndefined()
       expect(localModelContextWindow(provider, 'deepseek-chat', 200_000)).toBeUndefined()
@@ -140,6 +142,49 @@ describe('the context the model has', () => {
     expect(localModelContext('ollama', 'qwen3:4b')).toBe(262_144)
     process.env.OLLAMA_NUM_CTX = '24000'
     expect(localModelContext('ollama', 'qwen3:4b')).toBe(24_000)
+  })
+})
+
+describe('LM Studio', () => {
+  test('plans for the context LM Studio loaded the model with', () => {
+    noteLocalLoadedContext('qwen/qwen3-4b', 32_768)
+    recordTauRequest('qwen/qwen3-4b')
+    expect(localModelContext('lmstudio', 'qwen/qwen3-4b')).toBe(32_768)
+    expect(localCompactionProfile('lmstudio', 'qwen/qwen3-4b')).toEqual({
+      window: 32_768,
+      summaryReserve: 32_768 - 26_214,
+      outputReserve: 1024,
+      fileRestoreBudget: 3276,
+      skillRestoreBudget: 1638,
+    })
+    expect(localModelContextWindow('lmstudio', 'qwen/qwen3-4b', 200_000)).toBe(32_768)
+  })
+
+  test('the loaded context is only read, never raised: too small keeps the window LM Studio lists', () => {
+    noteLocalLoadedContext('qwen/qwen3-4b', 8192)
+    recordTauRequest('qwen/qwen3-4b')
+    expect(localModelContext('lmstudio', 'qwen/qwen3-4b')).toBe(8192)
+    expect(localCompactionProfile('lmstudio', 'qwen/qwen3-4b')).toBeUndefined()
+    // Undefined: the generic lookup keeps the window LM Studio lists for the model.
+    expect(localModelContextWindow('lmstudio', 'qwen/qwen3-4b', 200_000)).toBeUndefined()
+  })
+
+  test('a reload in LM Studio with another context is followed', () => {
+    recordTauRequest('qwen/qwen3-4b')
+    noteLocalLoadedContext('qwen/qwen3-4b', 32_768)
+    noteLocalLoadedContext('qwen/qwen3-4b', 65_536)
+    expect(localModelContext('lmstudio', 'qwen/qwen3-4b')).toBe(65_536)
+    // A model LM Studio unloaded keeps the last context read.
+    noteLocalLoadedContext('qwen/qwen3-4b', undefined)
+    expect(localModelContext('lmstudio', 'qwen/qwen3-4b')).toBe(65_536)
+  })
+
+  test("Ollama's settings do not apply, and nothing is planned before LM Studio reports a loaded context", () => {
+    process.env.OLLAMA_NUM_CTX = '24000'
+    recordTauRequest('local-model')
+    expect(localModelContext('lmstudio', 'local-model')).toBeUndefined()
+    noteLocalLoadedContext('local-model', 32_768)
+    expect(localModelContext('lmstudio', 'local-model')).toBe(32_768)
   })
 })
 
