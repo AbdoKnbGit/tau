@@ -27,6 +27,7 @@ import { promisify } from 'util'
 import type { ModelInfo } from '../../services/api/providers/base_provider.js'
 import { recordModelVision } from '../../lanes/shared/vision_capability.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
+import { isOllamaCloudModel } from './localModelContext.js'
 
 const exec = promisify(execFile)
 
@@ -133,10 +134,10 @@ export interface OllamaCatalog {
   toolless: OllamaModelInfo[]
 }
 
-// Known base families that we trust to support tool-calling properly.
-// Tested against the models listed in amelioration.txt and the Ollama
-// registry as of early 2026. If a model's name contains any of these
-// substrings we consider it tool-capable.
+// The fallback when Ollama reports no capabilities (an older Ollama), and the
+// rule `:cloud` aliases keep: base families trusted to support tool-calling,
+// as of early 2026. A model whose name contains one counts as tool-capable.
+// getOllamaCatalog asks Ollama first.
 const TOOLS_CAPABLE_NAMES: readonly string[] = [
   'llama3.1',
   'llama3.2',
@@ -187,21 +188,20 @@ interface ApiTagsResponse {
   models?: Array<{
     name: string
     model?: string
+    digest?: string
     details?: { family?: string; parameter_size?: string }
   }>
 }
 
-/**
- * List models currently pulled in the local Ollama install. Returns an
- * empty array if Ollama isn't running. Never throws — the picker should
- * degrade gracefully when the daemon is offline.
- */
-export async function listLocalOllamaModels(): Promise<string[]> {
+/** Every pulled model with its digest; none when Ollama isn't running. */
+async function listOllamaTags(): Promise<Array<{ name: string; digest?: string }>> {
   try {
     const response = await fetch(`${ollamaBase()}/api/tags`)
     if (!response.ok) return []
     const data = (await response.json()) as ApiTagsResponse
-    return (data.models ?? []).map(m => m.name).filter(Boolean)
+    return (data.models ?? [])
+      .filter(m => Boolean(m.name))
+      .map(m => ({ name: m.name, digest: m.digest }))
   } catch (error) {
     debugLog(
       `[OllamaCatalog] listLocalOllamaModels failed: ${
@@ -210,6 +210,54 @@ export async function listLocalOllamaModels(): Promise<string[]> {
     )
     return []
   }
+}
+
+/**
+ * List models currently pulled in the local Ollama install. Returns an
+ * empty array if Ollama isn't running. Never throws — the picker should
+ * degrade gracefully when the daemon is offline.
+ */
+export async function listLocalOllamaModels(): Promise<string[]> {
+  return (await listOllamaTags()).map(m => m.name)
+}
+
+// What Ollama says each pulled model can do, by name and digest: a model
+// pulled again under the same name can change.
+const capabilityCache = new Map<string, readonly string[]>()
+
+/**
+ * The capabilities Ollama lists for a pulled model (`completion`, `tools`,
+ * `thinking`, `vision`, `embedding`...). Undefined when the daemon lists none
+ * (an older Ollama) or does not answer; that is asked again next time.
+ */
+async function readOllamaCapabilities(
+  id: string,
+  digest: string | undefined,
+): Promise<readonly string[] | undefined> {
+  const key = `${id}\n${digest ?? ''}`
+  const known = capabilityCache.get(key)
+  if (known) return known
+  try {
+    const response = await fetch(`${ollamaBase()}/api/show`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: id }),
+      signal: AbortSignal.timeout(3_000),
+    })
+    if (!response.ok) return undefined
+    const { capabilities } = (await response.json()) as { capabilities?: unknown }
+    if (!Array.isArray(capabilities)) return undefined
+    const list = capabilities.filter((item): item is string => typeof item === 'string')
+    capabilityCache.set(key, list)
+    return list
+  } catch {
+    return undefined
+  }
+}
+
+/** Test seam: forget the capabilities read in this process. */
+export function resetOllamaCatalogForTests(): void {
+  capabilityCache.clear()
 }
 
 /**
@@ -248,11 +296,22 @@ async function recordOllamaVision(ids: readonly string[]): Promise<void> {
  * Local models come from /api/tags minus anything that matches a cloud
  * entry. We then split them by tools support — tool-less models surface as
  * the toolless section (hidden by default but accessible via a warning UI).
+ *
+ * A model on this machine is sorted by what Ollama says it can do (its
+ * `capabilities`): tools, thinking and vision, and a model that cannot chat
+ * (an embedding model) is left out. The list of model names is only the
+ * fallback for an older Ollama that reports no capabilities. `:cloud`
+ * aliases keep the rules they always had.
  */
 export async function getOllamaCatalog(): Promise<OllamaCatalog> {
-  const pulled = new Set(await listLocalOllamaModels())
-  void recordOllamaVision([...pulled])
+  const tags = await listOllamaTags()
+  const pulled = new Set(tags.map(tag => tag.name))
   const cloudSet = new Set(CLOUD_MODELS_LIST)
+  const isCloudAlias = (id: string) => cloudSet.has(id) || isOllamaCloudModel(id)
+  void recordOllamaVision(tags.filter(tag => isCloudAlias(tag.name)).map(tag => tag.name))
+  const onMachine = tags.filter(tag => !isCloudAlias(tag.name))
+  const capabilities = new Map(await Promise.all(onMachine.map(async tag =>
+    [tag.name, await readOllamaCapabilities(tag.name, tag.digest)] as const)))
 
   const cloud: OllamaModelInfo[] = CLOUD_MODELS_LIST.map(id => ({
     id,
@@ -268,14 +327,18 @@ export async function getOllamaCatalog(): Promise<OllamaCatalog> {
 
   for (const id of pulled) {
     if (cloudSet.has(id)) continue // already in the cloud section
-    const supportsTools = inferToolsSupport(id)
+    const caps = capabilities.get(id)
+    if (caps) recordModelVision('ollama', id, caps.includes('vision'))
+    // A model Ollama says cannot chat (an embedding model) cannot run Tau.
+    if (caps && !caps.includes('completion')) continue
+    const supportsTools = caps ? caps.includes('tools') : inferToolsSupport(id)
     const entry: OllamaModelInfo = {
       id,
       name: id,
       category: 'local',
       pulled: true,
       supportsTools,
-      supportsThinking: false,
+      supportsThinking: caps?.includes('thinking') ?? false,
     }
     if (supportsTools) {
       local.push(entry)

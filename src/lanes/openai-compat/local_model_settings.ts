@@ -24,6 +24,7 @@
  */
 
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { publishLocalModelNotice } from '../../utils/model/localModelNotices.js'
 import {
   envPositiveInt,
   isOllamaCloudModel,
@@ -300,6 +301,43 @@ async function readOllamaOwnContext(
   return after === 'not loaded' ? undefined : after
 }
 
+/** A loaded model as /api/ps describes it. */
+type LoadedOllamaModel = {
+  /** The context it is loaded with. */
+  context?: number
+  /** Its whole size in memory, and the part of it in GPU memory. */
+  size?: number
+  sizeVram?: number
+}
+
+/**
+ * The model as /api/ps describes it. Undefined when the server does not say;
+ * throws when it cannot be reached.
+ */
+async function readLoadedModel(
+  serverRoot: string,
+  model: string,
+  headers: Record<string, string>,
+): Promise<LoadedOllamaModel | undefined | 'not loaded'> {
+  const response = await fetch(`${serverRoot}/api/ps`, { headers, signal: AbortSignal.timeout(3_000) })
+  if (!response.ok) return undefined
+  const data = await response.json().catch(() => undefined) as
+    | { models?: Array<{ name?: unknown; model?: unknown; context_length?: unknown; size?: unknown; size_vram?: unknown }> }
+    | undefined
+  if (!Array.isArray(data?.models)) return undefined
+  // `llama3` is listed as `llama3:latest`.
+  const names = new Set([model, model.includes(':') ? model : `${model}:latest`])
+  const entry = data.models.find(item => names.has(String(item.name)) || names.has(String(item.model)))
+  if (!entry) return 'not loaded'
+  const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+  const context = count(entry.context_length)
+  return {
+    context: context && context > 0 ? context : undefined,
+    size: count(entry.size),
+    sizeVram: count(entry.size_vram),
+  }
+}
+
 /**
  * The context the model is loaded with, from /api/ps. Undefined when the
  * server does not say; throws when it cannot be reached.
@@ -309,18 +347,54 @@ async function readLoadedContext(
   model: string,
   headers: Record<string, string>,
 ): Promise<number | undefined | 'not loaded'> {
-  const response = await fetch(`${serverRoot}/api/ps`, { headers, signal: AbortSignal.timeout(3_000) })
-  if (!response.ok) return undefined
-  const data = await response.json().catch(() => undefined) as
-    | { models?: Array<{ name?: unknown; model?: unknown; context_length?: unknown }> }
-    | undefined
-  if (!Array.isArray(data?.models)) return undefined
-  // `llama3` is listed as `llama3:latest`.
-  const names = new Set([model, model.includes(':') ? model : `${model}:latest`])
-  const entry = data.models.find(item => names.has(String(item.name)) || names.has(String(item.model)))
-  if (!entry) return 'not loaded'
-  const context = entry.context_length
-  return typeof context === 'number' && Number.isFinite(context) && context > 0 ? context : undefined
+  const loaded = await readLoadedModel(serverRoot, model, headers)
+  return loaded === undefined || loaded === 'not loaded' ? loaded : loaded.context
+}
+
+// The context each model was last checked at, per server and model.
+const gpuFitChecks = new Map<string, number>()
+
+/**
+ * After Ollama loaded a model at a new context: does part of it run on the
+ * CPU? /api/ps reports the model's size and the part of it in GPU memory. A
+ * model split between GPU and CPU answers much slower, so the user hears it
+ * once per model and context, with what helps. Nothing is said for a model
+ * fully on the GPU, or for a machine that runs it all on the CPU (nothing in
+ * GPU memory), where nothing on the GPU side would help. One short request
+ * per new context; never throws.
+ */
+export async function checkOllamaGpuFit(
+  serverRoot: string,
+  model: string,
+  apiKey: string,
+  numCtx: number,
+): Promise<void> {
+  const key = ollamaContextKey(serverRoot, model)
+  if (gpuFitChecks.get(key) === numCtx) return
+  gpuFitChecks.set(key, numCtx)
+  try {
+    const loaded = await readLoadedModel(serverRoot, model, ollamaHeaders(apiKey))
+    if (loaded === undefined || loaded === 'not loaded') return
+    const { size, sizeVram } = loaded
+    if (!size || !sizeVram || sizeVram >= size) return
+    const context = loaded.context ?? numCtx
+    const onCpu = Math.max(1, Math.round((100 * (size - sizeVram)) / size))
+    publishLocalModelNotice({
+      key: `ollama-cpu-share\n${key}\n${context}`,
+      text: ollamaCpuShareNotice(model, onCpu, context),
+    })
+  } catch {
+    // Best effort: the request already succeeded.
+  }
+}
+
+/**
+ * The one-time notice for a model that runs partly on the CPU. The REPL shows
+ * notices on one truncated line, so the facts come first and one fix after.
+ */
+export function ollamaCpuShareNotice(model: string, onCpuPercent: number, context: number): string {
+  return `${model} runs ${onCpuPercent}% on the CPU at ${context.toLocaleString('en-US')} context, so slower`
+    + ' · OLLAMA_FLASH_ATTENTION=1 + OLLAMA_KV_CACHE_TYPE=q8_0 for Ollama fit more on the GPU'
 }
 
 // LM Studio servers that refused `stream_options`, by base URL. Without it a
@@ -403,5 +477,6 @@ export function resetLocalModelSettingsForTests(): void {
   modelLimits.clear()
   ownContexts.clear()
   refusesStreamOptions.clear()
+  gpuFitChecks.clear()
   resetLocalModelContextForTests()
 }

@@ -6,8 +6,9 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { initOpenAICompatLane, openaiCompatLane } from './index.js'
-import { resetLocalModelSettingsForTests } from './local_model_settings.js'
+import { ollamaCpuShareNotice, resetLocalModelSettingsForTests } from './local_model_settings.js'
 import { localCompactionProfile, localTokenEstimate } from '../../utils/model/localModelContext.js'
+import { onLocalModelNotice, resetLocalModelNoticesForTests } from '../../utils/model/localModelNotices.js'
 import type { AnthropicStreamEvent } from '../../services/api/providers/base_provider.js'
 
 const OLLAMA = 'http://127.0.0.1:11434/v1'
@@ -46,6 +47,8 @@ type Server = {
   loadedAt?: number
   /** The context Ollama picks when it loads the model with no options. */
   ownDefault?: number
+  /** /api/ps: the loaded model's size and the part of it in GPU memory. */
+  gpuShare?: { size: number; sizeVram: number }
 }
 
 function ndjson(lines: unknown[]): Response {
@@ -105,7 +108,8 @@ async function run(input: {
     }
     if (href.endsWith('/api/ps')) {
       if (!answersPs) return new Response('not found', { status: 404 })
-      return Response.json({ models: loadedAt === undefined ? [] : [{ name: input.model, model: input.model, context_length: loadedAt }] })
+      const share = server.gpuShare && { size: server.gpuShare.size, size_vram: server.gpuShare.sizeVram }
+      return Response.json({ models: loadedAt === undefined ? [] : [{ name: input.model, model: input.model, context_length: loadedAt, ...share }] })
     }
     if (href.endsWith('/api/generate')) {
       loadedAt = server.ownDefault === undefined ? undefined : clamp(server.ownDefault)
@@ -164,12 +168,17 @@ async function run(input: {
 
 const chats = (sent: Sent[]) => sent.filter(entry => entry.url.endsWith('/api/chat') || entry.url.endsWith('/chat/completions'))
 
+// What Tau asked the server before its first request.
+const callsBeforeFirstChat = (sent: Sent[]) =>
+  sent.slice(0, sent.findIndex(entry => entry.url.endsWith('/api/chat') || entry.url.endsWith('/chat/completions')))
+
 beforeEach(() => {
   for (const key of ENV_KEYS) {
     saved.set(key, process.env[key])
     delete process.env[key]
   }
   resetLocalModelSettingsForTests()
+  resetLocalModelNoticesForTests()
 })
 
 afterEach(() => {
@@ -214,11 +223,12 @@ describe('Ollama, a model on this machine', () => {
     expect(chats(sent)[0]!.body.options.num_ctx).toBe(8192)
   })
 
-  test('a fixed OLLAMA_NUM_CTX is sent as given, without asking Ollama anything', async () => {
+  test('a fixed OLLAMA_NUM_CTX is sent as given, without asking Ollama for its context first', async () => {
     process.env.OLLAMA_NUM_CTX = '20000'
     const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', system: 'x '.repeat(40_000), server: { ownDefault: 262_144 } })
     expect(chats(sent)[0]!.body.options.num_ctx).toBe(20_000)
-    expect(sent.filter(entry => !entry.url.endsWith('/api/chat'))).toEqual([])
+    expect(callsBeforeFirstChat(sent)).toEqual([])
+    expect(sent.some(entry => entry.url.endsWith('/api/generate'))).toBe(false)
   })
 
   test("a refused request grows to Ollama's exact count and is sent once more", async () => {
@@ -259,7 +269,40 @@ describe('Ollama, a model on this machine', () => {
     process.env.OLLAMA_NUM_CTX_MAX = '65536'
     const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', system: 'x '.repeat(40_000), server: { ownDefault: 262_144 } })
     expect(chats(sent)[0]!.body.options.num_ctx).toBe(32_768)
-    expect(sent.some(entry => entry.url.endsWith('/api/ps') || entry.url.endsWith('/api/generate'))).toBe(false)
+    // Only the model's own limit is read first, as before.
+    expect(callsBeforeFirstChat(sent).map(entry => new URL(entry.url).pathname)).toEqual(['/api/show'])
+    expect(sent.some(entry => entry.url.endsWith('/api/generate'))).toBe(false)
+  })
+
+  test('a model split between GPU and CPU gets a one-time notice after the answer; the request is the same', async () => {
+    const notices: string[] = []
+    const stop = onLocalModelNotice(notice => notices.push(notice.text))
+    try {
+      const server = { loadedAt: 32_768, gpuShare: { size: 4_000_000_000, sizeVram: 3_360_000_000 } }
+      const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', system: 'x '.repeat(40_000), server })
+      expect(notices).toEqual([ollamaCpuShareNotice('qwen3:4b', 16, 32_768)])
+      // The check is a read after the answer, not part of the request.
+      const firstChat = sent.findIndex(entry => entry.url.endsWith('/api/chat'))
+      expect(sent.slice(firstChat + 1).map(entry => `${entry.method} ${new URL(entry.url).pathname}`)).toEqual(['GET /api/ps'])
+      // The same context next turn: no second check, no second notice.
+      const again = await run({ providerHint: 'ollama', model: 'qwen3:4b', server })
+      expect(again.sent.filter(entry => entry.url.endsWith('/api/ps'))).toHaveLength(0)
+      expect(notices).toHaveLength(1)
+    } finally {
+      stop()
+    }
+  })
+
+  test('a model fully on the GPU, or a machine running it all on the CPU, gets no notice', async () => {
+    const notices: string[] = []
+    const stop = onLocalModelNotice(notice => notices.push(notice.text))
+    try {
+      await run({ providerHint: 'ollama', model: 'full:1b', server: { loadedAt: 32_768, gpuShare: { size: 4_000_000_000, sizeVram: 4_000_000_000 } } })
+      await run({ providerHint: 'ollama', model: 'cpu:1b', server: { loadedAt: 32_768, gpuShare: { size: 4_000_000_000, sizeVram: 0 } } })
+      expect(notices).toEqual([])
+    } finally {
+      stop()
+    }
   })
 
   test('past the context it may use, the advice says how to allow more', async () => {
@@ -326,12 +369,13 @@ describe('Ollama, a model on this machine', () => {
 })
 
 describe("Ollama's cloud models keep the request Tau has always sent", () => {
-  test('16K context, the full answer limit, Tau temperature, no truncate field, no /api/show', async () => {
-    const { sent } = await run({ providerHint: 'ollama', model: 'glm-5.1:cloud', system: 'x '.repeat(40_000) })
+  test('16K context, the full answer limit, Tau temperature, no truncate field, no /api/show, no GPU check', async () => {
+    const server = { loadedAt: 16_384, gpuShare: { size: 4_000_000_000, sizeVram: 1_000_000_000 } }
+    const { sent } = await run({ providerHint: 'ollama', model: 'glm-5.1:cloud', system: 'x '.repeat(40_000), server })
     const [chat] = chats(sent)
     expect(Object.keys(chat!.body)).toEqual(['model', 'messages', 'stream', 'keep_alive', 'options'])
     expect(chat!.body.options).toEqual({ num_ctx: 16_384, num_predict: 32_000, temperature: 0.7 })
-    expect(sent.some(entry => entry.url.endsWith('/api/show'))).toBe(false)
+    expect(sent.filter(entry => !entry.url.endsWith('/api/chat'))).toEqual([])
   })
 })
 

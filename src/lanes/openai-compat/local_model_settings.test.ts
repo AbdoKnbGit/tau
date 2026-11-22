@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { onLocalModelNotice, resetLocalModelNoticesForTests } from '../../utils/model/localModelNotices.js'
 import {
   capLocalOutputTokens,
+  checkOllamaGpuFit,
   chooseOllamaNumCtx,
   fitLocalOutputTokens,
   growOllamaNumCtx,
@@ -10,6 +12,7 @@ import {
   localAnswerRoom,
   ollamaContextSetting,
   ollamaKeepAlive,
+  ollamaCpuShareNotice,
   ollamaOverflowAdvice,
   ollamaOwnContext,
   ollamaTruncateFields,
@@ -36,6 +39,7 @@ beforeEach(() => {
     delete process.env[key]
   }
   resetLocalModelSettingsForTests()
+  resetLocalModelNoticesForTests()
 })
 
 afterEach(() => {
@@ -300,6 +304,30 @@ describe("the context Ollama gives a model on this machine", () => {
       expect(await ollamaOwnContext(ROOT, 'b:1b', '')).toBeUndefined()
       expect(calls.map(call => call.path)).toEqual(['/api/ps'])
     })
+  })
+
+  test('the GPU check: a new context is checked again, an unreachable server is quiet', async () => {
+    const notices: string[] = []
+    const stop = onLocalModelNotice(notice => notices.push(notice.text))
+    try {
+      const share = (context: number) => ps([{ name: 'gpu:4b', model: 'gpu:4b', context_length: context, size: 1000, size_vram: 750 }])
+      let context = 32_768
+      await withServer(() => share(context), async calls => {
+        await checkOllamaGpuFit(ROOT, 'gpu:4b', '', 32_768)
+        await checkOllamaGpuFit(ROOT, 'gpu:4b', '', 32_768)
+        context = 65_536
+        await checkOllamaGpuFit(ROOT, 'gpu:4b', '', 65_536)
+        expect(calls.map(call => call.path)).toEqual(['/api/ps', '/api/ps'])
+      })
+      expect(notices).toEqual([ollamaCpuShareNotice('gpu:4b', 25, 32_768), ollamaCpuShareNotice('gpu:4b', 25, 65_536)])
+      expect(notices[0]).toStartWith('gpu:4b runs 25% on the CPU at 32,768 context, so slower · ')
+      await withServer(() => { throw new TypeError('fetch failed') }, async () => {
+        await checkOllamaGpuFit(ROOT, 'away:1b', '', 32_768)
+      })
+      expect(notices).toHaveLength(2)
+    } finally {
+      stop()
+    }
   })
 
   test('an unreachable server gets no load request and is asked again next time', async () => {

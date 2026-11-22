@@ -42,6 +42,7 @@ import { getCompatShellDescription } from './shell_descriptions.js'
 import { filterToSingleShell } from './single_shell.js'
 import {
   capLocalOutputTokens,
+  checkOllamaGpuFit,
   chooseOllamaNumCtx,
   fitLocalOutputTokens,
   growOllamaNumCtx,
@@ -3515,6 +3516,8 @@ async function* streamOllamaNative(
     ? chooseOllamaNumCtx({ key: contextKey, promptTokens, answerRoom, modelMax, range: autoRange(), setting: contextSetting })
     : Number.isFinite(legacyNumCtx) ? legacyNumCtx : 16384
   if (local) noteLocalSentContext(body.model, numCtx)
+  // The context of the request that went through, for the GPU check below.
+  let servedNumCtx = numCtx
   const numPredict = local
     ? fitLocalOutputTokens(body.max_tokens, numCtx, promptTokens)
     : body.max_tokens
@@ -3611,6 +3614,7 @@ async function* streamOllamaNative(
     })
     if (grown !== undefined) {
       noteLocalSentContext(body.model, grown)
+      servedNumCtx = grown
       response = await send(buildOllamaBody(grown, fitLocalOutputTokens(body.max_tokens, grown, overflow.requestTokens)))
       errText = response.ok ? '' : await response.text().catch(() => '')
     }
@@ -3775,6 +3779,8 @@ async function* streamOllamaNative(
   // prompt_eval_count is the whole prompt even when Ollama reused its cache,
   // so it calibrates Tau's character estimate for this model.
   if (local && inputTokens > 0) noteLocalTokenCount(body.model, rawEstimate, inputTokens)
+  // Loaded at a new context: tell the user once if part of it runs on the CPU.
+  if (local) void checkOllamaGpuFit(root, body.model, cfg.apiKey, servedNumCtx)
   yield {
     type: 'message_delta',
     delta: { stop_reason: stopReason },

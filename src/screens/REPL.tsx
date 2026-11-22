@@ -275,6 +275,7 @@ import { useMcpConnectivityStatus } from 'src/hooks/notifs/useMcpConnectivitySta
 import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoModeUnavailableNotification.js';
 import { AUTO_MODE_DESCRIPTION } from 'src/components/AutoModeOptInDialog.js';
 import { useLspInitializationNotification } from 'src/hooks/notifs/useLspInitializationNotification.js';
+import { useLocalModelNotices } from 'src/hooks/notifs/useLocalModelNotices.js';
 import { useLspPluginRecommendation } from 'src/hooks/useLspPluginRecommendation.js';
 import { LspRecommendationMenu } from 'src/components/LspRecommendation/LspRecommendationMenu.js';
 import { useClaudeCodeHintRecommendation } from 'src/hooks/useClaudeCodeHintRecommendation.js';
@@ -830,6 +831,7 @@ export function REPL({
   useChromeExtensionNotification();
   useOfficialMarketplaceNotification();
   useLspInitializationNotification();
+  useLocalModelNotices();
   useTeammateLifecycleNotification();
   const {
     recommendation: lspRecommendation,

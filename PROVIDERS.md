@@ -74,12 +74,18 @@ would, which costs one extra load when Ollama's own context turns out too small
 (about 2 seconds for a small model on an 8 GB laptop GPU). Setting
 `OLLAMA_NUM_CTX` or `OLLAMA_NUM_CTX_MAX` skips the question.
 
-A larger context needs more GPU memory. If a model is slow because part of it
-runs on the CPU (`ollama ps` shows a CPU share), give Ollama
+A larger context needs more GPU memory. When part of an Ollama model ends up
+on the CPU, which makes it answer much slower, Tau tells you once, with the
+share and the context (`ollama ps` shows it too). Give Ollama
 `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` and restart it: that
 halves the context's memory, so more of the model stays on the GPU. Or switch
 to `/mode cheap`, which roughly halves Tau's prompt and so the context Tau
-needs.
+needs, or pick a smaller model.
+
+The Ollama model picker takes what each model on your machine can do from
+Ollama itself: tools, thinking and image input. A model that can't chat, such
+as an embedding model, isn't offered. Tau's list of model names is only the
+fallback for an older Ollama that doesn't report this.
 
 Auto-compact on Ollama plans for the context the model really has, not the
 size it was trained for or a 200K default. Once Tau has sent a model its first
