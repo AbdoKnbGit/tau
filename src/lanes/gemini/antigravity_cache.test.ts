@@ -610,8 +610,9 @@ async function main(): Promise<void> {
   })
 
   const activeGeminiModels = [
-    ...['carbon', 'argon', 'hydrogen'].flatMap(family =>
+    ...['neon', 'carbon', 'argon', 'hydrogen'].flatMap(family =>
       ['low', 'medium', 'high'].map(level => `gemini-4-${family}-${level}`)),
+    'gemini-4-neon-xhigh', 'gemini-4-hydrogen-xhigh',
     'gemini-3.8-flash-low',
   ]
   await test('Gemini 4 tiers, Flash 3.8 and helper sources retain separate prompt snapshots', () => {

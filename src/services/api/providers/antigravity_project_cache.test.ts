@@ -59,7 +59,7 @@ test('an ownerless legacy project is rediscovered using the request credential',
   expect(loads).toEqual(['account-A'])
 })
 
-test.each([undefined, 'antigravity/hub/2.8.1 darwin/arm64', 'antigravity/hub/2.23.0 darwin/arm64'])(
+test.each([undefined, 'antigravity/hub/2.8.1 darwin/arm64', 'antigravity/hub/2.23.0 darwin/arm64', 'antigravity/hub/2.31.2 darwin/arm64'])(
   'discovery from an old Hub identity (%s) is refreshed once', async userAgent => {
     mkdirSync(cacheDir, { recursive: true })
     writeFileSync(cacheFile, JSON.stringify({
@@ -96,11 +96,14 @@ test('one listed level names every level of its Gemini 4 model as usable', async
   writeFileSync(cacheFile, JSON.stringify({
     version: 7, credentialKey: createHash('sha256').update('account-A').digest('hex'),
     userAgent: ANTIGRAVITY_HUB_USER_AGENT, projectId: 'saved-project', onboardedAt: Date.now(),
-    entitledModelIds: ['gemini-4-carbon-high', 'gemini-4-hydrogen-xhigh'],
+    entitledModelIds: ['gemini-4-carbon-high', 'gemini-4-hydrogen-xhigh', 'gemini-4-neon-medium'],
   }))
   expect(await ensureCodeAssistReady('account-A', 'antigravity')).toBe('saved-project')
-  const listed = ['carbon', 'hydrogen'].flatMap(family =>
-    ['low', 'medium', 'high'].map(level => `gemini-4-${family}-${level}`))
+  const listed = [
+    ...['low', 'medium', 'high'].map(level => `gemini-4-carbon-${level}`),
+    ...['hydrogen', 'neon'].flatMap(family =>
+      ['low', 'medium', 'high', 'xhigh'].map(level => `gemini-4-${family}-${level}`)),
+  ]
   const gap = describeAntigravityEntitlementGap('gemini-3.8-flash-low')
   expect(gap).toContain('not entitled to gemini-3.8-flash-low')
   for (const model of listed) expect(gap).toContain(model)
@@ -122,6 +125,7 @@ test('Gemini 4 entitlement follows the account plan, never the production quota 
       return Response.json({
         cloudaicompanionProject: `project-${token}`,
         ...(token === 'business-account' ? { currentTier: { id: 'standard-tier' } } : {}),
+        ...(token === 'legacy-account' ? { currentTier: { id: 'legacy-tier' } } : {}),
         ...(paid ? { currentTier: { id: 'free-tier' }, paidTier: { id: paid } } : {}),
       })
     }
@@ -133,23 +137,29 @@ test('Gemini 4 entitlement follows the account plan, never the production quota 
     return fetchNow(input, init)
   }) as typeof fetch
 
-  const levels = (family: string) => ['low', 'medium', 'high'].map(level => `gemini-4-${family}-${level}`)
-  for (const account of ['pro-account', 'ultra-account', 'ultra-lite-account', 'business-account', 'unknown-plan-account', 'starter-account']) {
+  const levels = (family: string) => [
+    ...['low', 'medium', 'high'],
+    ...(family === 'neon' || family === 'hydrogen' ? ['xhigh'] : []),
+  ].map(level => `gemini-4-${family}-${level}`)
+  for (const account of ['pro-account', 'ultra-account', 'ultra-lite-account', 'business-account', 'unknown-plan-account', 'starter-account', 'legacy-account']) {
     await ensureCodeAssistReady(account, 'antigravity')
     // A 429 on these is throttling, never "not entitled", on every plan.
     for (const model of [...levels('argon'), ...levels('hydrogen')]) {
       expect(describeAntigravityEntitlementGap(model)).toBeNull()
     }
-    for (const model of levels('carbon')) {
-      const gap = describeAntigravityEntitlementGap(model)
-      if (account === 'pro-account') {
-        expect(gap).toContain('Gemini 4 Carbon on Antigravity launched for Google AI Ultra and business plans')
-        expect(gap).toContain('the "g1-pro-tier" plan')
-        expect(gap).not.toContain('not entitled')
-      } else if (account === 'starter-account') {
-        expect(gap).toContain('the free plan')
-      } else {
-        expect(gap).toBeNull()
+    // Google lists Neon and Carbon for paid Pro, Ultra and business plans.
+    // Nothing in a plan id tells a Pro trial from a paid Pro plan, so only the
+    // free and legacy plans get a plan note.
+    for (const [family, name] of [['neon', 'Gemini 4 Neon'], ['carbon', 'Gemini 4 Carbon']]) {
+      for (const model of levels(family!)) {
+        const gap = describeAntigravityEntitlementGap(model)
+        if (account === 'starter-account' || account === 'legacy-account') {
+          expect(gap).toContain(`${name} on Antigravity is for paid Google AI Pro, Ultra and business plans`)
+          expect(gap).toContain(account === 'starter-account' ? 'the free plan' : 'the "legacy-tier" plan')
+          expect(gap).not.toContain('not entitled')
+        } else {
+          expect(gap).toBeNull()
+        }
       }
     }
   }

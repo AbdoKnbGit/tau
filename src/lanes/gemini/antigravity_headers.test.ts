@@ -46,8 +46,8 @@ function main(): void {
   console.log('antigravity headers:')
 
   test('generateContent headers advertise the current Antigravity API version', () => {
-    assert(ANTIGRAVITY_API_VERSION === '2.31.2', `unexpected Antigravity version: ${ANTIGRAVITY_API_VERSION}`)
-    assert(ANTIGRAVITY_HUB_USER_AGENT === 'antigravity/hub/2.31.2 darwin/arm64', `bad Hub identity: ${ANTIGRAVITY_HUB_USER_AGENT}`)
+    assert(ANTIGRAVITY_API_VERSION === '2.35.2', `unexpected Antigravity version: ${ANTIGRAVITY_API_VERSION}`)
+    assert(ANTIGRAVITY_HUB_USER_AGENT === 'antigravity/hub/2.35.2 darwin/arm64', `bad Hub identity: ${ANTIGRAVITY_HUB_USER_AGENT}`)
     const headers = antigravityApiHeaders('token')
     assert(
       headers['User-Agent'] === ANTIGRAVITY_HUB_USER_AGENT,
@@ -78,7 +78,7 @@ function main(): void {
   })
 
   test('all Antigravity models and request sources use daily only', () => {
-    for (const model of ['gemini-4-carbon-low', 'gemini-4-carbon-medium', 'gemini-4-carbon-high', 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-high', 'gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-argon-high', 'gemini-3.8-flash-high', 'gemini-3.5-flash-low', 'claude-sonnet-4-6', 'claude-opus-5-5-high']) {
+    for (const model of ['gemini-4-neon-low', 'gemini-4-neon-medium', 'gemini-4-neon-high', 'gemini-4-neon-xhigh', 'gemini-4-carbon-low', 'gemini-4-carbon-medium', 'gemini-4-carbon-high', 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-xhigh', 'gemini-4-argon-low', 'gemini-4-argon-medium', 'gemini-4-argon-high', 'gemini-3.8-flash-high', 'gemini-3.5-flash-low', 'claude-sonnet-4-6', 'claude-opus-5-5-high']) {
       for (const source of [undefined, 'repl_main_thread', 'agent:default', 'report', 'compact', 'quota_check']) {
         const bases = codeAssistGenerationBasesForModel('antigravity', model, 'session', source)
         assert(bases.length === 1 && bases[0] === ANTIGRAVITY_GENERATION_BASE,

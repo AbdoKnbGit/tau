@@ -214,10 +214,15 @@ test('Argon resolves its full context before the picker or remote catalog is loa
     'Argon context must not invent limits for unrelated Gemini 4 models')
 })
 
-test('Carbon and Hydrogen resolve their full context on Antigravity only', () => {
+test('Neon, Carbon and Hydrogen resolve their full context on Antigravity only', () => {
   useCatalogue({})
-  for (const family of ['carbon', 'hydrogen']) {
-    for (const level of ['low', 'medium', 'high']) {
+  // XHigh is Neon's and Hydrogen's alone.
+  for (const [family, levels] of [
+    ['neon', ['low', 'medium', 'high', 'xhigh']],
+    ['carbon', ['low', 'medium', 'high']],
+    ['hydrogen', ['low', 'medium', 'high', 'xhigh']],
+  ] as const) {
+    for (const level of levels) {
       const id = `gemini-4-${family}-${level}`
       for (const model of [id, `models/${id}`, `antigravity-${id}`, id.toUpperCase()]) {
         assert(getProviderCatalogContextWindow(model, 'antigravity') === 1_048_576,
@@ -229,7 +234,9 @@ test('Carbon and Hydrogen resolve their full context on Antigravity only', () =>
           `${provider}/${id} took Antigravity's window`)
       }
     }
-    for (const model of [`gemini-4-${family}`, `gemini-4-${family}-xhigh`, `google/gemini-4-${family}`]) {
+    const notRows = [`gemini-4-${family}`, `gemini-4-${family}-max`, `google/gemini-4-${family}`,
+      ...((levels as readonly string[]).includes('xhigh') ? [] : [`gemini-4-${family}-xhigh`])]
+    for (const model of notRows) {
       assert(getProviderCatalogContextWindow(model, 'antigravity') === undefined,
         `${model} is not an Antigravity row and must not take its window`)
     }

@@ -44,8 +44,11 @@ function main(): void {
 
   test('Flash and Gemini 4 variants preserve their Antigravity thinking level', () => {
     // Preserve the chosen level for both shared and per-level wire models.
-    for (const family of ['3.6-flash', '3.7-flash', '3.8-flash', '4-argon', '4-carbon', '4-hydrogen'] as const) {
-      for (const level of ['low', 'medium', 'high'] as const) {
+    for (const family of ['3.6-flash', '3.7-flash', '3.8-flash', '4-argon', '4-carbon', '4-hydrogen', '4-neon'] as const) {
+      const levels = family === '4-hydrogen' || family === '4-neon'
+        ? ['low', 'medium', 'high', 'xhigh'] as const
+        : ['low', 'medium', 'high'] as const
+      for (const level of levels) {
         const id = `gemini-${family}-${level}`
         const cfg = resolveThinkingConfig(id, -1)
         assert(cfg.thinkingLevel === level, `${id} thinkingLevel=${String(cfg.thinkingLevel)}`)
@@ -58,7 +61,7 @@ function main(): void {
   test('Gemini 4 respects existing explicit thought and level overrides', () => {
     const previous = process.env.TAU_GEMINI_THINKING
     try {
-      const cases = ['gemini-4-argon-high', 'gemini-4-carbon-high', 'gemini-4-hydrogen-high'].flatMap(model =>
+      const cases = ['gemini-4-argon-high', 'gemini-4-carbon-high', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-xhigh', 'gemini-4-neon-high', 'gemini-4-neon-xhigh'].flatMap(model =>
         [['medium', 'medium'], ['off', 'low']].map(([override, expected]) => ({ model, override, expected })))
       for (const { model, override, expected } of cases) {
         process.env.TAU_GEMINI_THINKING = override

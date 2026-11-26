@@ -36,15 +36,28 @@ try {
   delete process.env.TAU_GEMINI_INCLUDE_THOUGHTS
   globalThis.fetch = (async (_url, init) => {
     assert.ok(String(_url).startsWith(codeAssist.ANTIGRAVITY_GENERATION_BASE + ':'), 'generation left the Antigravity host')
-    assert.equal(new Headers(init?.headers).get('user-agent'), 'antigravity/hub/2.31.2 darwin/arm64', 'an older Hub identity can hide Gemini 4 models upstream')
+    assert.equal(new Headers(init?.headers).get('user-agent'), 'antigravity/hub/2.35.2 darwin/arm64', 'an older Hub identity can hide Gemini 4 models upstream')
     payloads.push(JSON.parse(String(init?.body)))
     const response = { candidates: [{ content: { role: 'model', parts: [{ text: 'OK' }] } }], usageMetadata: { promptTokenCount: 19_803, cachedContentTokenCount: 16_353, candidatesTokenCount: 1 } }
     return String(_url).includes('streamGenerateContent')
       ? new Response(`data: ${JSON.stringify({ response })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
       : Response.json({ response })
   }) as typeof fetch
-  const gemini4Models = ['carbon', 'argon', 'hydrogen'].flatMap(family =>
-    ['low', 'medium', 'high'].map(level => `gemini-4-${family}-${level}`))
+  const gemini4Levels: Record<string, readonly string[]> = {
+    neon: ['low', 'medium', 'high', 'xhigh'],
+    carbon: ['low', 'medium', 'high'],
+    argon: ['low', 'medium', 'high'],
+    hydrogen: ['low', 'medium', 'high', 'xhigh'],
+  }
+  const gemini4Models = Object.entries(gemini4Levels).flatMap(([family, levels]) =>
+    levels.map(level => `gemini-4-${family}-${level}`))
+  // High names its level; Low and Medium send dynamic thinking; XHigh, which
+  // is in the id alone, sends no level or budget.
+  const gemini4WireThinking = (tier: string) => tier === 'high'
+    ? { thinkingLevel: 'high', includeThoughts: true }
+    : tier === 'xhigh'
+      ? { includeThoughts: true }
+      : { thinkingBudget: -1, includeThoughts: true }
   for (const model of [...gemini4Models, 'gemini-3.8-flash-low']) {
     for (const streaming of [true, false]) {
       for (const querySource of ['repl_main_thread', 'agent:builtin:general-purpose']) {
@@ -53,7 +66,7 @@ try {
         const tools = [{ functionDeclarations: [{ name: 'Read', parameters: { type: 'OBJECT', properties: { path: { type: 'STRING' } } } }] }]
         const contents = [{ role: 'user', parts: [{ text: 'Reply OK.' }] }]
         const thinkingConfig = resolveThinkingConfig(model, -1)
-        const level = model.endsWith('-high') ? 'high' : model.endsWith('-medium') ? 'medium' : 'low'
+        const level = model.endsWith('-xhigh') ? 'xhigh' : model.endsWith('-high') ? 'high' : model.endsWith('-medium') ? 'medium' : 'low'
         let previousEnvelope: any
         for (const turn of [1, 2]) {
           const context = { sessionId, model, querySource, requestId: `trace-${sessionId}-${turn}` }
@@ -87,8 +100,8 @@ try {
           assert.deepEqual(envelope.request.tools, tools, 'stable tool prefix changed')
           assert.deepEqual(envelope.request.contents, contents, 'conversation prefix changed')
           assert.deepEqual(envelope.request.generationConfig, { thinkingConfig:
-            model.startsWith('gemini-4-') && level !== 'high'
-              ? { thinkingBudget: -1, includeThoughts: true }
+            model.startsWith('gemini-4-')
+              ? gemini4WireThinking(level)
               : { thinkingLevel: level, includeThoughts: true },
           })
           assert.ok(!('cachedContent' in envelope.request), 'explicit cache metadata leaked into implicit-cache transport')
@@ -106,7 +119,7 @@ try {
   }
   // Exercise the real lane's thinking conversion before the wrapper. An
   // override must select the same upstream tier as the emitted config.
-  for (const family of ['carbon', 'argon', 'hydrogen']) {
+  for (const [family, levels] of Object.entries(gemini4Levels)) {
     for (const [level, override, tier] of [
       ['low', undefined, 'low'],
       ['medium', undefined, 'medium'],
@@ -114,6 +127,11 @@ try {
       ['high', 'low', 'low'],
       ['low', 'high', 'high'],
       ['high', 'off', 'low'],
+      ...(levels.includes('xhigh') ? [
+        ['xhigh', undefined, 'xhigh'],
+        ['xhigh', 'high', 'high'],
+        ['xhigh', 'off', 'low'],
+      ] as const : []),
     ] as const) {
       const model = `gemini-4-${family}-${level}`
       if (override === undefined) delete process.env.TAU_GEMINI_THINKING
@@ -128,9 +146,7 @@ try {
       for await (const _event of stream) { /* exercise the real lane and transport */ }
       const envelope = payloads.at(-1)
       assert.equal(envelope.model, `gemini-4-${family}-${tier}`)
-      assert.deepEqual(envelope.request.generationConfig.thinkingConfig, tier === 'high'
-        ? { thinkingLevel: 'high', includeThoughts: true }
-        : { thinkingBudget: -1, includeThoughts: true })
+      assert.deepEqual(envelope.request.generationConfig.thinkingConfig, gemini4WireThinking(tier))
     }
   }
   delete process.env.TAU_GEMINI_THINKING
@@ -154,7 +170,7 @@ try {
     assert.ok(parts.some((part: any) => part.inlineData?.mimeType === 'image/png' && part.inlineData.data === png),
       `${model}: the image did not reach the wire as inline data`)
   }
-  console.log('Antigravity cache transport passed: all Gemini 4 levels and Flash 3.8 Low; streaming/non-streaming main/agent turns preserve prefix, reasoning and affinity; Gemini 4 images reach the wire')
+  console.log('Antigravity cache transport passed: all Gemini 4 levels (XHigh included) and Flash 3.8 Low; streaming/non-streaming main/agent turns preserve prefix, reasoning and affinity; Gemini 4 images reach the wire')
 } finally {
   globalThis.fetch = originalFetch
   ;(geminiApi as any).antigravityOAuthToken = previousToken

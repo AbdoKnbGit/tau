@@ -370,7 +370,10 @@ await test('a Claude side request without thinking sends no signed thinking', as
 })
 
 await test('every Gemini 4 row gets thought summaries and keeps its text signature like 3.8', async () => {
-  const gemini4 = ['argon', 'carbon', 'hydrogen'].flatMap(family => ['low', 'medium', 'high'].map(level => `gemini-4-${family}-${level}`))
+  const gemini4 = [
+    ...['argon', 'carbon', 'hydrogen', 'neon'].flatMap(family => ['low', 'medium', 'high'].map(level => `gemini-4-${family}-${level}`)),
+    'gemini-4-hydrogen-xhigh', 'gemini-4-neon-xhigh',
+  ]
   for (const model of gemini4) {
     // Request: summaries on by default, kept through the Gemini 4 wire rewrite.
     const config = resolveThinkingConfig(model, -1, { type: 'adaptive' }, 32_000)
@@ -396,7 +399,7 @@ await test('every Gemini 4 row gets thought summaries and keeps its text signatu
       { text: 'The number 23 is prime.' },
       { text: '', thoughtSignature: `SIG-${model}` },
     ], `${model}: replay`)
-    const other = model.endsWith('-high') ? model.replace(/-high$/, '-low') : model.replace(/-(low|medium)$/, '-high')
+    const other = /-x?high$/.test(model) ? model.replace(/-x?high$/, '-low') : model.replace(/-(low|medium)$/, '-high')
     assert.equal(JSON.stringify(partsFor(other)).includes('thoughtSignature'), false, `${model}: signature leaked to ${other}`)
     assert.equal(JSON.stringify(partsFor('gemini-3.8-flash-high')).includes('thoughtSignature'), false, `${model}: signature leaked to 3.8`)
   }

@@ -1,5 +1,8 @@
 import type { LaneProviderCallParams } from '../types.js'
-import { isAntigravityGeminiModel } from '../../services/api/providers/gemini_code_assist.js'
+import {
+  isAntigravityGeminiModel,
+  parseAntigravityGemini4LevelId,
+} from '../../services/api/providers/gemini_code_assist.js'
 import { parseAntigravityClaudeTier } from '../../utils/model/antigravityClaudeTiers.js'
 
 export function resolveThinkingBudget(
@@ -48,9 +51,9 @@ function antigravityClaudeThinkingBudget(maxOutputTokens: number | undefined): n
  * Build the right shape of `thinkingConfig` for the target model.
  *
  * Gemini 3.x and Gemini 4 Antigravity models use LEVEL-based thinking ("low",
- * "medium", "high") via the model registry. For those models, keep the
- * reasoning level and stream the thought summaries (see
- * shouldIncludeGeminiThoughts).
+ * "medium", "high", and "xhigh" on Gemini 4 Neon and Hydrogen) via the model
+ * registry. For those models, keep the reasoning level and stream the thought
+ * summaries (see shouldIncludeGeminiThoughts).
  */
 export function resolveThinkingConfig(
   model: string,
@@ -74,8 +77,8 @@ export function resolveThinkingConfig(
   }
 
   const lower = model.toLowerCase()
-  let level: 'low' | 'medium' | 'high' | null = null
-  const levelMatch = lower.match(/^gemini-(?:\d+(?:\.\d+)?-(?:pro|flash)|4-(?:argon|carbon|hydrogen))-(high|medium|low)$/)
+  let level: 'low' | 'medium' | 'high' | 'xhigh' | null = parseAntigravityGemini4LevelId(lower)?.level ?? null
+  const levelMatch = lower.match(/^gemini-\d+(?:\.\d+)?-(?:pro|flash)-(high|medium|low)$/)
   if (levelMatch) level = levelMatch[1] as 'low' | 'medium' | 'high'
   else if (/^gemini-3(?:\.\d+)?-flash$/.test(lower)) level = 'low'
 

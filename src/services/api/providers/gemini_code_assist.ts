@@ -190,14 +190,22 @@ export function antigravityGenerationHostCount(_model: string | undefined): numb
 // daily Antigravity endpoint. They share the `userAgent: "antigravity"`
 // envelope but need small content-level fixes (see wrapForCodeAssist).
 export const ANTIGRAVITY_MODELS: readonly ModelInfo[] = [
-  // Google serves Carbon to Google AI Ultra and business plans; other plans
-  // get 404 for it.
-  { id: 'gemini-4-carbon-high', name: 'Gemini 4 Carbon (High)', contextWindow: 1048576 },
-  { id: 'gemini-4-carbon-medium', name: 'Gemini 4 Carbon (Medium)', contextWindow: 1048576 },
-  { id: 'gemini-4-carbon-low', name: 'Gemini 4 Carbon (Low)', contextWindow: 1048576 },
+  // Google lists Neon and Carbon for paid Google AI Pro (Pro trials only with
+  // an eligible premium device), Ultra and business plans, not for the free
+  // and Google AI Plus plans. Hydrogen is on every plan. XHigh is the Extra
+  // level of Neon and Hydrogen. Neon has the 1,048,576-token window the rest
+  // of Gemini 4 has, as Antigravity's model catalog lists it.
+  { id: 'gemini-4-neon-xhigh', name: 'Gemini 4 Neon (XHigh)', contextWindow: 1048576, tags: ['pro-ultra'] },
+  { id: 'gemini-4-neon-high', name: 'Gemini 4 Neon (High)', contextWindow: 1048576, tags: ['pro-ultra'] },
+  { id: 'gemini-4-neon-medium', name: 'Gemini 4 Neon (Medium)', contextWindow: 1048576, tags: ['pro-ultra'] },
+  { id: 'gemini-4-neon-low', name: 'Gemini 4 Neon (Low)', contextWindow: 1048576, tags: ['pro-ultra'] },
+  { id: 'gemini-4-carbon-high', name: 'Gemini 4 Carbon (High)', contextWindow: 1048576, tags: ['pro-ultra'] },
+  { id: 'gemini-4-carbon-medium', name: 'Gemini 4 Carbon (Medium)', contextWindow: 1048576, tags: ['pro-ultra'] },
+  { id: 'gemini-4-carbon-low', name: 'Gemini 4 Carbon (Low)', contextWindow: 1048576, tags: ['pro-ultra'] },
   { id: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)', contextWindow: 1048576 },
   { id: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)', contextWindow: 1048576 },
   { id: 'gemini-4-argon-low', name: 'Gemini 4 Argon (Low)', contextWindow: 1048576 },
+  { id: 'gemini-4-hydrogen-xhigh', name: 'Gemini 4 Hydrogen (XHigh)', contextWindow: 1048576 },
   { id: 'gemini-4-hydrogen-high', name: 'Gemini 4 Hydrogen (High)', contextWindow: 1048576 },
   { id: 'gemini-4-hydrogen-medium', name: 'Gemini 4 Hydrogen (Medium)', contextWindow: 1048576 },
   { id: 'gemini-4-hydrogen-low', name: 'Gemini 4 Hydrogen (Low)', contextWindow: 1048576 },
@@ -253,16 +261,17 @@ export const ANTIGRAVITY_PICKER_MODELS: readonly ModelInfo[] =
   ANTIGRAVITY_MODELS.filter(model => !isHiddenAntigravityPickerModel(model.id))
 
 /**
- * The picker's rows for the account's plan. Every plan lists Claude 4.6. Only
- * paid Google AI Pro and Ultra plans list Claude 5.5, which answers the free
- * plan with 404. With the plan still unknown (no project discovered yet) every
- * row stays listed.
+ * The picker's rows for the account's plan. Every plan lists Claude 4.6 and
+ * Gemini 4 Hydrogen. Only paid Google AI Pro and Ultra plans list the rows
+ * tagged `pro-ultra` (Claude 5.5, Gemini 4 Neon and Carbon), which answer the
+ * free plan with 404. With the plan still unknown (no project discovered yet)
+ * every row stays listed.
  */
 export function antigravityPickerModelsForPlan(
   tier: string | null,
 ): readonly ModelInfo[] {
   if (!tier || isPaidGeminiTier(tier)) return ANTIGRAVITY_PICKER_MODELS
-  return ANTIGRAVITY_PICKER_MODELS.filter(model => !parseAntigravityClaudeTier(model.id))
+  return ANTIGRAVITY_PICKER_MODELS.filter(model => !model.tags?.includes('pro-ultra'))
 }
 
 export const ANTIGRAVITY_MODEL_IDS = new Set([
@@ -308,16 +317,35 @@ export function getAntigravityModelDisplayName(model: string): string | null {
 }
 
 /**
- * Gemini 4 ids Antigravity serves one per effort level: the level is part of
- * the id, and there is no shared `-tiered` form. Captures family and level.
+ * Gemini 4 models Antigravity serves one id per effort level: the level is
+ * part of the id, and there is no shared `-tiered` form. Neon and Hydrogen
+ * add `xhigh`, the level Antigravity's catalog names XHigh and its app Extra.
  */
-const ANTIGRAVITY_GEMINI_4_LEVEL_ID = /^(gemini-4-(?:argon|carbon|hydrogen))-(low|medium|high)$/
+const ANTIGRAVITY_GEMINI_4_LEVELS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['gemini-4-neon', ['low', 'medium', 'high', 'xhigh']],
+  ['gemini-4-carbon', ['low', 'medium', 'high']],
+  ['gemini-4-argon', ['low', 'medium', 'high']],
+  ['gemini-4-hydrogen', ['low', 'medium', 'high', 'xhigh']],
+])
+
+/**
+ * The family and level of a Gemini 4 per-level id such as
+ * `gemini-4-neon-xhigh`, or null for any other id, including a level the
+ * family does not have. Expects a lowercase id without a `models/` prefix.
+ */
+export function parseAntigravityGemini4LevelId(
+  model: string,
+): { family: string; level: 'low' | 'medium' | 'high' | 'xhigh' } | null {
+  const match = /^(gemini-4-[a-z]+)-([a-z]+)$/.exec(model)
+  if (!match || !ANTIGRAVITY_GEMINI_4_LEVELS.get(match[1]!)?.includes(match[2]!)) return null
+  return { family: match[1]!, level: match[2]! as 'low' | 'medium' | 'high' | 'xhigh' }
+}
 
 export function resolveAntigravityWireModel(model: string): string {
   const normalized = model.toLowerCase()
   // Gemini 4 uses per-level ids; wrapForCodeAssist applies any explicit
   // reasoning override and the tier-specific thinking wire format.
-  if (ANTIGRAVITY_GEMINI_4_LEVEL_ID.test(normalized)) return normalized
+  if (parseAntigravityGemini4LevelId(normalized)) return normalized
   // 3.6 and 3.8 keep their shared tiered wire models; the picker's level
   // rides in generationConfig.thinkingConfig.thinkingLevel.
   // 3.7 must preserve its per-level id: the daily endpoint returned 404 for
@@ -411,17 +439,6 @@ export function isPaidGeminiTier(tier: string | null | undefined): boolean {
 }
 
 /**
- * Consumer plans known to leave out a model that launched for Ultra only: the
- * free and legacy tiers and the Google One AI plans other than Ultra, such as
- * `g1-pro-tier`. Business and unknown plans are not in it, so nothing is
- * claimed for them.
- */
-function isConsumerPlanWithoutUltra(tier: string): boolean {
-  return tier === GEMINI_TIER_FREE || tier === GEMINI_TIER_LEGACY
-    || (tier.startsWith('g1-') && !tier.includes('ultra'))
-}
-
-/**
  * Read the cached tier id for an executor (set during onboarding).
  * Returns null when no tier has been captured yet — typical for the
  * Antigravity executor, since loadCodeAssist there returns a project
@@ -481,15 +498,18 @@ export function describeAntigravityEntitlementGap(model: string): string | null 
   // The same list leaves the Gemini 4 models out even on Pro and Ultra plans
   // that include them, and it is read again only on a new login or Hub
   // release, so a model that rolls out later stays missing from it. A missing
-  // id proves nothing here: only Carbon, which launched for Google AI Ultra
-  // and business plans, is judged, by plan, and only on a consumer plan
-  // without Ultra.
-  const gemini4 = ANTIGRAVITY_GEMINI_4_LEVEL_ID.exec(normalized)?.[1]
-  if (gemini4) {
+  // id proves nothing here. Neon and Carbon (the rows tagged `pro-ultra`) are
+  // judged by plan instead: Google lists them for paid Google AI Pro, Ultra
+  // and business plans (antigravity.google/docs/models, 2026-11-26). Nothing
+  // in a plan id tells a Pro trial from a paid Pro plan, and Google AI Plus
+  // has no known id, so only the free and legacy plans are known to lack
+  // them. Argon and Hydrogen make no claim.
+  if (parseAntigravityGemini4LevelId(normalized)) {
+    const row = ANTIGRAVITY_MODELS.find(candidate => candidate.id === normalized)
     const plan = getGeminiTier('antigravity')
-    if (gemini4 !== 'gemini-4-carbon' || !plan || !isConsumerPlanWithoutUltra(plan)) return null
+    if (!row?.tags?.includes('pro-ultra') || !plan || isPaidGeminiTier(plan)) return null
     return [
-      `Gemini 4 Carbon on Antigravity launched for Google AI Ultra and business plans, and this account is on ${plan === GEMINI_TIER_FREE ? 'the free plan' : `the "${plan}" plan`}.`,
+      `${row.name.replace(/ \([^)]*\)$/, '')} on Antigravity is for paid Google AI Pro, Ultra and business plans, and this account is on ${plan === GEMINI_TIER_FREE ? 'the free plan' : `the "${plan}" plan`}.`,
       'Antigravity answers a model the plan does not include with 404 or 429, which reads like a missing model or spent quota.',
     ].join('\n')
   }
@@ -501,8 +521,10 @@ export function describeAntigravityEntitlementGap(model: string): string | null 
   // For the alternatives below: some capability lists advertise one level for
   // a whole Gemini 4 family (only High for Argon). The levels are one model,
   // so one listed level covers them all.
-  const gemini4Family = (id: string): string | undefined =>
-    id.match(/^(gemini-4-(?:argon|carbon|hydrogen))-(?:low|medium|high|xhigh)$/)?.[1]
+  const gemini4Family = (id: string): string | undefined => {
+    const family = id.match(/^(gemini-4-[a-z]+)-(?:low|medium|high|xhigh)$/)?.[1]
+    return family && ANTIGRAVITY_GEMINI_4_LEVELS.has(family) ? family : undefined
+  }
   const entitledGemini4 = new Set([...entitledSet].map(gemini4Family).filter(Boolean))
   const isEntitled = (id: string): boolean => entitledSet.has(id)
     || entitledSet.has(resolveAntigravityWireModel(id).toLowerCase())
@@ -1299,10 +1321,10 @@ function normalizeAntigravityGemini4Request(
   model: string,
   request: Record<string, unknown>,
 ): string {
-  const match = model.match(ANTIGRAVITY_GEMINI_4_LEVEL_ID)
-  if (!match) return model
-  const family = match[1]!
-  let tier = match[2]!
+  const parsed = parseAntigravityGemini4LevelId(model)
+  if (!parsed) return model
+  const { family } = parsed
+  let tier: string = parsed.level
   const generationConfig = request.generationConfig as Record<string, unknown> | undefined
   const thinkingConfig = { ...(generationConfig?.thinkingConfig as Record<string, unknown> | undefined) }
   const level = typeof thinkingConfig.thinkingLevel === 'string'
@@ -1310,22 +1332,34 @@ function normalizeAntigravityGemini4Request(
   const budget = thinkingConfig.thinkingBudget
   if (['none', 'minimal', 'low'].includes(level)) tier = 'low'
   else if (level === 'medium') tier = 'medium'
-  else if (['high', 'xhigh', 'max'].includes(level)) tier = 'high'
-  else if (!level && typeof budget === 'number' && Number.isFinite(budget) && budget >= 0) {
+  else if (level === 'high') tier = 'high'
+  else if (level === 'xhigh' || level === 'max') {
+    tier = ANTIGRAVITY_GEMINI_4_LEVELS.get(family)!.includes('xhigh') ? 'xhigh' : 'high'
+  } else if (!level && typeof budget === 'number' && Number.isFinite(budget) && budget >= 0) {
     tier = budget <= 1024 ? 'low' : budget <= 8192 ? 'medium' : 'high'
   }
 
   // Cloud Code accepts a level only on High; Low/Medium encode their level
-  // in the model id and require dynamic thinking. Keep includeThoughts as
-  // supplied. Clone both config layers so retries keep their original input.
-  // Protocol reference: router-for-me/CLIProxyAPI#6627.
+  // in the model id and require dynamic thinking (CLIProxyAPI#6627). XHigh
+  // is in the id too, and an explicit xhigh level is refused on some
+  // accounts with 400 "Thinking level is unsupported: THINKING_LEVEL_XHIGH"
+  // (CLIProxyAPI#7561), so XHigh sends neither a level nor a budget, the
+  // request a proxy ran Neon XHigh with live (wbunting/CLIProxyAPI#3). Keep
+  // includeThoughts as supplied. Clone both config layers so retries keep
+  // their original input.
   delete thinkingConfig.thinkingBudget
   if (tier === 'high') thinkingConfig.thinkingLevel = 'high'
   else {
     delete thinkingConfig.thinkingLevel
-    thinkingConfig.thinkingBudget = -1
+    if (tier !== 'xhigh') thinkingConfig.thinkingBudget = -1
   }
-  request.generationConfig = { ...generationConfig, thinkingConfig }
+  if (Object.keys(thinkingConfig).length > 0) {
+    request.generationConfig = { ...generationConfig, thinkingConfig }
+  } else if (generationConfig && 'thinkingConfig' in generationConfig) {
+    // Nothing left to send for XHigh: drop the empty config.
+    const { thinkingConfig: _empty, ...rest } = generationConfig
+    request.generationConfig = rest
+  }
   return `${family}-${tier}`
 }
 

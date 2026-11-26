@@ -210,8 +210,13 @@ async function main(): Promise<void> {
 
   await test('picker offers only Gemini 4 and 3.8 Flash while retired Gemini sessions keep cache routing', () => {
     const visible = ANTIGRAVITY_PICKER_MODELS.filter(model => model.id.startsWith('gemini-'))
-    const expected = ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen', 'gemini-3.8-flash']
-      .flatMap(model => ['high', 'medium', 'low'].map(level => `${model}-${level}`))
+    const expected = [
+      ['gemini-4-neon', ['xhigh', 'high', 'medium', 'low']],
+      ['gemini-4-carbon', ['high', 'medium', 'low']],
+      ['gemini-4-argon', ['high', 'medium', 'low']],
+      ['gemini-4-hydrogen', ['xhigh', 'high', 'medium', 'low']],
+      ['gemini-3.8-flash', ['high', 'medium', 'low']],
+    ].flatMap(([model, levels]) => (levels as string[]).map(level => `${model}-${level}`))
     assert(JSON.stringify(visible.map(model => model.id)) === JSON.stringify(expected),
       `unexpected Gemini picker rows: ${visible.map(model => model.id).join(', ')}`)
     for (const id of [
@@ -230,21 +235,39 @@ async function main(): Promise<void> {
     }
   })
 
-  const gemini4Families = ['carbon', 'argon', 'hydrogen'] as const
+  // Antigravity's own level ids and catalog names (agy 1.5.18, 2026-11-26):
+  // Neon and Hydrogen add XHigh, which Antigravity's app labels Extra.
+  const gemini4Levels = {
+    neon: ['low', 'medium', 'high', 'xhigh'],
+    carbon: ['low', 'medium', 'high'],
+    argon: ['low', 'medium', 'high'],
+    hydrogen: ['low', 'medium', 'high', 'xhigh'],
+  } as const
+  const gemini4Families = Object.keys(gemini4Levels) as (keyof typeof gemini4Levels)[]
+  const levelNames = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh' } as const
   const gemini4Rows = gemini4Families.flatMap(family =>
-    (['low', 'medium', 'high'] as const).map(level => ({
+    gemini4Levels[family].map(level => ({
       family,
       level,
       id: `gemini-4-${family}-${level}`,
-      name: `Gemini 4 ${family[0]!.toUpperCase()}${family.slice(1)} (${level[0]!.toUpperCase()}${level.slice(1)})`,
+      name: `Gemini 4 ${family[0]!.toUpperCase()}${family.slice(1)} (${levelNames[level]})`,
+      paidPlansOnly: family === 'neon' || family === 'carbon',
     })))
+  // The wire thinking config each level sends when the lane asked for none.
+  const levelWireConfig = (level: string, includeThoughts: boolean): Record<string, unknown> =>
+    level === 'high' ? { thinkingLevel: 'high', includeThoughts }
+      : level === 'xhigh' ? { includeThoughts }
+        : { includeThoughts, thinkingBudget: -1 }
 
   await test('Gemini 4 tiers use the upstream thinking format without changing the prompt prefix', () => {
-    for (const { family, level, id, name } of gemini4Rows) {
+    assert(JSON.stringify(ANTIGRAVITY_MODELS.filter(model => model.id.startsWith('gemini-4-')).map(model => model.id).sort())
+      === JSON.stringify(gemini4Rows.map(row => row.id).sort()), 'Gemini 4 registry rows changed')
+    for (const { family, level, id, name, paidPlansOnly } of gemini4Rows) {
       const row = ANTIGRAVITY_PICKER_MODELS.find(model => model.id === id)
       assert(row?.name === name, `${id} display name`)
       assert(getAntigravityModelDisplayName(`models/${id.toUpperCase()}`) === row?.name, `${id} usage label`)
       assert(row?.contextWindow === 1_048_576, `${id} context window`)
+      assert(!!row?.tags?.includes('pro-ultra') === paidPlansOnly, `${id} Pro/Ultra tag`)
       assert(executorForModel(id) === 'antigravity', `${id} executor`)
       assert(isAntigravityModelId(id), `${id} lazy tool opt-out`)
       assert(isAntigravityGeminiModel(id), `${id} implicit-cache guards`)
@@ -261,9 +284,7 @@ async function main(): Promise<void> {
       assert(wrapped.model === id, `${id} wire id changed`)
       assert(wrapped.userAgent === 'antigravity', `${id} wrong envelope`)
       const config = (wrapped.request.generationConfig as any).thinkingConfig
-      assert(JSON.stringify(config) === JSON.stringify(level === 'high'
-        ? { thinkingLevel: 'high', includeThoughts: false }
-        : { includeThoughts: false, thinkingBudget: -1 }), `${id} wrong thinking wire format`)
+      assert(JSON.stringify(config) === JSON.stringify(levelWireConfig(level, false)), `${id} wrong thinking wire format`)
       assert(wrapped.request.sessionId === request.sessionId, `${id} affinity changed`)
       assert(JSON.stringify(wrapped.request.systemInstruction) === JSON.stringify(request.systemInstruction), `${id} system prefix changed`)
       assert(JSON.stringify(wrapped.request.contents) === JSON.stringify(request.contents), `${id} history changed`)
@@ -283,8 +304,28 @@ async function main(): Promise<void> {
       ['medium', { thinkingBudget: 24576 }, 'high'],
       ['medium', { thinkingBudget: -1 }, 'medium'],
     ] as const
+    // XHigh, the top level, is Neon's and Hydrogen's only. Elsewhere an xhigh
+    // or max request takes the family's top level, High. A budget never
+    // selects XHigh, and a dynamic one keeps the selected tier.
+    const xhighCases = [
+      ['xhigh', { thinkingLevel: 'high' }, 'high', null],
+      ['low', { thinkingLevel: 'xhigh' }, 'xhigh', 'high'],
+      ['medium', { thinkingLevel: 'max' }, 'xhigh', 'high'],
+      ['xhigh', { thinkingLevel: 'XHIGH', thinkingBudget: 512 }, 'xhigh', null],
+      ['xhigh', { thinkingLevel: 'none' }, 'low', null],
+      ['xhigh', { thinkingBudget: 0 }, 'low', null],
+      ['xhigh', { thinkingBudget: 24576 }, 'high', null],
+      ['xhigh', { thinkingBudget: -1 }, 'xhigh', null],
+    ] as const
     for (const family of gemini4Families) {
-      for (const [selected, thinking, expected] of cases) {
+      const hasXhigh = (gemini4Levels[family] as readonly string[]).includes('xhigh')
+      const familyCases = [
+        ...cases,
+        ...xhighCases.flatMap(([selected, thinking, withXhigh, withoutXhigh]) => hasXhigh
+          ? [[selected, thinking, withXhigh] as const]
+          : withoutXhigh ? [[selected, thinking, withoutXhigh] as const] : []),
+      ]
+      for (const [selected, thinking, expected] of familyCases) {
         const input = { generationConfig: { thinkingConfig: { ...thinking, includeThoughts: true } } }
         const before = JSON.stringify(input)
         const wrapped = wrapForCodeAssist(`gemini-4-${family}-${selected}`, 'project', input)
@@ -293,29 +334,45 @@ async function main(): Promise<void> {
         assert(config.includeThoughts === true, 'explicit thoughts lost')
         assert(expected === 'high'
           ? config.thinkingLevel === 'high' && !('thinkingBudget' in config)
-          : config.thinkingBudget === -1 && !('thinkingLevel' in config), 'incompatible thinking fields sent')
+          : expected === 'xhigh'
+            ? !('thinkingLevel' in config) && !('thinkingBudget' in config)
+            : config.thinkingBudget === -1 && !('thinkingLevel' in config), `${family} ${selected}/${before}: incompatible thinking fields sent`)
         assert(JSON.stringify(input) === before, 'normalization mutated caller config')
       }
-      for (const tier of ['low', 'medium', 'high']) {
+      for (const tier of gemini4Levels[family]) {
         const wrapped = wrapForCodeAssist(`gemini-4-${family}-${tier}`, 'project', {})
-        const config = (wrapped.request.generationConfig as any).thinkingConfig
+        const config = (wrapped.request.generationConfig as any)?.thinkingConfig
         assert(wrapped.model === `gemini-4-${family}-${tier}`, `${family} ${tier}: wire id changed`)
+        if (tier === 'xhigh') {
+          // The level is in the id; there is nothing else to send.
+          assert(config === undefined, `${family} xhigh: sent a thinking config of its own: ${JSON.stringify(config)}`)
+          continue
+        }
         assert(tier === 'high' ? config.thinkingLevel === 'high' : config.thinkingBudget === -1,
           `${family} ${tier}: missing default wire thinking config`)
         assert(!('includeThoughts' in config), 'absent thought preference was invented')
       }
     }
+    // An xhigh level with nothing else leaves no empty config behind, and the
+    // caller's request keeps its own.
+    for (const id of ['gemini-4-neon-xhigh', 'gemini-4-hydrogen-xhigh']) {
+      const input = { generationConfig: { topP: 0.95, thinkingConfig: { thinkingLevel: 'xhigh' } } }
+      const before = JSON.stringify(input)
+      const wrapped = wrapForCodeAssist(id, 'project', input)
+      assert(JSON.stringify(wrapped.request.generationConfig) === '{"topP":0.95}', `${id}: ${JSON.stringify(wrapped.request.generationConfig)}`)
+      assert(JSON.stringify(input) === before, `${id}: caller config mutated`)
+    }
   })
 
   await test('Gemini 4 images reach the wire as inline data, and other Gemini 4 ids stay off the per-level path', () => {
     const image = { inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } }
-    for (const id of ['gemini-4-carbon-high', 'gemini-4-hydrogen-low']) {
+    for (const id of ['gemini-4-neon-xhigh', 'gemini-4-neon-low', 'gemini-4-carbon-high', 'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-low']) {
       const request = { contents: [{ role: 'user', parts: [{ text: 'What is in this screenshot?' }, image] }] }
       const wrapped = wrapForCodeAssist(id, 'project', request)
       assert(JSON.stringify(wrapped.request.contents) === JSON.stringify(request.contents), `${id} dropped or rewrote the image`)
     }
-    // An id outside the three levels is not a Gemini 4 row and keeps its text.
-    for (const id of ['gemini-4-hydrogen-xhigh', 'gemini-4-carbon', 'gemini-4-neon-high']) {
+    // An id outside a family's levels is not a Gemini 4 row and keeps its text.
+    for (const id of ['gemini-4-argon-xhigh', 'gemini-4-carbon-xhigh', 'gemini-4-neon-max', 'gemini-4-neon', 'gemini-4-carbon', 'gemini-4-hydrogen-extra']) {
       assert(!isAntigravityModelId(id), `${id} must not be registered`)
       assert(resolveAntigravityWireModel(id) === id, `${id} must pass through untouched`)
       const wrapped = wrapForCodeAssist(id, 'project', { generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } })

@@ -147,6 +147,27 @@ test('every plan lists Claude 4.6, and only paid plans list Claude 5.5', () => {
   assert(ids(null).length === ANTIGRAVITY_PICKER_MODELS.length, 'unknown plan lists everything')
 })
 
+test('Gemini 4 Neon and Carbon are listed for paid plans only; Hydrogen and Argon for every plan', () => {
+  const ids = (tier: string | null) => antigravityPickerModelsForPlan(tier).map(m => m.id)
+  const paidOnly = [
+    ...['xhigh', 'high', 'medium', 'low'].map(level => `gemini-4-neon-${level}`),
+    ...['high', 'medium', 'low'].map(level => `gemini-4-carbon-${level}`),
+  ]
+  const everyPlan = [
+    ...['xhigh', 'high', 'medium', 'low'].map(level => `gemini-4-hydrogen-${level}`),
+    ...['high', 'medium', 'low'].map(level => `gemini-4-argon-${level}`),
+  ]
+  for (const tier of ['g1-pro-tier', 'g1-ultra-tier', 'standard-tier', null]) {
+    const rows = ids(tier)
+    for (const id of [...paidOnly, ...everyPlan]) assert(rows.includes(id), `${tier}: ${id} missing`)
+  }
+  for (const tier of ['free-tier', 'legacy-tier']) {
+    const rows = ids(tier)
+    for (const id of paidOnly) assert(!rows.includes(id), `${tier}: ${id} listed`)
+    for (const id of everyPlan) assert(rows.includes(id), `${tier}: ${id} missing`)
+  }
+})
+
 test('other Antigravity models keep their thinking config', () => {
   const claude46 = resolveThinkingConfig('claude-opus-4-6-thinking', 8192, { type: 'enabled', budget_tokens: 8192 } as any)
   assert(
