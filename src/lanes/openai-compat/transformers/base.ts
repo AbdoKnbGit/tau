@@ -33,6 +33,7 @@ export type ProviderId =
   | 'modelrouter'
   | 'vercel'
   | 'requesty'
+  | 'llmtr'
   | 'opencode'
   | 'opencodego'
   | 'lxd'

@@ -108,6 +108,8 @@ export function initLanes(opts?: {
   // Requesty router
   requestyApiKey?: string
   requestyBaseUrl?: string
+  llmtrApiKey?: string
+  llmtrBaseUrl?: string
   // OpenCode Zen gateway
   opencodeApiKey?: string
   opencodeBaseUrl?: string
@@ -241,6 +243,7 @@ export function initLanes(opts?: {
     modelrouter: opts?.modelrouterApiKey ? { apiKey: opts.modelrouterApiKey, baseUrl: opts.modelrouterBaseUrl } : undefined,
     vercel: opts?.vercelApiKey ? { apiKey: opts.vercelApiKey, baseUrl: opts.vercelBaseUrl } : undefined,
     requesty: opts?.requestyApiKey ? { apiKey: opts.requestyApiKey, baseUrl: opts.requestyBaseUrl } : undefined,
+    llmtr: opts?.llmtrApiKey ? { apiKey: opts.llmtrApiKey, baseUrl: opts.llmtrBaseUrl } : undefined,
     opencode: opts?.opencodeApiKey ? { apiKey: opts.opencodeApiKey, baseUrl: opts.opencodeBaseUrl } : undefined,
     opencodego: opts?.opencodegoApiKey ? { apiKey: opts.opencodegoApiKey, baseUrl: opts.opencodegoBaseUrl } : undefined,
     lxd: opts?.lxdApiKey ? { apiKey: opts.lxdApiKey, baseUrl: opts.lxdBaseUrl } : undefined,

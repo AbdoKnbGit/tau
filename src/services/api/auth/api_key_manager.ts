@@ -157,6 +157,7 @@ function detectKeyFormat(provider: string, key: string): string {
     modelrouter: '',
     vercel: '',
     requesty: '',
+    llmtr: '',
     opencode: '',
     opencodego: '',
     commandcode: '',
@@ -193,6 +194,7 @@ const KEY_VALIDATIONS: Record<string, KeyValidation> = {
   modelrouter: { prefix: '', minLength: 10, displayName: 'Model Router' },
   vercel: { prefix: '', minLength: 10, displayName: 'Vercel AI Gateway' },
   requesty: { prefix: '', minLength: 10, displayName: 'Requesty' },
+  llmtr: { prefix: '', minLength: 10, displayName: 'LLMTR' },
   opencode: { prefix: '', minLength: 10, displayName: 'OpenCode Zen' },
   opencodego: { prefix: '', minLength: 10, displayName: 'OpenCode Go' },
   commandcode: { prefix: '', minLength: 10, displayName: 'Command Code' },
@@ -362,6 +364,7 @@ export function deleteAllProviderCredentials(provider: string): void {
     provider === 'modelrouter' ||
     provider === 'vercel' ||
     provider === 'requesty' ||
+    provider === 'llmtr' ||
     provider === 'opencode' ||
     provider === 'opencodego' ||
     provider === 'commandcode' ||
@@ -376,7 +379,7 @@ export function deleteAllProviderCredentials(provider: string): void {
   ) {
     void import('../providers/providerShim.js')
       .then(({ reloadOpenAICompatProviderAuth }) =>
-        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'opencode' | 'opencodego' | 'commandcode' | 'fireworks' | 'cloudflare' | 'xai' | 'meta' | 'groq' | 'alibaba'),
+        reloadOpenAICompatProviderAuth(provider as 'modelrouter' | 'vercel' | 'requesty' | 'llmtr' | 'opencode' | 'opencodego' | 'commandcode' | 'fireworks' | 'cloudflare' | 'xai' | 'meta' | 'groq' | 'alibaba'),
       )
       .catch(() => {})
   }

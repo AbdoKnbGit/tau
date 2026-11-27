@@ -122,7 +122,7 @@ function readFrozenUsage(messages, provider) {
 
 const additionalStreamingProviders = [
   'commandcode', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'groq', 'nim',
-  'xai', 'meta', 'mimo', 'lxd', 'fireworks', 'cloudflare', 'vercel', 'requesty',
+  'xai', 'meta', 'mimo', 'lxd', 'fireworks', 'cloudflare', 'vercel', 'requesty', 'llmtr',
   'modelrouter', 'agentrouter', 'ollama', 'lmstudio', 'cline', 'clinepass', 'copilot',
   'cursor', 'iflow', 'kilocode', 'kiro',
 ]

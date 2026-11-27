@@ -53,6 +53,7 @@ function _resolveAPIProvider(): APIProvider {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_MODELROUTER) || isEnvTruthy(process.env.CLAUDE_CODE_USE_MODEL_ROUTER) || isEnvTruthy(process.env.CLAUDE_CODE_USE_LXG2IT)) return 'modelrouter'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL) || isEnvTruthy(process.env.CLAUDE_CODE_USE_VERCEL_AI_GATEWAY)) return 'vercel'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_REQUESTY))    return 'requesty'
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_LLMTR))      return 'llmtr'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE_GO) || isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODEGO)) return 'opencodego'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE) || isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENCODE_ZEN)) return 'opencode'
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_COMMANDCODE) || isEnvTruthy(process.env.CLAUDE_CODE_USE_COMMAND_CODE)) return 'commandcode'
@@ -163,6 +164,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<APIProvider, string> = {
   modelrouter: 'Model Router',
   vercel: 'Vercel AI Gateway',
   requesty: 'Requesty',
+  llmtr: 'LLMTR',
   opencode: 'OpenCode Zen',
   opencodego: 'OpenCode Go',
   commandcode: 'Command Code',
@@ -250,13 +252,13 @@ export function listAPIProviderNames(): readonly APIProvider[] {
 
 /** Providers that use OpenAI-compatible chat completions API */
 export function isOpenAICompatibleProvider(p: APIProvider): boolean {
-  return ['openai', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'ollama', 'lmstudio',
+  return ['openai', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'llmtr', 'opencode', 'opencodego', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'ollama', 'lmstudio',
           'cline', 'clinepass', 'copilot', 'iflow', 'kilocode'].includes(p)
 }
 
 /** All non-Anthropic third-party LLM providers */
 export function isThirdPartyProvider(p: APIProvider): boolean {
-  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'commandcode', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'xai', 'meta', 'ollama', 'lmstudio',
+  return ['openai', 'gemini', 'antigravity', 'openrouter', 'agentrouter', 'modelrouter', 'vercel', 'requesty', 'llmtr', 'opencode', 'opencodego', 'commandcode', 'lxd', 'mimo', 'fireworks', 'cloudflare', 'groq', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'xai', 'meta', 'ollama', 'lmstudio',
           'cline', 'clinepass', 'copilot', 'cursor', 'iflow', 'kilocode', 'kiro'].includes(p)
 }
 

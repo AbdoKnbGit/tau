@@ -8,7 +8,7 @@ import { opencodeReplaysReasoningContent } from '../../../utils/model/opencodeTh
 import { cloudflareReasoningContentReplayRequired } from '../../../utils/model/cloudflareThinking.js'
 import { preserveToolCallReasoning } from './reasoning_history.js'
 
-type CompatChatProviderName = 'modelrouter' | 'vercel' | 'requesty' | 'opencode'
+type CompatChatProviderName = 'modelrouter' | 'vercel' | 'requesty' | 'llmtr' | 'opencode'
   | 'opencodego' | 'fireworks' | 'cloudflare' | 'lmstudio'
 
 const REASONING_FIELDS = [

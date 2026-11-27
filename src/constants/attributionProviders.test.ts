@@ -40,7 +40,7 @@ const THIRD_PARTY = [
   'fireworks', 'cloudflare', 'mimo', 'alibaba', 'lxd', 'nim', 'openai', 'gemini',
   'antigravity', 'copilot', 'opencode', 'opencodego', 'agentrouter',
   'modelrouter', 'kilocode', 'kiro', 'cline', 'clinepass', 'cursor', 'iflow',
-  'requesty', 'vercel', 'commandcode', 'ollama', 'lmstudio',
+  'requesty', 'llmtr', 'vercel', 'commandcode', 'ollama', 'lmstudio',
 ]
 
 console.log('attribution header provider gate:')

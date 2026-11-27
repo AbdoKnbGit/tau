@@ -18,6 +18,7 @@ import { agentrouterTransformer } from './agentrouter.js'
 import { modelRouterTransformer } from './modelrouter.js'
 import { vercelTransformer } from './vercel.js'
 import { requestyTransformer } from './requesty.js'
+import { llmtrTransformer } from './llmtr.js'
 import { opencodeTransformer } from './opencode.js'
 import { opencodeGoTransformer } from './opencode-go.js'
 import { lxdTransformer } from './lxd.js'
@@ -47,6 +48,7 @@ export const TRANSFORMERS: Record<ProviderId, Transformer> = {
   modelrouter: modelRouterTransformer,
   vercel: vercelTransformer,
   requesty: requestyTransformer,
+  llmtr: llmtrTransformer,
   opencode: opencodeTransformer,
   opencodego: opencodeGoTransformer,
   lxd: lxdTransformer,
@@ -66,7 +68,7 @@ export function getTransformer(provider: ProviderId): Transformer {
 
 export {
   deepseekTransformer, groqTransformer, mistralTransformer, nimTransformer,
-  glmTransformer, moonshotTransformer, minimaxTransformer, alibabaTransformer, ollamaTransformer, lmStudioTransformer, openrouterTransformer, agentrouterTransformer, modelRouterTransformer, vercelTransformer, requestyTransformer, opencodeTransformer, opencodeGoTransformer, lxdTransformer, mimoTransformer, fireworksTransformer, cloudflareTransformer, genericTransformer,
+  glmTransformer, moonshotTransformer, minimaxTransformer, alibabaTransformer, ollamaTransformer, lmStudioTransformer, openrouterTransformer, agentrouterTransformer, modelRouterTransformer, vercelTransformer, requestyTransformer, llmtrTransformer, opencodeTransformer, opencodeGoTransformer, lxdTransformer, mimoTransformer, fireworksTransformer, cloudflareTransformer, genericTransformer,
   clineTransformer, iflowTransformer, kilocodeTransformer, copilotTransformer,
 }
 export type { Transformer, ProviderId, TransformContext } from './base.js'

@@ -66,6 +66,9 @@ const VERCEL_AI_GATEWAY_BASE_URL = process.env.VERCEL_AI_GATEWAY_BASE_URL
 const REQUESTY_BASE_URL = process.env.REQUESTY_BASE_URL
   ?? 'https://router.requesty.ai/v1'
 
+const LLMTR_BASE_URL = process.env.LLMTR_BASE_URL
+  ?? 'https://llmtr.com/v1'
+
 const OPENCODE_BASE_URL = process.env.OPENCODE_BASE_URL
   ?? process.env.OPENCODE_ZEN_BASE_URL
   ?? 'https://opencode.ai/zen/v1'
@@ -804,6 +807,33 @@ export const PROVIDER_CONFIGS: Record<string, ProviderModelConfig> = {
         opus:   process.env.REQUESTY_MODEL_OPUS   ?? 'anthropic/claude-opus-4-7',
         sonnet: process.env.REQUESTY_MODEL_SONNET ?? 'anthropic/claude-sonnet-4-6',
         haiku:  process.env.REQUESTY_MODEL_HAIKU  ?? 'anthropic/claude-haiku-4-5',
+      },
+    },
+  },
+
+  llmtr: {
+    displayName: 'LLMTR',
+    baseUrl: LLMTR_BASE_URL,
+    authType: 'bearer',
+    apiKeyEnv: 'LLMTR_API_KEY',
+    supportsStreaming: true,
+    supportsToolCalling: true,
+    defaultTier: 'pro',
+    tiers: {
+      free: {
+        opus:   process.env.LLMTR_MODEL_OPUS_FREE   ?? 'nvidia/nemotron-3.5-super-vl-free',
+        sonnet: process.env.LLMTR_MODEL_SONNET_FREE ?? 'lgai/k-exaone-2.5',
+        haiku:  process.env.LLMTR_MODEL_HAIKU_FREE  ?? 'qwen/qwen3.8-27b-free',
+      },
+      pro: {
+        opus:   process.env.LLMTR_MODEL_OPUS   ?? 'nvidia/nemotron-3.5-super-vl-free',
+        sonnet: process.env.LLMTR_MODEL_SONNET ?? 'lgai/k-exaone-2.5',
+        haiku:  process.env.LLMTR_MODEL_HAIKU  ?? 'qwen/qwen3.8-27b-free',
+      },
+      plus: {
+        opus:   process.env.LLMTR_MODEL_OPUS   ?? 'nvidia/nemotron-3.5-super-vl-free',
+        sonnet: process.env.LLMTR_MODEL_SONNET ?? 'lgai/k-exaone-2.5',
+        haiku:  process.env.LLMTR_MODEL_HAIKU  ?? 'qwen/qwen3.8-27b-free',
       },
     },
   },

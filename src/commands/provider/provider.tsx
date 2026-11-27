@@ -96,6 +96,7 @@ const MANAGEABLE_PROVIDERS = [
   'agentrouter',
   'vercel',
   'requesty',
+  'llmtr',
   'opencode',
   'opencodego',
   'lxd',
@@ -336,6 +337,7 @@ function usesEmbeddedProviderLogin(provider: ManageableProvider): provider is Ke
     provider === 'modelrouter' ||
     provider === 'vercel' ||
     provider === 'requesty' ||
+    provider === 'llmtr' ||
     provider === 'opencode' ||
     provider === 'opencodego' ||
     provider === 'commandcode' ||

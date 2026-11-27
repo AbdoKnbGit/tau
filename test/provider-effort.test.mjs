@@ -123,7 +123,7 @@ const cases = [
   ['xai', 'grok-4.7', 'low', 'xhigh'],
   ['meta', 'muse-spark-1.3', 'low', 'max'],
 ]
-const noEffortProviders = ['nim', 'minimax', 'ollama', 'lmstudio', 'copilot', 'cursor', 'iflow', 'kiro']
+const noEffortProviders = ['nim', 'minimax', 'ollama', 'lmstudio', 'copilot', 'cursor', 'iflow', 'kiro', 'llmtr']
 
 function body(model) {
   return { model, messages: [

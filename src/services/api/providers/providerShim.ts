@@ -148,6 +148,8 @@ function _ensureLanesInitialized(): void {
       vercelBaseUrl: getProviderBaseUrl('vercel'),
       requestyApiKey: getProviderApiKey('requesty') ?? undefined,
       requestyBaseUrl: getProviderBaseUrl('requesty'),
+      llmtrApiKey: getProviderApiKey('llmtr') ?? undefined,
+      llmtrBaseUrl: getProviderBaseUrl('llmtr'),
       opencodeApiKey: getProviderRuntimeApiKey('opencode') ?? undefined,
       opencodeBaseUrl: getProviderBaseUrl('opencode'),
       opencodegoApiKey: getProviderRuntimeApiKey('opencodego') ?? undefined,
@@ -210,6 +212,7 @@ function _laneNameForProvider(provider: APIProvider): string {
     case 'modelrouter':
     case 'vercel':
     case 'requesty':
+    case 'llmtr':
     case 'opencode':
     case 'opencodego':
     case 'lxd':
@@ -381,6 +384,7 @@ function createProvider(provider: APIProvider): BaseProvider {
     case 'modelrouter':
     case 'vercel':
     case 'requesty':
+    case 'llmtr':
     case 'opencode':
     case 'opencodego':
     case 'fireworks':
@@ -872,6 +876,7 @@ export async function reloadOpenAICompatProviderAuth(provider: APIProvider): Pro
     case 'modelrouter':
     case 'vercel':
     case 'requesty':
+    case 'llmtr':
     case 'opencode':
     case 'opencodego':
     case 'lxd':
