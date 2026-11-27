@@ -599,7 +599,14 @@ const MessagesImpl = ({
     if (b_0?.type !== 'tool_result' || b_0.is_error || msg_6.toolUseResult === undefined) return false;
     const name = lookupsRef.current.toolUseByToolUseID.get(b_0.tool_use_id)?.name;
     const tool = name ? findToolByName(tools, name) : undefined;
-    return tool?.isResultTruncated?.(msg_6.toolUseResult as never) ?? false;
+    // toolUseResult is not validated here: a resumed transcript, or two calls
+    // that share one tool_use id, can hand this tool another tool's result.
+    // A shape the tool does not expect must not take the whole list down.
+    try {
+      return tool?.isResultTruncated?.(msg_6.toolUseResult as never) ?? false;
+    } catch {
+      return false;
+    }
   }, [tools]);
   const canAnimate = (!toolJSX || !!toolJSX.shouldContinueAnimation) && !toolUseConfirmQueue.length && !isMessageSelectorVisible;
   const hasToolsInProgress = inProgressToolUseIDs.size > 0;
@@ -668,10 +675,17 @@ const MessagesImpl = ({
       if (tr && 'tool_use_id' in tr) {
         const tu = lookups_0.toolUseByToolUseID.get(tr.tool_use_id);
         const tool_0 = tu && findToolByName(tools, tu.name);
-        const extracted = tool_0?.extractSearchText?.(msg_9.toolUseResult as never);
+        // Same unvalidated toolUseResult as isItemClickable: an unexpected
+        // shape falls back to the heuristic instead of throwing.
+        let extracted: unknown;
+        try {
+          extracted = tool_0?.extractSearchText?.(msg_9.toolUseResult as never);
+        } catch {
+          extracted = undefined;
+        }
         // undefined = tool didn't implement → keep heuristic. Empty
         // string = tool says "nothing to index" → respect that.
-        if (extracted !== undefined) text_0 = extracted;
+        if (typeof extracted === 'string') text_0 = extracted;
       }
     }
     // Cache LOWERED: setSearchQuery's hot loop indexOfs per keystroke.

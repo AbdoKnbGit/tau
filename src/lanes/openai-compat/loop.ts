@@ -16,6 +16,7 @@
  * litellm/llms/<provider>/chat/transformation.py.
  */
 
+import { randomUUID } from 'crypto'
 import { APIConnectionError } from '@anthropic-ai/sdk'
 import { decodeToolArguments, toolDecodeFields } from '../../services/mcp/decodeStatus.js'
 import { EmptyToolInputSettler } from '../../services/api/emptyToolInput.js'
@@ -253,6 +254,17 @@ function detectProvider(model: string, baseUrl: string): ProviderType {
 function isLocalBaseUrl(baseUrl: string): boolean {
   const b = baseUrl.toLowerCase()
   return b.includes('localhost') || b.includes('127.0.0.1') || b.includes('0.0.0.0') || b.includes(':11434')
+}
+
+/**
+ * Id for a tool call the server sent without one (older Ollama builds, some
+ * OpenAI-compatible servers) or with an empty one. An index alone restarts
+ * every response, and two calls that share an id get merged in the UI and
+ * deduped out of the next request. The random part keeps it unique; the
+ * wrapped id stays under the 40-character cap some servers put on ids.
+ */
+function fallbackToolCallId(prefix: string, index: number): string {
+  return `${prefix}_${index}_${randomUUID().replace(/-/g, '').slice(0, 12)}`
 }
 
 // ─── OpenAI Chat Completions Message Shape ───────────────────────
@@ -1204,7 +1216,7 @@ export class OpenAICompatLane implements Lane {
                   inThinkingBlock = false
                 }
                 buf = {
-                  id: tc.id ?? `call_${idx}`,
+                  id: tc.id || fallbackToolCallId('call', idx),
                   name: tc.function?.name ?? '',
                   args: '',
                   anthropicIndex: currentBlockIndex,
@@ -1372,7 +1384,7 @@ export class OpenAICompatLane implements Lane {
             ? { toolName: implId, input: decoded.input }
             : repairCompatToolCall(implId, decoded.input)
           const input = repaired.input
-          const toolId = toolCall.id?.startsWith('toolu_') ? toolCall.id : `toolu_compat_${toolCall.id ?? `lmstudio_${currentBlockIndex}`}`
+          const toolId = toolCall.id?.startsWith('toolu_') ? toolCall.id : `toolu_compat_${toolCall.id || fallbackToolCallId('lmstudio', currentBlockIndex)}`
           yield {
             type: 'content_block_start',
             index: currentBlockIndex,
@@ -3716,7 +3728,7 @@ async function* streamOllamaNative(
             const argsStr = typeof fn.arguments === 'string'
               ? fn.arguments
               : fn.arguments === undefined ? '' : JSON.stringify(fn.arguments)
-            const id = tc.id ?? `call_${toolCallBuffers.length}`
+            const id = tc.id || fallbackToolCallId('call', toolCallBuffers.length)
             toolCallBuffers.push({
               id,
               name,
