@@ -61,6 +61,7 @@ environment variable: set it in your shell, or in the `env` block of
 | `OLLAMA_TRUNCATE` | off | Tau asks Ollama to refuse a request that doesn't fit instead of silently dropping your oldest messages. On `auto`, Tau then grows the context once and resends; past the limit you get the exact sizes and what to change. `1` brings back Ollama's silent truncation. |
 | `TAU_LOCAL_MAX_OUTPUT_TOKENS` | none | Most tokens an answer may use. Tau also fits the answer to the room left in the context, so a long answer never pushes the model's instructions out. |
 | `TAU_LOCAL_TEMPERATURE`, `TAU_LOCAL_TOP_P`, `TAU_LOCAL_TOP_K` | the model's own | Sampling. Unset, the model keeps its own settings: its Ollama Modelfile or its LM Studio preset. |
+| `TAU_LOCAL_THINKING` | follows `/thinking` | Thinking, on any local server. `off` asks a thinking model not to think (much faster answers), `on` to think, `low`/`medium`/`high` for models that take a level. Tau sends it the way each server takes it: Ollama as `think`, to models that list thinking; LM Studio as `reasoning_effort`, within the thinking options LM Studio lists for the model; any other server (llama.cpp, vLLM, Jan) as `chat_template_kwargs.enable_thinking`, or `reasoning_effort` for a level, and without it again if the server refuses it. Unset, `/thinking on` asks for thinking the same way, and with `/thinking` off nothing is sent: each model keeps its own default. Some models think whatever they're told; with `off` they put their reasoning into the answer instead. |
 
 Server addresses: `OLLAMA_HOST` (default `http://localhost:11434`) and
 `LMSTUDIO_BASE_URL` (default `http://localhost:1234/v1`), or set them in
@@ -81,6 +82,12 @@ share and the context (`ollama ps` shows it too). Give Ollama
 halves the context's memory, so more of the model stays on the GPU. Or switch
 to `/mode cheap`, which roughly halves Tau's prompt and so the context Tau
 needs, or pick a smaller model.
+
+When a local model thinks, Tau shows its thinking as it streams, the same way
+it shows other models' thinking, instead of dropping it while you wait: Ollama
+sends it apart from the answer, and so do LM Studio and other servers that
+split it out (`reasoning_content`). The thinking is never sent back to the
+model.
 
 The Ollama model picker takes what each model on your machine can do from
 Ollama itself: tools, thinking and image input. A model that can't chat, such

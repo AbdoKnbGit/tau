@@ -4,6 +4,15 @@ import {
   capLocalOutputTokens,
   checkOllamaGpuFit,
   chooseOllamaNumCtx,
+  chooseOllamaThink,
+  isLocalThinkingFieldRefusal,
+  isThinkRefusal,
+  lmStudioReasoningEffort,
+  localServerRefusesThinkingFields,
+  localThinkingSetting,
+  localThinkingWanted,
+  otherLocalThinkingFields,
+  rememberLocalServerRefusesThinkingFields,
   fitLocalOutputTokens,
   growOllamaNumCtx,
   isLocalModelRequest,
@@ -30,6 +39,7 @@ const ENV_KEYS = [
   'TAU_LOCAL_TEMPERATURE',
   'TAU_LOCAL_TOP_P',
   'TAU_LOCAL_TOP_K',
+  'TAU_LOCAL_THINKING',
 ]
 const saved = new Map<string, string | undefined>()
 
@@ -226,6 +236,86 @@ describe('Ollama context', () => {
     expect(ollamaTruncateFields()).toEqual({ truncate: false })
     process.env.OLLAMA_TRUNCATE = '1'
     expect(ollamaTruncateFields()).toEqual({})
+  })
+
+  test('TAU_LOCAL_THINKING: off, on and the levels; anything else is ignored', () => {
+    expect(localThinkingSetting()).toBeUndefined()
+    for (const [text, value] of [['off', false], ['false', false], ['on', true], ['TRUE', true], ['low', 'low'], ['high', 'high'], ['maybe', undefined]] as const) {
+      process.env.TAU_LOCAL_THINKING = text
+      expect(localThinkingSetting()).toBe(value)
+    }
+  })
+
+  test('think is sent only when asked for, and only to a model that lists thinking', () => {
+    const thinks = ['completion', 'tools', 'thinking']
+    // Tau's thinking off and no setting: the model keeps its own default.
+    expect(chooseOllamaThink({ setting: undefined, tauThinkingOn: false, capabilities: thinks })).toBeUndefined()
+    expect(chooseOllamaThink({ setting: undefined, tauThinkingOn: true, capabilities: thinks })).toBe(true)
+    expect(chooseOllamaThink({ setting: false, tauThinkingOn: true, capabilities: thinks })).toBe(false)
+    expect(chooseOllamaThink({ setting: 'low', tauThinkingOn: false, capabilities: thinks })).toBe('low')
+    // A model that does not list thinking, or an Ollama that says nothing.
+    expect(chooseOllamaThink({ setting: true, tauThinkingOn: true, capabilities: ['completion', 'tools'] })).toBeUndefined()
+    expect(chooseOllamaThink({ setting: true, tauThinkingOn: true, capabilities: undefined })).toBeUndefined()
+  })
+
+  test("a server's refusal of think is recognized; other errors are not", () => {
+    expect(isThinkRefusal(400, '{"error":"\\"llama3:8b\\" does not support thinking"}')).toBe(true)
+    expect(isThinkRefusal(400, '{"error":"invalid think value"}')).toBe(true)
+    expect(isThinkRefusal(400, 'request (20000 tokens) exceeds the available context size (8192 tokens)')).toBe(false)
+    expect(isThinkRefusal(500, 'does not support thinking')).toBe(false)
+  })
+
+  test('what was asked for: the setting first, else Tau thinking on, else nothing', () => {
+    expect(localThinkingWanted(undefined, false)).toBeUndefined()
+    expect(localThinkingWanted(undefined, true)).toBe(true)
+    expect(localThinkingWanted(false, true)).toBe(false)
+    expect(localThinkingWanted('high', false)).toBe('high')
+  })
+
+  test('LM Studio gets reasoning_effort only within the options it lists for the model', () => {
+    const onByDefault = { allowed: ['off', 'on'], default: 'on' }
+    const offByDefault = { allowed: ['off', 'on'], default: 'off' }
+    const levels = { allowed: ['low', 'medium', 'high'], default: 'medium' }
+    // Nothing asked: nothing sent, whatever the model.
+    expect(lmStudioReasoningEffort(undefined, onByDefault)).toBeUndefined()
+    // Off: `none`, only where off is allowed.
+    expect(lmStudioReasoningEffort(false, onByDefault)).toBe('none')
+    expect(lmStudioReasoningEffort(false, offByDefault)).toBe('none')
+    expect(lmStudioReasoningEffort(false, levels)).toBeUndefined()
+    // On or a level for an on/off model: only needed when it starts off.
+    expect(lmStudioReasoningEffort(true, onByDefault)).toBeUndefined()
+    expect(lmStudioReasoningEffort('low', onByDefault)).toBeUndefined()
+    expect(lmStudioReasoningEffort(true, offByDefault)).toBe('medium')
+    expect(lmStudioReasoningEffort('high', offByDefault)).toBe('medium')
+    // A level the model lists goes as is.
+    expect(lmStudioReasoningEffort('high', levels)).toBe('high')
+    expect(lmStudioReasoningEffort(true, levels)).toBeUndefined()
+    // A model with no thinking options.
+    expect(lmStudioReasoningEffort(false, undefined)).toBeUndefined()
+    expect(lmStudioReasoningEffort(true, { allowed: [] })).toBeUndefined()
+  })
+
+  test('any other local server gets the fields such servers take, for what was asked', () => {
+    expect(otherLocalThinkingFields(undefined)).toBeUndefined()
+    expect(otherLocalThinkingFields(false)).toEqual({ chat_template_kwargs: { enable_thinking: false } })
+    expect(otherLocalThinkingFields(true)).toEqual({ chat_template_kwargs: { enable_thinking: true } })
+    expect(otherLocalThinkingFields('high')).toEqual({ reasoning_effort: 'high' })
+  })
+
+  test("a server's refusal of a thinking field is recognized and remembered per server and model", () => {
+    expect(isLocalThinkingFieldRefusal(400, "Invalid 'reasoning_effort' value: 'off'. Supported values: none, low")).toBe(true)
+    expect(isLocalThinkingFieldRefusal(422, '{"detail":[{"loc":["body","chat_template_kwargs"],"msg":"Extra inputs are not permitted"}]}')).toBe(true)
+    expect(isLocalThinkingFieldRefusal(400, 'context length exceeded')).toBe(false)
+    expect(isLocalThinkingFieldRefusal(500, 'reasoning_effort')).toBe(false)
+
+    const server = 'http://localhost:8080/v1'
+    expect(localServerRefusesThinkingFields(server, 'model-a')).toBe(false)
+    rememberLocalServerRefusesThinkingFields(server, 'model-a')
+    expect(localServerRefusesThinkingFields(server, 'model-a')).toBe(true)
+    expect(localServerRefusesThinkingFields(server, 'model-b')).toBe(false)
+    expect(localServerRefusesThinkingFields('http://localhost:8081/v1', 'model-a')).toBe(false)
+    resetLocalModelSettingsForTests()
+    expect(localServerRefusesThinkingFields(server, 'model-a')).toBe(false)
   })
 
   test("a server's refusal of stream_options is recognized; other errors are not", () => {

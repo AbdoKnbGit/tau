@@ -1,8 +1,9 @@
 /**
  * What the compat lane sends to local model servers, through the real lane
  * with a mocked network: Ollama's native /api/chat (local and `:cloud`
- * models), LM Studio's OpenAI-compatible route, and DeepSeek as the hosted
- * control that local settings must never reach.
+ * models), LM Studio's OpenAI-compatible route, another OpenAI-compatible
+ * server on this machine, and DeepSeek as the hosted control that local
+ * settings must never reach.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { initOpenAICompatLane, openaiCompatLane } from './index.js'
@@ -14,6 +15,8 @@ import type { AnthropicStreamEvent } from '../../services/api/providers/base_pro
 const OLLAMA = 'http://127.0.0.1:11434/v1'
 const LMSTUDIO = 'http://127.0.0.1:1234/v1'
 const DEEPSEEK = 'https://api.deepseek.test/v1'
+// Another OpenAI-compatible server on this machine (llama.cpp, vLLM, Jan).
+const GENERIC = 'http://127.0.0.1:8080/v1'
 const ENV_KEYS = [
   'OLLAMA_NUM_CTX',
   'OLLAMA_NUM_CTX_MAX',
@@ -24,6 +27,7 @@ const ENV_KEYS = [
   'TAU_LOCAL_TEMPERATURE',
   'TAU_LOCAL_TOP_P',
   'TAU_LOCAL_TOP_K',
+  'TAU_LOCAL_THINKING',
 ]
 const saved = new Map<string, string | undefined>()
 
@@ -40,6 +44,10 @@ type Server = {
   lmStudioCountRatio?: number
   /** An OpenAI-compatible server that rejects stream_options with a 400. */
   refusesStreamOptions?: boolean
+  /** An OpenAI-compatible server that rejects reasoning_effort and chat_template_kwargs with a 422. */
+  refusesThinkingFields?: boolean
+  /** An OpenAI-compatible server streams this as `reasoning_content` before the answer. */
+  reasons?: string
   /**
    * Ollama /api/ps: the context the model is loaded with when the request
    * starts. Without this or `ownDefault`, /api/ps answers 404.
@@ -49,6 +57,10 @@ type Server = {
   ownDefault?: number
   /** /api/ps: the loaded model's size and the part of it in GPU memory. */
   gpuShare?: { size: number; sizeVram: number }
+  /** Ollama /api/chat streams this as `message.thinking` before the answer. */
+  thinks?: string
+  /** Ollama /api/chat refuses any request with a `think` field. */
+  refusesThink?: boolean
 }
 
 function ndjson(lines: unknown[]): Response {
@@ -59,8 +71,9 @@ function ndjson(lines: unknown[]): Response {
 }
 
 // Usage only when the request asks for it, as OpenAI-compatible servers do.
-function sse(model: string, promptTokens?: number): Response {
+function sse(model: string, promptTokens?: number, reasoning?: string): Response {
   const chunks = [
+    ...(reasoning ? [{ id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { reasoning_content: reasoning }, finish_reason: null }] }] : []),
     { id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }] },
     {
       id: 'x', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
@@ -74,18 +87,23 @@ function sse(model: string, promptTokens?: number): Response {
 }
 
 async function run(input: {
-  providerHint: 'ollama' | 'lmstudio' | 'deepseek'
+  providerHint: 'ollama' | 'lmstudio' | 'deepseek' | 'generic'
   model: string
+  /** Where the generic OpenAI-compatible server runs (default: this machine). */
+  genericUrl?: string
   system?: string
   temperature?: number
   maxTokens?: number
+  /** Tau's /thinking switch. */
+  thinking?: { type: 'enabled' } | { type: 'disabled' }
   server?: Server
-}): Promise<{ sent: Sent[]; text: string }> {
+}): Promise<{ sent: Sent[]; text: string; thinking: string; blocks: string[] }> {
   initOpenAICompatLane({
     ollama: { baseUrl: OLLAMA },
     lmstudio: { baseUrl: LMSTUDIO },
     deepseek: { apiKey: 'sk-test-key-0123456789', baseUrl: DEEPSEEK },
   })
+  openaiCompatLane.registerProvider('generic', '', input.genericUrl ?? GENERIC)
   const sent: Sent[] = []
   const server = input.server ?? {}
   const answersPs = server.loadedAt !== undefined || server.ownDefault !== undefined
@@ -123,7 +141,11 @@ async function run(input: {
           error: `request (${refuse.requestTokens} tokens) exceeds the available context size (${loadedAt} tokens), try increasing it`,
         }, { status: 400 })
       }
+      if (server.refusesThink && body.think !== undefined) {
+        return Response.json({ error: `"${body.model}" does not support thinking` }, { status: 400 })
+      }
       return ndjson([
+        ...(server.thinks ? [{ model: body.model, message: { role: 'assistant', content: '', thinking: server.thinks }, done: false }] : []),
         { model: body.model, message: { role: 'assistant', content: 'ok' }, done: false },
         { model: body.model, message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop', prompt_eval_count: 30, eval_count: 1 },
       ])
@@ -133,9 +155,13 @@ async function run(input: {
       if (server.refusesStreamOptions && body?.stream_options) {
         return Response.json({ error: "'stream_options' is not supported" }, { status: 400 })
       }
+      if (server.refusesThinkingFields && (body?.chat_template_kwargs || body?.reasoning_effort)) {
+        const field = body.chat_template_kwargs ? 'chat_template_kwargs' : 'reasoning_effort'
+        return Response.json({ detail: [{ loc: ['body', field], msg: 'Extra inputs are not permitted' }] }, { status: 422 })
+      }
       const estimate = (JSON.stringify(body.messages).length + (body.tools ? JSON.stringify(body.tools).length : 0)) / 4
       const promptTokens = server.lmStudioCountRatio === undefined ? 10 : Math.ceil(estimate * server.lmStudioCountRatio)
-      return sse(body?.model ?? 'model', body?.stream_options?.include_usage ? promptTokens : undefined)
+      return sse(body?.model ?? 'model', body?.stream_options?.include_usage ? promptTokens : undefined, server.reasons)
     }
     return new Response('not found', { status: 404 })
   }) as typeof fetch
@@ -149,18 +175,23 @@ async function run(input: {
       tools: [],
       max_tokens: input.maxTokens ?? 32_000,
       ...(input.temperature !== undefined && { temperature: input.temperature }),
+      ...(input.thinking !== undefined && { thinking: input.thinking }),
       signal: new AbortController().signal,
       providerHint: input.providerHint,
     })
     for await (const event of stream) events.push(event)
-    const text = events
+    const deltas = (kind: string) => events
       .map(event => {
         if (event.type !== 'content_block_delta') return ''
-        const delta = event.delta
-        return delta?.type === 'text_delta' ? delta.text : ''
+        const delta = event.delta as { type?: string; text?: string; thinking?: string }
+        if (delta?.type !== kind) return ''
+        return (kind === 'text_delta' ? delta.text : delta.thinking) ?? ''
       })
       .join('')
-    return { sent, text }
+    // The kinds of content blocks, in order.
+    const blocks = events.flatMap(event =>
+      event.type === 'content_block_start' ? [String((event.content_block as { type?: unknown }).type)] : [])
+    return { sent, text: deltas('text_delta'), thinking: deltas('thinking_delta'), blocks }
   } finally {
     globalThis.fetch = oldFetch
   }
@@ -368,7 +399,70 @@ describe('Ollama, a model on this machine', () => {
   })
 })
 
+describe('Ollama thinking', () => {
+  const thinks = { model_info: { 'qwen3.context_length': 40_960 }, capabilities: ['completion', 'tools', 'thinking'] }
+  const noThinking = { model_info: { 'llama.context_length': 131_072 }, capabilities: ['completion', 'tools'] }
+
+  test('by default no think field is sent and nothing extra is asked: the model keeps its own default', async () => {
+    const { sent } = await run({ providerHint: 'ollama', model: 'qwen3:4b', server: { show: thinks } })
+    expect('think' in chats(sent)[0]!.body).toBe(false)
+    expect(sent.some(entry => entry.url.endsWith('/api/show'))).toBe(false)
+  })
+
+  test('/thinking on sends think: true to a model that lists thinking, and nothing to one that does not', async () => {
+    const on = { type: 'enabled' } as const
+    const capable = await run({ providerHint: 'ollama', model: 'qwen3:4b', thinking: on, server: { show: thinks } })
+    expect(chats(capable.sent)[0]!.body.think).toBe(true)
+    const other = await run({ providerHint: 'ollama', model: 'llama3.1:8b', thinking: on, server: { show: noThinking } })
+    expect('think' in chats(other.sent)[0]!.body).toBe(false)
+  })
+
+  test('TAU_LOCAL_THINKING decides, whatever /thinking says: off, or a level', async () => {
+    process.env.TAU_LOCAL_THINKING = 'off'
+    const off = await run({ providerHint: 'ollama', model: 'qwen3:4b', thinking: { type: 'enabled' }, server: { show: thinks } })
+    expect(chats(off.sent)[0]!.body.think).toBe(false)
+    process.env.TAU_LOCAL_THINKING = 'low'
+    const low = await run({ providerHint: 'ollama', model: 'gpt-oss:20b', server: { show: thinks } })
+    expect(chats(low.sent)[0]!.body.think).toBe('low')
+  })
+
+  test('a server that refuses think gets the request again without it, and the model never gets it again', async () => {
+    const server = { show: thinks, refusesThink: true }
+    const first = await run({ providerHint: 'ollama', model: 'qwen3:4b', thinking: { type: 'enabled' }, server })
+    expect(first.text).toBe('ok')
+    expect(chats(first.sent).map(chat => chat.body.think)).toEqual([true, undefined])
+    const second = await run({ providerHint: 'ollama', model: 'qwen3:4b', thinking: { type: 'enabled' }, server })
+    expect(chats(second.sent).map(chat => 'think' in chat.body)).toEqual([false])
+  })
+
+  test("the thinking a model streams is shown as thinking, ahead of the answer", async () => {
+    const { thinking, text, blocks } = await run({ providerHint: 'ollama', model: 'qwen3:4b', server: { thinks: 'Adding 17 and 25.' } })
+    expect(thinking).toBe('Adding 17 and 25.')
+    expect(text).toBe('ok')
+    expect(blocks).toEqual(['thinking', 'text'])
+  })
+})
+
 describe("Ollama's cloud models keep the request Tau has always sent", () => {
+  test('no think field and no thinking shown, even with /thinking on', async () => {
+    const show = { capabilities: ['completion', 'tools', 'thinking'] }
+    const { sent, thinking, blocks } = await run({
+      providerHint: 'ollama',
+      model: 'glm-5.1:cloud',
+      thinking: { type: 'enabled' },
+      server: { show, thinks: 'cloud reasoning' },
+    })
+    expect('think' in chats(sent)[0]!.body).toBe(false)
+    expect(thinking).toBe('')
+    expect(blocks).toEqual(['text'])
+  })
+
+  test('TAU_LOCAL_THINKING does not reach a cloud model', async () => {
+    process.env.TAU_LOCAL_THINKING = 'off'
+    const { sent } = await run({ providerHint: 'ollama', model: 'glm-5.1:cloud', server: { show: { capabilities: ['thinking'] } } })
+    expect('think' in chats(sent)[0]!.body).toBe(false)
+  })
+
   test('16K context, the full answer limit, Tau temperature, no truncate field, no /api/show, no GPU check', async () => {
     const server = { loadedAt: 16_384, gpuShare: { size: 4_000_000_000, sizeVram: 1_000_000_000 } }
     const { sent } = await run({ providerHint: 'ollama', model: 'glm-5.1:cloud', system: 'x '.repeat(40_000), server })
@@ -458,6 +552,83 @@ describe('LM Studio', () => {
   })
 })
 
+describe('thinking on LM Studio and other local servers', () => {
+  const lmStudioModel = (reasoning?: Record<string, unknown>) => [{
+    type: 'llm',
+    key: 'local-model',
+    display_name: 'Local Model',
+    max_context_length: 131_072,
+    loaded_instances: [{ id: 'local-model', config: { context_length: 32_768 } }],
+    ...(reasoning && { capabilities: { reasoning } }),
+  }]
+  const onByDefault = lmStudioModel({ allowed_options: ['off', 'on'], default: 'on' })
+  const offByDefault = lmStudioModel({ allowed_options: ['off', 'on'], default: 'off' })
+  const thinkingFieldsOf = (body: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(body).filter(([key]) => key === 'reasoning_effort' || key === 'chat_template_kwargs'))
+
+  test('LM Studio: nothing extra by default, and its reasoning is shown as thinking', async () => {
+    const { sent, thinking, text, blocks } = await run({
+      providerHint: 'lmstudio', model: 'local-model', server: { lmStudioModels: onByDefault, reasons: 'Adding 17 and 25.' },
+    })
+    expect(thinkingFieldsOf(chats(sent)[0]!.body)).toEqual({})
+    expect(thinking).toBe('Adding 17 and 25.')
+    expect(text).toBe('ok')
+    expect(blocks).toEqual(['thinking', 'text'])
+  })
+
+  test('LM Studio: TAU_LOCAL_THINKING=off sends reasoning_effort none, which LM Studio reads as thinking off', async () => {
+    process.env.TAU_LOCAL_THINKING = 'off'
+    const { sent } = await run({ providerHint: 'lmstudio', model: 'local-model', server: { lmStudioModels: onByDefault } })
+    expect(thinkingFieldsOf(chats(sent)[0]!.body)).toEqual({ reasoning_effort: 'none' })
+  })
+
+  test('LM Studio: /thinking on turns on a model whose thinking starts off, and leaves one that thinks alone', async () => {
+    const on = { type: 'enabled' } as const
+    const startsOff = await run({ providerHint: 'lmstudio', model: 'local-model', thinking: on, server: { lmStudioModels: offByDefault } })
+    expect(thinkingFieldsOf(chats(startsOff.sent)[0]!.body)).toEqual({ reasoning_effort: 'medium' })
+    const thinksAlready = await run({ providerHint: 'lmstudio', model: 'local-model', thinking: on, server: { lmStudioModels: onByDefault } })
+    expect(thinkingFieldsOf(chats(thinksAlready.sent)[0]!.body)).toEqual({})
+  })
+
+  test('LM Studio: a model with no thinking options gets nothing, whatever is asked', async () => {
+    process.env.TAU_LOCAL_THINKING = 'off'
+    const { sent } = await run({ providerHint: 'lmstudio', model: 'local-model', thinking: { type: 'enabled' }, server: { lmStudioModels: lmStudioModel() } })
+    expect(thinkingFieldsOf(chats(sent)[0]!.body)).toEqual({})
+  })
+
+  test('a server behind the LM Studio provider (no LM Studio listing) gets the fields such servers take, only when asked', async () => {
+    const plain = await run({ providerHint: 'lmstudio', model: 'other-server-model' })
+    expect(thinkingFieldsOf(chats(plain.sent)[0]!.body)).toEqual({})
+    const on = await run({ providerHint: 'lmstudio', model: 'other-server-model', thinking: { type: 'enabled' } })
+    expect(thinkingFieldsOf(chats(on.sent)[0]!.body)).toEqual({ chat_template_kwargs: { enable_thinking: true } })
+    process.env.TAU_LOCAL_THINKING = 'off'
+    const off = await run({ providerHint: 'lmstudio', model: 'other-server-model' })
+    expect(thinkingFieldsOf(chats(off.sent)[0]!.body)).toEqual({ chat_template_kwargs: { enable_thinking: false } })
+    process.env.TAU_LOCAL_THINKING = 'high'
+    const high = await run({ providerHint: 'lmstudio', model: 'other-server-model' })
+    expect(thinkingFieldsOf(chats(high.sent)[0]!.body)).toEqual({ reasoning_effort: 'high' })
+  })
+
+  test('another server on this machine gets the same; one that refuses the fields gets the request again without them, and never again', async () => {
+    process.env.TAU_LOCAL_THINKING = 'on'
+    const plain = await run({ providerHint: 'generic', model: 'my-model' })
+    expect(thinkingFieldsOf(chats(plain.sent)[0]!.body)).toEqual({ chat_template_kwargs: { enable_thinking: true } })
+    const first = await run({ providerHint: 'generic', model: 'strict-model', server: { refusesThinkingFields: true } })
+    expect(first.text).toBe('ok')
+    expect(chats(first.sent).map(chat => 'chat_template_kwargs' in chat.body)).toEqual([true, false])
+    const second = await run({ providerHint: 'generic', model: 'strict-model', server: { refusesThinkingFields: true } })
+    expect(chats(second.sent).map(chat => 'chat_template_kwargs' in chat.body)).toEqual([false])
+  })
+
+  test('a server that is not on this machine gets nothing, whatever TAU_LOCAL_THINKING says', async () => {
+    const before = await run({ providerHint: 'generic', model: 'my-model', genericUrl: 'https://llm.example.test/v1' })
+    process.env.TAU_LOCAL_THINKING = 'off'
+    const after = await run({ providerHint: 'generic', model: 'my-model', genericUrl: 'https://llm.example.test/v1' })
+    expect(chats(after.sent)[0]!.body).toEqual(chats(before.sent)[0]!.body)
+    expect(thinkingFieldsOf(chats(after.sent)[0]!.body)).toEqual({})
+  })
+})
+
 describe('a hosted provider on the same lane is untouched', () => {
   test('DeepSeek keeps its temperature and limit and gets no local fields, whatever the local settings say', async () => {
     process.env.TAU_LOCAL_TEMPERATURE = '0.2'
@@ -471,5 +642,12 @@ describe('a hosted provider on the same lane is untouched', () => {
     expect('top_p' in body).toBe(false)
     expect('truncate' in body).toBe(false)
     expect(sent.some(entry => entry.url.includes('/api/'))).toBe(false)
+  })
+
+  test('DeepSeek gets the same request whatever TAU_LOCAL_THINKING says', async () => {
+    const before = await run({ providerHint: 'deepseek', model: 'deepseek-chat', thinking: { type: 'enabled' } })
+    process.env.TAU_LOCAL_THINKING = 'off'
+    const after = await run({ providerHint: 'deepseek', model: 'deepseek-chat', thinking: { type: 'enabled' } })
+    expect(chats(after.sent)[0]!.body).toEqual(chats(before.sent)[0]!.body)
   })
 })

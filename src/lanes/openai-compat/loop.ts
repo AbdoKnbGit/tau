@@ -45,6 +45,20 @@ import {
   capLocalOutputTokens,
   checkOllamaGpuFit,
   chooseOllamaNumCtx,
+  chooseOllamaThink,
+  isLocalThinkingFieldRefusal,
+  isThinkRefusal,
+  lmStudioReasoningEffort,
+  localServerRefusesThinkingFields,
+  localThinkingSetting,
+  localThinkingWanted,
+  ollamaModelCapabilities,
+  ollamaRefusesThink,
+  otherLocalThinkingFields,
+  rememberLocalServerRefusesThinkingFields,
+  rememberOllamaRefusesThink,
+  type LmStudioReasoning,
+  type LocalThinking,
   fitLocalOutputTokens,
   growOllamaNumCtx,
   isLocalModelRequest,
@@ -308,7 +322,10 @@ interface OpenAIChatRequest {
   top_k?: number
   stop?: string[]
   // Reasoning knobs — provider-specific. Passed through when supported.
-  reasoning_effort?: 'low' | 'medium' | 'high'
+  // `none` only for a local server asked not to think (local_model_settings.ts).
+  reasoning_effort?: 'none' | 'low' | 'medium' | 'high'
+  // Local servers only: how llama.cpp, vLLM and the like switch thinking.
+  chat_template_kwargs?: { enable_thinking: boolean }
   reasoning?: { effort?: string }
   thinking?: { type: 'enabled' } | { type: 'disabled' }
   extra_body?: Record<string, unknown>
@@ -382,6 +399,8 @@ interface LmStudioNativeModel {
   capabilities?: {
     trained_for_tool_use?: boolean
     vision?: boolean
+    /** The thinking options a model takes, e.g. { allowed_options: ['off', 'on'], default: 'on' }. */
+    reasoning?: { allowed_options?: unknown[]; default?: unknown }
   }
 }
 
@@ -389,6 +408,7 @@ type LmStudioModelInfo = ModelInfo & {
   lmStudioAliases?: string[]
   lmStudioLoadedContextWindow?: number
   lmStudioMaxContextWindow?: number
+  lmStudioReasoning?: LmStudioReasoning
 }
 
 // ─── Lane Implementation ─────────────────────────────────────────
@@ -772,7 +792,7 @@ export class OpenAICompatLane implements Lane {
     // turn — that was the latency cancer). Other providers stay on /v1
     // unchanged.
     if (provider === 'ollama') {
-      const ollamaUsage = yield* streamOllamaNative(cfg, body, model, signal, isLocalRequest)
+      const ollamaUsage = yield* streamOllamaNative(cfg, body, model, signal, isLocalRequest, !!thinking && thinking.type !== 'disabled')
       return ollamaUsage
     }
 
@@ -854,8 +874,9 @@ export class OpenAICompatLane implements Lane {
     // LM Studio's estimate of this request, kept for calibration once LM Studio
     // reports its exact count.
     let lmStudioEstimate = 0
+    let lmStudioInfo: LmStudioModelInfo | null = null
     if (provider === 'lmstudio') {
-      const lmStudioInfo = await getLmStudioModelInfo(cfg, model).catch(() => null)
+      lmStudioInfo = await getLmStudioModelInfo(cfg, model).catch(() => null)
       // Auto compaction plans for the context LM Studio loaded the model with,
       // around the part it cannot shrink (localModelContext.ts).
       noteLocalLoadedContext(model, lmStudioInfo?.lmStudioLoadedContextWindow)
@@ -878,6 +899,23 @@ export class OpenAICompatLane implements Lane {
         lmStudioInfo?.lmStudioLoadedContextWindow,
         localTokenEstimate(model, lmStudioEstimate),
       )
+    }
+
+    // Thinking on a local OpenAI-compatible server (local_model_settings.ts),
+    // for what TAU_LOCAL_THINKING or Tau's /thinking asks. LM Studio lists
+    // each model's thinking options, and Tau stays within them; any other
+    // server (llama.cpp, vLLM, Jan: no LM Studio listing) gets the fields
+    // such servers take. Nothing is added unless thinking was asked for.
+    let thinkingFields: Record<string, unknown> | undefined
+    if (isLocalRequest && !localServerRefusesThinkingFields(cfg.baseUrl, model)) {
+      const wanted = localThinkingWanted(localThinkingSetting(), !!thinking && thinking.type !== 'disabled')
+      if (lmStudioInfo) {
+        const effort = lmStudioReasoningEffort(wanted, lmStudioInfo.lmStudioReasoning)
+        thinkingFields = effort === undefined ? undefined : { reasoning_effort: effort }
+      } else {
+        thinkingFields = otherLocalThinkingFields(wanted)
+      }
+      if (thinkingFields) Object.assign(body, thinkingFields)
     }
 
     let response!: Response
@@ -930,6 +968,17 @@ export class OpenAICompatLane implements Lane {
         // Re-stamp the tool-prefix cache breakpoint the transformer placed on
         // the original array; losing it would cold-start the upstream cache.
         if (stamped && lastTool) lastTool.cache_control = stamped
+        continue
+      }
+      // A local server that refuses a thinking field Tau added: resend without
+      // them, and leave them out for it from now on.
+      if (
+        thinkingFields
+        && isLocalThinkingFieldRefusal(response.status, errText)
+      ) {
+        rememberLocalServerRefusesThinkingFields(cfg.baseUrl, model)
+        for (const key of Object.keys(thinkingFields)) delete (body as unknown as Record<string, unknown>)[key]
+        thinkingFields = undefined
         continue
       }
       // A server behind the LM Studio provider that does not take
@@ -3093,6 +3142,14 @@ function toLmStudioNativeModelInfo(model: LmStudioNativeModel): LmStudioModelInf
     ...(contextWindow ? { contextWindow } : {}),
     ...(loadedContextWindow ? { lmStudioLoadedContextWindow: loadedContextWindow } : {}),
     ...(model.max_context_length ? { lmStudioMaxContextWindow: model.max_context_length } : {}),
+    ...(Array.isArray(model.capabilities?.reasoning?.allowed_options)
+      ? {
+        lmStudioReasoning: {
+          allowed: model.capabilities.reasoning.allowed_options.filter((option): option is string => typeof option === 'string'),
+          ...(typeof model.capabilities.reasoning.default === 'string' && { default: model.capabilities.reasoning.default }),
+        },
+      }
+      : {}),
     ...(typeof model.capabilities?.trained_for_tool_use === 'boolean'
       ? { supportsToolCalling: model.capabilities.trained_for_tool_use }
       : {}),
@@ -3488,6 +3545,8 @@ async function* streamOllamaNative(
   model: string,
   signal: AbortSignal | undefined,
   local: boolean,
+  /** Tau's /thinking switch. */
+  thinkingOn = false,
 ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
   const root = normalizeBaseUrl(cfg.baseUrl).replace(/\/v1$/i, '')
   const url = `${root}/api/chat`
@@ -3533,6 +3592,18 @@ async function* streamOllamaNative(
   const numPredict = local
     ? fitLocalOutputTokens(body.max_tokens, numCtx, promptTokens)
     : body.max_tokens
+  // `think` goes only where thinking was asked for (Tau's /thinking or
+  // TAU_LOCAL_THINKING), to a model that lists `thinking`; otherwise the
+  // request is what it always was (local_model_settings.ts).
+  const thinkSetting = local ? localThinkingSetting() : undefined
+  let sendThink: LocalThinking | undefined =
+    local && (thinkSetting !== undefined || thinkingOn) && !ollamaRefusesThink(root, body.model)
+      ? chooseOllamaThink({
+        setting: thinkSetting,
+        tauThinkingOn: thinkingOn,
+        capabilities: await ollamaModelCapabilities(root, body.model, cfg.apiKey),
+      })
+      : undefined
 
   const buildOllamaBody = (contextTokens: number, answerTokens: number | undefined): Record<string, unknown> => {
     const ollamaBody: Record<string, unknown> = {
@@ -3541,6 +3612,7 @@ async function* streamOllamaNative(
       stream: true,
       keep_alive: ollamaKeepAlive(),
       ...(local && ollamaTruncateFields()),
+      ...(sendThink !== undefined && { think: sendThink }),
       options: {
         num_ctx: contextTokens,
         ...(answerTokens != null && { num_predict: answerTokens }),
@@ -3608,6 +3680,15 @@ async function* streamOllamaNative(
 
   let response = await send(buildOllamaBody(numCtx, numPredict))
   let errText = response.ok ? '' : await response.text().catch(() => '')
+
+  // A server that will not take `think` for this model: resend without it,
+  // and leave it out for the model from now on.
+  if (!response.ok && sendThink !== undefined && isThinkRefusal(response.status, errText)) {
+    rememberOllamaRefusesThink(root, body.model)
+    sendThink = undefined
+    response = await send(buildOllamaBody(numCtx, numPredict))
+    errText = response.ok ? '' : await response.text().catch(() => '')
+  }
 
   // Too long for the context: Ollama counted the request exactly, so `auto`
   // grows to fit it and tries once more, before anything has streamed.
@@ -3688,10 +3769,34 @@ async function* streamOllamaNative(
 
         const hasContent = typeof message.content === 'string' && message.content.length > 0
         const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+        // A thinking model on this machine streams its reasoning apart from
+        // the answer; it is shown as thinking and never sent back to Ollama.
+        const hasThinking = local && typeof message.thinking === 'string' && message.thinking.length > 0
 
-        if (!messageStartEmitted && (hasContent || hasToolCalls)) {
+        if (!messageStartEmitted && (hasContent || hasToolCalls || hasThinking)) {
           const mst = emitMessageStart()
           if (mst) yield mst
+        }
+
+        if (hasThinking) {
+          if (inTextBlock) {
+            yield { type: 'content_block_stop', index: currentBlockIndex }
+            currentBlockIndex++
+            inTextBlock = false
+          }
+          if (!inThinkingBlock) {
+            yield {
+              type: 'content_block_start',
+              index: currentBlockIndex,
+              content_block: { type: 'thinking', thinking: '' },
+            }
+            inThinkingBlock = true
+          }
+          yield {
+            type: 'content_block_delta',
+            index: currentBlockIndex,
+            delta: { type: 'thinking_delta', thinking: message.thinking },
+          }
         }
 
         if (hasContent) {

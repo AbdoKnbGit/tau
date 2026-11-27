@@ -21,6 +21,8 @@
  *   TAU_LOCAL_TEMPERATURE       sampling. Unset keeps the model's own settings
  *   TAU_LOCAL_TOP_P               (its Ollama Modelfile, its LM Studio preset)
  *   TAU_LOCAL_TOP_K
+ *   TAU_LOCAL_THINKING          thinking on any local server: off, on, low,
+ *                               medium, high. Unset follows Tau's /thinking
  */
 
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -424,33 +426,32 @@ function ollamaHeaders(apiKey: string): Record<string, string> {
   return headers
 }
 
-// A model's own context limit, from Ollama's /api/show, per server and model.
-const modelLimits = new Map<string, Promise<number | undefined>>()
+/** What Ollama's /api/show says about a model. */
+type OllamaModelFacts = {
+  /** The context length it was trained for. */
+  contextLength?: number
+  /** What it can do (`completion`, `tools`, `thinking`...); undefined on an older Ollama. */
+  capabilities?: readonly string[]
+}
+
+// /api/show answers, per server and model.
+const modelFacts = new Map<string, Promise<OllamaModelFacts>>()
 
 /**
- * The model's trained context length, which `auto` never goes past. One
- * /api/show request per model per process; a server that cannot answer just
- * leaves no limit.
+ * One /api/show request per model per process; a server that cannot answer
+ * leaves nothing known and is asked again on the next request.
  */
-export function ollamaModelContextLength(
-  serverRoot: string,
-  model: string,
-  apiKey: string,
-): Promise<number | undefined> {
+function ollamaModelFacts(serverRoot: string, model: string, apiKey: string): Promise<OllamaModelFacts> {
   const key = ollamaContextKey(serverRoot, model)
-  let pending = modelLimits.get(key)
+  let pending = modelFacts.get(key)
   if (!pending) {
-    pending = fetchOllamaModelContextLength(serverRoot, model, apiKey)
-    modelLimits.set(key, pending)
+    pending = fetchOllamaModelFacts(serverRoot, model, apiKey)
+    modelFacts.set(key, pending)
   }
   return pending
 }
 
-async function fetchOllamaModelContextLength(
-  serverRoot: string,
-  model: string,
-  apiKey: string,
-): Promise<number | undefined> {
+async function fetchOllamaModelFacts(serverRoot: string, model: string, apiKey: string): Promise<OllamaModelFacts> {
   try {
     const response = await fetch(`${serverRoot}/api/show`, {
       method: 'POST',
@@ -458,25 +459,167 @@ async function fetchOllamaModelContextLength(
       body: JSON.stringify({ model }),
       signal: AbortSignal.timeout(3_000),
     })
-    if (!response.ok) return undefined
-    const info = await response.json() as { model_info?: Record<string, unknown> }
+    if (!response.ok) return {}
+    const info = await response.json() as { model_info?: Record<string, unknown>; capabilities?: unknown }
+    let contextLength: number | undefined
     for (const [name, value] of Object.entries(info.model_info ?? {})) {
-      if (name.endsWith('.context_length') && typeof value === 'number' && value > 0) return value
+      if (name.endsWith('.context_length') && typeof value === 'number' && value > 0) {
+        contextLength = value
+        break
+      }
     }
-    return undefined
+    const capabilities = Array.isArray(info.capabilities)
+      ? info.capabilities.filter((item): item is string => typeof item === 'string')
+      : undefined
+    return { contextLength, capabilities }
   } catch {
     // Unreachable or slow: try again on the next request.
-    modelLimits.delete(ollamaContextKey(serverRoot, model))
-    return undefined
+    modelFacts.delete(ollamaContextKey(serverRoot, model))
+    return {}
   }
+}
+
+/** The model's trained context length, which `auto` never goes past. */
+export async function ollamaModelContextLength(
+  serverRoot: string,
+  model: string,
+  apiKey: string,
+): Promise<number | undefined> {
+  return (await ollamaModelFacts(serverRoot, model, apiKey)).contextLength
+}
+
+/** What the model can do, as Ollama lists it; undefined on an older Ollama. */
+export async function ollamaModelCapabilities(
+  serverRoot: string,
+  model: string,
+  apiKey: string,
+): Promise<readonly string[] | undefined> {
+  return (await ollamaModelFacts(serverRoot, model, apiKey)).capabilities
+}
+
+// ─── Thinking ──────────────────────────────────────────────────────
+
+/** Thinking asked for on a local model: off, on, or a level. */
+export type LocalThinking = boolean | 'low' | 'medium' | 'high'
+
+/**
+ * TAU_LOCAL_THINKING: `off` asks a thinking model not to think, `on` to
+ * think, `low` / `medium` / `high` for a model that takes a level. Unset
+ * leaves it to Tau's /thinking switch. It applies to every local server.
+ */
+export function localThinkingSetting(): LocalThinking | undefined {
+  const text = envText('TAU_LOCAL_THINKING')?.toLowerCase()
+  if (text === undefined) return undefined
+  if (text === 'off' || text === 'false' || text === '0') return false
+  if (text === 'on' || text === 'true' || text === '1') return true
+  return text === 'low' || text === 'medium' || text === 'high' ? text : undefined
+}
+
+/**
+ * What was asked for: TAU_LOCAL_THINKING, else thinking when Tau's /thinking
+ * is on. Undefined sends nothing, so each model keeps its own default: some
+ * models think whatever they are told, and told not to they put their
+ * reasoning into the answer instead.
+ */
+export function localThinkingWanted(setting: LocalThinking | undefined, tauThinkingOn: boolean): LocalThinking | undefined {
+  return setting ?? (tauThinkingOn ? true : undefined)
+}
+
+/**
+ * The `think` field for an Ollama request, or undefined to send none. Only a
+ * model whose capabilities list `thinking` gets it; Ollama refuses it for any
+ * other.
+ */
+export function chooseOllamaThink(input: {
+  setting: LocalThinking | undefined
+  tauThinkingOn: boolean
+  capabilities: readonly string[] | undefined
+}): LocalThinking | undefined {
+  const wanted = localThinkingWanted(input.setting, input.tauThinkingOn)
+  if (wanted === undefined || !input.capabilities?.includes('thinking')) return undefined
+  return wanted
+}
+
+/** A model's thinking options as LM Studio lists them (`capabilities.reasoning`). */
+export type LmStudioReasoning = { allowed: readonly string[]; default?: string }
+
+/**
+ * LM Studio's `reasoning_effort` for what was asked, within the options LM
+ * Studio lists for the model. `none` turns thinking off, only where `off` is
+ * allowed; a level goes where that level is allowed; an on/off model asked
+ * to think gets `medium`, and only when its default is off. Undefined sends
+ * nothing: nothing asked, a model with no thinking options, or nothing it
+ * allows.
+ */
+export function lmStudioReasoningEffort(
+  wanted: LocalThinking | undefined,
+  reasoning: LmStudioReasoning | undefined,
+): 'none' | 'low' | 'medium' | 'high' | undefined {
+  if (wanted === undefined || !reasoning) return undefined
+  const allowed = new Set(reasoning.allowed)
+  if (wanted === false) return allowed.has('off') ? 'none' : undefined
+  if (typeof wanted === 'string' && allowed.has(wanted)) return wanted
+  if (allowed.has('on')) return reasoning.default === 'off' ? 'medium' : undefined
+  return undefined
+}
+
+/**
+ * Thinking fields for any other local server (llama.cpp, vLLM and the rest,
+ * which list no thinking options), for what was asked. These servers switch a
+ * model's thinking with `chat_template_kwargs.enable_thinking`, which a model
+ * whose template has no such switch ignores; a level goes as
+ * `reasoning_effort`. Nothing asked sends nothing.
+ */
+export function otherLocalThinkingFields(
+  wanted: LocalThinking | undefined,
+): { chat_template_kwargs: { enable_thinking: boolean } } | { reasoning_effort: 'low' | 'medium' | 'high' } | undefined {
+  if (wanted === undefined) return undefined
+  return typeof wanted === 'boolean'
+    ? { chat_template_kwargs: { enable_thinking: wanted } }
+    : { reasoning_effort: wanted }
+}
+
+// Local OpenAI-compatible servers that refused a thinking field, per server
+// and model; Tau leaves the fields out for them from then on.
+const refusesThinkingFields = new Set<string>()
+
+/** An error about a thinking field Tau added for a local server. */
+export function isLocalThinkingFieldRefusal(status: number, text: string): boolean {
+  return (status === 400 || status === 422) && /reasoning_effort|chat_template_kwargs|enable_thinking/i.test(text)
+}
+
+export function localServerRefusesThinkingFields(baseUrl: string, model: string): boolean {
+  return refusesThinkingFields.has(`${baseUrl}\n${model}`)
+}
+
+export function rememberLocalServerRefusesThinkingFields(baseUrl: string, model: string): void {
+  refusesThinkingFields.add(`${baseUrl}\n${model}`)
+}
+
+// Models whose server refused the `think` field, per server and model.
+const refusesThink = new Set<string>()
+
+/** An Ollama error about the `think` field ("does not support thinking"...). */
+export function isThinkRefusal(status: number, text: string): boolean {
+  return status === 400 && /\bthink(ing)?\b/i.test(text)
+}
+
+export function ollamaRefusesThink(serverRoot: string, model: string): boolean {
+  return refusesThink.has(ollamaContextKey(serverRoot, model))
+}
+
+export function rememberOllamaRefusesThink(serverRoot: string, model: string): void {
+  refusesThink.add(ollamaContextKey(serverRoot, model))
 }
 
 /** Test seam: forget every context chosen, asked about and recorded in this process. */
 export function resetLocalModelSettingsForTests(): void {
   chosenContexts.clear()
-  modelLimits.clear()
+  modelFacts.clear()
   ownContexts.clear()
   refusesStreamOptions.clear()
+  refusesThink.clear()
+  refusesThinkingFields.clear()
   gpuFitChecks.clear()
   resetLocalModelContextForTests()
 }
