@@ -12,7 +12,7 @@
 
 ## What is Tau?
 
-Tau is an adaptive coding harness that is simple to use. It costs less to run, gives you higher quality output, and lets you follow what the agent is doing with better monitoring and visuals. You don't have to go hunting for tools and plugins, because Tau brings the ecosystem to you: prebuilt integrations that cover most of your use cases, ready from the first run. Getting started is plug and play. Install it, type `/login`, pick a provider, and start working. Tau has native adapters for 30 providers, so it talks to each provider API directly with no proxy in between. The full list is in [PROVIDERS.md](PROVIDERS.md).
+Tau is an adaptive coding harness that is simple to use. It costs less to run, gives you higher quality output, and lets you follow what the agent is doing with better monitoring and visuals. You don't have to go hunting for tools and plugins, because Tau brings the ecosystem to you: prebuilt integrations that cover most of your use cases, ready from the first run. Getting started is plug and play. Install it, type `/login`, pick a provider, and start working. Tau has native adapters for 31 providers, so it talks to each provider API directly with no proxy in between. The full list is in [PROVIDERS.md](PROVIDERS.md).
 
 ---
 
@@ -66,7 +66,7 @@ See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 
 ## Supported Providers
 
-30 providers with native adapters. See the full list and per-provider notes in **[PROVIDERS.md](PROVIDERS.md)**.
+31 providers with native adapters. See the full list and per-provider notes in **[PROVIDERS.md](PROVIDERS.md)**.
 
 ---
 
@@ -74,7 +74,7 @@ See the full command list and usage notes in **[COMMANDS.md](COMMANDS.md)**.
 
 ### Multi-provider, natively
 
-30 providers with native adapters. Not a routing layer, not a translation proxy. Each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
+31 providers with native adapters. Not a routing layer, not a translation proxy. Each provider speaks its own API through its own adapter. Full streaming, rate-limit handling, and automatic tool-schema sanitization per provider.
 
 ### The full agent loop
 

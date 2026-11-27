@@ -95,6 +95,11 @@ const PROVIDER_META: Partial<Record<APIProvider, ProviderMeta>> = {
     getKeyUrl: 'https://app.requesty.ai/api-keys',
     supportsOAuth: false,
   },
+  llmtr: {
+    envVar: 'LLMTR_API_KEY',
+    getKeyUrl: 'https://llmtr.com/dashboard/keys',
+    supportsOAuth: false,
+  },
   opencode: {
     envVar: 'OPENCODE_API_KEY',
     getKeyUrl: 'https://opencode.ai/auth',
@@ -335,6 +340,10 @@ async function _testApiKey(
         url = 'https://router.requesty.ai/v1/models'
         headers = { Authorization: `Bearer ${key}` }
         break
+      case 'llmtr':
+        url = 'https://llmtr.com/v1/models'
+        headers = { Authorization: `Bearer ${key}` }
+        break
       case 'opencode':
         url = 'https://opencode.ai/zen/v1/models'
         headers = { Authorization: `Bearer ${key}` }
@@ -460,6 +469,7 @@ function reloadSavedApiKeyInRuntime(provider: APIProvider): void {
     provider === 'modelrouter' ||
     provider === 'vercel' ||
     provider === 'requesty' ||
+    provider === 'llmtr' ||
     provider === 'opencode' ||
     provider === 'opencodego' ||
     provider === 'lxd' ||

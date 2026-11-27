@@ -1795,6 +1795,7 @@ export const PROVIDER_AUTH_SUPPORT: Record<string, ProviderAuthMethod[]> = {
   modelrouter: ['api_key'],
   vercel:      ['api_key'],
   requesty:    ['api_key'],
+  llmtr:       ['api_key'],
   opencode:    ['api_key'],
   opencodego:  ['api_key'],
   commandcode: ['api_key'],
@@ -1890,6 +1891,7 @@ function _getApiKeyDirect(provider: APIProvider): string | null {
     case 'modelrouter': return process.env.MODEL_ROUTER_API_KEY ?? process.env.MODELROUTER_API_KEY ?? process.env.LXG2IT_API_KEY ?? _loadStoredKey('modelrouter')
     case 'vercel':      return process.env.AI_GATEWAY_API_KEY ?? process.env.VERCEL_AI_GATEWAY_API_KEY ?? process.env.VERCEL_OIDC_TOKEN ?? _loadStoredKey('vercel')
     case 'requesty':    return process.env.REQUESTY_API_KEY ?? _loadStoredKey('requesty')
+    case 'llmtr':       return process.env.LLMTR_API_KEY ?? _loadStoredKey('llmtr')
     case 'opencode':    return process.env.OPENCODE_API_KEY ?? process.env.OPENCODE_ZEN_API_KEY ?? _loadStoredKey('opencode') ?? loadOpenCodeApiKeyFromAuthFile()
     // Go shares the OpenCode credential with Zen — read the dedicated Go env
     // first, then fall back to the shared OpenCode key sources so one login
@@ -2012,6 +2014,7 @@ export function getProviderBaseUrl(provider: APIProvider): string {
     case 'modelrouter': return process.env.MODELROUTER_BASE_URL ?? process.env.MODEL_ROUTER_BASE_URL ?? process.env.LXG2IT_BASE_URL ?? 'https://api.lxg2it.com/v1'
     case 'vercel':      return process.env.VERCEL_AI_GATEWAY_BASE_URL ?? process.env.AI_GATEWAY_BASE_URL ?? 'https://ai-gateway.vercel.sh/v1'
     case 'requesty':    return process.env.REQUESTY_BASE_URL ?? 'https://router.requesty.ai/v1'
+    case 'llmtr':       return process.env.LLMTR_BASE_URL ?? 'https://llmtr.com/v1'
     case 'opencode':    return process.env.OPENCODE_BASE_URL ?? process.env.OPENCODE_ZEN_BASE_URL ?? 'https://opencode.ai/zen/v1'
     case 'opencodego':  return process.env.OPENCODE_GO_BASE_URL ?? 'https://opencode.ai/zen/go/v1'
     case 'commandcode': return normalizeCommandCodeBaseUrl(process.env.COMMANDCODE_BASE_URL ?? process.env.COMMAND_CODE_BASE_URL ?? process.env.CMD_BASE_URL ?? 'https://api.commandcode.ai/provider/v1')
@@ -2173,6 +2176,7 @@ function _getApiKeyEnvName(provider: APIProvider): string {
     case 'modelrouter': return 'MODEL_ROUTER_API_KEY or LXG2IT_API_KEY'
     case 'vercel':      return 'AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY'
     case 'requesty':    return 'REQUESTY_API_KEY'
+    case 'llmtr':       return 'LLMTR_API_KEY'
     case 'opencodego':  return 'OPENCODE_API_KEY'
     case 'commandcode': return 'CMD_API_KEY'
     case 'lxd':         return 'LXD_API_KEY'
@@ -2213,6 +2217,7 @@ function _validateKeyFormat(provider: APIProvider, key: string): { valid: boolea
     modelrouter: { minLen: 10 },
     vercel:      { minLen: 10 },
     requesty:    { minLen: 10 },
+    llmtr:       { minLen: 10 },
     commandcode: { minLen: 10 },
     lxd:         { minLen: 10 },
     mimo:        { minLen: 10 },

@@ -338,6 +338,7 @@ function _envVarName(provider: APIProvider): string {
     modelrouter: 'MODEL_ROUTER_API_KEY',
     vercel: 'AI_GATEWAY_API_KEY',
     requesty: 'REQUESTY_API_KEY',
+    llmtr: 'LLMTR_API_KEY',
     opencode: 'OPENCODE_API_KEY',
     opencodego: 'OPENCODE_API_KEY',
     commandcode: 'CMD_API_KEY',

@@ -1,6 +1,6 @@
 # Supported Providers
 
-Tau ships **30 selectable native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
+Tau ships **31 selectable native provider adapters**. Each speaks the provider's API directly: there's no routing proxy, no translation middleware, no shared bottleneck. Full streaming, rate-limit handling, and automatic tool-schema sanitization are wired per provider.
 
 | Provider | Notes |
 |---|---|
@@ -10,6 +10,7 @@ Tau ships **30 selectable native provider adapters**. Each speaks the provider's
 | OpenRouter | Would use this full-time if the bills didn't care |
 | Vercel AI Gateway | OpenAI-compatible AI Gateway with saved API-key login, live model browsing, automatic cache controls, and usage checks |
 | Requesty | OpenAI-compatible router with saved API-key login, live model browsing, automatic cache controls, and organization usage checks |
+| LLMTR | Prepaid OpenAI-compatible gateway at `https://llmtr.com/v1`, with saved API-key login, live model browsing, and `vendor/model` ids |
 | Command Code | 1 euro plan with a solid model pool for budget work, including Kimi 2.6, Qwen 3.7, and MiniMax 3 |
 | AgentRouter | Multi-provider router with native adapter and saved login |
 | Model Router | Hidden compatibility provider for lxg2it Model Router. Backend support remains wired, but it is not shown in the default provider/model pickers |

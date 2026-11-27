@@ -37,6 +37,7 @@ export function initOpenAICompatLane(providers?: {
   modelrouter?: { apiKey: string; baseUrl?: string }
   vercel?: { apiKey: string; baseUrl?: string }
   requesty?: { apiKey: string; baseUrl?: string }
+  llmtr?: { apiKey: string; baseUrl?: string }
   opencode?: { apiKey: string; baseUrl?: string }
   opencodego?: { apiKey: string; baseUrl?: string }
   lxd?: { apiKey: string; baseUrl?: string }
@@ -214,6 +215,16 @@ export function initOpenAICompatLane(providers?: {
       p.requesty?.baseUrl
         ?? process.env.REQUESTY_BASE_URL
         ?? 'https://router.requesty.ai/v1',
+    )
+  }
+
+  const llmtrKey = p.llmtr?.apiKey ?? process.env.LLMTR_API_KEY
+  if (llmtrKey) {
+    openaiCompatLane.registerProvider(
+      'llmtr', llmtrKey,
+      p.llmtr?.baseUrl
+        ?? process.env.LLMTR_BASE_URL
+        ?? 'https://llmtr.com/v1',
     )
   }
 

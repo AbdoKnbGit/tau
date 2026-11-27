@@ -14,7 +14,7 @@ export const ROUTES = {
   anthropic: { provider: 'firstParty', model: 'claude-sonnet-4-6' },
   agy: { provider: 'antigravity', model: 'gemini-3.8-flash-high' },
 }
-const KEY_PROVIDERS = ['openai', 'openrouter', 'agentrouter', 'vercel', 'requesty', 'opencode', 'opencodego', 'commandcode', 'lxd', 'mimo', 'fireworks', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'xai', 'meta']
+const KEY_PROVIDERS = ['openai', 'openrouter', 'agentrouter', 'vercel', 'requesty', 'llmtr', 'opencode', 'opencodego', 'commandcode', 'lxd', 'mimo', 'fireworks', 'mistral', 'nim', 'deepseek', 'glm', 'moonshot', 'minimax', 'alibaba', 'xai', 'meta']
 const OAUTH_PROVIDERS = ['cline', 'clinepass', 'copilot', 'kilocode', 'kiro', 'iflow']
 
 export function routeFor(name) {

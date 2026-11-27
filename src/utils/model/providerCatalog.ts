@@ -130,6 +130,7 @@ function normalizeProviderQueryToken(
     'ai-gateway': 'vercel',
     requestyai: 'requesty',
     'requesty-ai': 'requesty',
+    llmtr: 'llmtr',
     opencodezen: 'opencode',
     'opencode-zen': 'opencode',
     opencode_zen: 'opencode',
@@ -320,7 +321,7 @@ export async function loadProviderModels(
     // xAI lists newest first, as its catalog states release dates; so does Meta.
     return models
   }
-  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty' || provider === 'opencode' || provider === 'commandcode') {
+  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty' || provider === 'llmtr' || provider === 'opencode' || provider === 'commandcode') {
     return sortProviderModels(
       models.map(model => enrichUpstreamProviderModel(provider, model)),
     )
@@ -571,7 +572,7 @@ export async function loadProviderModelSections(
     return buildClinePassSections(models)
   }
 
-  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty' || provider === 'opencode' || provider === 'commandcode') {
+  if (provider === 'openrouter' || provider === 'nim' || provider === 'modelrouter' || provider === 'vercel' || provider === 'requesty' || provider === 'llmtr' || provider === 'opencode' || provider === 'commandcode') {
     return buildUpstreamProviderSections(provider, models)
   }
 
