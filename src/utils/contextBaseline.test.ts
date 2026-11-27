@@ -116,5 +116,15 @@ test('ignores measurements that are not a positive number', () => {
   assert(getContextBaselineRevision() === before, 'the revision does not move')
 })
 
+test("keeps a server's own count over a later estimate for the same model", () => {
+  setContextBaselineTokens('model-local', 15_800, { measured: true })
+  setContextBaselineTokens('model-local', 31_000)
+  assert(getContextBaselineTokens('model-local') === 15_800, 'the estimate does not replace the count')
+  setContextBaselineTokens('model-local', 16_400, { measured: true })
+  assert(getContextBaselineTokens('model-local') === 16_400, 'a newer count does')
+  setContextBaselineTokens('model-other', 31_000)
+  assert(getContextBaselineTokens('model-other') === 31_000, 'another model takes its estimate')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

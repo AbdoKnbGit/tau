@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { onLocalModelNotice, resetLocalModelNoticesForTests } from '../../utils/model/localModelNotices.js'
 import {
+  beginLocalPreload,
   capLocalOutputTokens,
   checkOllamaGpuFit,
   chooseOllamaNumCtx,
@@ -19,6 +20,10 @@ import {
   isOllamaCloudModel,
   isStreamOptionsRefusal,
   localAnswerRoom,
+  localConversationReached,
+  localPreloadKey,
+  noteLocalConversationRequest,
+  waitForLocalPreload,
   ollamaContextSetting,
   ollamaKeepAlive,
   ollamaCpuShareNotice,
@@ -329,6 +334,49 @@ describe('Ollama context', () => {
     expect(ollamaKeepAlive()).toBe('30m')
     process.env.OLLAMA_KEEP_ALIVE = '2h'
     expect(ollamaKeepAlive()).toBe('2h')
+  })
+})
+
+describe('preload coordination', () => {
+  const server = 'http://127.0.0.1:11434/v1'
+
+  test('a request waits for a preload of the same model on the same server, and only that one', async () => {
+    const key = localPreloadKey('ollama', server, 'model-a')
+    const finish = beginLocalPreload(key)
+    let waited = false
+    const waiting = waitForLocalPreload(key).then(() => { waited = true })
+    // Another model, or another server: nothing to wait for.
+    await waitForLocalPreload(localPreloadKey('ollama', server, 'model-b'))
+    await waitForLocalPreload(localPreloadKey('ollama', 'http://127.0.0.1:11435/v1', 'model-a'))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(waited).toBe(false)
+    finish()
+    await waiting
+    expect(waited).toBe(true)
+    // Ended: no wait.
+    await waitForLocalPreload(key)
+  })
+
+  test('an abort ends the wait', async () => {
+    const key = localPreloadKey('lmstudio', 'http://127.0.0.1:1234/v1', 'model-a')
+    beginLocalPreload(key)
+    const controller = new AbortController()
+    const waiting = waitForLocalPreload(key, controller.signal)
+    controller.abort()
+    await waiting
+    const aborted = new AbortController()
+    aborted.abort()
+    await waitForLocalPreload(key, aborted.signal)
+  })
+
+  test('the conversation reaching a model is remembered per server and model', () => {
+    const key = localPreloadKey('ollama', server, 'model-a')
+    expect(localConversationReached(key)).toBe(false)
+    noteLocalConversationRequest(key)
+    expect(localConversationReached(key)).toBe(true)
+    expect(localConversationReached(localPreloadKey('ollama', server, 'model-b'))).toBe(false)
+    resetLocalModelSettingsForTests()
+    expect(localConversationReached(key)).toBe(false)
   })
 })
 

@@ -61,6 +61,7 @@ import {
   stripSignatureBlocks,
 } from './utils/messages.js'
 import { getAPIProvider } from './utils/model/providers.js'
+import { isLocalPreloadSource } from './utils/model/localModelPreload.js'
 import { resolveEffectiveAPIProvider } from './services/api/providerRouting.js'
 import { isMidTurnNotification } from './utils/midTurnNotifications.js'
 import {
@@ -1345,6 +1346,11 @@ async function* queryLoop(
       logAntError('Query error', error)
       return { reason: 'model_error', error }
     }
+
+    // A local model preload only puts the prompt into the server's cache
+    // (utils/model/localModelPreload.ts): this one model call, nothing after
+    // it. No hooks, no tools, no recovery of its one-token answer.
+    if (isLocalPreloadSource(querySource)) return { reason: 'completed' }
 
     // Execute post-sampling hooks after model response is complete
     if (assistantMessages.length > 0) {

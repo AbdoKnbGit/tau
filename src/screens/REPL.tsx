@@ -276,6 +276,11 @@ import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoMode
 import { AUTO_MODE_DESCRIPTION } from 'src/components/AutoModeOptInDialog.js';
 import { useLspInitializationNotification } from 'src/hooks/notifs/useLspInitializationNotification.js';
 import { useLocalModelNotices } from 'src/hooks/notifs/useLocalModelNotices.js';
+import { useLocalModelPreload } from '../hooks/useLocalModelPreload.js';
+import { runForkedAgent } from '../utils/forkedAgent.js';
+import { LOCAL_PRELOAD_QUERY_SOURCE } from '../utils/model/localModelPreload.js';
+import { setContextBaselineTokens } from '../utils/contextBaseline.js';
+import { getRuntimeMainLoopModel } from '../utils/model/model.js';
 import { useLspPluginRecommendation } from 'src/hooks/useLspPluginRecommendation.js';
 import { LspRecommendationMenu } from 'src/components/LspRecommendation/LspRecommendationMenu.js';
 import { useClaudeCodeHintRecommendation } from 'src/hooks/useClaudeCodeHintRecommendation.js';
@@ -2891,6 +2896,82 @@ export function REPL({
       });
     })();
   }, [abortController, mainLoopModel, toolPermissionContext, mainThreadAgentDefinition, getToolUseContext, customSystemPrompt, appendSystemPrompt, canUseTool, setAppState]);
+
+  // Loads this session's prompt into a local model while the user types
+  // (useLocalModelPreload, utils/model/localModelPreload.ts). The prompt is
+  // built the way a turn builds its request (onQueryImpl below), so the server
+  // caches exactly what the first message starts with.
+  const preloadLocalModel = useCallback(async (model: string, signal: AbortSignal) => {
+    const abortController = createAbortController();
+    signal.addEventListener('abort', () => abortController.abort(), {
+      once: true
+    });
+    const toolUseContext = getToolUseContext(messagesRef.current, [], abortController, model);
+    const {
+      tools: freshTools,
+      mcpClients: freshMcpClients,
+      mainLoopModel: effectiveMainLoopModel
+    } = toolUseContext.options;
+    const [defaultSystemPrompt, baseUserContext, systemContext] = await Promise.all([getSystemPrompt(freshTools, effectiveMainLoopModel, Array.from(toolPermissionContext.additionalWorkingDirectories.keys()), freshMcpClients), getUserContext(), getSystemContext()]);
+    const userContext = {
+      ...baseUserContext,
+      ...getCoordinatorUserContext(freshMcpClients, isScratchpadEnabled() ? getScratchpadDir() : undefined)
+    };
+    const systemPrompt = buildEffectiveSystemPrompt({
+      mainThreadAgentDefinition,
+      toolUseContext,
+      customSystemPrompt,
+      defaultSystemPrompt,
+      appendSystemPrompt
+    });
+    toolUseContext.renderedSystemPrompt = systemPrompt;
+    if (signal.aborted || queryGuard.isActive) return;
+    const {
+      totalUsage
+    } = await runForkedAgent({
+      promptMessages: [createUserMessage({
+        content: '.'
+      })],
+      cacheSafeParams: {
+        systemPrompt,
+        userContext,
+        systemContext,
+        toolUseContext,
+        forkContextMessages: messagesRef.current
+      },
+      // Denied through the callback, not by sending no tools: the tools are
+      // part of the prompt being cached. A preload's one-token answer calls none.
+      canUseTool: async () => ({
+        behavior: 'deny' as const,
+        message: 'A preload runs no tools',
+        decisionReason: {
+          type: 'other' as const,
+          reason: 'local model preload'
+        }
+      }),
+      querySource: LOCAL_PRELOAD_QUERY_SOURCE,
+      forkLabel: 'local_preload',
+      overrides: {
+        abortController,
+        getAppState: toolUseContext.getAppState
+      },
+      skipTranscript: true
+    });
+    // The server just counted the prompt the session starts with: the context
+    // bar shows that instead of Tau's rough estimate until the first answer.
+    const counted = totalUsage.input_tokens + totalUsage.cache_read_input_tokens + totalUsage.cache_creation_input_tokens;
+    if (counted > 0) setContextBaselineTokens(getRuntimeMainLoopModel({
+      permissionMode: toolPermissionContext.mode,
+      mainLoopModel: model
+    }), counted, {
+      measured: true
+    });
+  }, [getToolUseContext, toolPermissionContext, mainThreadAgentDefinition, customSystemPrompt, appendSystemPrompt, queryGuard]);
+  useLocalModelPreload({
+    mainLoopModel,
+    isBusy: () => queryGuard.isActive,
+    preload: preloadLocalModel
+  });
   const {
     handleBackgroundSession
   } = useSessionBackgrounding({

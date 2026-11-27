@@ -49,6 +49,12 @@ type Server = {
   /** An OpenAI-compatible server streams this as `reasoning_content` before the answer. */
   reasons?: string
   /**
+   * An OpenAI-compatible server streams no text at all, as a thinking model
+   * does when its one token is the start of its thinking. Asked without
+   * streaming, it answers "ok".
+   */
+  emptyStream?: boolean
+  /**
    * Ollama /api/ps: the context the model is loaded with when the request
    * starts. Without this or `ownDefault`, /api/ps answers 404.
    */
@@ -96,6 +102,8 @@ async function run(input: {
   maxTokens?: number
   /** Tau's /thinking switch. */
   thinking?: { type: 'enabled' } | { type: 'disabled' }
+  /** Who asks: the main conversation unless a test says otherwise. */
+  querySource?: string
   server?: Server
 }): Promise<{ sent: Sent[]; text: string; thinking: string; blocks: string[] }> {
   initOpenAICompatLane({
@@ -159,6 +167,17 @@ async function run(input: {
         const field = body.chat_template_kwargs ? 'chat_template_kwargs' : 'reasoning_effort'
         return Response.json({ detail: [{ loc: ['body', field], msg: 'Extra inputs are not permitted' }] }, { status: 422 })
       }
+      if (body?.stream === false) {
+        return Response.json({
+          id: 'x', object: 'chat.completion', model: body.model,
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+        })
+      }
+      if (server.emptyStream) {
+        const last = { id: 'x', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: {}, finish_reason: 'length' }], usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 } }
+        return new Response(`data: ${JSON.stringify(last)}\n\ndata: [DONE]\n\n`, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }
       const estimate = (JSON.stringify(body.messages).length + (body.tools ? JSON.stringify(body.tools).length : 0)) / 4
       const promptTokens = server.lmStudioCountRatio === undefined ? 10 : Math.ceil(estimate * server.lmStudioCountRatio)
       return sse(body?.model ?? 'model', body?.stream_options?.include_usage ? promptTokens : undefined, server.reasons)
@@ -176,6 +195,7 @@ async function run(input: {
       max_tokens: input.maxTokens ?? 32_000,
       ...(input.temperature !== undefined && { temperature: input.temperature }),
       ...(input.thinking !== undefined && { thinking: input.thinking }),
+      querySource: input.querySource ?? 'repl_main_thread',
       signal: new AbortController().signal,
       providerHint: input.providerHint,
     })
@@ -626,6 +646,123 @@ describe('thinking on LM Studio and other local servers', () => {
     const after = await run({ providerHint: 'generic', model: 'my-model', genericUrl: 'https://llm.example.test/v1' })
     expect(chats(after.sent)[0]!.body).toEqual(chats(before.sent)[0]!.body)
     expect(thinkingFieldsOf(chats(after.sent)[0]!.body)).toEqual({})
+  })
+})
+
+describe('loading the prompt ahead of the first message', () => {
+  const preload = 'local_preload'
+  const thinks = { model_info: { 'qwen3.context_length': 40_960 }, capabilities: ['completion', 'tools', 'thinking'] }
+  const withoutAnswerLimit = (body: any) => {
+    const copy = structuredClone(body)
+    delete copy.options?.num_predict
+    delete copy.max_tokens
+    return copy
+  }
+
+  for (const [label, env] of [['auto', {}], ['OLLAMA_NUM_CTX_MAX', { OLLAMA_NUM_CTX_MAX: '131072' }], ['a fixed OLLAMA_NUM_CTX', { OLLAMA_NUM_CTX: '24576' }]] as const) {
+    test(`Ollama (${label}): a preload is the first request with a one-token answer, at the same context`, async () => {
+      Object.assign(process.env, env)
+      const ahead = await run({ providerHint: 'ollama', model: 'qwen3:4b', querySource: preload, server: { show: thinks } })
+      resetLocalModelSettingsForTests()
+      const first = await run({ providerHint: 'ollama', model: 'qwen3:4b', server: { show: thinks } })
+      const [early] = chats(ahead.sent)
+      const [real] = chats(first.sent)
+      expect(early!.body.options.num_predict).toBe(1)
+      expect(real!.body.options.num_predict).toBeGreaterThan(1)
+      expect(early!.body.options.num_ctx).toBe(real!.body.options.num_ctx)
+      expect(withoutAnswerLimit(early!.body)).toEqual(withoutAnswerLimit(real!.body))
+    })
+  }
+
+  test('once the conversation has reached the model, a preload sends nothing', async () => {
+    await run({ providerHint: 'ollama', model: 'qwen3:4b', server: { show: thinks } })
+    const late = await run({ providerHint: 'ollama', model: 'qwen3:4b', querySource: preload, server: { show: thinks } })
+    expect(late.sent).toEqual([])
+    expect(late.text).toBe('')
+  })
+
+  test("a helper's request on the same model is not the conversation: the preload still goes", async () => {
+    await run({ providerHint: 'ollama', model: 'qwen3:4b', querySource: 'compact', server: { show: thinks } })
+    const ahead = await run({ providerHint: 'ollama', model: 'qwen3:4b', querySource: preload, server: { show: thinks } })
+    expect(chats(ahead.sent).map(chat => chat.body.options.num_predict)).toEqual([1])
+  })
+
+  test('a request that starts during a preload waits for it, then goes', async () => {
+    initOpenAICompatLane({ ollama: { baseUrl: OLLAMA } })
+    const order: string[] = []
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const oldFetch = globalThis.fetch
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const href = String(url)
+      if (href.endsWith('/api/show')) return Response.json(thinks)
+      if (!href.endsWith('/api/chat')) return new Response('not found', { status: 404 })
+      const body = JSON.parse(String(init?.body))
+      const kind = body.options.num_predict === 1 ? 'preload' : 'first message'
+      order.push(`${kind} sent`)
+      if (kind === 'preload') await held
+      return ndjson([
+        { model: body.model, message: { role: 'assistant', content: 'ok' }, done: false },
+        { model: body.model, message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop', prompt_eval_count: 30, eval_count: 1 },
+      ])
+    }) as typeof fetch
+    const drain = async (querySource: string) => {
+      for await (const _ of openaiCompatLane.streamAsProvider({
+        model: 'qwen3:4b', messages: [{ role: 'user', content: 'hello' }], system: 'stable system prompt', tools: [],
+        max_tokens: 32_000, querySource, signal: new AbortController().signal, providerHint: 'ollama',
+      })) { /* drain */ }
+      order.push(`${querySource === preload ? 'preload' : 'first message'} done`)
+    }
+    try {
+      const ahead = drain(preload)
+      while (!order.includes('preload sent')) await new Promise(resolve => setTimeout(resolve, 5))
+      const first = drain('repl_main_thread')
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(order).toEqual(['preload sent'])
+      release()
+      await Promise.all([ahead, first])
+      expect(order).toEqual(['preload sent', 'preload done', 'first message sent', 'first message done'])
+    } finally {
+      globalThis.fetch = oldFetch
+    }
+  })
+
+  test('LM Studio: a preload is the first request with max_tokens 1', async () => {
+    const loaded = [{ type: 'llm', key: 'local-model', max_context_length: 131_072, loaded_instances: [{ id: 'local-model', config: { context_length: 32_768 } }] }]
+    const ahead = await run({ providerHint: 'lmstudio', model: 'local-model', querySource: preload, server: { lmStudioModels: loaded } })
+    resetLocalModelSettingsForTests()
+    const first = await run({ providerHint: 'lmstudio', model: 'local-model', server: { lmStudioModels: loaded } })
+    const [early] = chats(ahead.sent)
+    const [real] = chats(first.sent)
+    expect(early!.body.max_tokens).toBe(1)
+    expect(real!.body.max_tokens).toBeGreaterThan(1)
+    expect(withoutAnswerLimit(early!.body)).toEqual(withoutAnswerLimit(real!.body))
+  })
+
+  test("an empty one-token answer is a preload's normal end: one request, no fallback, no retry", async () => {
+    const loaded = [{ type: 'llm', key: 'local-model', max_context_length: 131_072, loaded_instances: [{ id: 'local-model', config: { context_length: 32_768 } }] }]
+    const lmStudio = await run({ providerHint: 'lmstudio', model: 'local-model', querySource: preload, server: { lmStudioModels: loaded, emptyStream: true } })
+    expect(chats(lmStudio.sent).map(chat => chat.body.max_tokens)).toEqual([1])
+    const other = await run({ providerHint: 'generic', model: 'my-model', querySource: preload, server: { emptyStream: true } })
+    expect(chats(other.sent).map(chat => chat.body.max_tokens)).toEqual([1])
+  })
+
+  test("an empty answer to a real request still gets LM Studio's fallback", async () => {
+    const loaded = [{ type: 'llm', key: 'local-model', max_context_length: 131_072, loaded_instances: [{ id: 'local-model', config: { context_length: 32_768 } }] }]
+    const first = await run({ providerHint: 'lmstudio', model: 'local-model', server: { lmStudioModels: loaded, emptyStream: true } })
+    expect(chats(first.sent).length).toBeGreaterThan(1)
+    expect(first.text).toBe('ok')
+  })
+
+  test("a cloud model, a remote server and a hosted provider send what they always did, whoever asks", async () => {
+    const cloud = await run({ providerHint: 'ollama', model: 'glm-5.1:cloud', querySource: preload })
+    expect(chats(cloud.sent)[0]!.body.options.num_predict).toBe(32_000)
+    const remote = await run({ providerHint: 'generic', model: 'my-model', genericUrl: 'https://llm.example.test/v1', querySource: preload })
+    const remoteMain = await run({ providerHint: 'generic', model: 'my-model', genericUrl: 'https://llm.example.test/v1' })
+    expect(chats(remote.sent)[0]!.body).toEqual(chats(remoteMain.sent)[0]!.body)
+    const hosted = await run({ providerHint: 'deepseek', model: 'deepseek-chat', querySource: preload })
+    const hostedMain = await run({ providerHint: 'deepseek', model: 'deepseek-chat' })
+    expect(chats(hosted.sent)[0]!.body).toEqual(chats(hostedMain.sent)[0]!.body)
   })
 })
 

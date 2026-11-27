@@ -45,8 +45,13 @@ import {
   capLocalOutputTokens,
   checkOllamaGpuFit,
   chooseOllamaNumCtx,
+  beginLocalPreload,
   chooseOllamaThink,
   isLocalThinkingFieldRefusal,
+  localConversationReached,
+  localPreloadKey,
+  noteLocalConversationRequest,
+  waitForLocalPreload,
   isThinkRefusal,
   lmStudioReasoningEffort,
   localServerRefusesThinkingFields,
@@ -158,6 +163,7 @@ import {
   type OpenRouterCatalogModel,
 } from '../../utils/model/openrouterCatalog.js'
 import { resolveOpenRouterVirtualModelId } from '../../utils/model/openrouterAliases.js'
+import { isLocalPreloadSource, isMainConversationSource } from '../../utils/model/localModelPreload.js'
 import {
   isOpenRouterStrictToolSchemaError,
   recordOpenRouterStrictToolSchemaModel,
@@ -550,6 +556,35 @@ export class OpenAICompatLane implements Lane {
     openRouterRecovery = false,
     openRouterNote?: string,
   ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
+    const model = !params.providerHint || params.providerHint === 'openrouter'
+      ? resolveOpenRouterVirtualModelId(params.model)
+      : params.model
+    const cfg = this.getConfigForModel(model, params.providerHint)
+    const send = () => this.streamAsProviderRequest(params, openRouterRecovery, openRouterNote)
+    if (!cfg || !isLocalModelRequest(cfg.provider, model, isLocalBaseUrl(cfg.baseUrl))) return yield* send()
+    // A model on a local server reads one copy of the prompt at a time
+    // (local_model_settings.ts): a preload is skipped once the conversation has
+    // reached the model, and any other request waits for a preload in flight.
+    const key = localPreloadKey(cfg.provider, cfg.baseUrl, model)
+    if (isLocalPreloadSource(params.querySource)) {
+      if (localConversationReached(key)) return yield* emptyLocalReply(model)
+      const finish = beginLocalPreload(key)
+      try {
+        return yield* send()
+      } finally {
+        finish()
+      }
+    }
+    await waitForLocalPreload(key, params.signal)
+    if (isMainConversationSource(params.querySource)) noteLocalConversationRequest(key)
+    return yield* send()
+  }
+
+  private async *streamAsProviderRequest(
+    params: LaneProviderCallParams,
+    openRouterRecovery = false,
+    openRouterNote?: string,
+  ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
     const { model: requestedModel, messages, system, tools, max_tokens, thinking, temperature, stop_sequences, signal, sessionId, providerHint, querySource } = params
     const model = !providerHint || providerHint === 'openrouter'
       ? resolveOpenRouterVirtualModelId(requestedModel)
@@ -575,6 +610,10 @@ export class OpenAICompatLane implements Lane {
     // Local model servers get their own request settings
     // (local_model_settings.ts). Nothing else reads them.
     const isLocalRequest = isLocalModelRequest(provider, model, isLocal)
+    // Loads the prompt into a local model ahead of the first message
+    // (utils/model/localModelPreload.ts): planned like any request, with a
+    // one-token answer that may well come back empty.
+    const preload = isLocalRequest && isLocalPreloadSource(querySource)
     const cacheSessionId = providerUsesStableRequestSession(provider)
       ? sessionId
       : undefined
@@ -792,7 +831,9 @@ export class OpenAICompatLane implements Lane {
     // turn — that was the latency cancer). Other providers stay on /v1
     // unchanged.
     if (provider === 'ollama') {
-      const ollamaUsage = yield* streamOllamaNative(cfg, body, model, signal, isLocalRequest, !!thinking && thinking.type !== 'disabled')
+      const ollamaUsage = yield* streamOllamaNative(
+        cfg, body, model, signal, isLocalRequest, !!thinking && thinking.type !== 'disabled', preload,
+      )
       return ollamaUsage
     }
 
@@ -917,6 +958,9 @@ export class OpenAICompatLane implements Lane {
       }
       if (thinkingFields) Object.assign(body, thinkingFields)
     }
+    // A preload is planned like any request and only reads the prompt: one
+    // token of answer.
+    if (preload) body.max_tokens = 1
 
     let response!: Response
     let errText = ''
@@ -1375,7 +1419,9 @@ export class OpenAICompatLane implements Lane {
     // A failed attempt must not pin later traffic to the provider that failed.
     if (openRouterServedProvider) await recordOpenRouterServedProvider(cacheSessionId, model, openRouterServedProvider)
 
-    if (provider === 'lmstudio' && !emittedAnyAssistantOutput) {
+    // A preload's one token is often the opening of the model's thinking,
+    // which the server keeps to itself: an empty answer is its normal end.
+    if (provider === 'lmstudio' && !emittedAnyAssistantOutput && !preload) {
       const fallback = await fetchLmStudioNonStreamingCompletion(cfg, body, model, signal).catch(() => null)
       const textOnlyFallback = !fallback?.text?.trim() && !fallback?.thinking?.trim() && !(fallback?.toolCalls?.length)
         ? await fetchLmStudioNonStreamingCompletion(cfg, body, model, signal, true).catch(() => null)
@@ -1500,7 +1546,8 @@ export class OpenAICompatLane implements Lane {
       !emittedAnyAssistantOutput &&
       (provider !== 'openrouter' || !outputCapTruncated) &&
       !signal?.aborted &&
-      provider !== 'lmstudio'
+      provider !== 'lmstudio' &&
+      !preload
     ) {
       mistralCacheDebug?.finish('empty_response', diagnosticUsage())
       throw new APIConnectionError({
@@ -1991,6 +2038,26 @@ export function resolveCompatSmallFastModel(
   model: string,
 ): string | null {
   return getTransformer(provider as ProviderId).smallFastModel(model)
+}
+
+/** An empty, finished answer: a preload with nothing left to load. */
+async function* emptyLocalReply(model: string): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
+  yield {
+    type: 'message_start',
+    message: {
+      id: `local-${Date.now()}`,
+      type: 'message',
+      role: 'assistant',
+      content: [],
+      model,
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }
+  yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } }
+  yield { type: 'message_stop' }
+  return blankUsage(0, 0, 0, 0)
 }
 
 function blankUsage(i: number, o: number, c: number, r: number): NormalizedUsage {
@@ -3547,6 +3614,8 @@ async function* streamOllamaNative(
   local: boolean,
   /** Tau's /thinking switch. */
   thinkingOn = false,
+  /** A preload of a model on this machine (utils/model/localModelPreload.ts). */
+  preload = false,
 ): AsyncGenerator<AnthropicStreamEvent, NormalizedUsage> {
   const root = normalizeBaseUrl(cfg.baseUrl).replace(/\/v1$/i, '')
   const url = `${root}/api/chat`
@@ -3615,7 +3684,9 @@ async function* streamOllamaNative(
       ...(sendThink !== undefined && { think: sendThink }),
       options: {
         num_ctx: contextTokens,
-        ...(answerTokens != null && { num_predict: answerTokens }),
+        // A preload is planned like any request, so Ollama keeps the same
+        // context, and only reads the prompt: one token of answer.
+        ...(answerTokens != null && { num_predict: preload ? 1 : answerTokens }),
         ...(body.temperature !== undefined && { temperature: body.temperature }),
         ...(local && body.top_p !== undefined && { top_p: body.top_p }),
         ...(local && body.top_k !== undefined && { top_k: body.top_k }),

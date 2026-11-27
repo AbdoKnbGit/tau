@@ -22,6 +22,11 @@ type Baseline = {
   tokens: number
   /** Model this was measured against; a different one invalidates it. */
   model: string
+  /**
+   * Counted by the model's server rather than estimated here: a local model's
+   * preload reads the session's prompt (utils/model/localModelPreload.ts).
+   */
+  measured?: boolean
 }
 
 let baseline: Baseline | null = null
@@ -58,10 +63,14 @@ export function getContextBaselineTokens(model: string): number {
   return baseline?.model === model ? baseline.tokens : 0
 }
 
-/** Record a measured baseline. */
-export function setContextBaselineTokens(model: string, tokens: number): void {
+/**
+ * Record a measured baseline. A server's own count of the prompt
+ * (`measured`) is kept over a later estimate for the same model.
+ */
+export function setContextBaselineTokens(model: string, tokens: number, options?: { measured?: boolean }): void {
   if (!Number.isFinite(tokens) || tokens <= 0) return
-  baseline = { model, tokens }
+  if (!options?.measured && baseline?.model === model && baseline.measured) return
+  baseline = { model, tokens, ...(options?.measured && { measured: true }) }
   revision += 1
   logForDebugging(
     `[contextBaseline] ${model}: ~${tokens} tokens of initial context`,

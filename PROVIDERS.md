@@ -57,11 +57,12 @@ environment variable: set it in your shell, or in the `env` block of
 |---|---|---|
 | `OLLAMA_NUM_CTX` | `auto` | Ollama context per request. `auto` uses the context Ollama itself gives the model on your machine: Ollama picks 4K, 32K or 256K from your GPU's memory, or takes your `OLLAMA_CONTEXT_LENGTH` or the model's Modelfile, and never more than the model's own limit. When that is too small for Tau's prompt, Tau asks for the least it can work in instead, worked out from the size of its own prompt (32K with the default tools, more with many MCP tools). It never shrinks during a session, because Ollama reloads the model whenever it changes. A number fixes it. |
 | `OLLAMA_NUM_CTX_MAX` | none | Instead of the context Ollama picks, `auto` grows as the conversation needs, up to this many tokens. It doubles each time, since every change reloads the model. The model's own limit still caps it. |
-| `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded after a request. |
+| `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded after a request; after that Ollama unloads it by itself. Closing Tau doesn't unload it: `ollama stop <model>` frees the GPU at once. |
 | `OLLAMA_TRUNCATE` | off | Tau asks Ollama to refuse a request that doesn't fit instead of silently dropping your oldest messages. On `auto`, Tau then grows the context once and resends; past the limit you get the exact sizes and what to change. `1` brings back Ollama's silent truncation. |
 | `TAU_LOCAL_MAX_OUTPUT_TOKENS` | none | Most tokens an answer may use. Tau also fits the answer to the room left in the context, so a long answer never pushes the model's instructions out. |
 | `TAU_LOCAL_TEMPERATURE`, `TAU_LOCAL_TOP_P`, `TAU_LOCAL_TOP_K` | the model's own | Sampling. Unset, the model keeps its own settings: its Ollama Modelfile or its LM Studio preset. |
 | `TAU_LOCAL_THINKING` | follows `/thinking` | Thinking, on any local server. `off` asks a thinking model not to think (much faster answers), `on` to think, `low`/`medium`/`high` for models that take a level. Tau sends it the way each server takes it: Ollama as `think`, to models that list thinking; LM Studio as `reasoning_effort`, within the thinking options LM Studio lists for the model; any other server (llama.cpp, vLLM, Jan) as `chat_template_kwargs.enable_thinking`, or `reasoning_effort` for a level, and without it again if the server refuses it. Unset, `/thinking on` asks for thinking the same way, and with `/thinking` off nothing is sent: each model keeps its own default. Some models think whatever they're told; with `off` they put their reasoning into the answer instead. |
+| `TAU_LOCAL_PRELOAD` | on | Loads this session's prompt into a local model while you type, so the first answer doesn't wait for the model to load and read it. `0` turns it off. |
 
 Server addresses: `OLLAMA_HOST` (default `http://localhost:11434`) and
 `LMSTUDIO_BASE_URL` (default `http://localhost:1234/v1`), or set them in
@@ -88,6 +89,21 @@ it shows other models' thinking, instead of dropping it while you wait: Ollama
 sends it apart from the answer, and so do LM Studio and other servers that
 split it out (`reasoning_content`). The thinking is never sent back to the
 model.
+
+Before the first answer of a session, a local model has to load and read
+Tau's whole prompt: its instructions, tools and your project context, often
+10,000 to 20,000 tokens. On a laptop GPU that can take 10 to 20 seconds;
+every later message only reads what is new. So when an interactive session
+starts on a local model (Ollama's models on your machine, LM Studio, or a
+server behind LM Studio's address), Tau sends the model this session's prompt
+once in the background with a one-token answer, and the model reads it while
+you type. Tau waits for your MCP servers first, so the prompt is exactly the
+one your first message starts with. A message you send before it is done
+waits for it rather than making the model read the same prompt twice. It runs
+once per model (again after `/model`), only in interactive sessions, and never
+for cloud models. Its tokens show in `/cost` like any request's, at no charge,
+and the context bar then shows the model's own count of the prompt.
+`TAU_LOCAL_PRELOAD=0` turns it off.
 
 The Ollama model picker takes what each model on your machine can do from
 Ollama itself: tools, thinking and image input. A model that can't chat, such

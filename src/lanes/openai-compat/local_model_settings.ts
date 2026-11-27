@@ -23,6 +23,9 @@
  *   TAU_LOCAL_TOP_K
  *   TAU_LOCAL_THINKING          thinking on any local server: off, on, low,
  *                               medium, high. Unset follows Tau's /thinking
+ *   TAU_LOCAL_PRELOAD           0 stops loading the session's prompt into the
+ *                               model ahead of the first message
+ *                               (utils/model/localModelPreload.ts)
  */
 
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -612,6 +615,54 @@ export function rememberOllamaRefusesThink(serverRoot: string, model: string): v
   refusesThink.add(ollamaContextKey(serverRoot, model))
 }
 
+// ─── Preload ───────────────────────────────────────────────────────
+// A preload (utils/model/localModelPreload.ts) and the requests after it share
+// one model on one server. A request that starts while the preload is still
+// being read waits for it, and then finds the prompt in the server's cache
+// instead of reading it a second time beside the preload. Once the main
+// conversation has reached a model, its prompt is cached and a preload has
+// nothing left to do. Per server and model.
+
+const preloadsInFlight = new Map<string, Promise<void>>()
+const conversationReached = new Set<string>()
+
+export function localPreloadKey(provider: string, baseUrl: string, model: string): string {
+  return `${provider}\n${baseUrl}\n${model}`
+}
+
+/** Marks a preload in flight; the function returned ends it. */
+export function beginLocalPreload(key: string): () => void {
+  let finish!: () => void
+  const done = new Promise<void>(resolve => { finish = resolve })
+  preloadsInFlight.set(key, done)
+  return () => {
+    if (preloadsInFlight.get(key) === done) preloadsInFlight.delete(key)
+    finish()
+  }
+}
+
+/** Waits for a preload of the same model to end. An abort ends the wait. */
+export async function waitForLocalPreload(key: string, signal?: AbortSignal): Promise<void> {
+  const pending = preloadsInFlight.get(key)
+  if (!pending || signal?.aborted) return
+  await new Promise<void>(resolve => {
+    const stop = () => resolve()
+    signal?.addEventListener('abort', stop, { once: true })
+    void pending.then(() => {
+      signal?.removeEventListener('abort', stop)
+      resolve()
+    })
+  })
+}
+
+export function noteLocalConversationRequest(key: string): void {
+  conversationReached.add(key)
+}
+
+export function localConversationReached(key: string): boolean {
+  return conversationReached.has(key)
+}
+
 /** Test seam: forget every context chosen, asked about and recorded in this process. */
 export function resetLocalModelSettingsForTests(): void {
   chosenContexts.clear()
@@ -621,5 +672,7 @@ export function resetLocalModelSettingsForTests(): void {
   refusesThink.clear()
   refusesThinkingFields.clear()
   gpuFitChecks.clear()
+  preloadsInFlight.clear()
+  conversationReached.clear()
   resetLocalModelContextForTests()
 }
