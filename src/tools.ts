@@ -10,6 +10,8 @@ import { FileWriteTool } from './tools/FileWriteTool/FileWriteTool.js'
 import { GlobTool } from './tools/GlobTool/GlobTool.js'
 import { NotebookEditTool } from './tools/NotebookEditTool/NotebookEditTool.js'
 import { EvalTool } from './tools/EvalTool/EvalTool.js'
+import { ListPeersTool } from './tools/ListPeersTool/ListPeersTool.js'
+import { OpenPeerTool } from './tools/OpenPeerTool/OpenPeerTool.js'
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
@@ -132,9 +134,6 @@ const coordinatorModeModule = feature('COORDINATOR_MODE')
 const SnipTool = feature('HISTORY_SNIP')
   ? require('./tools/SnipTool/SnipTool.js').SnipTool
   : null
-const ListPeersTool = feature('UDS_INBOX')
-  ? require('./tools/ListPeersTool/ListPeersTool.js').ListPeersTool
-  : null
 const WorkflowTool = feature('WORKFLOW_SCRIPTS')
   ? (() => {
       require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
@@ -250,7 +249,9 @@ export function getAllBaseTools(): Tools {
     ...NATIVE_READ_ONLY_TOOLS,
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
-    ...(ListPeersTool ? [ListPeersTool] : []),
+    // Enabled only in a session started with --orchestrate (services/peers).
+    ListPeersTool,
+    OpenPeerTool,
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
     ...(process.env.USER_TYPE === 'ant' && REPLTool ? [REPLTool] : []),
     ...(WorkflowTool ? [WorkflowTool] : []),

@@ -901,6 +901,40 @@ export const SettingsSchema = lazySchema(() =>
         })
         .optional()
         .describe('Remote session configuration'),
+      peers: z
+        .object({
+          inbound: z
+            .enum(['on', 'off'])
+            .optional()
+            .describe(
+              'Whether sessions take tasks from orchestrator sessions (tau --orchestrate) on this machine. Default off; /peers on|off changes the current session.',
+            ),
+          replyLimit: z
+            .number()
+            .int()
+            .min(500)
+            .optional()
+            .describe(
+              'Most characters of an answer an orchestrator gets back from another session. Default 8000.',
+            ),
+          taskLimit: z
+            .number()
+            .int()
+            .min(1)
+            .optional()
+            .describe(
+              'Most tasks an orchestrator sends between two of your own messages. Default 20.',
+            ),
+          openCommand: z
+            .array(z.string())
+            .min(1)
+            .optional()
+            .describe(
+              'Command that opens a terminal window for OpenPeer, as a list of arguments. "{tau}" becomes the Tau command; {tauLine}, {folder} and {title} are replaced inside arguments. Default: a tmux window inside tmux, else Windows Terminal or cmd start on Windows; elsewhere Tau shows the command to run. Example: ["gnome-terminal", "--working-directory={folder}", "--", "{tau}"]',
+            ),
+        })
+        .optional()
+        .describe('Tasks between Tau sessions on this machine (/peers)'),
       autoUpdatesChannel: z
         .enum(['latest', 'stable'])
         .optional()

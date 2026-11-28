@@ -6,6 +6,8 @@ import {
   mcpInfoFromString,
 } from '../../services/mcp/mcpStringUtils.js'
 import { isWhatsAppDrivenTurn } from '../../services/whatsapp/turnState.js'
+import { COORDINATOR_MODE_ALLOWED_TOOLS } from '../../constants/tools.js'
+import { isOrchestrator } from '../../services/peers/runtime.js'
 import { isSelfLearningEnabled } from '../../memdir/paths.js'
 import { hasModEvent } from '../plugins/mods/manager.js'
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
@@ -16,6 +18,12 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../tools/ExitPlanModeTool/constants.js'
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
+import { OPEN_PEER_TOOL_NAME } from '../../tools/OpenPeerTool/prompt.js'
+import { SKILL_TOOL_NAME } from '../../tools/SkillTool/constants.js'
+import { TASK_CREATE_TOOL_NAME } from '../../tools/TaskCreateTool/constants.js'
+import { TASK_UPDATE_TOOL_NAME } from '../../tools/TaskUpdateTool/constants.js'
+import { TODO_WRITE_TOOL_NAME } from '../../tools/TodoWriteTool/constants.js'
+import { expandPath } from '../path.js'
 import type { AssistantMessage } from '../../types/message.js'
 import { extractOutputRedirections } from '../bash/commands.js'
 import { logForDebugging } from '../debug.js'
@@ -204,6 +212,62 @@ function refusePlanModeFileEdit(
     behavior: 'deny',
     message: PLAN_MODE_FILE_EDIT_REFUSAL,
     decisionReason: { type: 'mode', mode: 'plan' },
+  }
+}
+
+/** What an orchestrator session's model is told when it tries to change something itself. */
+export const ORCHESTRATOR_WORK_REFUSAL =
+  'This session is an orchestrator: it reads and delegates, and does not change files or run commands that change things. Give this to a session with SendMessage (to "peer:<name>", see ListPeers) or open one with OpenPeer. If the user wants it done here, tell them to use a session started without --orchestrate.'
+
+/** The same for the orchestrator's own subagents, which can't hand work on. */
+export const ORCHESTRATOR_AGENT_WORK_REFUSAL =
+  'This session is an orchestrator, so its agents do not change files or run commands that change things either. Say in your report what should change; the orchestrator gives it to a session.'
+
+let orchestratorSessionTools: Set<string> | undefined
+
+/**
+ * An orchestrator session (tau --orchestrate) reads and coordinates, and every
+ * change goes to another session. Like a deny rule, this holds in every
+ * permission mode, over hook approvals, and for the session's own subagents
+ * (same process). Allowed besides read-only calls: the tools that run the
+ * session itself (agents, messages, its task list, plan mode, skills) and
+ * edits to Tau's own files (plan, memory, scratchpad).
+ */
+async function refuseOrchestratorWork(
+  tool: Tool,
+  input: Record<string, unknown>,
+  context: ToolUseContext,
+): Promise<PermissionDenyDecision | null> {
+  if (!isOrchestrator()) return null
+  // Built on first use: constants/tools.js may still be loading when this module is.
+  orchestratorSessionTools ??= new Set([
+    ...COORDINATOR_MODE_ALLOWED_TOOLS,
+    OPEN_PEER_TOOL_NAME,
+    TODO_WRITE_TOOL_NAME,
+    TASK_CREATE_TOOL_NAME,
+    TASK_UPDATE_TOOL_NAME,
+    SKILL_TOOL_NAME,
+    EXIT_PLAN_MODE_V2_TOOL_NAME,
+  ])
+  if (orchestratorSessionTools.has(tool.name)) return null
+  try {
+    const parsedInput = parseToolInputForPermissions(tool, input)
+    if (tool.isReadOnly(parsedInput)) return null
+    const path = tool.getPath?.(parsedInput)
+    if (path) {
+      // Lazy: filesystem.js imports this module.
+      const { checkEditableInternalPath } = await import('./filesystem.js')
+      if (checkEditableInternalPath(expandPath(path), parsedInput).behavior === 'allow') {
+        return null
+      }
+    }
+  } catch {
+    // An input that can't be parsed is refused like any other change.
+  }
+  return {
+    behavior: 'deny',
+    message: context.agentId ? ORCHESTRATOR_AGENT_WORK_REFUSAL : ORCHESTRATOR_WORK_REFUSAL,
+    decisionReason: { type: 'other', reason: 'Orchestrator sessions give changes to other sessions' },
   }
 }
 
@@ -1220,6 +1284,10 @@ export async function checkRuleBasedPermissions(
       message: `Permission to use ${tool.name} has been denied.`,
     }
   }
+  const orchestratorRefusal = await refuseOrchestratorWork(tool, input, context)
+  if (orchestratorRefusal) {
+    return orchestratorRefusal
+  }
 
   // 1b. Entire tool has an ask rule
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
@@ -1335,6 +1403,10 @@ export async function hasPermissionsToUseToolInner(
       },
       message: `Permission to use ${tool.name} has been denied.`,
     }
+  }
+  const orchestratorRefusal = await refuseOrchestratorWork(tool, input, context)
+  if (orchestratorRefusal) {
+    return orchestratorRefusal
   }
 
   // 1b. Check if the entire tool should always ask for permission

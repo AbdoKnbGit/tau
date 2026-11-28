@@ -40,6 +40,7 @@ import { getGlobalConfig } from '../../utils/config.js';
 import { getPlatform } from '../../utils/platform.js';
 import { getPowerModeFromSettings } from '../../utils/powerMode.js';
 import { PrBadge } from '../PrBadge.js';
+import { PeerRoleBadge } from './PeerRoleBadge.js';
 
 // Dead code elimination: conditional import for proactive mode
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -215,7 +216,7 @@ export function PromptInputFooterLeftSide(t0) {
   }
   let t6;
   if ($[23] !== t2 || $[24] !== t3 || $[25] !== t5) {
-    t6 = <Box justifyContent="flex-start" gap={1}>{t2}{t3}{t5}</Box>;
+    t6 = <Box justifyContent="flex-start" gap={1}><PeerRoleBadge />{t2}{t3}{t5}</Box>;
     $[23] = t2;
     $[24] = t3;
     $[25] = t5;

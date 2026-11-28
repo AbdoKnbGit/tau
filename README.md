@@ -267,6 +267,12 @@ For example, `$E=mc^2$` renders as `E=mc²`; inline and display equations work w
 Greek letters, fractions, roots, scripts, and common matrices are supported; code, prompts, logs, and tool output stay literal.
 Copying or exporting preserves the original LaTeX. Unsupported expressions stay readable as source; full TeX documents and custom macros are unsupported.
 
+### Orchestrate other sessions
+
+Start one session with `tau --orchestrate` and it hands the real work to other Tau sessions on your machine: each works in its own folder, with its own provider and model, in a window you can watch.
+Run `/peers on` in a session to let it take tasks, or let the orchestrator open one; answers come back by themselves, and the footer shows which window orchestrates and which works.
+The orchestrator only reads and delegates, a worker follows the orchestrator's bypass for that task only, and no prompt cache is broken. [How it works](docs/orchestrator.md).
+
 ### Plan mode
 
 Plan mode lets Tau read your code and write a plan before it changes anything.

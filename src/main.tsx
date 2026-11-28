@@ -34,6 +34,7 @@ import { initBuiltinPlugins } from './plugins/bundled/index.js';
 import { getEnvironmentPluginPaths, setSessionPluginUrls } from './utils/plugins/sessionPaths.js';
 import { launchRepl } from './replLauncher.js';
 import { requestLocalAtStartup } from './services/remote/autostart.js';
+import { acceptPeersFrom, setOrchestrator } from './services/peers/runtime.js';
 import { hasGrowthBookEnvOverride, initializeGrowthBook, refreshGrowthBookAfterAuthChange } from './services/analytics/growthbook.js';
 import { fetchBootstrapData } from './services/api/bootstrap.js';
 import { type DownloadResult, downloadSessionFiles, type FilesApiConfig, parseFileSpecs } from './services/api/filesApi.js';
@@ -1100,7 +1101,7 @@ async function run(): Promise<CommanderCommand> {
   // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
   .option('--plugin-dir <path>', 'Load a plugin directory or ZIP for this session (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
   .option('--plugin-url <urls>', 'Load plugin ZIP archives from URLs for this session (repeatable)', (val: string, prev: string[]) => [...prev, val], [] as string[])
-  .option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Tau in Chrome integration').option('--no-chrome', 'Disable Tau in Chrome integration').option('--remote-local', 'Start /remote local with the session: a phone on your Wi-Fi can connect, and phones you chose to remember reconnect without a QR code (plain HTTP on your network)', () => true).option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
+  .option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Tau in Chrome integration').option('--no-chrome', 'Disable Tau in Chrome integration').option('--remote-local', 'Start /remote local with the session: a phone on your Wi-Fi can connect, and phones you chose to remember reconnect without a QR code (plain HTTP on your network)', () => true).option('--orchestrate', 'Start as an orchestrator: send tasks to other Tau sessions on this machine and get their answers back (they opt in with /peers on)', () => true).addOption(new Option('--peer-of <sessionId>', 'Take tasks from this orchestrator session only (set by OpenPeer)').hideHelp()).option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
     trace('action_handler_start');
     profileCheckpoint('action_handler_start');
 
@@ -1955,6 +1956,24 @@ async function run(): Promise<CommanderCommand> {
         process.exit(1);
       }
       requestLocalAtStartup();
+    }
+
+    // --orchestrate adds ListPeers and peer: addresses to SendMessage, so it
+    // must be set before getTools() and never change for the process.
+    if (options.orchestrate) {
+      if (isNonInteractiveSession) {
+        writeToStderr(`Error: --orchestrate needs an interactive session, so it cannot be used with --print.\n`);
+        process.exit(1);
+      }
+      setOrchestrator();
+    }
+    // --peer-of: a window OpenPeer opened takes tasks from its opener only.
+    if (options.peerOf) {
+      if (isNonInteractiveSession || options.orchestrate || !/^[A-Za-z0-9-]{1,80}$/.test(options.peerOf)) {
+        writeToStderr(`Error: --peer-of needs an interactive session that is not an orchestrator, and a session id.\n`);
+        process.exit(1);
+      }
+      acceptPeersFrom(options.peerOf);
     }
     const effectivePrompt = prompt || '';
     let inputPrompt = await getInputPrompt(effectivePrompt, (inputFormat ?? 'text') as 'text' | 'stream-json');

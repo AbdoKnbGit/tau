@@ -1,7 +1,11 @@
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
-import { isReplBridgeActive } from '../../bootstrap/state.js'
+import { getSessionId, isReplBridgeActive } from '../../bootstrap/state.js'
 import { getReplBridgeHandle } from '../../bridge/replBridgeHandle.js'
+import { isOrchestrator, sendPeerTask } from '../../services/peers/runtime.js'
+import { permissionModeWithSessionBypass } from '../../utils/permissions/bypassPermissionsMode.js'
+import { readPeerSettings } from '../../services/peers/settings.js'
+import { PEER_ADDRESS_PREFIX } from '../../services/peers/store.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { findTeammateTaskByAgentId } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
@@ -76,6 +80,9 @@ function describeRecipient(): string {
   ]
   if (isAgentSwarmsEnabled()) {
     kinds.push('a teammate name', '"*" to broadcast to all teammates')
+  }
+  if (isOrchestrator()) {
+    kinds.push('"peer:<name>" for another Tau session on this machine (see ListPeers)')
   }
   if (feature('UDS_INBOX')) {
     kinds.push(
@@ -625,13 +632,27 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       return { behavior: 'allow' as const, updatedInput: input }
     },
 
-    async validateInput(input, _context) {
+    async validateInput(input, context) {
       if (input.to.trim().length === 0) {
         return {
           result: false,
           message: 'to must not be empty',
           errorCode: 9,
         }
+      }
+      if (input.to.startsWith(PEER_ADDRESS_PREFIX)) {
+        const problem = !isOrchestrator()
+          ? 'peer: addresses work only in a session started with tau --orchestrate'
+          : context.agentId
+            ? 'only the main session can send tasks to other Tau sessions'
+            : typeof input.message !== 'string'
+              ? 'other Tau sessions take plain text only'
+              : !input.to.slice(PEER_ADDRESS_PREFIX.length).trim()
+                ? 'name the session after peer:'
+                : null
+        return problem
+          ? { result: false, message: problem, errorCode: 9 }
+          : { result: true }
       }
       const addr = parseAddress(input.to)
       if (
@@ -763,6 +784,25 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     },
 
     async call(input, context, canUseTool, assistantMessage) {
+      if (
+        typeof input.message === 'string' &&
+        input.to.startsWith(PEER_ADDRESS_PREFIX)
+      ) {
+        const settings = readPeerSettings()
+        const sent = await sendPeerTask(
+          input.to.slice(PEER_ADDRESS_PREFIX.length),
+          input.message,
+          {
+            sessionId: getSessionId(),
+            permissionMode: permissionModeWithSessionBypass(
+              context.getAppState().toolPermissionContext.mode,
+            ),
+            taskLimit: settings.taskLimit,
+            replyLimit: settings.replyLimit,
+          },
+        )
+        return { data: { success: sent.ok, message: sent.message } }
+      }
       if (feature('UDS_INBOX') && typeof input.message === 'string') {
         const addr = parseAddress(input.to)
         if (addr.scheme === 'bridge') {

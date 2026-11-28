@@ -376,6 +376,7 @@ export function isQueuedCommandEditable(cmd: QueuedCommand): boolean {
   return (
     isPromptInputModeEditable(cmd.mode) &&
     !cmd.modPrompt &&
+    !cmd.peer &&
     !cmd.isMeta &&
     !isQueuedHiddenBashCommand(cmd)
   )
@@ -400,7 +401,7 @@ function isQueuedHiddenBashCommand(cmd: QueuedCommand): boolean {
  * keyboard user sees what is pending) but stay non-editable.
  */
 export function isQueuedCommandVisible(cmd: QueuedCommand): boolean {
-  if (cmd.modPrompt) return true
+  if (cmd.modPrompt || cmd.peer) return true
   if (
     (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
     cmd.origin?.kind === 'channel'

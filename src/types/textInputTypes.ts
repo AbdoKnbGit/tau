@@ -315,6 +315,12 @@ export type QueuedCommand = {
   uuid?: UUID
   /** Plugin submissions own an independent turn and are never injected mid-turn. */
   modPrompt?: true
+  /**
+   * A task from another Tau session (services/peers). It runs as its own turn,
+   * never batched with other prompts, so its answer goes back to that session
+   * exactly.
+   */
+  peer?: true
   orphanedPermission?: OrphanedPermission
   /** Raw pasted contents including images. Images are resized at execution time. */
   pastedContents?: Record<number, PastedContent>

@@ -119,11 +119,6 @@ const ultraplan = feature('ULTRAPLAN')
   ? require('./commands/ultraplan.js').default
   : null
 const torch = feature('TORCH') ? require('./commands/torch.js').default : null
-const peersCmd = feature('UDS_INBOX')
-  ? (
-      require('./commands/peers/index.js') as typeof import('./commands/peers/index.js')
-    ).default
-  : null
 const forkCmd = feature('FORK_SUBAGENT')
   ? (
       require('./commands/fork/index.js') as typeof import('./commands/fork/index.js')
@@ -230,6 +225,7 @@ const usageReport: Command = {
 }
 import oauthRefresh from './commands/oauth-refresh/index.js'
 import debugToolCall from './commands/debug-tool-call/index.js'
+import peersCmd from './commands/peers/index.js'
 import { getSettingSourceName } from './utils/settings/constants.js'
 import {
   type Command,
@@ -388,7 +384,7 @@ const COMMANDS = memoize((): Command[] => [
   sandboxToggle,
   logout, login(), provider, lane,
   passes,
-  ...(peersCmd ? [peersCmd] : []),
+  peersCmd,
   tasks,
   toolsCommand,
   powerModeCommand,

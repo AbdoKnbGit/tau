@@ -77,6 +77,7 @@ export function processQueueIfReady({
   if (
     isSlashCommand(next) ||
     next.modPrompt ||
+    next.peer ||
     next.mode === 'bash' ||
     (next.mode === 'prompt' && hasModEvent('prompt.submit'))
   ) {
@@ -102,7 +103,7 @@ export function processQueueIfReady({
   const barrier = queue.findIndex(cmd => isMainThread(cmd) && cmd.modPrompt)
   const beforeBarrier = barrier < 0 ? undefined : new Set(queue.slice(0, barrier))
   const commands = dequeueAllMatching(
-    cmd => isMainThread(cmd) && !cmd.modPrompt && (!beforeBarrier || beforeBarrier.has(cmd)) && !isSlashCommand(cmd) && cmd.mode === targetMode,
+    cmd => isMainThread(cmd) && !cmd.modPrompt && !cmd.peer && (!beforeBarrier || beforeBarrier.has(cmd)) && !isSlashCommand(cmd) && cmd.mode === targetMode,
   )
   if (commands.length === 0) {
     return { processed: false }

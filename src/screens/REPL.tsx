@@ -59,6 +59,7 @@ import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
 import { useRemoteMirror } from '../hooks/useRemoteMirror.js';
 import { useWhatsAppMirror } from '../hooks/useWhatsAppMirror.js';
+import { usePeerSession } from '../hooks/usePeerSession.js';
 import { isOn as isWhatsAppOn } from '../services/whatsapp/lifecycle.js';
 import { onWhatsAppPermissionResponse, sendWhatsAppPermissionRequest } from '../services/whatsapp/permissions.js';
 import { getActiveChatJid } from '../services/whatsapp/router.js';
@@ -3450,7 +3451,9 @@ export function REPL({
       if (abortController.signal.reason === 'user-cancel' && !queryGuard.isActive && inputValueRef.current === '' && getCommandQueueLength() === 0 && !store.getState().viewingAgentTaskId) {
         const msgs = messagesRef.current;
         const lastUserMsg = msgs.findLast(selectableUserMessagesFilter);
-        if (lastUserMsg) {
+        // A task from another Tau session is not the user's draft: Esc stops
+        // it (its sender hears so) rather than pulling its text into the input.
+        if (lastUserMsg && lastUserMsg.origin?.kind !== 'peer') {
           const idx = msgs.lastIndexOf(lastUserMsg);
           if (messagesAfterAreOnlySynthetic(msgs, idx)) {
             // The submit is being undone — undo its history entry too,
@@ -4333,6 +4336,18 @@ export function REPL({
   // Remote mirror: streams the session to phones paired over LAN via /remote,
   // and lets them prompt and interrupt. No-op when /remote is off.
   useRemoteMirror(messages, isLoading, abortControllerRef, mainLoopModel, commands);
+
+  // Tasks between Tau sessions (/peers, --orchestrate). No-op until opted in.
+  usePeerSession({
+    messages,
+    isLoading,
+    waiting: toolUseConfirmQueue.length > 0,
+    model: mainLoopModel,
+    toolPermissionContext,
+    setAppState,
+    addNotification,
+    tasks
+  });
 
   useAfterFirstRender();
 

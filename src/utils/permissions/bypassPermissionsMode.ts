@@ -74,6 +74,48 @@ export function isBypassPermissionsOnForSession(mode: PermissionMode): boolean {
   return mode === 'bypassPermissions' || getSessionBypassPermissionsMode()
 }
 
+/** The mode to tell another session: bypass whenever it is on here, plan mode included. */
+export function permissionModeWithSessionBypass(mode: PermissionMode): PermissionMode {
+  return isBypassPermissionsOnForSession(mode) ? 'bypassPermissions' : mode
+}
+
+/** What enableBypassPermissionsModeForSession replaced, to put back later. */
+export type PermissionModeBeforeBypass = Pick<
+  ToolPermissionContext,
+  'mode' | 'isBypassPermissionsModeAvailable'
+>
+
+/**
+ * Ends bypass that enableBypassPermissionsModeForSession turned on for a while
+ * (a task from an orchestrator that has it on): back to the mode before it. A
+ * mode the user picked in the meantime stays, and a plan opened meantime no
+ * longer returns to bypass when it is approved.
+ */
+export function endBypassPermissionsModeForSession(
+  context: Pick<ToolUseContext, 'setAppState'>,
+  before: PermissionModeBeforeBypass,
+): void {
+  setSessionBypassPermissionsMode(false)
+  context.setAppState(prev => {
+    const current = prev.toolPermissionContext
+    if (current.mode !== 'bypassPermissions') {
+      return current.mode === 'plan' && current.prePlanMode === 'bypassPermissions'
+        ? { ...prev, toolPermissionContext: { ...current, prePlanMode: before.mode } }
+        : prev
+    }
+    return {
+      ...prev,
+      toolPermissionContext: {
+        ...applyPermissionUpdate(
+          transitionPermissionMode('bypassPermissions', before.mode, current),
+          { type: 'setMode', mode: before.mode, destination: 'session' },
+        ),
+        isBypassPermissionsModeAvailable: before.isBypassPermissionsModeAvailable,
+      },
+    }
+  })
+}
+
 /**
  * A plan that ends in a mode someone chose other than bypass (manual
  * approval, accepted edits) ends bypass for the session as well. Otherwise
